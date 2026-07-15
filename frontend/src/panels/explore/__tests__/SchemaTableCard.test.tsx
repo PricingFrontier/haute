@@ -182,6 +182,13 @@ describe("SchemaTableCard", () => {
     expect(codeNan).toHaveAttribute("data-nan-severity", "none")
   })
 
+  it("explains via a Distinct header info button that null and NaN are not values", () => {
+    render(<SchemaTableCard report={makeReport()} />)
+
+    const info = screen.getByRole("button", { name: /Null and NaN are not values/i })
+    expect(info).toHaveAttribute("data-testid", "explore-distinct-info")
+  })
+
   it("renders min and max values instead of examples", () => {
     render(
       <SchemaTableCard

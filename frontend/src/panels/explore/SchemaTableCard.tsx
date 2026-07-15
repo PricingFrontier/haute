@@ -18,6 +18,7 @@ import type { ExploreCacheReport, ExploreColumnStat } from "../../api/types"
 import { NODE_GROUP_COLORS } from "../../theme/colors"
 import { getDtypeColor } from "../../utils/dtypeColors"
 import { formatNullPct } from "../../utils/formatValue"
+import DistinctInfoButton from "./DistinctInfoButton"
 import { StatValueCell } from "./StatValueCell"
 
 interface SchemaTableCardProps {
@@ -245,7 +246,10 @@ export default function SchemaTableCard({ report }: SchemaTableCardProps) {
                 NaN %
               </th>
               <th className={HEADER_CLASS} style={HEADER_STYLE}>
-                Distinct
+                <span className="inline-flex items-center gap-1">
+                  Distinct
+                  <DistinctInfoButton />
+                </span>
               </th>
               <th className={HEADER_CLASS} style={HEADER_STYLE}>
                 Min

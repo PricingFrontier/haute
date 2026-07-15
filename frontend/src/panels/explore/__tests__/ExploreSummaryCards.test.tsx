@@ -325,6 +325,13 @@ describe("Explore summary cards", () => {
     expect(claimNan).toHaveTextContent("-")
   })
 
+  it("explains via a Distinct header info button that null and NaN are not values", () => {
+    render(<NumericSummaryCard report={makeReport()} />)
+
+    const info = screen.getByRole("button", { name: /Null and NaN are not values/i })
+    expect(info).toHaveAttribute("data-testid", "explore-distinct-info")
+  })
+
   it("renders an empty numeric summary state when there are no numeric fields", () => {
     render(
       <NumericSummaryCard

@@ -864,6 +864,77 @@ def test_build_frame_stats_distinct_count_excludes_null_bucket(
     assert column.distinct_count == 2
 
 
+def test_build_frame_stats_distinct_count_excludes_nan_bucket(
+    explore_execution_context,
+) -> None:
+    """NaN is reported separately (nan_count), so it is not a distinct value.
+
+    ``[1.0, 1.0, nan, None]`` has one valid value (1.0); the NaN and null
+    buckets are each their own count and must not inflate distinct_count.
+    """
+
+    from haute.routes._explore_service import _build_frame_stats
+
+    lf = pl.DataFrame({"value": [1.0, 1.0, float("nan"), None]}).lazy()
+
+    frame_stats = _build_frame_stats(
+        lf,
+        lf.collect_schema(),
+        execution_context=explore_execution_context,
+    )
+
+    [column] = frame_stats.columns
+    assert column.null_count == 1
+    assert column.nan_count == 1
+    assert column.distinct_count == 1
+
+
+def test_build_frame_stats_single_valid_value_with_nan_is_constant(
+    explore_execution_context,
+) -> None:
+    """One valid value plus NaN is a constant column (distinct valid == 1)."""
+
+    from haute.routes._explore_service import _build_frame_stats
+
+    lf = pl.DataFrame({"rate": [5.0, 5.0, float("nan")]}).lazy()
+
+    frame_stats = _build_frame_stats(
+        lf,
+        lf.collect_schema(),
+        execution_context=explore_execution_context,
+    )
+
+    [column] = frame_stats.columns
+    assert column.distinct_count == 1
+    labels = [issue.label for issue in frame_stats.overview_summary.data_quality.issues]
+    assert any("constant" in label for label in labels)
+
+
+def test_build_frame_stats_all_nan_column_is_not_flagged_constant(
+    explore_execution_context,
+) -> None:
+    """An all-NaN column has zero distinct valid values, so it is not
+
+    "constant / single-value" — the dedicated NaN issue is the right signal.
+    """
+
+    from haute.routes._explore_service import _build_frame_stats
+
+    lf = pl.DataFrame({"all_nan": [float("nan")] * 4}).lazy()
+
+    frame_stats = _build_frame_stats(
+        lf,
+        lf.collect_schema(),
+        execution_context=explore_execution_context,
+    )
+
+    [column] = frame_stats.columns
+    assert column.distinct_count == 0
+    labels = [issue.label for issue in frame_stats.overview_summary.data_quality.issues]
+    assert not any("constant" in label for label in labels)
+    assert any("NaN" in label for label in labels)
+
+
 def test_build_frame_stats_flags_constant_column_that_also_has_nulls(
     explore_execution_context,
 ) -> None:

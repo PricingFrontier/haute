@@ -4,6 +4,7 @@ import type { ExploreCacheReport, ExploreColumnStat } from "../../api/types"
 import { NODE_GROUP_COLORS } from "../../theme/colors"
 import { formatNullPct } from "../../utils/formatValue"
 import { formatRelativeTime } from "../../utils/formatTime"
+import DistinctInfoButton from "./DistinctInfoButton"
 import { StatValueCell } from "./StatValueCell"
 
 interface SummaryCardProps {
@@ -196,7 +197,14 @@ export function NumericSummaryCard({ report }: SummaryCardProps) {
                     className="text-[10px] font-bold uppercase tracking-[0.08em] text-left px-2 py-1.5"
                     style={SECONDARY_STYLE}
                   >
-                    {label}
+                    {label === "Distinct" ? (
+                      <span className="inline-flex items-center gap-1">
+                        {label}
+                        <DistinctInfoButton />
+                      </span>
+                    ) : (
+                      label
+                    )}
                   </th>
                 ))}
               </tr>
