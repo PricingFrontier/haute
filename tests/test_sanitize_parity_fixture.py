@@ -1,30 +1,56 @@
 """Python-side drift gate for the backend↔frontend sanitizer parity fixture.
 
-The fixture ``frontend/src/utils/__tests__/sanitizeParity.fixture.json`` was
-generated FROM the backend ``_sanitize_func_name`` and is asserted against the
+The fixture ``frontend/src/utils/__tests__/sanitizeParity.fixture.json`` is
+generated FROM the backend ``_sanitize_func_name`` by
+``scripts/regen_sanitize_parity_fixture.py`` and is asserted against the
 frontend ``sanitizeName.ts`` by vitest (``sanitizeParity.diff.test.ts``).
 Before this gate existed, a backend sanitizer change kept BOTH suites green
 while the implementations diverged — vitest checks TS against the (stale)
 fixture, and nothing checked the fixture against Python.  This test closes
-that: any backend change that alters an expected output fails here until
-``scripts/regen_sanitize_parity_fixture.py`` is rerun (which in turn breaks
-vitest until the TS side is realigned).  Drift can no longer stay green.
+that: any backend change that alters an expected output fails here until the
+regenerator is rerun (which in turn breaks vitest until the TS side is
+realigned).  Drift can no longer stay green.
+
+The regenerator module is the single source of BOTH the input corpus and the
+expected outputs, and the gate asserts the on-disk bytes equal
+``canonical(build_fixture())`` — so the corpus CONTENT is pinned too: an
+edge-case input (keyword case, hex-encoding discriminator) cannot be dropped
+from the fixture while both suites stay green, which the previous
+outputs-only recompute allowed (only a row-count floor guarded the corpus).
+Same idiom as ``test_api_input_label_parity_fixture.py``.
 """
 
 from __future__ import annotations
 
+import importlib.util
 import json
+import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
-
-from haute._graph_utils import _sanitize_func_name
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _FIXTURE = _REPO_ROOT / "frontend" / "src" / "utils" / "__tests__" / "sanitizeParity.fixture.json"
 
 
-def _load_pairs() -> list[list[str]]:
+def _load_regen() -> Any:
+    """Import the regenerator as a module (its corpus + canonical serializer
+    are the single source of the fixture)."""
+    script_path = _REPO_ROOT / "scripts" / "regen_sanitize_parity_fixture.py"
+    spec = importlib.util.spec_from_file_location("regen_sanitize_parity_fixture", script_path)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+regen = _load_regen()
+
+
+def _require_fixture() -> str:
     if not (_REPO_ROOT / "frontend").is_dir():
         # Running outside the repo checkout (e.g. against an installed
         # package) — the frontend tree, and therefore the parity contract,
@@ -32,35 +58,29 @@ def _load_pairs() -> list[list[str]]:
         pytest.skip("frontend tree not present; parity fixture out of scope")
     # If frontend/ exists the fixture MUST: a missing fixture is drift, not
     # an excuse to skip.
-    return json.loads(_FIXTURE.read_text(encoding="utf-8"))
+    return _FIXTURE.read_text(encoding="utf-8")
 
 
-def test_fixture_expected_outputs_match_backend_sanitizer() -> None:
-    pairs = _load_pairs()
-    assert len(pairs) >= 400, "parity fixture unexpectedly shrank"
-    mismatches = [
-        (inp, expected, _sanitize_func_name(inp))
-        for inp, expected in pairs
-        if _sanitize_func_name(inp) != expected
-    ]
-    assert mismatches == [], (
-        "Backend _sanitize_func_name diverged from the parity fixture "
-        "(input, fixture, backend): "
-        f"{mismatches[:10]!r} — if the backend change is intentional, run "
-        "scripts/regen_sanitize_parity_fixture.py and realign sanitizeName.ts"
-    )
+def test_fixture_matches_current_backend() -> None:
+    """On-disk fixture bytes == what the regenerator emits from today's backend.
 
-
-def test_fixture_serialization_is_regenerator_canonical() -> None:
-    """The on-disk bytes must be exactly what the regenerator would emit.
-
-    Guards the regeneration loop itself: a hand-edited or re-serialized
-    fixture (indented, ascii-escaped, trailing newline) would make
-    ``regen_sanitize_parity_fixture.py`` produce spurious diffs.
+    A single equality covers every drift face: expected outputs still match
+    ``_sanitize_func_name``, the input corpus is exactly the regenerator's
+    (no silently dropped edge cases), and the serialization is the canonical
+    shape (compact ``json.dumps`` with ``ensure_ascii=False``, no trailing
+    newline) — a hand-edited or re-indented fixture fails here too, so the
+    fixture can only be produced by the regenerator.
     """
-    pairs = _load_pairs()
-    canonical = json.dumps(
-        [[inp, _sanitize_func_name(inp)] for inp, _expected in pairs],
-        ensure_ascii=False,
+    on_disk = _require_fixture()
+    assert on_disk == regen.canonical(regen.build_fixture()), (
+        "Sanitizer parity fixture is stale vs the backend — if a change to "
+        "_sanitize_func_name (or the corpus) is intentional, run "
+        "`uv run python scripts/regen_sanitize_parity_fixture.py` and realign "
+        "frontend/src/utils/sanitizeName.ts until vitest is green."
     )
-    assert _FIXTURE.read_text(encoding="utf-8") == canonical
+
+
+def test_fixture_width_floor() -> None:
+    """The corpus must not silently shrink below its researched breadth."""
+    pairs = json.loads(_require_fixture())
+    assert len(pairs) >= 400, "parity fixture unexpectedly shrank"
