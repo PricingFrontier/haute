@@ -19,6 +19,7 @@ import click
 from packaging.requirements import Requirement
 from packaging.utils import canonicalize_name
 
+from haute._gitignore_guard import ensure_gitignore_guards
 from haute._io import read_user_text
 
 
@@ -645,25 +646,13 @@ def handle_init(config: InitConfig) -> None:
             installed.chmod(0o755)
 
     # -- .gitignore - append if exists, create if not --------------------------
-    # NB: <pipeline>.haute.json is STABLE-LAYER (node positions etc.) and MUST be
-    # tracked — it rides the save ledger. Do NOT gitignore *.haute.json. The
-    # per-clone .haute/ state directory (working-branch association, caches) is
-    # the untracked part.
+    # The guard entries (and the stable-layer *.haute.json caveat) live in
+    # haute._gitignore_guard, shared with the unborn-repo seed in haute._git so
+    # the two sites cannot drift.
     gitignore_path = project_dir / ".gitignore"
-    haute_entries = ".env\n.haute/\nimpact_report.md\n.haute_cache/\nmlruns/\ndata/\n"
-    if gitignore_path.exists():
-        existing_lines = set(read_user_text(gitignore_path).splitlines())
-        missing = [
-            line for line in haute_entries.splitlines() if line and line not in existing_lines
-        ]
-        if missing:
-            with open(gitignore_path, "a", encoding="utf-8") as fh:
-                fh.write("\n# Haute\n" + "\n".join(missing) + "\n")
-    else:
-        gitignore_path.write_text(
-            "__pycache__/\n*.pyc\n.venv/\n.env\n.haute/\n.haute_cache/\nmlruns/\ndata/\n",
-            encoding="utf-8",
-        )
+    if not gitignore_path.exists():
+        gitignore_path.write_text("__pycache__/\n*.pyc\n.venv/\n", encoding="utf-8")
+    ensure_gitignore_guards(project_dir)
 
     # -- Summary ---------------------------------------------------------------
     click.echo(f"Initialised Haute project '{name}' ({target} + {ci})\n")

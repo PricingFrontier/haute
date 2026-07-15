@@ -22,6 +22,7 @@ from datetime import UTC, datetime
 from functools import lru_cache
 from pathlib import Path
 
+from haute._gitignore_guard import ensure_gitignore_guards
 from haute._logging import get_logger
 from haute.errors import HauteError
 from haute.schemas import (
@@ -1154,6 +1155,18 @@ def set_working_branch(
                 _get_default_branch_cached.cache_clear()
                 _clear_content_caches()
 
+            # The add-all below trusts .gitignore to keep secrets and per-clone
+            # state out of the root commit. `haute init` writes the guard
+            # entries, but a foreign `git init` repo carries no such guarantee
+            # — assert them before staging anything, or the seed publishes
+            # .env into history and commits .haute/ (the clone-lockout class).
+            toplevel = Path(_run_git("rev-parse", "--show-toplevel", cwd=cwd).strip())
+            ensure_gitignore_guards(toplevel)
+            # Pre-staged index content bypasses .gitignore and would survive
+            # `add -A`; start from an empty index so the fresh guards alone
+            # decide what enters the root commit. --cached leaves the working
+            # tree untouched; -f covers stage-vs-disk mismatches.
+            _run_git("rm", "-r", "-f", "-q", "--cached", "--ignore-unmatch", "--", ".", cwd=cwd)
             _run_git("add", "-A", cwd=cwd)
             # If nothing was staged (empty working tree) use --allow-empty so we
             # still establish a root commit and the model remains consistent.

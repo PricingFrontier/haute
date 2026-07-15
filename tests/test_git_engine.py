@@ -750,6 +750,90 @@ class TestSetWorkingBranchUnborn:
             set_working_branch("ghost", repo, create=False, cwd=repo)
 
 
+class TestSeedGitignoreGuards:
+    """The unborn-repo seed must not trust an ambient .gitignore.
+
+    ``haute init`` writes the guard entries (``.env``, ``.haute/``, ``data/``,
+    …), so the haute-scaffolded flow is protected.  But a FOREIGN unborn repo —
+    the user ran bare ``git init`` themselves in a directory holding a ``.env``
+    or datasets — has no such guarantee, and the seed's ``git add -A`` would
+    publish credentials into git history and commit the per-clone ``.haute/``
+    state (the clone-lockout class).  The seed therefore asserts the shared
+    guard entries into ``.gitignore`` before staging anything, and stages from
+    an empty index so pre-staged secrets cannot ride through either.
+    """
+
+    def test_foreign_unborn_repo_secrets_not_committed(self, unborn_repo: Path) -> None:
+        """PRIMARY repro: planted .env / .haute/ / data/ and NO .gitignore —
+        none of them may enter the root commit."""
+        (unborn_repo / "main.py").write_text("x = 1\n")
+        (unborn_repo / ".env").write_text("DATABRICKS_TOKEN=hunter2\n")
+        (unborn_repo / "sub").mkdir()
+        (unborn_repo / "sub" / ".env").write_text("NESTED_SECRET=1\n")
+        (unborn_repo / ".haute").mkdir()
+        (unborn_repo / ".haute" / "state.json").write_text("{}")
+        (unborn_repo / "data").mkdir()
+        (unborn_repo / "data" / "quotes.csv").write_text("a,b\n1,2\n")
+
+        set_working_branch("initial-model", unborn_repo, create=True, cwd=unborn_repo)
+
+        committed = _git(unborn_repo, "show", "--name-only", "--format=", "main").splitlines()
+        assert "main.py" in committed
+        assert not any(".env" in f for f in committed), f".env leaked into history: {committed}"
+        assert not any(f.startswith(".haute/") for f in committed), (
+            f"per-clone .haute/ state committed: {committed}"
+        )
+        assert not any(f.startswith("data/") for f in committed), (
+            f"data/ leaked into history: {committed}"
+        )
+        # The asserted guards are themselves captured, so clones inherit them.
+        assert ".gitignore" in committed
+
+    def test_seed_appends_guards_to_partial_gitignore(self, unborn_repo: Path) -> None:
+        """An existing .gitignore missing the guard entries gets them appended;
+        the user's own entries keep working."""
+        (unborn_repo / ".gitignore").write_text("*.pyc\n")
+        (unborn_repo / "model.pyc").write_text("bytecode")
+        (unborn_repo / ".env").write_text("SECRET=1\n")
+        (unborn_repo / "main.py").write_text("x = 1\n")
+
+        set_working_branch("initial-model", unborn_repo, create=True, cwd=unborn_repo)
+
+        committed = _git(unborn_repo, "show", "--name-only", "--format=", "main").splitlines()
+        assert "main.py" in committed
+        assert ".env" not in committed, f".env leaked into history: {committed}"
+        assert not any(f.endswith(".pyc") for f in committed), f".pyc leaked: {committed}"
+        gitignore = (unborn_repo / ".gitignore").read_text()
+        assert "*.pyc" in gitignore
+        assert ".env" in gitignore.splitlines()
+
+    def test_prestaged_secret_not_committed(self, unborn_repo: Path) -> None:
+        """Staged index content ignores .gitignore entirely — a .env the user
+        pre-staged must still be kept out of the root commit (and left on disk)."""
+        (unborn_repo / "main.py").write_text("x = 1\n")
+        (unborn_repo / ".env").write_text("SECRET=1\n")
+        _git(unborn_repo, "add", "main.py", ".env")
+
+        set_working_branch("initial-model", unborn_repo, create=True, cwd=unborn_repo)
+
+        committed = _git(unborn_repo, "show", "--name-only", "--format=", "main").splitlines()
+        assert "main.py" in committed
+        assert ".env" not in committed, f"pre-staged .env leaked into history: {committed}"
+        assert (unborn_repo / ".env").exists()  # working tree untouched
+
+    def test_seed_leaves_complete_gitignore_untouched(self, unborn_repo: Path) -> None:
+        """A .gitignore already carrying the full guard set is not rewritten."""
+        from haute._gitignore_guard import GITIGNORE_GUARD_ENTRIES
+
+        content = "\n".join(GITIGNORE_GUARD_ENTRIES) + "\n"
+        (unborn_repo / ".gitignore").write_text(content)
+        (unborn_repo / "main.py").write_text("x = 1\n")
+
+        set_working_branch("initial-model", unborn_repo, create=True, cwd=unborn_repo)
+
+        assert (unborn_repo / ".gitignore").read_text() == content
+
+
 class TestSetWorkingBranchUnbornNonDefault:
     """set_working_branch(create=True) when HEAD is on an unborn NON-default branch.
 
