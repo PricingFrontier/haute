@@ -10,6 +10,7 @@ function makeParams(overrides: Partial<Parameters<typeof useKeyboardShortcuts>[0
     handleSave: vi.fn(),
     setNodes: vi.fn(),
     setEdges: vi.fn(),
+    setNodesAndEdges: vi.fn(),
     undo: vi.fn(),
     redo: vi.fn(),
     fitView: vi.fn(),
@@ -149,8 +150,12 @@ describe("useKeyboardShortcuts", () => {
       edges: [],
     }
     fireKey("v", { ctrlKey: true })
-    expect(params.setNodes).toHaveBeenCalledOnce()
-    expect(params.setEdges).toHaveBeenCalledOnce()
+    // Undo-atomicity: paste adds nodes + their edges in ONE combined call, so
+    // a single ⌘/Ctrl-Z removes the whole paste — never separate setNodes +
+    // setEdges (two undo snapshots).
+    expect(params.setNodesAndEdges).toHaveBeenCalledOnce()
+    expect(params.setNodes).not.toHaveBeenCalled()
+    expect(params.setEdges).not.toHaveBeenCalled()
     const toasts = useToastStore.getState().toasts
     expect(toasts[toasts.length - 1]).toMatchObject({ type: "info", text: "Pasted 1 node" })
   })
@@ -167,8 +172,8 @@ describe("useKeyboardShortcuts", () => {
       edges: [],
     }
     fireKey("v", { ctrlKey: true })
-    expect(params.setNodes).toHaveBeenCalledOnce()
-    const updater = vi.mocked(params.setNodes).mock.calls[0][0] as (nds: Node[]) => Node[]
+    expect(params.setNodesAndEdges).toHaveBeenCalledOnce()
+    const updater = vi.mocked(params.setNodesAndEdges).mock.calls[0][0] as (nds: Node[]) => Node[]
     const result = updater(params.graphRef.current.nodes)
     // Original node + 1 pasted (polars), singleton (apiInput) filtered out
     expect(result).toHaveLength(2)
@@ -186,7 +191,7 @@ describe("useKeyboardShortcuts", () => {
       edges: [],
     }
     fireKey("v", { ctrlKey: true })
-    expect(params.setNodes).not.toHaveBeenCalled()
+    expect(params.setNodesAndEdges).not.toHaveBeenCalled()
   })
 
   it("Ctrl+V allows pasting singleton when it does not exist in graph", () => {
@@ -198,12 +203,12 @@ describe("useKeyboardShortcuts", () => {
       edges: [],
     }
     fireKey("v", { ctrlKey: true })
-    expect(params.setNodes).toHaveBeenCalledOnce()
+    expect(params.setNodesAndEdges).toHaveBeenCalledOnce()
   })
 
   it("Ctrl+V with empty clipboard does nothing", () => {
     fireKey("v", { ctrlKey: true })
-    expect(params.setNodes).not.toHaveBeenCalled()
+    expect(params.setNodesAndEdges).not.toHaveBeenCalled()
   })
 
   it("Delete removes selected nodes", () => {
@@ -216,8 +221,11 @@ describe("useKeyboardShortcuts", () => {
       { id: "e1", source: "n1", target: "n2" } as Edge,
     ]
     fireKey("Delete")
-    expect(params.setNodes).toHaveBeenCalled()
-    expect(params.setEdges).toHaveBeenCalled()
+    // Undo-atomicity: node + its edges removed in ONE combined call — never
+    // separate setNodes + setEdges (two undo snapshots).
+    expect(params.setNodesAndEdges).toHaveBeenCalledOnce()
+    expect(params.setNodes).not.toHaveBeenCalled()
+    expect(params.setEdges).not.toHaveBeenCalled()
     expect(params.setSelectedNode).toHaveBeenCalledWith(null)
     expect(params.setPreviewData).toHaveBeenCalledWith(null)
   })
@@ -228,7 +236,9 @@ describe("useKeyboardShortcuts", () => {
     ]
     params.graphRef.current.edges = []
     fireKey("Delete")
+    expect(params.setNodesAndEdges).not.toHaveBeenCalled()
     expect(params.setNodes).not.toHaveBeenCalled()
+    expect(params.setEdges).not.toHaveBeenCalled()
   })
 
   it("Ctrl+G with 2+ selected opens submodel dialog", () => {
@@ -389,6 +399,7 @@ describe("useKeyboardShortcuts", () => {
     params.graphRef.current.nodes = []
     params.graphRef.current.edges = []
     fireKey("Delete")
+    expect(params.setNodesAndEdges).not.toHaveBeenCalled()
     expect(params.setNodes).not.toHaveBeenCalled()
     expect(params.setEdges).not.toHaveBeenCalled()
   })
@@ -412,6 +423,7 @@ describe("useKeyboardShortcuts", () => {
     const input = document.createElement("input")
     document.body.appendChild(input)
     input.dispatchEvent(new KeyboardEvent("keydown", { key: "Delete", bubbles: true }))
+    expect(params.setNodesAndEdges).not.toHaveBeenCalled()
     expect(params.setNodes).not.toHaveBeenCalled()
     document.body.removeChild(input)
   })
@@ -484,8 +496,9 @@ describe("useKeyboardShortcuts", () => {
       { id: "e1", source: "n1", target: "n2" } as Edge,
     ]
     fireKey("Backspace")
-    expect(params.setNodes).toHaveBeenCalled()
-    expect(params.setEdges).toHaveBeenCalled()
+    expect(params.setNodesAndEdges).toHaveBeenCalledOnce()
+    expect(params.setNodes).not.toHaveBeenCalled()
+    expect(params.setEdges).not.toHaveBeenCalled()
     expect(params.setSelectedNode).toHaveBeenCalledWith(null)
   })
 })
