@@ -255,7 +255,7 @@ def test_training_background_memory_limit_sets_typed_terminal_status(
         service._launch_background(
             job_id,
             "train",
-            {"target": "target"},
+            {"target": "target", "loss_function": "RMSE"},
             {},
             str(tmp_parquet),
             None,
@@ -322,7 +322,7 @@ def test_launch_background_threads_admitted_context_through_to_training_job(
         service._launch_background(
             job_id,
             "train",
-            {"target": "target"},
+            {"target": "target", "loss_function": "RMSE"},
             {},
             str(tmp_parquet),
             None,
@@ -385,7 +385,7 @@ def test_launch_background_releases_admission_after_thread_completes(
         service._launch_background(
             job_id,
             "train",
-            {"target": "target"},
+            {"target": "target", "loss_function": "RMSE"},
             {},
             str(tmp_parquet),
             None,
@@ -431,7 +431,7 @@ def test_launch_background_releases_admission_on_thread_start_failure(
         service._launch_background(
             job_id,
             "train",
-            {"target": "target"},
+            {"target": "target", "loss_function": "RMSE"},
             {},
             str(tmp_parquet),
             None,

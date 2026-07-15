@@ -80,6 +80,7 @@ class TestDoubleStartTraining:
                             "config": {
                                 "target": "y",
                                 "algorithm": "catboost",
+                                "loss_function": "RMSE",
                                 "params": {"iterations": 5},
                             },
                         },
@@ -117,6 +118,7 @@ class TestDoubleStartTraining:
                             "config": {
                                 "target": "y",
                                 "algorithm": "catboost",
+                                "loss_function": "RMSE",
                                 "params": {"iterations": 5},
                             },
                         },
@@ -265,6 +267,7 @@ class TestExportScript:
                             "config": {
                                 "target": "y",
                                 "algorithm": "catboost",
+                                "loss_function": "RMSE",
                                 "params": {"iterations": 100},
                             },
                         },

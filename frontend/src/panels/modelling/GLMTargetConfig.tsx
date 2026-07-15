@@ -47,7 +47,11 @@ export type GLMTargetConfigProps = {
 export function GLMTargetConfig({ config, onUpdate, columns }: GLMTargetConfigProps) {
   const target = configField(config, "target", "")
   const weight = configField(config, "weight", "")
-  const family = configField(config, "family", "poisson")
+  // No display default: an unselected family must LOOK unselected — the
+  // backend requires an explicit family (unset would have silently trained
+  // gaussian), so faking a "poisson" selection here would show a chosen
+  // family the config doesn't actually have.
+  const family = configField(config, "family", "")
   const link = configField(config, "link", "")
   const intercept = configField(config, "intercept", true)
   const metrics = configField<string[]>(config, "metrics", ["gini", "poisson_deviance"])

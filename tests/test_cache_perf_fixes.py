@@ -54,6 +54,7 @@ import gc
 import hashlib
 import os
 import secrets
+import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -403,6 +404,60 @@ class TestPreambleCacheCorrectness:
                 "concurrent compiles produced semantically different "
                 "namespaces — race in cache population"
             )
+
+    def test_concurrent_compiles_single_flight_under_thread_churn(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """Stress form of the test above: single-flight must hold even when
+        the OS preempts a thread between cache lookup and cache store.
+
+        The plain barrier test only catches the population race when a
+        thread happens to be preempted inside a ~one-GIL-slice window, so it
+        passed on idle machines and flaked rarely in CI (observed 2026-07-15,
+        PR #80 backend shard).  Shrinking the switch interval widens that
+        window enough that the unfixed race reproduced in ~99% of
+        iterations, making this a deterministic regression guard.
+
+        Asserts *identity*, not just equality: single-flight population
+        means every concurrent caller of the same key gets the SAME dict —
+        the guarantee the pre-lru_cache ``OrderedDict`` implementation gave
+        (lookup and store both under ``_preamble_lock``).
+        """
+        monkeypatch.chdir(tmp_path)
+        _clear_preamble_cache()
+        old_interval = sys.getswitchinterval()
+        sys.setswitchinterval(1e-6)  # force frequent preemption
+        try:
+            n_threads = 8
+            for i in range(150):
+                # Unique source per iteration -> fresh cache key each time,
+                # so every iteration exercises the concurrent-miss path.
+                source = f"def churn_helper_{i}(x):\n    return x * 3\n"
+                results: list[dict[str, Any]] = []
+                errors: list[BaseException] = []
+                barrier = threading.Barrier(n_threads)
+
+                def worker() -> None:
+                    try:
+                        barrier.wait()
+                        results.append(_compile_preamble(source, force_refresh=False))
+                    except BaseException as exc:  # pragma: no cover — failure path
+                        errors.append(exc)
+
+                with ThreadPoolExecutor(max_workers=n_threads) as pool:
+                    for _ in range(n_threads):
+                        pool.submit(worker)
+
+                assert not errors, f"iteration {i}: concurrent compile crashed: {errors!r}"
+                assert len(results) == n_threads
+                identities = {id(ns) for ns in results}
+                assert len(identities) == 1, (
+                    f"iteration {i}: concurrent compiles returned "
+                    f"{len(identities)} distinct namespace objects — cache "
+                    "population is not single-flight"
+                )
+        finally:
+            sys.setswitchinterval(old_interval)
 
     def test_empty_preamble_does_not_fill_cache(self) -> None:
         """Empty / whitespace preamble short-circuits before the cache.
