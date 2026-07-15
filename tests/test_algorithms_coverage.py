@@ -402,6 +402,119 @@ class TestBuildPool:
         pool = _build_pool(df, ["f1", "missing_col"], [], target="y")
         assert pool.num_row() == 2
 
+    def test_numeric_only_pool_carries_feature_names(self):
+        """The numpy fast path must still name features (not ['0', '1', ...]).
+
+        Without explicit names, models trained on a numeric-only Pool save
+        feature_names_ == ['0', '1', ...] and the serve-side name validation
+        rejects every named scoring frame.
+        """
+        from haute.modelling._algorithms import _build_pool
+
+        df = pl.DataFrame({"f1": [1.0, 2.0, 3.0], "f2": [4.0, 5.0, 6.0], "y": [0.0, 1.0, 0.0]})
+        pool = _build_pool(df, ["f1", "f2"], [], target="y")
+        assert pool.get_feature_names() == ["f1", "f2"]
+
+    def test_categorical_pool_carries_feature_names(self):
+        """The pandas branch keeps names too, in feature order."""
+        from haute.modelling._algorithms import _build_pool
+
+        df = pl.DataFrame({"f1": [1.0, 2.0, 3.0], "cat": ["a", "b", "c"], "y": [0.0, 1.0, 0.0]})
+        pool = _build_pool(df, ["f1", "cat"], ["cat"], target="y")
+        assert pool.get_feature_names() == ["f1", "cat"]
+
+
+class TestNumericOnlyModelServeRoundtrip:
+    """Regression: all-numeric CatBoost models must keep real feature names.
+
+    The numeric-only training path hands CatBoost a bare numpy array; before
+    _build_pool passed feature_names explicitly, the saved .cbm reported
+    feature_names_ == ['0', '1', ...] and the serve path
+    (load_local_model → _wrap_catboost → _validate_features) rejected every
+    named scoring frame with a feature mismatch.
+    """
+
+    def test_all_numeric_model_saves_names_and_scores_named_frame(
+        self, haute_scratch: Path
+    ) -> None:
+        from haute._mlflow_io import load_local_model
+        from haute._model_scorer import _run_score_pipeline
+        from haute.modelling._algorithms import CatBoostAlgorithm
+
+        rng = np.random.default_rng(42)
+        train_df = pl.DataFrame(
+            {
+                "age": rng.uniform(18, 80, 100),
+                "exposure": rng.uniform(0.1, 1.0, 100),
+                "claims": rng.poisson(0.2, 100).astype(np.float64),
+            }
+        )
+
+        algo = CatBoostAlgorithm()
+        result = algo.fit(
+            train_df,
+            features=["age", "exposure"],
+            cat_features=[],
+            target="claims",
+            weight=None,
+            params={"iterations": 5, "depth": 2, "verbose": 0},
+            task="regression",
+        )
+
+        model_path = haute_scratch / "numeric_only.cbm"
+        algo.save(result.model, model_path)
+
+        scoring_model = load_local_model(str(model_path), task="regression")
+        assert scoring_model.feature_names == ["age", "exposure"]
+
+        score_df = pl.DataFrame(
+            {
+                "age": [30.0, 55.0, 70.0],
+                "exposure": [0.5, 0.8, 1.0],
+            }
+        )
+        scored = _run_score_pipeline(
+            scoring_model,
+            score_df.lazy(),
+            task="regression",
+            output_col="prediction",
+        )
+        collected = scored.collect() if isinstance(scored, pl.LazyFrame) else scored
+        assert "prediction" in collected.columns
+        assert collected.height == 3
+        assert collected["prediction"].is_finite().all()
+
+    def test_named_model_predicts_positionally_via_numpy_path(self) -> None:
+        """CatBoostAlgorithm.predict's numpy fast path stays valid: CatBoost
+        accepts unnamed numpy input positionally even when the model carries
+        real feature names, so training-time names don't break in-process
+        prediction."""
+        from haute.modelling._algorithms import CatBoostAlgorithm
+
+        rng = np.random.default_rng(7)
+        train_df = pl.DataFrame(
+            {
+                "x1": rng.uniform(0, 1, 50),
+                "x2": rng.uniform(0, 1, 50),
+                "y": rng.uniform(0, 1, 50),
+            }
+        )
+        algo = CatBoostAlgorithm()
+        result = algo.fit(
+            train_df,
+            features=["x1", "x2"],
+            cat_features=[],
+            target="y",
+            weight=None,
+            params={"iterations": 5, "depth": 2, "verbose": 0},
+            task="regression",
+        )
+        assert result.model.feature_names_ == ["x1", "x2"]
+
+        preds = algo.predict(result.model, train_df.head(5), ["x1", "x2"])
+        assert preds.shape == (5,)
+        assert np.isfinite(preds).all()
+
 
 # ---------------------------------------------------------------------------
 # resolve_loss_function — full coverage
