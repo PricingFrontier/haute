@@ -851,7 +851,7 @@ async def test_timed_out_preview_requests_hold_slot_until_worker_finishes(
 
     limiter = asyncio.Semaphore(1)
     coordinator = SupersessionCoordinator()
-    monkeypatch.setattr(route_mod, "_PREVIEW_TIMEOUT", 0.05)
+    monkeypatch.setenv("HAUTE_PREVIEW_TIMEOUT", "0.05")
     monkeypatch.setattr(route_mod, "_preview_work_slots", limiter)
     monkeypatch.setattr(route_mod, "_preview_supersession", coordinator)
 
@@ -956,7 +956,7 @@ async def test_timed_out_same_key_preview_stays_active_until_worker_finishes(
     from haute.server import app
 
     coordinator = SupersessionCoordinator()
-    monkeypatch.setattr(route_mod, "_PREVIEW_TIMEOUT", 0.05)
+    monkeypatch.setenv("HAUTE_PREVIEW_TIMEOUT", "0.05")
     monkeypatch.setattr(route_mod, "_preview_work_slots", asyncio.Semaphore(2))
     monkeypatch.setattr(route_mod, "_preview_supersession", coordinator)
 
@@ -1047,7 +1047,7 @@ async def test_superseded_timed_out_preview_holds_slot_until_worker_finishes(
 
     limiter = asyncio.Semaphore(1)
     coordinator = SupersessionCoordinator()
-    monkeypatch.setattr(route_mod, "_PREVIEW_TIMEOUT", 0.05)
+    monkeypatch.setenv("HAUTE_PREVIEW_TIMEOUT", "0.05")
     monkeypatch.setattr(route_mod, "_preview_work_slots", limiter)
     monkeypatch.setattr(route_mod, "_preview_supersession", coordinator)
 

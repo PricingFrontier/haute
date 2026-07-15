@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import tempfile
 import time
 from pathlib import Path
@@ -12,6 +13,7 @@ from typing import Any, Protocol, cast
 from fastapi import APIRouter, HTTPException
 
 from haute._execution_context import ExecutionContext, ExecutionProfile
+from haute._file_ops import atomic_write_text
 from haute._logging import get_logger
 from haute._polars_utils import (
     DEFAULT_STREAMING_CHUNK_SIZE,
@@ -1579,6 +1581,69 @@ def _build_artifact_payload(
     return payload
 
 
+def _non_finite_paths(value: Any, path: str = "") -> list[str]:
+    """Return JSON paths of every non-finite float nested inside *value*."""
+    if isinstance(value, float) and not math.isfinite(value):
+        return [path or "<root>"]
+    if isinstance(value, dict):
+        return [
+            found
+            for key, item in value.items()
+            for found in _non_finite_paths(item, f"{path}.{key}" if path else str(key))
+        ]
+    if isinstance(value, (list, tuple)):
+        return [
+            found
+            for index, item in enumerate(value)
+            for found in _non_finite_paths(item, f"{path}[{index}]")
+        ]
+    return []
+
+
+def _validate_artifact_payload(payload: dict[str, Any]) -> None:
+    """Gate the artifact payload before it is written to disk.
+
+    The saved artifact is exactly what OPTIMISER_APPLY reads to price, so a
+    payload with NaN/Infinity values or a missing ratebook factor-table
+    section would mis-price silently downstream. Reject with an actionable
+    4xx instead of persisting a poisoned artifact — and because this runs
+    before the write and before the post-save result slimming, the in-memory
+    solve result survives for the user to inspect.
+    """
+    lambdas = payload.get("lambdas")
+    if not isinstance(lambdas, dict):
+        raise HTTPException(
+            status_code=400,
+            detail="Solve result has no lambda mapping. Re-run the solve before saving.",
+        )
+    if payload.get("total_objective") is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Solve result has no total objective. Re-run the solve before saving.",
+        )
+    if payload.get("mode") == "ratebook" and not isinstance(payload.get("factor_tables"), dict):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Ratebook solve result has no factor tables, so the saved artifact "
+                "could not be applied for pricing. Re-run the solve before saving."
+            ),
+        )
+    bad_paths = _non_finite_paths(payload)
+    if bad_paths:
+        shown = ", ".join(bad_paths[:5])
+        if len(bad_paths) > 5:
+            shown += f", … ({len(bad_paths)} in total)"
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Solve result contains non-finite values ({shown}); the artifact was "
+                "not saved. Check the solve inputs and constraints, then re-run the "
+                "solve — a pricing artifact must not contain NaN or Infinity."
+            ),
+        )
+
+
 @router.post("/save", response_model=OptimiserSaveResponse)
 def save_result(body: OptimiserSaveRequest) -> OptimiserSaveResponse:
     """Save the optimisation result to disk."""
@@ -1625,7 +1690,14 @@ def save_result(body: OptimiserSaveRequest) -> OptimiserSaveResponse:
             version_override=body.version,
             selected_frontier_point=selected_frontier_point,
         )
-        out.write_text(json.dumps(payload, indent=2, default=str))
+        _validate_artifact_payload(payload)
+        # Atomic write (same posture as the schema-mapping save in
+        # `_helpers.save_sidecar`): stage to a sibling temp then rename, so a
+        # crash or disk error mid-write can never tear the previous artifact
+        # — this file is what OPTIMISER_APPLY prices from. `allow_nan=False`
+        # is a backstop behind `_validate_artifact_payload`: nothing
+        # non-finite may ever reach disk.
+        atomic_write_text(out, json.dumps(payload, indent=2, default=str, allow_nan=False))
         logger.info("result_saved", path=str(out), job_id=body.job_id)
 
         response = OptimiserSaveResponse(

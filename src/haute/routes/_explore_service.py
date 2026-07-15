@@ -12,6 +12,7 @@ import json
 import threading
 import time
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import Any
 
 import polars as pl
@@ -333,6 +334,20 @@ def _lossy_decode_binary(value: bytes | None) -> str | None:
     return value.decode("utf-8", errors="replace")
 
 
+def _format_duration(value: timedelta | None) -> str | None:
+    """Format a Duration value as text, matching ``str(timedelta)``.
+
+    Mirrors the min/max path, which leaves Duration uncast and lets
+    ``_format_display_value`` apply ``str(timedelta)``, so a Duration column's
+    value-count labels read identically to its min/max ("2:00:00",
+    "1 day, 0:00:00").
+    """
+
+    if value is None:
+        return None
+    return str(value)
+
+
 def _categorical_value_label_expr(name: str, dtype: pl.DataType) -> pl.Expr:
     """Return the String-typed expression whose distinct values are counted.
 
@@ -341,12 +356,20 @@ def _categorical_value_label_expr(name: str, dtype: pl.DataType) -> pl.Expr:
     ``ComputeError: invalid utf8`` on the first undecodable row, aborting the
     entire batched ``streaming_collect`` and taking down the whole Explore
     materialisation. Decode Binary leniently instead so undecodable bytes
-    surface as the Unicode replacement character rather than crashing; every
-    other text-like dtype is already valid UTF-8 and casts cheaply.
+    surface as the Unicode replacement character rather than crashing.
+
+    Duration columns are temporal, so they reach this branch too, but Polars
+    cannot ``cast(pl.Duration, pl.String)`` at all — the strict cast raises
+    ``InvalidOperationError`` and aborts the same collect. Format Duration
+    element-wise instead. Every other text-like dtype is already valid UTF-8
+    and casts cheaply.
     """
 
-    if dtype.base_type() == pl.Binary:
+    base = dtype.base_type()
+    if base == pl.Binary:
         return pl.col(name).map_elements(_lossy_decode_binary, return_dtype=pl.String)
+    if base == pl.Duration:
+        return pl.col(name).map_elements(_format_duration, return_dtype=pl.String)
     return pl.col(name).cast(pl.String)
 
 

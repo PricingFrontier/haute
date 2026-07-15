@@ -22,6 +22,7 @@ import polars as pl
 from fastapi import HTTPException
 from pydantic import BaseModel
 
+from haute._env import int_env
 from haute._execution_admission import (
     ExecutionAdmissionError,
     create_admitted_execution_context,
@@ -64,10 +65,19 @@ logger = get_logger(component="server.modelling.train")
 # ── Default constants ─────────────────────────────────────────────
 _DEFAULT_BORDER_COUNT = 128  # CatBoost border count for VRAM estimation
 _DEFAULT_DEPTH = 6  # CatBoost tree depth for VRAM estimation
-_DEFAULT_TIMEOUT = int(os.environ.get("HAUTE_TRAIN_TIMEOUT", "3600"))
-_MAX_TRAIN_LOSS_HISTORY = int(os.environ.get("HAUTE_TRAIN_LOSS_HISTORY_LIMIT", "200"))
 _TRAINING_JOB_TYPE = "training"
 _JOB_TYPE_KEY = "job_type"
+
+
+# Env-tunable defaults — resolved per call so overrides set after import
+# take effect.
+def _default_train_timeout() -> int:
+    return int_env("HAUTE_TRAIN_TIMEOUT", 3600)
+
+
+def _max_train_loss_history() -> int:
+    return int_env("HAUTE_TRAIN_LOSS_HISTORY_LIMIT", 200)
+
 
 # Deterministic seed for the RAM/row-limit training downsample. A fixed
 # constant (rather than a config knob) keeps training reproducible by default
@@ -365,9 +375,9 @@ def _bounded_loss_history(
     history: Iterable[dict[str, float]],
 ) -> tuple[list[dict[str, float]], bool]:
     rows = list(history)
-    if len(rows) <= _MAX_TRAIN_LOSS_HISTORY:
+    if len(rows) <= _max_train_loss_history():
         return rows, False
-    return rows[-_MAX_TRAIN_LOSS_HISTORY:], True
+    return rows[-_max_train_loss_history() :], True
 
 
 def _check_gpu_vram(
@@ -1087,7 +1097,7 @@ class TrainService:
             job_id,
             {
                 "start_time": start_time,
-                "timeout": config.get("timeout", _DEFAULT_TIMEOUT),
+                "timeout": config.get("timeout", _default_train_timeout()),
             },
         )
 
@@ -1109,8 +1119,8 @@ class TrainService:
             history = list(current_job.get("train_loss_history") or [])
             history.append({"iteration": float(iteration), **metrics})
             truncated = bool(current_job.get("train_loss_history_truncated"))
-            if len(history) > _MAX_TRAIN_LOSS_HISTORY:
-                history = history[-_MAX_TRAIN_LOSS_HISTORY:]
+            if len(history) > _max_train_loss_history():
+                history = history[-_max_train_loss_history() :]
                 truncated = True
             self._store.atomic_update(
                 job_id,

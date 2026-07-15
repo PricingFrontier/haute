@@ -5,7 +5,7 @@
  * default values, editing min, editing steps with clamping, step column,
  * preview line, selecting a column, InputSourcesBar rendering.
  */
-import { describe, it, expect, vi, afterEach } from "vitest"
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { render, screen, fireEvent, cleanup } from "@testing-library/react"
 import { useState } from "react"
 import ScenarioExpanderEditor from "../../panels/editors/ScenarioExpanderEditor"
@@ -42,6 +42,10 @@ const DEFAULT_PROPS = {
   upstreamColumns: [] as { name: string; dtype: string }[],
   accentColor: "#2dd4bf",
 }
+
+beforeEach(() => {
+  DEFAULT_PROPS.onUpdate.mockClear()
+})
 
 function applyConfigUpdate(
   config: Record<string, unknown>,

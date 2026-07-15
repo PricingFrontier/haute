@@ -1,9 +1,11 @@
 import { lazy } from "react"
-import { render, screen } from "@testing-library/react"
-import { describe, expect, it } from "vitest"
+import { render, screen, cleanup } from "@testing-library/react"
+import { afterEach, describe, expect, it } from "vitest"
 import { LazyEditorBoundary } from "../LazyNodeEditors"
 
 const SuspendedEditor = lazy(() => new Promise<{ default: () => null }>(() => {}))
+
+afterEach(cleanup)
 
 describe("LazyEditorBoundary accessibility", () => {
   it("announces lazy editor loading state", () => {

@@ -28,6 +28,7 @@ afterEach(cleanup)
 
 beforeEach(() => {
   mockExecuteSink.mockReset()
+  DEFAULT_PROPS.onUpdate.mockClear()
 })
 
 const DEFAULT_PROPS = {

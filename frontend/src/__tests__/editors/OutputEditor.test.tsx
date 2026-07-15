@@ -43,6 +43,14 @@ const mockPreviewNode = vi.mocked(previewNode)
 
 afterEach(cleanup)
 
+// File-global reset: clear both preview API spies before every test so no
+// test can inherit a stale mockResolvedValue/mockRejectedValue or a leaked
+// call count from an earlier test under any (shuffled) run order.
+beforeEach(() => {
+  mockOutputAssembleDryRun.mockReset()
+  mockPreviewNode.mockReset()
+})
+
 // ─── Graph fixtures ───────────────────────────────────────────────
 
 // A single-port source (null sourceHandle) whose columns come from _columns.
@@ -1093,11 +1101,6 @@ describe("OutputEditor — frames-table input schema", () => {
 // ─── Assembled-output preview ─────────────────────────────────────
 
 describe("OutputEditor — assembled-output preview", () => {
-  beforeEach(() => {
-    mockOutputAssembleDryRun.mockReset()
-    mockPreviewNode.mockReset()
-  })
-
   const SINGLE_PORT_CONFIG = {
     outputMapping: [
       { source_port: "Upstream Node", source_column: "premium", output_path: "$[:].premium", enabled: true },
@@ -1213,11 +1216,6 @@ describe("OutputEditor — assembled-output preview", () => {
 // ─── Per-frame input-data preview ─────────────────────────────────
 
 describe("OutputEditor — per-frame input-data preview", () => {
-  beforeEach(() => {
-    mockOutputAssembleDryRun.mockReset()
-    mockPreviewNode.mockReset()
-  })
-
   it("each frame block has an Input-data preview with Copy + Export", () => {
     render(<OutputEditor {...DEFAULT_PROPS} />, {
       allNodes: SINGLE_PORT_NODES,

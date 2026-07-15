@@ -22,6 +22,7 @@ from datetime import UTC, datetime
 from functools import lru_cache
 from pathlib import Path
 
+from haute._gitignore_guard import ensure_gitignore_guards
 from haute._logging import get_logger
 from haute.errors import HauteError
 from haute.schemas import (
@@ -1102,6 +1103,32 @@ def working_branch_status(project_root: Path, cwd: Path | None = None) -> GitWor
     return base
 
 
+# What haute owns in a project tree — the permit half of the unborn-repo
+# seed's defence-in-depth (haute._gitignore_guard carries the deny half).
+# Shapes follow the `haute init` scaffold plus the nested-pipeline layout.
+# Default git pathspec globs: '*' also matches '/', so "*.py" covers
+# rating/utility/helpers.py and "*/config/*" covers any pipeline's config
+# dir (a wildcard combined with a bare trailing slash matches nothing —
+# hence the explicit /* suffix there).
+_SEED_PATHSPECS: tuple[str, ...] = (
+    "haute.toml",
+    "pyproject.toml",
+    "uv.lock",
+    ".gitignore",
+    ".env.example",
+    "*.py",
+    "*.haute.json",
+    "config/",
+    "*/config/*",
+    "prompts/",
+    "tests/",
+    ".githooks/",
+    ".github/",
+    ".gitlab-ci.yml",
+    "azure-pipelines.yml",
+)
+
+
 def set_working_branch(
     branch: str,
     project_root: Path,
@@ -1154,7 +1181,37 @@ def set_working_branch(
                 _get_default_branch_cached.cache_clear()
                 _clear_content_caches()
 
-            _run_git("add", "-A", cwd=cwd)
+            # Seed staging is defence-in-depth: a file
+            # enters the root commit only by matching a haute-owned pathspec
+            # (_SEED_PATHSPECS, the permit gate) AND surviving the .gitignore
+            # guard entries (the deny gate). `haute init` writes the guards,
+            # but a foreign `git init` repo carries no such guarantee — assert
+            # them here, or the seed publishes .env into history and commits
+            # .haute/ (the clone-lockout class).
+            toplevel = Path(_run_git("rev-parse", "--show-toplevel", cwd=cwd).strip())
+            ensure_gitignore_guards(toplevel)
+            # Pre-staged index content bypasses .gitignore and would ride into
+            # the commit unstaged-checks notwithstanding; start from an empty
+            # index so the two gates alone decide what enters the root commit.
+            # --cached leaves the working tree untouched; -f covers
+            # stage-vs-disk mismatches.
+            _run_git("rm", "-r", "-f", "-q", "--cached", "--ignore-unmatch", "--", ".", cwd=cwd)
+            # ls-files applies both gates: the pathspecs permit, and
+            # --exclude-standard enforces the ignore rules.
+            listed = _run_git(
+                "ls-files",
+                "--others",
+                "--exclude-standard",
+                "-z",
+                "--",
+                *_SEED_PATHSPECS,
+                cwd=cwd,
+            )
+            seed_files = [f for f in listed.split("\0") if f]
+            if seed_files:
+                # :(literal) so a filename containing glob characters cannot
+                # re-expand into a broader pathspec at add time.
+                _run_git("add", "--", *[f":(literal){f}" for f in seed_files], cwd=cwd)
             # If nothing was staged (empty working tree) use --allow-empty so we
             # still establish a root commit and the model remains consistent.
             ok_diff, _ = _run_git_ok("diff", "--cached", "--quiet", cwd=cwd)
