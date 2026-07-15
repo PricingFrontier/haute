@@ -1181,7 +1181,7 @@ def set_working_branch(
                 _get_default_branch_cached.cache_clear()
                 _clear_content_caches()
 
-            # Seed staging is defence-in-depth (ruled 2026-07-15): a file
+            # Seed staging is defence-in-depth: a file
             # enters the root commit only by matching a haute-owned pathspec
             # (_SEED_PATHSPECS, the permit gate) AND surviving the .gitignore
             # guard entries (the deny gate). `haute init` writes the guards,

@@ -833,9 +833,9 @@ class TestSeedGitignoreGuards:
 
         assert (unborn_repo / ".gitignore").read_text() == content
 
-    # --- Allowlist gate (defence-in-depth, ruled 2026-07-15): the seed stages
-    # only haute-owned pathspecs, so an unintended file must fail BOTH the
-    # allowlist and the .gitignore guards to reach history. -------------------
+    # --- Allowlist gate (defence-in-depth): the seed stages only haute-owned
+    # pathspecs, so an unintended file must fail BOTH the allowlist and the
+    # .gitignore guards to reach history. -------------------------------------
 
     def test_unallowed_file_not_committed_even_when_not_ignored(self, unborn_repo: Path) -> None:
         """The allowlist gate alone: files matching no haute-owned pathspec
@@ -870,9 +870,8 @@ class TestSeedGitignoreGuards:
         )
         assert ".venv/" in (unborn_repo / ".gitignore").read_text().splitlines()
 
-    # --- Over-exclusion guard (Nick's note, ruled 2026-07-15): unintended
-    # EXCLUSION is a loud failure mode — pin that legitimate project files ARE
-    # still captured by the seed. ---------------------------------------------
+    # --- Over-exclusion guard: unintended EXCLUSION is a loud failure mode —
+    # pin that legitimate project files ARE still captured by the seed. -------
 
     def test_haute_scaffold_shape_is_fully_committed(self, unborn_repo: Path) -> None:
         """Every file shape `haute init` scaffolds (plus the nested-pipeline
