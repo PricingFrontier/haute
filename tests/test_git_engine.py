@@ -833,6 +833,76 @@ class TestSeedGitignoreGuards:
 
         assert (unborn_repo / ".gitignore").read_text() == content
 
+    # --- Allowlist gate (defence-in-depth, ruled 2026-07-15): the seed stages
+    # only haute-owned pathspecs, so an unintended file must fail BOTH the
+    # allowlist and the .gitignore guards to reach history. -------------------
+
+    def test_unallowed_file_not_committed_even_when_not_ignored(self, unborn_repo: Path) -> None:
+        """The allowlist gate alone: files matching no haute-owned pathspec
+        stay out of the root commit even though nothing gitignores them."""
+        (unborn_repo / "main.py").write_text("x = 1\n")
+        (unborn_repo / "notes.txt").write_text("meeting notes\n")
+        (unborn_repo / "backup.tar").write_text("tarball bytes")
+
+        set_working_branch("initial-model", unborn_repo, create=True, cwd=unborn_repo)
+
+        committed = _git(unborn_repo, "show", "--name-only", "--format=", "main").splitlines()
+        assert "main.py" in committed
+        assert "notes.txt" not in committed, f"unallowed file leaked: {committed}"
+        assert "backup.tar" not in committed, f"unallowed file leaked: {committed}"
+        # Not committed but also untouched: still on disk for the user.
+        assert (unborn_repo / "notes.txt").exists()
+
+    def test_venv_fails_both_gates(self, unborn_repo: Path) -> None:
+        """.venv/ contents match the *.py allowlist pathspec, so only the
+        gitignore guard (which must include .venv/) keeps them out."""
+        venv_pkg = unborn_repo / ".venv" / "lib" / "site-packages"
+        venv_pkg.mkdir(parents=True)
+        (venv_pkg / "dep.py").write_text("VERSION = '1.0'\n")
+        (unborn_repo / "main.py").write_text("x = 1\n")
+
+        set_working_branch("initial-model", unborn_repo, create=True, cwd=unborn_repo)
+
+        committed = _git(unborn_repo, "show", "--name-only", "--format=", "main").splitlines()
+        assert "main.py" in committed
+        assert not any(f.startswith(".venv/") for f in committed), (
+            f".venv/ leaked into history: {committed}"
+        )
+        assert ".venv/" in (unborn_repo / ".gitignore").read_text().splitlines()
+
+    # --- Over-exclusion guard (Nick's note, ruled 2026-07-15): unintended
+    # EXCLUSION is a loud failure mode — pin that legitimate project files ARE
+    # still captured by the seed. ---------------------------------------------
+
+    def test_haute_scaffold_shape_is_fully_committed(self, unborn_repo: Path) -> None:
+        """Every file shape `haute init` scaffolds (plus the nested-pipeline
+        layout) enters the root commit — the allowlist must not over-exclude."""
+        legitimate = [
+            "haute.toml",
+            "pyproject.toml",
+            "uv.lock",
+            ".env.example",
+            "rating/main.py",
+            "rating/main.haute.json",
+            "rating/utility/helpers.py",
+            "rating/config/data_source/quotes.json",
+            "prompts/starter.md",
+            "tests/test_pipeline.py",
+            ".githooks/pre-commit",
+            ".github/workflows/ci.yml",
+        ]
+        for rel in legitimate:
+            target = unborn_repo / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(f"# {rel}\n")
+
+        set_working_branch("initial-model", unborn_repo, create=True, cwd=unborn_repo)
+
+        committed = _git(unborn_repo, "show", "--name-only", "--format=", "main").splitlines()
+        missing = [rel for rel in legitimate if rel not in committed]
+        assert not missing, f"legitimate scaffold files over-excluded: {missing}"
+        assert ".gitignore" in committed
+
 
 class TestSetWorkingBranchUnbornNonDefault:
     """set_working_branch(create=True) when HEAD is on an unborn NON-default branch.

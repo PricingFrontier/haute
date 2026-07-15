@@ -22,6 +22,9 @@ GITIGNORE_GUARD_ENTRIES: tuple[str, ...] = (
     ".haute_cache/",
     "mlruns/",
     "data/",
+    # Without this, .venv/ contents would pass the seed's *.py allowlist
+    # pathspec — the deny gate has to carry it (ruled 2026-07-15).
+    ".venv/",
 )
 
 
