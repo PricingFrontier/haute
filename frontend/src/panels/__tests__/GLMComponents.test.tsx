@@ -118,14 +118,26 @@ describe("GLMTargetConfig", () => {
     expect(screen.getByText("Weight column (optional)")).toBeTruthy()
   })
 
-  it("renders only backend-accepted family buttons", () => {
+  it("renders all backend-accepted family buttons", () => {
     render(<GLMTargetConfig config={baseConfig} onUpdate={onUpdate} columns={defaultColumns} />)
-    for (const label of ["Poisson", "Gamma", "Tweedie", "Gaussian", "Binomial"]) {
+    // Every family the backend _VALID_GLM_LINKS validates, incl. the
+    // overdispersed-count families RustyStats fits as distinct models.
+    for (const label of [
+      "Poisson", "Gamma", "Tweedie", "Gaussian", "Binomial",
+      "Quasi-Poisson", "Neg. Binomial",
+    ]) {
       expect(screen.getByRole("button", { name: label })).toBeTruthy()
     }
-    // Quasi-Poisson / Neg. Binomial were rejected by the route — not offered.
-    expect(screen.queryByRole("button", { name: "Quasi-Poisson" })).toBeNull()
-    expect(screen.queryByRole("button", { name: "Neg. Binomial" })).toBeNull()
+  })
+
+  it("selecting Quasi-Poisson sets family, canonical link and count metrics", () => {
+    render(<GLMTargetConfig config={baseConfig} onUpdate={onUpdate} columns={defaultColumns} />)
+    fireEvent.click(screen.getByRole("button", { name: "Quasi-Poisson" }))
+    expect(onUpdate).toHaveBeenCalledWith({
+      family: "quasipoisson",
+      link: "",
+      metrics: ["gini", "poisson_deviance"],
+    })
   })
 
   it("clicking a family updates family, link, and metrics", () => {

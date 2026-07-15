@@ -1706,6 +1706,21 @@ class TestValidateGlmFamilyLink:
     def test_valid_family_link(self):
         _validate_glm_family_link("gamma", "log")
 
+    @pytest.mark.parametrize("family", ["quasipoisson", "negbinomial"])
+    def test_overdispersed_count_families_accepted(self, family):
+        """RustyStats fits Quasi-Poisson and Neg. Binomial as distinct models;
+        the UI offers them, so the route must validate them (not 400)."""
+        _validate_glm_family_link(family, "log")
+        _validate_glm_family_link(family, "identity")
+        _validate_glm_family_link(family, "")  # canonical link
+
+    @pytest.mark.parametrize("family", ["quasipoisson", "negbinomial"])
+    def test_overdispersed_count_families_reject_bad_link(self, family):
+        with pytest.raises(HTTPException) as exc_info:
+            _validate_glm_family_link(family, "logit")
+        assert exc_info.value.status_code == 400
+        assert "logit" in exc_info.value.detail
+
     def test_empty_family_raises(self):
         """The old early-return here was the silent gaussian-default channel."""
         with pytest.raises(HTTPException) as exc_info:

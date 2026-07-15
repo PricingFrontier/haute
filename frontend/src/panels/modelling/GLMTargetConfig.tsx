@@ -5,17 +5,16 @@ import { FailoverHelp } from "./FailoverHelp"
 
 type Column = { name: string; dtype: string }
 
-// Only families the backend validates (_VALID_GLM_LINKS in
-// routes/_train_service.py). Quasi-Poisson and Neg. Binomial were offered
-// here but rejected by the route, so a config using them failed at submit —
-// they are removed until the backend accepts them (Neg. Binomial also needs
-// its own `theta` gate before it can be offered safely).
+// Families the backend validates (_VALID_GLM_LINKS in
+// routes/_train_service.py). Keep in sync with that dict.
 const FAMILIES = [
   { value: "poisson", label: "Poisson", hint: "Claim frequency" },
   { value: "gamma", label: "Gamma", hint: "Claim severity" },
   { value: "tweedie", label: "Tweedie", hint: "Pure premium" },
   { value: "gaussian", label: "Gaussian", hint: "Linear regression" },
   { value: "binomial", label: "Binomial", hint: "Binary outcomes" },
+  { value: "quasipoisson", label: "Quasi-Poisson", hint: "Overdispersed counts" },
+  { value: "negbinomial", label: "Neg. Binomial", hint: "Overdispersed counts" },
 ] as const
 
 const CANONICAL_LINKS: Record<string, string> = {
@@ -24,6 +23,8 @@ const CANONICAL_LINKS: Record<string, string> = {
   tweedie: "log",
   gaussian: "identity",
   binomial: "logit",
+  quasipoisson: "log",
+  negbinomial: "log",
 }
 
 const TWEEDIE_HELP =
@@ -130,6 +131,8 @@ export function GLMTargetConfig({ config, onUpdate, columns }: GLMTargetConfigPr
                       tweedie: ["gini", "tweedie_deviance"],
                       gaussian: ["gini", "rmse"],
                       binomial: ["auc", "logloss"],
+                      quasipoisson: ["gini", "poisson_deviance"],
+                      negbinomial: ["gini", "poisson_deviance"],
                     }
                     onUpdate({
                       family: f.value,

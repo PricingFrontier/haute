@@ -133,6 +133,12 @@ _VALID_GLM_LINKS: dict[str, tuple[str, ...]] = {
     "gaussian": ("identity", "log", "inverse"),
     "binomial": ("logit", "probit", "cloglog"),
     "poisson": ("log", "identity", "sqrt"),
+    # Overdispersed-count families RustyStats fits as distinct models
+    # (Quasi-Poisson inflates the Poisson SE via a free dispersion; Negative
+    # Binomial has its own likelihood). RustyStats accepts only log/identity
+    # for both — no sqrt.
+    "quasipoisson": ("log", "identity"),
+    "negbinomial": ("log", "identity"),
     "gamma": ("inverse", "log", "identity"),
     "tweedie": ("log", "identity"),
     "inverse_gaussian": ("inverse_squared", "inverse", "log", "identity"),
