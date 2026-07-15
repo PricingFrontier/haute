@@ -1091,6 +1091,13 @@ def _run_score_pipeline(
     resolved_offset = (
         offset_column if offset_column is not None else _declared_offset_column(scoring_model)
     )
+    # Preserve the offset-less call arity: only pass the kwarg when an offset
+    # is actually in play. Offset-less scoring (the common case) then calls
+    # the delegates exactly as before — keeping in-place test doubles that
+    # patch ``_score_eager`` with the pre-offset signature working.
+    offset_kwargs: dict[str, str] = (
+        {} if resolved_offset is None else {"offset_column": resolved_offset}
+    )
     normalised_levels = _normalise_runtime_categorical_levels(
         categorical_levels,
         features=features,
@@ -1136,7 +1143,7 @@ def _run_score_pipeline(
             features,
             output_col,
             task,
-            offset_column=resolved_offset,
+            **offset_kwargs,
         )
         result_lf = _project_scored_output(
             result_lf,
@@ -1153,7 +1160,7 @@ def _run_score_pipeline(
             write_projection=write_projection,
             temporary_paths=temporary_paths,
             categorical_levels=normalised_levels,
-            offset_column=resolved_offset,
+            **offset_kwargs,
         )
 
     if code:

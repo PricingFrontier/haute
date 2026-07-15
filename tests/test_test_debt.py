@@ -39,8 +39,8 @@ _DEBT_REVIEW_BY = date(2026, 10, 25)
 _EXPECTED_DEBT_IDS = {
     # Offset-through-serving suite — every test trains a real model, so each
     # leg importorskips its optional modelling engine (rustystats for the GLM
-    # legs, catboost for the boosted legs), matching the existing modelling
-    # suites' posture. See tests/test_offset_scoring.py.
+    # legs, catboost for the boosted / numeric-only legs), matching the
+    # existing modelling suites' posture. See tests/test_offset_scoring.py.
     "0a4860e95cf0f3b6",
     "22a55d6a8665b087",
     "3a392e6541a16437",
@@ -50,12 +50,15 @@ _EXPECTED_DEBT_IDS = {
     "78ccd0efb0b58c07",
     "7ecc4c9aac18c56a",
     "8575a86d12fcd9fd",
+    "8ad195689440ad84",
+    "8fc522e44d27d619",
     "9f129f4b22a3f0a6",
     "a9db81806e754356",
     "b809feae1b81044a",
     "d678759483265dfe",
     "dc9bc31593b95505",
     "e2d91359c364b2e7",
+    "f0497dbc6c3e3f81",
     "f3ec6eddbd8aa75a",
     # Data In/Out first pass — engine-gated legs. The dataInput/dataOutput
     # node types cover the full native polars width, but this pass ships zero
