@@ -20,7 +20,10 @@ type UseNodeHandlersParams = {
   nodeIdCounter: MutableRefObject<number>
   lastSelectedNodeRef: MutableRefObject<Node | null>
   setNodes: (updater: (nds: Node[]) => Node[]) => void
-  setEdges: (updater: (eds: Edge[]) => Edge[]) => void
+  setNodesAndEdges: (
+    nodes: (nds: Node[]) => Node[],
+    edges: (eds: Edge[]) => Edge[],
+  ) => void
   setSelectedNode: (updater: React.SetStateAction<Node | null>) => void
   setPreviewData: (updater: React.SetStateAction<PreviewData | null>) => void
   fitView: (opts?: { padding?: number }) => void
@@ -31,7 +34,7 @@ export default function useNodeHandlers({
   nodeIdCounter: nodeIdCounterRef,
   lastSelectedNodeRef,
   setNodes,
-  setEdges,
+  setNodesAndEdges,
   setSelectedNode,
   setPreviewData,
   fitView,
@@ -44,9 +47,13 @@ export default function useNodeHandlers({
   const setSubmodelDialog = useUIStore((s) => s.setSubmodelDialog)
 
   const handleDeleteNode = useCallback((id: string) => {
-    const { nodes: n, edges: e } = graphRef.current
-    setNodes(() => n.filter((node) => node.id !== id))
-    setEdges(() => e.filter((edge) => edge.source !== id && edge.target !== id))
+    // Node + its edges removed as ONE undo step. setNodes-then-setEdges would
+    // push two snapshots, so a single delete would need two undos to reverse
+    // (the undo-atomicity bug class).
+    setNodesAndEdges(
+      (nds) => nds.filter((node) => node.id !== id),
+      (eds) => eds.filter((edge) => edge.source !== id && edge.target !== id),
+    )
     setSelectedNode((prev) => (prev?.id === id ? null : prev))
     setPreviewData((prev) => (prev?.nodeId === id ? null : prev))
     // Defer cache cleanup by one task tick (Issue #32). If `clearNode(id)`
@@ -63,7 +70,7 @@ export default function useNodeHandlers({
     if (uiState.renameDialog?.nodeId === id) setRenameDialog(null)
     const subDlg = uiState.submodelDialog
     if (subDlg && subDlg.nodeIds.includes(id)) setSubmodelDialog(null)
-  }, [graphRef, lastSelectedNodeRef, setNodes, setEdges, setSelectedNode, setPreviewData, clearNode, setRenameDialog, setSubmodelDialog])
+  }, [setNodesAndEdges, lastSelectedNodeRef, setSelectedNode, setPreviewData, clearNode, setRenameDialog, setSubmodelDialog])
 
   const handleDuplicateNode = useCallback((id: string) => {
     const { nodes: n } = graphRef.current

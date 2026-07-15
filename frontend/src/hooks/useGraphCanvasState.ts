@@ -106,6 +106,18 @@ export default function useGraphCanvasState(
     [],
   )
 
+  // Combined node+edge mutation as one undo step. Delete/paste gestures must
+  // use this instead of setNodes-then-setEdges (which pushes two snapshots).
+  const setNodesAndEdges = useCallback(
+    (
+      nodesUpdater: Node[] | ((nds: Node[]) => Node[]),
+      edgesUpdater: Edge[] | ((eds: Edge[]) => Edge[]),
+    ) => {
+      useGraphStore.getState().setNodesAndEdges(nodesUpdater, edgesUpdater)
+    },
+    [],
+  )
+
   const setNodesRaw = useCallback((updater: Node[] | ((nds: Node[]) => Node[])) => {
     useGraphStore.getState().setNodesRaw(updater)
   }, [])
@@ -133,6 +145,7 @@ export default function useGraphCanvasState(
     edges,
     setNodes,
     setEdges,
+    setNodesAndEdges,
     setNodesRaw,
     setEdgesRaw,
     onNodesChange,
