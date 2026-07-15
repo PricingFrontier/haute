@@ -99,6 +99,17 @@ export interface GraphStore {
   // History-aware actions
   setNodes: (updater: Node[] | ((nds: Node[]) => Node[])) => void
   setEdges: (updater: Edge[] | ((eds: Edge[]) => Edge[])) => void
+  /**
+   * Mutate nodes AND edges in a single history-aware step: one snapshot, one
+   * `set()`. Use this for any gesture that touches both (delete, paste, cut)
+   * so it collapses to exactly one undo entry — calling `setNodes` then
+   * `setEdges` pushes TWO snapshots, so one delete would take two undos to
+   * reverse (the undo-atomicity bug class).
+   */
+  setNodesAndEdges: (
+    nodes: Node[] | ((nds: Node[]) => Node[]),
+    edges: Edge[] | ((eds: Edge[]) => Edge[]),
+  ) => void
   setPreamble: (value: string) => void
 
   // Raw actions (skip history push — for mid-drag, WS sync, load)
@@ -516,6 +527,40 @@ const useGraphStore = create<GraphStore>()((set, get) => {
           }
         })(),
       }))
+    },
+
+    setNodesAndEdges: (nodesUpdater, edgesUpdater) => {
+      set((state) => {
+        // One snapshot for the whole gesture, captured BEFORE either mutation
+        // (pushSnapshotInternal reads current state), then both node and edge
+        // updaters applied in this single set() — so nodes and edges never
+        // render in an inconsistent in-between state, and a single undo
+        // restores both.
+        const undoStack = pushSnapshotInternal()
+        const nodes = applyUpdater(state.nodes, nodesUpdater)
+        const edges = applyUpdater(state.edges, edgesUpdater)
+        const nextPersistedFingerprint = computePersistedFingerprint(nodes, edges, state.preamble)
+        const nextFingerprint = computeStructuralFingerprint(nodes, edges, state.preamble)
+        return {
+          undoStack,
+          redoStack: [],
+          nodes,
+          edges,
+          ...computePanelContextPatch(state, nodes, edges),
+          persistedFingerprint: nextPersistedFingerprint,
+          dirty: computeDirty(
+            state.lastSavedSnapshot,
+            state.savedPersistedFingerprint,
+            nextPersistedFingerprint,
+          ),
+          ...(nextFingerprint === state.structuralFingerprint
+            ? {}
+            : {
+                structuralFingerprint: nextFingerprint,
+                structuralVersion: state.structuralVersion + 1,
+              }),
+        }
+      })
     },
 
     setPreamble: (value) => {

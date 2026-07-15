@@ -17,7 +17,7 @@ function makeParams() {
     nodeIdCounter: { current: 10 },
     lastSelectedNodeRef: { current: null as Node | null },
     setNodes: vi.fn(),
-    setEdges: vi.fn(),
+    setNodesAndEdges: vi.fn(),
     setSelectedNode: vi.fn(),
     setPreviewData: vi.fn(),
     fitView: vi.fn(),
@@ -37,23 +37,26 @@ describe("useNodeHandlers", () => {
     vi.restoreAllMocks()
   })
 
-  it("handleDeleteNode removes node and connected edges", () => {
+  it("handleDeleteNode removes node and connected edges in ONE atomic step", () => {
     const params = makeParams()
     const n1 = makeNode("n1")
     const n2 = makeNode("n2")
-    params.graphRef.current = {
-      nodes: [n1, n2],
-      edges: [{ id: "e1", source: "n1", target: "n2" } as Edge],
-    }
+    const edges = [{ id: "e1", source: "n1", target: "n2" } as Edge]
+    params.graphRef.current = { nodes: [n1, n2], edges }
     const { result } = renderHook(() => useNodeHandlers(params))
     act(() => {
       result.current.handleDeleteNode("n1")
     })
-    // setNodes/setEdges are called with updater functions
-    const nodesUpdater = params.setNodes.mock.calls[0][0] as () => Node[]
-    const edgesUpdater = params.setEdges.mock.calls[0][0] as () => Edge[]
-    expect(nodesUpdater()).toEqual([n2])
-    expect(edgesUpdater()).toEqual([])
+    // Undo-atomicity: exactly one combined setNodesAndEdges call — never a
+    // separate setNodes then setEdges (that would be two undo snapshots).
+    expect(params.setNodesAndEdges).toHaveBeenCalledOnce()
+    expect(params.setNodes).not.toHaveBeenCalled()
+    const [nodesUpdater, edgesUpdater] = params.setNodesAndEdges.mock.calls[0] as [
+      (nds: Node[]) => Node[],
+      (eds: Edge[]) => Edge[],
+    ]
+    expect(nodesUpdater([n1, n2])).toEqual([n2])
+    expect(edgesUpdater(edges)).toEqual([])
   })
 
   it("handleDeleteNode clears selected node if it was selected", () => {

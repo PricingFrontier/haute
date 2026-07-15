@@ -126,7 +126,7 @@ function FlowEditor() {
   // Core ReactFlow state with undo/redo
   const {
     nodes, edges,
-    setNodes, setEdges,
+    setNodes, setEdges, setNodesAndEdges,
     setNodesRaw, setEdgesRaw,
     onNodesChange, onEdgesChange,
     undo, redo, canUndo, canRedo, pushSnapshot,
@@ -432,7 +432,7 @@ function FlowEditor() {
   })
 
   useKeyboardShortcuts({
-    handleSave: requestSave, setNodes, setEdges, undo, redo, fitView,
+    handleSave: requestSave, setNodes, setEdges, setNodesAndEdges, undo, redo, fitView,
     graphRef, clipboard, nodeIdCounter,
     setSelectedNode, setPreviewData: (d: null) => setPreviewData(d),
     clearTrace,
@@ -507,7 +507,7 @@ function FlowEditor() {
     handleCreateInstance, handleRenameNode, handleAutoLayout, isAutoLayouting,
   } = useNodeHandlers({
     graphRef, nodeIdCounter, lastSelectedNodeRef,
-    setNodes, setEdges, setSelectedNode,
+    setNodes, setNodesAndEdges, setSelectedNode,
     setPreviewData, fitView,
   })
 
