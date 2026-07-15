@@ -1138,7 +1138,12 @@ def _model_score_columns(config: dict[str, Any]) -> ColumnContract:
         from haute.modelling._feature_contract import load_contract_cached
 
         contract = load_contract_cached(feature_contract_path)
-        return produced, set(contract.features)
+        referenced = set(contract.features)
+        if contract.offset_column:
+            # The offset is a required scoring input (not a feature) —
+            # upstream pruning must not drop it.
+            referenced.add(contract.offset_column)
+        return produced, referenced
 
     # Feature columns are only known after loading the model.
     source_type = config.get("sourceType", "")
@@ -1196,7 +1201,11 @@ def _model_score_columns(config: dict[str, Any]) -> ColumnContract:
         task=config.get("task", "regression"),
     )
     if scoring_model.feature_names:
-        return produced, set(scoring_model.feature_names)
+        referenced = set(scoring_model.feature_names)
+        model_offset = getattr(scoring_model, "offset_column", None)
+        if isinstance(model_offset, str) and model_offset:
+            referenced.add(model_offset)
+        return produced, referenced
     return produced, None
 
 

@@ -94,7 +94,7 @@ ModelSource: TypeAlias = Literal["run", "registered"]
 from haute._mlflow_io import _MODEL_CACHE_MAX_SIZE as _MLFLOW_MODEL_CACHE_MAX_SIZE  # noqa: E402
 
 _SchemaValidationKey: TypeAlias = tuple[tuple[str, Hashable], ...]
-_ModelFeatureContractKey: TypeAlias = tuple[tuple[str, ...], frozenset[str]]
+_ModelFeatureContractKey: TypeAlias = tuple[tuple[str, ...], frozenset[str], str | None]
 _FeatureValidationCacheKey: TypeAlias = tuple[_ModelFeatureContractKey, _SchemaValidationKey]
 _FeatureValidationResult: TypeAlias = tuple[list[str], list[str]]
 _FeatureValidationLastEntry: TypeAlias = tuple[_FeatureValidationCacheKey, _FeatureValidationResult]
@@ -147,6 +147,7 @@ def _model_feature_contract_key(scoring_model: Any) -> _ModelFeatureContractKey:
     return (
         tuple(scoring_model.feature_names),
         frozenset(scoring_model.cat_feature_names or ()),
+        getattr(scoring_model, "offset_column", None),
     )
 
 
@@ -260,6 +261,14 @@ def _validate_features_uncached(
 
     missing = [f for f in expected if f not in available]
     usable = [f for f in expected if f in available]
+
+    # The trained-with offset column is a required scoring input even though
+    # it is not a design-matrix feature (RustyStats already lists it in
+    # ``required_columns``; CatBoost does not, so it is enforced here).
+    # Scoring without it would silently proceed on an offset-0 basis.
+    offset_column = getattr(scoring_model, "offset_column", None)
+    if offset_column and offset_column not in available and offset_column not in missing:
+        missing.append(offset_column)
 
     # Cheap dtype checks for categorical expectations
     type_mismatches: list[tuple[str, str, str]] = []
@@ -475,6 +484,79 @@ def _raw_model_supports_predict_proba(model: Any) -> bool:
     return getattr(raw_model, "predict_proba", None) is not None
 
 
+def _model_offset_column(model: Any, flavor: ModelFlavor) -> str | None:
+    """Return the offset column a raw model was trained with, if any.
+
+    Both native flavors are self-describing: CatBoost via the
+    ``haute_offset_column`` model-metadata key stamped at fit time,
+    RustyStats via the serialised offset spec.  Pyfunc models expose no
+    offset surface (their signature declares the column as an input, and
+    the wrapped model owns applying it).
+    """
+    if flavor == "catboost":
+        from haute._mlflow_io import _catboost_offset_column
+
+        return _catboost_offset_column(model)
+    if flavor == "rustystats":
+        spec = getattr(model, "_offset_spec", None)
+        return spec if isinstance(spec, str) and spec else None
+    return None
+
+
+def _require_offset_column(available: Iterable[str], offset_column: str | None) -> None:
+    """Fail loud when a scoring input lacks the model's offset column."""
+    if offset_column and offset_column not in set(available):
+        raise FeatureMismatchError(
+            f"Scoring input is missing the model's offset column "
+            f"{offset_column!r}. The model was trained with this offset and "
+            f"scoring without it would silently mis-scale every prediction. "
+            f"Provide the column (use a constant 1 for a unit basis).",
+            missing=[offset_column],
+            offset_column=offset_column,
+        )
+
+
+def _catboost_baseline_pool(
+    x_data: Any,
+    frame: pl.DataFrame,
+    features: list[str],
+    cat_feature_names: frozenset[str],
+    offset_column: str,
+) -> Any:
+    """Wrap prepared CatBoost predict input in a Pool carrying the baseline.
+
+    CatBoost only applies a baseline supplied inside a ``Pool``; a bare
+    matrix predict silently scores from baseline 0.
+    """
+    from catboost import Pool
+
+    _require_offset_column(frame.columns, offset_column)
+    baseline = frame[offset_column].cast(pl.Float64).to_numpy()
+    cat_indices = [i for i, f in enumerate(features) if f in cat_feature_names]
+    return Pool(
+        data=x_data,
+        cat_features=cat_indices if cat_indices else None,
+        baseline=baseline,
+    )
+
+
+def _offset_predict_features(
+    features: list[str],
+    flavor: ModelFlavor,
+    offset_column: str | None,
+) -> list[str]:
+    """Feature selection handed to ``_prepare_predict_frame``.
+
+    RustyStats extracts its offset column from the predict frame by name,
+    so the column rides along with the features; other flavors keep the
+    pure feature list (CatBoost receives the offset separately as a
+    ``Pool`` baseline).
+    """
+    if offset_column and flavor == "rustystats" and offset_column not in features:
+        return [*features, offset_column]
+    return list(features)
+
+
 def _score_output_projection_columns(
     schema_names: list[str],
     write_projection: ScoreWriteProjection,
@@ -572,6 +654,7 @@ def _score_input_projection_columns(
     lf: pl.LazyFrame,
     features: list[str],
     write_projection: ScoreWriteProjection | None,
+    offset_column: str | None = None,
 ) -> frozenset[str] | None:
     """Return the input columns scoring needs for a concrete write projection.
 
@@ -580,7 +663,9 @@ def _score_input_projection_columns(
     scoring only needs the model features plus the projected passthrough
     columns (and any optional passthrough columns actually present) —
     everything else can be pruned from the single upstream execution.
-    Shared by the eager and batched paths so both prune identically.
+    The model's offset column, when set, is always part of the scoring
+    input and survives the pruning.  Shared by the eager and batched
+    paths so both prune identically.
     """
     if write_projection is None or write_projection.passthrough_columns is None:
         return None
@@ -588,7 +673,10 @@ def _score_input_projection_columns(
     if write_projection.optional_passthrough_columns:
         schema_names = frozenset(lf.collect_schema().names())
         optional_present = write_projection.optional_passthrough_columns & schema_names
-    return frozenset(features) | write_projection.passthrough_columns | optional_present
+    required = frozenset(features) | write_projection.passthrough_columns | optional_present
+    if offset_column:
+        required |= {offset_column}
+    return required
 
 
 def _score_eager_unified(
@@ -627,8 +715,16 @@ def _score_eager_unified(
     from haute._mlflow_io import _prepare_predict_frame
     from haute._polars_utils import streaming_collect
 
+    offset_column = _model_offset_column(model, flavor)
+    if offset_column:
+        _require_offset_column(lf.collect_schema().names(), offset_column)
     collect_lf = lf
-    input_columns = _score_input_projection_columns(lf, features, write_projection)
+    input_columns = _score_input_projection_columns(
+        lf,
+        features,
+        write_projection,
+        offset_column=offset_column,
+    )
     if input_columns is not None:
         ordered = _ordered_required_columns(
             lf.collect_schema().names(),
@@ -641,12 +737,21 @@ def _score_eager_unified(
         profile=ExecutionProfile.PREVIEW_EAGER,
     )
     _validate_runtime_categorical_values(frame, categorical_levels or {})
+    predict_features = _offset_predict_features(features, flavor, offset_column)
     x_data = _prepare_predict_frame(
-        frame.select(features),
-        features,
+        frame.select(predict_features),
+        predict_features,
         cat_feature_names=cat_feature_names,
         flavor=flavor,
     )
+    if offset_column and flavor == "catboost":
+        x_data = _catboost_baseline_pool(
+            x_data,
+            frame,
+            features,
+            cat_feature_names,
+            offset_column,
+        )
     preds = np.asarray(model.predict(x_data)).flatten()
     prediction_columns = [pl.Series(output_col, preds)]
     generated_columns = [output_col]
@@ -749,13 +854,22 @@ def _score_batched_unified(
     """
     from haute._mlflow_io import ScoringModel
 
+    offset_column = _model_offset_column(model, flavor)
+    if offset_column:
+        _require_offset_column(lf.collect_schema().names(), offset_column)
     carrier = ScoringModel(
         model=model,
         feature_names=features,
         cat_feature_names=cat_feature_names,
         flavor=flavor,
+        offset_column=offset_column,
     )
-    sink_columns = _score_input_projection_columns(lf, features, write_projection)
+    sink_columns = _score_input_projection_columns(
+        lf,
+        features,
+        write_projection,
+        offset_column=offset_column,
+    )
     input_path = _sink_to_temp(lf, columns=sink_columns)
     try:
         scored_path = _batch_score_to_parquet(
@@ -1407,10 +1521,17 @@ def _batch_score_to_parquet(
         categorical_levels,
         features=features,
     )
+    offset_column = getattr(scoring_model, "offset_column", None)
+    predict_features = _offset_predict_features(
+        features,
+        scoring_model.flavor,
+        offset_column,
+    )
 
     try:
         pf = pq.ParquetFile(input_path)
         input_schema_names = list(pf.schema_arrow.names)
+        _require_offset_column(input_schema_names, offset_column)
         for batch in pf.iter_batches(
             batch_size=_SCORE_BATCH_SIZE,
         ):
@@ -1422,11 +1543,19 @@ def _batch_score_to_parquet(
             feature_chunk = chunk.select(features)
             _validate_runtime_categorical_values(feature_chunk, normalised_levels)
             x_data = _prepare_predict_frame(
-                feature_chunk,
-                features,
+                chunk.select(predict_features),
+                predict_features,
                 cat_feature_names=scoring_model.cat_feature_names,
                 flavor=scoring_model.flavor,
             )
+            if offset_column and scoring_model.flavor == "catboost":
+                x_data = _catboost_baseline_pool(
+                    x_data,
+                    chunk,
+                    features,
+                    scoring_model.cat_feature_names,
+                    offset_column,
+                )
             preds = scoring_model.predict(x_data)
             chunk = chunk.with_columns(
                 pl.Series(output_col, preds),
@@ -1479,11 +1608,24 @@ def _batch_score_to_parquet(
                 }
             )
             probe_x = _prepare_predict_frame(
-                probe.select(features),
-                features,
+                probe.select(predict_features),
+                predict_features,
                 cat_feature_names=scoring_model.cat_feature_names,
                 flavor=scoring_model.flavor,
             )
+            if offset_column and scoring_model.flavor == "catboost":
+                # Dtype probe only: a null baseline would make CatBoost
+                # reject the Pool, so probe at the unit raw-score offset 0.
+                from catboost import Pool
+
+                cat_indices = [
+                    i for i, f in enumerate(features) if f in scoring_model.cat_feature_names
+                ]
+                probe_x = Pool(
+                    data=probe_x,
+                    cat_features=cat_indices if cat_indices else None,
+                    baseline=np.zeros(1),
+                )
             prediction_dtype = pl.Series(output_col, scoring_model.predict(probe_x)).dtype
             empty = pl.DataFrame(
                 {

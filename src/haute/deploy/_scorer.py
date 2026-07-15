@@ -414,6 +414,15 @@ def _assert_runtime_contract_matches(
         )
     contract_levels = expected.categorical_levels if expected.categorical_levels else {}
 
+    # The offset column is a required scoring input: rebuild the runtime
+    # contract with it only when the live schema actually carries it, so a
+    # payload without the column fails the contract diff by name instead of
+    # silently scoring on an offset-absent basis.
+    runtime_offset = (
+        expected.offset_column
+        if expected.offset_column and schema.get(expected.offset_column) is not None
+        else None
+    )
     actual = build_contract(
         features=runtime_features,
         feature_types=feature_types,
@@ -422,6 +431,7 @@ def _assert_runtime_contract_matches(
         target_name=expected.target_name,
         target_type=expected.target_type,
         task=expected.task,
+        offset_column=runtime_offset,
     )
     assert_contracts_match(expected, actual)
     score_levels = (

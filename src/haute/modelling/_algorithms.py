@@ -135,6 +135,30 @@ def _mem_checkpoint(label: str) -> None:
 # Callback type: (iteration, total_iterations, metrics_dict) -> None
 IterationCallback = Callable[[int, int, dict[str, float]], None]
 
+# CatBoost model-metadata key recording the offset/baseline column a model
+# was trained with.  The .cbm format has no native baseline memory, so the
+# column name is stamped into the model's metadata at fit time and read back
+# by every loader — making the artifact self-describing the same way a
+# RustyStats model's ``required_columns`` carries its offset spec.
+CATBOOST_OFFSET_METADATA_KEY = "haute_offset_column"
+
+
+def _extract_offset_baseline(
+    df: pl.DataFrame,
+    offset: str,
+    *,
+    context: str,
+) -> np.ndarray:
+    """Return the offset column as a float baseline array, loud when absent."""
+    if offset not in df.columns:
+        raise ValueError(
+            f"{context}: offset column {offset!r} is missing from the input "
+            f"data. The model was trained with this offset and predictions "
+            f"without it would be silently mis-scaled. Available columns: "
+            f"{df.columns}"
+        )
+    return df[offset].cast(pl.Float64).to_numpy()
+
 
 @dataclass
 class FitResult:
@@ -177,8 +201,17 @@ class BaseAlgorithm(ABC):
         model: Any,
         df: pl.DataFrame,
         features: list[str],
+        offset: str | None = None,
     ) -> np.ndarray:
-        """Generate predictions from a fitted model."""
+        """Generate predictions from a fitted model.
+
+        When *offset* names the column the model was trained with, the
+        prediction re-applies it exactly as the fit did (GLM: the model
+        extracts and transforms its offset column; CatBoost: the baseline
+        is re-supplied through a ``Pool``).  A missing offset column in
+        *df* raises — predictions are never silently produced on an
+        offset-absent basis.
+        """
 
     @abstractmethod
     def feature_importance(self, model: Any) -> list[dict[str, Any]]:
@@ -579,6 +612,11 @@ class CatBoostAlgorithm(BaseAlgorithm):
             model.fit(pool, **fit_kwargs)
         _mem_checkpoint("catboost model.fit() END")
 
+        # Record the offset column on the model so saved .cbm artifacts are
+        # self-describing: predict/serve must re-supply this baseline.
+        if offset:
+            model.get_metadata()[CATBOOST_OFFSET_METADATA_KEY] = offset
+
         # Capture best iteration if early stopping was active
         best_iteration: int | None = None
         if eval_pool is not None and hasattr(model, "best_iteration_"):
@@ -611,6 +649,7 @@ class CatBoostAlgorithm(BaseAlgorithm):
         model: Any,
         df: pl.DataFrame,
         features: list[str],
+        offset: str | None = None,
     ) -> np.ndarray:
         from haute._mlflow_io import _prepare_predict_frame
 
@@ -618,13 +657,29 @@ class CatBoostAlgorithm(BaseAlgorithm):
         cat_cols = frozenset(
             c for c in features if selected[c].dtype in (pl.Utf8, pl.Categorical, pl.String)
         )
-        x_data = _prepare_predict_frame(
+        x_data: Any = _prepare_predict_frame(
             selected,
             features,
             cat_feature_names=cat_cols,
             flavor="catboost",
         )
         del selected
+        if offset:
+            # CatBoost only applies a baseline when it arrives inside a Pool;
+            # a bare matrix predict silently scores from baseline 0.
+            from catboost import Pool
+
+            baseline = _extract_offset_baseline(
+                df,
+                offset,
+                context="CatBoost predict",
+            )
+            cat_indices = [i for i, f in enumerate(features) if f in cat_cols]
+            x_data = Pool(
+                data=x_data,
+                cat_features=cat_indices if cat_indices else None,
+                baseline=baseline,
+            )
         from catboost import CatBoostClassifier
 
         if isinstance(model, CatBoostClassifier):
