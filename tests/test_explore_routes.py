@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import threading
 import time
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -868,6 +868,56 @@ def test_build_frame_stats_survives_non_utf8_binary_column(
     # Valid bytes decode to text; the two invalid bytes each become a
     # replacement character; nulls surface as a null bucket. Never a crash.
     assert values == {"ok": 2, "��": 1, None: 1}
+
+
+def test_build_frame_stats_survives_duration_column(
+    explore_execution_context,
+) -> None:
+    """A Duration column must not abort the whole Explore materialisation.
+
+    Duration is temporal, so it is admitted to the categorical value-count
+    branch — but Polars cannot ``cast(pl.Duration, pl.String)``, so the strict
+    cast aborts the entire batched ``streaming_collect``, taking every other
+    column's stats down with it. Duration values must instead be formatted
+    leniently (like Binary) so the report always completes, with the column
+    represented sensibly.
+    """
+    from haute.routes._explore_service import _build_frame_stats
+
+    lf = pl.DataFrame(
+        {
+            "premium": [10, 20, 30, 40],
+            "wait": pl.Series(
+                "wait",
+                [timedelta(days=1), timedelta(hours=2), timedelta(hours=2), None],
+                dtype=pl.Duration("us"),
+            ),
+        }
+    ).lazy()
+
+    frame_stats = _build_frame_stats(
+        lf,
+        lf.collect_schema(),
+        execution_context=explore_execution_context,
+    )
+
+    # The whole report survives: both columns are present with core stats.
+    assert frame_stats.row_count == 4
+    stats = {column.name: column for column in frame_stats.columns}
+    assert set(stats) == {"premium", "wait"}
+    assert stats["premium"].mean_value == "25"
+    assert stats["wait"].kind == "Temporal"
+    assert stats["wait"].null_count == 1
+    assert stats["wait"].distinct_count == 3
+    # Duration min/max already format via str(timedelta); labels match them.
+    assert stats["wait"].min_value == "2:00:00"
+    assert stats["wait"].max_value == "1 day, 0:00:00"
+    profiles = {
+        profile.field: profile for profile in frame_stats.overview_summary.categorical_summary
+    }
+    assert "wait" in profiles
+    values = {item.value: item.count for item in profiles["wait"].values}
+    assert values == {"2:00:00": 2, "1 day, 0:00:00": 1, None: 1}
 
 
 def test_build_frame_stats_expands_high_cardinality_categorical_columns_with_top_50_values(

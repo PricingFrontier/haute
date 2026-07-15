@@ -601,15 +601,15 @@ def test_bounded_loss_history_retains_latest_rows() -> None:
 
     history = [
         {"iteration": float(index), "rmse": float(index)}
-        for index in range(_train_service._MAX_TRAIN_LOSS_HISTORY + 5)
+        for index in range(_train_service._max_train_loss_history() + 5)
     ]
 
     bounded, truncated = _train_service._bounded_loss_history(history)
 
     assert truncated is True
-    assert len(bounded) == _train_service._MAX_TRAIN_LOSS_HISTORY
+    assert len(bounded) == _train_service._max_train_loss_history()
     assert bounded[0]["iteration"] == 5.0
-    assert bounded[-1]["iteration"] == float(_train_service._MAX_TRAIN_LOSS_HISTORY + 4)
+    assert bounded[-1]["iteration"] == float(_train_service._max_train_loss_history() + 4)
 
 
 class TestExportEndpoint:

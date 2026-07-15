@@ -32,6 +32,7 @@ if TYPE_CHECKING:
 
 from haute._banding_config import normalise_banding_factors
 from haute._contracts import Contract, get_column_contract
+from haute._env import int_env, optional_int_env
 from haute._execution_admission import (
     ExecutionAdmissionError,
     create_admitted_execution_context,
@@ -119,21 +120,35 @@ from haute.schemas import (
 logger = get_logger(component="server.optimiser.solve")
 
 # ── Default constants ─────────────────────────────────────────────
-_DEFAULT_SOLVER_TIMEOUT_RAW = os.environ.get("HAUTE_SOLVER_TIMEOUT")
-_DEFAULT_TIMEOUT = int(_DEFAULT_SOLVER_TIMEOUT_RAW) if _DEFAULT_SOLVER_TIMEOUT_RAW else None
-_DEFAULT_AUTO_RANGE_TIMEOUT = int(os.environ.get("HAUTE_AUTO_RANGE_TIMEOUT", "1800"))
 _HISTOGRAM_BINS = 20  # bin count for scenario-value distribution histogram
 _DEFAULT_MAX_ITER = 50  # max solver iterations (online & ratebook)
-_DEFAULT_AUTO_RANGE_CHUNK_SIZE = int(os.environ.get("HAUTE_AUTO_RANGE_CHUNK_SIZE", "2000000"))
+
+
+# Env-tunable defaults — resolved per call so overrides set after import
+# take effect.
+def _default_solver_timeout() -> int | None:
+    return optional_int_env("HAUTE_SOLVER_TIMEOUT")
+
+
+def _default_auto_range_timeout() -> int:
+    return int_env("HAUTE_AUTO_RANGE_TIMEOUT", 1800)
+
+
+def _default_auto_range_chunk_size() -> int:
+    return int_env("HAUTE_AUTO_RANGE_CHUNK_SIZE", 2_000_000)
+
+
+def _default_auto_range_partitions() -> int:
+    # disk buckets for chunked auto-range aggregation
+    return int_env("HAUTE_AUTO_RANGE_PARTITIONS", 16)
+
+
 _DEFAULT_AUTO_RANGE_TARGET_CHUNK_MIN_BYTES = 16 * 1024 * 1024
 _DEFAULT_AUTO_RANGE_TARGET_CHUNK_MAX_BYTES = 512 * 1024 * 1024
 _DEFAULT_AUTO_RANGE_TARGET_CHUNK_BUDGET_DIVISOR = 16
 _DEFAULT_OPTIMISER_SETUP_TARGET_CHUNK_MIN_BYTES = 16 * 1024 * 1024
 _DEFAULT_OPTIMISER_SETUP_TARGET_CHUNK_MAX_BYTES = 512 * 1024 * 1024
 _DEFAULT_OPTIMISER_SETUP_TARGET_CHUNK_BUDGET_DIVISOR = 16
-_DEFAULT_AUTO_RANGE_PARTITIONS = int(
-    os.environ.get("HAUTE_AUTO_RANGE_PARTITIONS", "16")
-)  # disk buckets for chunked auto-range aggregation
 _DEFAULT_TOLERANCE = 1e-6  # convergence tolerance for solver
 _DEFAULT_MAX_CD_ITERATIONS = 10  # max coordinate-descent iterations (ratebook)
 _DEFAULT_CD_TOLERANCE = 1e-3  # coordinate-descent convergence tolerance (ratebook)
@@ -424,7 +439,7 @@ def _optional_positive_int(value: object, *, field: str) -> int | None:
 
 def _solve_timeout_from_config(config: Mapping[str, Any]) -> int | None:
     if "timeout" not in config:
-        return _DEFAULT_TIMEOUT
+        return _default_solver_timeout()
     return _optional_positive_int(config.get("timeout"), field="timeout")
 
 
@@ -497,7 +512,7 @@ def _auto_range_chunk_size_from_config(config: dict[str, Any]) -> int:
             field="auto_range_chunk_size",
         )
     return _positive_int(
-        config.get("chunk_size", _DEFAULT_AUTO_RANGE_CHUNK_SIZE),
+        config.get("chunk_size", _default_auto_range_chunk_size()),
         field="chunk_size",
     )
 
@@ -672,14 +687,14 @@ def _auto_range_data_input_has_objective(
 
 def _auto_range_partition_count_from_config(config: dict[str, Any]) -> int:
     return _positive_int(
-        config.get("auto_range_partition_count", _DEFAULT_AUTO_RANGE_PARTITIONS),
+        config.get("auto_range_partition_count", _default_auto_range_partitions()),
         field="auto_range_partition_count",
     )
 
 
 def _auto_range_timeout_from_config(config: dict[str, Any]) -> int:
     return _positive_int(
-        config.get("auto_range_timeout", _DEFAULT_AUTO_RANGE_TIMEOUT),
+        config.get("auto_range_timeout", _default_auto_range_timeout()),
         field="auto_range_timeout",
     )
 
@@ -1576,8 +1591,8 @@ def _add_frontier_range_batch(
 class FrontierAutoRangeContext:
     """Per-job context for frontier auto-range estimation."""
 
-    chunk_size: int = _DEFAULT_AUTO_RANGE_CHUNK_SIZE
-    partition_count: int = _DEFAULT_AUTO_RANGE_PARTITIONS
+    chunk_size: int = dataclasses.field(default_factory=_default_auto_range_chunk_size)
+    partition_count: int = dataclasses.field(default_factory=_default_auto_range_partitions)
     execution_context: ExecutionContext | None = None
     streaming_chunk_size: int | None = None
 
@@ -3055,7 +3070,7 @@ class OptimiserSolveService:
 
         if job.get("status") == "running":
             start = job.get("start_time")
-            timeout = job.get("timeout", _DEFAULT_AUTO_RANGE_TIMEOUT)
+            timeout = job.get("timeout", _default_auto_range_timeout())
             if start and (time.monotonic() - start) > timeout:
                 self._auto_range_jobs.cancel(job_id, reason="timed_out")
                 updated_job = self._lifecycle.transition(

@@ -89,6 +89,7 @@ beforeEach(() => {
       { path: "$[:]", label: "quotes", emit: true, columns: [{ name: "id", path: "$[:].id", type: "str" }] },
     ],
   })
+  DEFAULT_PROPS.onUpdate.mockClear()
 })
 
 const DEFAULT_PROPS = {

@@ -78,6 +78,13 @@ beforeEach(() => {
 
 afterEach(cleanup)
 
+afterEach(() => {
+  // The "Tab from OUTSIDE the modal" test writes a bare #outside button
+  // directly into document.body; RTL's cleanup() only unmounts React trees,
+  // so remove it here to stop it leaking into later tests.
+  document.getElementById("outside")?.remove()
+})
+
 describe("Phase 2D-3 shell merge — panel surface preserved", () => {
   it("panel with a title string renders the title", () => {
     // A panel built by wrapping PanelHeader inside PanelShell (the current

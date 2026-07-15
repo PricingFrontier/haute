@@ -172,7 +172,7 @@ function seedCachedExplore({
 
 function resetStores() {
   resetNodeResultsDerivedCaches()
-  useGraphStore.setState({ structuralVersion: 0 })
+  useGraphStore.setState({ structuralVersion: 0, nodes: [], edges: [] })
   useNodeResultsStore.setState({
     previews: {},
     pinnedPreviewNodeId: null,

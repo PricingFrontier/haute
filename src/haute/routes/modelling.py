@@ -14,11 +14,11 @@ from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
 from haute.routes._job_lifecycle import require_job_status
 from haute.routes._job_store import get_job_store
 from haute.routes._train_service import (
-    _DEFAULT_TIMEOUT,
     TrainService,
     _assert_json_finite,
     _check_gpu_vram,
     _clamp_row_limit,
+    _default_train_timeout,
     _find_modelling_node,
     _VramCheck,
 )
@@ -64,7 +64,7 @@ async def train_status(job_id: str) -> TrainStatusResponse:
 
     if job.get("status") == "running":
         start = job.get("start_time")
-        timeout = job.get("timeout", _DEFAULT_TIMEOUT)
+        timeout = job.get("timeout", _default_train_timeout())
         if start and (time.monotonic() - start) > timeout:
             job = _train_service.timeout(job_id, timeout=timeout, start_time=start)
 
