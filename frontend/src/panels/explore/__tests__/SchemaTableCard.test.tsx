@@ -154,6 +154,34 @@ describe("SchemaTableCard", () => {
     expect(row.textContent).toContain("12.5%")
   })
 
+  it("surfaces NaN percentage for float columns so all-NaN columns are not hidden", () => {
+    render(
+      <SchemaTableCard
+        report={makeReport({
+          row_count: 100,
+          column_count: 2,
+          columns: [
+            makeColumn({ name: "measure", dtype: "Float64", null_count: 0, nan_count: 100 }),
+            makeColumn({ name: "code", dtype: "Int64", null_count: 0, nan_count: null }),
+          ],
+        })}
+      />,
+    )
+
+    // An all-NaN float column reads 0% null but 100% NaN — the third bucket
+    // is what stops it from looking fully populated.
+    const measureRow = screen.getByTestId("explore-schema-row-measure")
+    const measureNan = measureRow.querySelector("[data-testid='explore-schema-nan-pct']")
+    expect(measureNan).toHaveTextContent("100.0%")
+    expect(measureNan).toHaveAttribute("data-nan-severity", "high")
+
+    // Integer columns cannot hold NaN: em-dash placeholder, no severity.
+    const codeRow = screen.getByTestId("explore-schema-row-code")
+    const codeNan = codeRow.querySelector("[data-testid='explore-schema-nan-pct']")
+    expect(codeNan).toHaveTextContent("-")
+    expect(codeNan).toHaveAttribute("data-nan-severity", "none")
+  })
+
   it("renders min and max values instead of examples", () => {
     render(
       <SchemaTableCard
@@ -280,7 +308,7 @@ describe("SchemaTableCard", () => {
     const empty = screen.getByTestId("explore-schema-empty")
     expect(empty.textContent).toBe("(no columns)")
     expect(empty.tagName).toBe("TD")
-    expect(empty).toHaveAttribute("colSpan", "6")
+    expect(empty).toHaveAttribute("colSpan", "7")
   })
 
   it("colours dtype cells using the shared dtypeColors palette", () => {

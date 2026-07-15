@@ -56,9 +56,12 @@ from haute.schemas import (
 logger = get_logger(component="server.explore")
 
 # Keep report-cache identity tied to the underlying analysis dataframe and the
-# required report schema. Bump only when older in-memory report payloads are
-# schema-incompatible; dataframe cache identity is handled separately.
-EXPLORE_CACHE_VERSION = 2
+# required report schema. Bump when older in-memory report payloads are
+# schema-incompatible OR compute the same fields differently; dataframe cache
+# identity is handled separately.
+# v3: NaN counts added and distinct_count now excludes the null bucket, so a
+# v2 report cached for an unchanged frame would serve stale distinct counts.
+EXPLORE_CACHE_VERSION = 3
 EXPLORE_REPORT_CACHE_MAX_ENTRIES = 16
 
 # Dtypes whose values are not hashable in Polars and therefore cannot have
@@ -99,6 +102,17 @@ def _is_unhashable_dtype(dtype: pl.DataType) -> bool:
     """
 
     return dtype.base_type() in _UNHASHABLE_DTYPES
+
+
+def _is_float_dtype(dtype: pl.DataType) -> bool:
+    """Return True for float dtypes, the only columns that can hold NaN.
+
+    ``is_nan()`` raises ``InvalidOperationError`` against a non-float column
+    (see ``_trace_correlation``), so NaN counting must be gated strictly on
+    float dtype rather than the broader ``is_numeric()``.
+    """
+
+    return dtype.base_type() in (pl.Float32, pl.Float64)
 
 
 def _truncate_for_display(text: str) -> str:
@@ -250,6 +264,34 @@ def _build_data_quality_summary(
             )
         )
 
+    # NaN is invalid-numeric signal, reported separately from null: a float
+    # column that is usually numeric but carries non-numeric error/default
+    # values materialises NaN, which ``null_count`` does not see.
+    nan_columns = sorted(
+        [column for column in columns if (column.nan_count or 0) > 0],
+        key=lambda column: (
+            -((column.nan_count or 0) / row_count if row_count > 0 else 0),
+            column.name.lower(),
+        ),
+    )
+    mostly_nan_columns = [
+        column
+        for column in nan_columns
+        if row_count > 0 and (column.nan_count or 0) / row_count >= 0.5
+    ]
+    if nan_columns:
+        worst = nan_columns[0]
+        issues.append(
+            ExploreDataQualityIssue(
+                severity="danger" if mostly_nan_columns else "warning",
+                label=(
+                    f"{len(nan_columns)} numeric "
+                    f"{_plural(len(nan_columns), 'column')} with NaN values"
+                ),
+                detail=f"{worst.name} worst at {_percent_text(worst.nan_count or 0, row_count)}",
+            )
+        )
+
     zero_heavy_columns = sorted(
         [
             column
@@ -396,10 +438,16 @@ def _build_categorical_summary(
             and column.distinct_count > 0
             and _has_categorical_value_counts(dtype)
         )
-        values_truncated = (
-            column.distinct_count is not None
-            and column.distinct_count > _CATEGORICAL_VALUE_COUNT_LIMIT
+        # ``value_counts`` emits one group per distinct value *including* the
+        # null bucket, then ``.head(limit)`` clips. ``distinct_count`` now
+        # excludes the null bucket, so add it back to count the groups that
+        # were actually produced before deciding whether the head clipped any.
+        group_count = (
+            None
+            if column.distinct_count is None
+            else column.distinct_count + (1 if column.null_count > 0 else 0)
         )
+        values_truncated = group_count is not None and group_count > _CATEGORICAL_VALUE_COUNT_LIMIT
         values = values_by_column.get(column.name, [])
         profiles.append(
             ExploreCategoricalColumnProfile(
@@ -466,6 +514,11 @@ def _build_frame_stats(
             aggregations.append(numeric_expr.std().alias(f"std::{name}"))
             aggregations.append((pl.col(name) == 0).sum().alias(f"zero::{name}"))
             aggregations.append((pl.col(name) < 0).sum().alias(f"negative::{name}"))
+            if _is_float_dtype(dtype):
+                # NaN is the third missingness bucket, distinct from null.
+                # ``is_nan()`` yields null for null rows, so ``.sum()`` counts
+                # only genuine NaN values.
+                aggregations.append(pl.col(name).is_nan().sum().alias(f"nan::{name}"))
         elif _has_categorical_value_counts(dtype):
             aggregations.append(
                 _categorical_value_counts_expr(name, dtype).alias(
@@ -489,6 +542,10 @@ def _build_frame_stats(
             distinct_count = None
         else:
             distinct_count = int(aggregate_row[f"unique::{name}"])
+            # ``n_unique`` counts the null bucket as one distinct value; the
+            # analyst-facing distinct count is of non-null values only.
+            if null_count > 0:
+                distinct_count -= 1
         profile_stats: dict[str, Any] = {}
         if _supports_min_max(dtype):
             profile_stats.update(
@@ -509,6 +566,8 @@ def _build_frame_stats(
                     "negative_count": int(aggregate_row[f"negative::{name}"]),
                 }
             )
+            if _is_float_dtype(dtype):
+                profile_stats["nan_count"] = int(aggregate_row[f"nan::{name}"])
         elif _has_categorical_value_counts(dtype):
             categorical_values_by_column[name] = _parse_categorical_value_counts(
                 aggregate_row[_categorical_value_counts_alias(name)]

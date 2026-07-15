@@ -115,7 +115,7 @@ export function DataQualityCard({ report }: SummaryCardProps) {
             color: "var(--text-muted)",
           }}
         >
-          No obvious missing, constant, negative, or mostly-zero fields.
+          No obvious missing, NaN, constant, negative, or mostly-zero fields.
         </div>
       ) : (
         <div className="space-y-2">
@@ -189,6 +189,7 @@ export function NumericSummaryCard({ report }: SummaryCardProps) {
                   "Std",
                   "Zeros",
                   "Negatives",
+                  "NaN",
                 ].map((label) => (
                   <th
                     key={label}
@@ -227,6 +228,13 @@ export function NumericSummaryCard({ report }: SummaryCardProps) {
                   </td>
                   <td className={CELL_CLASS} style={column.negative_count ? PRIMARY_STYLE : MUTED_STYLE}>
                     {formatOptionalNumber(column.negative_count)}
+                  </td>
+                  <td
+                    data-testid="explore-numeric-nan-count"
+                    className={CELL_CLASS}
+                    style={column.nan_count ? PRIMARY_STYLE : MUTED_STYLE}
+                  >
+                    {formatOptionalNumber(column.nan_count)}
                   </td>
                 </tr>
               ))}

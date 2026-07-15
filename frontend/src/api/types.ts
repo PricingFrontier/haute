@@ -464,6 +464,8 @@ export interface ExploreColumnStat {
   dtype: string
   kind: ExploreColumnKind
   null_count: number
+  /** Float NaN count — the invalid-numeric bucket, distinct from null. Null for non-float dtypes. */
+  nan_count?: number | null
   distinct_count: number | null
   min_value?: string | null
   p25_value?: string | null

@@ -72,6 +72,11 @@ function SchemaRow({
   const nullPct = formatNullPct(column.null_count, rowCount)
   const nullStyle = nullPctStyle(column.null_count, rowCount)
   const severity = nullSeverity(column.null_count, rowCount)
+  // NaN only applies to float columns; nan_count is null/undefined otherwise.
+  const hasNan = column.nan_count !== null && column.nan_count !== undefined
+  const nanPct = hasNan ? formatNullPct(column.nan_count as number, rowCount) : null
+  const nanStyle = hasNan ? nullPctStyle(column.nan_count as number, rowCount) : MUTED_STYLE
+  const nanSeverity = hasNan ? nullSeverity(column.nan_count as number, rowCount) : "none"
 
   return (
     <tr data-testid={`explore-schema-row-${safeTestId(column.name)}`} style={ROW_BORDER_STYLE}>
@@ -93,6 +98,14 @@ function SchemaRow({
         style={nullStyle}
       >
         {nullPct ?? "-"}
+      </td>
+      <td
+        data-testid="explore-schema-nan-pct"
+        data-nan-severity={nanSeverity}
+        className={CELL_BASE_CLASS}
+        style={nanStyle}
+      >
+        {hasNan ? (nanPct ?? "-") : "-"}
       </td>
       <td
         className={CELL_BASE_CLASS}
@@ -229,6 +242,9 @@ export default function SchemaTableCard({ report }: SchemaTableCardProps) {
                 Null %
               </th>
               <th className={HEADER_CLASS} style={HEADER_STYLE}>
+                NaN %
+              </th>
+              <th className={HEADER_CLASS} style={HEADER_STYLE}>
                 Distinct
               </th>
               <th className={HEADER_CLASS} style={HEADER_STYLE}>
@@ -243,7 +259,7 @@ export default function SchemaTableCard({ report }: SchemaTableCardProps) {
             {report.columns.length === 0 ? (
               <tr>
                 <td
-                  colSpan={6}
+                  colSpan={7}
                   className={CELL_BASE_CLASS}
                   style={MUTED_STYLE}
                   data-testid="explore-schema-empty"
@@ -254,7 +270,7 @@ export default function SchemaTableCard({ report }: SchemaTableCardProps) {
             ) : visibleColumns.length === 0 ? (
               <tr>
                 <td
-                  colSpan={6}
+                  colSpan={7}
                   className={CELL_BASE_CLASS}
                   style={MUTED_STYLE}
                   data-testid="explore-schema-empty"
