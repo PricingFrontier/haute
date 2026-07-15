@@ -12,6 +12,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 from fastapi.concurrency import run_in_threadpool
 
+from haute._env import float_env
 from haute._execution_admission import (
     ExecutionAdmissionError,
     create_admitted_execution_context,
@@ -90,10 +91,20 @@ logger = get_logger(component="server.pipeline")
 
 router = APIRouter(prefix="/api", tags=["pipeline"])
 
-# ── Timeout constants (seconds) ──────────────────────────────────
-_TRACE_TIMEOUT = float(os.environ.get("HAUTE_TRACE_TIMEOUT", "120"))
-_PREVIEW_TIMEOUT = float(os.environ.get("HAUTE_PREVIEW_TIMEOUT", "120"))
-_SINK_TIMEOUT = float(os.environ.get("HAUTE_SINK_TIMEOUT", "300"))
+
+# ── Timeouts (seconds) — resolved per request so env overrides set
+# after import take effect ───────────────────────────────────────
+def _trace_timeout() -> float:
+    return float_env("HAUTE_TRACE_TIMEOUT", 120.0)
+
+
+def _preview_timeout() -> float:
+    return float_env("HAUTE_PREVIEW_TIMEOUT", 120.0)
+
+
+def _sink_timeout() -> float:
+    return float_env("HAUTE_SINK_TIMEOUT", 300.0)
+
 
 _preview_supersession = SupersessionCoordinator()
 _trace_supersession = SupersessionCoordinator()
@@ -447,7 +458,7 @@ async def trace_row(body: TraceRequest) -> TraceResponse:
 
             return await run_blocking_with_response_timeout(
                 _execute_trace_with_chunk_size,
-                timeout=_TRACE_TIMEOUT,
+                timeout=_trace_timeout(),
                 operation="pipeline_trace",
             )
 
@@ -474,7 +485,7 @@ async def trace_row(body: TraceRequest) -> TraceResponse:
     except TimeoutError:
         raise HTTPException(
             status_code=504,
-            detail=f"Trace execution timed out ({_TRACE_TIMEOUT:.0f}s limit)",
+            detail=f"Trace execution timed out ({_trace_timeout():.0f}s limit)",
         )
     except HTTPException:
         raise
@@ -553,7 +564,7 @@ async def preview_node(body: PreviewNodeRequest) -> PreviewNodeResponse:
 
             return await run_blocking_with_response_timeout(
                 _execute_graph_with_chunk_size,
-                timeout=_PREVIEW_TIMEOUT,
+                timeout=_preview_timeout(),
                 operation="pipeline_preview",
             )
 
@@ -689,13 +700,13 @@ async def preview_node(body: PreviewNodeRequest) -> PreviewNodeResponse:
             preview_context = None
         raise HTTPException(
             status_code=504,
-            detail=f"Preview execution timed out ({_PREVIEW_TIMEOUT:.0f}s limit)",
+            detail=f"Preview execution timed out ({_preview_timeout():.0f}s limit)",
         )
     except TimeoutError:
         preview_token.cancel()
         raise HTTPException(
             status_code=504,
-            detail=f"Preview execution timed out ({_PREVIEW_TIMEOUT:.0f}s limit)",
+            detail=f"Preview execution timed out ({_preview_timeout():.0f}s limit)",
         )
     except HTTPException:
         raise
@@ -774,7 +785,7 @@ async def execute_sink_node(body: SinkRequest) -> SinkResponse:
             execution_context=sink_context,
             streaming_chunk_size=body.streaming_chunk_size,
             project_root=project_root,
-            timeout=_SINK_TIMEOUT,
+            timeout=_sink_timeout(),
             operation="pipeline_sink",
         )
         if result.execution_metrics is not None:
@@ -808,14 +819,14 @@ async def execute_sink_node(body: SinkRequest) -> SinkResponse:
             sink_context = None
         raise HTTPException(
             status_code=504,
-            detail=f"Sink execution timed out ({_SINK_TIMEOUT:.0f}s limit)",
+            detail=f"Sink execution timed out ({_sink_timeout():.0f}s limit)",
         )
     except TimeoutError:
         if sink_context is not None:
             sink_context.cancel()
         raise HTTPException(
             status_code=504,
-            detail=f"Sink execution timed out ({_SINK_TIMEOUT:.0f}s limit)",
+            detail=f"Sink execution timed out ({_sink_timeout():.0f}s limit)",
         )
     except HTTPException:
         raise

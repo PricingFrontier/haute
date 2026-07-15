@@ -73,6 +73,9 @@ vi.mock("../../stores/useGraphStore.ts", () => {
 })
 
 import useWebSocketSync from "../../hooks/useWebSocketSync.ts"
+import useToastStore from "../../stores/useToastStore.ts"
+import useUIStore from "../../stores/useUIStore.ts"
+import useGraphStore from "../../stores/useGraphStore.ts"
 
 // ── Mock WebSocket ───────────────────────────────────────────────
 
@@ -118,6 +121,13 @@ describe("useWebSocketSync — WS sync must not corrupt undo history (#8)", () =
     mockWSInstances = []
     originalWebSocket = globalThis.WebSocket
     globalThis.WebSocket = createMockWebSocket() as unknown as typeof WebSocket
+
+    // Clear the mocked-store spies so call counts / args don't leak across
+    // tests (mirrors src/__tests__/hooks/useWebSocketSync.test.ts).
+    vi.mocked(useGraphStore.getState().markSaved).mockClear()
+    vi.mocked(useToastStore.getState().addToast).mockClear()
+    vi.mocked(useToastStore.getState().dismissToast).mockClear()
+    vi.mocked(useUIStore.getState().setSyncBanner).mockClear()
   })
 
   afterEach(() => {
