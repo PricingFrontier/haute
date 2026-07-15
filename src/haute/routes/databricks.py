@@ -31,6 +31,7 @@ logger = get_logger(component="server.databricks")
 
 router = APIRouter(prefix="/api/databricks", tags=["databricks"])
 
+
 # ── Timeout (seconds) — resolved per request so env overrides set
 # after import take effect ───────────────────────────────────────
 def _fetch_timeout() -> float:

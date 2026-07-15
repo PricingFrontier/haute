@@ -74,6 +74,7 @@ def _default_train_timeout() -> int:
 def _max_train_loss_history() -> int:
     return int_env("HAUTE_TRAIN_LOSS_HISTORY_LIMIT", 200)
 
+
 # Deterministic seed for the RAM/row-limit training downsample. A fixed
 # constant (rather than a config knob) keeps training reproducible by default
 # and matches the project-wide split-seed default (``SplitConfig.seed == 42``).
@@ -364,7 +365,7 @@ def _bounded_loss_history(
     rows = list(history)
     if len(rows) <= _max_train_loss_history():
         return rows, False
-    return rows[-_max_train_loss_history():], True
+    return rows[-_max_train_loss_history() :], True
 
 
 def _check_gpu_vram(
@@ -1083,7 +1084,7 @@ class TrainService:
             history.append({"iteration": float(iteration), **metrics})
             truncated = bool(current_job.get("train_loss_history_truncated"))
             if len(history) > _max_train_loss_history():
-                history = history[-_max_train_loss_history():]
+                history = history[-_max_train_loss_history() :]
                 truncated = True
             self._store.atomic_update(
                 job_id,

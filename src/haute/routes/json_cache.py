@@ -53,10 +53,12 @@ logger = get_logger(component="server.json_cache")
 
 router = APIRouter(prefix="/api/json-cache", tags=["json-cache"])
 
+
 # ── Timeout (seconds) — resolved per request so env overrides set
 # after import take effect ───────────────────────────────────────
 def _build_timeout() -> float:
     return float_env("HAUTE_BUILD_TIMEOUT", 1800.0)
+
 
 _build_progress: dict[str, dict[str, Any]] = {}
 _build_progress_lock = threading.Lock()

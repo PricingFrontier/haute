@@ -44,6 +44,7 @@ logger = get_logger(component="server.output_assemble")
 
 router = APIRouter(prefix="/api/output-assemble", tags=["output-assemble"])
 
+
 # Timeout (seconds) — resolved per request so env overrides set after
 # import take effect.
 def _dry_run_timeout() -> float:

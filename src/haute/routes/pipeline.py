@@ -91,6 +91,7 @@ logger = get_logger(component="server.pipeline")
 
 router = APIRouter(prefix="/api", tags=["pipeline"])
 
+
 # ── Timeouts (seconds) — resolved per request so env overrides set
 # after import take effect ───────────────────────────────────────
 def _trace_timeout() -> float:
@@ -103,6 +104,7 @@ def _preview_timeout() -> float:
 
 def _sink_timeout() -> float:
     return float_env("HAUTE_SINK_TIMEOUT", 300.0)
+
 
 _preview_supersession = SupersessionCoordinator()
 _trace_supersession = SupersessionCoordinator()
