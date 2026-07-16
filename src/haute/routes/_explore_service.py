@@ -305,11 +305,18 @@ def _build_data_quality_summary(
     )
     zero_heavy_names = {column.name for column in zero_heavy_columns}
 
+    # Constant means every row holds the same valid value: a column with nulls
+    # or NaNs alongside its single value is a missing-values / NaN column, not
+    # a constant one (ruled 2026-07-16).
     constant_columns = sorted(
         [
             column
             for column in columns
-            if row_count > 0 and column.distinct_count == 1 and column.name not in zero_heavy_names
+            if row_count > 0
+            and column.distinct_count == 1
+            and column.null_count == 0
+            and not (column.nan_count or 0)
+            and column.name not in zero_heavy_names
         ],
         key=lambda column: column.name.lower(),
     )

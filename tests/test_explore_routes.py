@@ -889,10 +889,14 @@ def test_build_frame_stats_distinct_count_excludes_nan_bucket(
     assert column.distinct_count == 1
 
 
-def test_build_frame_stats_single_valid_value_with_nan_is_constant(
+def test_build_frame_stats_single_valid_value_with_nan_is_not_constant(
     explore_execution_context,
 ) -> None:
-    """One valid value plus NaN is a constant column (distinct valid == 1)."""
+    """A constant column has NO nulls and NO NaNs — every row the same valid value.
+
+    One valid value plus NaN reads distinct == 1, but the NaN rows mean the
+    column is not constant; the NaN issue is the right signal for it.
+    """
 
     from haute.routes._explore_service import _build_frame_stats
 
@@ -907,7 +911,8 @@ def test_build_frame_stats_single_valid_value_with_nan_is_constant(
     [column] = frame_stats.columns
     assert column.distinct_count == 1
     labels = [issue.label for issue in frame_stats.overview_summary.data_quality.issues]
-    assert any("constant" in label for label in labels)
+    assert not any("constant" in label for label in labels)
+    assert any("NaN" in label for label in labels)
 
 
 def test_build_frame_stats_all_nan_column_is_not_flagged_constant(
@@ -935,9 +940,15 @@ def test_build_frame_stats_all_nan_column_is_not_flagged_constant(
     assert any("NaN" in label for label in labels)
 
 
-def test_build_frame_stats_flags_constant_column_that_also_has_nulls(
+def test_build_frame_stats_single_valid_value_with_nulls_is_not_constant(
     explore_execution_context,
 ) -> None:
+    """A single-valued column that also has nulls is NOT constant (Nick's ruling).
+
+    Constant means every row holds the same valid value; the null rows make
+    this a missing-values column instead, and that issue already covers it.
+    """
+
     from haute.routes._explore_service import _build_frame_stats
 
     lf = pl.DataFrame({"segment": ["same", "same", None]}).lazy()
@@ -948,12 +959,11 @@ def test_build_frame_stats_flags_constant_column_that_also_has_nulls(
         execution_context=explore_execution_context,
     )
 
-    [issue] = [
-        candidate
-        for candidate in frame_stats.overview_summary.data_quality.issues
-        if "constant" in candidate.label
-    ]
-    assert issue.detail == "segment"
+    [column] = frame_stats.columns
+    assert column.distinct_count == 1
+    labels = [issue.label for issue in frame_stats.overview_summary.data_quality.issues]
+    assert not any("constant" in label for label in labels)
+    assert any("missing" in label for label in labels)
 
 
 def test_categorical_truncation_counts_null_bucket_as_a_group(
