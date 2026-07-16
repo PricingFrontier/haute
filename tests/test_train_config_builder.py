@@ -99,6 +99,7 @@ class TestBuildTrainParams:
     def test_glm_config_keys_complete(self):
         assert set(GLM_CONFIG_KEYS) == {
             "terms",
+            "all_factors",
             "family",
             "link",
             "interactions",
@@ -222,6 +223,7 @@ class TestBuildTrainingJobKwargs:
             "target": "y",
             "algorithm": "glm",
             "family": "tweedie",
+            "all_factors": True,
             "variance_power": 1.7,
         }
         kwargs = build_training_job_kwargs(config, data="d")
@@ -234,6 +236,7 @@ class TestBuildTrainingJobKwargs:
                 "target": "y",
                 "algorithm": "glm",
                 "family": "tweedie",
+                "all_factors": True,
                 "var_power": 1.8,
                 "params": {"var_power": 1.4},
             },
@@ -250,6 +253,7 @@ class TestBuildTrainingJobKwargs:
                     "target": "y",
                     "algorithm": "glm",
                     "family": "tweedie",
+                    "all_factors": True,
                     "variance_power": 1.7,
                     "params": {"var_power": 1.4},
                 },
@@ -308,14 +312,20 @@ class TestExplicitObjectiveRequired:
         """``params["family"]`` wins over top-level per build_train_params —
         a family present only in params is still an explicit choice."""
         kwargs = build_training_job_kwargs(
-            {"target": "y", "algorithm": "glm", "params": {"family": "poisson"}},
+            {
+                "target": "y",
+                "algorithm": "glm",
+                "all_factors": True,
+                "params": {"family": "poisson"},
+            },
             data="d",
         )
         assert kwargs["params"]["family"] == "poisson"
 
     def test_glm_does_not_require_loss_function(self):
         kwargs = build_training_job_kwargs(
-            {"target": "y", "algorithm": "glm", "family": "gamma"}, data="d"
+            {"target": "y", "algorithm": "glm", "family": "gamma", "all_factors": True},
+            data="d",
         )
         assert kwargs["loss_function"] is None
 
@@ -335,7 +345,10 @@ class TestDefaultMetricsDerivation:
         ],
     )
     def test_catboost_regression_metrics_follow_loss(self, loss, expected):
-        kwargs = build_training_job_kwargs({"target": "y", "loss_function": loss}, data="d")
+        config = {"target": "y", "loss_function": loss}
+        if loss == "Tweedie":
+            config["variance_power"] = 1.5
+        kwargs = build_training_job_kwargs(config, data="d")
         assert kwargs["metrics"] == expected
 
     @pytest.mark.parametrize("loss", ["Logloss", "CrossEntropy"])
@@ -359,7 +372,14 @@ class TestDefaultMetricsDerivation:
     )
     def test_glm_metrics_follow_family(self, family, expected):
         kwargs = build_training_job_kwargs(
-            {"target": "y", "algorithm": "glm", "family": family}, data="d"
+            {
+                "target": "y",
+                "algorithm": "glm",
+                "family": family,
+                "all_factors": True,
+                "var_power": 1.5,
+            },
+            data="d",
         )
         assert kwargs["metrics"] == expected
 
@@ -398,3 +418,151 @@ class TestDefaultMetricsDerivation:
             params={"family": "tweedie"},
         )
         assert glm_job.metrics == ["gini", "tweedie_deviance"]
+
+
+class TestFailoverGates:
+    """Part 2 of the silent-default work: parameters whose unset state
+    previously fell through to a quiet library/literal failover (Tweedie
+    variance power -> 1.5, elastic-net l1_ratio -> pure ridge, empty terms
+    -> auto-terms over every column) must gate at build time instead."""
+
+    # -- Tweedie variance power ------------------------------------------
+
+    def test_catboost_tweedie_without_variance_power_fails_loud(self):
+        with pytest.raises(TrainingConfigError, match="variance power"):
+            build_training_job_kwargs({"target": "y", "loss_function": "Tweedie"}, data="d")
+
+    def test_catboost_tweedie_with_variance_power_passes(self):
+        kwargs = build_training_job_kwargs(
+            {"target": "y", "loss_function": "Tweedie", "variance_power": 1.5},
+            data="d",
+        )
+        assert kwargs["variance_power"] == 1.5
+
+    def test_catboost_non_tweedie_does_not_require_variance_power(self):
+        build_training_job_kwargs({"target": "y", "loss_function": "Poisson"}, data="d")
+
+    def test_glm_tweedie_without_var_power_fails_loud(self):
+        with pytest.raises(TrainingConfigError, match="variance power"):
+            build_training_job_kwargs(
+                {
+                    "target": "y",
+                    "algorithm": "glm",
+                    "family": "tweedie",
+                    "all_factors": True,
+                },
+                data="d",
+            )
+
+    def test_glm_tweedie_with_params_var_power_passes(self):
+        kwargs = build_training_job_kwargs(
+            {
+                "target": "y",
+                "algorithm": "glm",
+                "family": "tweedie",
+                "all_factors": True,
+                "params": {"var_power": 1.6},
+            },
+            data="d",
+        )
+        assert kwargs["variance_power"] == 1.6
+
+    # -- GLM factor set ---------------------------------------------------
+
+    def test_glm_empty_terms_without_all_factors_fails_loud(self):
+        with pytest.raises(TrainingConfigError, match="factor"):
+            build_training_job_kwargs(
+                {"target": "y", "algorithm": "glm", "family": "poisson"}, data="d"
+            )
+        with pytest.raises(TrainingConfigError, match="factor"):
+            build_training_job_kwargs(
+                {
+                    "target": "y",
+                    "algorithm": "glm",
+                    "family": "poisson",
+                    "terms": {},
+                },
+                data="d",
+            )
+
+    def test_glm_all_factors_is_an_explicit_choice(self):
+        kwargs = build_training_job_kwargs(
+            {
+                "target": "y",
+                "algorithm": "glm",
+                "family": "poisson",
+                "all_factors": True,
+            },
+            data="d",
+        )
+        assert kwargs["params"]["all_factors"] is True
+
+    def test_glm_configured_terms_pass_without_all_factors(self):
+        kwargs = build_training_job_kwargs(
+            {
+                "target": "y",
+                "algorithm": "glm",
+                "family": "poisson",
+                "terms": {"age": {"type": "linear"}},
+            },
+            data="d",
+        )
+        assert kwargs["params"]["terms"] == {"age": {"type": "linear"}}
+
+    # -- Elastic-net mixing weight ----------------------------------------
+
+    def test_glm_elastic_net_without_l1_ratio_fails_loud(self):
+        with pytest.raises(TrainingConfigError, match="L1 ratio"):
+            build_training_job_kwargs(
+                {
+                    "target": "y",
+                    "algorithm": "glm",
+                    "family": "poisson",
+                    "all_factors": True,
+                    "regularization": "elastic_net",
+                },
+                data="d",
+            )
+
+    def test_glm_elastic_net_with_l1_ratio_passes(self):
+        kwargs = build_training_job_kwargs(
+            {
+                "target": "y",
+                "algorithm": "glm",
+                "family": "poisson",
+                "all_factors": True,
+                "regularization": "elastic_net",
+                "l1_ratio": 0.0,
+            },
+            data="d",
+        )
+        assert kwargs["params"]["l1_ratio"] == 0.0
+
+    def test_glm_ridge_does_not_require_l1_ratio(self):
+        build_training_job_kwargs(
+            {
+                "target": "y",
+                "algorithm": "glm",
+                "family": "poisson",
+                "all_factors": True,
+                "regularization": "ridge",
+            },
+            data="d",
+        )
+
+    # -- Shared helper is the single source for the route's fast 400 ------
+
+    def test_training_objective_issue_returns_none_for_complete_configs(self):
+        from haute.modelling._train_config import training_objective_issue
+
+        assert training_objective_issue({"target": "y", "loss_function": "RMSE"}) is None
+        assert (
+            training_objective_issue(
+                {
+                    "algorithm": "glm",
+                    "family": "gamma",
+                    "terms": {"age": {"type": "linear"}},
+                }
+            )
+            is None
+        )

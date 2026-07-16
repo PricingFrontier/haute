@@ -177,6 +177,7 @@ class GLMAlgorithm(BaseAlgorithm):
 
         # Extract GLM-specific config from params
         terms = params.get("terms", {})
+        all_factors = bool(params.get("all_factors", False))
         family = params.get("family", "gaussian")
         link = params.get("link") or None  # empty string → None (canonical)
         var_power = params.get("var_power", 1.5)
@@ -186,8 +187,12 @@ class GLMAlgorithm(BaseAlgorithm):
         alpha = params.get("alpha", 0.0)
         l1_ratio = params.get("l1_ratio", 0.0)
 
-        # Auto-generate terms if none specified
-        if not terms:
+        # Auto-generate a term per column when the user opted into "all
+        # features" (all_factors), or — for the direct-construction API that
+        # bypasses the config gate — when no terms are specified. The config
+        # path (build_training_job_kwargs) already refuses empty terms without
+        # all_factors, so via the UI this only ever runs as an explicit choice.
+        if all_factors or not terms:
             terms = _auto_terms(features, cat_features)
 
         if feature_weights:

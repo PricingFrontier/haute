@@ -202,7 +202,7 @@ export function TrainingActionsAndResults({
         {missingObjective && !busy && (
           <div className="flex items-center gap-2 mt-2 px-3 py-2 rounded-lg text-xs" style={{ background: "var(--warning-soft-subtle)", border: "1px solid var(--warning-border)" }}>
             <AlertTriangle size={12} className="shrink-0" style={{ color: "var(--warning-strong)" }} />
-            <span style={{ color: "var(--warning)" }}>Select a {missingObjective} before training</span>
+            <span style={{ color: "var(--warning)" }}>{missingObjective} required before training</span>
           </div>
         )}
       </div>

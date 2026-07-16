@@ -118,11 +118,28 @@ describe("GLMTargetConfig", () => {
     expect(screen.getByText("Weight column (optional)")).toBeTruthy()
   })
 
-  it("renders all 7 family buttons", () => {
+  it("renders all backend-accepted family buttons", () => {
     render(<GLMTargetConfig config={baseConfig} onUpdate={onUpdate} columns={defaultColumns} />)
-    for (const label of ["Poisson", "Gamma", "Tweedie", "Gaussian", "Binomial", "Quasi-Poisson", "Neg. Binomial"]) {
+    // Every family the backend _VALID_GLM_LINKS validates, incl. Quasi-Poisson
+    // (dispersion estimated from Pearson residuals — no user parameter).
+    for (const label of [
+      "Poisson", "Gamma", "Tweedie", "Gaussian", "Binomial", "Quasi-Poisson",
+    ]) {
       expect(screen.getByRole("button", { name: label })).toBeTruthy()
     }
+    // Neg. Binomial is held: its dispersion `theta` fits silently at 1.0 with
+    // no gate yet, so the backend rejects it and the UI must not offer it.
+    expect(screen.queryByRole("button", { name: "Neg. Binomial" })).toBeNull()
+  })
+
+  it("selecting Quasi-Poisson sets family, canonical link and count metrics", () => {
+    render(<GLMTargetConfig config={baseConfig} onUpdate={onUpdate} columns={defaultColumns} />)
+    fireEvent.click(screen.getByRole("button", { name: "Quasi-Poisson" }))
+    expect(onUpdate).toHaveBeenCalledWith({
+      family: "quasipoisson",
+      link: "",
+      metrics: ["gini", "poisson_deviance"],
+    })
   })
 
   it("clicking a family updates family, link, and metrics", () => {
@@ -553,7 +570,7 @@ describe("GLMRegularizationConfig", () => {
     expect(screen.getByText(/Alpha/)).toBeTruthy()
   })
 
-  it("L1 ratio slider only appears for elastic_net", () => {
+  it("L1 ratio controls only appear for elastic_net", () => {
     const { unmount } = render(<GLMRegularizationConfig config={{ regularization: "ridge" }} onUpdate={onUpdate} />)
     fireEvent.click(screen.getByText("Regularization"))
     expect(screen.queryByText(/L1 ratio/)).toBeNull()
@@ -561,7 +578,32 @@ describe("GLMRegularizationConfig", () => {
 
     render(<GLMRegularizationConfig config={{ regularization: "elastic_net" }} onUpdate={onUpdate} />)
     fireEvent.click(screen.getByText("Regularization"))
-    expect(screen.getByText(/L1 ratio/)).toBeTruthy()
+    expect(screen.getAllByText(/L1 ratio/).length).toBeGreaterThan(0)
+  })
+
+  it("elastic_net gates the L1 ratio until it is set explicitly", () => {
+    render(<GLMRegularizationConfig config={{ regularization: "elastic_net" }} onUpdate={onUpdate} />)
+    fireEvent.click(screen.getByText("Regularization"))
+    // Unset: the mix must be chosen — a prompt and both collapse shortcuts.
+    expect(screen.getByRole("button", { name: /Set L1 ratio mix/ })).toBeTruthy()
+    expect(screen.getByRole("button", { name: /Fit Ridge \(0\)/ })).toBeTruthy()
+    expect(screen.getByRole("button", { name: /Fit LASSO \(1\)/ })).toBeTruthy()
+  })
+
+  it("Fit Ridge / Fit LASSO shortcuts set an explicit L1 ratio", () => {
+    render(<GLMRegularizationConfig config={{ regularization: "elastic_net" }} onUpdate={onUpdate} />)
+    fireEvent.click(screen.getByText("Regularization"))
+    fireEvent.click(screen.getByRole("button", { name: /Fit Ridge \(0\)/ }))
+    expect(onUpdate).toHaveBeenCalledWith("l1_ratio", 0)
+    fireEvent.click(screen.getByRole("button", { name: /Fit LASSO \(1\)/ }))
+    expect(onUpdate).toHaveBeenCalledWith("l1_ratio", 1)
+  })
+
+  it("a set L1 ratio shows the mix slider, not the prompt", () => {
+    render(<GLMRegularizationConfig config={{ regularization: "elastic_net", l1_ratio: 0.3 }} onUpdate={onUpdate} />)
+    fireEvent.click(screen.getByText("Regularization"))
+    expect(screen.queryByRole("button", { name: /Set L1 ratio mix/ })).toBeNull()
+    expect(screen.getByText("0.30")).toBeTruthy()
   })
 
   it("shows active badge when regularization is set", () => {

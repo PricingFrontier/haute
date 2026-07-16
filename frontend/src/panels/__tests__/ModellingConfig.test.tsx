@@ -455,7 +455,7 @@ describe("ModellingConfig", () => {
       })
       const trainBtn = screen.getByRole("button", { name: /Train Model/ })
       expect(trainBtn).toHaveProperty("disabled", true)
-      expect(screen.getByText(/Select a loss function before training/)).toBeTruthy()
+      expect(screen.getByText(/loss function required before training/)).toBeTruthy()
     })
 
     it("train button is gated until a family is selected (glm)", () => {
@@ -464,7 +464,55 @@ describe("ModellingConfig", () => {
       })
       const trainBtn = screen.getByRole("button", { name: /Train Model/ })
       expect(trainBtn).toHaveProperty("disabled", true)
-      expect(screen.getByText(/Select a distribution family before training/)).toBeTruthy()
+      expect(screen.getByText(/distribution family required before training/)).toBeTruthy()
+    })
+
+    it("train button stays gated on an empty factor set until All features (glm)", () => {
+      renderConfig({
+        config: {
+          _nodeId: "node_1",
+          target: "loss_ratio",
+          task: "regression",
+          algorithm: "glm",
+          family: "poisson",
+        },
+      })
+      const trainBtn = screen.getByRole("button", { name: /Train Model/ })
+      expect(trainBtn).toHaveProperty("disabled", true)
+      expect(screen.getByText(/factor selection required before training/)).toBeTruthy()
+    })
+
+    it("train button is gated on Tweedie without a variance power (glm)", () => {
+      renderConfig({
+        config: {
+          _nodeId: "node_1",
+          target: "loss_ratio",
+          task: "regression",
+          algorithm: "glm",
+          family: "tweedie",
+          all_factors: true,
+        },
+      })
+      const trainBtn = screen.getByRole("button", { name: /Train Model/ })
+      expect(trainBtn).toHaveProperty("disabled", true)
+      expect(screen.getByText(/Tweedie variance power required before training/)).toBeTruthy()
+    })
+
+    it("train button is gated on elastic-net without an L1 ratio (glm)", () => {
+      renderConfig({
+        config: {
+          _nodeId: "node_1",
+          target: "loss_ratio",
+          task: "regression",
+          algorithm: "glm",
+          family: "poisson",
+          all_factors: true,
+          regularization: "elastic_net",
+        },
+      })
+      const trainBtn = screen.getByRole("button", { name: /Train Model/ })
+      expect(trainBtn).toHaveProperty("disabled", true)
+      expect(screen.getByText(/elastic-net L1 ratio required before training/)).toBeTruthy()
     })
 
     it("train button enables once the objective is explicit", () => {
@@ -475,6 +523,7 @@ describe("ModellingConfig", () => {
           task: "regression",
           algorithm: "glm",
           family: "poisson",
+          all_factors: true,
         },
       })
       const trainBtn = screen.getByRole("button", { name: /Train Model/ })
