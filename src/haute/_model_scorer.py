@@ -1091,13 +1091,6 @@ def _run_score_pipeline(
     resolved_offset = (
         offset_column if offset_column is not None else _declared_offset_column(scoring_model)
     )
-    # Preserve the offset-less call arity: only pass the kwarg when an offset
-    # is actually in play. Offset-less scoring (the common case) then calls
-    # the delegates exactly as before — keeping in-place test doubles that
-    # patch ``_score_eager`` with the pre-offset signature working.
-    offset_kwargs: dict[str, str] = (
-        {} if resolved_offset is None else {"offset_column": resolved_offset}
-    )
     normalised_levels = _normalise_runtime_categorical_levels(
         categorical_levels,
         features=features,
@@ -1137,18 +1130,36 @@ def _run_score_pipeline(
             collected = streaming_collect(lf, profile=ExecutionProfile.PREVIEW_EAGER)
             _validate_runtime_categorical_values(collected, normalised_levels)
             eager_lf = collected.lazy()
-        result_lf = score_eager_(
-            scoring_model,
-            eager_lf,
-            features,
-            output_col,
-            task,
-            **offset_kwargs,
-        )
+        # Preserve the offset-less call arity: pass the kwarg only when an
+        # offset is actually in play, so offset-less scoring (the common case)
+        # calls the delegate exactly as before — keeping in-place test doubles
+        # that patch ``_score_eager`` with the pre-offset signature working.
+        if resolved_offset is None:
+            result_lf = score_eager_(scoring_model, eager_lf, features, output_col, task)
+        else:
+            result_lf = score_eager_(
+                scoring_model,
+                eager_lf,
+                features,
+                output_col,
+                task,
+                offset_column=resolved_offset,
+            )
         result_lf = _project_scored_output(
             result_lf,
             write_projection,
             output_col=output_col,
+        )
+    elif resolved_offset is None:
+        result_lf = _score_batched_standalone(
+            scoring_model,
+            lf,
+            features,
+            output_col,
+            task,
+            write_projection=write_projection,
+            temporary_paths=temporary_paths,
+            categorical_levels=normalised_levels,
         )
     else:
         result_lf = _score_batched_standalone(
@@ -1160,7 +1171,7 @@ def _run_score_pipeline(
             write_projection=write_projection,
             temporary_paths=temporary_paths,
             categorical_levels=normalised_levels,
-            **offset_kwargs,
+            offset_column=resolved_offset,
         )
 
     if code:
