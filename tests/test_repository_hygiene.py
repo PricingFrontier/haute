@@ -441,9 +441,7 @@ def test_frontend_name_mints_confined_to_blessed_sanitizers_and_allowlist() -> N
 # Interpolated template literal ending in a persisted-artifact extension —
 # the sink where a derived name reaches disk.
 _FRONTEND_PERSIST_SINK_RE = re.compile(r"`[^`\n]*\$\{[^`\n]*\.(?:json|parquet)`")
-_FRONTEND_BLESSED_IMPORT_RE = re.compile(
-    r'from\s+"[^"\n]*utils/(?:sanitizeName|apiInputPorts)"'
-)
+_FRONTEND_BLESSED_IMPORT_RE = re.compile(r'from\s+"[^"\n]*utils/(?:sanitizeName|apiInputPorts)"')
 
 # Frontend files allowed to build a persistence path WITHOUT importing a
 # blessed sanitizer (e.g. every interpolated part is machine-derived, never

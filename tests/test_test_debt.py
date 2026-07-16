@@ -56,8 +56,8 @@ _EXPECTED_DEBT_IDS = {
     # that lives in frontend/; outside a repo checkout (installed-package test
     # runs) the frontend tree, and therefore the parity contract, does not
     # exist. In-repo CI always runs it. See
-    # tests/test_sanitize_parity_fixture.py::_load_pairs.
-    "06b5fc5b5b500179",
+    # tests/test_sanitize_parity_fixture.py::_require_fixture.
+    "5eb0998a88b3cbb7",
     # Invariants battery — coexisting case-twin files (Foo.csv + foo.csv) can
     # only be created on a case-sensitive filesystem, so the real-twin test
     # skips on macOS/Windows by physical necessity; the Linux CI legs run it,
