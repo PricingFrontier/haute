@@ -271,9 +271,28 @@ class GLMAlgorithm(BaseAlgorithm):
         model: Any,
         df: pl.DataFrame,
         features: list[str],
+        offset: str | None = None,
     ) -> np.ndarray:
-        """Generate predictions on the response scale."""
-        preds = model.predict(df.select(features))
+        """Generate predictions on the response scale.
+
+        When *offset* is set, the offset column is kept in the frame handed
+        to RustyStats, which extracts its fit-time offset column by name and
+        re-applies the exact fit-time transform (exposure columns are
+        log-transformed for log-link families).  Served predictions therefore
+        include the offset effect; a frame without the column raises.
+        """
+        columns = list(features)
+        if offset:
+            if offset not in df.columns:
+                raise ValueError(
+                    f"GLM predict: offset column {offset!r} is missing from "
+                    f"the input data. The model was trained with this offset "
+                    f"and predictions without it would be mis-scaled. "
+                    f"Available columns: {df.columns}"
+                )
+            if offset not in columns:
+                columns.append(offset)
+        preds = model.predict(df.select(columns))
         return np.asarray(preds).flatten()
 
     def feature_importance(self, model: Any) -> list[dict[str, Any]]:

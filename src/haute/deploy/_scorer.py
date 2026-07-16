@@ -414,6 +414,15 @@ def _assert_runtime_contract_matches(
         )
     contract_levels = expected.categorical_levels if expected.categorical_levels else {}
 
+    # The offset column is a required scoring input: rebuild the runtime
+    # contract with it only when the live schema actually carries it, so a
+    # payload without the column fails the contract diff by name instead of
+    # silently scoring on an offset-absent basis.
+    runtime_offset = (
+        expected.offset_column
+        if expected.offset_column and schema.get(expected.offset_column) is not None
+        else None
+    )
     actual = build_contract(
         features=runtime_features,
         feature_types=feature_types,
@@ -422,6 +431,7 @@ def _assert_runtime_contract_matches(
         target_name=expected.target_name,
         target_type=expected.target_type,
         task=expected.task,
+        offset_column=runtime_offset,
     )
     assert_contracts_match(expected, actual)
     score_levels = (
@@ -674,6 +684,7 @@ def score_graph_lazy(
 
                     lf = dfs[0] if dfs else pl.LazyFrame()
                     score_categorical_levels = dict(_categorical_levels)
+                    offset_column: str | None = None
                     if _contract_path is not None:
                         score_categorical_levels = _assert_runtime_contract_matches(
                             lf,
@@ -681,6 +692,10 @@ def score_graph_lazy(
                             _t,
                             categorical_levels=_categorical_levels,
                         )
+                        # The bundled contract is the authoritative offset
+                        # source at serve time (the only one a pyfunc model
+                        # has); native models also self-describe.
+                        offset_column = _load_feature_contract_cached(_contract_path).offset_column
                     scoring_model = _load_local_model_cached(_p, _t)
                     return _run_score_pipeline(
                         scoring_model,
@@ -694,6 +709,7 @@ def score_graph_lazy(
                         required_output_columns=_required,
                         temporary_paths=model_score_temp_paths,
                         categorical_levels=score_categorical_levels,
+                        offset_column=offset_column,
                     )
 
                 return func_name, model_score_fn, False
