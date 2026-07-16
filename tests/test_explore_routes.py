@@ -1150,7 +1150,9 @@ def test_build_frame_stats_survives_duration_column(
     assert stats["premium"].mean_value == "25"
     assert stats["wait"].kind == "Temporal"
     assert stats["wait"].null_count == 1
-    assert stats["wait"].distinct_count == 3
+    # {1 day, 2 hours} — distinct counts valid values only; the null bucket
+    # is reported via null_count, not folded into distinct.
+    assert stats["wait"].distinct_count == 2
     # Duration min/max already format via str(timedelta); labels match them.
     assert stats["wait"].min_value == "2:00:00"
     assert stats["wait"].max_value == "1 day, 0:00:00"
