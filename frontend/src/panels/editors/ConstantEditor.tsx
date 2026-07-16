@@ -1,6 +1,7 @@
 import { Plus, Trash2 } from "lucide-react"
 import type { OnUpdateConfig } from "./_shared"
 import { configField } from "../../utils/configField"
+import { CommittedTextField } from "../../components/form"
 
 type ConstantValue = { name: string; value: string }
 
@@ -38,10 +39,10 @@ export default function ConstantEditor({
       <div className="space-y-1.5">
         {values.map((v, i) => (
           <div key={i} className="flex items-center gap-1.5">
-            <input
+            <CommittedTextField
               type="text"
               value={v.name}
-              onChange={(e) => updateRow(i, "name", e.target.value)}
+              onCommit={(val) => updateRow(i, "name", val)}
               placeholder="name"
               className="flex-1 min-w-0 px-2 py-1.5 text-xs font-mono rounded-lg"
               style={{
@@ -50,10 +51,10 @@ export default function ConstantEditor({
                 border: "1px solid var(--border)",
               }}
             />
-            <input
+            <CommittedTextField
               type="text"
               value={v.value}
-              onChange={(e) => updateRow(i, "value", e.target.value)}
+              onCommit={(val) => updateRow(i, "value", val)}
               placeholder="value"
               className="w-24 px-2 py-1.5 text-xs font-mono rounded-lg text-right"
               style={{

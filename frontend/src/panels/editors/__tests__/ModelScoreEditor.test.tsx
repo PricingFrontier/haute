@@ -223,6 +223,8 @@ describe("ModelScoreEditor", () => {
     render(<ModelScoreEditor {...props} />)
     const runIdInput = screen.getByPlaceholderText("e.g. a1b2c3d4e5f6...")
     fireEvent.change(runIdInput, { target: { value: "abc123" } })
+    expect(props.onUpdate).not.toHaveBeenCalled()
+    fireEvent.blur(runIdInput)
     expect(props.onUpdate).toHaveBeenCalledWith("run_id", "abc123")
   })
 
@@ -251,6 +253,8 @@ describe("ModelScoreEditor", () => {
     render(<ModelScoreEditor {...props} />)
     const colInput = screen.getByDisplayValue("prediction")
     fireEvent.change(colInput, { target: { value: "my_score" } })
+    expect(props.onUpdate).not.toHaveBeenCalled()
+    fireEvent.blur(colInput)
     expect(props.onUpdate).toHaveBeenCalledWith("output_column", "my_score")
   })
 
@@ -378,6 +382,8 @@ describe("ModelScoreEditor", () => {
     render(<ModelScoreEditor {...props} />)
     const artifactInput = screen.getByPlaceholderText("e.g. model.cbm")
     fireEvent.change(artifactInput, { target: { value: "model/best.cbm" } })
+    expect(props.onUpdate).not.toHaveBeenCalled()
+    fireEvent.blur(artifactInput)
     expect(props.onUpdate).toHaveBeenCalledWith("artifact_path", "model/best.cbm")
   })
 

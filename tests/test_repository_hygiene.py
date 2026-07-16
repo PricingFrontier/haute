@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import re
 import subprocess
 import tomllib
 from pathlib import Path
@@ -253,4 +254,232 @@ def test_text_mode_subprocess_calls_pin_utf8_in_caller_chokepoints() -> None:
         'Text-mode subprocess calls must pin encoding="utf-8". Without it the '
         "output decodes with the locale codepage (cp1252 on Windows), silently "
         f"corrupting non-ASCII tool output. Offenders: {offenders}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Sanitizer-proliferation scan.
+#
+# Deriving a persisted name/key/filename from a user string by LOCAL string-
+# mashing — instead of routing through a blessed sanitizer — creates its own
+# tiny identity relation, usually coarser than the blessed one: a latent
+# collision site (two labels converge on one artefact) and a latent drift
+# site (its rules diverge as the blessed rules evolve).  There are exactly
+# two blessed sanitizer pairs, each frontend/backend twinned:
+#
+#   identifier pair:        src/haute/_graph_utils.py::_sanitize_func_name
+#                           <-> frontend/src/utils/sanitizeName.ts
+#   filesystem-label pair:  src/haute/_api_input_schema.py::
+#                           sanitise_label_for_filesystem
+#                           <-> frontend/src/utils/apiInputPorts.ts
+#
+# Two scans hold the line:
+#
+#   BIRTH-SCAN — name-mint shapes (replace-to-underscore, fold-then-replace,
+#   character-class substitution) are allowed only in the blessed modules
+#   plus an explicit reason-commented allowlist.  Catches a new ad-hoc
+#   sanitizer the moment it is written, whatever it feeds.
+#
+#   SINK-SCAN — frontend files that build an interpolated persistence path
+#   (a template literal ending .json/.parquet) must import a blessed
+#   sanitizer.  This is the shape of the optimiser-preview specimen (a file
+#   composing `output/<derived>.json` from a locally-mashed label).
+#
+# A site that VALIDATES-and-rejects invalid names rather than transforming
+# them (e.g. routes/utility.py's _VALID_NAME) is fine and is not flagged:
+# rejection cannot silently merge two labels.  Display-only formatting and
+# search case-folds never match these shapes either.
+# ---------------------------------------------------------------------------
+
+_FRONTEND_SRC_PREFIX = "frontend/src/"
+
+# The blessed sanitizer modules — the only places mint shapes live by right.
+_BACKEND_BLESSED_SANITIZERS = {
+    "src/haute/_graph_utils.py",  # _sanitize_func_name (identifier pair)
+    "src/haute/_api_input_schema.py",  # sanitise_label_for_filesystem
+}
+_FRONTEND_BLESSED_SANITIZERS = {
+    "frontend/src/utils/sanitizeName.ts",  # identifier pair twin
+    "frontend/src/utils/apiInputPorts.ts",  # sanitiseLabelForFilesystem twin
+}
+
+# Every non-blessed module allowed to contain a mint shape, with why.  A new
+# entry needs the same justification review as a new subprocess chokepoint.
+_BACKEND_MINT_ALLOWLIST = {
+    # Databricks cache stem: deliberate, documented case-insensitive table
+    # identity (backtick-strip + casefold + separator collapse) with a
+    # containment check; identifier-sanitizer semantics do not fit a dotted
+    # catalog.schema.table reference.
+    "src/haute/_databricks_io.py",
+    # Git branch-name slug from a username; collisions are cosmetic and
+    # _validate_ref_name guards injection.
+    "src/haute/_git.py",
+    # One-shot scaffold: project dir name -> package name at `haute init`;
+    # single value, no collision space.
+    "src/haute/cli/_init_cmd.py",
+    # NOTE (not an entry): _scaffold.py's clean_columns mint lives inside the
+    # starter-pipeline TEMPLATE STRING that `haute init` writes into the
+    # user's project — string constants are invisible to the AST walk, and
+    # scaffolded user code is outside this scan's contract anyway.
+    # Keys rows from an external library's column headers, not user input.
+    "src/haute/modelling/_rustystats.py",
+    # label_slug feeds only the default `version` STRING inside the artifact
+    # payload (timestamp-salted); the on-disk path comes from the
+    # user-supplied output_path, so no name it mints reaches persistence.
+    "src/haute/routes/optimiser.py",
+}
+_FRONTEND_MINT_ALLOWLIST = {
+    # Deliberate third sanitizer with distinct semantics (run-collapse
+    # salting of dotted leaves; collisions handled actively by dedupName /
+    # ambiguousNames).  Confined to ONE local helper, collapseToNameChars.
+    "frontend/src/panels/editors/apiInputInherit.ts",
+    # safeTestId mints data-testid attributes only — never persisted.
+    "frontend/src/panels/explore/SchemaTableCard.tsx",
+}
+
+
+def _module_has_mint_shape(tree: ast.AST) -> bool:
+    """True if the module contains a name-mint shape.
+
+    Shapes (AST, so strings/comments cannot trip it):
+
+    * ``<expr>.replace(<x>, "_")`` — replace-to-underscore, the fold-family
+      mint (also catches ``.lower().replace(" ", "_")`` chains).
+    * ``re.sub(pat, "_"|"-", s)`` / ``<compiled>.sub("_"|"-", s)`` —
+      substitution collapsing a character class to a separator.
+    """
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if not isinstance(func, ast.Attribute):
+            continue
+        if func.attr == "replace" and len(node.args) >= 2:
+            repl = node.args[1]
+            if isinstance(repl, ast.Constant) and repl.value == "_":
+                return True
+        elif func.attr == "sub" and node.args:
+            is_re_module = isinstance(func.value, ast.Name) and func.value.id == "re"
+            repl = node.args[1] if is_re_module and len(node.args) >= 2 else node.args[0]
+            if isinstance(repl, ast.Constant) and repl.value in ("_", "-"):
+                return True
+    return False
+
+
+def _tracked_frontend_sources() -> list[str]:
+    return sorted(
+        rel
+        for rel in _tracked_files()
+        if rel.startswith(_FRONTEND_SRC_PREFIX)
+        and rel.endswith((".ts", ".tsx"))
+        and not rel.endswith(".d.ts")
+        and "__tests__" not in rel
+        and "/testSupport/" not in rel  # vitest scaffolding, not product code
+    )
+
+
+# Text shapes for the frontend half (no TS AST is available under pytest;
+# the shapes are narrow enough that a string-literal false positive would be
+# an acceptable prompt to restructure).  House style is double quotes, which
+# the replace-to-underscore pattern assumes.
+_FRONTEND_MINT_RES = (
+    re.compile(r"\.replace\(\s*/\[\^"),  # character-class substitution regex
+    re.compile(r"toLowerCase\(\)\s*\.\s*replace\("),  # fold-then-mint
+    re.compile(r'\.replace\([^)\n]*,\s*"_"\s*\)'),  # replace-to-underscore
+)
+
+
+def test_backend_name_mints_confined_to_blessed_sanitizers_and_allowlist() -> None:
+    minting = {
+        _rel_posix(path)
+        for path in _iter_src_haute_sources()
+        if _module_has_mint_shape(ast.parse(path.read_text(encoding="utf-8")))
+    }
+    expected = _BACKEND_BLESSED_SANITIZERS | _BACKEND_MINT_ALLOWLIST
+
+    unexpected = sorted(minting - expected)
+    missing = sorted(expected - minting)
+    assert unexpected == [], (
+        "New name-mint shape (replace-to-underscore / sub-to-separator) outside "
+        "the blessed sanitizers. Route the derivation through _sanitize_func_name "
+        "or sanitise_label_for_filesystem, make the site validate-and-reject "
+        "instead of transforming, or — if the local mint is genuinely deliberate "
+        f"— add a reason-commented allowlist entry here. Offenders: {unexpected}"
+    )
+    assert missing == [], (
+        "Allowlist/blessed set is stale: these modules no longer contain a mint "
+        f"shape. Remove their entries so the scan stays meaningful: {missing}"
+    )
+
+
+def test_frontend_name_mints_confined_to_blessed_sanitizers_and_allowlist() -> None:
+    minting = {
+        rel
+        for rel in _tracked_frontend_sources()
+        if any(
+            pattern.search((_REPO_ROOT / rel).read_text(encoding="utf-8"))
+            for pattern in _FRONTEND_MINT_RES
+        )
+    }
+    expected = _FRONTEND_BLESSED_SANITIZERS | _FRONTEND_MINT_ALLOWLIST
+
+    unexpected = sorted(minting - expected)
+    missing = sorted(expected - minting)
+    assert unexpected == [], (
+        "New frontend name-mint shape (char-class substitution / fold-then-"
+        "replace / replace-to-underscore) outside the blessed sanitizers. Route "
+        "the derivation through sanitizeName or sanitiseLabelForFilesystem, "
+        "validate-and-reject instead of transforming, or add a reason-commented "
+        f"allowlist entry here. Offenders: {unexpected}"
+    )
+    assert missing == [], (
+        "Allowlist/blessed set is stale: these files no longer contain a mint "
+        f"shape. Remove their entries so the scan stays meaningful: {missing}"
+    )
+
+
+# Interpolated template literal ending in a persisted-artifact extension —
+# the sink where a derived name reaches disk.
+_FRONTEND_PERSIST_SINK_RE = re.compile(r"`[^`\n]*\$\{[^`\n]*\.(?:json|parquet)`")
+_FRONTEND_BLESSED_IMPORT_RE = re.compile(r'from\s+"[^"\n]*utils/(?:sanitizeName|apiInputPorts)"')
+
+# Frontend files allowed to build a persistence path WITHOUT importing a
+# blessed sanitizer (e.g. every interpolated part is machine-derived, never
+# a user label).  A new entry needs a reason comment.
+_FRONTEND_PERSIST_SINK_ALLOWLIST: set[str] = {
+    # `${filename}.json` names a user-initiated BROWSER DOWNLOAD of the
+    # previewed document (downloadTextFile); nothing is persisted into the
+    # project tree, so no project artefact can collide.
+    "frontend/src/panels/editors/JsonPreview.tsx",
+}
+
+
+def test_frontend_persistence_path_builders_import_a_blessed_sanitizer() -> None:
+    sinks = {
+        rel
+        for rel in _tracked_frontend_sources()
+        if _FRONTEND_PERSIST_SINK_RE.search((_REPO_ROOT / rel).read_text(encoding="utf-8"))
+    }
+    # Non-vacuity pin: the optimiser artifact-path builder (the fixed
+    # specimen of this class) must stay visible to the sink pattern.  If it
+    # moves or the pattern rots, this fails rather than the scan silently
+    # covering nothing.
+    assert "frontend/src/panels/optimiser/optimiserHelpers.ts" in sinks, (
+        "Sink pattern no longer matches the known persistence-path builder — "
+        "the scan has gone vacuous; update _FRONTEND_PERSIST_SINK_RE (or this "
+        "pin) to track the code."
+    )
+
+    offenders = sorted(
+        rel
+        for rel in sinks - _FRONTEND_PERSIST_SINK_ALLOWLIST
+        if not _FRONTEND_BLESSED_IMPORT_RE.search((_REPO_ROOT / rel).read_text(encoding="utf-8"))
+    )
+    assert offenders == [], (
+        "Frontend file builds an interpolated persistence path (template "
+        "literal ending .json/.parquet) without importing a blessed sanitizer. "
+        "Any user-derived part of a persisted filename must pass through "
+        "sanitizeName or sanitiseLabelForFilesystem (the optimiser-preview bug "
+        "class); if every interpolated part is machine-derived, add a "
+        f"reason-commented allowlist entry. Offenders: {offenders}"
     )

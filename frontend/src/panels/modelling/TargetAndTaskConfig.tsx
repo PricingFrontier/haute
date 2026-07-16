@@ -2,6 +2,7 @@ import type { OnUpdateConfig } from "../editors"
 import { configField } from "../../utils/configField"
 import { toggleButtonStyle } from "./styles"
 import { FailoverHelp } from "./FailoverHelp"
+import { OffsetFieldLabel } from "./OffsetFieldLabel"
 
 const TWEEDIE_HELP =
   "Tweedie interpolates between Poisson (power 1) and Gamma (power 2); the " +
@@ -80,7 +81,7 @@ export function TargetAndTaskConfig({ config, onUpdate, columns, target, weight,
           </select>
         </div>
         <div>
-          <label className="text-xs" style={{ color: "var(--text-secondary)" }}>Offset column (optional, e.g. log-exposure)</label>
+          <OffsetFieldLabel />
           <select
             value={configField(config, "offset", "")}
             onChange={(e) => onUpdate("offset", e.target.value || null)}

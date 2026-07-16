@@ -34,6 +34,8 @@ def build_signature(
     target_name: str,
     target_type: str,
     task: Literal["classification", "regression"] = "regression",
+    offset_name: str | None = None,
+    offset_type: str = "Float64",
 ) -> ModelSignature:
     """Build an MLflow ModelSignature for a haute training run.
 
@@ -48,10 +50,16 @@ def build_signature(
         target_type: Polars dtype string for the target column.
         task: ``"regression"`` (single ``pred`` output) or ``"classification"``
             (``pred_label`` + ``pred_proba`` outputs).
+        offset_name: Optional offset/exposure column the model was trained
+            with. Declared as a required input so scoring payloads must carry
+            it — the offset is part of every served prediction, never an
+            optional extra. Must not shadow a feature name.
+        offset_type: Polars dtype string for the offset column.
 
     Returns:
         A ``mlflow.models.ModelSignature`` whose input schema preserves the
-        order of ``features``.
+        order of ``features`` (with the offset column, when present, appended
+        after them).
     """
     if not features:
         raise ValueError("features must be non-empty; a signature needs at least one input")
@@ -67,9 +75,17 @@ def build_signature(
     if extras:
         raise ValueError(f"categorical_features contains names not in features: {extras}")
 
+    if offset_name is not None and offset_name in features:
+        raise ValueError(
+            f"offset column {offset_name!r} shadows a feature name; the offset "
+            "is a separate model input, not a design-matrix feature"
+        )
+
     input_specs: list[ColSpec | TensorSpec] = [
         ColSpec(type=_map_dtype(feature_types[f]), name=f) for f in features
     ]
+    if offset_name is not None:
+        input_specs.append(ColSpec(type=_map_dtype(offset_type), name=offset_name))
     inputs = Schema(input_specs)
 
     target_dtype = _map_dtype(target_type)

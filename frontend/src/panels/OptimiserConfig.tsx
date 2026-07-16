@@ -26,6 +26,7 @@ import {
   executionTerminalReasonFromError,
 } from "../utils/executionDiagnostics"
 import { configField, safeParseFloat, safeParseInt } from "../utils/configField"
+import { CommittedTextField } from "../components/form"
 import { withAlpha } from "../utils/color"
 import { extractBandingLevelsForNode } from "../utils/banding"
 import { buildGraph } from "../utils/buildGraph"
@@ -897,12 +898,12 @@ export default function OptimiserConfig({
                     </div>
                     <div>
                       <label className="text-[11px]" style={{ color: "var(--text-muted)" }}>Steps</label>
-                      <input
+                      <CommittedTextField
                         type="number"
                         min={2}
                         step={1}
-                        value={frontierSteps}
-                        onChange={(e) => onUpdate("frontier_steps", safeParseInt(e.target.value, 15))}
+                        value={String(frontierSteps)}
+                        onCommit={(v) => onUpdate("frontier_steps", safeParseInt(v, 15))}
                         className="w-full mt-0.5 px-2 py-1 rounded text-xs font-mono"
                         style={{ background: "var(--bg-input)", border: "1px solid var(--border)", color: "var(--text-primary)" }}
                       />
@@ -934,20 +935,20 @@ export default function OptimiserConfig({
         <div className="mt-1.5 grid grid-cols-2 gap-2">
           <div>
             <label className="text-[11px]" style={{ color: "var(--text-muted)" }}>Max iterations</label>
-            <input
+            <CommittedTextField
               type="number" min={1} step={1}
-              value={maxIter}
-              onChange={(e) => onUpdate("max_iter", safeParseInt(e.target.value, 50))}
+              value={String(maxIter)}
+              onCommit={(v) => onUpdate("max_iter", safeParseInt(v, 50))}
               className="w-full mt-0.5 px-2 py-1 rounded text-xs font-mono"
               style={{ background: "var(--bg-input)", border: "1px solid var(--border)", color: "var(--text-primary)" }}
             />
           </div>
           <div>
             <label className="text-[11px]" style={{ color: "var(--text-muted)" }}>Tolerance</label>
-            <input
+            <CommittedTextField
               type="number" step={0.000001}
-              value={tolerance}
-              onChange={(e) => onUpdate("tolerance", safeParseFloat(e.target.value, 1e-6))}
+              value={String(tolerance)}
+              onCommit={(v) => onUpdate("tolerance", safeParseFloat(v, 1e-6))}
               className="w-full mt-0.5 px-2 py-1 rounded text-xs font-mono"
               style={{ background: "var(--bg-input)", border: "1px solid var(--border)", color: "var(--text-primary)" }}
             />
@@ -969,10 +970,10 @@ export default function OptimiserConfig({
           <div className="mt-1.5 space-y-2">
             <div>
               <label className="text-[11px]" style={{ color: "var(--text-muted)" }}>Chunk size</label>
-              <input
+              <CommittedTextField
                 type="number" min={1000} step={10000}
-                value={chunkSize}
-                onChange={(e) => onUpdate("chunk_size", safeParseInt(e.target.value, 500_000))}
+                value={String(chunkSize)}
+                onCommit={(v) => onUpdate("chunk_size", safeParseInt(v, 500_000))}
                 className="w-full mt-0.5 px-2 py-1 rounded text-xs font-mono"
                 style={{ background: "var(--bg-input)", border: "1px solid var(--border)", color: "var(--text-primary)" }}
               />
@@ -995,20 +996,20 @@ export default function OptimiserConfig({
               <div className="grid grid-cols-2 gap-2">
                 <div>
                   <label className="text-[11px]" style={{ color: "var(--text-muted)" }}>CD iterations</label>
-                  <input
+                  <CommittedTextField
                     type="number" min={1} step={1}
-                    value={maxCdIterations}
-                    onChange={(e) => onUpdate("max_cd_iterations", safeParseInt(e.target.value, 10))}
+                    value={String(maxCdIterations)}
+                    onCommit={(v) => onUpdate("max_cd_iterations", safeParseInt(v, 10))}
                     className="w-full mt-0.5 px-2 py-1 rounded text-xs font-mono"
                     style={{ background: "var(--bg-input)", border: "1px solid var(--border)", color: "var(--text-primary)" }}
                   />
                 </div>
                 <div>
                   <label className="text-[11px]" style={{ color: "var(--text-muted)" }}>CD tolerance</label>
-                  <input
+                  <CommittedTextField
                     type="number" step={0.0001}
-                    value={cdTolerance}
-                    onChange={(e) => onUpdate("cd_tolerance", safeParseFloat(e.target.value, 1e-3))}
+                    value={String(cdTolerance)}
+                    onCommit={(v) => onUpdate("cd_tolerance", safeParseFloat(v, 1e-3))}
                     className="w-full mt-0.5 px-2 py-1 rounded text-xs font-mono"
                     style={{ background: "var(--bg-input)", border: "1px solid var(--border)", color: "var(--text-primary)" }}
                   />
@@ -1033,11 +1034,11 @@ export default function OptimiserConfig({
           <div className="mt-1.5 space-y-2">
             <div>
               <label className="text-[11px]" style={{ color: "var(--text-muted)" }}>Experiment path</label>
-              <input
+              <CommittedTextField
                 type="text"
                 placeholder="Leave blank for default"
                 value={configField(config, "mlflow_experiment", "")}
-                onChange={(e) => onUpdate("mlflow_experiment", e.target.value)}
+                onCommit={(v) => onUpdate("mlflow_experiment", v)}
                 className="w-full mt-0.5 px-2.5 py-1.5 rounded-lg text-xs font-mono"
                 style={{ background: "var(--bg-input)", border: "1px solid var(--border)", color: "var(--text-primary)" }}
               />

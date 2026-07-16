@@ -172,9 +172,11 @@ describe("GLMTargetConfig", () => {
     expect(onUpdate).toHaveBeenCalledWith("link", "identity")
   })
 
-  it("renders offset column dropdown", () => {
+  it("renders offset column dropdown with link-function help", () => {
     render(<GLMTargetConfig config={baseConfig} onUpdate={onUpdate} columns={defaultColumns} />)
-    expect(screen.getByText("Offset column (optional, e.g. log-exposure)")).toBeTruthy()
+    expect(screen.getByText(/Offset column/)).toBeTruthy()
+    // The link-function framing is carried by the hover help.
+    expect(screen.getByTestId("offset-help")).toBeTruthy()
   })
 
   it("renders intercept checkbox checked by default", () => {

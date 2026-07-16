@@ -204,6 +204,7 @@ describe("DataInputEditor", () => {
     )
     const pathInput = await screen.findByLabelText("Path")
     fireEvent.change(pathInput, { target: { value: "data/new.csv" } })
+    fireEvent.blur(pathInput)
     expect(harnessConfig()).toEqual({
       format: "csv",
       path: "data/new.csv",
@@ -251,9 +252,12 @@ describe("DataInputEditor", () => {
     render(<DataInputEditor {...props} />)
     const uri = await screen.findByLabelText("Connection URI")
     fireEvent.change(uri, { target: { value: "postgres://host/db" } })
+    expect(props.onUpdate).not.toHaveBeenCalled()
+    fireEvent.blur(uri)
     expect(props.onUpdate).toHaveBeenCalledWith("uri", "postgres://host/db")
     const query = screen.getByLabelText("Query")
     fireEvent.change(query, { target: { value: "SELECT 1" } })
+    fireEvent.blur(query)
     expect(props.onUpdate).toHaveBeenCalledWith("query", "SELECT 1")
   })
 
@@ -264,11 +268,16 @@ describe("DataInputEditor", () => {
     const textarea = await screen.findByLabelText("Records")
     fireEvent.change(textarea, { target: { value: '[{"a": 1' } })
     expect(screen.getByText(/Invalid JSON/)).toBeInTheDocument()
+    fireEvent.blur(textarea)
     expect(props.onUpdate).not.toHaveBeenCalled()
     fireEvent.change(textarea, { target: { value: '{"a": 1}' } })
     expect(screen.getByText(/Must be a JSON array/)).toBeInTheDocument()
+    fireEvent.blur(textarea)
     expect(props.onUpdate).not.toHaveBeenCalled()
     fireEvent.change(textarea, { target: { value: '[{"a": 1}]' } })
+    // Valid JSON commits once at the blur boundary (undo-atomicity).
+    expect(props.onUpdate).not.toHaveBeenCalled()
+    fireEvent.blur(textarea)
     expect(props.onUpdate).toHaveBeenCalledWith("records", [{ a: 1 }])
   })
 
@@ -294,7 +303,9 @@ describe("DataInputEditor", () => {
     await screen.findByLabelText("Format")
     fireEvent.click(screen.getByText("Add argument"))
     fireEvent.change(screen.getByLabelText("Argument 2 name"), { target: { value: "has_header" } })
+    fireEvent.blur(screen.getByLabelText("Argument 2 name"))
     fireEvent.change(screen.getByLabelText("Argument 2 value"), { target: { value: "true" } })
+    fireEvent.blur(screen.getByLabelText("Argument 2 value"))
     expect(harnessConfig()).toEqual({
       format: "csv",
       path: "x.csv",

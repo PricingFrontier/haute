@@ -60,3 +60,8 @@ class ModelCardMetadata:
     categorical_features: list[str] = field(default_factory=list)
     target_name: str = ""
     target_type: str = ""
+    # Offset/exposure column the model was trained with ("" = none).
+    # Declared in the logged ModelSignature so scoring payloads must
+    # carry it — served predictions include the offset effect.
+    offset_name: str = ""
+    offset_type: str = ""

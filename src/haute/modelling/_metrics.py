@@ -844,6 +844,7 @@ def compute_pdp(
     *,
     n_grid: int = 50,
     max_sample: int = 500,
+    offset: str | None = None,
 ) -> list[dict[str, Any]]:
     """Compute partial dependence plots for all features.
 
@@ -923,7 +924,13 @@ def compute_pdp(
                     modified = sample_df.with_columns(
                         pl.lit(float(val)).cast(sample_df[feat].dtype).alias(feat)
                     )
-                preds = algo.predict(model, modified, features)
+                # *algo* is duck-typed here; only thread the offset kwarg
+                # when one is set so offset-less callers keep working with
+                # minimal predict(model, df, features) implementations.
+                if offset:
+                    preds = algo.predict(model, modified, features, offset=offset)
+                else:
+                    preds = algo.predict(model, modified, features)
                 avg_pred = float(np.mean(preds))
                 grid_entries.append(
                     {
