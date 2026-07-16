@@ -2,6 +2,7 @@ import { SELECT_STYLE } from "./_shared"
 import type { OnUpdateConfig } from "./_shared"
 import type { MlflowBrowserState, Run } from "../../hooks/useMlflowBrowser"
 import { configField } from "../../utils/configField"
+import { CommittedTextField } from "../../components/form"
 
 // ─── Registered Model Picker ─────────────────────────────────────
 
@@ -265,12 +266,12 @@ export function ExperimentRunPicker({
         >
           Run ID
         </label>
-        <input
+        <CommittedTextField
           type="text"
           className="mt-1 w-full text-xs px-2.5 py-1.5 rounded-lg font-mono focus:outline-none focus:ring-2"
           style={SELECT_STYLE}
           value={configField(config, "run_id", "")}
-          onChange={(e) => onUpdate("run_id", e.target.value)}
+          onCommit={(v) => onUpdate("run_id", v)}
           placeholder="e.g. a1b2c3d4e5f6..."
         />
       </div>
@@ -282,12 +283,12 @@ export function ExperimentRunPicker({
           >
             Artifact Path
           </label>
-          <input
+          <CommittedTextField
             type="text"
             className="mt-1 w-full text-xs px-2.5 py-1.5 rounded-lg font-mono focus:outline-none focus:ring-2"
             style={SELECT_STYLE}
             value={configField(config, "artifact_path", "")}
-            onChange={(e) => onUpdate("artifact_path", e.target.value)}
+            onCommit={(v) => onUpdate("artifact_path", v)}
             placeholder="e.g. model.cbm"
           />
         </div>

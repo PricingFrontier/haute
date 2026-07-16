@@ -336,6 +336,7 @@ class TestStartGlmMergeAndKeepColumns:
             "algorithm": "glm",
             "family": "poisson",
             "link": "log",
+            "all_factors": True,
             "weight": "exposure",
             "offset": "log_exp",
             "exclude": ["junk"],
@@ -867,7 +868,12 @@ class TestStartExecutionContextLifecycle:
     def _min_graph(self):
         from haute.schemas import TrainRequest
 
-        config = {"target": "loss", "algorithm": "catboost", "params": {"iterations": 2}}
+        config = {
+            "target": "loss",
+            "algorithm": "catboost",
+            "loss_function": "RMSE",
+            "params": {"iterations": 2},
+        }
         graph = make_graph(
             {
                 "nodes": [
@@ -1114,6 +1120,7 @@ class TestStartCategoricalLevelsMerge:
         config = {
             "target": "loss",
             "algorithm": "catboost",
+            "loss_function": "RMSE",
             "categorical_levels": {"region": ["north", "south"]},
             "params": {"iterations": 2},
         }
@@ -1221,7 +1228,12 @@ class _InlineThread:
 
 
 def _launch_config():
-    return {"target": "y", "algorithm": "catboost", "params": {"iterations": 1}}
+    return {
+        "target": "y",
+        "algorithm": "catboost",
+        "loss_function": "RMSE",
+        "params": {"iterations": 1},
+    }
 
 
 class TestLaunchBackgroundWorker:
@@ -1247,7 +1259,7 @@ class TestLaunchBackgroundWorker:
         tmp_parquet = str(tmp_path / "train.parquet")
         Path(tmp_parquet).write_text("x", encoding="utf-8")
 
-        cap = _train_service._MAX_TRAIN_LOSS_HISTORY
+        cap = _train_service._max_train_loss_history()
 
         class FakeJob:
             def run(self, progress, on_iteration, *, check_cancelled, execution_context):

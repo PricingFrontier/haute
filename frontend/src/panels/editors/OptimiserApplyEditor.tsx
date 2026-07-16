@@ -7,6 +7,7 @@ import { configField } from "../../utils/configField"
 import { optimiserSelectionMode } from "../../utils/mlflowOptimiser"
 import { readJson } from "../../api/client"
 import ToggleButtonGroup from "../../components/ToggleButtonGroup"
+import { CommittedTextField } from "../../components/form"
 
 type ArtifactMeta = {
   version: string
@@ -181,12 +182,12 @@ export default function OptimiserApplyEditor({
           <label className="text-[11px] font-bold uppercase tracking-[0.08em] block mb-1" style={{ color: 'var(--text-muted)' }}>
             Artifact Path
           </label>
-          <input
+          <CommittedTextField
             type="text"
             className="w-full px-2.5 py-1.5 rounded-lg text-[12px] font-mono focus:outline-none focus:ring-2"
             style={INPUT_STYLE}
             value={artifactPath}
-            onChange={(e) => onUpdate("artifact_path", e.target.value)}
+            onCommit={(v) => onUpdate("artifact_path", v)}
             placeholder="artifacts/optimiser_v1.json"
           />
           <p className="text-[10px] mt-1" style={{ color: 'var(--text-muted)' }}>
@@ -218,12 +219,12 @@ export default function OptimiserApplyEditor({
         <label className="text-[11px] font-bold uppercase tracking-[0.08em] block mb-1" style={{ color: 'var(--text-muted)' }}>
           Version Column
         </label>
-        <input
+        <CommittedTextField
           type="text"
           className="w-full px-2.5 py-1.5 rounded-lg text-[12px] font-mono focus:outline-none focus:ring-2"
           style={INPUT_STYLE}
           value={versionColumn}
-          onChange={(e) => onUpdate("version_column", e.target.value)}
+          onCommit={(v) => onUpdate("version_column", v)}
           placeholder="__optimiser_version__"
         />
         <p className="text-[10px] mt-1" style={{ color: 'var(--text-muted)' }}>
@@ -236,12 +237,12 @@ export default function OptimiserApplyEditor({
         <label className="text-[11px] font-bold uppercase tracking-[0.08em] block mb-1" style={{ color: 'var(--text-muted)' }}>
           Optimised Value Column
         </label>
-        <input
+        <CommittedTextField
           type="text"
           className="w-full px-2.5 py-1.5 rounded-lg text-[12px] font-mono focus:outline-none focus:ring-2"
           style={INPUT_STYLE}
           value={optimisedValueColumn}
-          onChange={(e) => onUpdate("optimised_value_column", e.target.value)}
+          onCommit={(v) => onUpdate("optimised_value_column", v)}
           placeholder="optimised_value"
         />
         <p className="text-[10px] mt-1" style={{ color: 'var(--text-muted)' }}>

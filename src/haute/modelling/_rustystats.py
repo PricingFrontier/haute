@@ -177,6 +177,7 @@ class GLMAlgorithm(BaseAlgorithm):
 
         # Extract GLM-specific config from params
         terms = params.get("terms", {})
+        all_factors = bool(params.get("all_factors", False))
         family = params.get("family", "gaussian")
         link = params.get("link") or None  # empty string → None (canonical)
         var_power = params.get("var_power", 1.5)
@@ -186,8 +187,12 @@ class GLMAlgorithm(BaseAlgorithm):
         alpha = params.get("alpha", 0.0)
         l1_ratio = params.get("l1_ratio", 0.0)
 
-        # Auto-generate terms if none specified
-        if not terms:
+        # Auto-generate a term per column when the user opted into "all
+        # features" (all_factors), or — for the direct-construction API that
+        # bypasses the config gate — when no terms are specified. The config
+        # path (build_training_job_kwargs) already refuses empty terms without
+        # all_factors, so via the UI this only ever runs as an explicit choice.
+        if all_factors or not terms:
             terms = _auto_terms(features, cat_features)
 
         if feature_weights:
@@ -271,9 +276,28 @@ class GLMAlgorithm(BaseAlgorithm):
         model: Any,
         df: pl.DataFrame,
         features: list[str],
+        offset: str | None = None,
     ) -> np.ndarray:
-        """Generate predictions on the response scale."""
-        preds = model.predict(df.select(features))
+        """Generate predictions on the response scale.
+
+        When *offset* is set, the offset column is kept in the frame handed
+        to RustyStats, which extracts its fit-time offset column by name and
+        re-applies the exact fit-time transform (exposure columns are
+        log-transformed for log-link families).  Served predictions therefore
+        include the offset effect; a frame without the column raises.
+        """
+        columns = list(features)
+        if offset:
+            if offset not in df.columns:
+                raise ValueError(
+                    f"GLM predict: offset column {offset!r} is missing from "
+                    f"the input data. The model was trained with this offset "
+                    f"and predictions without it would be mis-scaled. "
+                    f"Available columns: {df.columns}"
+                )
+            if offset not in columns:
+                columns.append(offset)
+        preds = model.predict(df.select(columns))
         return np.asarray(preds).flatten()
 
     def feature_importance(self, model: Any) -> list[dict[str, Any]]:

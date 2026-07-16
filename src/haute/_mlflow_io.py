@@ -328,9 +328,16 @@ class ScoringModel:
     dispatch explicitly on ``flavor``; there is no ``__getattr__``
     proxying — callers must go through the declared ``predict`` /
     ``predict_proba`` / ``raw_model`` surface.
+
+    ``offset_column`` names the offset/exposure column the model was
+    trained with (``None`` when the model has none).  Scoring frames must
+    carry it: the CatBoost path re-supplies it as a ``Pool`` baseline, the
+    RustyStats path hands it to the model inside the predict frame (it is
+    already part of ``required_columns``).  A missing column fails loud —
+    scoring never silently proceeds on an offset-0/absent basis.
     """
 
-    __slots__ = ("_model", "feature_names", "cat_feature_names", "flavor")
+    __slots__ = ("_model", "feature_names", "cat_feature_names", "flavor", "offset_column")
 
     def __init__(
         self,
@@ -338,11 +345,13 @@ class ScoringModel:
         feature_names: list[str],
         cat_feature_names: frozenset[str] = frozenset(),
         flavor: ModelFlavor = "pyfunc",
+        offset_column: str | None = None,
     ) -> None:
         self._model = model
         self.feature_names = feature_names
         self.cat_feature_names = cat_feature_names
         self.flavor = flavor
+        self.offset_column = offset_column
 
     @property
     def raw_model(self) -> Any:
@@ -381,6 +390,25 @@ def _load_catboost_model(path: str, task: str) -> CatBoostRegressor | CatBoostCl
     return model
 
 
+def _catboost_offset_column(model: Any) -> str | None:
+    """Read the trained-with offset column stamped into the .cbm metadata.
+
+    ``CatBoostAlgorithm.fit`` records the offset column name under
+    ``CATBOOST_OFFSET_METADATA_KEY`` because the .cbm format has no native
+    baseline memory — without this, a served model would silently score
+    from baseline 0.
+    """
+    from haute.modelling._algorithms import CATBOOST_OFFSET_METADATA_KEY
+
+    try:
+        value = model.get_metadata().get(CATBOOST_OFFSET_METADATA_KEY)
+    except Exception:
+        return None
+    # Strict str gate: metadata proxies (and mocked models in tests) can
+    # return non-string truthy objects for absent keys.
+    return value if isinstance(value, str) and value else None
+
+
 def _wrap_catboost(model: CatBoostRegressor | CatBoostClassifier) -> ScoringModel:
     """Wrap a raw CatBoost model in a ``ScoringModel``."""
     feature_names = list(model.feature_names_)
@@ -393,6 +421,7 @@ def _wrap_catboost(model: CatBoostRegressor | CatBoostClassifier) -> ScoringMode
         feature_names=feature_names,
         cat_feature_names=cat_names,
         flavor="catboost",
+        offset_column=_catboost_offset_column(model),
     )
 
 
@@ -410,11 +439,13 @@ def _load_rustystats_model(path: str) -> ScoringModel:
 
     with open(path, "rb") as f:
         model = rs.GLMModel.from_bytes(f.read())
+    offset_spec = getattr(model, "_offset_spec", None)
     return ScoringModel(
         model=model,
         feature_names=list(model.required_columns),
         cat_feature_names=frozenset(),
         flavor="rustystats",
+        offset_column=offset_spec if isinstance(offset_spec, str) and offset_spec else None,
     )
 
 
@@ -1188,6 +1219,7 @@ def _score_eager(
     output_col: str = "prediction",
     task: str = "regression",
     write_projection: ScoreWriteProjection | None = None,
+    offset_column: str | None = None,
 ) -> pl.LazyFrame:
     """Collect a LazyFrame and score in-memory. Returns a LazyFrame.
 
@@ -1196,8 +1228,12 @@ def _score_eager(
     dispatch and the batch/eager fork.  This symbol stays exported so
     existing call sites (dev executor, deploy scorer) and direct-patch
     tests keep working.
+
+    ``offset_column`` is threaded so the model's fit-time offset (contract
+    or self-described) is re-applied at score time; ``None`` lets the
+    scorer derive it from the model itself.
     """
-    from haute._model_scorer import score_frame
+    from haute._model_scorer import _declared_offset_column, score_frame
 
     return score_frame(
         model=scoring_model.raw_model,
@@ -1209,4 +1245,7 @@ def _score_eager(
         output_col=output_col,
         batch=False,
         write_projection=write_projection,
+        offset_column=offset_column
+        if offset_column is not None
+        else _declared_offset_column(scoring_model),
     )

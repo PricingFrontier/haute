@@ -28,6 +28,7 @@ afterEach(cleanup)
 
 beforeEach(() => {
   mockExecuteSink.mockReset()
+  DEFAULT_PROPS.onUpdate.mockClear()
 })
 
 const DEFAULT_PROPS = {
@@ -78,11 +79,14 @@ describe("SinkEditor", () => {
     expect(onUpdate).toHaveBeenCalledWith("format", "parquet")
   })
 
-  it("path input calls onUpdate when changed", () => {
+  it("path input commits once on blur, not per keystroke (undo-atomicity)", () => {
     const onUpdate = vi.fn()
     render(<SinkEditor {...DEFAULT_PROPS} onUpdate={onUpdate} />)
     const input = screen.getByRole("textbox")
     fireEvent.change(input, { target: { value: "new_path.parquet" } })
+    expect(onUpdate).not.toHaveBeenCalled()
+    fireEvent.blur(input)
+    expect(onUpdate).toHaveBeenCalledTimes(1)
     expect(onUpdate).toHaveBeenCalledWith("path", "new_path.parquet")
   })
 

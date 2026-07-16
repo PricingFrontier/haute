@@ -1,0 +1,107 @@
+name: Frontend Shuffle
+
+# Nightly guard against WITHIN-FILE test-order dependence in the frontend
+# vitest suite. The default `frontend` lane in ci.yml runs tests in file
+# order, so a test that leaks state into a sibling (an uncleared module-level
+# mock spy, an unconsumed mockImplementationOnce, accumulated DOM) passes there
+# and only fails under a different ordering. This lane runs the same suite under
+# `--sequence.shuffle` so those regressions surface. It is intentionally NOT a
+# required per-PR check (ruled 2026-07-15) — order-dependence is a slow-moving
+# class and a nightly catch is enough; keeping it off the PR critical path
+# avoids charging every PR for a probabilistic check.
+#
+# Loud: a failure finds-or-creates a `shuffle-watch` issue with the run URL and
+# the exact seed, so a red night is reproducible with one command.
+
+on:
+  workflow_dispatch:
+    inputs:
+      seed:
+        description: "Explicit shuffle seed (reproduce a specific nightly failure). Blank = random."
+        type: string
+        default: ""
+      force_fail:
+        description: "Fail deliberately to prove the alarm path rings"
+        type: boolean
+        default: false
+  schedule:
+    # 02:07 UTC daily — offset from the Monday scheduled lanes
+    # (performance 03:17, dependencies 04:41, mutation 05:00).
+    - cron: "7 2 * * *"
+
+permissions:
+  contents: read
+
+jobs:
+  frontend-shuffle:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      issues: write
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - run: npm ci
+
+      - name: Forced failure (alarm-path test)
+        if: inputs.force_fail
+        run: |
+          echo "force_fail input set — failing deliberately to exercise the alarm step"
+          exit 1
+
+      # Bare `--sequence.shuffle` (no seed) makes vitest pick and PRINT a random
+      # seed each night, maximising ordering coverage over time while staying
+      # reproducible from the log. A dispatch-supplied seed pins the ordering.
+      - name: Run frontend suite under shuffle
+        id: shuffle
+        env:
+          SEED: ${{ inputs.seed }}
+        run: |
+          set -o pipefail
+          npm run test:shuffle -- ${SEED:+--sequence.seed=$SEED} 2>&1 | tee ../shuffle-run.log
+
+      # Surface the seed vitest used (from its "Running tests with seed ..."
+      # banner) as a step output, so the alarm can embed the exact repro command.
+      - name: Capture shuffle seed
+        id: seed
+        if: always()
+        run: |
+          value="$(sed -n 's/.*Running tests with seed "\([0-9]*\)".*/\1/p' ../shuffle-run.log 2>/dev/null | head -1)"
+          echo "value=${value}" >> "$GITHUB_OUTPUT"
+          echo "shuffle seed: ${value:-<not found>}"
+
+      # Ring on real nightly failures and on a deliberate force_fail test, but
+      # NOT on an ordinary reproduce-a-seed dispatch (the developer is already
+      # watching that run — no need to open a tracker issue).
+      - name: Raise the alarm (find-or-create shuffle-watch issue)
+        if: failure() && (github.event_name == 'schedule' || inputs.force_fail)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SEED: ${{ steps.seed.outputs.value }}
+        run: |
+          title="Nightly frontend-shuffle lane is red"
+          body="The frontend vitest suite failed under --sequence.shuffle. Run: ${RUN_URL}
+
+          Reproduce locally (from frontend/):
+              npm ci
+              npm run test:shuffle -- --sequence.seed=${SEED:-<see run log>}
+
+          Likely cause: a test with within-file order dependence — an uncleared module-level mock spy, an unconsumed mockImplementationOnce, or DOM/store state leaking into a sibling test. See PRs #70/#74/#80 for the pattern and the standard fixes (clear the spy / reset the mock / register afterEach(cleanup) in the offending test's beforeEach)."
+          gh label create shuffle-watch --color FBCA04 --force \
+            --description "Automated: nightly frontend-shuffle lane failures"
+          existing="$(gh issue list --state open --label shuffle-watch \
+            --search "in:title \"${title}\"" --json number --jq '.[0].number // empty')"
+          if [ -n "${existing}" ]; then
+            gh issue comment "${existing}" --body "Still red: ${RUN_URL} (seed ${SEED:-unknown})"
+          else
+            gh issue create --title "${title}" --label shuffle-watch --body "${body}"
+          fi

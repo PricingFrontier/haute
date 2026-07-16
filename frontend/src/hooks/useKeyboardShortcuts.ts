@@ -10,6 +10,10 @@ interface KeyboardShortcutsParams {
   handleSave: () => void
   setNodes: (updater: Node[] | ((nds: Node[]) => Node[])) => void
   setEdges: (updater: Edge[] | ((eds: Edge[]) => Edge[])) => void
+  setNodesAndEdges: (
+    nodes: Node[] | ((nds: Node[]) => Node[]),
+    edges: Edge[] | ((eds: Edge[]) => Edge[]),
+  ) => void
   undo: () => void
   redo: () => void
   fitView: (options?: { padding?: number }) => void
@@ -24,7 +28,7 @@ interface KeyboardShortcutsParams {
 }
 
 export default function useKeyboardShortcuts({
-  handleSave, setNodes, setEdges, undo, redo, fitView,
+  handleSave, setNodes, setEdges, setNodesAndEdges, undo, redo, fitView,
   graphRef, clipboard, nodeIdCounter,
   setSelectedNode, setPreviewData, clearTrace, closePanel,
   isInsideSubmodel,
@@ -112,8 +116,13 @@ export default function useKeyboardShortcuts({
           if (!newSource || !newTarget) return []
           return [{ ...ed, id: `e-${newSource}-${newTarget}`, source: newSource, target: newTarget }]
         })
-        setNodes((nds) => [...nds.map((n) => ({ ...n, selected: false })), ...newNodes])
-        setEdges((eds) => [...eds, ...newEdges])
+        // Pasted nodes + their internal edges added in ONE undo step, so a
+        // single ⌘/Ctrl-Z removes the whole paste (the undo-atomicity bug
+        // class — setNodes-then-setEdges would push two snapshots).
+        setNodesAndEdges(
+          (nds) => [...nds.map((n) => ({ ...n, selected: false })), ...newNodes],
+          (eds) => [...eds, ...newEdges],
+        )
         addToast("info", `Pasted ${newNodes.length} node${newNodes.length > 1 ? "s" : ""}`)
         return
       }
@@ -177,8 +186,13 @@ export default function useKeyboardShortcuts({
         const selectedEdgeIds = new Set(currentEdges.filter((ed) => ed.selected).map((ed) => ed.id))
         if (selectedNodeIds.size === 0 && selectedEdgeIds.size === 0) return
         if (selectedNodeIds.size > 0) {
-          setNodes(currentNodes.filter((n) => !selectedNodeIds.has(n.id)))
-          setEdges(currentEdges.filter((ed) => !selectedNodeIds.has(ed.source) && !selectedNodeIds.has(ed.target)))
+          // Nodes + their edges removed in ONE undo step. setNodes-then-setEdges
+          // would push two snapshots, so one delete would take two undos to
+          // reverse (the undo-atomicity bug class).
+          setNodesAndEdges(
+            currentNodes.filter((n) => !selectedNodeIds.has(n.id)),
+            currentEdges.filter((ed) => !selectedNodeIds.has(ed.source) && !selectedNodeIds.has(ed.target)),
+          )
           setSelectedNode(null)
           setPreviewData(null)
           // Clean up store state for deleted nodes
@@ -186,6 +200,8 @@ export default function useKeyboardShortcuts({
             useNodeResultsStore.getState().clearNode(nid)
           }
         } else {
+          // Pure-edge delete: only edges selected, no nodes — a single setEdges
+          // is already one snapshot.
           setEdges(currentEdges.filter((ed) => !selectedEdgeIds.has(ed.id)))
         }
       }
@@ -193,7 +209,7 @@ export default function useKeyboardShortcuts({
     window.addEventListener("keydown", handler)
     return () => window.removeEventListener("keydown", handler)
   }, [
-    handleSave, setNodes, setEdges, undo, redo, fitView,
+    handleSave, setNodes, setEdges, setNodesAndEdges, undo, redo, fitView,
     graphRef, clipboard, nodeIdCounter,
     setSelectedNode, setPreviewData, clearTrace, closePanel,
     addToast, setShortcutsOpen, setSubmodelDialog, setNodeSearchOpen, isInsideSubmodel,

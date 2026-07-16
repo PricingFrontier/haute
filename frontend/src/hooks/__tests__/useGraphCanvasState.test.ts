@@ -37,6 +37,29 @@ describe("useGraphCanvasState", () => {
     expect(result.current.canUndo).toBe(true)
   })
 
+  it("setNodesAndEdges applies both node and edge changes as one undo entry", () => {
+    const initial = [makeNode("n1"), makeNode("n2")]
+    const initialEdges = [makeEdge("n1", "n2", { id: "e1" })]
+    const { result } = renderHook(() => useGraphCanvasState(initial, initialEdges))
+    // Delete n1 and its edge in a single combined gesture.
+    act(() => {
+      result.current.setNodesAndEdges(
+        (nds) => nds.filter((n) => n.id !== "n1"),
+        (eds) => eds.filter((e) => e.source !== "n1" && e.target !== "n1"),
+      )
+    })
+    expect(result.current.nodes.map((n) => n.id)).toEqual(["n2"])
+    expect(result.current.edges).toHaveLength(0)
+    // Exactly one undo entry — a single undo restores nodes AND edges together.
+    expect(result.current.canUndo).toBe(true)
+    act(() => {
+      result.current.undo()
+    })
+    expect(result.current.nodes).toHaveLength(2)
+    expect(result.current.edges).toHaveLength(1)
+    expect(result.current.canUndo).toBe(false)
+  })
+
   it("undo restores previous state", () => {
     const initial = [makeNode("n1")]
     const { result } = renderHook(() => useGraphCanvasState(initial, []))

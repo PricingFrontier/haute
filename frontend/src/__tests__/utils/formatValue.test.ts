@@ -63,8 +63,8 @@ describe("formatValue", () => {
     expect(formatValue(false)).toBe("false")
   })
 
-  it("converts an object to its string representation", () => {
-    expect(formatValue({ a: 1 })).toBe("[object Object]")
+  it("converts a struct (object) value to JSON, not '[object Object]'", () => {
+    expect(formatValue({ a: 1 })).toBe('{"a":1}')
   })
 
   it("formats Haute non-finite JSON sentinels distinctly from null", () => {

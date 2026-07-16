@@ -30,6 +30,7 @@ from haute.modelling._split import (
     SplitConfig,
     split_mask,
 )
+from haute.modelling._train_config import default_metrics
 
 logger = get_logger(component="training_job")
 
@@ -220,6 +221,7 @@ class _PreparedData:
     categorical_levels: dict[str, list[str | None]] = field(default_factory=dict)
     target_dtype: str = ""
     target_null_count: int = 0
+    offset_dtype: str = ""
 
 
 @dataclass
@@ -296,7 +298,9 @@ class TrainingJob:
     split : dict | SplitConfig | None
         Split configuration (strategy, validation_size, seed, etc.).
     metrics : list[str] | None
-        Metrics to compute (default: ["gini", "rmse"]).
+        Metrics to compute. When omitted, the default list is derived from
+        the training objective (loss function / GLM family) so a Poisson or
+        Tweedie model is not silently reported with squared-error metrics.
     mlflow_experiment : str | None
         MLflow experiment path. If set and mlflow is importable, logs the run.
     model_name : str | None
@@ -342,7 +346,11 @@ class TrainingJob:
         self.algorithm = algorithm
         self.task = task
         self.params = params or {}
-        self.metrics = metrics or (["gini", "rmse"] if task == "regression" else ["auc", "logloss"])
+        self.metrics = metrics or default_metrics(
+            task,
+            loss_function=loss_function,
+            family=self.params.get("family") if algorithm == "glm" else None,
+        )
         self.mlflow_experiment = mlflow_experiment
         self.model_name = model_name
         self.output_dir = output_dir
@@ -371,6 +379,7 @@ class TrainingJob:
         self._contract_feature_dtypes: dict[str, str] = {}
         self._contract_categorical_levels: dict[str, list[str | None]] = {}
         self._contract_target_dtype: str = ""
+        self._contract_offset_dtype: str = ""
 
     def run(
         self,
@@ -428,6 +437,7 @@ class TrainingJob:
             self._contract_feature_dtypes = dict(prepared.feature_dtypes)
             self._contract_categorical_levels = dict(prepared.categorical_levels)
             self._contract_target_dtype = prepared.target_dtype
+            self._contract_offset_dtype = prepared.offset_dtype
 
             # GLM: narrow features to only the terms the user selected.
             # CatBoost uses all features; GLM should only carry the columns
@@ -460,6 +470,7 @@ class TrainingJob:
                         },
                         target_dtype=prepared.target_dtype,
                         target_null_count=prepared.target_null_count,
+                        offset_dtype=prepared.offset_dtype,
                     )
                     _report(
                         f"GLM: using {len(prepared.features)} term features "
@@ -727,6 +738,11 @@ class TrainingJob:
                 if self.target in schema_df.columns
                 else ""
             )
+            offset_dtype = (
+                _polars_dtype_name(schema_df[self.offset].dtype)
+                if self.offset and self.offset in schema_df.columns
+                else ""
+            )
             del schema_df, schema_lf
             _report(f"Using {len(features)} features ({len(cat_features)} categorical)", 0.1)
 
@@ -740,6 +756,7 @@ class TrainingJob:
                 categorical_levels=categorical_levels,
                 target_dtype=target_dtype,
                 target_null_count=target_null_count,
+                offset_dtype=offset_dtype,
             )
         except BaseException:
             # Remediation 4b.6 — validation/cleaning/feature-derivation
@@ -1136,7 +1153,14 @@ class TrainingJob:
         )
         _mem_checkpoint(f"read {diagnostics_set} partition for diagnostics ({len(diag_df):,} rows)")
         y_true = diag_df[self.target].to_numpy()
-        y_pred = algo.predict(model, diag_df, features)
+        # Offset-inclusive predictions: reported fit quality must describe
+        # the predictions the model actually serves.  The kwarg is only
+        # threaded when an offset is configured so minimal predict stubs
+        # (tests, duck-typed algos) keep working for offset-less jobs.
+        if self.offset:
+            y_pred = algo.predict(model, diag_df, features, offset=self.offset)
+        else:
+            y_pred = algo.predict(model, diag_df, features)
         w = diag_df[self.weight].to_numpy() if self.weight else None
 
         # Primary metrics from the diagnostics set
@@ -1164,7 +1188,10 @@ class TrainingJob:
                     stage_name="training_validation_metrics_materialise",
                 )
                 val_y_true = val_df[self.target].to_numpy()
-                val_y_pred = algo.predict(model, val_df, features)
+                if self.offset:
+                    val_y_pred = algo.predict(model, val_df, features, offset=self.offset)
+                else:
+                    val_y_pred = algo.predict(model, val_df, features)
                 val_w = val_df[self.weight].to_numpy() if self.weight else None
                 metrics = compute_metrics(
                     val_y_true,
@@ -1205,6 +1232,7 @@ class TrainingJob:
                     features,
                     cat_features,
                     target=self.target,
+                    offset=self.offset,
                 )
                 feature_importance_loss = algo.feature_importance_typed(
                     model,
@@ -1227,7 +1255,14 @@ class TrainingJob:
         _report("Computing partial dependence", 0.87)
         pdp_data: list[dict[str, Any]] = []
         try:
-            pdp_data = compute_pdp(model, algo, diag_df, sorted_features, cat_features)
+            pdp_data = compute_pdp(
+                model,
+                algo,
+                diag_df,
+                sorted_features,
+                cat_features,
+                offset=self.offset,
+            )
         except Exception as exc:
             _record_diag_error(diagnostics_errors, "pdp", exc)
 
@@ -1343,6 +1378,7 @@ class TrainingJob:
                 target_name=self.target,
                 target_type=self._target_dtype_for_contract(),
                 task="classification" if self.task == "classification" else "regression",
+                offset_column=self.offset,
             )
             contract_path = output_dir / model_contract_filename(self.name)
             save_contract(contract, contract_path)
@@ -1557,6 +1593,8 @@ class TrainingJob:
             categorical_features=list(result.cat_features),
             target_name=self.target,
             target_type=self._target_dtype_for_contract(),
+            offset_name=self.offset or "",
+            offset_type=(self._contract_offset_dtype or "Float64") if self.offset else "",
         )
 
         log_experiment(

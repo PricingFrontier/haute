@@ -67,6 +67,7 @@ export default function Toolbar({
   const removeSource = useSettingsStore((s) => s.removeSource)
   const [addingSource, setAddingSource] = useState(false)
   const [newSourceName, setNewSourceName] = useState("")
+  const [sourceError, setSourceError] = useState<string | null>(null)
   const [sourceOpen, setSourceOpen] = useState(false)
   const sourceRef = useRef<HTMLDivElement>(null)
   const closeSource = useCallback(() => setSourceOpen(false), [])
@@ -105,26 +106,47 @@ export default function Toolbar({
         <label className="text-[11px] font-medium" style={{ color: 'var(--text-muted)' }}>Source</label>
         {addingSource ? (
           <form
-            className="flex items-center gap-0.5"
+            className="relative flex items-center gap-0.5"
             onSubmit={(e) => {
               e.preventDefault()
-              if (newSourceName.trim()) {
-                const slug = addSource(newSourceName)
-                if (slug) setActiveSource(slug)
+              const result = addSource(newSourceName)
+              if (result.ok) {
+                setActiveSource(result.key)
+                setAddingSource(false)
+                setNewSourceName("")
+                setSourceError(null)
+              } else if (result.reason === "empty") {
+                // Keep the form open so the user can supply a name.
+                setSourceError("Enter a name for the source.")
+              } else {
+                // A distinct label that sanitises onto an existing key — name
+                // the collision so the reject is intelligible, not silent.
+                setSourceError(`Matches existing source "${result.key}".`)
               }
-              setAddingSource(false)
-              setNewSourceName("")
             }}
           >
             <input
               autoFocus
               value={newSourceName}
-              onChange={(e) => setNewSourceName(e.target.value)}
-              onBlur={() => requestAnimationFrame(() => { setAddingSource(false); setNewSourceName("") })}
+              onChange={(e) => { setNewSourceName(e.target.value); if (sourceError) setSourceError(null) }}
+              onBlur={() => requestAnimationFrame(() => { setAddingSource(false); setNewSourceName(""); setSourceError(null) })}
               placeholder="name"
+              aria-invalid={sourceError ? true : undefined}
+              aria-describedby={sourceError ? "source-add-error" : undefined}
               className="w-20 px-1.5 py-1 text-[11px] font-mono rounded focus:outline-none"
-              style={{ background: 'var(--chrome-hover)', border: '1px solid var(--accent)', color: 'var(--text-primary)' }}
+              style={{ background: 'var(--chrome-hover)', border: `1px solid ${sourceError ? 'var(--danger)' : 'var(--accent)'}`, color: 'var(--text-primary)' }}
             />
+            {sourceError && (
+              <span
+                id="source-add-error"
+                role="alert"
+                data-testid="source-add-error"
+                className="absolute top-full left-0 mt-1 whitespace-nowrap rounded px-1.5 py-0.5 text-[10px] font-medium z-50"
+                style={{ background: 'var(--danger-soft)', color: 'var(--danger-text)', border: '1px solid var(--danger-border)' }}
+              >
+                {sourceError}
+              </span>
+            )}
           </form>
         ) : (
           <button

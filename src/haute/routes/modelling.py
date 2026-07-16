@@ -14,11 +14,11 @@ from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
 from haute.routes._job_lifecycle import require_job_status
 from haute.routes._job_store import get_job_store
 from haute.routes._train_service import (
-    _DEFAULT_TIMEOUT,
     TrainService,
     _assert_json_finite,
     _check_gpu_vram,
     _clamp_row_limit,
+    _default_train_timeout,
     _find_modelling_node,
     _VramCheck,
 )
@@ -64,7 +64,7 @@ async def train_status(job_id: str) -> TrainStatusResponse:
 
     if job.get("status") == "running":
         start = job.get("start_time")
-        timeout = job.get("timeout", _DEFAULT_TIMEOUT)
+        timeout = job.get("timeout", _default_train_timeout())
         if start and (time.monotonic() - start) > timeout:
             job = _train_service.timeout(job_id, timeout=timeout, start_time=start)
 
@@ -336,6 +336,7 @@ async def mlflow_log(body: LogExperimentRequest) -> LogExperimentResponse:
         categorical_features = list(result.cat_features)
         target_name = str(config.get("target", "") or "")
         target_type = ""
+        offset_name = str(config.get("offset", "") or "")
         model_file = Path(result.model_path) if result.model_path else None
         if model_file is not None and model_file.exists():
             from haute.modelling._feature_contract import load_contract_cached
@@ -349,6 +350,7 @@ async def mlflow_log(body: LogExperimentRequest) -> LogExperimentResponse:
             categorical_features = list(contract.categorical_features)
             target_name = contract.target_name
             target_type = contract.target_type
+            offset_name = contract.offset_column or ""
 
         metadata = ModelCardMetadata(
             algorithm=config.get("algorithm", "catboost"),
@@ -363,6 +365,8 @@ async def mlflow_log(body: LogExperimentRequest) -> LogExperimentResponse:
             categorical_features=categorical_features,
             target_name=target_name,
             target_type=target_type,
+            offset_name=offset_name,
+            offset_type="Float64" if offset_name else "",
         )
 
         log_result = await run_in_threadpool(

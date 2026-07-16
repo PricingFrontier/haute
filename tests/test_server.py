@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
 import sys
 from pathlib import Path
 from unittest.mock import patch
@@ -1991,17 +1992,13 @@ class TestPipelineTimeouts:
                 "haute.routes._timeouts.asyncio.to_thread",
                 self._never_finishes,
             ),
-            patch(
-                "haute.routes.pipeline._TRACE_TIMEOUT",
-                0.001,
-            ),
-            patch(
-                "haute.routes.pipeline._PREVIEW_TIMEOUT",
-                0.001,
-            ),
-            patch(
-                "haute.routes.pipeline._SINK_TIMEOUT",
-                0.001,
+            patch.dict(
+                os.environ,
+                {
+                    "HAUTE_TRACE_TIMEOUT": "0.001",
+                    "HAUTE_PREVIEW_TIMEOUT": "0.001",
+                    "HAUTE_SINK_TIMEOUT": "0.001",
+                },
             ),
         ):
             resp = client.post(f"/api/pipeline/{endpoint}", json=body)

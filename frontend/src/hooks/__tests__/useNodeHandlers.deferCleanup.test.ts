@@ -31,7 +31,7 @@ function makeParams() {
     nodeIdCounter: { current: 10 },
     lastSelectedNodeRef: { current: null as Node | null },
     setNodes: vi.fn(),
-    setEdges: vi.fn(),
+    setNodesAndEdges: vi.fn(),
     setSelectedNode: vi.fn(),
     setPreviewData: vi.fn(),
     fitView: vi.fn(),
@@ -106,10 +106,11 @@ describe("useNodeHandlers — cache cleanup deferred on delete (#32)", () => {
     const { result } = renderHook(() => useNodeHandlers(params))
 
     let snapshotDuringSetNodes: boolean | null = null
-    // Arrange setNodes to capture whether the cache is still intact
-    // at the moment the setter is invoked.  If clearNode runs BEFORE
-    // setNodes, snapshotDuringSetNodes will be false (bug).
-    params.setNodes.mockImplementationOnce(() => {
+    // Arrange the graph setter to capture whether the cache is still intact
+    // at the moment it is invoked.  If clearNode runs BEFORE the mutation,
+    // snapshotDuringSetNodes will be false (bug). Delete now goes through the
+    // atomic setNodesAndEdges, so hook that.
+    params.setNodesAndEdges.mockImplementationOnce(() => {
       const res = useNodeResultsStore.getState().solveResults["n1"]
       snapshotDuringSetNodes = !!res
     })
@@ -118,7 +119,7 @@ describe("useNodeHandlers — cache cleanup deferred on delete (#32)", () => {
       result.current.handleDeleteNode("n1")
     })
 
-    // Cache must still exist the instant setNodes was called.
+    // Cache must still exist the instant the graph mutation was applied.
     expect(snapshotDuringSetNodes).toBe(true)
   })
 

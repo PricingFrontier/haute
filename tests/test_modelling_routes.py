@@ -131,6 +131,8 @@ def _make_modelling_graph(
         "split": {"strategy": "random", "validation_size": 0.2, "seed": 42},
         "metrics": ["gini", "rmse"] if task == "regression" else ["auc", "logloss"],
     }
+    if algorithm == "catboost":
+        config["loss_function"] = "RMSE" if task == "regression" else "Logloss"
     if weight:
         config["weight"] = weight
 
@@ -382,7 +384,7 @@ class TestTrainBackgroundLaunchFailures:
             service._launch_background(
                 job_id,
                 "train",
-                {"target": "y"},
+                {"target": "y", "loss_function": "RMSE"},
                 {},
                 str(tmp_parquet),
                 None,
@@ -434,7 +436,7 @@ class TestTrainBackgroundLaunchFailures:
             service._launch_background(
                 job_id,
                 "train",
-                {"target": "y", "timeout": 10},
+                {"target": "y", "loss_function": "RMSE", "timeout": 10},
                 {},
                 str(tmp_parquet),
                 None,
@@ -510,7 +512,7 @@ class TestTrainBackgroundLaunchFailures:
             service._launch_background(
                 job_id,
                 "train",
-                {"target": "y"},
+                {"target": "y", "loss_function": "RMSE"},
                 {},
                 str(tmp_parquet),
                 None,
@@ -599,15 +601,15 @@ def test_bounded_loss_history_retains_latest_rows() -> None:
 
     history = [
         {"iteration": float(index), "rmse": float(index)}
-        for index in range(_train_service._MAX_TRAIN_LOSS_HISTORY + 5)
+        for index in range(_train_service._max_train_loss_history() + 5)
     ]
 
     bounded, truncated = _train_service._bounded_loss_history(history)
 
     assert truncated is True
-    assert len(bounded) == _train_service._MAX_TRAIN_LOSS_HISTORY
+    assert len(bounded) == _train_service._max_train_loss_history()
     assert bounded[0]["iteration"] == 5.0
-    assert bounded[-1]["iteration"] == float(_train_service._MAX_TRAIN_LOSS_HISTORY + 4)
+    assert bounded[-1]["iteration"] == float(_train_service._max_train_loss_history() + 4)
 
 
 class TestExportEndpoint:
@@ -1551,6 +1553,7 @@ class TestValidateConfig:
             {
                 "target": "y",
                 "algorithm": "catboost",
+                "loss_function": "RMSE",
                 "params": {"iterations": 10},
             }
         )
@@ -1562,17 +1565,111 @@ class TestValidateConfig:
                 "algorithm": "glm",
                 "family": "poisson",
                 "link": "log",
+                "all_factors": True,
             }
         )
 
-    def test_glm_empty_family_passes(self):
+    def test_catboost_missing_loss_raises_400(self):
+        """Unset loss must not silently train under CatBoost's RMSE default."""
+        with pytest.raises(HTTPException) as exc_info:
+            TrainService._validate_config(
+                {
+                    "target": "y",
+                    "algorithm": "catboost",
+                    "params": {"iterations": 10},
+                }
+            )
+        assert exc_info.value.status_code == 400
+        assert "loss function" in exc_info.value.detail.lower()
+
+    def test_catboost_loss_invalid_for_task_raises_400(self):
+        with pytest.raises(HTTPException) as exc_info:
+            TrainService._validate_config(
+                {
+                    "target": "y",
+                    "algorithm": "catboost",
+                    "task": "classification",
+                    "loss_function": "Poisson",
+                }
+            )
+        assert exc_info.value.status_code == 400
+        assert "Poisson" in exc_info.value.detail
+
+    def test_glm_empty_family_raises_400(self):
+        """Unset family must not silently train a gaussian GLM."""
+        with pytest.raises(HTTPException) as exc_info:
+            TrainService._validate_config(
+                {
+                    "target": "y",
+                    "algorithm": "glm",
+                    "family": "",
+                }
+            )
+        assert exc_info.value.status_code == 400
+        assert "family" in exc_info.value.detail.lower()
+
+    def test_glm_family_in_params_only_passes(self):
+        """params["family"] wins over top-level (build_train_params precedence)."""
         TrainService._validate_config(
             {
                 "target": "y",
                 "algorithm": "glm",
-                "family": "",
+                "all_factors": True,
+                "params": {"family": "poisson"},
             }
         )
+
+    def test_glm_empty_factors_without_all_raises_400(self):
+        """An empty factor set must not silently auto-term over every column."""
+        with pytest.raises(HTTPException) as exc_info:
+            TrainService._validate_config(
+                {
+                    "target": "y",
+                    "algorithm": "glm",
+                    "family": "poisson",
+                }
+            )
+        assert exc_info.value.status_code == 400
+        assert "factor" in exc_info.value.detail.lower()
+
+    def test_glm_tweedie_without_variance_power_raises_400(self):
+        with pytest.raises(HTTPException) as exc_info:
+            TrainService._validate_config(
+                {
+                    "target": "y",
+                    "algorithm": "glm",
+                    "family": "tweedie",
+                    "all_factors": True,
+                }
+            )
+        assert exc_info.value.status_code == 400
+        assert "variance power" in exc_info.value.detail.lower()
+
+    def test_glm_elastic_net_without_l1_ratio_raises_400(self):
+        with pytest.raises(HTTPException) as exc_info:
+            TrainService._validate_config(
+                {
+                    "target": "y",
+                    "algorithm": "glm",
+                    "family": "poisson",
+                    "all_factors": True,
+                    "regularization": "elastic_net",
+                }
+            )
+        assert exc_info.value.status_code == 400
+        assert "l1 ratio" in exc_info.value.detail.lower()
+
+    def test_catboost_tweedie_without_variance_power_raises_400(self):
+        with pytest.raises(HTTPException) as exc_info:
+            TrainService._validate_config(
+                {
+                    "target": "y",
+                    "algorithm": "catboost",
+                    "loss_function": "Tweedie",
+                }
+            )
+        assert exc_info.value.status_code == 400
+        assert "variance power" in exc_info.value.detail.lower()
 
     def test_glm_empty_link_passes(self):
         TrainService._validate_config(
@@ -1581,6 +1678,7 @@ class TestValidateConfig:
                 "algorithm": "glm",
                 "family": "gaussian",
                 "link": "",
+                "all_factors": True,
             }
         )
 
@@ -1608,8 +1706,33 @@ class TestValidateGlmFamilyLink:
     def test_valid_family_link(self):
         _validate_glm_family_link("gamma", "log")
 
-    def test_empty_family_skips(self):
-        _validate_glm_family_link("", "log")
+    def test_quasipoisson_accepted(self):
+        """Quasi-Poisson estimates its dispersion (no user parameter), so the
+        route validates it — RustyStats accepts only log/identity, no sqrt."""
+        _validate_glm_family_link("quasipoisson", "log")
+        _validate_glm_family_link("quasipoisson", "identity")
+        _validate_glm_family_link("quasipoisson", "")  # canonical link
+
+    def test_quasipoisson_rejects_bad_link(self):
+        with pytest.raises(HTTPException) as exc_info:
+            _validate_glm_family_link("quasipoisson", "logit")
+        assert exc_info.value.status_code == 400
+        assert "logit" in exc_info.value.detail
+
+    def test_negbinomial_held_until_theta_gate(self):
+        """Neg. Binomial's dispersion `theta` fits silently at 1.0 with no gate
+        yet, so the route must reject it (not offer a silent-default failover)."""
+        with pytest.raises(HTTPException) as exc_info:
+            _validate_glm_family_link("negbinomial", "log")
+        assert exc_info.value.status_code == 400
+        assert "negbinomial" in exc_info.value.detail
+
+    def test_empty_family_raises(self):
+        """The old early-return here was the silent gaussian-default channel."""
+        with pytest.raises(HTTPException) as exc_info:
+            _validate_glm_family_link("", "log")
+        assert exc_info.value.status_code == 400
+        assert "family" in exc_info.value.detail.lower()
 
     def test_empty_link_skips(self):
         _validate_glm_family_link("poisson", "")
@@ -1871,6 +1994,7 @@ class TestExportScriptDirect:
                                 "target": "y",
                                 "algorithm": "catboost",
                                 "task": "regression",
+                                "loss_function": "RMSE",
                                 "params": {"iterations": 100},
                             },
                         },
@@ -1901,6 +2025,7 @@ class TestExportScriptDirect:
                             "config": {
                                 "target": "y",
                                 "algorithm": "catboost",
+                                "loss_function": "RMSE",
                                 "params": {"iterations": 10},
                             },
                         },

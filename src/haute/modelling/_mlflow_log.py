@@ -234,6 +234,8 @@ def log_experiment(
                 categorical_features=meta.categorical_features,
                 target_name=meta.target_name,
                 target_type=meta.target_type,
+                offset_name=meta.offset_name,
+                offset_type=meta.offset_type,
             )
             _check_cancelled()
 
@@ -414,6 +416,8 @@ def _log_model_with_signature(
     categorical_features: list[str],
     target_name: str,
     target_type: str,
+    offset_name: str = "",
+    offset_type: str = "",
 ) -> None:
     """Log a trained model to MLflow with a ``ModelSignature`` attached.
 
@@ -444,6 +448,8 @@ def _log_model_with_signature(
         categorical_features=categorical_features,
         target_name=target_name,
         target_type=target_type,
+        offset_name=offset_name,
+        offset_type=offset_type,
     )
 
     if model_file.suffix == ".cbm":
@@ -493,6 +499,8 @@ def _build_signature_for_log(
     categorical_features: list[str],
     target_name: str,
     target_type: str,
+    offset_name: str = "",
+    offset_type: str = "",
 ) -> Any | None:
     """Best-effort build of an ``mlflow.models.ModelSignature``.
 
@@ -543,6 +551,8 @@ def _build_signature_for_log(
         target_name=target_name or "target",
         target_type=target_type or "Float64",
         task=task,  # type: ignore[arg-type]
+        offset_name=offset_name or None,
+        offset_type=offset_type or "Float64",
     )
 
 

@@ -26,6 +26,7 @@ from haute.modelling._split import DEFAULT_SPLIT_DICT
 # CatBoost receives ``params`` verbatim as constructor kwargs.
 GLM_CONFIG_KEYS: tuple[str, ...] = (
     "terms",
+    "all_factors",
     "family",
     "link",
     "interactions",
@@ -42,11 +43,109 @@ class TrainingConfigError(ValueError):
     """Raised when a modelling node config cannot produce a training job."""
 
 
+def default_metrics(
+    task: str,
+    *,
+    loss_function: str | None = None,
+    family: str | None = None,
+) -> list[str]:
+    """Default reported-metric list matched to the training objective.
+
+    The headline metrics must follow the loss family: a Poisson or Tweedie
+    frequency model reported with squared-error metrics produces plausible
+    numbers that say nothing about the fit under the actual objective.
+    """
+    objective = str(family or loss_function or "").lower()
+    if task == "classification" or objective in {"binomial", "logloss", "crossentropy"}:
+        return ["auc", "logloss"]
+    if objective in {"poisson", "quasipoisson", "negbinomial"}:
+        return ["gini", "poisson_deviance"]
+    if objective == "tweedie":
+        return ["gini", "tweedie_deviance"]
+    return ["gini", "rmse"]
+
+
 def _power_values_equal(left: Any, right: Any) -> bool:
     try:
         return float(left) == float(right)
     except (TypeError, ValueError):
         return bool(left == right)
+
+
+def _first_set(*values: Any) -> Any:
+    for value in values:
+        if value is not None:
+            return value
+    return None
+
+
+def training_objective_issue(config: Mapping[str, Any]) -> str | None:
+    """Return an actionable message when the training objective is incomplete.
+
+    An unset objective parameter must gate, never fall through to a library
+    or literal failover (CatBoost RMSE, GLM gaussian, Tweedie power 1.5,
+    elastic-net collapsing to ridge at l1_ratio=0, auto-terms over every
+    column). Shared by ``build_training_job_kwargs`` (build/export time) and
+    the train route's fast upfront validation so the two can never drift.
+    Returns ``None`` when the objective is fully specified.
+    """
+    params = config.get("params")
+    if not isinstance(params, Mapping):
+        params = {}
+    algorithm = str(config.get("algorithm", "catboost")).lower()
+    if algorithm == "glm":
+        family = params.get("family") or config.get("family")
+        if not family:
+            return (
+                "GLM config has no family. Open the config panel and choose a "
+                "distribution family explicitly (e.g. poisson for claim counts, "
+                "gamma for severity) — an unset family would silently train a "
+                "gaussian model."
+            )
+        var_power = _first_set(
+            params.get("var_power"),
+            config.get("var_power"),
+            config.get("variance_power"),
+        )
+        if str(family).lower() == "tweedie" and var_power is None:
+            return (
+                "Tweedie GLM has no variance power. Set it explicitly "
+                "(1=Poisson, 2=Gamma) — an unset value would silently fit "
+                "at power 1.5."
+            )
+        terms = _first_set(params.get("terms"), config.get("terms"))
+        all_factors = _first_set(params.get("all_factors"), config.get("all_factors"))
+        if not terms and not all_factors:
+            return (
+                "GLM config has no factors. Add factors or tick 'All features' "
+                "— an empty factor set would silently auto-build a term for "
+                "every column."
+            )
+        regularization = _first_set(params.get("regularization"), config.get("regularization"))
+        l1_ratio = _first_set(params.get("l1_ratio"), config.get("l1_ratio"))
+        if str(regularization or "").lower() == "elastic_net" and l1_ratio is None:
+            return (
+                "Elastic-net regularisation has no L1 ratio. Set it explicitly "
+                "(0 fits Ridge, 1 fits LASSO) — an unset value would silently "
+                "fit pure Ridge."
+            )
+    else:
+        loss_function = config.get("loss_function")
+        if not loss_function:
+            return (
+                "Modelling config has no loss function. Open the config panel and "
+                "choose a training loss explicitly (e.g. Poisson for claim counts, "
+                "RMSE for a squared-error regression) — an unset loss would "
+                "silently train under the library default."
+            )
+        variance_power = _first_set(config.get("variance_power"), config.get("var_power"))
+        if str(loss_function) == "Tweedie" and variance_power is None:
+            return (
+                "Tweedie loss has no variance power. Set it explicitly "
+                "(1=Poisson, 2=Gamma) — an unset value would silently train "
+                "at power 1.5."
+            )
+    return None
 
 
 def build_train_params(config: Mapping[str, Any]) -> dict[str, Any]:
@@ -90,8 +189,12 @@ def build_training_job_kwargs(
     Raises
     ------
     ValueError
-        If the config has no target column — a job/script without a target is
-        broken and must fail at build time, not at training time.
+        If the config has no target column, or an incomplete training
+        objective — an unset loss/family, or an unset objective parameter
+        that would fall through to a library/literal failover (Tweedie
+        variance power, elastic-net L1 ratio, empty GLM factor set). Such a
+        job/script trains a plausible-looking wrong model, so it must fail at
+        build time, not at training time.
     """
     target = config.get("target")
     if not isinstance(target, str) or not target:
@@ -100,8 +203,15 @@ def build_training_job_kwargs(
             "Open the config panel and choose a target column."
         )
 
+    objective_issue = training_objective_issue(config)
+    if objective_issue is not None:
+        raise TrainingConfigError(objective_issue)
+
     params = build_train_params(config)
     algorithm = str(config.get("algorithm", "catboost")).lower()
+    task = str(config.get("task", "regression"))
+    family = params.get("family") if algorithm == "glm" else None
+    loss_function = None if algorithm == "glm" else config.get("loss_function")
     raw_params = config.get("params") or {}
     params_has_explicit_var_power = (
         isinstance(raw_params, Mapping) and raw_params.get("var_power") is not None
@@ -133,10 +243,11 @@ def build_training_job_kwargs(
         "fold_column": config.get("fold_column") or None,
         "id_columns": config.get("id_columns") or None,
         "algorithm": config.get("algorithm", "catboost"),
-        "task": config.get("task", "regression"),
+        "task": task,
         "params": params,
         "split": config.get("split", DEFAULT_SPLIT_DICT),
-        "metrics": config.get("metrics", ["gini", "rmse"]),
+        "metrics": config.get("metrics")
+        or default_metrics(task, loss_function=loss_function, family=family),
         "mlflow_experiment": config.get("mlflow_experiment") or None,
         "model_name": config.get("model_name") or None,
         "output_dir": config.get("output_dir", "outputs"),

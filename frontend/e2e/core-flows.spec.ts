@@ -192,20 +192,22 @@ test.describe("core browser flows", () => {
     await sourceInput.fill("Batch Smoke")
     await sourceInput.press("Enter")
 
-    await expect(page.getByTitle("Data source")).toContainText("batch_smoke")
+    // Keys are minted by the blessed sanitizeName: case is PRESERVED (the
+    // old ad-hoc fold lowercased, silently merging case-distinct labels).
+    await expect(page.getByTitle("Data source")).toContainText("Batch_Smoke")
 
     await page.getByRole("button", { name: "Save", exact: true }).click()
     await expect(page.getByRole("alert").filter({ hasText: /Saved/ })).toBeVisible()
 
     await expect
       .poll(() => JSON.parse(readFileSync(sidecarPath, "utf8")).active_source)
-      .toBe("batch_smoke")
+      .toBe("Batch_Smoke")
     await expect
       .poll(() => JSON.parse(readFileSync(sidecarPath, "utf8")).sources)
-      .toEqual(["live", "batch_smoke"])
+      .toEqual(["live", "Batch_Smoke"])
 
     await page.reload()
-    await expect(page.getByTitle("Data source")).toContainText("batch_smoke")
+    await expect(page.getByTitle("Data source")).toContainText("Batch_Smoke")
   })
 
   test("creates and persists utility scripts from the browser", async ({ page }) => {

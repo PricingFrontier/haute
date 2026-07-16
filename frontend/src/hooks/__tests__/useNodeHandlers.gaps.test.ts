@@ -25,7 +25,7 @@ function makeParams() {
     nodeIdCounter: { current: 10 },
     lastSelectedNodeRef: { current: null as Node | null },
     setNodes: vi.fn(),
-    setEdges: vi.fn(),
+    setNodesAndEdges: vi.fn(),
     setSelectedNode: vi.fn(),
     setPreviewData: vi.fn(),
     fitView: vi.fn(),

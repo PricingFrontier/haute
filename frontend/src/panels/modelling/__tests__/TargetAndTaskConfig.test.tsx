@@ -93,13 +93,16 @@ describe("TargetAndTaskConfig", () => {
     expect(screen.queryByText("Poisson")).not.toBeInTheDocument()
   })
 
-  it("toggling a loss function calls onUpdate", () => {
+  it("toggling a loss function calls onUpdate with objective-matched metrics", () => {
     const onUpdate = vi.fn()
     render(<TargetAndTaskConfig {...makeProps({ onUpdate })} />)
     // RMSE appears in both loss and metrics — the loss section comes first in the DOM
     const rmseButtons = screen.getAllByText("RMSE")
     fireEvent.click(rmseButtons[0]) // first one is in the Loss section
-    expect(onUpdate).toHaveBeenCalledWith("loss_function", "RMSE")
+    expect(onUpdate).toHaveBeenCalledWith({
+      loss_function: "RMSE",
+      metrics: ["gini", "rmse"],
+    })
   })
 
   it("deselecting a selected loss function sets null", () => {
@@ -110,11 +113,24 @@ describe("TargetAndTaskConfig", () => {
     expect(onUpdate).toHaveBeenCalledWith("loss_function", null)
   })
 
-  it("shows Tweedie variance power slider when Tweedie is selected", () => {
+  it("gates Tweedie variance power until it is set explicitly", () => {
+    // Unset: no silent 1.5 slider — a prompt to set it (the gate).
     render(<TargetAndTaskConfig {...makeProps({ config: { loss_function: "Tweedie" } })} />)
     expect(screen.getByText(/Variance power/)).toBeInTheDocument()
-    const slider = screen.getByRole("slider")
-    expect(slider).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: /Set variance power/ })).toBeInTheDocument()
+    expect(screen.queryByRole("slider")).toBeNull()
+  })
+
+  it("shows the Tweedie slider once a variance power is set", () => {
+    render(<TargetAndTaskConfig {...makeProps({ config: { loss_function: "Tweedie", variance_power: 1.5 } })} />)
+    expect(screen.getByRole("slider")).toBeInTheDocument()
+  })
+
+  it("Set variance power writes an explicit value", () => {
+    const onUpdate = vi.fn()
+    render(<TargetAndTaskConfig {...makeProps({ onUpdate, config: { loss_function: "Tweedie" } })} />)
+    fireEvent.click(screen.getByRole("button", { name: /Set variance power/ }))
+    expect(onUpdate).toHaveBeenCalledWith("variance_power", 1.5)
   })
 
   it("does not show Tweedie slider for other loss functions", () => {

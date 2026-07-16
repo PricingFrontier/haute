@@ -2,6 +2,7 @@ import { ChevronDown, ChevronRight } from "lucide-react"
 import type { OnUpdateConfig } from "../editors"
 import { configField, safeParseInt } from "../../utils/configField"
 import { CHART_COLORS } from "../../theme/colors"
+import { CommittedTextField } from "../../components/form"
 
 type Column = { name: string; dtype: string }
 
@@ -209,22 +210,22 @@ export function SplitAndMetricsConfig({
           <div className="mt-1.5 space-y-2">
             <div>
               <label className="text-[11px]" style={{ color: "var(--text-muted)" }}>Experiment path</label>
-              <input
+              <CommittedTextField
                 type="text"
                 placeholder="/Shared/haute/experiment"
                 value={configField(config, "mlflow_experiment", "")}
-                onChange={(e) => onUpdate("mlflow_experiment", e.target.value)}
+                onCommit={(v) => onUpdate("mlflow_experiment", v)}
                 className="w-full mt-0.5 px-2.5 py-1.5 rounded-lg text-xs font-mono"
                 style={{ background: "var(--bg-input)", border: "1px solid var(--border)", color: "var(--text-primary)" }}
               />
             </div>
             <div>
               <label className="text-[11px]" style={{ color: "var(--text-muted)" }}>Model name (registered model)</label>
-              <input
+              <CommittedTextField
                 type="text"
                 placeholder="Optional"
                 value={configField(config, "model_name", "")}
-                onChange={(e) => onUpdate("model_name", e.target.value)}
+                onCommit={(v) => onUpdate("model_name", v)}
                 className="w-full mt-0.5 px-2.5 py-1.5 rounded-lg text-xs font-mono"
                 style={{ background: "var(--bg-input)", border: "1px solid var(--border)", color: "var(--text-primary)" }}
               />

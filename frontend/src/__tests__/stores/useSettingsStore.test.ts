@@ -317,36 +317,41 @@ describe("useSettingsStore", () => {
   })
 
   // ────────────────────────────────────────────────────────────────
-  // Source slug (B12 fix)
+  // Source slug (B12 fix; key mint moved to the blessed sanitizeName —
+  // case is now PRESERVED. Full identity battery lives in
+  // stores/__tests__/useSettingsStore.addSource.test.ts)
   // ────────────────────────────────────────────────────────────────
 
-  describe("addSource returns normalized slug", () => {
-    it("returns the slugified name on success", () => {
+  describe("addSource returns a discriminated result", () => {
+    it("returns ok + the sanitized key on success", () => {
       const result = useSettingsStore.getState().addSource("My Test Source")
-      expect(result).toBe("my_test_source")
-      expect(useSettingsStore.getState().sources).toContain("my_test_source")
+      expect(result).toEqual({ ok: true, key: "My_Test_Source" })
+      expect(useSettingsStore.getState().sources).toContain("My_Test_Source")
     })
 
-    it("returns null for duplicate source", () => {
+    it("returns a duplicate rejection (naming the colliding key) for a duplicate source", () => {
       useSettingsStore.getState().addSource("dup")
       const result = useSettingsStore.getState().addSource("dup")
-      expect(result).toBeNull()
+      expect(result).toEqual({ ok: false, reason: "duplicate", key: "dup" })
     })
 
-    it("returns null for empty name", () => {
+    it("returns an empty rejection for a blank name", () => {
       const result = useSettingsStore.getState().addSource("   ")
-      expect(result).toBeNull()
+      expect(result).toEqual({ ok: false, reason: "empty" })
     })
 
-    it("normalizes whitespace to underscores", () => {
+    it("maps each space to an underscore, per the blessed identity", () => {
+      // sanitizeName encodes EVERY interior space (runs are not collapsed),
+      // so "a  b" and "a b" stay distinct keys — the old fold merged them.
       const result = useSettingsStore.getState().addSource("  Two  Words  ")
-      expect(result).toBe("two_words")
+      expect(result).toEqual({ ok: true, key: "Two__Words" })
     })
 
-    it("slug is consistent with what gets stored in sources list", () => {
-      const slug = useSettingsStore.getState().addSource("New Source")
+    it("key is consistent with what gets stored in sources list", () => {
+      const result = useSettingsStore.getState().addSource("New Source")
       const sources = useSettingsStore.getState().sources
-      expect(sources).toContain(slug)
+      expect(result.ok).toBe(true)
+      if (result.ok) expect(sources).toContain(result.key)
     })
   })
 

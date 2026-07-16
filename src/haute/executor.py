@@ -135,6 +135,19 @@ _preamble_lock = threading.Lock()
 # Non-utility preambles still take the same lock for their short path
 # reprioritisation so they cannot change import precedence while a utility
 # preamble is paused between path setup and ``exec``.
+#
+# Hot cache hits must NOT pass through this lock (pinned by
+# ``test_hot_cache_hit_does_not_wait_for_import_lock``): a slow preamble exec
+# holding the lock for seconds must not stall unrelated hot-path scoring.
+# At the same time, cache population must be single-flight (pinned by
+# ``test_concurrent_compiles_do_not_double_evaluate``): ``functools.lru_cache``
+# is thread-safe at the lookup level but does NOT serialise the wrapped
+# function — two threads that both miss would each exec the preamble and each
+# return their own distinct namespace dict (CPython returns the caller's own
+# result rather than re-reading the cache).  Both invariants are delivered by
+# storing per-key ``_PreambleCell`` slots in the ``lru_cache`` and computing
+# the namespace into the cell under ``_preamble_lock`` with a double-check —
+# see ``_compile_preamble``.
 
 
 def _pipeline_dir(graph: PipelineGraph) -> Path | None:  # pragma: no mutate
@@ -342,14 +355,41 @@ def _exec_preamble_namespace(preamble: str) -> dict[str, Any]:
     }
 
 
+class _PreambleCell:
+    """Single-flight slot for one preamble cache key.
+
+    The ``lru_cache`` stores one cell per key (so eviction, ``cache_info``
+    and ``cache_clear`` bookkeeping stay stdlib); the compiled namespace is
+    computed INTO the cell under ``_preamble_lock`` with a double-check, so
+    all concurrent first-callers of a key observe the same dict.  ``ns`` is
+    ``None`` until the first successful compile; a failed compile leaves it
+    ``None`` so the next call retries (matching lru_cache's
+    exceptions-are-not-cached semantics, at the cost of the failed key
+    occupying a cache slot until evicted).
+    """
+
+    __slots__ = ("ns",)
+
+    def __init__(self) -> None:
+        self.ns: dict[str, Any] | None = None
+
+
+# Guards cell creation only — held for a cache lookup / tiny allocation,
+# never during validation or exec, so hot hits can't stall behind a slow
+# compile.  Needed because lru_cache does not serialise the wrapped factory:
+# without it, two threads missing the same key could each mint their own
+# cell and the single-flight guarantee would be lost one level up.
+_preamble_cells_guard = threading.Lock()
+
+
 @functools.lru_cache(maxsize=128)
 def _compile_preamble_cached(
     preamble: str,
     cwd: str,
     pipeline_dir_str: str | None,  # pragma: no mutate
     _execution_fingerprint: str,
-) -> dict[str, Any]:
-    """Pure cache-facing worker — compiles preamble bytes into a namespace.
+) -> _PreambleCell:
+    """Cache-facing worker — returns the per-key single-flight cell.
 
     Keyed on ``(preamble, cwd, pipeline_dir_str, _execution_fingerprint)``
     so different pipelines sharing an identical preamble text but different
@@ -361,22 +401,33 @@ def _compile_preamble_cached(
     ``Path("/x")`` and ``"/x"`` — normalisation happens at the public
     entry point.
 
-    All cache misses run under ``_preamble_lock`` for the entire
-    path-prioritisation/import/exec window. Even preambles without literal
-    import statements execute with ``allow_imports=True`` and can consult
-    process-global import state via helpers such as ``__import__``.
+    Callers must hold ``_preamble_cells_guard`` (see ``_compile_preamble``).
+    """
+    return _PreambleCell()
+
+
+def _compile_preamble_into_cell(
+    preamble: str,
+    cwd: str,
+    pipeline_dir_str: str | None,  # pragma: no mutate
+) -> dict[str, Any]:
+    """Compile preamble bytes into a namespace. Caller holds ``_preamble_lock``.
+
+    The lock covers the entire path-prioritisation/import/exec window. Even
+    preambles without literal import statements execute with
+    ``allow_imports=True`` and can consult process-global import state via
+    helpers such as ``__import__``.
     """
     validate_user_code(preamble, allow_imports=True)
     imports_utility = preamble_imports_utility(preamble)
-    with _preamble_lock:
-        _prioritise_preamble_import_paths(cwd, pipeline_dir_str)
-        if imports_utility:
-            # Evict cached utility modules so digest-keyed cache misses pick up
-            # GUI edits. Clearing matching pyc files prevents same-size,
-            # same-mtime edits from being hidden by timestamp-based bytecode
-            # validation.
-            _evict_utility_import_state(pipeline_dir_str)
-        return _exec_preamble_namespace(preamble)
+    _prioritise_preamble_import_paths(cwd, pipeline_dir_str)
+    if imports_utility:
+        # Evict cached utility modules so digest-keyed cache misses pick up
+        # GUI edits. Clearing matching pyc files prevents same-size,
+        # same-mtime edits from being hidden by timestamp-based bytecode
+        # validation.
+        _evict_utility_import_state(pipeline_dir_str)
+    return _exec_preamble_namespace(preamble)
 
 
 def _compile_preamble(
@@ -448,12 +499,29 @@ def _compile_preamble(
     else:
         execution_fingerprint = _PREAMBLE_NO_REFRESH_FINGERPRINT
 
-    return _compile_preamble_cached(
-        preamble,
-        cwd,
-        pipeline_dir_str,
-        execution_fingerprint,
-    )
+    # Cell lookup under its own tiny guard (never held during exec), so a
+    # hot hit returns without touching ``_preamble_lock`` — a slow compile
+    # in another thread cannot stall it.
+    with _preamble_cells_guard:
+        cell = _compile_preamble_cached(
+            preamble,
+            cwd,
+            pipeline_dir_str,
+            execution_fingerprint,
+        )
+    ns = cell.ns
+    if ns is not None:
+        return ns
+
+    # Single-flight population: first caller compiles under ``_preamble_lock``
+    # (which also serialises the process-global sys.path / sys.modules
+    # mutation); concurrent first-callers block, re-check, and return the
+    # SAME dict the winner stored — never a second exec producing a
+    # semantically-equal-but-distinct namespace.
+    with _preamble_lock:
+        if cell.ns is None:
+            cell.ns = _compile_preamble_into_cell(preamble, cwd, pipeline_dir_str)
+        return cell.ns
 
 
 # Expose the cache diagnostics (``cache_info``, ``cache_clear``) directly on

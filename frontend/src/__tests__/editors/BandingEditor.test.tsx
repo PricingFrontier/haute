@@ -914,6 +914,8 @@ describe("BandingEditor", () => {
     // The default input is the last text input
     const defaultInput = inputs[inputs.length - 1]
     fireEvent.change(defaultInput, { target: { value: "" } })
+    expect(onUpdate).not.toHaveBeenCalled()
+    fireEvent.blur(defaultInput)
     expect(onUpdate).toHaveBeenCalledWith("factors", expect.arrayContaining([
       expect.objectContaining({ default: null }),
     ]))

@@ -1,11 +1,29 @@
 import type { OnUpdateConfig } from "../editors"
 import { configField } from "../../utils/configField"
 import { toggleButtonStyle } from "./styles"
+import { FailoverHelp } from "./FailoverHelp"
+import { OffsetFieldLabel } from "./OffsetFieldLabel"
+
+const TWEEDIE_HELP =
+  "Tweedie interpolates between Poisson (power 1) and Gamma (power 2); the " +
+  "variance power sets where. There is no sensible default — leaving it unset " +
+  "would silently train at power 1.5, so a choice is required. You can change " +
+  "it later; the value is kept if you switch loss and back."
 
 type Column = { name: string; dtype: string }
 
 const REGRESSION_LOSSES = ["RMSE", "MAE", "Poisson", "Tweedie"]
 const CLASSIFICATION_LOSSES = ["Logloss", "CrossEntropy"]
+// Default reported metrics per loss — mirrors the GLM family buttons and the
+// backend's default_metrics(): the headline metrics follow the objective.
+const LOSS_METRIC_DEFAULTS: Record<string, string[]> = {
+  RMSE: ["gini", "rmse"],
+  MAE: ["gini", "rmse"],
+  Poisson: ["gini", "poisson_deviance"],
+  Tweedie: ["gini", "tweedie_deviance"],
+  Logloss: ["auc", "logloss"],
+  CrossEntropy: ["auc", "logloss"],
+}
 const REGRESSION_METRICS = ["gini", "rmse", "mae", "mse", "r2", "poisson_deviance", "tweedie_deviance"]
 const CLASSIFICATION_METRICS = ["auc", "logloss"]
 
@@ -63,7 +81,7 @@ export function TargetAndTaskConfig({ config, onUpdate, columns, target, weight,
           </select>
         </div>
         <div>
-          <label className="text-xs" style={{ color: "var(--text-secondary)" }}>Offset column (optional, e.g. log-exposure)</label>
+          <OffsetFieldLabel />
           <select
             value={configField(config, "offset", "")}
             onChange={(e) => onUpdate("offset", e.target.value || null)}
@@ -109,7 +127,16 @@ export function TargetAndTaskConfig({ config, onUpdate, columns, target, weight,
               return (
                 <button
                   key={l}
-                  onClick={() => onUpdate("loss_function", selected ? null : l)}
+                  onClick={() => {
+                    if (selected) {
+                      onUpdate("loss_function", null)
+                    } else {
+                      onUpdate({
+                        loss_function: l,
+                        metrics: LOSS_METRIC_DEFAULTS[l] ?? metrics,
+                      })
+                    }
+                  }}
                   className="px-2.5 py-1 rounded-md text-xs font-mono transition-colors"
                   style={toggleButtonStyle(selected)}
                 >
@@ -120,16 +147,31 @@ export function TargetAndTaskConfig({ config, onUpdate, columns, target, weight,
           </div>
           {configField(config, "loss_function", "") === "Tweedie" && (
             <div className="mt-2">
-              <label className="text-[11px]" style={{ color: "var(--text-muted)" }}>Variance power (1.0=Poisson, 2.0=Gamma)</label>
-              <input
-                type="range" min={1.0} max={2.0} step={0.05}
-                value={configField(config, "variance_power", 1.5)}
-                onChange={(e) => onUpdate("variance_power", parseFloat(e.target.value))}
-                className="w-full mt-0.5"
-              />
-              <div className="text-[11px] font-mono text-right" style={{ color: "var(--text-muted)" }}>
-                {configField(config, "variance_power", 1.5).toFixed(2)}
-              </div>
+              <label className="flex items-center gap-1 text-[11px]" style={{ color: "var(--text-muted)" }}>
+                Variance power (1.0=Poisson, 2.0=Gamma)
+                <FailoverHelp label={TWEEDIE_HELP} />
+              </label>
+              {config.variance_power === undefined ? (
+                <button
+                  onClick={() => onUpdate("variance_power", 1.5)}
+                  className="w-full mt-1 px-2.5 py-1.5 rounded-lg text-xs font-medium"
+                  style={{ background: "var(--warning-soft-subtle)", border: "1px solid var(--warning-border)", color: "var(--warning)" }}
+                >
+                  Set variance power (required for Tweedie)
+                </button>
+              ) : (
+                <>
+                  <input
+                    type="range" min={1.0} max={2.0} step={0.05}
+                    value={configField(config, "variance_power", 1.5)}
+                    onChange={(e) => onUpdate("variance_power", parseFloat(e.target.value))}
+                    className="w-full mt-0.5"
+                  />
+                  <div className="text-[11px] font-mono text-right" style={{ color: "var(--text-muted)" }}>
+                    {configField(config, "variance_power", 1.5).toFixed(2)}
+                  </div>
+                </>
+              )}
             </div>
           )}
         </div>

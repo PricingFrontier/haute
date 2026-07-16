@@ -106,6 +106,25 @@ describe("DataPreview", () => {
     expect(screen.getByTestId("preview-panel-node-icon").querySelector(".lucide-database")).toBeTruthy()
   })
 
+  it("renders struct and list cell values as JSON, not '[object Object]'", () => {
+    render(
+      <DataPreview
+        data={makePreview({
+          column_count: 2,
+          columns: [
+            { name: "meta", dtype: "struct[2]" },
+            { name: "tags", dtype: "list[str]" },
+          ],
+          row_count: 1,
+          preview: [{ meta: { region: "uk", score: 3 }, tags: ["a", "b"] }],
+        })}
+      />,
+    )
+    expect(screen.getByText('{"region":"uk","score":3}')).toBeInTheDocument()
+    expect(screen.getByText('["a","b"]')).toBeInTheDocument()
+    expect(screen.queryByText(/\[object Object\]/)).not.toBeInTheDocument()
+  })
+
   it("renders error message for error status", () => {
     render(<DataPreview data={makePreview({ status: "error", error: "Division by zero" })} />)
     expect(screen.getAllByText("Division by zero").length).toBeGreaterThanOrEqual(1)

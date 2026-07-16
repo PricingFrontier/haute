@@ -13,8 +13,10 @@ import pytest
 from haute.modelling._split import DEFAULT_SPLIT_DICT
 from haute.modelling._train_config import (
     GLM_CONFIG_KEYS,
+    TrainingConfigError,
     build_train_params,
     build_training_job_kwargs,
+    default_metrics,
 )
 
 
@@ -97,6 +99,7 @@ class TestBuildTrainParams:
     def test_glm_config_keys_complete(self):
         assert set(GLM_CONFIG_KEYS) == {
             "terms",
+            "all_factors",
             "family",
             "link",
             "interactions",
@@ -111,7 +114,9 @@ class TestBuildTrainParams:
 
 class TestBuildTrainingJobKwargs:
     def test_minimal_config_defaults(self):
-        kwargs = build_training_job_kwargs({"target": "y"}, data="d.parquet")
+        kwargs = build_training_job_kwargs(
+            {"target": "y", "loss_function": "RMSE"}, data="d.parquet"
+        )
         assert kwargs["name"] == "model"
         assert kwargs["data"] == "d.parquet"
         assert kwargs["target"] == "y"
@@ -121,6 +126,7 @@ class TestBuildTrainingJobKwargs:
         assert kwargs["split"] == DEFAULT_SPLIT_DICT
         assert kwargs["metrics"] == ["gini", "rmse"]
         assert kwargs["output_dir"] == "outputs"
+        assert kwargs["loss_function"] == "RMSE"
         for key in (
             "weight",
             "feature_columns",
@@ -128,7 +134,6 @@ class TestBuildTrainingJobKwargs:
             "id_columns",
             "mlflow_experiment",
             "model_name",
-            "loss_function",
             "variance_power",
             "offset",
             "monotone_constraints",
@@ -139,9 +144,13 @@ class TestBuildTrainingJobKwargs:
         assert kwargs["exclude"] == []
 
     def test_default_name_override(self):
-        kwargs = build_training_job_kwargs({"target": "y"}, data="d", default_name="node_7")
+        kwargs = build_training_job_kwargs(
+            {"target": "y", "loss_function": "RMSE"}, data="d", default_name="node_7"
+        )
         assert kwargs["name"] == "node_7"
-        named = build_training_job_kwargs({"target": "y", "name": "freq"}, data="d")
+        named = build_training_job_kwargs(
+            {"target": "y", "name": "freq", "loss_function": "RMSE"}, data="d"
+        )
         assert named["name"] == "freq"
 
     def test_kwargs_construct_a_real_training_job(self):
@@ -189,7 +198,7 @@ class TestBuildTrainingJobKwargs:
             "fold_column": "",
             "mlflow_experiment": "",
             "model_name": "",
-            "loss_function": "",
+            "loss_function": "RMSE",
         }
         kwargs = build_training_job_kwargs(config, data="d")
         assert kwargs["weight"] is None
@@ -197,13 +206,15 @@ class TestBuildTrainingJobKwargs:
         assert kwargs["fold_column"] is None
         assert kwargs["mlflow_experiment"] is None
         assert kwargs["model_name"] is None
-        assert kwargs["loss_function"] is None
 
     def test_var_power_falls_back_into_variance_power(self):
-        kwargs = build_training_job_kwargs({"target": "y", "var_power": 1.8}, data="d")
+        kwargs = build_training_job_kwargs(
+            {"target": "y", "loss_function": "Tweedie", "var_power": 1.8}, data="d"
+        )
         assert kwargs["variance_power"] == 1.8
         explicit = build_training_job_kwargs(
-            {"target": "y", "variance_power": 1.3, "var_power": 1.8}, data="d"
+            {"target": "y", "loss_function": "Tweedie", "variance_power": 1.3, "var_power": 1.8},
+            data="d",
         )
         assert explicit["variance_power"] == 1.3
 
@@ -212,6 +223,7 @@ class TestBuildTrainingJobKwargs:
             "target": "y",
             "algorithm": "glm",
             "family": "tweedie",
+            "all_factors": True,
             "variance_power": 1.7,
         }
         kwargs = build_training_job_kwargs(config, data="d")
@@ -224,6 +236,7 @@ class TestBuildTrainingJobKwargs:
                 "target": "y",
                 "algorithm": "glm",
                 "family": "tweedie",
+                "all_factors": True,
                 "var_power": 1.8,
                 "params": {"var_power": 1.4},
             },
@@ -240,6 +253,7 @@ class TestBuildTrainingJobKwargs:
                     "target": "y",
                     "algorithm": "glm",
                     "family": "tweedie",
+                    "all_factors": True,
                     "variance_power": 1.7,
                     "params": {"var_power": 1.4},
                 },
@@ -266,3 +280,289 @@ class TestBuildTrainingJobKwargs:
             build_training_job_kwargs({"algorithm": "catboost"}, data="d")
         with pytest.raises(ValueError, match="target"):
             build_training_job_kwargs({"target": ""}, data="d")
+
+
+class TestExplicitObjectiveRequired:
+    """An unset training objective must fail at build time, not silently
+    train under the library default (CatBoost → RMSE, GLM → gaussian):
+    a frequency dataset trained without an explicit loss would produce
+    plausible numbers from the wrong model with zero signal."""
+
+    def test_catboost_missing_loss_fails_loud(self):
+        with pytest.raises(TrainingConfigError, match="loss"):
+            build_training_job_kwargs({"target": "y"}, data="d")
+
+    def test_catboost_empty_loss_fails_loud(self):
+        with pytest.raises(TrainingConfigError, match="loss"):
+            build_training_job_kwargs({"target": "y", "loss_function": ""}, data="d")
+
+    def test_catboost_classification_missing_loss_fails_loud(self):
+        with pytest.raises(TrainingConfigError, match="loss"):
+            build_training_job_kwargs({"target": "y", "task": "classification"}, data="d")
+
+    def test_glm_missing_family_fails_loud(self):
+        with pytest.raises(TrainingConfigError, match="family"):
+            build_training_job_kwargs({"target": "y", "algorithm": "glm"}, data="d")
+
+    def test_glm_empty_family_fails_loud(self):
+        with pytest.raises(TrainingConfigError, match="family"):
+            build_training_job_kwargs({"target": "y", "algorithm": "glm", "family": ""}, data="d")
+
+    def test_glm_family_in_params_only_is_accepted(self):
+        """``params["family"]`` wins over top-level per build_train_params —
+        a family present only in params is still an explicit choice."""
+        kwargs = build_training_job_kwargs(
+            {
+                "target": "y",
+                "algorithm": "glm",
+                "all_factors": True,
+                "params": {"family": "poisson"},
+            },
+            data="d",
+        )
+        assert kwargs["params"]["family"] == "poisson"
+
+    def test_glm_does_not_require_loss_function(self):
+        kwargs = build_training_job_kwargs(
+            {"target": "y", "algorithm": "glm", "family": "gamma", "all_factors": True},
+            data="d",
+        )
+        assert kwargs["loss_function"] is None
+
+
+class TestDefaultMetricsDerivation:
+    """The default reported-metric list must follow the training objective —
+    hardcoded ['gini', 'rmse'] gives a Poisson/Tweedie model squared-error
+    headline metrics that look plausible while measuring the wrong thing."""
+
+    @pytest.mark.parametrize(
+        ("loss", "expected"),
+        [
+            ("RMSE", ["gini", "rmse"]),
+            ("MAE", ["gini", "rmse"]),
+            ("Poisson", ["gini", "poisson_deviance"]),
+            ("Tweedie", ["gini", "tweedie_deviance"]),
+        ],
+    )
+    def test_catboost_regression_metrics_follow_loss(self, loss, expected):
+        config = {"target": "y", "loss_function": loss}
+        if loss == "Tweedie":
+            config["variance_power"] = 1.5
+        kwargs = build_training_job_kwargs(config, data="d")
+        assert kwargs["metrics"] == expected
+
+    @pytest.mark.parametrize("loss", ["Logloss", "CrossEntropy"])
+    def test_catboost_classification_metrics(self, loss):
+        kwargs = build_training_job_kwargs(
+            {"target": "y", "task": "classification", "loss_function": loss}, data="d"
+        )
+        assert kwargs["metrics"] == ["auc", "logloss"]
+
+    @pytest.mark.parametrize(
+        ("family", "expected"),
+        [
+            ("poisson", ["gini", "poisson_deviance"]),
+            ("quasipoisson", ["gini", "poisson_deviance"]),
+            ("negbinomial", ["gini", "poisson_deviance"]),
+            ("tweedie", ["gini", "tweedie_deviance"]),
+            ("gamma", ["gini", "rmse"]),
+            ("gaussian", ["gini", "rmse"]),
+            ("binomial", ["auc", "logloss"]),
+        ],
+    )
+    def test_glm_metrics_follow_family(self, family, expected):
+        kwargs = build_training_job_kwargs(
+            {
+                "target": "y",
+                "algorithm": "glm",
+                "family": family,
+                "all_factors": True,
+                "var_power": 1.5,
+            },
+            data="d",
+        )
+        assert kwargs["metrics"] == expected
+
+    def test_explicit_metrics_always_win(self):
+        kwargs = build_training_job_kwargs(
+            {"target": "y", "loss_function": "Poisson", "metrics": ["rmse"]}, data="d"
+        )
+        assert kwargs["metrics"] == ["rmse"]
+
+    def test_default_metrics_helper_direct(self):
+        assert default_metrics("regression") == ["gini", "rmse"]
+        assert default_metrics("classification") == ["auc", "logloss"]
+        assert default_metrics("regression", loss_function="Poisson") == [
+            "gini",
+            "poisson_deviance",
+        ]
+        assert default_metrics("regression", family="tweedie") == [
+            "gini",
+            "tweedie_deviance",
+        ]
+
+    def test_training_job_fallback_metrics_follow_loss(self):
+        """TrainingJob is also constructed directly (not only via the
+        builder) — its own metrics fallback must not reintroduce the
+        hardcoded ['gini', 'rmse']."""
+        from haute.modelling import TrainingJob
+
+        job = TrainingJob(name="m", data="d.parquet", target="y", loss_function="Poisson")
+        assert job.metrics == ["gini", "poisson_deviance"]
+
+        glm_job = TrainingJob(
+            name="m",
+            data="d.parquet",
+            target="y",
+            algorithm="glm",
+            params={"family": "tweedie"},
+        )
+        assert glm_job.metrics == ["gini", "tweedie_deviance"]
+
+
+class TestFailoverGates:
+    """Part 2 of the silent-default work: parameters whose unset state
+    previously fell through to a quiet library/literal failover (Tweedie
+    variance power -> 1.5, elastic-net l1_ratio -> pure ridge, empty terms
+    -> auto-terms over every column) must gate at build time instead."""
+
+    # -- Tweedie variance power ------------------------------------------
+
+    def test_catboost_tweedie_without_variance_power_fails_loud(self):
+        with pytest.raises(TrainingConfigError, match="variance power"):
+            build_training_job_kwargs({"target": "y", "loss_function": "Tweedie"}, data="d")
+
+    def test_catboost_tweedie_with_variance_power_passes(self):
+        kwargs = build_training_job_kwargs(
+            {"target": "y", "loss_function": "Tweedie", "variance_power": 1.5},
+            data="d",
+        )
+        assert kwargs["variance_power"] == 1.5
+
+    def test_catboost_non_tweedie_does_not_require_variance_power(self):
+        build_training_job_kwargs({"target": "y", "loss_function": "Poisson"}, data="d")
+
+    def test_glm_tweedie_without_var_power_fails_loud(self):
+        with pytest.raises(TrainingConfigError, match="variance power"):
+            build_training_job_kwargs(
+                {
+                    "target": "y",
+                    "algorithm": "glm",
+                    "family": "tweedie",
+                    "all_factors": True,
+                },
+                data="d",
+            )
+
+    def test_glm_tweedie_with_params_var_power_passes(self):
+        kwargs = build_training_job_kwargs(
+            {
+                "target": "y",
+                "algorithm": "glm",
+                "family": "tweedie",
+                "all_factors": True,
+                "params": {"var_power": 1.6},
+            },
+            data="d",
+        )
+        assert kwargs["variance_power"] == 1.6
+
+    # -- GLM factor set ---------------------------------------------------
+
+    def test_glm_empty_terms_without_all_factors_fails_loud(self):
+        with pytest.raises(TrainingConfigError, match="factor"):
+            build_training_job_kwargs(
+                {"target": "y", "algorithm": "glm", "family": "poisson"}, data="d"
+            )
+        with pytest.raises(TrainingConfigError, match="factor"):
+            build_training_job_kwargs(
+                {
+                    "target": "y",
+                    "algorithm": "glm",
+                    "family": "poisson",
+                    "terms": {},
+                },
+                data="d",
+            )
+
+    def test_glm_all_factors_is_an_explicit_choice(self):
+        kwargs = build_training_job_kwargs(
+            {
+                "target": "y",
+                "algorithm": "glm",
+                "family": "poisson",
+                "all_factors": True,
+            },
+            data="d",
+        )
+        assert kwargs["params"]["all_factors"] is True
+
+    def test_glm_configured_terms_pass_without_all_factors(self):
+        kwargs = build_training_job_kwargs(
+            {
+                "target": "y",
+                "algorithm": "glm",
+                "family": "poisson",
+                "terms": {"age": {"type": "linear"}},
+            },
+            data="d",
+        )
+        assert kwargs["params"]["terms"] == {"age": {"type": "linear"}}
+
+    # -- Elastic-net mixing weight ----------------------------------------
+
+    def test_glm_elastic_net_without_l1_ratio_fails_loud(self):
+        with pytest.raises(TrainingConfigError, match="L1 ratio"):
+            build_training_job_kwargs(
+                {
+                    "target": "y",
+                    "algorithm": "glm",
+                    "family": "poisson",
+                    "all_factors": True,
+                    "regularization": "elastic_net",
+                },
+                data="d",
+            )
+
+    def test_glm_elastic_net_with_l1_ratio_passes(self):
+        kwargs = build_training_job_kwargs(
+            {
+                "target": "y",
+                "algorithm": "glm",
+                "family": "poisson",
+                "all_factors": True,
+                "regularization": "elastic_net",
+                "l1_ratio": 0.0,
+            },
+            data="d",
+        )
+        assert kwargs["params"]["l1_ratio"] == 0.0
+
+    def test_glm_ridge_does_not_require_l1_ratio(self):
+        build_training_job_kwargs(
+            {
+                "target": "y",
+                "algorithm": "glm",
+                "family": "poisson",
+                "all_factors": True,
+                "regularization": "ridge",
+            },
+            data="d",
+        )
+
+    # -- Shared helper is the single source for the route's fast 400 ------
+
+    def test_training_objective_issue_returns_none_for_complete_configs(self):
+        from haute.modelling._train_config import training_objective_issue
+
+        assert training_objective_issue({"target": "y", "loss_function": "RMSE"}) is None
+        assert (
+            training_objective_issue(
+                {
+                    "algorithm": "glm",
+                    "family": "gamma",
+                    "terms": {"age": {"type": "linear"}},
+                }
+            )
+            is None
+        )

@@ -17,6 +17,11 @@ function formatMb(mb: number): string {
 
 export type TrainingActionsAndResultsProps = {
   target: string
+  /** Label of the required training objective still unset ("loss function" /
+   * "distribution family"), or null when set. Gates the Train button: the
+   * backend rejects an unset objective rather than training under a library
+   * default, so submission is blocked here with the reason shown. */
+  missingObjective?: string | null
   training: boolean
   trainProgress: TrainProgress | null
   trainResult: TrainResult | null
@@ -35,6 +40,7 @@ export type TrainingActionsAndResultsProps = {
 
 export function TrainingActionsAndResults({
   target,
+  missingObjective = null,
   training,
   trainProgress,
   trainResult,
@@ -104,7 +110,7 @@ export function TrainingActionsAndResults({
         <span style={{ color: "var(--warning)" }}>Config changed since last training</span>
           <button
             onClick={onTrain}
-            disabled={training || submitting || !target}
+            disabled={training || submitting || !target || !!missingObjective}
             className="ml-auto px-2 py-0.5 rounded text-[11px] font-medium"
             style={{ background: MODEL_COLORS.accentSoft, color: MODEL_COLORS.accent }}
           >
@@ -182,17 +188,23 @@ export function TrainingActionsAndResults({
       <div className="pt-2" style={{ borderTop: "1px solid var(--border)" }}>
         <button
           onClick={onTrain}
-          disabled={busy || !target}
+          disabled={busy || !target || !!missingObjective}
           className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-xs font-medium transition-colors"
           style={{
             background: busy ? "var(--chrome-hover)" : MODEL_COLORS.accent,
             color: busy ? "var(--text-muted)" : "var(--text-on-accent)",
-            opacity: !target ? 0.5 : 1,
+            opacity: !target || missingObjective ? 0.5 : 1,
           }}
         >
           {trainIcon}
           {trainLabel}
         </button>
+        {missingObjective && !busy && (
+          <div className="flex items-center gap-2 mt-2 px-3 py-2 rounded-lg text-xs" style={{ background: "var(--warning-soft-subtle)", border: "1px solid var(--warning-border)" }}>
+            <AlertTriangle size={12} className="shrink-0" style={{ color: "var(--warning-strong)" }} />
+            <span style={{ color: "var(--warning)" }}>{missingObjective} required before training</span>
+          </div>
+        )}
       </div>
 
       {/* Live Training Progress */}

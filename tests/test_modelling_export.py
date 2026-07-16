@@ -12,6 +12,7 @@ MINIMAL_CONFIG = {
     "target": "ClaimCount",
     "algorithm": "catboost",
     "task": "regression",
+    "loss_function": "Poisson",
 }
 
 
@@ -104,11 +105,14 @@ class TestLossFunction:
         assert "variance_power=1.5" in script
         compile(script, "<test>", "exec")
 
-    def test_tweedie_without_variance_power_omits_it(self):
+    def test_tweedie_without_variance_power_fails_loud(self):
+        """Exporting a Tweedie script with no variance power must gate, not
+        emit a script that silently trains at the CatBoost 1.5 default."""
+        from haute.modelling._train_config import TrainingConfigError
+
         config = {**MINIMAL_CONFIG, "loss_function": "Tweedie"}
-        script = generate_training_script(config, "d.parquet")
-        assert "loss_function='Tweedie'" in script
-        assert "variance_power" not in script
+        with pytest.raises(TrainingConfigError, match="variance power"):
+            generate_training_script(config, "d.parquet")
 
     def test_non_tweedie_omits_variance_power(self):
         config = {**MINIMAL_CONFIG, "loss_function": "Poisson", "variance_power": 1.5}
@@ -116,19 +120,23 @@ class TestLossFunction:
         assert "loss_function='Poisson'" in script
         assert "variance_power" not in script
 
-    def test_loss_function_none_excluded(self):
-        config = {**MINIMAL_CONFIG, "loss_function": None}
-        script = generate_training_script(config, "d.parquet")
-        assert "loss_function" not in script
+    @pytest.mark.parametrize("loss", [None, ""])
+    def test_unset_loss_function_fails_loud(self, loss):
+        """An unset loss must not export a script that silently trains under
+        CatBoost's RMSE default (same rule as live training)."""
+        from haute.modelling._train_config import TrainingConfigError
 
-    def test_loss_function_empty_string_excluded(self):
-        config = {**MINIMAL_CONFIG, "loss_function": ""}
-        script = generate_training_script(config, "d.parquet")
-        assert "loss_function" not in script
+        config = {**MINIMAL_CONFIG, "loss_function": loss}
+        with pytest.raises(TrainingConfigError, match="loss"):
+            generate_training_script(config, "d.parquet")
 
-    def test_loss_function_absent_excluded(self):
-        script = generate_training_script(MINIMAL_CONFIG, "d.parquet")
-        assert "loss_function" not in script
+    def test_absent_loss_function_fails_loud(self):
+        from haute.modelling._train_config import TrainingConfigError
+
+        config = dict(MINIMAL_CONFIG)
+        del config["loss_function"]
+        with pytest.raises(TrainingConfigError, match="loss"):
+            generate_training_script(config, "d.parquet")
 
 
 class TestWeightColumn:
@@ -187,8 +195,14 @@ class TestMetricsList:
         script = generate_training_script(config, "d.parquet")
         assert "metrics=['gini', 'rmse', 'mae']" in script
 
-    def test_default_metrics_when_absent(self):
+    def test_default_metrics_derived_from_loss_when_absent(self):
+        # MINIMAL_CONFIG trains with a Poisson loss, so the derived default
+        # metrics follow the objective rather than hardcoding gini/rmse.
         script = generate_training_script(MINIMAL_CONFIG, "d.parquet")
+        assert "metrics=['gini', 'poisson_deviance']" in script
+
+        rmse_config = {**MINIMAL_CONFIG, "loss_function": "RMSE"}
+        script = generate_training_script(rmse_config, "d.parquet")
         assert "metrics=['gini', 'rmse']" in script
 
 
@@ -361,7 +375,6 @@ class TestEmptyOptionalParamsExcluded:
         script = generate_training_script(MINIMAL_CONFIG, "d.parquet")
         for param in [
             "weight",
-            "loss_function",
             "variance_power",
             "offset",
             "monotone_constraints",

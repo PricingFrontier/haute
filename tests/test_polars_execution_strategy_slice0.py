@@ -103,6 +103,7 @@ def _make_avg_top_5_competitor_join_graph(
                         "nodeType": "modelling",
                         "config": {
                             "algorithm": "catboost",
+                            "loss_function": "RMSE",
                             "target": "target",
                             "exclude": ["quote_id", "policy_id"],
                             "params": {"iterations": 1, "depth": 1},
