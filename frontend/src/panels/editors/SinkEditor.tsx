@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react"
+import { useState } from "react"
 import { HardDriveDownload } from "lucide-react"
 import type { OnUpdateConfig } from "./_shared"
 import { executeSink } from "../../api/client"
@@ -7,7 +7,7 @@ import { withAlpha } from "../../utils/color"
 import ToggleButtonGroup from "../../components/ToggleButtonGroup"
 import { buildGraph } from "../../utils/buildGraph"
 import useSettingsStore from "../../stores/useSettingsStore"
-import { EditorLabel } from "../../components/form"
+import { CommittedTextField, EditorLabel } from "../../components/form"
 import { useGraph } from "../useGraph"
 
 export default function SinkEditor({
@@ -26,8 +26,6 @@ export default function SinkEditor({
   const [writing, setWriting] = useState(false)
   const [writeResult, setWriteResult] = useState<{ status: string; message: string } | null>(null)
   const configPath = configField(config, "path", "")
-  const [localPath, setLocalPath] = useState(configPath)
-  useEffect(() => { setLocalPath(configPath) }, [configPath])
 
   const hasPath = Boolean(config.path)
 
@@ -73,11 +71,11 @@ export default function SinkEditor({
 
       <div>
         <EditorLabel className="mb-1.5 block">Output Path</EditorLabel>
-        <input
+        <CommittedTextField
           type="text"
           placeholder=""
-          value={localPath}
-          onChange={(e) => { setLocalPath(e.target.value); onUpdate("path", e.target.value) }}
+          value={configPath}
+          onCommit={(v) => onUpdate("path", v)}
           className="focus-ring w-full px-2.5 py-1.5 text-xs font-mono rounded-lg"
           style={{
             background: 'var(--bg-input)',

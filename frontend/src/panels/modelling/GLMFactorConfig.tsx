@@ -2,6 +2,13 @@ import { useState, useMemo, useCallback, useEffect, useRef } from "react"
 import { ChevronDown, ChevronRight, Plus, Trash2 } from "lucide-react"
 import type { OnUpdateConfig } from "../editors"
 import { configField, safeParseFloat } from "../../utils/configField"
+import { FailoverHelp } from "./FailoverHelp"
+
+const ALL_FACTORS_HELP =
+  "With no factors configured, the GLM would silently auto-build one term per " +
+  "column (linear for numeric, categorical for strings) — an all-features " +
+  "model you never chose. Tick 'All features' to opt into that explicitly, or " +
+  "add factors below. Your individual factor setup is kept either way."
 
 type Column = { name: string; dtype: string }
 
@@ -81,6 +88,12 @@ export function GLMFactorConfig({
   const terms = configField<Record<string, TermSpec>>(config, "terms", {})
   const interactions = configField<InteractionSpec[]>(config, "interactions", [])
   const offset = configField(config, "offset", "")
+  // "All features" is an explicit opt-in to auto-terms (one linear/categorical
+  // term per column). It gates the otherwise-silent empty-terms failover: with
+  // it off and no terms, the model would auto-build over every column with no
+  // signal. When on, the individual builder greys out but keeps its state, so
+  // unticking restores exactly what was configured before.
+  const allFactors = configField(config, "all_factors", false)
 
   const [factorsOpen, setFactorsOpen] = useState(true)
   const [mode, setMode] = useState<FactorMode>("builder")
@@ -236,8 +249,36 @@ export function GLMFactorConfig({
           )}
         </div>
 
+        {/* All-features gate — explicit opt-in to auto-terms. */}
+        {factorsOpen && (
+          <label className="flex items-center gap-1.5 mt-1.5 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={allFactors}
+              onChange={(e) => onUpdate("all_factors", e.target.checked || null)}
+              className="accent-purple-500"
+            />
+            <span className="text-[11px]" style={{ color: "var(--text-primary)" }}>
+              All features
+            </span>
+            <span className="text-[10px]" style={{ color: "var(--text-muted)" }}>
+              (one term per column)
+            </span>
+            <FailoverHelp label={ALL_FACTORS_HELP} />
+          </label>
+        )}
+
+        {factorsOpen && allFactors && (
+          <div className="mt-1 text-[10px]" style={{ color: "var(--text-muted)" }}>
+            Using every eligible column. Untick to edit the factor list below (kept).
+          </div>
+        )}
+
         {factorsOpen && mode === "builder" && (
-          <div className="mt-1.5 space-y-1.5">
+          <div
+            className="mt-1.5 space-y-1.5"
+            style={allFactors ? { opacity: 0.4, pointerEvents: "none" } : undefined}
+          >
             {/* Added factors */}
             {addedFactors.length > 0 ? (
               <div className="space-y-1">
@@ -360,7 +401,10 @@ export function GLMFactorConfig({
         )}
 
         {factorsOpen && mode === "json" && (
-          <div className="mt-1.5">
+          <div
+            className="mt-1.5"
+            style={allFactors ? { opacity: 0.4, pointerEvents: "none" } : undefined}
+          >
             <p className="text-[10px] mb-1" style={{ color: "var(--text-muted)" }}>
               RustyStats terms dict. Paste from Atelier or edit directly. Saved on blur.
             </p>

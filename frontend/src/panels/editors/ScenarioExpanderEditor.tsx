@@ -3,6 +3,7 @@ import { InputSourcesBar, INPUT_STYLE } from "./_shared"
 import type { InputSource, OnUpdateConfig } from "./_shared"
 import { CodeEditor } from "./CodeEditor"
 import { configField } from "../../utils/configField"
+import { CommittedTextField } from "../../components/form"
 
 type ScenarioRangeNumberField = "min_value" | "max_value"
 type ScenarioRangeDraftState = {
@@ -124,21 +125,20 @@ export default function ScenarioExpanderEditor({
     ? { ...INPUT_STYLE, border: "1px solid var(--danger-border-strong)" }
     : INPUT_STYLE
 
+  // Buffer keystrokes locally and commit ONCE at the blur boundary —
+  // committing per parseable keystroke pushed one undo snapshot per
+  // character (BUGS undo-atomicity class; same rationale as
+  // CommittedTextField, which these fields don't use directly because
+  // they carry their own numeric-validity styling and draft machinery).
   const updateRangeDraft = (
-    field: ScenarioRangeNumberField,
     next: string,
     setDraft: (draft: string | null, pendingConfigEcho?: boolean) => void,
   ) => {
-    const parsed = parseScenarioNumber(next)
-    setDraft(next, parsed !== null)
-    if (parsed !== null) {
-      onUpdate(field, parsed)
-    } else if (isBlankScenarioNumber(next)) {
-      onUpdate(field, null)
-    }
+    setDraft(next)
   }
 
   const commitRangeNumber = (
+    field: ScenarioRangeNumberField,
     draft: string | null,
     committedText: string,
     clearDraft: (next: string | null) => void,
@@ -149,8 +149,17 @@ export default function ScenarioExpanderEditor({
       return
     }
     const parsed = parseScenarioNumber(draft)
-    if (parsed === null) return
-    clearDraft(null)
+    if (parsed !== null) {
+      onUpdate(field, parsed)
+      clearDraft(null)
+      return
+    }
+    if (isBlankScenarioNumber(draft)) {
+      onUpdate(field, null)
+      clearDraft(null)
+    }
+    // Invalid non-blank drafts stay in place with the error styling so
+    // the user can fix or revert — nothing invalid reaches config.
   }
 
   return (
@@ -177,12 +186,12 @@ export default function ScenarioExpanderEditor({
             ))}
           </select>
         ) : (
-          <input
+          <CommittedTextField
             type="text"
             className="w-full px-2.5 py-1.5 rounded-md text-[12px] font-mono"
             style={INPUT_STYLE}
             value={quoteId}
-            onChange={(e) => onUpdate("quote_id", e.target.value)}
+            onCommit={(v) => onUpdate("quote_id", v)}
           />
         )}
       </div>
@@ -193,12 +202,12 @@ export default function ScenarioExpanderEditor({
           Index Column
           <span className="ml-1.5 normal-case tracking-normal font-normal">0-based step index column</span>
         </label>
-        <input
+        <CommittedTextField
           type="text"
           className="w-full px-2.5 py-1.5 rounded-md text-[12px] font-mono"
           style={INPUT_STYLE}
           value={stepColumn}
-          onChange={(e) => onUpdate("step_column", e.target.value)}
+          onCommit={(v) => onUpdate("step_column", v)}
         />
       </div>
 
@@ -209,13 +218,13 @@ export default function ScenarioExpanderEditor({
             Steps
             <span className="ml-1.5 normal-case tracking-normal font-normal">rows generated per input row</span>
           </label>
-          <input
+          <CommittedTextField
             type="number"
             min={1}
             className="w-full px-2.5 py-1.5 rounded-md text-[12px] font-mono"
             style={INPUT_STYLE}
-            value={steps}
-            onChange={(e) => onUpdate("steps", Math.max(1, parseInt(e.target.value) || 1))}
+            value={String(steps)}
+            onCommit={(v) => onUpdate("steps", Math.max(1, parseInt(v) || 1))}
           />
         </div>
       )}
@@ -226,12 +235,12 @@ export default function ScenarioExpanderEditor({
           Value Column
           <span className="ml-1.5 normal-case tracking-normal font-normal">(optional)</span>
         </label>
-        <input
+        <CommittedTextField
           type="text"
           className="w-full px-2.5 py-1.5 rounded-md text-[12px] font-mono"
           style={INPUT_STYLE}
           value={columnName}
-          onChange={(e) => onUpdate("column_name", e.target.value)}
+          onCommit={(v) => onUpdate("column_name", v)}
         />
       </div>
 
@@ -256,8 +265,8 @@ export default function ScenarioExpanderEditor({
                 style={numberInputStyle(minInvalid)}
                 value={shownMinText}
                 aria-invalid={minInvalid ? true : undefined}
-                onChange={(e) => updateRangeDraft("min_value", e.target.value, setMinDraft)}
-                onBlur={() => commitRangeNumber(minDraft, committedMinText, setMinDraft)}
+                onChange={(e) => updateRangeDraft(e.target.value, setMinDraft)}
+                onBlur={() => commitRangeNumber("min_value", minDraft, committedMinText, setMinDraft)}
               />
             </div>
             <div>
@@ -269,19 +278,19 @@ export default function ScenarioExpanderEditor({
                 style={numberInputStyle(maxInvalid)}
                 value={shownMaxText}
                 aria-invalid={maxInvalid ? true : undefined}
-                onChange={(e) => updateRangeDraft("max_value", e.target.value, setMaxDraft)}
-                onBlur={() => commitRangeNumber(maxDraft, committedMaxText, setMaxDraft)}
+                onChange={(e) => updateRangeDraft(e.target.value, setMaxDraft)}
+                onBlur={() => commitRangeNumber("max_value", maxDraft, committedMaxText, setMaxDraft)}
               />
             </div>
             <div>
               <label className="text-[10px] block mb-0.5" style={{ color: 'var(--text-muted)' }}>Steps</label>
-              <input
+              <CommittedTextField
                 type="number"
                 min={1}
                 className="w-full px-2 py-1.5 rounded-md text-[12px] font-mono"
                 style={INPUT_STYLE}
-                value={steps}
-                onChange={(e) => onUpdate("steps", Math.max(1, parseInt(e.target.value) || 1))}
+                value={String(steps)}
+                onCommit={(v) => onUpdate("steps", Math.max(1, parseInt(v) || 1))}
               />
             </div>
             <div>

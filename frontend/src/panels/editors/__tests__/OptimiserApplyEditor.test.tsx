@@ -174,6 +174,8 @@ describe("OptimiserApplyEditor", () => {
     render(<OptimiserApplyEditor {...props} />)
     const input = screen.getByPlaceholderText("artifacts/optimiser_v1.json")
     fireEvent.change(input, { target: { value: "output/result.json" } })
+    expect(props.onUpdate).not.toHaveBeenCalled()
+    fireEvent.blur(input)
     expect(props.onUpdate).toHaveBeenCalledWith("artifact_path", "output/result.json")
   })
 
@@ -343,6 +345,8 @@ describe("OptimiserApplyEditor", () => {
     expect(screen.getByText("Version Column")).toBeInTheDocument()
     const colInput = screen.getByDisplayValue("__optimiser_version__")
     fireEvent.change(colInput, { target: { value: "my_version" } })
+    expect(props.onUpdate).not.toHaveBeenCalled()
+    fireEvent.blur(colInput)
     expect(props.onUpdate).toHaveBeenCalledWith("version_column", "my_version")
   })
 
@@ -353,6 +357,8 @@ describe("OptimiserApplyEditor", () => {
     expect(screen.getByText("Optimised Value Column")).toBeInTheDocument()
     const input = screen.getByDisplayValue("selected_price_factor")
     fireEvent.change(input, { target: { value: "final_price_factor" } })
+    expect(props.onUpdate).not.toHaveBeenCalled()
+    fireEvent.blur(input)
     expect(props.onUpdate).toHaveBeenCalledWith("optimised_value_column", "final_price_factor")
   })
 
@@ -363,6 +369,8 @@ describe("OptimiserApplyEditor", () => {
     const colInput = screen.getByPlaceholderText("optimised_value")
     expect(colInput).toHaveValue("")
     fireEvent.change(colInput, { target: { value: "selected_factor" } })
+    expect(props.onUpdate).not.toHaveBeenCalled()
+    fireEvent.blur(colInput)
     expect(props.onUpdate).toHaveBeenCalledWith("optimised_value_column", "selected_factor")
   })
 
@@ -412,6 +420,8 @@ describe("OptimiserApplyEditor", () => {
     expect(screen.getByText("Run ID")).toBeInTheDocument()
     const runIdInput = screen.getByPlaceholderText("e.g. a1b2c3d4e5f6...")
     fireEvent.change(runIdInput, { target: { value: "xyz789" } })
+    expect(props.onUpdate).not.toHaveBeenCalled()
+    fireEvent.blur(runIdInput)
     expect(props.onUpdate).toHaveBeenCalledWith("run_id", "xyz789")
   })
 

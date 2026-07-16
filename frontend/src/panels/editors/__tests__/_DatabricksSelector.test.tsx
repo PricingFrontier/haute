@@ -77,11 +77,15 @@ describe("WarehousePicker", () => {
     expect(input).toHaveValue("/sql/1.0/warehouses/abc")
   })
 
-  it("calls onSelect when user types in the input", () => {
+  it("commits a typed path once on blur, not per keystroke (undo-atomicity)", () => {
     const onSelect = vi.fn()
     render(<WarehousePicker httpPath="" onSelect={onSelect} />)
     const input = screen.getByPlaceholderText("/sql/1.0/warehouses/abc123")
     fireEvent.change(input, { target: { value: "/sql/custom/path" } })
+    // Typing buffers locally — nothing committed yet.
+    expect(onSelect).not.toHaveBeenCalled()
+    fireEvent.blur(input)
+    expect(onSelect).toHaveBeenCalledTimes(1)
     expect(onSelect).toHaveBeenCalledWith("/sql/custom/path")
   })
 

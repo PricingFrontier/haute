@@ -1565,6 +1565,7 @@ class TestValidateConfig:
                 "algorithm": "glm",
                 "family": "poisson",
                 "link": "log",
+                "all_factors": True,
             }
         )
 
@@ -1613,9 +1614,62 @@ class TestValidateConfig:
             {
                 "target": "y",
                 "algorithm": "glm",
+                "all_factors": True,
                 "params": {"family": "poisson"},
             }
         )
+
+    def test_glm_empty_factors_without_all_raises_400(self):
+        """An empty factor set must not silently auto-term over every column."""
+        with pytest.raises(HTTPException) as exc_info:
+            TrainService._validate_config(
+                {
+                    "target": "y",
+                    "algorithm": "glm",
+                    "family": "poisson",
+                }
+            )
+        assert exc_info.value.status_code == 400
+        assert "factor" in exc_info.value.detail.lower()
+
+    def test_glm_tweedie_without_variance_power_raises_400(self):
+        with pytest.raises(HTTPException) as exc_info:
+            TrainService._validate_config(
+                {
+                    "target": "y",
+                    "algorithm": "glm",
+                    "family": "tweedie",
+                    "all_factors": True,
+                }
+            )
+        assert exc_info.value.status_code == 400
+        assert "variance power" in exc_info.value.detail.lower()
+
+    def test_glm_elastic_net_without_l1_ratio_raises_400(self):
+        with pytest.raises(HTTPException) as exc_info:
+            TrainService._validate_config(
+                {
+                    "target": "y",
+                    "algorithm": "glm",
+                    "family": "poisson",
+                    "all_factors": True,
+                    "regularization": "elastic_net",
+                }
+            )
+        assert exc_info.value.status_code == 400
+        assert "l1 ratio" in exc_info.value.detail.lower()
+
+    def test_catboost_tweedie_without_variance_power_raises_400(self):
+        with pytest.raises(HTTPException) as exc_info:
+            TrainService._validate_config(
+                {
+                    "target": "y",
+                    "algorithm": "catboost",
+                    "loss_function": "Tweedie",
+                }
+            )
+        assert exc_info.value.status_code == 400
+        assert "variance power" in exc_info.value.detail.lower()
 
     def test_glm_empty_link_passes(self):
         TrainService._validate_config(
@@ -1624,6 +1678,7 @@ class TestValidateConfig:
                 "algorithm": "glm",
                 "family": "gaussian",
                 "link": "",
+                "all_factors": True,
             }
         )
 
@@ -1650,6 +1705,27 @@ class TestValidateGlmFamilyLink:
 
     def test_valid_family_link(self):
         _validate_glm_family_link("gamma", "log")
+
+    def test_quasipoisson_accepted(self):
+        """Quasi-Poisson estimates its dispersion (no user parameter), so the
+        route validates it — RustyStats accepts only log/identity, no sqrt."""
+        _validate_glm_family_link("quasipoisson", "log")
+        _validate_glm_family_link("quasipoisson", "identity")
+        _validate_glm_family_link("quasipoisson", "")  # canonical link
+
+    def test_quasipoisson_rejects_bad_link(self):
+        with pytest.raises(HTTPException) as exc_info:
+            _validate_glm_family_link("quasipoisson", "logit")
+        assert exc_info.value.status_code == 400
+        assert "logit" in exc_info.value.detail
+
+    def test_negbinomial_held_until_theta_gate(self):
+        """Neg. Binomial's dispersion `theta` fits silently at 1.0 with no gate
+        yet, so the route must reject it (not offer a silent-default failover)."""
+        with pytest.raises(HTTPException) as exc_info:
+            _validate_glm_family_link("negbinomial", "log")
+        assert exc_info.value.status_code == 400
+        assert "negbinomial" in exc_info.value.detail
 
     def test_empty_family_raises(self):
         """The old early-return here was the silent gaussian-default channel."""

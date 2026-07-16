@@ -173,6 +173,7 @@ describe("DataOutputEditor", () => {
     )
     const pathInput = await screen.findByLabelText("Path")
     fireEvent.change(pathInput, { target: { value: "out/new.csv" } })
+    fireEvent.blur(pathInput)
     expect(harnessConfig()).toEqual({
       format: "csv",
       path: "out/new.csv",
@@ -202,9 +203,12 @@ describe("DataOutputEditor", () => {
     render(<DataOutputEditor {...props} />)
     const uri = await screen.findByLabelText("Connection URI")
     fireEvent.change(uri, { target: { value: "postgres://host/db" } })
+    expect(props.onUpdate).not.toHaveBeenCalled()
+    fireEvent.blur(uri)
     expect(props.onUpdate).toHaveBeenCalledWith("uri", "postgres://host/db")
     const table = screen.getByLabelText("Table")
     fireEvent.change(table, { target: { value: "public.prices" } })
+    fireEvent.blur(table)
     expect(props.onUpdate).toHaveBeenCalledWith("table", "public.prices")
     // output side has no query field
     expect(screen.queryByLabelText("Query")).not.toBeInTheDocument()
@@ -223,6 +227,7 @@ describe("DataOutputEditor", () => {
     render(<Harness initial={{ format: "csv", path: "out.csv", arguments: { separator: "," } }} />)
     await screen.findByLabelText("Format")
     fireEvent.change(screen.getByLabelText("Argument 1 value"), { target: { value: '";"' } })
+    fireEvent.blur(screen.getByLabelText("Argument 1 value"))
     expect(harnessConfig()).toEqual({
       format: "csv",
       path: "out.csv",

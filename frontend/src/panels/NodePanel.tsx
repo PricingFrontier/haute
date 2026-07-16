@@ -35,6 +35,7 @@ import useUIStore, { type ExplorePane } from "../stores/useUIStore"
 import PanelShell from "./PanelShell"
 import PreviewPanelTabs from "./PreviewPanelTabs"
 import { useGraph } from "./useGraph"
+import { CommittedTextField } from "../components/form"
 
 // Re-export types (preserve public API for App.tsx)
 export type { SimpleNode, SimpleEdge } from "./editors"
@@ -923,13 +924,13 @@ export default function NodePanel({
   return (
     <PanelShell testId="node-panel" style={{ opacity: dimmed ? 0.6 : 1, transition: 'opacity 150ms' }}>
       <div className="px-3 py-2.5 flex items-center gap-2 shrink-0" style={{ borderBottom: '1px solid var(--border)' }}>
-        <input
+        <CommittedTextField
           data-testid="node-panel-label-input"
           type="text"
           value={node.data.label}
-          onChange={(e) => {
+          onCommit={(v) => {
             if (onUpdateNode) {
-              onUpdateNode(node.id, { ...node.data, label: e.target.value })
+              onUpdateNode(node.id, { ...node.data, label: v })
             }
           }}
           className="node-label-input flex-1 min-w-0 px-2 py-1 text-[13px] font-semibold border border-transparent rounded-md focus:outline-none bg-transparent"

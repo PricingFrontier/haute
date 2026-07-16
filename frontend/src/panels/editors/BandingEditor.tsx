@@ -1,6 +1,7 @@
 import { useState } from "react"
 import { X, Plus, Copy, AlertTriangle } from "lucide-react"
 import { InputSourcesBar, INPUT_STYLE } from "./_shared"
+import { CommittedTextField } from "../../components/form"
 import type { InputSource, OnUpdateConfig } from "./_shared"
 import type { ContinuousRule, CategoricalRule, BandingFactor, BandingMode, BreakpointRule } from "../../types/banding"
 import {
@@ -386,24 +387,24 @@ export default function BandingEditor({
               ))}
             </select>
           ) : (
-            <input
+            <CommittedTextField
               id={`banding-input-col-${safeIdx}`}
               key={`col-${safeIdx}`}
               type="text" value={factor.column || ""}
-              onChange={(e) => updateFactor(safeIdx, { column: e.target.value })}
+              onCommit={(v) => updateFactor(safeIdx, { column: v })}
               className="w-full px-2 py-1.5 text-xs font-mono rounded-lg focus:outline-none focus:ring-2"
               style={INPUT_STYLE} />
           )}
         </div>
         <div>
           <label htmlFor={`banding-output-col-${safeIdx}`} className="text-[11px] font-bold uppercase tracking-[0.08em] block mb-1" style={{ color: 'var(--text-muted)' }}>Output Column</label>
-          <input
+          <CommittedTextField
             id={`banding-output-col-${safeIdx}`}
             key={`out-${safeIdx}`}
             type="text"
             placeholder=""
             value={factor.outputColumn || ""}
-            onChange={(e) => updateFactor(safeIdx, { outputColumn: e.target.value })}
+            onCommit={(v) => updateFactor(safeIdx, { outputColumn: v })}
             className="w-full px-2 py-1.5 text-xs font-mono rounded-lg focus:outline-none focus:ring-2"
             style={INPUT_STYLE} />
         </div>
@@ -555,10 +556,10 @@ export default function BandingEditor({
             </span>
           )}
         </div>
-        <input
+        <CommittedTextField
           key={`def-${safeIdx}`}
           type="text" value={factor.default ?? ""}
-          onChange={(e) => updateFactor(safeIdx, { default: e.target.value !== "" ? e.target.value : null })}
+          onCommit={(v) => updateFactor(safeIdx, { default: v !== "" ? v : null })}
           className="w-full px-2 py-1.5 text-xs font-mono rounded-lg focus:outline-none focus:ring-2"
           style={INPUT_STYLE} />
       </div>
