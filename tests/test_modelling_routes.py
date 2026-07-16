@@ -1706,20 +1706,26 @@ class TestValidateGlmFamilyLink:
     def test_valid_family_link(self):
         _validate_glm_family_link("gamma", "log")
 
-    @pytest.mark.parametrize("family", ["quasipoisson", "negbinomial"])
-    def test_overdispersed_count_families_accepted(self, family):
-        """RustyStats fits Quasi-Poisson and Neg. Binomial as distinct models;
-        the UI offers them, so the route must validate them (not 400)."""
-        _validate_glm_family_link(family, "log")
-        _validate_glm_family_link(family, "identity")
-        _validate_glm_family_link(family, "")  # canonical link
+    def test_quasipoisson_accepted(self):
+        """Quasi-Poisson estimates its dispersion (no user parameter), so the
+        route validates it — RustyStats accepts only log/identity, no sqrt."""
+        _validate_glm_family_link("quasipoisson", "log")
+        _validate_glm_family_link("quasipoisson", "identity")
+        _validate_glm_family_link("quasipoisson", "")  # canonical link
 
-    @pytest.mark.parametrize("family", ["quasipoisson", "negbinomial"])
-    def test_overdispersed_count_families_reject_bad_link(self, family):
+    def test_quasipoisson_rejects_bad_link(self):
         with pytest.raises(HTTPException) as exc_info:
-            _validate_glm_family_link(family, "logit")
+            _validate_glm_family_link("quasipoisson", "logit")
         assert exc_info.value.status_code == 400
         assert "logit" in exc_info.value.detail
+
+    def test_negbinomial_held_until_theta_gate(self):
+        """Neg. Binomial's dispersion `theta` fits silently at 1.0 with no gate
+        yet, so the route must reject it (not offer a silent-default failover)."""
+        with pytest.raises(HTTPException) as exc_info:
+            _validate_glm_family_link("negbinomial", "log")
+        assert exc_info.value.status_code == 400
+        assert "negbinomial" in exc_info.value.detail
 
     def test_empty_family_raises(self):
         """The old early-return here was the silent gaussian-default channel."""

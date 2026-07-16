@@ -6,7 +6,9 @@ import { FailoverHelp } from "./FailoverHelp"
 type Column = { name: string; dtype: string }
 
 // Families the backend validates (_VALID_GLM_LINKS in
-// routes/_train_service.py). Keep in sync with that dict.
+// routes/_train_service.py). Keep in sync with that dict. Neg. Binomial is
+// intentionally absent: its dispersion `theta` fits silently at 1.0 with no
+// gate yet — it returns once that gate exists (tracked separately).
 const FAMILIES = [
   { value: "poisson", label: "Poisson", hint: "Claim frequency" },
   { value: "gamma", label: "Gamma", hint: "Claim severity" },
@@ -14,7 +16,6 @@ const FAMILIES = [
   { value: "gaussian", label: "Gaussian", hint: "Linear regression" },
   { value: "binomial", label: "Binomial", hint: "Binary outcomes" },
   { value: "quasipoisson", label: "Quasi-Poisson", hint: "Overdispersed counts" },
-  { value: "negbinomial", label: "Neg. Binomial", hint: "Overdispersed counts" },
 ] as const
 
 const CANONICAL_LINKS: Record<string, string> = {
@@ -24,7 +25,6 @@ const CANONICAL_LINKS: Record<string, string> = {
   gaussian: "identity",
   binomial: "logit",
   quasipoisson: "log",
-  negbinomial: "log",
 }
 
 const TWEEDIE_HELP =
@@ -132,7 +132,6 @@ export function GLMTargetConfig({ config, onUpdate, columns }: GLMTargetConfigPr
                       gaussian: ["gini", "rmse"],
                       binomial: ["auc", "logloss"],
                       quasipoisson: ["gini", "poisson_deviance"],
-                      negbinomial: ["gini", "poisson_deviance"],
                     }
                     onUpdate({
                       family: f.value,

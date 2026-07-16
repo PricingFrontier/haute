@@ -120,14 +120,16 @@ describe("GLMTargetConfig", () => {
 
   it("renders all backend-accepted family buttons", () => {
     render(<GLMTargetConfig config={baseConfig} onUpdate={onUpdate} columns={defaultColumns} />)
-    // Every family the backend _VALID_GLM_LINKS validates, incl. the
-    // overdispersed-count families RustyStats fits as distinct models.
+    // Every family the backend _VALID_GLM_LINKS validates, incl. Quasi-Poisson
+    // (dispersion estimated from Pearson residuals — no user parameter).
     for (const label of [
-      "Poisson", "Gamma", "Tweedie", "Gaussian", "Binomial",
-      "Quasi-Poisson", "Neg. Binomial",
+      "Poisson", "Gamma", "Tweedie", "Gaussian", "Binomial", "Quasi-Poisson",
     ]) {
       expect(screen.getByRole("button", { name: label })).toBeTruthy()
     }
+    // Neg. Binomial is held: its dispersion `theta` fits silently at 1.0 with
+    // no gate yet, so the backend rejects it and the UI must not offer it.
+    expect(screen.queryByRole("button", { name: "Neg. Binomial" })).toBeNull()
   })
 
   it("selecting Quasi-Poisson sets family, canonical link and count metrics", () => {
