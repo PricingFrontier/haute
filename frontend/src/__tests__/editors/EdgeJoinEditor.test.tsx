@@ -184,6 +184,8 @@ describe("EdgeJoinEditor", () => {
     expect(onUpdate).toHaveBeenCalledWith({ on: ["state"], leftOn: [], rightOn: [] })
 
     fireEvent.change(screen.getByLabelText("Suffix"), { target: { value: "_dim" } })
+    expect(onUpdate).not.toHaveBeenCalledWith("suffix", "_dim")
+    fireEvent.blur(screen.getByLabelText("Suffix"))
     expect(onUpdate).toHaveBeenCalledWith("suffix", "_dim")
   })
 

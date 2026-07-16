@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react"
+import { useState } from "react"
 import { FileText, Database, Check } from "lucide-react"
 import { FileBrowser } from "./_shared"
 import type { OnUpdateConfig } from "./_shared"
@@ -6,6 +6,7 @@ import { CodeEditor } from "./CodeEditor"
 import ToggleButtonGroup from "../../components/ToggleButtonGroup"
 import { WarehousePicker, CatalogTablePicker, DatabricksFetchButton } from "./_DatabricksSelector"
 import { configField } from "../../utils/configField"
+import { CommittedTextArea } from "../../components/form"
 
 export default function DataSourceEditor({
   config,
@@ -24,9 +25,7 @@ export default function DataSourceEditor({
   const currentPath = configField<string | undefined>(config, "path", undefined)
   const hasFile = sourceType === "flat_file" && !!currentPath
   const [fileExpanded, setFileExpanded] = useState(false)
-  const configQuery = configField(config, "query", "") || "SELECT *"
-  const [query, setQuery] = useState(configQuery)
-  useEffect(() => { setQuery(configQuery) }, [configQuery])
+  const query = configField(config, "query", "") || "SELECT *"
 
   return (
     <>
@@ -95,10 +94,10 @@ export default function DataSourceEditor({
                 SQL Query
                 <span className="ml-1.5 normal-case tracking-normal font-normal" style={{ color: 'var(--text-muted)' }}>(optional)</span>
               </label>
-              <textarea
+              <CommittedTextArea
                 placeholder={"SELECT *\nFROM catalog.schema.table\nWHERE status = 'active'"}
                 value={query}
-                onChange={(e) => { setQuery(e.target.value); onUpdate("query", e.target.value || undefined) }}
+                onCommit={(v) => onUpdate("query", v || undefined)}
                 rows={3}
                 className="focus-ring mt-1 w-full px-2.5 py-1.5 text-xs font-mono rounded-lg resize-y"
                 style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text-primary)' }}

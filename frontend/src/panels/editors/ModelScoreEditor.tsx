@@ -7,6 +7,7 @@ import { RegisteredModelPicker, ExperimentRunPicker } from "./MlflowModelPicker"
 import { useMlflowBrowser } from "../../hooks/useMlflowBrowser"
 import { configField } from "../../utils/configField"
 import ToggleButtonGroup from "../../components/ToggleButtonGroup"
+import { CommittedTextField } from "../../components/form"
 
 export default function ModelScoreEditor({
   config,
@@ -87,12 +88,12 @@ export default function ModelScoreEditor({
         </div>
         <div className="flex-1">
           <label className="text-[11px] font-bold uppercase tracking-[0.08em]" style={{ color: "var(--text-muted)" }}>Output Column</label>
-          <input
+          <CommittedTextField
             type="text"
             className="mt-1 w-full text-xs px-2.5 py-1.5 rounded-lg focus:outline-none focus:ring-2"
             style={SELECT_STYLE}
             value={outputColumn}
-            onChange={(e) => onUpdate("output_column", e.target.value)}
+            onCommit={(v) => onUpdate("output_column", v)}
             placeholder="prediction"
           />
         </div>

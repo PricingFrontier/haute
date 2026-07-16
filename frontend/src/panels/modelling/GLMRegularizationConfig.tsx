@@ -4,6 +4,7 @@ import type { OnUpdateConfig } from "../editors"
 import { configField } from "../../utils/configField"
 import { MODEL_COLORS } from "../../theme/colors"
 import { toggleButtonStyle } from "./styles"
+import { CommittedTextField } from "../../components/form"
 
 const REGULARIZATION_TYPES = [
   { value: "", label: "None" },
@@ -64,10 +65,10 @@ export function GLMRegularizationConfig({ config, onUpdate }: GLMRegularizationC
                 <label className="text-xs" style={{ color: "var(--text-secondary)" }}>
                   Alpha ({alpha === 0 ? "Auto via CV" : "Manual"})
                 </label>
-                <input
+                <CommittedTextField
                   type="number"
-                  value={alpha}
-                  onChange={(e) => onUpdate("alpha", parseFloat(e.target.value) || 0)}
+                  value={String(alpha)}
+                  onCommit={(v) => onUpdate("alpha", parseFloat(v) || 0)}
                   className="w-full mt-0.5 px-2.5 py-1.5 rounded-lg text-xs font-mono"
                   style={{ background: "var(--bg-input)", border: "1px solid var(--border)", color: "var(--text-primary)" }}
                   min={0}

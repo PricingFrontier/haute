@@ -479,6 +479,7 @@ describe("NodePanel standalone hover/focus sites", () => {
     renderNodePanel({ onUpdateNode })
     const labelInput = screen.getByDisplayValue("My Node") as HTMLInputElement
     fireEvent.change(labelInput, { target: { value: "Renamed" } })
+    fireEvent.blur(labelInput)
     expect(onUpdateNode).toHaveBeenCalledWith(
       "node_1",
       expect.objectContaining({ label: "Renamed" }),
