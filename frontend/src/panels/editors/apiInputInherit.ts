@@ -175,7 +175,21 @@ export function getCascadeDestinations(
 export function inheritedColumnName(path: string, salt = true): string {
   const leaf = parseColumnPathFull(path).leaf
   const base = salt ? leaf : leaf.split(".").pop() ?? leaf
-  return base.replace(/[^A-Za-z0-9_]+/g, "_")
+  return collapseToNameChars(base)
+}
+
+/**
+ * This file's ONE deliberate local sanitizer (distinct semantics from the
+ * blessed `sanitizeName`: runs collapse to a single underscore so the salted
+ * dotted leaf `customer.id` → `customer_id`, and collisions are handled
+ * actively by {@link dedupName}/{@link dedupNameByPath}/{@link ambiguousNames}
+ * rather than avoided by injectivity). Both mint sites — the salted leaf and
+ * the dedup level prefix — MUST share this helper so they can never drift;
+ * keep it the file's only character-class substitution (enforced by the
+ * sanitizer-proliferation scan in tests/test_repository_hygiene.py).
+ */
+function collapseToNameChars(s: string): string {
+  return s.replace(/[^A-Za-z0-9_]+/g, "_")
 }
 
 /**
@@ -281,7 +295,7 @@ export function dedupNameByPath(
   const levels = locating.filter((s) => s.isArray).map((s) => s.name)
   let candidate = name
   for (let i = levels.length - 1; i >= 0; i--) {
-    candidate = `${levels[i].replace(/[^A-Za-z0-9_]+/g, "_")}_${candidate}`
+    candidate = `${collapseToNameChars(levels[i])}_${candidate}`
     if (!taken.has(candidate)) return candidate
   }
   return dedupName(candidate, taken)

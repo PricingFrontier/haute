@@ -12,6 +12,7 @@
  */
 import { create } from "zustand"
 import { checkMlflow } from "../api/client"
+import { sanitizeName } from "../utils/sanitizeName"
 
 export const MIN_STREAMING_CHUNK_SIZE = 1000
 export const MAX_STREAMING_CHUNK_SIZE = 10_000_000
@@ -167,11 +168,19 @@ const useSettingsStore = create<SettingsState>()((set, get) => ({
   })),
   setActiveSource: (source) => set({ activeSource: source }),
   addSource: (name) => {
-    const trimmed = name.trim().toLowerCase().replace(/\s+/g, "_")
+    // Mint the persisted source key through the blessed sanitizer, not an
+    // ad-hoc fold: the previous local mint (trim, case-fold, whitespace to
+    // underscore) was a coarser identity than sanitizeName, so case-distinct
+    // labels silently minted the SAME persisted key. sanitizeName preserves
+    // case and encodes punctuation distinctly, so distinct labels stay
+    // distinct keys. Keys already persisted in sidecars are read back as
+    // opaque strings, so previously-saved sources are unaffected.
+    if (!name.trim()) return null
+    const key = sanitizeName(name)
     const current = get().sources
-    if (!trimmed || current.includes(trimmed)) return null
-    set({ sources: [...current, trimmed] })
-    return trimmed
+    if (current.includes(key)) return null
+    set({ sources: [...current, key] })
+    return key
   },
   removeSource: (name) => set((s) => {
     if (name === "live") return s

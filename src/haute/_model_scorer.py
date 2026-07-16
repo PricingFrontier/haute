@@ -94,7 +94,7 @@ ModelSource: TypeAlias = Literal["run", "registered"]
 from haute._mlflow_io import _MODEL_CACHE_MAX_SIZE as _MLFLOW_MODEL_CACHE_MAX_SIZE  # noqa: E402
 
 _SchemaValidationKey: TypeAlias = tuple[tuple[str, Hashable], ...]
-_ModelFeatureContractKey: TypeAlias = tuple[tuple[str, ...], frozenset[str]]
+_ModelFeatureContractKey: TypeAlias = tuple[tuple[str, ...], frozenset[str], str | None]
 _FeatureValidationCacheKey: TypeAlias = tuple[_ModelFeatureContractKey, _SchemaValidationKey]
 _FeatureValidationResult: TypeAlias = tuple[list[str], list[str]]
 _FeatureValidationLastEntry: TypeAlias = tuple[_FeatureValidationCacheKey, _FeatureValidationResult]
@@ -147,6 +147,7 @@ def _model_feature_contract_key(scoring_model: Any) -> _ModelFeatureContractKey:
     return (
         tuple(scoring_model.feature_names),
         frozenset(scoring_model.cat_feature_names or ()),
+        _declared_offset_column(scoring_model),
     )
 
 
@@ -260,6 +261,14 @@ def _validate_features_uncached(
 
     missing = [f for f in expected if f not in available]
     usable = [f for f in expected if f in available]
+
+    # The trained-with offset column is a required scoring input even though
+    # it is not a design-matrix feature (RustyStats already lists it in
+    # ``required_columns``; CatBoost does not, so it is enforced here).
+    # Scoring without it would silently proceed on an offset-0 basis.
+    offset_column = _declared_offset_column(scoring_model)
+    if offset_column and offset_column not in available and offset_column not in missing:
+        missing.append(offset_column)
 
     # Cheap dtype checks for categorical expectations
     type_mismatches: list[tuple[str, str, str]] = []
@@ -475,6 +484,99 @@ def _raw_model_supports_predict_proba(model: Any) -> bool:
     return getattr(raw_model, "predict_proba", None) is not None
 
 
+def _declared_offset_column(scoring_model: Any) -> str | None:
+    """Read ``offset_column`` off a carrier, hardened to real strings.
+
+    Mocked scoring models (and duck-typed carriers predating the field)
+    can expose truthy non-string attributes; only a non-empty ``str`` is
+    an offset declaration.
+    """
+    value = getattr(scoring_model, "offset_column", None)
+    return value if isinstance(value, str) and value else None
+
+
+def _model_offset_column(model: Any, flavor: ModelFlavor) -> str | None:
+    """Return the offset column a raw model was trained with, if any.
+
+    Both native flavors are self-describing: CatBoost via the
+    ``haute_offset_column`` model-metadata key stamped at fit time,
+    RustyStats via the serialised offset spec.  Pyfunc models expose no
+    offset surface (their signature declares the column as an input, and
+    the wrapped model owns applying it).
+    """
+    if flavor == "catboost":
+        from haute._mlflow_io import _catboost_offset_column
+
+        return _catboost_offset_column(model)
+    if flavor == "rustystats":
+        spec = getattr(model, "_offset_spec", None)
+        return spec if isinstance(spec, str) and spec else None
+    return None
+
+
+def _require_offset_column(available: Iterable[str], offset_column: str | None) -> None:
+    """Fail loud when a scoring input lacks the model's offset column."""
+    if offset_column and offset_column not in set(available):
+        raise FeatureMismatchError(
+            f"Scoring input is missing the model's offset column "
+            f"{offset_column!r}. The model was trained with this offset and "
+            f"scoring without it would silently mis-scale every prediction. "
+            f"Provide the column (use a constant 1 for a unit basis).",
+            missing=[offset_column],
+            offset_column=offset_column,
+        )
+
+
+def _catboost_baseline_pool(
+    x_data: Any,
+    frame: pl.DataFrame,
+    features: list[str],
+    cat_feature_names: frozenset[str],
+    offset_column: str,
+) -> Any:
+    """Wrap prepared CatBoost predict input in a Pool carrying the baseline.
+
+    CatBoost only applies a baseline supplied inside a ``Pool``; a bare
+    matrix predict silently scores from baseline 0.
+    """
+    from catboost import Pool
+
+    _require_offset_column(frame.columns, offset_column)
+    baseline = frame[offset_column].cast(pl.Float64).to_numpy()
+    cat_indices = [i for i, f in enumerate(features) if f in cat_feature_names]
+    return Pool(
+        data=x_data,
+        cat_features=cat_indices if cat_indices else None,
+        baseline=baseline,
+    )
+
+
+# Flavors whose model consumes a named frame and owns applying the offset
+# itself, so the offset column must ride along in the predict frame.  RustyStats
+# extracts its offset column by name; a pyfunc model receives it as a declared
+# signature input and the wrapped model applies it (there is no baseline haute
+# can re-inject into an opaque pyfunc).  CatBoost is the exception — its offset
+# is a numeric ``Pool`` baseline, never a design-matrix column.
+_OFFSET_PASSTHROUGH_FLAVORS: frozenset[ModelFlavor] = frozenset({"rustystats", "pyfunc"})
+
+
+def _offset_predict_features(
+    features: list[str],
+    flavor: ModelFlavor,
+    offset_column: str | None,
+) -> list[str]:
+    """Feature selection handed to ``_prepare_predict_frame``.
+
+    For passthrough flavors (rustystats, pyfunc) the offset column rides
+    along with the features so the model can apply it; CatBoost keeps the
+    pure feature list and receives the offset separately as a ``Pool``
+    baseline.
+    """
+    if offset_column and flavor in _OFFSET_PASSTHROUGH_FLAVORS and offset_column not in features:
+        return [*features, offset_column]
+    return list(features)
+
+
 def _score_output_projection_columns(
     schema_names: list[str],
     write_projection: ScoreWriteProjection,
@@ -572,6 +674,7 @@ def _score_input_projection_columns(
     lf: pl.LazyFrame,
     features: list[str],
     write_projection: ScoreWriteProjection | None,
+    offset_column: str | None = None,
 ) -> frozenset[str] | None:
     """Return the input columns scoring needs for a concrete write projection.
 
@@ -580,7 +683,9 @@ def _score_input_projection_columns(
     scoring only needs the model features plus the projected passthrough
     columns (and any optional passthrough columns actually present) —
     everything else can be pruned from the single upstream execution.
-    Shared by the eager and batched paths so both prune identically.
+    The model's offset column, when set, is always part of the scoring
+    input and survives the pruning.  Shared by the eager and batched
+    paths so both prune identically.
     """
     if write_projection is None or write_projection.passthrough_columns is None:
         return None
@@ -588,7 +693,10 @@ def _score_input_projection_columns(
     if write_projection.optional_passthrough_columns:
         schema_names = frozenset(lf.collect_schema().names())
         optional_present = write_projection.optional_passthrough_columns & schema_names
-    return frozenset(features) | write_projection.passthrough_columns | optional_present
+    required = frozenset(features) | write_projection.passthrough_columns | optional_present
+    if offset_column:
+        required |= {offset_column}
+    return required
 
 
 def _score_eager_unified(
@@ -601,6 +709,7 @@ def _score_eager_unified(
     output_col: str,
     write_projection: ScoreWriteProjection | None = None,
     categorical_levels: _CategoricalLevels = None,
+    offset_column: str | None = None,
 ) -> pl.LazyFrame:
     """Eager in-memory scoring for a pre-validated flavor.
 
@@ -627,8 +736,21 @@ def _score_eager_unified(
     from haute._mlflow_io import _prepare_predict_frame
     from haute._polars_utils import streaming_collect
 
+    # An explicit offset (from the feature contract) is authoritative; only
+    # fall back to the model's self-description when the caller has none — so
+    # pyfunc models, which cannot self-describe an offset, still apply it.
+    offset_column = (
+        offset_column if offset_column is not None else _model_offset_column(model, flavor)
+    )
+    if offset_column:
+        _require_offset_column(lf.collect_schema().names(), offset_column)
     collect_lf = lf
-    input_columns = _score_input_projection_columns(lf, features, write_projection)
+    input_columns = _score_input_projection_columns(
+        lf,
+        features,
+        write_projection,
+        offset_column=offset_column,
+    )
     if input_columns is not None:
         ordered = _ordered_required_columns(
             lf.collect_schema().names(),
@@ -641,12 +763,21 @@ def _score_eager_unified(
         profile=ExecutionProfile.PREVIEW_EAGER,
     )
     _validate_runtime_categorical_values(frame, categorical_levels or {})
+    predict_features = _offset_predict_features(features, flavor, offset_column)
     x_data = _prepare_predict_frame(
-        frame.select(features),
-        features,
+        frame.select(predict_features),
+        predict_features,
         cat_feature_names=cat_feature_names,
         flavor=flavor,
     )
+    if offset_column and flavor == "catboost":
+        x_data = _catboost_baseline_pool(
+            x_data,
+            frame,
+            features,
+            cat_feature_names,
+            offset_column,
+        )
     preds = np.asarray(model.predict(x_data)).flatten()
     prediction_columns = [pl.Series(output_col, preds)]
     generated_columns = [output_col]
@@ -738,6 +869,7 @@ def _score_batched_unified(
     write_projection: ScoreWriteProjection | None = None,
     temporary_paths: list[str] | None = None,
     categorical_levels: _CategoricalLevels = None,
+    offset_column: str | None = None,
 ) -> pl.LazyFrame:
     """Sink → batch score → lazy scan (low-memory path) for the unified API.
 
@@ -749,13 +881,25 @@ def _score_batched_unified(
     """
     from haute._mlflow_io import ScoringModel
 
+    # Contract-supplied offset wins; fall back to model self-description.
+    offset_column = (
+        offset_column if offset_column is not None else _model_offset_column(model, flavor)
+    )
+    if offset_column:
+        _require_offset_column(lf.collect_schema().names(), offset_column)
     carrier = ScoringModel(
         model=model,
         feature_names=features,
         cat_feature_names=cat_feature_names,
         flavor=flavor,
+        offset_column=offset_column,
     )
-    sink_columns = _score_input_projection_columns(lf, features, write_projection)
+    sink_columns = _score_input_projection_columns(
+        lf,
+        features,
+        write_projection,
+        offset_column=offset_column,
+    )
     input_path = _sink_to_temp(lf, columns=sink_columns)
     try:
         scored_path = _batch_score_to_parquet(
@@ -791,6 +935,7 @@ def score_frame(
     write_projection: ScoreWriteProjection | None = None,
     temporary_paths: list[str] | None = None,
     categorical_levels: _CategoricalLevels = None,
+    offset_column: str | None = None,
 ) -> pl.LazyFrame:
     """Unified scoring entry point with explicit flavor dispatch.
 
@@ -881,6 +1026,7 @@ def score_frame(
             write_projection=write_projection,
             temporary_paths=temporary_paths,
             categorical_levels=normalised_levels,
+            offset_column=offset_column,
         )
     return _score_eager_unified(
         model,
@@ -892,6 +1038,7 @@ def score_frame(
         output_col,
         write_projection=write_projection,
         categorical_levels=normalised_levels,
+        offset_column=offset_column,
     )
 
 
@@ -909,6 +1056,7 @@ def _run_score_pipeline(
     required_output_columns: frozenset[str] | set[str] | None = None,
     temporary_paths: list[str] | None = None,
     categorical_levels: _CategoricalLevels = None,
+    offset_column: str | None = None,
 ) -> _Frame:
     """Core scoring logic shared by ``ModelScorer.score()`` and deploy scorer.
 
@@ -930,11 +1078,19 @@ def _run_score_pipeline(
         ``"live"`` → eager path; anything else → batched path.
     row_limit
         When set, forces the eager path regardless of source.
+    offset_column
+        Offset column from the feature contract, when the caller has one.
+        Authoritative over the model's self-description — the only offset
+        source a pyfunc model has, and a redundant confirmation for native
+        flavors that self-describe.
     """
     from haute._mlflow_io import _score_eager as score_eager_
 
     schema = lf.collect_schema()
     features, _missing = _validate_features(scoring_model, schema)
+    resolved_offset = (
+        offset_column if offset_column is not None else _declared_offset_column(scoring_model)
+    )
     normalised_levels = _normalise_runtime_categorical_levels(
         categorical_levels,
         features=features,
@@ -974,11 +1130,36 @@ def _run_score_pipeline(
             collected = streaming_collect(lf, profile=ExecutionProfile.PREVIEW_EAGER)
             _validate_runtime_categorical_values(collected, normalised_levels)
             eager_lf = collected.lazy()
-        result_lf = score_eager_(scoring_model, eager_lf, features, output_col, task)
+        # Preserve the offset-less call arity: pass the kwarg only when an
+        # offset is actually in play, so offset-less scoring (the common case)
+        # calls the delegate exactly as before — keeping in-place test doubles
+        # that patch ``_score_eager`` with the pre-offset signature working.
+        if resolved_offset is None:
+            result_lf = score_eager_(scoring_model, eager_lf, features, output_col, task)
+        else:
+            result_lf = score_eager_(
+                scoring_model,
+                eager_lf,
+                features,
+                output_col,
+                task,
+                offset_column=resolved_offset,
+            )
         result_lf = _project_scored_output(
             result_lf,
             write_projection,
             output_col=output_col,
+        )
+    elif resolved_offset is None:
+        result_lf = _score_batched_standalone(
+            scoring_model,
+            lf,
+            features,
+            output_col,
+            task,
+            write_projection=write_projection,
+            temporary_paths=temporary_paths,
+            categorical_levels=normalised_levels,
         )
     else:
         result_lf = _score_batched_standalone(
@@ -990,6 +1171,7 @@ def _run_score_pipeline(
             write_projection=write_projection,
             temporary_paths=temporary_paths,
             categorical_levels=normalised_levels,
+            offset_column=resolved_offset,
         )
 
     if code:
@@ -1014,6 +1196,7 @@ def _score_batched_standalone(
     write_projection: ScoreWriteProjection | None = None,
     temporary_paths: list[str] | None = None,
     categorical_levels: _CategoricalLevels = None,
+    offset_column: str | None = None,
 ) -> pl.LazyFrame:
     """Sink → batch score → lazy scan (low-memory path).
 
@@ -1032,6 +1215,9 @@ def _score_batched_standalone(
         write_projection=write_projection,
         temporary_paths=temporary_paths,
         categorical_levels=categorical_levels,
+        offset_column=offset_column
+        if offset_column is not None
+        else _declared_offset_column(scoring_model),
     )
 
 
@@ -1186,6 +1372,21 @@ class ModelScorer:
             )
         return {column: list(levels) for column, levels in expected.categorical_levels.items()}
 
+    def _offset_column_for_score(self) -> str | None:
+        """Return the offset column the bundled contract declares, if any.
+
+        The contract is the authoritative offset source at score time — the
+        only one a pyfunc model has (its signature lists the offset as an
+        input but cannot mark which input it is). ``None`` when there is no
+        contract or it declares no offset, in which case the scorer falls
+        back to a native model's self-description.
+        """
+        if self.feature_contract_path is None:
+            return None
+        from haute.modelling._feature_contract import load_contract
+
+        return load_contract(self.feature_contract_path).offset_column
+
     # ------------------------------------------------------------------
     # Public entry point
     # ------------------------------------------------------------------
@@ -1201,6 +1402,7 @@ class ModelScorer:
         callers in tests / deploy paths keep working.
         """
         categorical_levels = self._categorical_levels_for_score()
+        offset_column = self._offset_column_for_score()
         scoring_model = self._load_scoring_model()
 
         if dfs_by_name:
@@ -1223,6 +1425,7 @@ class ModelScorer:
             row_limit=self.row_limit,
             required_output_columns=self.required_output_columns,
             categorical_levels=categorical_levels,
+            offset_column=offset_column,
         )
 
     # ------------------------------------------------------------------
@@ -1407,10 +1610,17 @@ def _batch_score_to_parquet(
         categorical_levels,
         features=features,
     )
+    offset_column = _declared_offset_column(scoring_model)
+    predict_features = _offset_predict_features(
+        features,
+        scoring_model.flavor,
+        offset_column,
+    )
 
     try:
         pf = pq.ParquetFile(input_path)
         input_schema_names = list(pf.schema_arrow.names)
+        _require_offset_column(input_schema_names, offset_column)
         for batch in pf.iter_batches(
             batch_size=_SCORE_BATCH_SIZE,
         ):
@@ -1422,11 +1632,19 @@ def _batch_score_to_parquet(
             feature_chunk = chunk.select(features)
             _validate_runtime_categorical_values(feature_chunk, normalised_levels)
             x_data = _prepare_predict_frame(
-                feature_chunk,
-                features,
+                chunk.select(predict_features),
+                predict_features,
                 cat_feature_names=scoring_model.cat_feature_names,
                 flavor=scoring_model.flavor,
             )
+            if offset_column and scoring_model.flavor == "catboost":
+                x_data = _catboost_baseline_pool(
+                    x_data,
+                    chunk,
+                    features,
+                    scoring_model.cat_feature_names,
+                    offset_column,
+                )
             preds = scoring_model.predict(x_data)
             chunk = chunk.with_columns(
                 pl.Series(output_col, preds),
@@ -1479,11 +1697,24 @@ def _batch_score_to_parquet(
                 }
             )
             probe_x = _prepare_predict_frame(
-                probe.select(features),
-                features,
+                probe.select(predict_features),
+                predict_features,
                 cat_feature_names=scoring_model.cat_feature_names,
                 flavor=scoring_model.flavor,
             )
+            if offset_column and scoring_model.flavor == "catboost":
+                # Dtype probe only: a null baseline would make CatBoost
+                # reject the Pool, so probe at the unit raw-score offset 0.
+                from catboost import Pool
+
+                cat_indices = [
+                    i for i, f in enumerate(features) if f in scoring_model.cat_feature_names
+                ]
+                probe_x = Pool(
+                    data=probe_x,
+                    cat_features=cat_indices if cat_indices else None,
+                    baseline=np.zeros(1),
+                )
             prediction_dtype = pl.Series(output_col, scoring_model.predict(probe_x)).dtype
             empty = pl.DataFrame(
                 {

@@ -37,6 +37,29 @@ _DEBT_REVIEW_BY = date(2026, 10, 25)
 # path, enclosing scope, debt kind, reason text, and normalized AST source. A new
 # skip/xfail/importorskip, or a changed reason, must be accepted deliberately.
 _EXPECTED_DEBT_IDS = {
+    # Offset-through-serving suite — every test trains a real model, so each
+    # leg importorskips its optional modelling engine (rustystats for the GLM
+    # legs, catboost for the boosted / numeric-only legs), matching the
+    # existing modelling suites' posture. See tests/test_offset_scoring.py.
+    "0a4860e95cf0f3b6",
+    "22a55d6a8665b087",
+    "3a392e6541a16437",
+    "3ab16f01c706b8cf",
+    "4908d9a546bf0eb3",
+    "53ef46f50a3e8e3c",
+    "78ccd0efb0b58c07",
+    "7ecc4c9aac18c56a",
+    "8575a86d12fcd9fd",
+    "8ad195689440ad84",
+    "8fc522e44d27d619",
+    "9f129f4b22a3f0a6",
+    "a9db81806e754356",
+    "b809feae1b81044a",
+    "d678759483265dfe",
+    "dc9bc31593b95505",
+    "e2d91359c364b2e7",
+    "f0497dbc6c3e3f81",
+    "f3ec6eddbd8aa75a",
     # Data In/Out first pass — engine-gated legs. The dataInput/dataOutput
     # node types cover the full native polars width, but this pass ships zero
     # new runtime dependencies, so the excel/database/delta round-trip legs
@@ -56,8 +79,8 @@ _EXPECTED_DEBT_IDS = {
     # that lives in frontend/; outside a repo checkout (installed-package test
     # runs) the frontend tree, and therefore the parity contract, does not
     # exist. In-repo CI always runs it. See
-    # tests/test_sanitize_parity_fixture.py::_load_pairs.
-    "06b5fc5b5b500179",
+    # tests/test_sanitize_parity_fixture.py::_require_fixture.
+    "5eb0998a88b3cbb7",
     # Invariants battery — coexisting case-twin files (Foo.csv + foo.csv) can
     # only be created on a case-sensitive filesystem, so the real-twin test
     # skips on macOS/Windows by physical necessity; the Linux CI legs run it,

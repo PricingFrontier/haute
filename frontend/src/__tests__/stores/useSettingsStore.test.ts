@@ -317,14 +317,16 @@ describe("useSettingsStore", () => {
   })
 
   // ────────────────────────────────────────────────────────────────
-  // Source slug (B12 fix)
+  // Source slug (B12 fix; key mint moved to the blessed sanitizeName —
+  // case is now PRESERVED. Full identity battery lives in
+  // stores/__tests__/useSettingsStore.addSource.test.ts)
   // ────────────────────────────────────────────────────────────────
 
   describe("addSource returns normalized slug", () => {
-    it("returns the slugified name on success", () => {
+    it("returns the sanitized name on success", () => {
       const result = useSettingsStore.getState().addSource("My Test Source")
-      expect(result).toBe("my_test_source")
-      expect(useSettingsStore.getState().sources).toContain("my_test_source")
+      expect(result).toBe("My_Test_Source")
+      expect(useSettingsStore.getState().sources).toContain("My_Test_Source")
     })
 
     it("returns null for duplicate source", () => {
@@ -338,9 +340,11 @@ describe("useSettingsStore", () => {
       expect(result).toBeNull()
     })
 
-    it("normalizes whitespace to underscores", () => {
+    it("maps each space to an underscore, per the blessed identity", () => {
+      // sanitizeName encodes EVERY interior space (runs are not collapsed),
+      // so "a  b" and "a b" stay distinct keys — the old fold merged them.
       const result = useSettingsStore.getState().addSource("  Two  Words  ")
-      expect(result).toBe("two_words")
+      expect(result).toBe("Two__Words")
     })
 
     it("slug is consistent with what gets stored in sources list", () => {

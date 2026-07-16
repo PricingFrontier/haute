@@ -447,6 +447,25 @@ class TestSaveSidecar:
         assert "sources" not in data
         assert "active_source" not in data
 
+    def test_source_keys_round_trip_verbatim(self, tmp_path):
+        """Source keys survive save→load byte-for-byte, case included.
+
+        The frontend now mints source keys with the blessed ``sanitizeName``
+        (case-preserving — the old fold lowercased, so ``My_Src`` is a new
+        key shape on disk). The sidecar layer must treat keys as opaque
+        strings in both directions: no folding, no reformatting, membership
+        checks only. Legacy lowercase keys and new case-preserved keys must
+        coexist unchanged.
+        """
+        py_path = tmp_path / "pipeline.py"
+        keys = ["live", "my_src", "My_Src", "node_2024"]
+        graph = PipelineGraph(nodes=[], sources=list(keys), active_source="My_Src")
+        save_sidecar(py_path, graph)
+
+        loaded = load_sidecar(py_path)
+        assert loaded["sources"] == keys
+        assert loaded["active_source"] == "My_Src"
+
     def test_writes_atomically_via_atomic_write_text(self, tmp_path, monkeypatch):
         """save_sidecar must write the sidecar via ``atomic_write_text``.
 

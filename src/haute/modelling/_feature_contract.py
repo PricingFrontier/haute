@@ -44,6 +44,7 @@ _FIELDS: tuple[str, ...] = (
     "target_name",
     "target_type",
     "task",
+    "offset_column",
 )
 _ALL_KEYS: frozenset[str] = frozenset((*_FIELDS, "contract_hash"))
 
@@ -62,6 +63,10 @@ class FeatureContract:
     target_type: str
     task: Task
     contract_hash: str
+    # Offset/exposure column the model was trained with, or ``None``.  Not a
+    # feature: it never enters the design matrix / pool, but every scoring
+    # frame MUST carry it — served predictions include the offset effect.
+    offset_column: str | None = None
 
 
 def _canonical_payload(
@@ -72,6 +77,7 @@ def _canonical_payload(
     target_name: str,
     target_type: str,
     task: str,
+    offset_column: str | None = None,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "features": list(features),
@@ -85,6 +91,10 @@ def _canonical_payload(
         payload["categorical_levels"] = {
             str(column): list(levels) for column, levels in categorical_levels.items()
         }
+    # Only present when set, so the hashes of offset-less contracts written
+    # before this field existed stay valid.
+    if offset_column:
+        payload["offset_column"] = offset_column
     return payload
 
 
@@ -101,6 +111,7 @@ def build_contract(
     target_type: str,
     task: Task,
     categorical_levels: Mapping[str, Iterable[str | None]] | None = None,
+    offset_column: str | None = None,
 ) -> FeatureContract:
     """Construct a contract and compute its content hash.
 
@@ -108,6 +119,13 @@ def build_contract(
     contract's read-only forms.  ``contract_hash`` is the sha256 of the
     canonical-JSON representation of every field except itself.
     """
+    if offset_column and offset_column in features:
+        raise FeatureMismatchError(
+            "offset_column shadows a feature name; the offset is a separate "
+            "model input, not a design-matrix feature",
+            field="offset_column",
+            offset_column=offset_column,
+        )
     normalised_levels = normalise_categorical_levels(
         categorical_levels,
         features=features,
@@ -121,6 +139,7 @@ def build_contract(
         target_name,
         target_type,
         task,
+        offset_column or None,
     )
     return FeatureContract(
         features=list(features),
@@ -131,6 +150,7 @@ def build_contract(
         target_type=target_type,
         task=task,
         contract_hash=_hash_payload(payload),
+        offset_column=offset_column or None,
     )
 
 
@@ -149,6 +169,8 @@ def save_contract(contract: FeatureContract, path: Path | str) -> None:
         "task": contract.task,
         "contract_hash": contract.contract_hash,
     }
+    if contract.offset_column:
+        payload["offset_column"] = contract.offset_column
     path.write_text(
         json.dumps(payload, indent=2, sort_keys=True),
         encoding="utf-8",
@@ -198,6 +220,8 @@ def load_contract(path: Path | str, *, verify_hash: bool = True) -> FeatureContr
     _check_type(raw, "target_type", str, path)
     _check_type(raw, "task", str, path)
     _check_type(raw, "contract_hash", str, path)
+    if "offset_column" in raw:
+        _check_type(raw, "offset_column", str, path)
 
     categorical_levels = normalise_categorical_levels(
         raw.get("categorical_levels"),
@@ -216,6 +240,7 @@ def load_contract(path: Path | str, *, verify_hash: bool = True) -> FeatureContr
                 raw["target_name"],
                 raw["target_type"],
                 raw["task"],
+                raw.get("offset_column"),
             )
         )
         stored = raw["contract_hash"]
@@ -236,6 +261,7 @@ def load_contract(path: Path | str, *, verify_hash: bool = True) -> FeatureContr
         target_type=raw["target_type"],
         task=raw["task"],
         contract_hash=raw["contract_hash"],
+        offset_column=raw.get("offset_column"),
     )
 
 
