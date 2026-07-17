@@ -5,8 +5,9 @@
  *
  * An unset objective parameter must gate the Train button, never fall through
  * to a library/literal failover (CatBoost RMSE, GLM gaussian, Tweedie power
- * 1.5, elastic-net collapsing to Ridge at l1_ratio=0, auto-terms over every
- * column). `field` is a short noun phrase for the button hint; `message` is
+ * 1.5, Negative Binomial theta 1.0, elastic-net collapsing to Ridge at
+ * l1_ratio=0, auto-terms over every column). `field` is a short noun phrase
+ * for the button hint; `message` is
  * the full explanation shown below the disabled button. This must stay in
  * step with the backend so a config that passes the UI also passes the route.
  */
@@ -44,6 +45,15 @@ export function trainingObjectiveIssue(
         message:
           "Set the Tweedie variance power (1=Poisson, 2=Gamma) — an unset " +
           "value would silently fit at power 1.5.",
+      }
+    }
+    const theta = firstSet(params.theta, config.theta)
+    if (String(family).toLowerCase() === "negbinomial" && theta === undefined) {
+      return {
+        field: "Neg. Binomial dispersion (theta)",
+        message:
+          "Set the Negative Binomial dispersion (theta), or estimate it from " +
+          "the data — an unset value would silently fit at theta=1.0.",
       }
     }
     const terms = firstSet(params.terms, config.terms) as

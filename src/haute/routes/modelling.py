@@ -23,6 +23,9 @@ from haute.routes._train_service import (
     _VramCheck,
 )
 from haute.schemas import (
+    DispersionEstimateRequest,
+    DispersionEstimateResponse,
+    DispersionEstimateStatusResponse,
     ExportScriptRequest,
     ExportScriptResponse,
     LogExperimentRequest,
@@ -142,6 +145,46 @@ async def cancel_training(job_id: str) -> TrainStatusResponse:
         terminal_reason=job.get("terminal_reason"),
         execution_metrics=job.get("execution_metrics"),
     )
+
+
+def _dispersion_status_response(job: dict) -> DispersionEstimateStatusResponse:
+    return DispersionEstimateStatusResponse(
+        status=require_job_status(job),
+        progress=job.get("progress", 0.0),
+        message=job.get("message", ""),
+        elapsed_seconds=job.get("elapsed_seconds", 0.0),
+        param=job.get("param"),
+        value=job.get("value"),
+        llf=job.get("llf"),
+        n_fits=job.get("n_fits"),
+        error=job.get("error"),
+        terminal_reason=job.get("terminal_reason"),
+    )
+
+
+@router.post("/dispersion/estimate", response_model=DispersionEstimateResponse)
+def estimate_dispersion(body: DispersionEstimateRequest) -> DispersionEstimateResponse:
+    """Estimate a GLM dispersion parameter (NB theta / Tweedie var_power).
+
+    Materialises the node's training frame exactly as /train would, then
+    profiles the log-likelihood over the parameter in a background job.
+    The resolved value is returned for the user to accept into the config —
+    the training-objective gate still requires an explicit value; this
+    endpoint never sets one silently.
+    """
+    return _train_service.start_dispersion_estimate(body)
+
+
+@router.get("/dispersion/status/{job_id}", response_model=DispersionEstimateStatusResponse)
+def dispersion_status(job_id: str) -> DispersionEstimateStatusResponse:
+    """Poll a dispersion-estimation job."""
+    return _dispersion_status_response(_train_service.dispersion_job(job_id))
+
+
+@router.post("/dispersion/cancel/{job_id}", response_model=DispersionEstimateStatusResponse)
+def cancel_dispersion(job_id: str) -> DispersionEstimateStatusResponse:
+    """Cancel an in-progress dispersion-estimation job."""
+    return _dispersion_status_response(_train_service.cancel_dispersion(job_id))
 
 
 @router.post("/estimate", response_model=TrainEstimateResponse)

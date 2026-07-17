@@ -35,6 +35,7 @@ GLM_CONFIG_KEYS: tuple[str, ...] = (
     "l1_ratio",
     "intercept",
     "var_power",
+    "theta",
     "offset",
 )
 
@@ -84,8 +85,9 @@ def training_objective_issue(config: Mapping[str, Any]) -> str | None:
 
     An unset objective parameter must gate, never fall through to a library
     or literal failover (CatBoost RMSE, GLM gaussian, Tweedie power 1.5,
-    elastic-net collapsing to ridge at l1_ratio=0, auto-terms over every
-    column). Shared by ``build_training_job_kwargs`` (build/export time) and
+    Negative Binomial theta 1.0, elastic-net collapsing to ridge at
+    l1_ratio=0, auto-terms over every column). Shared by
+    ``build_training_job_kwargs`` (build/export time) and
     the train route's fast upfront validation so the two can never drift.
     Returns ``None`` when the objective is fully specified.
     """
@@ -112,6 +114,14 @@ def training_objective_issue(config: Mapping[str, Any]) -> str | None:
                 "Tweedie GLM has no variance power. Set it explicitly "
                 "(1=Poisson, 2=Gamma) — an unset value would silently fit "
                 "at power 1.5."
+            )
+        theta = _first_set(params.get("theta"), config.get("theta"))
+        if str(family).lower() == "negbinomial" and theta is None:
+            return (
+                "Negative Binomial GLM has no dispersion (theta). Set it "
+                "explicitly or estimate it from the data — RustyStats does "
+                "not estimate theta, so an unset value would silently fit "
+                "at theta=1.0."
             )
         terms = _first_set(params.get("terms"), config.get("terms"))
         all_factors = _first_set(params.get("all_factors"), config.get("all_factors"))
@@ -192,7 +202,8 @@ def build_training_job_kwargs(
         If the config has no target column, or an incomplete training
         objective — an unset loss/family, or an unset objective parameter
         that would fall through to a library/literal failover (Tweedie
-        variance power, elastic-net L1 ratio, empty GLM factor set). Such a
+        variance power, Negative Binomial theta, elastic-net L1 ratio,
+        empty GLM factor set). Such a
         job/script trains a plausible-looking wrong model, so it must fail at
         build time, not at training time.
     """
