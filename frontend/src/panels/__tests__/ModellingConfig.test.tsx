@@ -640,6 +640,8 @@ describe("ModellingConfig", () => {
             result: makeTrainResult(),
             jobId: "job_1",
             configHash: hash,
+            source: "live",
+            structuralVersion: 0,
           },
         },
       })

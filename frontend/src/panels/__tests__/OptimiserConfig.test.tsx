@@ -992,6 +992,8 @@ describe("OptimiserConfig", () => {
             },
             jobId: "job_42",
             configHash: matchingHash,
+            source: "live",
+            structuralVersion: 0,
             constraints: {},
             nodeLabel: "Optimiser",
             originalResult: {
