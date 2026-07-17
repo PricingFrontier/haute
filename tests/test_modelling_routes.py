@@ -1719,13 +1719,20 @@ class TestValidateGlmFamilyLink:
         assert exc_info.value.status_code == 400
         assert "logit" in exc_info.value.detail
 
-    def test_negbinomial_held_until_theta_gate(self):
-        """Neg. Binomial's dispersion `theta` fits silently at 1.0 with no gate
-        yet, so the route must reject it (not offer a silent-default failover)."""
+    def test_negbinomial_accepted(self):
+        """Neg. Binomial is offered now its theta gate exists: the training
+        objective requires an explicit theta (training_objective_issue), so
+        the silent theta=1.0 failover that held it out of #86 cannot fire.
+        RustyStats accepts only log/identity — no sqrt."""
+        _validate_glm_family_link("negbinomial", "log")
+        _validate_glm_family_link("negbinomial", "identity")
+        _validate_glm_family_link("negbinomial", "")  # canonical link
+
+    def test_negbinomial_rejects_bad_link(self):
         with pytest.raises(HTTPException) as exc_info:
-            _validate_glm_family_link("negbinomial", "log")
+            _validate_glm_family_link("negbinomial", "sqrt")
         assert exc_info.value.status_code == 400
-        assert "negbinomial" in exc_info.value.detail
+        assert "sqrt" in exc_info.value.detail
 
     def test_empty_family_raises(self):
         """The old early-return here was the silent gaussian-default channel."""
@@ -1736,6 +1743,163 @@ class TestValidateGlmFamilyLink:
 
     def test_empty_link_skips(self):
         _validate_glm_family_link("poisson", "")
+
+
+# ---------------------------------------------------------------------------
+# /dispersion/estimate endpoint tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def nb_training_data(tmp_path) -> str:
+    """Overdispersed count parquet (gamma-Poisson mixture, true theta 2.0)."""
+    rng = np.random.default_rng(42)
+    n = 400
+    x1 = rng.normal(0, 1, n)
+    x2 = rng.normal(0, 1, n)
+    mu = np.exp(0.5 + 0.4 * x1 - 0.3 * x2)
+    lam = rng.gamma(2.0, mu / 2.0)
+    df = pl.DataFrame({"x1": x1, "x2": x2, "y": rng.poisson(lam).astype(float)})
+    path = tmp_path / "nb_data.parquet"
+    df.write_parquet(path)
+    return str(path)
+
+
+def _make_negbinomial_graph(data_path: str, **config_overrides: object) -> dict:
+    config: dict = {
+        "target": "y",
+        "algorithm": "glm",
+        "task": "regression",
+        "family": "negbinomial",
+        "terms": {"x1": {"type": "linear"}, "x2": {"type": "linear"}},
+        "params": {},
+        "split": {"strategy": "random", "validation_size": 0.2, "seed": 42},
+        **config_overrides,
+    }
+    graph = make_graph(
+        {
+            "nodes": [
+                {
+                    "id": "source",
+                    "data": {
+                        "label": "source",
+                        "nodeType": "dataSource",
+                        "config": {"path": data_path},
+                    },
+                },
+                {
+                    "id": "train",
+                    "data": {"label": "train", "nodeType": "modelling", "config": config},
+                },
+            ],
+            "edges": [make_edge("source", "train").model_dump()],
+        }
+    )
+    return graph.model_dump()
+
+
+def _poll_dispersion_until_done(client: TestClient, job_id: str, timeout: float = 30) -> dict:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        resp = client.get(f"/api/modelling/dispersion/status/{job_id}")
+        assert resp.status_code == 200
+        data = resp.json()
+        if data["status"] in _TERMINAL_JOB_STATUSES:
+            return data
+        time.sleep(0.02)
+    raise TimeoutError(f"Dispersion job {job_id} did not finish within {timeout}s")
+
+
+class TestDispersionEstimateEndpoint:
+    def test_theta_estimate_completes_with_profile_mle(self, client, nb_training_data):
+        """End-to-end: pipeline execution → profile likelihood → value in the
+        status payload. The golden value 2.4487 is cross-validated against
+        statsmodels NB2 (1/alpha) on this exact draw."""
+        graph = _make_negbinomial_graph(nb_training_data)
+        resp = client.post(
+            "/api/modelling/dispersion/estimate",
+            json={"graph": graph, "node_id": "train", "param": "theta"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "started"
+
+        final = _poll_dispersion_until_done(client, resp.json()["job_id"])
+        assert final["status"] == "completed"
+        assert final["param"] == "theta"
+        assert final["value"] == pytest.approx(2.4487, abs=0.01)
+        assert final["n_fits"] > 0
+
+    def test_train_negbinomial_without_theta_rejected_400(self, client, nb_training_data):
+        """The re-enabled family keeps the failover closed: an unset theta
+        gates at the route, never falls through to RustyStats' theta=1.0."""
+        graph = _make_negbinomial_graph(nb_training_data)
+        resp = client.post("/api/modelling/train", json={"graph": graph, "node_id": "train"})
+        assert resp.status_code == 400
+        assert "theta" in resp.json()["detail"]
+
+    def test_train_negbinomial_with_theta_trains(self, client, nb_training_data, tmp_path):
+        """A set theta round-trips to a completed NB fit through /train."""
+        graph = _make_negbinomial_graph(
+            nb_training_data,
+            theta=2.45,
+            metrics=["gini"],
+            output_dir=str(tmp_path / "outputs"),
+        )
+        resp = client.post("/api/modelling/train", json={"graph": graph, "node_id": "train"})
+        assert resp.status_code == 200
+        final = _poll_until_done(client, resp.json()["job_id"])
+        assert final["status"] == "completed"
+        assert final["result"]["model_path"].endswith(".rsglm")
+
+    def test_estimate_rejected_for_catboost_node(self, client, training_data):
+        graph = _make_modelling_graph(training_data)
+        resp = client.post(
+            "/api/modelling/dispersion/estimate",
+            json={"graph": graph, "node_id": "train", "param": "theta"},
+        )
+        assert resp.status_code == 400
+        assert "GLM" in resp.json()["detail"]
+
+    def test_estimate_rejected_for_family_param_mismatch(self, client, nb_training_data):
+        graph = _make_negbinomial_graph(nb_training_data, family="poisson")
+        resp = client.post(
+            "/api/modelling/dispersion/estimate",
+            json={"graph": graph, "node_id": "train", "param": "theta"},
+        )
+        assert resp.status_code == 400
+        assert "negbinomial" in resp.json()["detail"]
+
+    def test_estimate_rejected_when_rest_of_objective_incomplete(self, client, nb_training_data):
+        """The profile is conditional on the design, so the factor gate still
+        applies — only the parameter being estimated is stubbed."""
+        graph = _make_negbinomial_graph(nb_training_data, terms=None)
+        resp = client.post(
+            "/api/modelling/dispersion/estimate",
+            json={"graph": graph, "node_id": "train", "param": "theta"},
+        )
+        assert resp.status_code == 400
+        assert "factor" in resp.json()["detail"].lower()
+
+    def test_estimate_rejected_for_unknown_param(self, client, nb_training_data):
+        graph = _make_negbinomial_graph(nb_training_data)
+        resp = client.post(
+            "/api/modelling/dispersion/estimate",
+            json={"graph": graph, "node_id": "train", "param": "alpha"},
+        )
+        # Pydantic Literal["theta", "var_power"] rejects at parse time.
+        assert resp.status_code == 422
+
+    def test_status_unknown_job_404(self, client):
+        resp = client.get("/api/modelling/dispersion/status/nonexistent")
+        assert resp.status_code == 404
+
+    def test_status_rejects_training_job_ids(self, client):
+        """Job types are disjoint: a training job id is not a dispersion job."""
+        from haute.routes.modelling import _store
+
+        job_id = _store.create_job({"status": "completed", "job_type": "training"})
+        resp = client.get(f"/api/modelling/dispersion/status/{job_id}")
+        assert resp.status_code == 404
 
 
 # ---------------------------------------------------------------------------

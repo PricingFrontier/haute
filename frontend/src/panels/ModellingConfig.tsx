@@ -1,6 +1,7 @@
 import { useState, useCallback } from "react"
 import type { OnUpdateConfig } from "./editors"
-import { trainModel, estimateTrainingRam } from "../api/client"
+import { trainModel, estimateTrainingRam, runDispersionEstimate } from "../api/client"
+import type { DispersionParam } from "../api/types"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
 import useSettingsStore from "../stores/useSettingsStore"
 import useGraphStore from "../stores/useGraphStore"
@@ -131,6 +132,21 @@ export default function ModellingConfig({ config, onUpdate, upstreamColumns }: M
     [allNodes, edges, submodels, preamble],
   )
 
+  // Profile-likelihood dispersion estimate (NB theta / Tweedie var_power):
+  // runs the pipeline to this node on the backend and resolves with the
+  // value, which GLMTargetConfig fills into the editable config field —
+  // the estimate is an explicit user action, never a silent default.
+  const handleEstimateDispersion = useCallback(
+    (param: DispersionParam) =>
+      runDispersionEstimate({
+        graph: buildGraphCb(),
+        node_id: nodeId,
+        param,
+        source: useSettingsStore.getState().activeSource,
+      }),
+    [buildGraphCb, nodeId],
+  )
+
   const handleTrain = useCallback(async () => {
     const nodeLabel = allNodes.find(n => n.id === nodeId)?.data.label || "Model Training"
     setSubmitting(true)
@@ -197,6 +213,7 @@ export default function ModellingConfig({ config, onUpdate, upstreamColumns }: M
           config={config}
           onUpdate={onUpdate}
           columns={columns}
+          onEstimateDispersion={handleEstimateDispersion}
         />
 
         <GLMFactorConfig

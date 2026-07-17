@@ -86,6 +86,8 @@ import type {
   SubmodelCreateResponse,
   SubmodelGraphResponse,
   TraceResponse,
+  DispersionEstimateStart,
+  DispersionEstimateStatus,
   TrainEstimate,
   TrainResponse,
   TrainStatusResponse,
@@ -1434,6 +1436,30 @@ export function parseTrainEstimateResponse(value: unknown): TrainEstimate {
     gpu_vram_estimated_mb: optionalNullableNumber("parseTrainEstimateResponse", obj, "gpu_vram_estimated_mb"),
     gpu_vram_available_mb: optionalNullableNumber("parseTrainEstimateResponse", obj, "gpu_vram_available_mb"),
     gpu_warning: optionalNullableString("parseTrainEstimateResponse", obj, "gpu_warning"),
+  }
+}
+
+export function parseDispersionEstimateResponse(value: unknown): DispersionEstimateStart {
+  const obj = expectPlainObject("parseDispersionEstimateResponse", value)
+  return {
+    status: expectStringLiteral("parseDispersionEstimateResponse", obj.status, "field `status`", ["started"]),
+    job_id: expectString("parseDispersionEstimateResponse", obj.job_id, "field `job_id`"),
+  }
+}
+
+export function parseDispersionStatusResponse(value: unknown): DispersionEstimateStatus {
+  const obj = expectPlainObject("parseDispersionStatusResponse", value)
+  return {
+    status: expectStringLiteral("parseDispersionStatusResponse", obj.status, "field `status`", JOB_STATUSES),
+    progress: optionalNumber("parseDispersionStatusResponse", obj, "progress"),
+    message: optionalString("parseDispersionStatusResponse", obj, "message"),
+    elapsed_seconds: optionalNumber("parseDispersionStatusResponse", obj, "elapsed_seconds"),
+    param: optionalNullableString("parseDispersionStatusResponse", obj, "param"),
+    value: optionalNullableNumber("parseDispersionStatusResponse", obj, "value"),
+    llf: optionalNullableNumber("parseDispersionStatusResponse", obj, "llf"),
+    n_fits: optionalNullableNumber("parseDispersionStatusResponse", obj, "n_fits"),
+    error: optionalNullableString("parseDispersionStatusResponse", obj, "error"),
+    terminal_reason: optionalNullableString("parseDispersionStatusResponse", obj, "terminal_reason"),
   }
 }
 
