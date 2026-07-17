@@ -1280,6 +1280,7 @@ function parseExploreColumnStat(value: unknown, field: string): ExploreColumnSta
     dtype: expectString(parser, obj.dtype, `${field}.dtype`),
     kind: expectStringLiteral(parser, obj.kind, `${field}.kind`, EXPLORE_COLUMN_KINDS),
     null_count: expectNumber(parser, obj.null_count, `${field}.null_count`),
+    nan_count: optionalNullableNumber(parser, obj, "nan_count"),
     distinct_count: expectNullableNumber(parser, obj.distinct_count, `${field}.distinct_count`),
     min_value: optionalNullableString(parser, obj, "min_value"),
     p25_value: optionalNullableString(parser, obj, "p25_value"),

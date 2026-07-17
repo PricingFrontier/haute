@@ -422,14 +422,25 @@ ExploreColumnKind = Literal["Numeric", "Text", "Temporal", "Boolean", "Nested", 
 class ExploreColumnStat(BaseModel):
     """Per-column stats captured at Explore cache-materialisation time.
 
-    distinct_count may be None when the dtype is not hashable (Object/Struct
-    columns), in which case the UI renders an em-dash.
+    Missingness is reported as a three-way split rather than a valid/invalid
+    dichotomy: ``null_count`` (absent values), ``nan_count`` (float NaN — an
+    invalid-numeric value that a stream unable to distinguish string from int
+    materialises for non-numeric input), and everything else is valid. Polars
+    ``null_count`` ignores NaN, so an all-NaN float column would otherwise look
+    fully populated. ``nan_count`` is None for non-float dtypes (not
+    applicable), mirroring ``zero_count``/``negative_count`` on non-numeric
+    columns.
+
+    ``distinct_count`` counts distinct non-null values (the null bucket is
+    excluded) and may be None when the dtype is not hashable (Object columns),
+    in which case the UI renders an em-dash.
     """
 
     name: str
     dtype: str
     kind: ExploreColumnKind
     null_count: int
+    nan_count: int | None = None
     distinct_count: int | None
     min_value: str | None = None
     p25_value: str | None = None
