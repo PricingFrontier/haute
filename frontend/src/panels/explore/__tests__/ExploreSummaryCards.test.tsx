@@ -153,7 +153,7 @@ describe("Explore summary cards", () => {
     )
 
     const card = screen.getByTestId("explore-data-quality-card")
-    expect(card).toHaveTextContent("No obvious missing, constant, negative, or mostly-zero fields.")
+    expect(card).toHaveTextContent("No obvious missing, NaN, constant, negative, or mostly-zero fields.")
     expect(card).not.toHaveTextContent("with missing values")
   })
 
@@ -286,6 +286,50 @@ describe("Explore summary cards", () => {
     expect(card).toHaveTextContent("100.0%")
     expect(screen.getAllByTestId("explore-numeric-summary-row")).toHaveLength(1)
     expect(card).not.toHaveTextContent("No numeric fields in this dataset.")
+  })
+
+  it("surfaces the NaN count for float columns and a placeholder for integers", () => {
+    render(
+      <NumericSummaryCard
+        report={makeReport({
+          row_count: 100,
+          columns: [
+            makeColumn({
+              name: "measure",
+              dtype: "Float64",
+              null_count: 5,
+              nan_count: 7,
+              distinct_count: 80,
+              zero_count: 0,
+              negative_count: 0,
+            }),
+            makeColumn({
+              name: "claim_count",
+              dtype: "Int64",
+              null_count: 0,
+              nan_count: null,
+              distinct_count: 4,
+              zero_count: 0,
+              negative_count: 0,
+            }),
+          ],
+        })}
+      />,
+    )
+
+    const card = screen.getByTestId("explore-numeric-summary-card")
+    expect(card).toHaveTextContent("NaN")
+    const [measureNan, claimNan] = screen.getAllByTestId("explore-numeric-nan-count")
+    expect(measureNan).toHaveTextContent("7")
+    // Integers cannot hold NaN: nan_count is null, rendered as an em-dash.
+    expect(claimNan).toHaveTextContent("-")
+  })
+
+  it("explains via a Distinct header info button that null and NaN are not values", () => {
+    render(<NumericSummaryCard report={makeReport()} />)
+
+    const info = screen.getByRole("button", { name: /Null and NaN are not values/i })
+    expect(info).toHaveAttribute("data-testid", "explore-distinct-info")
   })
 
   it("renders an empty numeric summary state when there are no numeric fields", () => {

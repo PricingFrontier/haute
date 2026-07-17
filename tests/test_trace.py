@@ -157,6 +157,19 @@ class TestTraceJsonSafeRowMatching:
         assert _find_target_row_index(df, {"value": INF_SENTINEL}) == 2
         assert _find_target_row_index(df, {"value": NEG_INF_SENTINEL}) == 3
 
+    def test_target_row_lookup_fails_loud_on_duplicate_matches(self):
+        df = pl.DataFrame(
+            {
+                "x": [1, 1, 2],
+                "y": [10, 10, 30],
+            }
+        )
+
+        with pytest.raises(ValueError, match="ambiguous"):
+            _find_target_row_index(df, {"x": 1, "y": 10})
+
+        assert _find_target_row_index(df, {"x": 2, "y": 30}) == 2
+
     def test_parent_row_matching_accepts_json_safe_frontend_values(self):
         unsafe = MAX_SAFE_INTEGER + 1
         df = pl.DataFrame(

@@ -579,6 +579,8 @@ describe("ModellingConfig", () => {
             progress: null,
             error: null,
             configHash: "abc",
+            source: "live",
+            structuralVersion: 0,
           },
         },
       })
@@ -660,6 +662,8 @@ describe("ModellingConfig", () => {
             result: makeTrainResult(),
             jobId: "job_1",
             configHash: "old_hash_that_wont_match",
+            source: "live",
+            structuralVersion: 0,
           },
         },
       })
@@ -678,6 +682,8 @@ describe("ModellingConfig", () => {
             result: makeTrainResult(),
             jobId: "job_1",
             configHash: hash,
+            source: "live",
+            structuralVersion: 0,
           },
         },
       })
@@ -709,6 +715,8 @@ describe("ModellingConfig", () => {
             },
             error: null,
             configHash: "abc",
+            source: "live",
+            structuralVersion: 0,
           },
         },
       })
@@ -723,6 +731,8 @@ describe("ModellingConfig", () => {
             result: makeTrainResult({ status: "error", error: "OOM: out of memory" }),
             jobId: "job_1",
             configHash: "irrelevant",
+            source: "live",
+            structuralVersion: 0,
           },
         },
       })
@@ -738,6 +748,8 @@ describe("ModellingConfig", () => {
             result: makeTrainResult(),
             jobId: "job_1",
             configHash: "irrelevant",
+            source: "live",
+            structuralVersion: 0,
           },
         },
       })
@@ -755,6 +767,8 @@ describe("ModellingConfig", () => {
             progress: null,
             error: null,
             configHash: "abc",
+            source: "live",
+            structuralVersion: 0,
           },
         },
         trainResults: {
@@ -762,6 +776,8 @@ describe("ModellingConfig", () => {
             result: makeTrainResult(),
             jobId: "job_1",
             configHash: "abc",
+            source: "live",
+            structuralVersion: 0,
           },
         },
       })
@@ -776,6 +792,8 @@ describe("ModellingConfig", () => {
             result: makeTrainResult({ status: "error", error: "fail" }),
             jobId: "job_1",
             configHash: "irrelevant",
+            source: "live",
+            structuralVersion: 0,
           },
         },
       })

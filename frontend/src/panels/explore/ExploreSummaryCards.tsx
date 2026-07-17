@@ -4,6 +4,7 @@ import type { ExploreCacheReport, ExploreColumnStat } from "../../api/types"
 import { NODE_GROUP_COLORS } from "../../theme/colors"
 import { formatNullPct } from "../../utils/formatValue"
 import { formatRelativeTime } from "../../utils/formatTime"
+import DistinctInfoButton from "./DistinctInfoButton"
 import { StatValueCell } from "./StatValueCell"
 
 interface SummaryCardProps {
@@ -115,7 +116,7 @@ export function DataQualityCard({ report }: SummaryCardProps) {
             color: "var(--text-muted)",
           }}
         >
-          No obvious missing, constant, negative, or mostly-zero fields.
+          No obvious missing, NaN, constant, negative, or mostly-zero fields.
         </div>
       ) : (
         <div className="space-y-2">
@@ -189,13 +190,21 @@ export function NumericSummaryCard({ report }: SummaryCardProps) {
                   "Std",
                   "Zeros",
                   "Negatives",
+                  "NaN",
                 ].map((label) => (
                   <th
                     key={label}
                     className="text-[10px] font-bold uppercase tracking-[0.08em] text-left px-2 py-1.5"
                     style={SECONDARY_STYLE}
                   >
-                    {label}
+                    {label === "Distinct" ? (
+                      <span className="inline-flex items-center gap-1">
+                        {label}
+                        <DistinctInfoButton />
+                      </span>
+                    ) : (
+                      label
+                    )}
                   </th>
                 ))}
               </tr>
@@ -227,6 +236,13 @@ export function NumericSummaryCard({ report }: SummaryCardProps) {
                   </td>
                   <td className={CELL_CLASS} style={column.negative_count ? PRIMARY_STYLE : MUTED_STYLE}>
                     {formatOptionalNumber(column.negative_count)}
+                  </td>
+                  <td
+                    data-testid="explore-numeric-nan-count"
+                    className={CELL_CLASS}
+                    style={column.nan_count ? PRIMARY_STYLE : MUTED_STYLE}
+                  >
+                    {formatOptionalNumber(column.nan_count)}
                   </td>
                 </tr>
               ))}

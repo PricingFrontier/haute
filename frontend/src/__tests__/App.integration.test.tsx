@@ -569,6 +569,9 @@ describe("App integration — load a pipeline with nodes", () => {
     const sourceNode = makeNode("source_0", "Claims Source", "dataSource")
     sourceNode.data._columns = [{ name: "premium", dtype: "i64" }]
     sourceNode.data._availableColumns = [{ name: "premium", dtype: "i64" }]
+    // Tag the stash with its capture source — untagged stashes are treated
+    // as unknown provenance and invalidated on mount (cache-key completeness).
+    sourceNode.data._columnsSource = "live"
     vi.mocked(api.loadPipeline).mockResolvedValueOnce({
       nodes: [
         sourceNode,

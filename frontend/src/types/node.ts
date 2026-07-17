@@ -39,6 +39,10 @@ export interface HauteNodeData extends Record<string, unknown> {
   _availableColumns?: ColumnInfo[]
   /** Schema warnings from last preview — set by usePipelineAPI */
   _schemaWarnings?: { column: string; status: string }[]
+  /** Active source the column stash (_columns/_availableColumns/_schemaWarnings)
+   *  was captured under — set by usePipelineAPI. A stash whose source no longer
+   *  matches the active source is stale and gets invalidated, never served. */
+  _columnsSource?: string
   /** Node execution status — set by useTracing */
   _status?: NodeStatus
   _traceActive?: boolean

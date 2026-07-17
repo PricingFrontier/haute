@@ -316,8 +316,8 @@ def test_explore_reuses_typed_report_cache_without_reexecuting_sources(
         "source": "live",
     }
     spec = _explore_service._prepare_spec(ExploreRunRequest.model_validate(body))
-    assert EXPLORE_CACHE_VERSION == 2
-    assert spec.report_cache_key.startswith("explore:v2:")
+    assert EXPLORE_CACHE_VERSION == 3
+    assert spec.report_cache_key.startswith("explore:v3:")
 
     _explore_service._report_cache.put(
         spec.report_cache_key,
@@ -523,6 +523,16 @@ def test_distinct_count_matches_input(client: TestClient, tmp_path: Path) -> Non
     columns = _run_explore_and_get_columns(client, str(path))
 
     assert columns[0]["distinct_count"] == 3
+
+
+def test_nan_count_matches_input(client: TestClient, tmp_path: Path) -> None:
+    path = tmp_path / "nans.parquet"
+    pl.DataFrame({"value": [1.0, float("nan"), float("nan"), None, 2.0]}).write_parquet(path)
+
+    columns = _run_explore_and_get_columns(client, str(path))
+
+    assert columns[0]["nan_count"] == 2
+    assert columns[0]["null_count"] == 1
 
 
 def test_min_value_truncated_at_80_chars_with_ellipsis(
@@ -747,6 +757,236 @@ def test_build_frame_stats_keeps_all_null_numeric_profiles(
     assert by_name["single_value"].std_value is None
 
 
+def test_build_frame_stats_reports_nan_counts_for_float_columns_only(
+    explore_execution_context,
+) -> None:
+    """NaN is a third bucket, distinct from null: valid / null / NaN.
+
+    A stream that cannot distinguish string from int materialises non-numeric
+    error/default values as NaN in a Float column. Polars ``null_count``
+    ignores NaN, so without a dedicated count an all-NaN column looks fully
+    populated. Non-float dtypes cannot hold NaN, so their ``nan_count`` is
+    None ("not applicable"), mirroring ``zero_count`` on non-numeric columns.
+    """
+
+    from haute.routes._explore_service import _build_frame_stats
+
+    lf = pl.DataFrame(
+        {
+            "measure": [1.0, float("nan"), float("nan"), None],
+            "volume": [1, 2, 3, 4],
+            "label": ["a", "b", "c", None],
+        }
+    ).lazy()
+
+    frame_stats = _build_frame_stats(
+        lf,
+        lf.collect_schema(),
+        execution_context=explore_execution_context,
+    )
+
+    by_name = {column.name: column for column in frame_stats.columns}
+    assert by_name["measure"].nan_count == 2
+    assert by_name["measure"].null_count == 1
+    assert by_name["volume"].nan_count is None
+    assert by_name["label"].nan_count is None
+
+
+def test_build_frame_stats_flags_nan_columns_in_quality_summary(
+    explore_execution_context,
+) -> None:
+    from haute.routes._explore_service import _build_frame_stats
+
+    lf = pl.DataFrame(
+        {
+            "all_nan": [float("nan")] * 4,
+            "some_nan": [1.0, float("nan"), 2.0, 3.0],
+            "clean": [1.0, 2.0, 3.0, 4.0],
+        }
+    ).lazy()
+
+    frame_stats = _build_frame_stats(
+        lf,
+        lf.collect_schema(),
+        execution_context=explore_execution_context,
+    )
+
+    issues = frame_stats.overview_summary.data_quality.issues
+    nan_issues = [issue for issue in issues if "NaN" in issue.label]
+    assert len(nan_issues) == 1
+    assert nan_issues[0].label == "2 numeric columns with NaN values"
+    assert nan_issues[0].severity == "danger"
+    assert nan_issues[0].detail == "all_nan worst at 100%"
+    # NaN rows are not nulls: the missing-values issue must not fire here.
+    assert not any("missing" in issue.label for issue in issues)
+
+
+def test_build_frame_stats_nan_issue_is_warning_below_half(
+    explore_execution_context,
+) -> None:
+    from haute.routes._explore_service import _build_frame_stats
+
+    lf = pl.DataFrame({"measure": [1.0, float("nan"), 3.0, 4.0]}).lazy()
+
+    frame_stats = _build_frame_stats(
+        lf,
+        lf.collect_schema(),
+        execution_context=explore_execution_context,
+    )
+
+    [issue] = [
+        candidate
+        for candidate in frame_stats.overview_summary.data_quality.issues
+        if "NaN" in candidate.label
+    ]
+    assert issue.severity == "warning"
+    assert issue.label == "1 numeric column with NaN values"
+    assert issue.detail == "measure worst at 25%"
+
+
+def test_build_frame_stats_distinct_count_excludes_null_bucket(
+    explore_execution_context,
+) -> None:
+    """``n_unique`` counts the null bucket; the displayed distinct must not."""
+
+    from haute.routes._explore_service import _build_frame_stats
+
+    lf = pl.DataFrame({"value": [1, 1, 2, None]}).lazy()
+
+    frame_stats = _build_frame_stats(
+        lf,
+        lf.collect_schema(),
+        execution_context=explore_execution_context,
+    )
+
+    [column] = frame_stats.columns
+    assert column.null_count == 1
+    assert column.distinct_count == 2
+
+
+def test_build_frame_stats_distinct_count_excludes_nan_bucket(
+    explore_execution_context,
+) -> None:
+    """NaN is reported separately (nan_count), so it is not a distinct value.
+
+    ``[1.0, 1.0, nan, None]`` has one valid value (1.0); the NaN and null
+    buckets are each their own count and must not inflate distinct_count.
+    """
+
+    from haute.routes._explore_service import _build_frame_stats
+
+    lf = pl.DataFrame({"value": [1.0, 1.0, float("nan"), None]}).lazy()
+
+    frame_stats = _build_frame_stats(
+        lf,
+        lf.collect_schema(),
+        execution_context=explore_execution_context,
+    )
+
+    [column] = frame_stats.columns
+    assert column.null_count == 1
+    assert column.nan_count == 1
+    assert column.distinct_count == 1
+
+
+def test_build_frame_stats_single_valid_value_with_nan_is_not_constant(
+    explore_execution_context,
+) -> None:
+    """A constant column has NO nulls and NO NaNs — every row the same valid value.
+
+    One valid value plus NaN reads distinct == 1, but the NaN rows mean the
+    column is not constant; the NaN issue is the right signal for it.
+    """
+
+    from haute.routes._explore_service import _build_frame_stats
+
+    lf = pl.DataFrame({"rate": [5.0, 5.0, float("nan")]}).lazy()
+
+    frame_stats = _build_frame_stats(
+        lf,
+        lf.collect_schema(),
+        execution_context=explore_execution_context,
+    )
+
+    [column] = frame_stats.columns
+    assert column.distinct_count == 1
+    labels = [issue.label for issue in frame_stats.overview_summary.data_quality.issues]
+    assert not any("constant" in label for label in labels)
+    assert any("NaN" in label for label in labels)
+
+
+def test_build_frame_stats_all_nan_column_is_not_flagged_constant(
+    explore_execution_context,
+) -> None:
+    """An all-NaN column has zero distinct valid values, so it is not
+
+    "constant / single-value" — the dedicated NaN issue is the right signal.
+    """
+
+    from haute.routes._explore_service import _build_frame_stats
+
+    lf = pl.DataFrame({"all_nan": [float("nan")] * 4}).lazy()
+
+    frame_stats = _build_frame_stats(
+        lf,
+        lf.collect_schema(),
+        execution_context=explore_execution_context,
+    )
+
+    [column] = frame_stats.columns
+    assert column.distinct_count == 0
+    labels = [issue.label for issue in frame_stats.overview_summary.data_quality.issues]
+    assert not any("constant" in label for label in labels)
+    assert any("NaN" in label for label in labels)
+
+
+def test_build_frame_stats_single_valid_value_with_nulls_is_not_constant(
+    explore_execution_context,
+) -> None:
+    """A single-valued column that also has nulls is NOT constant (Nick's ruling).
+
+    Constant means every row holds the same valid value; the null rows make
+    this a missing-values column instead, and that issue already covers it.
+    """
+
+    from haute.routes._explore_service import _build_frame_stats
+
+    lf = pl.DataFrame({"segment": ["same", "same", None]}).lazy()
+
+    frame_stats = _build_frame_stats(
+        lf,
+        lf.collect_schema(),
+        execution_context=explore_execution_context,
+    )
+
+    [column] = frame_stats.columns
+    assert column.distinct_count == 1
+    labels = [issue.label for issue in frame_stats.overview_summary.data_quality.issues]
+    assert not any("constant" in label for label in labels)
+    assert any("missing" in label for label in labels)
+
+
+def test_categorical_truncation_counts_null_bucket_as_a_group(
+    explore_execution_context,
+) -> None:
+    """50 distinct values plus nulls is 51 value-count groups: truncated."""
+
+    from haute.routes._explore_service import _build_frame_stats
+
+    lf = pl.DataFrame({"segment": [f"s{i:03d}" for i in range(50)] + [None]}).lazy()
+
+    frame_stats = _build_frame_stats(
+        lf,
+        lf.collect_schema(),
+        execution_context=explore_execution_context,
+    )
+
+    [profile] = frame_stats.overview_summary.categorical_summary
+    assert profile.distinct_count == 50
+    assert profile.values_truncated is True
+    assert len(profile.values) == 50
+
+
 def test_build_frame_stats_includes_backend_overview_summary(
     explore_execution_context,
 ) -> None:
@@ -807,7 +1047,9 @@ def test_build_frame_stats_includes_bounded_categorical_value_counts(
         profile.field: profile for profile in frame_stats.overview_summary.categorical_summary
     }
     assert set(profiles) == {"region", "renewal", "inception_date", "empty_segment"}
-    assert profiles["region"].distinct_count == 3
+    # distinct_count is of non-null values only: {north, south} = 2, even
+    # though the value-count groups also include the null bucket.
+    assert profiles["region"].distinct_count == 2
     assert profiles["region"].expandable is True
     assert profiles["region"].values_truncated is False
     assert [(item.value, item.count) for item in profiles["region"].values] == [
@@ -908,7 +1150,9 @@ def test_build_frame_stats_survives_duration_column(
     assert stats["premium"].mean_value == "25"
     assert stats["wait"].kind == "Temporal"
     assert stats["wait"].null_count == 1
-    assert stats["wait"].distinct_count == 3
+    # {1 day, 2 hours} — distinct counts valid values only; the null bucket
+    # is reported via null_count, not folded into distinct.
+    assert stats["wait"].distinct_count == 2
     # Duration min/max already format via str(timedelta); labels match them.
     assert stats["wait"].min_value == "2:00:00"
     assert stats["wait"].max_value == "1 day, 0:00:00"
@@ -992,7 +1236,8 @@ def test_build_frame_stats_keeps_unsupported_categorical_profiles_unexpanded(
 
     [profile] = frame_stats.overview_summary.categorical_summary
     assert profile.field == "codes"
-    assert profile.distinct_count == 3
+    # {["a"], ["b"]} = 2 distinct non-null values (the None row is excluded).
+    assert profile.distinct_count == 2
     assert profile.expandable is False
     assert profile.values_truncated is False
     assert profile.values == []
@@ -1037,7 +1282,8 @@ def test_build_column_stats_happy_path(explore_execution_context) -> None:
     assert [s.dtype for s in stats] == ["Int64", "String", "Float64"]
     assert [s.kind for s in stats] == ["Numeric", "Text", "Numeric"]
     assert [s.null_count for s in stats] == [0, 1, 0]
-    assert [s.distinct_count for s in stats] == [3, 3, 3]
+    # "name" has a null row: 3 raw n_unique minus the null bucket == 2.
+    assert [s.distinct_count for s in stats] == [3, 2, 3]
     assert [s.min_value for s in stats] == ["1", "alpha", "1.5"]
     assert [s.max_value for s in stats] == ["3", "beta", "3.5"]
 

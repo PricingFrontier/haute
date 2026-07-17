@@ -1015,7 +1015,7 @@ def _fix_upstream_values(
             # Step has null but we know the correct value — try to find
             # the right row in the source DataFrame using the known value.
             df = eager_outputs.get(s.node_id)
-            if df is None or col_name not in df.columns:
+            if not isinstance(df, pl.DataFrame) or col_name not in df.columns:
                 break
             try:
                 # Filter to rows where this column matches the known value.
@@ -1554,6 +1554,7 @@ def enrich_steps(
                 # Check if the column is a keyword arg or appears as an alias target
                 _col_in_code = bool(re.search(rf"\b{re.escape(column)}\s*=", raw_code))
             if column and (_col_in_schema or _col_in_code):
+                parsed = None
                 try:
                     parsed = trace_mod.parse_expression(code, column)
                     if parsed is not None:
@@ -1575,41 +1576,73 @@ def enrich_steps(
                         "error_type": type(exc).__name__,
                         "target_column": column,
                     }
-                try:
-                    evaluated = trace_mod.evaluate_expression(
-                        code,
-                        column,
-                        {**step.input_values, **step.output_values},
-                        preamble_ns=preamble_ns,
-                    )
-                    if evaluated is not None:
-                        calc_dict = dataclasses.asdict(evaluated)
-                        # Add taken_branch info to calculation dict
-                        if evaluated.taken_branch is not None:
-                            calc_dict["taken_branch"] = evaluated.taken_branch
-                        if evaluated.taken_branch_index is not None:
-                            calc_dict["taken_branch_index"] = evaluated.taken_branch_index
-                        # For window functions, use the actual output value
-                        if evaluated.expression_type == "window" and column in step.output_values:
-                            calc_dict["result_value"] = step.output_values[column]
-                        step.calculation = calc_dict
-                except Exception as exc:
-                    logger.warning(
-                        "expression_eval_failed",
-                        node_id=step.node_id,
-                        column=column,
-                        error=str(exc),
-                        error_type=type(exc).__name__,
-                        exc_info=True,
-                    )
-                    # Seed calculation with a visible error marker that
-                    # persists even if later enrichment stages (chain,
-                    # input_sources) add more fields to the dict.
-                    step.calculation = {
-                        "error": f"evaluate_expression failed: {exc}",
-                        "error_type": type(exc).__name__,
-                        "target_column": column,
-                    }
+                # Self-referential assignment (premium = premium * ...):
+                # the post-assignment output value must not clobber the
+                # RHS input, or the substitution shows the OUTPUT on the
+                # right-hand side and a result contradicting the
+                # displayed value.  Same guard as the input-sources path
+                # (``self_referential_modification`` above).
+                eval_values = {**step.input_values, **step.output_values}
+                self_referential = (
+                    column in step.schema_diff.columns_modified
+                    and parsed is not None
+                    and column in parsed.referenced_columns
+                )
+                skip_evaluation = False
+                if self_referential:
+                    if column in step.input_values:
+                        eval_values[column] = step.input_values[column]
+                    else:
+                        # No pre-assignment value available: showing a
+                        # substitution would require the input we don't
+                        # have, so present the output value directly
+                        # rather than an arithmetically false eval.
+                        result = step.output_values.get(column)
+                        step.calculation = {
+                            "target_column": column,
+                            "substituted_text": f"{column} = {_quote_trace_value(result)}",
+                            "result_value": result,
+                        }
+                        skip_evaluation = True
+                if not skip_evaluation:
+                    try:
+                        evaluated = trace_mod.evaluate_expression(
+                            code,
+                            column,
+                            eval_values,
+                            preamble_ns=preamble_ns,
+                        )
+                        if evaluated is not None:
+                            calc_dict = dataclasses.asdict(evaluated)
+                            # Add taken_branch info to calculation dict
+                            if evaluated.taken_branch is not None:
+                                calc_dict["taken_branch"] = evaluated.taken_branch
+                            if evaluated.taken_branch_index is not None:
+                                calc_dict["taken_branch_index"] = evaluated.taken_branch_index
+                            # For window functions, use the actual output value
+                            if (
+                                evaluated.expression_type == "window"
+                                and column in step.output_values
+                            ):
+                                calc_dict["result_value"] = step.output_values[column]
+                            step.calculation = calc_dict
+                    except Exception as exc:
+                        logger.warning(
+                            "expression_eval_failed",
+                            node_id=step.node_id,
+                            column=column,
+                            error=str(exc),
+                            error_type=type(exc).__name__,
+                            exc_info=True,
+                        )
+                        # Seed calculation with a visible error marker that
+                        # persists even if later enrichment stages (chain,
+                        # input_sources) add more fields to the dict.
+                        step.calculation = {
+                            "error": f"evaluate_expression failed: {exc}",
+                            "error_type": type(exc).__name__,
+                            "target_column": column,
+                        }
 
                 # --- Expression chain (intra-node dependencies) ---
                 try:
@@ -1617,7 +1650,22 @@ def enrich_steps(
                     if chain and len(chain) > 1:
                         if step.calculation is None:
                             step.calculation = {}
+                        # Evaluate chain entries in order, feeding each
+                        # result forward.  Seeding every entry from the
+                        # final output values instead is wrong for
+                        # self-referential assignments: the entry that
+                        # rewrites ``premium`` would see the
+                        # post-assignment premium on its own RHS.  Chain
+                        # target columns therefore start from their
+                        # PRE-node input values (absent if newly created)
+                        # and are filled in as each entry evaluates.
                         combined_values = {**step.input_values, **step.output_values}
+                        chain_targets = {p.target_column for p in chain}
+                        for target in chain_targets:
+                            if target in step.input_values:
+                                combined_values[target] = step.input_values[target]
+                            else:
+                                combined_values.pop(target, None)
                         enriched_chain: list[dict[str, Any]] = []
                         for p in chain:
                             entry = dataclasses.asdict(p)
@@ -1632,6 +1680,7 @@ def enrich_steps(
                                 if ev is not None:
                                     entry["substituted_text"] = ev.substituted_text
                                     entry["result_value"] = ev.result_value
+                                    combined_values[p.target_column] = ev.result_value
                             except Exception as inner_exc:
                                 logger.warning(
                                     "chain_entry_eval_failed",
@@ -1644,7 +1693,10 @@ def enrich_steps(
                                 entry["error"] = f"chain entry evaluation failed: {inner_exc}"
                                 entry["error_type"] = type(inner_exc).__name__
                                 entry.setdefault("substituted_text", p.expression_text)
-                                fallback = combined_values.get(p.target_column)
+                                fallback = combined_values.get(
+                                    p.target_column,
+                                    step.output_values.get(p.target_column),
+                                )
                                 entry.setdefault("result_value", fallback)
                             enriched_chain.append(entry)
                         step.calculation["expression_chain"] = enriched_chain
@@ -1772,8 +1824,16 @@ def enrich_steps(
                         factor_input_dtypes: dict[str, Any] = {}
                         for pid in parents_of.get(step.node_id, []):
                             pdf = eager_outputs.get(pid)
-                            if pdf is not None:
-                                for cname, cdtype in pdf.schema.items():
+                            # Multi-frame parents store dict[label, DataFrame]
+                            frames = (
+                                pdf.values()
+                                if isinstance(pdf, dict)
+                                else [pdf]
+                                if pdf is not None
+                                else []
+                            )
+                            for frame in frames:
+                                for cname, cdtype in frame.schema.items():
                                     factor_input_dtypes.setdefault(cname, cdtype)
                         detail = trace_mod.enrich_banding(
                             cfg,
@@ -1799,7 +1859,7 @@ def enrich_steps(
                         input_frames = [
                             eager_outputs[pid]
                             for pid in parent_ids
-                            if pid in eager_outputs and eager_outputs[pid] is not None
+                            if isinstance(eager_outputs.get(pid), pl.DataFrame)
                         ]
                         source_names = [
                             _sanitize_func_name(node_map[pid].data.label)
@@ -1847,7 +1907,10 @@ def enrich_steps(
                     parent_row_count = 0
                     for pid in parent_ids:
                         df = eager_outputs.get(pid)
-                        if df is not None:
+                        if isinstance(df, dict):
+                            for frame in df.values():
+                                parent_row_count = max(parent_row_count, len(frame))
+                        elif df is not None:
                             parent_row_count = max(parent_row_count, len(df))
                     child_df = eager_outputs.get(step.node_id)
                     child_row_count = len(child_df) if child_df is not None else 0

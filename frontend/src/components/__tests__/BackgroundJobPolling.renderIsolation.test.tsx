@@ -68,7 +68,7 @@ describe("BackgroundJobPolling", () => {
     expect(getByTestId("node-count")).toHaveTextContent("1")
 
     act(() => {
-      useNodeResultsStore.getState().startSolveJob("solve-node", "solve-job", "Solve Node", {}, "hash-a")
+      useNodeResultsStore.getState().startSolveJob("solve-node", "solve-job", "Solve Node", {}, "hash-a", "live", 0)
     })
     expect(EditorShell).toHaveBeenCalledTimes(2)
 
@@ -83,7 +83,7 @@ describe("BackgroundJobPolling", () => {
     expect(EditorShell).toHaveBeenCalledTimes(2)
 
     act(() => {
-      useNodeResultsStore.getState().startTrainJob("train-node", "train-job", "Train Node", "hash-b")
+      useNodeResultsStore.getState().startTrainJob("train-node", "train-job", "Train Node", "hash-b", "live", 0)
     })
     expect(EditorShell).toHaveBeenCalledTimes(2)
 

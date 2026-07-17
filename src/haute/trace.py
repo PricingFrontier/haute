@@ -265,10 +265,23 @@ def _find_target_row_index(df: pl.DataFrame, row_values: dict[str, Any]) -> int 
     if not shared:
         return None
 
-    for idx, row in enumerate(df.select(shared).iter_rows(named=True)):
-        if all(_trace_values_match(row.get(col), row_values.get(col)) for col in shared):
-            return idx
-    return None
+    # Duplicate rows on the shared columns are ambiguous: silently
+    # anchoring to the first match would correlate upstream from the
+    # wrong row.  Mirror the W4 policy (_record_ambiguous_row_match)
+    # and fail loud instead.
+    matches = [
+        idx
+        for idx, row in enumerate(df.select(shared).iter_rows(named=True))
+        if all(_trace_values_match(row.get(col), row_values.get(col)) for col in shared)
+    ]
+    if len(matches) > 1:
+        raise ValueError(
+            "Trace row match is ambiguous: "
+            f"{len(matches)} rows match the clicked values on "
+            f"columns {shared}. The preview data may have changed. "
+            "Please click the node to refresh, then retry."
+        )
+    return matches[0] if matches else None
 
 
 def _requested_preview_columns_from_row(
@@ -289,7 +302,7 @@ def _is_integer_output_column(
     column: str,
 ) -> bool:
     df = eager_outputs.get(node_id)
-    if df is None or column not in df.schema:
+    if not isinstance(df, pl.DataFrame) or column not in df.schema:
         return False
     is_integer = getattr(df.schema[column], "is_integer", None)
     return bool(is_integer()) if callable(is_integer) else False
@@ -462,6 +475,20 @@ def execute_trace(
             source_ids=source_ids,
         )
 
+    # Multi-frame sources (e.g. a ≥2-table apiInput) store a
+    # dict[label, DataFrame] in eager_outputs; a trace must target a node
+    # downstream of a specific frame, never the bundle itself.
+    if isinstance(eager_outputs.get(target_node_id), dict):
+        raise ValueError(
+            f"Target node {target_node_id!r} emits multiple frames; "
+            "trace a node downstream of a specific frame instead."
+        )
+
+    # Edge sourceHandles record which frame of a multi-frame source each
+    # child consumes (the selection _pick_source_frame makes at execution
+    # time); the correlation walk makes the same per-edge selection.
+    source_frame_of = {(e.source, e.target): e.sourceHandle for e in graph.edges}
+
     # ---------- Verify row identity ----------
     # If the frontend sent the clicked row's values, verify that the
     # DataFrame at the target node has the same values at row_index.
@@ -509,12 +536,13 @@ def execute_trace(
             row_index,
             node_map=node_map,
             diagnostics=correlation_diagnostics,
+            source_frame_of=source_frame_of,
         )
     else:
         # Target node execution failed — build partial rows from available nodes
         cached_rows = {}
         for nid in order:
-            if nid in eager_outputs:
+            if nid in eager_outputs and not isinstance(eager_outputs[nid], dict):
                 df = eager_outputs[nid]
                 if row_index < len(df):
                     cached_rows[nid] = _jsonify_row(df.row(row_index, named=True))
