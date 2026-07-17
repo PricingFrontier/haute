@@ -137,6 +137,32 @@ class TestRequestValidation:
         assert resp.status_code == 409
         assert "Trace data does not match" in resp.json()["detail"]
 
+    def test_duplicate_row_relocation_returns_conflict_not_first_match(self, client, tmp_path):
+        """Two rows identical on the clicked columns must fail loud, not
+        silently anchor the trace to the first duplicate."""
+        from haute.executor import _preview_cache
+        from haute.trace import _cache as _trace_cache
+
+        _preview_cache.invalidate()
+        _trace_cache.invalidate()
+
+        p = _simple_parquet(tmp_path, data={"x": [1, 1, 2], "y": [10, 10, 30]})
+        graph = _simple_graph(p, "df = df.with_columns(z=pl.col('x') + pl.col('y'))")
+
+        # row_index 2 does not match the clicked values, forcing the
+        # eviction-relocation path; the values then match rows 0 AND 1.
+        resp = _trace_post(
+            client,
+            graph,
+            row_index=2,
+            target_node_id="t",
+            column="z",
+            row_values={"x": 1, "y": 10, "z": 11},
+        )
+
+        assert resp.status_code == 409
+        assert "ambiguous" in resp.json()["detail"]
+
     def test_empty_graph_returns_error(self, client):
         """POST with a graph containing no nodes returns an error."""
         graph = _g({"nodes": [], "edges": []}).model_dump()

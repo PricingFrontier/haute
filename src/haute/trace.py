@@ -265,10 +265,23 @@ def _find_target_row_index(df: pl.DataFrame, row_values: dict[str, Any]) -> int 
     if not shared:
         return None
 
-    for idx, row in enumerate(df.select(shared).iter_rows(named=True)):
-        if all(_trace_values_match(row.get(col), row_values.get(col)) for col in shared):
-            return idx
-    return None
+    # Duplicate rows on the shared columns are ambiguous: silently
+    # anchoring to the first match would correlate upstream from the
+    # wrong row.  Mirror the W4 policy (_record_ambiguous_row_match)
+    # and fail loud instead.
+    matches = [
+        idx
+        for idx, row in enumerate(df.select(shared).iter_rows(named=True))
+        if all(_trace_values_match(row.get(col), row_values.get(col)) for col in shared)
+    ]
+    if len(matches) > 1:
+        raise ValueError(
+            "Trace row match is ambiguous: "
+            f"{len(matches)} rows match the clicked values on "
+            f"columns {shared}. The preview data may have changed. "
+            "Please click the node to refresh, then retry."
+        )
+    return matches[0] if matches else None
 
 
 def _requested_preview_columns_from_row(

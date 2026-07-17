@@ -211,8 +211,8 @@ function resetStores(): void {
 }
 
 function startBackgroundJobs(): void {
-  useNodeResultsStore.getState().startSolveJob("optimizer_1", "solve-job-1", "Optimizer", {}, "solve-config")
-  useNodeResultsStore.getState().startTrainJob("model_1", "train-job-1", "Model", "train-config")
+  useNodeResultsStore.getState().startSolveJob("optimizer_1", "solve-job-1", "Optimizer", {}, "solve-config", "live", 0)
+  useNodeResultsStore.getState().startTrainJob("model_1", "train-job-1", "Model", "train-config", "live", 0)
 }
 
 function updateBackgroundJobProgress(): void {

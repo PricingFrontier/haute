@@ -502,6 +502,9 @@ async def trace_row(body: TraceRequest) -> TraceResponse:
         if detail.startswith("Trace data does not match"):
             logger.warning("trace_row_mismatch", error=detail)
             raise HTTPException(status_code=409, detail=detail)
+        if detail.startswith("Trace row match is ambiguous"):
+            logger.warning("trace_row_match_ambiguous", error=detail)
+            raise HTTPException(status_code=409, detail=detail)
         if detail.startswith("row_index ") and "out of range" in detail:
             logger.warning("trace_row_out_of_range", error=detail)
             raise HTTPException(status_code=400, detail=detail)

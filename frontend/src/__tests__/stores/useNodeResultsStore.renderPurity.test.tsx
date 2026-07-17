@@ -58,7 +58,7 @@ describe("useNodeResultsStore render-pure preview getters", () => {
   it("does not refresh optimiser LRU recency when read during StrictMode render", () => {
     const store = useNodeResultsStore.getState()
     for (let i = 0; i < MAX_CACHED_SOLVE_RESULTS; i += 1) {
-      store.startSolveJob(`s${i}`, `job-${i}`, `Solve ${i}`, {}, `hash-${i}`)
+      store.startSolveJob(`s${i}`, `job-${i}`, `Solve ${i}`, {}, `hash-${i}`, "live", 0)
       store.completeSolveJob(`s${i}`, makeSolveResult({ total_objective: i }))
     }
 
@@ -73,7 +73,7 @@ describe("useNodeResultsStore render-pure preview getters", () => {
       </StrictMode>,
     )
 
-    store.startSolveJob("s-new", "job-new", "Solve new", {}, "hash-new")
+    store.startSolveJob("s-new", "job-new", "Solve new", {}, "hash-new", "live", 0)
     store.completeSolveJob("s-new", makeSolveResult({ total_objective: 999 }))
 
     const { solveResults } = useNodeResultsStore.getState()
@@ -86,7 +86,7 @@ describe("useNodeResultsStore render-pure preview getters", () => {
   it("does not refresh modelling LRU recency when read during StrictMode render", () => {
     const store = useNodeResultsStore.getState()
     for (let i = 0; i < MAX_CACHED_TRAIN_RESULTS; i += 1) {
-      store.startTrainJob(`t${i}`, `job-${i}`, `Train ${i}`, `hash-${i}`)
+      store.startTrainJob(`t${i}`, `job-${i}`, `Train ${i}`, `hash-${i}`, "live", 0)
       store.completeTrainJob(`t${i}`, makeTrainResult({ metrics: { rmse: i } }))
     }
 
@@ -101,7 +101,7 @@ describe("useNodeResultsStore render-pure preview getters", () => {
       </StrictMode>,
     )
 
-    store.startTrainJob("t-new", "job-new", "Train new", "hash-new")
+    store.startTrainJob("t-new", "job-new", "Train new", "hash-new", "live", 0)
     store.completeTrainJob("t-new", makeTrainResult({ metrics: { rmse: 999 } }))
 
     const { trainResults } = useNodeResultsStore.getState()

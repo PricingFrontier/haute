@@ -32,6 +32,7 @@ describe("useStaleConfigEstimate", () => {
         configA,
         { configHash: "old-hash" },
         endpoint,
+        { source: "source_a", structuralVersion: 1 },
       ),
     )
 
@@ -51,8 +52,9 @@ describe("useStaleConfigEstimate", () => {
       useStaleConfigEstimate<FakeEstimate>(
         "node_1",
         configA,
-        { configHash: hashConfig(configA) },
+        { configHash: hashConfig(configA), source: "source_a", structuralVersion: 1 },
         endpoint,
+        { source: "source_a", structuralVersion: 1 },
       ),
     )
 
@@ -64,7 +66,7 @@ describe("useStaleConfigEstimate", () => {
     const endpoint = vi.fn().mockResolvedValue(sampleEstimate)
 
     renderHook(() =>
-      useStaleConfigEstimate<FakeEstimate>("", configA, null, endpoint),
+      useStaleConfigEstimate<FakeEstimate>("", configA, null, endpoint, { source: "source_a", structuralVersion: 1 }),
     )
 
     await act(async () => {})
@@ -79,7 +81,7 @@ describe("useStaleConfigEstimate", () => {
 
     const { result, rerender } = renderHook(
       ({ config }: { config: Record<string, unknown> }) =>
-        useStaleConfigEstimate<FakeEstimate>("node_1", config, null, endpoint),
+        useStaleConfigEstimate<FakeEstimate>("node_1", config, null, endpoint, { source: "source_a", structuralVersion: 1 }),
       { initialProps: { config: configA } },
     )
 
@@ -108,6 +110,7 @@ describe("useStaleConfigEstimate", () => {
           configA,
           null,
           endpoint,
+          { source: "source_a", structuralVersion: 1 },
           { estimateKey },
         ),
       { initialProps: { estimateKey: "live:1" } },
@@ -133,7 +136,7 @@ describe("useStaleConfigEstimate", () => {
 
     const { rerender } = renderHook(
       ({ config }: { config: Record<string, unknown> }) =>
-        useStaleConfigEstimate<FakeEstimate>("node_1", config, null, endpoint),
+        useStaleConfigEstimate<FakeEstimate>("node_1", config, null, endpoint, { source: "source_a", structuralVersion: 1 }),
       { initialProps: { config: configA } },
     )
 
@@ -155,7 +158,7 @@ describe("useStaleConfigEstimate", () => {
       })
 
     const { unmount, result } = renderHook(() =>
-      useStaleConfigEstimate<FakeEstimate>("node_1", configA, null, endpoint),
+      useStaleConfigEstimate<FakeEstimate>("node_1", configA, null, endpoint, { source: "source_a", structuralVersion: 1 }),
     )
 
     await waitFor(() => expect(endpoint).toHaveBeenCalled())
@@ -171,7 +174,7 @@ describe("useStaleConfigEstimate", () => {
     const endpoint = vi.fn().mockRejectedValue(new Error("Server unreachable"))
 
     const { result } = renderHook(() =>
-      useStaleConfigEstimate<FakeEstimate>("node_1", configA, null, endpoint),
+      useStaleConfigEstimate<FakeEstimate>("node_1", configA, null, endpoint, { source: "source_a", structuralVersion: 1 }),
     )
 
     await waitFor(() => expect(result.current.loading).toBe(false))

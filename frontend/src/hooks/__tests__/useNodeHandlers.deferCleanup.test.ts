@@ -95,6 +95,8 @@ describe("useNodeHandlers — cache cleanup deferred on delete (#32)", () => {
           },
           jobId: "j1",
           configHash: "h1",
+          source: "live",
+          structuralVersion: 0,
           constraints: {},
           nodeLabel: "N1",
           frontier: null,

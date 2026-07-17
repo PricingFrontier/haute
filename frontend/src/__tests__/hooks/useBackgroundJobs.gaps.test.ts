@@ -115,8 +115,8 @@ describe("useBackgroundJobs — gap tests", () => {
 
       // Start both jobs
       act(() => {
-        useNodeResultsStore.getState().startSolveJob("s1", "solve-1", "Solve Node", {}, "h1")
-        useNodeResultsStore.getState().startTrainJob("t1", "train-1", "Train Node", "h2")
+        useNodeResultsStore.getState().startSolveJob("s1", "solve-1", "Solve Node", {}, "h1", "live", 0)
+        useNodeResultsStore.getState().startTrainJob("t1", "train-1", "Train Node", "h2", "live", 0)
       })
 
       renderHook(() => useBackgroundJobs())
@@ -174,8 +174,8 @@ describe("useBackgroundJobs — gap tests", () => {
       })
 
       act(() => {
-        useNodeResultsStore.getState().startSolveJob("a", "job-a", "Node A", {}, "h")
-        useNodeResultsStore.getState().startSolveJob("b", "job-b", "Node B", {}, "h")
+        useNodeResultsStore.getState().startSolveJob("a", "job-a", "Node A", {}, "h", "live", 0)
+        useNodeResultsStore.getState().startSolveJob("b", "job-b", "Node B", {}, "h", "live", 0)
       })
 
       renderHook(() => useBackgroundJobs())
@@ -212,7 +212,7 @@ describe("useBackgroundJobs — gap tests", () => {
       })
 
       act(() => {
-        useNodeResultsStore.getState().startTrainJob("t1", "tj-1", "GLM Node", "th")
+        useNodeResultsStore.getState().startTrainJob("t1", "tj-1", "GLM Node", "th", "live", 0)
       })
 
       renderHook(() => useBackgroundJobs())
@@ -247,7 +247,7 @@ describe("useBackgroundJobs — gap tests", () => {
       })
 
       act(() => {
-        useNodeResultsStore.getState().startSolveJob("n1", "job-1", "Node 1", {}, "h")
+        useNodeResultsStore.getState().startSolveJob("n1", "job-1", "Node 1", {}, "h", "live", 0)
       })
 
       renderHook(() => useBackgroundJobs())
@@ -285,7 +285,7 @@ describe("useBackgroundJobs — gap tests", () => {
         })
 
       act(() => {
-        useNodeResultsStore.getState().startSolveJob("n1", "job-1", "Node 1", {}, "h")
+        useNodeResultsStore.getState().startSolveJob("n1", "job-1", "Node 1", {}, "h", "live", 0)
       })
 
       renderHook(() => useBackgroundJobs())
