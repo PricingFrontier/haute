@@ -16,9 +16,12 @@ const DEFAULT_MAX_SINGLE_JS_GZIP_KIB = 650
 // initial-path growth (VC api/types/guards/store + multi-frame core). The
 // data-io feature added ~0.7 KiB of the same class (fetchIoFormats client
 // function + its runtime guard; the editors themselves are lazy chunks).
-// 243 KiB keeps a small margin while still catching accidental eager
+// The Explore NaN split added ~0.5 KiB of the same class again (nan_count in
+// types/guards, the NaN %/NaN columns, and the shared Tooltip + HelpCircle
+// icon newly reaching the initial chunk via the Distinct help button).
+// 244 KiB keeps a small margin while still catching accidental eager
 // editor/vendor imports.
-const DEFAULT_MAX_INITIAL_JS_GZIP_KIB = 243
+const DEFAULT_MAX_INITIAL_JS_GZIP_KIB = 244
 
 // Chunks that should only be fetched after a user opens a code/editor-heavy
 // surface. If one appears as a startup modulepreload, the app has likely
