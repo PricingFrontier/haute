@@ -152,7 +152,7 @@ describe("useBackgroundJobs", () => {
 
       // Start a job in the store
       act(() => {
-        useNodeResultsStore.getState().startSolveJob("n1", "job-1", "Node 1", {}, "hash-a")
+        useNodeResultsStore.getState().startSolveJob("n1", "job-1", "Node 1", {}, "hash-a", "live", 0)
       })
 
       // Render the hook (triggers useEffect -> createJobPoller -> schedulePoll)
@@ -188,7 +188,7 @@ describe("useBackgroundJobs", () => {
       )
 
       act(() => {
-        useNodeResultsStore.getState().startSolveJob("n1", "job-1", "Node 1", {}, "h")
+        useNodeResultsStore.getState().startSolveJob("n1", "job-1", "Node 1", {}, "h", "live", 0)
       })
 
       renderHook(() => useBackgroundJobs())
@@ -210,7 +210,7 @@ describe("useBackgroundJobs", () => {
       })
 
       act(() => {
-        useNodeResultsStore.getState().startSolveJob("n1", "sj-missing", "Solve Node", {}, "sh")
+        useNodeResultsStore.getState().startSolveJob("n1", "sj-missing", "Solve Node", {}, "sh", "live", 0)
       })
 
       renderHook(() => useBackgroundJobs())
@@ -244,7 +244,7 @@ describe("useBackgroundJobs", () => {
       })
 
       act(() => {
-        useNodeResultsStore.getState().startSolveJob("n1", "sj-gone", "Solve Node", {}, "sh")
+        useNodeResultsStore.getState().startSolveJob("n1", "sj-gone", "Solve Node", {}, "sh", "live", 0)
       })
 
       renderHook(() => useBackgroundJobs())
@@ -270,7 +270,7 @@ describe("useBackgroundJobs", () => {
         .mockResolvedValueOnce(makeSolveProgress({ status: "running", progress: 0.3, message: "30%" }))
 
       act(() => {
-        useNodeResultsStore.getState().startSolveJob("n1", "job-1", "Node 1", {}, "h")
+        useNodeResultsStore.getState().startSolveJob("n1", "job-1", "Node 1", {}, "h", "live", 0)
       })
 
       renderHook(() => useBackgroundJobs())
@@ -307,7 +307,7 @@ describe("useBackgroundJobs", () => {
       )
 
       act(() => {
-        useNodeResultsStore.getState().startTrainJob("t1", "tj-1", "Train Node", "th")
+        useNodeResultsStore.getState().startTrainJob("t1", "tj-1", "Train Node", "th", "live", 0)
       })
 
       renderHook(() => useBackgroundJobs())
@@ -329,7 +329,7 @@ describe("useBackgroundJobs", () => {
         .mockResolvedValueOnce(makeTrainProgress({ status: "running", progress: 0.3, message: "30%" }))
 
       act(() => {
-        useNodeResultsStore.getState().startTrainJob("t1", "tj-1", "Train Node", "th")
+        useNodeResultsStore.getState().startTrainJob("t1", "tj-1", "Train Node", "th", "live", 0)
       })
 
       renderHook(() => useBackgroundJobs())
@@ -354,7 +354,7 @@ describe("useBackgroundJobs", () => {
       })
 
       act(() => {
-        useNodeResultsStore.getState().startTrainJob("t1", "tj-missing", "Train Node", "th")
+        useNodeResultsStore.getState().startTrainJob("t1", "tj-missing", "Train Node", "th", "live", 0)
       })
 
       renderHook(() => useBackgroundJobs())
@@ -390,7 +390,7 @@ describe("useBackgroundJobs", () => {
         .mockResolvedValueOnce(makeTrainProgress({ status: "running", progress: 0.4 }))
 
       act(() => {
-        useNodeResultsStore.getState().startTrainJob("t1", "tj-retry", "Train Node", "th")
+        useNodeResultsStore.getState().startTrainJob("t1", "tj-retry", "Train Node", "th", "live", 0)
       })
 
       renderHook(() => useBackgroundJobs())
@@ -496,7 +496,7 @@ describe("useBackgroundJobs", () => {
       })
 
       act(() => {
-        useNodeResultsStore.getState().startSolveJob("n1", "job-1", "Node 1", {}, "h")
+        useNodeResultsStore.getState().startSolveJob("n1", "job-1", "Node 1", {}, "h", "live", 0)
       })
 
       renderHook(() => useBackgroundJobs())
@@ -550,7 +550,7 @@ describe("useBackgroundJobs", () => {
       )
 
       act(() => {
-        useNodeResultsStore.getState().startSolveJob("n1", "job-1", "Node 1", {}, "h")
+        useNodeResultsStore.getState().startSolveJob("n1", "job-1", "Node 1", {}, "h", "live", 0)
       })
 
       renderHook(() => useBackgroundJobs())
@@ -581,7 +581,7 @@ describe("useBackgroundJobs", () => {
       })
 
       act(() => {
-        useNodeResultsStore.getState().startSolveJob("n1", "job-1", "Node 1", {}, "h")
+        useNodeResultsStore.getState().startSolveJob("n1", "job-1", "Node 1", {}, "h", "live", 0)
       })
 
       const { rerender } = renderHook(() => useBackgroundJobs())
@@ -624,7 +624,7 @@ describe("useBackgroundJobs", () => {
       )
 
       act(() => {
-        useNodeResultsStore.getState().startSolveJob("n1", "job-1", "Node 1", {}, "h")
+        useNodeResultsStore.getState().startSolveJob("n1", "job-1", "Node 1", {}, "h", "live", 0)
       })
 
       renderHook(() => useBackgroundJobs())
@@ -649,7 +649,7 @@ describe("useBackgroundJobs", () => {
         )
 
         act(() => {
-          useNodeResultsStore.getState().startSolveJob("n1", "job-1", "Node 1", {}, "h")
+          useNodeResultsStore.getState().startSolveJob("n1", "job-1", "Node 1", {}, "h", "live", 0)
         })
 
         renderHook(() => useBackgroundJobs())
@@ -672,7 +672,7 @@ describe("useBackgroundJobs", () => {
       )
 
       act(() => {
-        useNodeResultsStore.getState().startSolveJob("n1", "job-1", "Node 1", {}, "h")
+        useNodeResultsStore.getState().startSolveJob("n1", "job-1", "Node 1", {}, "h", "live", 0)
       })
 
       renderHook(() => useBackgroundJobs())
@@ -708,7 +708,7 @@ describe("useBackgroundJobs", () => {
       )
 
       act(() => {
-        useNodeResultsStore.getState().startSolveJob("n1", "job-1", "Node 1", {}, "h")
+        useNodeResultsStore.getState().startSolveJob("n1", "job-1", "Node 1", {}, "h", "live", 0)
       })
 
       renderHook(() => useBackgroundJobs())

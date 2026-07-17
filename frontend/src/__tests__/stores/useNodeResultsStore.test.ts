@@ -112,7 +112,7 @@ describe("useNodeResultsStore", () => {
   describe("solve job lifecycle", () => {
     it("startSolveJob creates an active job entry", () => {
       const { startSolveJob } = useNodeResultsStore.getState()
-      startSolveJob("n1", "job-1", "Node 1", { premium: { min: 0, max: 100 } }, "hash-a")
+      startSolveJob("n1", "job-1", "Node 1", { premium: { min: 0, max: 100 } }, "hash-a", "live", 0)
 
       const { solveJobs } = useNodeResultsStore.getState()
       expect(solveJobs["n1"]).toBeDefined()
@@ -125,7 +125,7 @@ describe("useNodeResultsStore", () => {
 
     it("updateSolveProgress attaches progress to active job", () => {
       const state = useNodeResultsStore.getState()
-      state.startSolveJob("n1", "job-1", "Node 1", {}, "h")
+      state.startSolveJob("n1", "job-1", "Node 1", {}, "h", "live", 0)
       state.updateSolveProgress("n1", {
         status: "running",
         progress: 0.5,
@@ -152,7 +152,7 @@ describe("useNodeResultsStore", () => {
 
     it("completeSolveJob moves result to solveResults and removes the job", () => {
       const state = useNodeResultsStore.getState()
-      state.startSolveJob("n1", "job-1", "Node 1", { premium: { min: 0, max: 100 } }, "hash-a")
+      state.startSolveJob("n1", "job-1", "Node 1", { premium: { min: 0, max: 100 } }, "hash-a", "live", 0)
 
       const result = makeSolveResult()
       state.completeSolveJob("n1", result)
@@ -179,7 +179,7 @@ describe("useNodeResultsStore", () => {
 
     it("full lifecycle: start → update → complete", () => {
       const s = useNodeResultsStore.getState()
-      s.startSolveJob("n1", "j1", "Node 1", { c: { min: 0, max: 1 } }, "h1")
+      s.startSolveJob("n1", "j1", "Node 1", { c: { min: 0, max: 1 } }, "h1", "live", 0)
       s.updateSolveProgress("n1", {
         status: "running",
         progress: 0.5,
@@ -202,7 +202,7 @@ describe("useNodeResultsStore", () => {
   describe("failSolveJob", () => {
     it("removes the job from solveJobs on failure", () => {
       const s = useNodeResultsStore.getState()
-      s.startSolveJob("n1", "j1", "Node 1", {}, "h")
+      s.startSolveJob("n1", "j1", "Node 1", {}, "h", "live", 0)
       s.updateSolveProgress("n1", {
         status: "running",
         progress: 0.3,
@@ -232,7 +232,7 @@ describe("useNodeResultsStore", () => {
         execution_metrics: executionMetrics,
       }
 
-      s.startSolveJob("n1", "j1", "Node 1", {}, "h")
+      s.startSolveJob("n1", "j1", "Node 1", {}, "h", "live", 0)
       s.failSolveJob("n1", "Stopped", terminalStatus)
 
       const failedResult = useNodeResultsStore.getState().solveResults["n1"]
@@ -252,7 +252,7 @@ describe("useNodeResultsStore", () => {
 
   describe("train job lifecycle", () => {
     it("startTrainJob creates an active job entry", () => {
-      useNodeResultsStore.getState().startTrainJob("t1", "tj-1", "Train Node", "cfg-hash")
+      useNodeResultsStore.getState().startTrainJob("t1", "tj-1", "Train Node", "cfg-hash", "live", 0)
       const job = useNodeResultsStore.getState().trainJobs["t1"]
       expect(job).toBeDefined()
       expect(job.jobId).toBe("tj-1")
@@ -264,7 +264,7 @@ describe("useNodeResultsStore", () => {
 
     it("updateTrainProgress attaches progress to active job", () => {
       const s = useNodeResultsStore.getState()
-      s.startTrainJob("t1", "tj-1", "Train Node", "h")
+      s.startTrainJob("t1", "tj-1", "Train Node", "h", "live", 0)
       s.updateTrainProgress("t1", {
         status: "running",
         progress: 0.7,
@@ -295,7 +295,7 @@ describe("useNodeResultsStore", () => {
 
     it("completeTrainJob moves result to trainResults and removes the job", () => {
       const s = useNodeResultsStore.getState()
-      s.startTrainJob("t1", "tj-1", "Train Node", "cfg-hash")
+      s.startTrainJob("t1", "tj-1", "Train Node", "cfg-hash", "live", 0)
       const result = makeTrainResult()
       s.completeTrainJob("t1", result)
 
@@ -322,7 +322,7 @@ describe("useNodeResultsStore", () => {
 
     it("full lifecycle: start → update → complete", () => {
       const s = useNodeResultsStore.getState()
-      s.startTrainJob("t1", "tj-1", "Train Node", "h")
+      s.startTrainJob("t1", "tj-1", "Train Node", "h", "live", 0)
       s.updateTrainProgress("t1", {
         status: "running",
         progress: 0.5,
@@ -348,7 +348,7 @@ describe("useNodeResultsStore", () => {
   describe("failTrainJob", () => {
     it("removes job from trainJobs on failure", () => {
       const s = useNodeResultsStore.getState()
-      s.startTrainJob("t1", "tj-1", "Train Node", "h")
+      s.startTrainJob("t1", "tj-1", "Train Node", "h", "live", 0)
       s.updateTrainProgress("t1", {
         status: "running",
         progress: 0.3,
@@ -385,7 +385,7 @@ describe("useNodeResultsStore", () => {
         execution_metrics: executionMetrics,
       }
 
-      s.startTrainJob("t1", "tj-1", "Train Node", "h")
+      s.startTrainJob("t1", "tj-1", "Train Node", "h", "live", 0)
       s.failTrainJob("t1", "Stopped", terminalStatus)
 
       const failedResult = useNodeResultsStore.getState().trainResults["t1"]
@@ -617,15 +617,15 @@ describe("useNodeResultsStore", () => {
       // Set up data across all caches
       s.setPreview("n1", makePreviewData(), 0)
       s.setColumns("n1", [{ name: "x", dtype: "float64" }], 0)
-      s.startSolveJob("n1", "sj1", "Node 1", { c: { min: 0, max: 1 } }, "h1")
-      s.startTrainJob("n1", "tj1", "Train 1", "th1")
+      s.startSolveJob("n1", "sj1", "Node 1", { c: { min: 0, max: 1 } }, "h1", "live", 0)
+      s.startTrainJob("n1", "tj1", "Train 1", "th1", "live", 0)
 
       // Also set up a solve result (complete a second job to create it)
-      s.startSolveJob("n1b", "sj2", "Node 1b", {}, "h2")
+      s.startSolveJob("n1b", "sj2", "Node 1b", {}, "h2", "live", 0)
       // We'll directly inject a solve result for n1
       useNodeResultsStore.setState((prev) => ({
-        solveResults: { ...prev.solveResults, n1: { result: makeSolveResult(), originalResult: makeSolveResult(), jobId: "sj-old", configHash: "h-old", constraints: {}, nodeLabel: "N1", frontier: null, selectedPointIndex: null } },
-        trainResults: { ...prev.trainResults, n1: { result: makeTrainResult(), jobId: "tj-old", configHash: "th-old" } },
+        solveResults: { ...prev.solveResults, n1: { result: makeSolveResult(), originalResult: makeSolveResult(), jobId: "sj-old", configHash: "h-old", source: "live", structuralVersion: 0, constraints: {}, nodeLabel: "N1", frontier: null, selectedPointIndex: null } },
+        trainResults: { ...prev.trainResults, n1: { result: makeTrainResult(), jobId: "tj-old", configHash: "th-old", source: "live", structuralVersion: 0 } },
       }))
 
       // Verify all caches have data
@@ -770,14 +770,14 @@ describe("useNodeResultsStore", () => {
 
     it("evicts the oldest cached solve results without removing active solve jobs", () => {
       const s = useNodeResultsStore.getState()
-      s.startSolveJob("active-solve", "active-job", "Still Running", {}, "active-hash")
+      s.startSolveJob("active-solve", "active-job", "Still Running", {}, "active-hash", "live", 0)
 
       for (let i = 0; i < MAX_CACHED_SOLVE_RESULTS; i += 1) {
-        s.startSolveJob(`s${i}`, `job-${i}`, `Solve ${i}`, {}, `hash-${i}`)
+        s.startSolveJob(`s${i}`, `job-${i}`, `Solve ${i}`, {}, `hash-${i}`, "live", 0)
         s.completeSolveJob(`s${i}`, makeSolveResult({ total_objective: i }))
       }
       expect(s.getOptimiserPreview("s0")).not.toBeNull()
-      s.startSolveJob(`s${MAX_CACHED_SOLVE_RESULTS}`, `job-${MAX_CACHED_SOLVE_RESULTS}`, "Solve new", {}, "hash-new")
+      s.startSolveJob(`s${MAX_CACHED_SOLVE_RESULTS}`, `job-${MAX_CACHED_SOLVE_RESULTS}`, "Solve new", {}, "hash-new", "live", 0)
       s.completeSolveJob(`s${MAX_CACHED_SOLVE_RESULTS}`, makeSolveResult({ total_objective: MAX_CACHED_SOLVE_RESULTS }))
 
       const { solveJobs, solveResults } = useNodeResultsStore.getState()
@@ -791,11 +791,11 @@ describe("useNodeResultsStore", () => {
       const s = useNodeResultsStore.getState()
 
       for (let i = 0; i < MAX_CACHED_SOLVE_RESULTS; i += 1) {
-        s.startSolveJob(`s${i}`, `job-${i}`, `Solve ${i}`, {}, `hash-${i}`)
+        s.startSolveJob(`s${i}`, `job-${i}`, `Solve ${i}`, {}, `hash-${i}`, "live", 0)
         s.completeSolveJob(`s${i}`, makeSolveResult({ total_objective: i }))
       }
       expect(s.getOptimiserPreview("s0")).not.toBeNull()
-      s.startSolveJob("s-new", "job-new", "Solve new", {}, "hash-new")
+      s.startSolveJob("s-new", "job-new", "Solve new", {}, "hash-new", "live", 0)
       s.failSolveJob("s-new", "Solver failed")
 
       const { solveResults } = useNodeResultsStore.getState()
@@ -808,12 +808,12 @@ describe("useNodeResultsStore", () => {
       const s = useNodeResultsStore.getState()
 
       for (let i = 0; i < MAX_CACHED_SOLVE_RESULTS; i += 1) {
-        s.startSolveJob(`s${i}`, `job-${i}`, `Solve ${i}`, {}, `hash-${i}`)
+        s.startSolveJob(`s${i}`, `job-${i}`, `Solve ${i}`, {}, `hash-${i}`, "live", 0)
         s.completeSolveJob(`s${i}`, makeSolveResult({ total_objective: i }))
       }
       expect(s.getOptimiserPreview("s0")).not.toBeNull()
       s.touchOptimiserPreview("s0")
-      s.startSolveJob("s-new", "job-new", "Solve new", {}, "hash-new")
+      s.startSolveJob("s-new", "job-new", "Solve new", {}, "hash-new", "live", 0)
       s.completeSolveJob("s-new", makeSolveResult({ total_objective: 999 }))
 
       const { solveResults } = useNodeResultsStore.getState()
@@ -827,13 +827,13 @@ describe("useNodeResultsStore", () => {
       const s = useNodeResultsStore.getState()
 
       for (let i = 0; i < MAX_CACHED_SOLVE_RESULTS; i += 1) {
-        s.startSolveJob(`s${i}`, `job-${i}`, `Solve ${i}`, {}, `hash-${i}`)
+        s.startSolveJob(`s${i}`, `job-${i}`, `Solve ${i}`, {}, `hash-${i}`, "live", 0)
         s.completeSolveJob(`s${i}`, makeSolveResult({ total_objective: i }))
       }
       s.setPinnedPreviewNodeId("s0")
-      s.startSolveJob("s-new-1", "job-new-1", "Solve new 1", {}, "hash-new-1")
+      s.startSolveJob("s-new-1", "job-new-1", "Solve new 1", {}, "hash-new-1", "live", 0)
       s.completeSolveJob("s-new-1", makeSolveResult({ total_objective: 998 }))
-      s.startSolveJob("s-new-2", "job-new-2", "Solve new 2", {}, "hash-new-2")
+      s.startSolveJob("s-new-2", "job-new-2", "Solve new 2", {}, "hash-new-2", "live", 0)
       s.completeSolveJob("s-new-2", makeSolveResult({ total_objective: 999 }))
 
       const { solveResults } = useNodeResultsStore.getState()
@@ -847,10 +847,10 @@ describe("useNodeResultsStore", () => {
 
     it("evicts the oldest cached train results without removing active train jobs", () => {
       const s = useNodeResultsStore.getState()
-      s.startTrainJob("active-train", "active-job", "Still Running", "active-hash")
+      s.startTrainJob("active-train", "active-job", "Still Running", "active-hash", "live", 0)
 
       for (let i = 0; i < MAX_CACHED_TRAIN_RESULTS + 1; i += 1) {
-        s.startTrainJob(`t${i}`, `job-${i}`, `Train ${i}`, `hash-${i}`)
+        s.startTrainJob(`t${i}`, `job-${i}`, `Train ${i}`, `hash-${i}`, "live", 0)
         s.completeTrainJob(`t${i}`, makeTrainResult({ metrics: { rmse: i } }))
       }
 
@@ -865,11 +865,11 @@ describe("useNodeResultsStore", () => {
       const s = useNodeResultsStore.getState()
 
       for (let i = 0; i < MAX_CACHED_TRAIN_RESULTS; i += 1) {
-        s.startTrainJob(`t${i}`, `job-${i}`, `Train ${i}`, `hash-${i}`)
+        s.startTrainJob(`t${i}`, `job-${i}`, `Train ${i}`, `hash-${i}`, "live", 0)
         s.completeTrainJob(`t${i}`, makeTrainResult({ metrics: { rmse: i } }))
       }
       expect(s.getModellingPreview("t0")).not.toBeNull()
-      s.startTrainJob("t-new", "job-new", "Train new", "hash-new")
+      s.startTrainJob("t-new", "job-new", "Train new", "hash-new", "live", 0)
       s.failTrainJob("t-new", "Training failed")
 
       const { trainResults } = useNodeResultsStore.getState()
@@ -882,12 +882,12 @@ describe("useNodeResultsStore", () => {
       const s = useNodeResultsStore.getState()
 
       for (let i = 0; i < MAX_CACHED_TRAIN_RESULTS; i += 1) {
-        s.startTrainJob(`t${i}`, `job-${i}`, `Train ${i}`, `hash-${i}`)
+        s.startTrainJob(`t${i}`, `job-${i}`, `Train ${i}`, `hash-${i}`, "live", 0)
         s.completeTrainJob(`t${i}`, makeTrainResult({ metrics: { rmse: i } }))
       }
       expect(s.getModellingPreview("t0")).not.toBeNull()
       s.touchModellingPreview("t0")
-      s.startTrainJob("t-new", "job-new", "Train new", "hash-new")
+      s.startTrainJob("t-new", "job-new", "Train new", "hash-new", "live", 0)
       s.completeTrainJob("t-new", makeTrainResult({ metrics: { rmse: 999 } }))
 
       const { trainResults } = useNodeResultsStore.getState()
@@ -901,13 +901,13 @@ describe("useNodeResultsStore", () => {
       const s = useNodeResultsStore.getState()
 
       for (let i = 0; i < MAX_CACHED_TRAIN_RESULTS; i += 1) {
-        s.startTrainJob(`t${i}`, `job-${i}`, `Train ${i}`, `hash-${i}`)
+        s.startTrainJob(`t${i}`, `job-${i}`, `Train ${i}`, `hash-${i}`, "live", 0)
         s.completeTrainJob(`t${i}`, makeTrainResult({ metrics: { rmse: i } }))
       }
       s.setPinnedPreviewNodeId("t0")
-      s.startTrainJob("t-new-1", "job-new-1", "Train new 1", "hash-new-1")
+      s.startTrainJob("t-new-1", "job-new-1", "Train new 1", "hash-new-1", "live", 0)
       s.completeTrainJob("t-new-1", makeTrainResult({ metrics: { rmse: 998 } }))
-      s.startTrainJob("t-new-2", "job-new-2", "Train new 2", "hash-new-2")
+      s.startTrainJob("t-new-2", "job-new-2", "Train new 2", "hash-new-2", "live", 0)
       s.completeTrainJob("t-new-2", makeTrainResult({ metrics: { rmse: 999 } }))
 
       const { trainResults } = useNodeResultsStore.getState()
@@ -943,7 +943,7 @@ describe("useNodeResultsStore", () => {
       s.touchOptimiserPreview("missing-solve")
       s.touchModellingPreview("missing-train")
 
-      s.startTrainJob("t-error", "job-error", "Train error", "hash-error")
+      s.startTrainJob("t-error", "job-error", "Train error", "hash-error", "live", 0)
       s.failTrainJob("t-error", "Training failed")
       s.touchModellingPreview("t-error")
 
@@ -965,7 +965,7 @@ describe("useNodeResultsStore", () => {
     it("builds correct shape from completed result", () => {
       const s = useNodeResultsStore.getState()
       const constraints = { premium: { min: 0, max: 100 } }
-      s.startSolveJob("n1", "j1", "Optim Node", constraints, "h")
+      s.startSolveJob("n1", "j1", "Optim Node", constraints, "h", "live", 0)
       const result = makeSolveResult({ converged: true, iterations: 15 })
       s.completeSolveJob("n1", result)
 
@@ -985,7 +985,7 @@ describe("useNodeResultsStore", () => {
   describe("Frontier actions", () => {
     it("completeSolveJob selects and displays the first frontier point immediately", () => {
       const s = useNodeResultsStore.getState()
-      s.startSolveJob("n1", "j1", "Node 1", { vol: { min: 0.9 } }, "h1")
+      s.startSolveJob("n1", "j1", "Node 1", { vol: { min: 0.9 } }, "h1", "live", 0)
 
       const frontier = {
         status: "ok",
@@ -1030,7 +1030,7 @@ describe("useNodeResultsStore", () => {
 
     it("completeSolveJob caches an accepted partial frontier without auto-selecting it", () => {
       const s = useNodeResultsStore.getState()
-      s.startSolveJob("n1", "j1", "Node 1", { premium: { min: 0 } }, "h1")
+      s.startSolveJob("n1", "j1", "Node 1", { premium: { min: 0 } }, "h1", "live", 0)
 
       const result = makeSolveResult({
         total_objective: 100,
@@ -1058,7 +1058,7 @@ describe("useNodeResultsStore", () => {
 
     it("completeSolveJob sets null frontier when points empty", () => {
       const s = useNodeResultsStore.getState()
-      s.startSolveJob("n1", "j1", "Node 1", {}, "h1")
+      s.startSolveJob("n1", "j1", "Node 1", {}, "h1", "live", 0)
 
       const frontier = {
         status: "ok",
@@ -1079,7 +1079,7 @@ describe("useNodeResultsStore", () => {
 
     it("completeSolveJob sets null frontier when absent", () => {
       const s = useNodeResultsStore.getState()
-      s.startSolveJob("n1", "j1", "Node 1", {}, "h1")
+      s.startSolveJob("n1", "j1", "Node 1", {}, "h1", "live", 0)
 
       const result = makeSolveResult()
       // Ensure no frontier key on the result
@@ -1093,7 +1093,7 @@ describe("useNodeResultsStore", () => {
 
     it("selectFrontierPoint sets index", () => {
       const s = useNodeResultsStore.getState()
-      s.startSolveJob("n1", "j1", "Node 1", {}, "h1")
+      s.startSolveJob("n1", "j1", "Node 1", {}, "h1", "live", 0)
       s.completeSolveJob("n1", makeSolveResult({
         frontier: {
           status: "ok",
@@ -1114,7 +1114,7 @@ describe("useNodeResultsStore", () => {
 
     it("selectFrontierPoint derives the selected result summary from a flattened frontier row immediately", () => {
       const s = useNodeResultsStore.getState()
-      s.startSolveJob("n1", "j1", "Node 1", {}, "h1")
+      s.startSolveJob("n1", "j1", "Node 1", {}, "h1", "live", 0)
       const frontier = {
         status: "ok",
         points: [
@@ -1182,7 +1182,7 @@ describe("useNodeResultsStore", () => {
 
     it("selectFrontierPoint uses point diagnostics when the frontier row provides them", () => {
       const s = useNodeResultsStore.getState()
-      s.startSolveJob("n1", "j1", "Node 1", {}, "h1")
+      s.startSolveJob("n1", "j1", "Node 1", {}, "h1", "live", 0)
       const pointStats = {
         mean: 1.08,
         std: 0.03,
@@ -1262,7 +1262,7 @@ describe("useNodeResultsStore", () => {
 
     it("selectFrontierPoint preserves flat scenario stats from price-contour frontier rows", () => {
       const s = useNodeResultsStore.getState()
-      s.startSolveJob("n1", "j1", "Node 1", {}, "h1")
+      s.startSolveJob("n1", "j1", "Node 1", {}, "h1", "live", 0)
       const frontier = {
         status: "ok",
         points: [
@@ -1311,7 +1311,7 @@ describe("useNodeResultsStore", () => {
 
     it("selectFrontierPoint uses a point-specific warning for non-converged frontier rows", () => {
       const s = useNodeResultsStore.getState()
-      s.startSolveJob("n1", "j1", "Node 1", {}, "h1")
+      s.startSolveJob("n1", "j1", "Node 1", {}, "h1", "live", 0)
       const frontier = {
         status: "ok",
         points: [
@@ -1341,7 +1341,7 @@ describe("useNodeResultsStore", () => {
 
     it("selectFrontierPoint accepts raw constraint columns from price-contour frontier rows", () => {
       const s = useNodeResultsStore.getState()
-      s.startSolveJob("n1", "j1", "Node 1", {}, "h1")
+      s.startSolveJob("n1", "j1", "Node 1", {}, "h1", "live", 0)
       const frontier = {
         status: "ok",
         points: [
@@ -1372,7 +1372,7 @@ describe("useNodeResultsStore", () => {
 
     it("selectFrontierPoint derives the selected result summary from nested frontier row maps", () => {
       const s = useNodeResultsStore.getState()
-      s.startSolveJob("n1", "j1", "Node 1", {}, "h1")
+      s.startSolveJob("n1", "j1", "Node 1", {}, "h1", "live", 0)
       const frontier = {
         status: "ok",
         points: [
@@ -1405,7 +1405,7 @@ describe("useNodeResultsStore", () => {
 
     it("selectFrontierPoint null deselects and reverts result", () => {
       const s = useNodeResultsStore.getState()
-      s.startSolveJob("n1", "j1", "Node 1", {}, "h1")
+      s.startSolveJob("n1", "j1", "Node 1", {}, "h1", "live", 0)
       const original = makeSolveResult({
         total_objective: 100,
         frontier: {
@@ -1445,7 +1445,7 @@ describe("useNodeResultsStore", () => {
 
     it("updateFrontierAfterSelect updates result metrics", () => {
       const s = useNodeResultsStore.getState()
-      s.startSolveJob("n1", "j1", "Node 1", {}, "h1")
+      s.startSolveJob("n1", "j1", "Node 1", {}, "h1", "live", 0)
       s.completeSolveJob("n1", makeSolveResult({
         total_objective: 100,
         constraints: { premium: 50 },
@@ -1476,7 +1476,7 @@ describe("useNodeResultsStore", () => {
 
     it("updateFrontierAfterSelect uses the backend non-convergence warning for select responses", () => {
       const s = useNodeResultsStore.getState()
-      s.startSolveJob("n1", "j1", "Node 1", {}, "h1")
+      s.startSolveJob("n1", "j1", "Node 1", {}, "h1", "live", 0)
       s.completeSolveJob("n1", makeSolveResult({
         converged: false,
         warning: "Stale original warning",
@@ -1498,7 +1498,7 @@ describe("useNodeResultsStore", () => {
 
     it("updateFrontierAfterSelect keeps diagnostics from the selected frontier row", () => {
       const s = useNodeResultsStore.getState()
-      s.startSolveJob("n1", "j1", "Node 1", {}, "h1")
+      s.startSolveJob("n1", "j1", "Node 1", {}, "h1", "live", 0)
       const frontier = {
         status: "ok",
         points: [
@@ -1544,7 +1544,7 @@ describe("useNodeResultsStore", () => {
 
     it("updateFrontierAfterSelect stores materialised ratebook factor tables on the selected point", () => {
       const s = useNodeResultsStore.getState()
-      s.startSolveJob("n1", "j1", "Node 1", {}, "h1")
+      s.startSolveJob("n1", "j1", "Node 1", {}, "h1", "live", 0)
       const frontier = {
         status: "ok",
         points: [
@@ -1595,7 +1595,7 @@ describe("useNodeResultsStore", () => {
 
     it("updateFrontierAfterSelect enriches only the selected frontier point with optional detail", () => {
       const s = useNodeResultsStore.getState()
-      s.startSolveJob("n1", "j1", "Node 1", {}, "h1")
+      s.startSolveJob("n1", "j1", "Node 1", {}, "h1", "live", 0)
       const frontier = {
         status: "ok",
         points: [
@@ -1683,7 +1683,7 @@ describe("useNodeResultsStore", () => {
       // response is still allowed to enrich point-0's per-point detail in the
       // frontier so re-selecting point 0 later benefits from the data.
       const s = useNodeResultsStore.getState()
-      s.startSolveJob("n1", "j1", "Node 1", {}, "h1")
+      s.startSolveJob("n1", "j1", "Node 1", {}, "h1", "live", 0)
       const frontier = {
         status: "ok",
         points: [
@@ -1748,7 +1748,7 @@ describe("useNodeResultsStore", () => {
       // disagrees with the index the store was asked to update, that is a
       // contract violation — surface it loudly rather than mutating state.
       const s = useNodeResultsStore.getState()
-      s.startSolveJob("n1", "j1", "Node 1", {}, "h1")
+      s.startSolveJob("n1", "j1", "Node 1", {}, "h1", "live", 0)
       s.completeSolveJob("n1", makeSolveResult({
         frontier: {
           status: "ok",
@@ -1781,7 +1781,7 @@ describe("useNodeResultsStore", () => {
 
     it("updateFrontierAfterSelect clears point diagnostics that are not in the selected point", () => {
       const s = useNodeResultsStore.getState()
-      s.startSolveJob("n1", "j1", "Node 1", {}, "h1")
+      s.startSolveJob("n1", "j1", "Node 1", {}, "h1", "live", 0)
       const original = makeSolveResult({
         iterations: 42,
         cd_iterations: 9,
@@ -1840,7 +1840,7 @@ describe("useNodeResultsStore", () => {
 
     it("getModellingPreview returns null when train result has error status", () => {
       const s = useNodeResultsStore.getState()
-      s.startTrainJob("t1", "tj-1", "Model Node", "cfg-h")
+      s.startTrainJob("t1", "tj-1", "Model Node", "cfg-h", "live", 0)
       s.completeTrainJob("t1", makeTrainResult({ status: "error", error: "OOM" }))
 
       const preview = useNodeResultsStore.getState().getModellingPreview("t1")
@@ -1849,7 +1849,7 @@ describe("useNodeResultsStore", () => {
 
     it("getModellingPreview returns result when status is 'completed'", () => {
       const s = useNodeResultsStore.getState()
-      s.startTrainJob("t1", "tj-1", "Model Node", "cfg-h")
+      s.startTrainJob("t1", "tj-1", "Model Node", "cfg-h", "live", 0)
       s.completeTrainJob("t1", makeTrainResult({ status: "completed" }))
 
       const preview = useNodeResultsStore.getState().getModellingPreview("t1")
@@ -1866,10 +1866,10 @@ describe("useNodeResultsStore", () => {
     it("getModellingPreview uses active job nodeLabel if still running", () => {
       const s = useNodeResultsStore.getState()
       // Start a job, complete it, then start another job for the same node
-      s.startTrainJob("t1", "tj-1", "First Label", "h1")
+      s.startTrainJob("t1", "tj-1", "First Label", "h1", "live", 0)
       s.completeTrainJob("t1", makeTrainResult())
       // Start a new job (different config) — old result still cached
-      s.startTrainJob("t1", "tj-2", "Updated Label", "h2")
+      s.startTrainJob("t1", "tj-2", "Updated Label", "h2", "live", 0)
 
       const preview = useNodeResultsStore.getState().getModellingPreview("t1")
       expect(preview).not.toBeNull()
@@ -1939,8 +1939,8 @@ describe("useNodeResultsStore", () => {
 
     it("concurrent solve and train jobs on the same nodeId are independent", () => {
       const s = useNodeResultsStore.getState()
-      s.startSolveJob("n1", "sj-1", "Node 1", { c: { min: 0 } }, "sh1")
-      s.startTrainJob("n1", "tj-1", "Node 1", "th1")
+      s.startSolveJob("n1", "sj-1", "Node 1", { c: { min: 0 } }, "sh1", "live", 0)
+      s.startTrainJob("n1", "tj-1", "Node 1", "th1", "live", 0)
 
       // Both should exist
       expect(useNodeResultsStore.getState().solveJobs["n1"]).toBeDefined()
@@ -1960,8 +1960,8 @@ describe("useNodeResultsStore", () => {
 
     it("failing solve does not affect concurrent train job", () => {
       const s = useNodeResultsStore.getState()
-      s.startSolveJob("n1", "sj-1", "Node 1", {}, "sh1")
-      s.startTrainJob("n1", "tj-1", "Node 1", "th1")
+      s.startSolveJob("n1", "sj-1", "Node 1", {}, "sh1", "live", 0)
+      s.startTrainJob("n1", "tj-1", "Node 1", "th1", "live", 0)
 
       s.failSolveJob("n1", "Solver diverged")
 
@@ -1973,8 +1973,8 @@ describe("useNodeResultsStore", () => {
 
     it("multiple solve jobs on different nodes simultaneously", () => {
       const s = useNodeResultsStore.getState()
-      s.startSolveJob("n1", "sj-1", "Node 1", { c: { min: 0 } }, "h1")
-      s.startSolveJob("n2", "sj-2", "Node 2", { d: { max: 1 } }, "h2")
+      s.startSolveJob("n1", "sj-1", "Node 1", { c: { min: 0 } }, "h1", "live", 0)
+      s.startSolveJob("n2", "sj-2", "Node 2", { d: { max: 1 } }, "h2", "live", 0)
 
       expect(useNodeResultsStore.getState().solveJobs["n1"]).toBeDefined()
       expect(useNodeResultsStore.getState().solveJobs["n2"]).toBeDefined()
@@ -2000,8 +2000,8 @@ describe("useNodeResultsStore", () => {
 
     it("failing one solve does not affect other nodes' solve jobs", () => {
       const s = useNodeResultsStore.getState()
-      s.startSolveJob("n1", "sj-1", "Node 1", {}, "h1")
-      s.startSolveJob("n2", "sj-2", "Node 2", {}, "h2")
+      s.startSolveJob("n1", "sj-1", "Node 1", {}, "h1", "live", 0)
+      s.startSolveJob("n2", "sj-2", "Node 2", {}, "h2", "live", 0)
 
       s.failSolveJob("n1", "Diverged")
 
@@ -2014,7 +2014,7 @@ describe("useNodeResultsStore", () => {
     it("getOptimiserPreview includes frontier and selectedPointIndex", () => {
       const s = useNodeResultsStore.getState()
       const constraints = { vol: { min: 0.9 } }
-      s.startSolveJob("n1", "j1", "Optim Node", constraints, "h1")
+      s.startSolveJob("n1", "j1", "Optim Node", constraints, "h1", "live", 0)
 
       const frontier = {
         status: "ok",
@@ -2048,7 +2048,7 @@ describe("useNodeResultsStore", () => {
   describe("derived getter caching (Issue #13)", () => {
     it("resetNodeResultsDerivedCaches clears module-scope derived caches and recency state", () => {
       const s = useNodeResultsStore.getState()
-      s.startSolveJob("n1", "j1", "Label", {}, "h1")
+      s.startSolveJob("n1", "j1", "Label", {}, "h1", "live", 0)
       s.completeSolveJob("n1", makeSolveResult())
       const stalePreview = s.getOptimiserPreview("n1")
 
@@ -2060,6 +2060,8 @@ describe("useNodeResultsStore", () => {
             originalResult: makeSolveResult({ total_objective: 999 }),
             jobId: "j2",
             configHash: "h2",
+            source: "live",
+            structuralVersion: 0,
             constraints: {},
             nodeLabel: "Fresh Label",
             frontier: null,
@@ -2076,7 +2078,7 @@ describe("useNodeResultsStore", () => {
 
     it("getOptimiserPreview returns same reference on repeated calls", () => {
       const s = useNodeResultsStore.getState()
-      s.startSolveJob("n1", "j1", "Label", {}, "h1")
+      s.startSolveJob("n1", "j1", "Label", {}, "h1", "live", 0)
       s.completeSolveJob("n1", makeSolveResult())
 
       const a = useNodeResultsStore.getState().getOptimiserPreview("n1")
@@ -2086,7 +2088,7 @@ describe("useNodeResultsStore", () => {
 
     it("getOptimiserPreview returns new reference after state change", () => {
       const s = useNodeResultsStore.getState()
-      s.startSolveJob("n1", "j1", "Label", {}, "h1")
+      s.startSolveJob("n1", "j1", "Label", {}, "h1", "live", 0)
       s.completeSolveJob("n1", makeSolveResult())
 
       const a = useNodeResultsStore.getState().getOptimiserPreview("n1")
@@ -2098,7 +2100,7 @@ describe("useNodeResultsStore", () => {
 
     it("getOptimiserPreview returns null after clearNode", () => {
       const s = useNodeResultsStore.getState()
-      s.startSolveJob("n1", "j1", "Label", {}, "h1")
+      s.startSolveJob("n1", "j1", "Label", {}, "h1", "live", 0)
       s.completeSolveJob("n1", makeSolveResult())
 
       expect(useNodeResultsStore.getState().getOptimiserPreview("n1")).not.toBeNull()
@@ -2108,7 +2110,7 @@ describe("useNodeResultsStore", () => {
 
     it("getModellingPreview returns same reference on repeated calls", () => {
       const s = useNodeResultsStore.getState()
-      s.startTrainJob("n1", "j1", "Model", "h1")
+      s.startTrainJob("n1", "j1", "Model", "h1", "live", 0)
       s.completeTrainJob("n1", makeTrainResult())
 
       const a = useNodeResultsStore.getState().getModellingPreview("n1")
@@ -2118,7 +2120,7 @@ describe("useNodeResultsStore", () => {
 
     it("getModellingPreview returns new reference after state change", () => {
       const s = useNodeResultsStore.getState()
-      s.startTrainJob("n1", "j1", "Model", "h1")
+      s.startTrainJob("n1", "j1", "Model", "h1", "live", 0)
       s.completeTrainJob("n1", makeTrainResult())
 
       const a = useNodeResultsStore.getState().getModellingPreview("n1")
@@ -2130,9 +2132,9 @@ describe("useNodeResultsStore", () => {
 
     it("getModellingPreview keeps its reference across active job progress updates", () => {
       const s = useNodeResultsStore.getState()
-      s.startTrainJob("n1", "j1", "Initial Label", "h1")
+      s.startTrainJob("n1", "j1", "Initial Label", "h1", "live", 0)
       s.completeTrainJob("n1", makeTrainResult())
-      s.startTrainJob("n1", "j2", "Updated Label", "h2")
+      s.startTrainJob("n1", "j2", "Updated Label", "h2", "live", 0)
 
       const beforeProgress = useNodeResultsStore.getState().getModellingPreview("n1")
       expect(beforeProgress!.nodeLabel).toBe("Updated Label")
@@ -2155,7 +2157,7 @@ describe("useNodeResultsStore", () => {
 
     it("getModellingPreview returns null for error results", () => {
       const s = useNodeResultsStore.getState()
-      s.startTrainJob("n1", "j1", "Model", "h1")
+      s.startTrainJob("n1", "j1", "Model", "h1", "live", 0)
       s.failTrainJob("n1", "boom")
 
       expect(useNodeResultsStore.getState().getModellingPreview("n1")).toBeNull()

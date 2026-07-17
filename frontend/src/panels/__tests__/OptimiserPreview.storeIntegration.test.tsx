@@ -69,7 +69,7 @@ describe("OptimiserPreview store integration", () => {
 
   it("re-renders from the result store when a frontier point is clicked", async () => {
     const store = useNodeResultsStore.getState()
-    store.startSolveJob("opt_1", "job_123", "My Optimiser", { loss_ratio: { max: 1.05 } }, "h1")
+    store.startSolveJob("opt_1", "job_123", "My Optimiser", { loss_ratio: { max: 1.05 } }, "h1", "live", 0)
     store.completeSolveJob(
       "opt_1",
       makeSolveResult({
@@ -120,7 +120,7 @@ describe("OptimiserPreview store integration", () => {
       error: null,
     })
     const store = useNodeResultsStore.getState()
-    store.startSolveJob("opt_1", "job_123", "Ratebook Optimiser", { volume: { min: 0.9 } }, "h1")
+    store.startSolveJob("opt_1", "job_123", "Ratebook Optimiser", { volume: { min: 0.9 } }, "h1", "live", 0)
     store.completeSolveJob(
       "opt_1",
       makeSolveResult({
@@ -187,7 +187,7 @@ describe("OptimiserPreview store integration", () => {
       error: null,
     })
     const store = useNodeResultsStore.getState()
-    store.startSolveJob("opt_1", "job_123", "Ratebook Optimiser", { volume: { min: 0.9 } }, "h1")
+    store.startSolveJob("opt_1", "job_123", "Ratebook Optimiser", { volume: { min: 0.9 } }, "h1", "live", 0)
     store.completeSolveJob(
       "opt_1",
       makeSolveResult({
@@ -260,7 +260,7 @@ describe("OptimiserPreview store integration", () => {
         error: null,
       })
     const store = useNodeResultsStore.getState()
-    store.startSolveJob("opt_1", "job_123", "Ratebook Optimiser", { volume: { min: 0.9 } }, "h1")
+    store.startSolveJob("opt_1", "job_123", "Ratebook Optimiser", { volume: { min: 0.9 } }, "h1", "live", 0)
     store.completeSolveJob(
       "opt_1",
       makeSolveResult({
@@ -317,7 +317,7 @@ describe("OptimiserPreview store integration", () => {
       error: null,
     })
     const store = useNodeResultsStore.getState()
-    store.startSolveJob("opt_1", "job_123", "Ratebook Optimiser", { volume: { min: 0.9 } }, "h1")
+    store.startSolveJob("opt_1", "job_123", "Ratebook Optimiser", { volume: { min: 0.9 } }, "h1", "live", 0)
     store.completeSolveJob(
       "opt_1",
       makeSolveResult({
@@ -361,7 +361,7 @@ describe("OptimiserPreview store integration", () => {
       }),
     )
     const store = useNodeResultsStore.getState()
-    store.startSolveJob("opt_1", "job_123", "Ratebook Optimiser", { volume: { min: 0.9 } }, "h1")
+    store.startSolveJob("opt_1", "job_123", "Ratebook Optimiser", { volume: { min: 0.9 } }, "h1", "live", 0)
     store.completeSolveJob(
       "opt_1",
       makeSolveResult({
@@ -446,7 +446,7 @@ describe("OptimiserPreview store integration", () => {
     )
 
     const store = useNodeResultsStore.getState()
-    store.startSolveJob("opt_1", "job_123", "Ratebook Optimiser", { volume: { min: 0.9 } }, "h1")
+    store.startSolveJob("opt_1", "job_123", "Ratebook Optimiser", { volume: { min: 0.9 } }, "h1", "live", 0)
     store.completeSolveJob(
       "opt_1",
       makeSolveResult({
