@@ -106,6 +106,9 @@ interface CachedSolveResult {
   terminalStatus?: SolveProgress | null
   jobId: string
   configHash: string
+  /** Staleness key contract: configHash + source + structuralVersion (see useStaleConfigEstimate) */
+  source: string
+  structuralVersion: number
   /** Constraint config snapshot for OptimiserPreview */
   constraints: Record<string, Record<string, number>>
   nodeLabel: string
@@ -122,6 +125,8 @@ interface ActiveSolveJob {
   /** Constraint config snapshot for OptimiserPreview */
   constraints: Record<string, Record<string, number>>
   configHash: string
+  source: string
+  structuralVersion: number
 }
 
 interface CachedTrainResult {
@@ -129,6 +134,9 @@ interface CachedTrainResult {
   terminalStatus?: TrainProgress | null
   jobId: string
   configHash: string
+  /** Staleness key contract: configHash + source + structuralVersion (see useStaleConfigEstimate) */
+  source: string
+  structuralVersion: number
 }
 
 interface ActiveTrainJob {
@@ -138,6 +146,8 @@ interface ActiveTrainJob {
   progress: TrainProgress | null
   error: string | null
   configHash: string
+  source: string
+  structuralVersion: number
 }
 
 interface CachedExploreResult {
@@ -573,7 +583,7 @@ interface NodeResultsState {
   setPinnedPreviewNodeId: (nodeId: string | null) => void
 
   // ── Optimiser actions ──
-  startSolveJob: (nodeId: string, jobId: string, nodeLabel: string, constraints: Record<string, Record<string, number>>, configHash: string) => void
+  startSolveJob: (nodeId: string, jobId: string, nodeLabel: string, constraints: Record<string, Record<string, number>>, configHash: string, source: string, structuralVersion: number) => void
   updateSolveProgress: (nodeId: string, progress: SolveProgress) => void
   completeSolveJob: (nodeId: string, result: SolveResult, terminalStatus?: SolveProgress) => void
   failSolveJob: (nodeId: string, error: string, terminalStatus?: SolveProgress) => void
@@ -581,7 +591,7 @@ interface NodeResultsState {
   updateFrontierAfterSelect: (nodeId: string, pointIndex: number, selectResult: FrontierSelectResponse) => void
 
   // ── Training actions ──
-  startTrainJob: (nodeId: string, jobId: string, nodeLabel: string, configHash: string) => void
+  startTrainJob: (nodeId: string, jobId: string, nodeLabel: string, configHash: string, source: string, structuralVersion: number) => void
   updateTrainProgress: (nodeId: string, progress: TrainProgress) => void
   completeTrainJob: (nodeId: string, result: TrainResult, terminalStatus?: TrainProgress) => void
   failTrainJob: (nodeId: string, error: string, terminalStatus?: TrainProgress) => void
@@ -678,11 +688,11 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
 
   // ── Optimiser ──
 
-  startSolveJob: (nodeId, jobId, nodeLabel, constraints, configHash) =>
+  startSolveJob: (nodeId, jobId, nodeLabel, constraints, configHash, source, structuralVersion) =>
     set((s) => ({
       solveJobs: {
         ...s.solveJobs,
-        [nodeId]: { jobId, nodeId, nodeLabel, progress: null, error: null, constraints, configHash },
+        [nodeId]: { jobId, nodeId, nodeLabel, progress: null, error: null, constraints, configHash, source, structuralVersion },
       },
     })),
 
@@ -720,6 +730,8 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
         terminalStatus: terminalStatus ?? null,
         jobId: job.jobId,
         configHash: job.configHash,
+        source: job.source,
+        structuralVersion: job.structuralVersion,
         constraints: job.constraints,
         nodeLabel: job.nodeLabel,
         frontier,
@@ -764,6 +776,8 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
         terminalStatus: terminalStatus ?? null,
         jobId: job.jobId,
         configHash: job.configHash,
+        source: job.source,
+        structuralVersion: job.structuralVersion,
         constraints: job.constraints,
         nodeLabel: job.nodeLabel,
         frontier: null,
@@ -904,9 +918,9 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
 
   // ── Training ──
 
-  startTrainJob: (nodeId, jobId, nodeLabel, configHash) =>
+  startTrainJob: (nodeId, jobId, nodeLabel, configHash, source, structuralVersion) =>
     set((s) => {
-      const nextJob = { jobId, nodeId, nodeLabel, progress: null, error: null, configHash }
+      const nextJob = { jobId, nodeId, nodeLabel, progress: null, error: null, configHash, source, structuralVersion }
       const cached = s.trainResults[nodeId]
       if (cached && cached.result.status !== "error") {
         cacheModellingPreview(nodeId, cached, nextJob)
@@ -940,6 +954,10 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
         terminalStatus: terminalStatus ?? null,
         jobId: job?.jobId ?? "",
         configHash: job?.configHash ?? "",
+        // Direct completion with no active job has no recorded source; the
+        // empty sentinel never matches a real source, so it reads as stale.
+        source: job?.source ?? "",
+        structuralVersion: job?.structuralVersion ?? -1,
       }
       const bounded = trimCacheByRecency(
         {
@@ -975,6 +993,8 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
         terminalStatus: terminalStatus ?? null,
         jobId: job.jobId,
         configHash: job.configHash,
+        source: job.source,
+        structuralVersion: job.structuralVersion,
       }
       const bounded = trimCacheByRecency(
         {

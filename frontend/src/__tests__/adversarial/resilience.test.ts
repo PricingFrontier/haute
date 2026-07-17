@@ -131,7 +131,7 @@ describe("1. API returns unexpected shapes", () => {
 
     it("completeSolveJob with minimal result shape does not crash", () => {
       const store = useNodeResultsStore.getState()
-      store.startSolveJob("n1", "j1", "Node", {}, "h")
+      store.startSolveJob("n1", "j1", "Node", {}, "h", "live", 0)
       // Simulate server returning only partial result
       const minimalResult = {
         total_objective: 0,
@@ -147,7 +147,7 @@ describe("1. API returns unexpected shapes", () => {
 
     it("completeTrainJob with minimal result shape does not crash", () => {
       const store = useNodeResultsStore.getState()
-      store.startTrainJob("t1", "tj1", "Train", "h")
+      store.startTrainJob("t1", "tj1", "Train", "h", "live", 0)
       const minimalResult = {
         status: "completed",
         metrics: {},
@@ -812,7 +812,7 @@ describe("10. Store state after unmount", () => {
     const store = useNodeResultsStore.getState()
     store.setPreview("n1", makePreviewData("n1", "Test"), 0)
     store.setColumns("n1", [{ name: "a", dtype: "float64" }], 0)
-    store.startSolveJob("n1", "j1", "N1", {}, "h")
+    store.startSolveJob("n1", "j1", "N1", {}, "h", "live", 0)
 
     // Simulate "unmount" by just calling cleanup (no actual React tree here)
     cleanup()

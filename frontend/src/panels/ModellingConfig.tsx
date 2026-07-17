@@ -94,9 +94,9 @@ export default function ModellingConfig({ config, onUpdate, upstreamColumns }: M
     config,
     cachedResult,
     estimateEndpoint,
+    { source: activeSource, structuralVersion },
     {
       toastLabel: "RAM estimate failed",
-      estimateKey: `${activeSource}:${structuralVersion}`,
     },
   )
 
@@ -133,6 +133,8 @@ export default function ModellingConfig({ config, onUpdate, upstreamColumns }: M
 
   const handleTrain = useCallback(async () => {
     const nodeLabel = allNodes.find(n => n.id === nodeId)?.data.label || "Model Training"
+    const trainSource = useSettingsStore.getState().activeSource
+    const trainStructuralVersion = useGraphStore.getState().structuralVersion
     setSubmitting(true)
     try {
       const result = await trainModel({
@@ -144,7 +146,7 @@ export default function ModellingConfig({ config, onUpdate, upstreamColumns }: M
 
       if (result.status === "started" && result.job_id) {
         // Register job in store — background hook picks up polling
-        startTrainJob(nodeId, result.job_id as string, nodeLabel, currentConfigHash)
+        startTrainJob(nodeId, result.job_id as string, nodeLabel, currentConfigHash, trainSource, trainStructuralVersion)
       } else if (result.status === "error") {
         // Immediate validation error — store as completed with error result
         useNodeResultsStore.getState().completeTrainJob(nodeId, result as unknown as TrainResult)

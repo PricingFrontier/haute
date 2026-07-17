@@ -21,6 +21,25 @@ export interface UseStaleConfigEstimateOptions {
   enabled?: boolean
 }
 
+/**
+ * The non-config inputs that affect a cached solve/train result. Staleness
+ * key contract: a cached result is current only if its configHash, source,
+ * AND structuralVersion all match the live values — the same identity
+ * Explore checks (config+source folded into its hash, source re-checked on
+ * the cached result). Omitting either field here re-opens the wrong-source
+ * staleness bug pinned in useStaleConfigEstimate.sourceKey.test.ts.
+ */
+export interface StaleEstimateContext {
+  source: string
+  structuralVersion: number
+}
+
+export interface StaleCachedResult {
+  configHash: string
+  source?: string
+  structuralVersion?: number
+}
+
 interface EstimateState<TEstimate> {
   estimate: TEstimate | null
   loading: boolean
@@ -51,13 +70,20 @@ const INITIAL_STATE = { estimate: null, loading: false, error: null }
 export function useStaleConfigEstimate<TEstimate>(
   nodeId: string,
   config: Record<string, unknown>,
-  cachedResult: { configHash: string } | null | undefined,
+  cachedResult: StaleCachedResult | null | undefined,
   endpoint: ConfigEstimateEndpoint<TEstimate>,
+  context: StaleEstimateContext,
   options: UseStaleConfigEstimateOptions = {},
 ): UseStaleConfigEstimateResult<TEstimate> {
   const { toastLabel = "Estimate failed", estimateKey = "", enabled = true } = options
   const configHash = useMemo(() => hashConfig(config), [config])
-  const isStale = !!cachedResult && cachedResult.configHash !== configHash
+  // A cached result missing source/structuralVersion (pre-contract shape)
+  // fails the comparison and reads as stale — fail-safe, never fail-current.
+  const isStale =
+    !!cachedResult &&
+    (cachedResult.configHash !== configHash ||
+      cachedResult.source !== context.source ||
+      cachedResult.structuralVersion !== context.structuralVersion)
   const [state, dispatch] = useReducer(
     estimateReducer<TEstimate>,
     INITIAL_STATE as EstimateState<TEstimate>,
@@ -98,7 +124,7 @@ export function useStaleConfigEstimate<TEstimate>(
       })
 
     return () => controller.abort()
-  }, [nodeId, configHash, estimateKey, enabled])
+  }, [nodeId, configHash, context.source, context.structuralVersion, estimateKey, enabled])
 
   return { ...state, configHash, isStale }
 }

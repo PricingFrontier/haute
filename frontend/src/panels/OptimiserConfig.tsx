@@ -310,9 +310,9 @@ export default function OptimiserConfig({
     config,
     cachedResult,
     solveEstimateEndpoint,
+    { source: activeSource, structuralVersion },
     {
       toastLabel: "Solve estimate failed",
-      estimateKey: `${activeSource}:${structuralVersion}`,
       enabled: !deferColumnFetch,
     },
   )
@@ -342,6 +342,8 @@ export default function OptimiserConfig({
   const handleSolve = useCallback(async () => {
     setSubmitting(true)
     const nodeLabel = allNodes.find(n => n.id === nodeId)?.data.label || "Optimiser"
+    const solveSource = useSettingsStore.getState().activeSource
+    const solveStructuralVersion = useGraphStore.getState().structuralVersion
     try {
       const result = await solveOptimiser({
         graph: buildGraphCb(),
@@ -350,15 +352,15 @@ export default function OptimiserConfig({
       })
       if (result.status === "started" && result.job_id) {
         // Register job in store — background hook picks up polling
-        startSolveJob(nodeId, result.job_id, nodeLabel, constraints, currentConfigHash)
+        startSolveJob(nodeId, result.job_id, nodeLabel, constraints, currentConfigHash, solveSource, solveStructuralVersion)
       } else if (result.status === "error") {
-        startSolveJob(nodeId, `startup-failure:${nodeId}`, nodeLabel, constraints, currentConfigHash)
+        startSolveJob(nodeId, `startup-failure:${nodeId}`, nodeLabel, constraints, currentConfigHash, solveSource, solveStructuralVersion)
         useNodeResultsStore.getState().failSolveJob(nodeId, result.error || "Unknown error")
       }
     } catch (e) {
       const errorMessage = requestErrorDetail(e)
       const terminalStatus = solveFailureStatus(e, errorMessage)
-      startSolveJob(nodeId, `startup-failure:${nodeId}`, nodeLabel, constraints, currentConfigHash)
+      startSolveJob(nodeId, `startup-failure:${nodeId}`, nodeLabel, constraints, currentConfigHash, solveSource, solveStructuralVersion)
       useNodeResultsStore.getState().failSolveJob(nodeId, errorMessage, terminalStatus)
     } finally {
       setSubmitting(false)
