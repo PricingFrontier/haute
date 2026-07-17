@@ -1902,6 +1902,281 @@ class TestDispersionEstimateEndpoint:
         assert resp.status_code == 404
 
 
+_NB_ESTIMATION_CONFIG: dict = {
+    "target": "y",
+    "algorithm": "glm",
+    "family": "negbinomial",
+    "terms": {"x1": {"type": "linear"}},
+    "params": {},
+}
+
+
+class _DeferredThread:
+    """Capture the worker instead of running it, so tests drive it inline."""
+
+    captured: list[_DeferredThread] = []
+
+    def __init__(self, *, target, daemon):
+        self.target = target
+        self.daemon = daemon
+        _DeferredThread.captured.append(self)
+
+    def start(self) -> None:
+        return None
+
+
+class TestDispersionErrorPaths:
+    """The dispersion job's error/cleanup branches must not strand a job in a
+    wrong state or orphan the training-prep parquet (same critical-coverage
+    rationale as the training worker's)."""
+
+    def _service(self):
+        from haute.routes._job_store import JobStore
+
+        store = JobStore()
+        return store, TrainService(store)
+
+    def _launch(self, service, store, tmp_path: Path, *, config=None) -> tuple[str, Path]:
+        _DeferredThread.captured.clear()
+        job_id = store.create_job(
+            {"status": "running", "job_type": "dispersion_estimate", "param": "theta"}
+        )
+        tmp_parquet = tmp_path / "estimate_data.parquet"
+        tmp_parquet.write_bytes(b"parquet")
+        service._launch_dispersion_background(
+            job_id,
+            "train",
+            config or dict(_NB_ESTIMATION_CONFIG),
+            "theta",
+            str(tmp_parquet),
+            execution_context=_admitted_training_context_for_launch(job_id),
+        )
+        return job_id, tmp_parquet
+
+    def test_start_maps_execute_http_error_to_contract_error(self, nb_training_data):
+        from haute.schemas import DispersionEstimateRequest
+
+        graph = _make_negbinomial_graph(nb_training_data)
+        store, service = self._service()
+        body = DispersionEstimateRequest.model_validate(
+            {"graph": graph, "node_id": "train", "param": "theta"}
+        )
+        with (
+            patch.object(
+                TrainService,
+                "_execute_and_sink",
+                side_effect=HTTPException(status_code=422, detail="missing column"),
+            ),
+            pytest.raises(HTTPException) as exc_info,
+        ):
+            service.start_dispersion_estimate(body)
+        assert exc_info.value.status_code == 422
+        (job_id,) = store.jobs
+        job = store.require_job(job_id)
+        assert job["status"] == "contract_error"
+        assert "missing column" in job["message"]
+
+    def test_start_maps_unexpected_exception_to_error(self, nb_training_data):
+        from haute.schemas import DispersionEstimateRequest
+
+        graph = _make_negbinomial_graph(nb_training_data)
+        store, service = self._service()
+        body = DispersionEstimateRequest.model_validate(
+            {"graph": graph, "node_id": "train", "param": "theta"}
+        )
+        with (
+            patch.object(
+                TrainService,
+                "_execute_and_sink",
+                side_effect=RuntimeError("sink exploded"),
+            ),
+            pytest.raises(RuntimeError),
+        ):
+            service.start_dispersion_estimate(body)
+        (job_id,) = store.jobs
+        job = store.require_job(job_id)
+        assert job["status"] == "error"
+        assert "sink exploded" in job["message"]
+
+    def test_start_maps_memory_limit_to_507(self, nb_training_data):
+        from haute._execution_admission import ExecutionAdmissionError
+        from haute._execution_context import ExecutionProfile
+        from haute.schemas import DispersionEstimateRequest
+
+        graph = _make_negbinomial_graph(nb_training_data)
+        store, service = self._service()
+        body = DispersionEstimateRequest.model_validate(
+            {"graph": graph, "node_id": "train", "param": "theta"}
+        )
+        admission_error = ExecutionAdmissionError(
+            "dispersion_estimate",
+            profile=ExecutionProfile.TRAINING_PREP,
+            memory_limit_bytes=1_000,
+            rss_at_admission_bytes=2_000,
+            reason="over budget",
+        )
+        with (
+            patch.object(TrainService, "_execute_and_sink", side_effect=admission_error),
+            pytest.raises(HTTPException) as exc_info,
+        ):
+            service.start_dispersion_estimate(body)
+        assert exc_info.value.status_code == 507
+        (job_id,) = store.jobs
+        assert store.require_job(job_id)["status"] == "memory_limited"
+
+    def test_cancel_dispersion_running_then_terminal_noop(self):
+        store, service = self._service()
+        job_id = store.create_job(
+            {"status": "running", "job_type": "dispersion_estimate", "param": "theta"}
+        )
+
+        cancelled = service.cancel_dispersion(job_id)
+        assert cancelled["status"] == "cancelled"
+
+        # A second cancel is a no-op on the now-terminal job.
+        again = service.cancel_dispersion(job_id)
+        assert again["status"] == "cancelled"
+
+    def test_validate_rejects_unknown_param_directly(self):
+        _, service = self._service()
+        with pytest.raises(HTTPException) as exc_info:
+            service._validate_dispersion_config(dict(_NB_ESTIMATION_CONFIG), "alpha")
+        assert exc_info.value.status_code == 400
+        assert "Unknown dispersion parameter" in exc_info.value.detail
+
+    def test_validate_rejects_missing_target(self):
+        _, service = self._service()
+        config = {**_NB_ESTIMATION_CONFIG, "target": ""}
+        with pytest.raises(HTTPException) as exc_info:
+            service._validate_dispersion_config(config, "theta")
+        assert exc_info.value.status_code == 400
+        assert "target column" in exc_info.value.detail
+
+    def test_worker_missing_term_columns_is_contract_error(self, tmp_path: Path):
+        """Terms referencing absent columns must fail actionably, not reach
+        RustyStats as a phantom design."""
+
+        class FakeJob:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def _prepare_data(self, _report, *, execution_context=None):
+                return SimpleNamespace(
+                    data_path="unused.parquet",
+                    owns_tmp=False,
+                    features=["other_column"],
+                    cat_features=[],
+                )
+
+        store, service = self._service()
+        with (
+            patch("haute.modelling.TrainingJob", FakeJob),
+            patch("haute.routes._train_service.threading.Thread", _DeferredThread),
+        ):
+            job_id, tmp_parquet = self._launch(service, store, tmp_path)
+        _DeferredThread.captured[0].target()
+
+        job = store.require_job(job_id)
+        assert job["status"] == "contract_error"
+        assert "x1" in job["message"]
+        assert not tmp_parquet.exists()
+
+    def test_worker_stopped_error_leaves_terminal_state_alone(self, tmp_path: Path):
+        from haute.routes._background_jobs import BackgroundJobStoppedError
+
+        class FakeJob:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def _prepare_data(self, _report, *, execution_context=None):
+                raise BackgroundJobStoppedError("job", "cancelled")
+
+        store, service = self._service()
+        with (
+            patch("haute.modelling.TrainingJob", FakeJob),
+            patch("haute.routes._train_service.threading.Thread", _DeferredThread),
+        ):
+            job_id, tmp_parquet = self._launch(service, store, tmp_path)
+        store.atomic_update(job_id, {"status": "cancelled"})
+        _DeferredThread.captured[0].target()
+
+        # The stopped worker must not overwrite the terminal state.
+        assert store.require_job(job_id)["status"] == "cancelled"
+        assert not tmp_parquet.exists()
+
+    def test_worker_execution_cancelled_marks_cancelled(self, tmp_path: Path):
+        from haute._execution_context import ExecutionCancelledError
+
+        class FakeJob:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def _prepare_data(self, _report, *, execution_context=None):
+                raise ExecutionCancelledError("cancelled mid-prep")
+
+        store, service = self._service()
+        with (
+            patch("haute.modelling.TrainingJob", FakeJob),
+            patch("haute.routes._train_service.threading.Thread", _DeferredThread),
+        ):
+            job_id, tmp_parquet = self._launch(service, store, tmp_path)
+        _DeferredThread.captured[0].target()
+
+        assert store.require_job(job_id)["status"] == "cancelled"
+        assert not tmp_parquet.exists()
+
+    def test_worker_unexpected_exception_marks_error(self, tmp_path: Path):
+        class FakeJob:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def _prepare_data(self, _report, *, execution_context=None):
+                raise RuntimeError("estimator exploded")
+
+        store, service = self._service()
+        with (
+            patch("haute.modelling.TrainingJob", FakeJob),
+            patch("haute.routes._train_service.threading.Thread", _DeferredThread),
+        ):
+            job_id, tmp_parquet = self._launch(service, store, tmp_path)
+        _DeferredThread.captured[0].target()
+
+        job = store.require_job(job_id)
+        assert job["status"] == "error"
+        assert not tmp_parquet.exists()
+
+    def test_worker_thread_start_failure_maps_to_500(self, tmp_path: Path):
+        store, service = self._service()
+        job_id = store.create_job(
+            {"status": "running", "job_type": "dispersion_estimate", "param": "theta"}
+        )
+        tmp_parquet = tmp_path / "estimate_data.parquet"
+        tmp_parquet.write_bytes(b"parquet")
+
+        with (
+            patch("haute.modelling.TrainingJob", return_value=MagicMock()),
+            patch(
+                "haute.routes._train_service.threading.Thread.start",
+                side_effect=RuntimeError("thread boom"),
+            ),
+            pytest.raises(HTTPException) as exc_info,
+        ):
+            service._launch_dispersion_background(
+                job_id,
+                "train",
+                dict(_NB_ESTIMATION_CONFIG),
+                "theta",
+                str(tmp_parquet),
+                execution_context=_admitted_training_context_for_launch(job_id),
+            )
+
+        assert exc_info.value.status_code == 500
+        job = store.require_job(job_id)
+        assert job["status"] == "error"
+        assert "Failed to start dispersion estimation worker" in job["message"]
+        assert not tmp_parquet.exists()
+
+
 # ---------------------------------------------------------------------------
 # /mlflow/check backend resolution tests
 # ---------------------------------------------------------------------------
