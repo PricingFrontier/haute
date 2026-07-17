@@ -302,7 +302,7 @@ def _is_integer_output_column(
     column: str,
 ) -> bool:
     df = eager_outputs.get(node_id)
-    if df is None or column not in df.schema:
+    if not isinstance(df, pl.DataFrame) or column not in df.schema:
         return False
     is_integer = getattr(df.schema[column], "is_integer", None)
     return bool(is_integer()) if callable(is_integer) else False
@@ -475,6 +475,20 @@ def execute_trace(
             source_ids=source_ids,
         )
 
+    # Multi-frame sources (e.g. a ≥2-table apiInput) store a
+    # dict[label, DataFrame] in eager_outputs; a trace must target a node
+    # downstream of a specific frame, never the bundle itself.
+    if isinstance(eager_outputs.get(target_node_id), dict):
+        raise ValueError(
+            f"Target node {target_node_id!r} emits multiple frames; "
+            "trace a node downstream of a specific frame instead."
+        )
+
+    # Edge sourceHandles record which frame of a multi-frame source each
+    # child consumes (the selection _pick_source_frame makes at execution
+    # time); the correlation walk makes the same per-edge selection.
+    source_frame_of = {(e.source, e.target): e.sourceHandle for e in graph.edges}
+
     # ---------- Verify row identity ----------
     # If the frontend sent the clicked row's values, verify that the
     # DataFrame at the target node has the same values at row_index.
@@ -522,12 +536,13 @@ def execute_trace(
             row_index,
             node_map=node_map,
             diagnostics=correlation_diagnostics,
+            source_frame_of=source_frame_of,
         )
     else:
         # Target node execution failed — build partial rows from available nodes
         cached_rows = {}
         for nid in order:
-            if nid in eager_outputs:
+            if nid in eager_outputs and not isinstance(eager_outputs[nid], dict):
                 df = eager_outputs[nid]
                 if row_index < len(df):
                     cached_rows[nid] = _jsonify_row(df.row(row_index, named=True))
