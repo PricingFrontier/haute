@@ -750,6 +750,8 @@ describe("OptimiserConfig", () => {
             error: null,
             constraints: {},
             configHash: "abc",
+            source: "live",
+            structuralVersion: 0,
           },
         },
       })
@@ -1030,6 +1032,8 @@ describe("OptimiserConfig", () => {
             },
             jobId: "job_42",
             configHash: "definitely_stale_hash",
+            source: "live",
+            structuralVersion: 0,
             constraints: {},
             nodeLabel: "Optimiser",
             originalResult: {
@@ -1090,6 +1094,8 @@ describe("OptimiserConfig", () => {
       },
       frontier: null,
       selectedPointIndex: null,
+      source: "live",
+      structuralVersion: 0,
     }
 
     it("shows convergence status when solveResult exists", () => {
@@ -1177,6 +1183,8 @@ describe("OptimiserConfig", () => {
             error: "Solver exploded",
             constraints: {},
             configHash: "abc",
+            source: "live",
+            structuralVersion: 0,
           },
         },
       })
@@ -1228,6 +1236,8 @@ describe("OptimiserConfig", () => {
             error: null,
             constraints: {},
             configHash: "abc",
+            source: "live",
+            structuralVersion: 0,
           },
         },
       })
@@ -1255,6 +1265,8 @@ describe("OptimiserConfig", () => {
             error: null,
             constraints: {},
             configHash: "abc",
+            source: "live",
+            structuralVersion: 0,
           },
         },
       })
@@ -1288,6 +1300,8 @@ describe("OptimiserConfig", () => {
             },
             jobId: "job_42",
             configHash: "definitely_stale_hash",
+            source: "live",
+            structuralVersion: 0,
             constraints: {},
             nodeLabel: "Optimiser",
             originalResult: {
