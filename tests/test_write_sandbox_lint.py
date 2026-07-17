@@ -526,10 +526,14 @@ EXPECTED_VIOLATIONS: dict[str, int] = {
 
 
 def test_write_apis_derive_from_scratch_fixture() -> None:
-    observed = {rel: len(violations) for rel, violations in scan_tests().items()}
+    # Scan once: the full-corpus AST walk costs seconds, and doubling it
+    # under the parallel+coverage gate pushed this test over the 60s
+    # pytest-timeout on loaded machines.
+    scanned = scan_tests()
+    observed = {rel: len(violations) for rel, violations in scanned.items()}
     details = {
         rel: [f"  {v.file}:{v.line} {v.kind} ({v.detail})" for v in violations]
-        for rel, violations in scan_tests().items()
+        for rel, violations in scanned.items()
     }
 
     unexpected = {
