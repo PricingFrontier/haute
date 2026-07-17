@@ -115,6 +115,7 @@ class TestGLMConfigKeyMerge:
             "l1_ratio",
             "intercept",
             "var_power",
+            "theta",
             "offset",
         }
         assert set(GLM_CONFIG_KEYS) == expected

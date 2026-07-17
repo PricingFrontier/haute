@@ -523,3 +523,158 @@ class TestTrainingJobGLM:
             result = job.run()
             assert result.model_path.endswith(".rsglm")
             assert len(result.features) > 0
+
+
+# ---------------------------------------------------------------------------
+# Negative Binomial theta threading + dispersion estimation
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def nb_df() -> pl.DataFrame:
+    """Overdispersed count frame with a known dispersion.
+
+    Gamma-Poisson mixture with gamma shape 2.0 — the true NB theta is 2.0.
+    The profile-likelihood MLE on this exact draw is 2.4487, cross-validated
+    against statsmodels NegativeBinomial(loglike_method="nb2"): 1/alpha_hat =
+    2.4487, with coefficient parity to 4 d.p. (theta = 1/alpha under NB2).
+    """
+    rng = np.random.default_rng(42)
+    n = 400
+    x1 = rng.normal(0, 1, n)
+    x2 = rng.normal(0, 1, n)
+    mu = np.exp(0.5 + 0.4 * x1 - 0.3 * x2)
+    lam = rng.gamma(2.0, mu / 2.0)
+    return pl.DataFrame({"x1": x1, "x2": x2, "y": rng.poisson(lam).astype(float)})
+
+
+_NB_TERMS = {"x1": {"type": "linear"}, "x2": {"type": "linear"}}
+
+
+class TestNegBinomialThetaThreading:
+    def test_unset_theta_is_the_silent_default(self, nb_df):
+        """Pin the failover the gate exists to close: RustyStats does not
+        estimate theta — an unset theta fits bit-identically to theta=1.0."""
+        unset = rs.glm_dict(response="y", terms=_NB_TERMS, data=nb_df, family="negbinomial").fit()
+        explicit = rs.glm_dict(
+            response="y", terms=_NB_TERMS, data=nb_df, family="negbinomial", theta=1.0
+        ).fit()
+        assert list(unset.coefficients) == list(explicit.coefficients)
+        assert float(unset.deviance) == float(explicit.deviance)
+
+    def test_theta_param_reaches_the_fit(self, algo, nb_df):
+        """params["theta"] must change the fitted model — the whole gate is
+        pointless if the threaded value never reaches RustyStats."""
+
+        def fit_deviance(params):
+            result = algo.fit(
+                train_df=nb_df,
+                features=["x1", "x2"],
+                cat_features=[],
+                target="y",
+                weight=None,
+                params=params,
+                task="regression",
+            )
+            return float(result.model.deviance)
+
+        base = {"family": "negbinomial", "terms": _NB_TERMS}
+        dev_theta_1 = fit_deviance({**base, "theta": 1.0})
+        dev_theta_5 = fit_deviance({**base, "theta": 5.0})
+        assert dev_theta_1 != dev_theta_5
+
+
+class TestEstimateGlmDispersion:
+    def test_nb_theta_profile_mle_matches_statsmodels_reference(self, nb_df):
+        """Golden value: statsmodels NB2 MLE on this exact draw gives
+        1/alpha = 2.4487 (betas match rustystats to 4 d.p.). Pinned as a
+        literal so statsmodels is not a test dependency."""
+        from haute.modelling._rustystats import estimate_glm_dispersion
+
+        est = estimate_glm_dispersion(
+            data=nb_df,
+            terms=_NB_TERMS,
+            target="y",
+            family="negbinomial",
+            param="theta",
+        )
+        assert est.param == "theta"
+        assert est.value == pytest.approx(2.4487, abs=0.01)
+        assert est.llf == pytest.approx(-693.038, abs=0.05)
+        assert est.n_fits > 0
+
+    def test_estimate_is_deterministic(self, nb_df):
+        from haute.modelling._rustystats import estimate_glm_dispersion
+
+        kwargs = dict(data=nb_df, terms=_NB_TERMS, target="y", family="negbinomial", param="theta")
+        first = estimate_glm_dispersion(**kwargs)
+        second = estimate_glm_dispersion(**kwargs)
+        assert first.value == second.value
+        assert first.n_fits == second.n_fits
+
+    def test_tweedie_var_power_finds_interior_maximum(self, nb_df):
+        from haute.modelling._rustystats import estimate_glm_dispersion
+
+        rng = np.random.default_rng(7)
+        n = 400
+        x1 = rng.normal(0, 1, n)
+        mu = np.exp(0.3 + 0.5 * x1)
+        y = np.where(rng.random(n) < 0.3, 0.0, rng.gamma(2.0, mu / 2.0))
+        frame = pl.DataFrame({"x1": x1, "y": y})
+
+        est = estimate_glm_dispersion(
+            data=frame,
+            terms={"x1": {"type": "linear"}},
+            target="y",
+            family="tweedie",
+            param="var_power",
+        )
+        assert est.param == "var_power"
+        assert 1.01 < est.value < 1.99
+
+    def test_on_fit_callback_can_abort(self, nb_df):
+        from haute.modelling._rustystats import estimate_glm_dispersion
+
+        class _StopError(RuntimeError):
+            pass
+
+        def abort_immediately(fit_index: int) -> None:
+            raise _StopError()
+
+        with pytest.raises(_StopError):
+            estimate_glm_dispersion(
+                data=nb_df,
+                terms=_NB_TERMS,
+                target="y",
+                family="negbinomial",
+                param="theta",
+                on_fit=abort_immediately,
+            )
+
+    def test_unknown_param_rejected(self, nb_df):
+        from haute.modelling._rustystats import estimate_glm_dispersion
+
+        with pytest.raises(ValueError, match="Unknown dispersion parameter"):
+            estimate_glm_dispersion(
+                data=nb_df, terms=_NB_TERMS, target="y", family="negbinomial", param="alpha"
+            )
+
+    def test_family_param_mismatch_rejected(self, nb_df):
+        from haute.modelling._rustystats import estimate_glm_dispersion
+
+        with pytest.raises(ValueError, match="belongs to the negbinomial family"):
+            estimate_glm_dispersion(
+                data=nb_df, terms=_NB_TERMS, target="y", family="poisson", param="theta"
+            )
+
+
+class TestBuildInteractionsEmptySlots:
+    def test_unfilled_interaction_row_is_skipped(self):
+        """The config panel's "+ Add" persists {"factors": ["", ""]} until both
+        columns are picked; such rows must not reach RustyStats (they crash the
+        fit — and the dispersion estimate — with "Interaction must have at
+        least 2 variables")."""
+        terms = {"a": {"type": "linear"}, "b": {"type": "categorical"}}
+        assert _build_interactions([{"factors": ["", ""], "include_main": True}], terms) == []
+        assert _build_interactions([{"factors": ["a", ""], "include_main": True}], terms) == []
+        assert len(_build_interactions([{"factors": ["a", "b"]}], terms)) == 1

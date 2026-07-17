@@ -58,7 +58,12 @@ from haute.routes._job_lifecycle import (
     bind_running_execution_metrics_publisher,
 )
 from haute.routes._job_store import JobStore
-from haute.schemas import TrainRequest, TrainResponse
+from haute.schemas import (
+    DispersionEstimateRequest,
+    DispersionEstimateResponse,
+    TrainRequest,
+    TrainResponse,
+)
 
 logger = get_logger(component="server.modelling.train")
 
@@ -66,7 +71,23 @@ logger = get_logger(component="server.modelling.train")
 _DEFAULT_BORDER_COUNT = 128  # CatBoost border count for VRAM estimation
 _DEFAULT_DEPTH = 6  # CatBoost tree depth for VRAM estimation
 _TRAINING_JOB_TYPE = "training"
+_DISPERSION_JOB_TYPE = "dispersion_estimate"
 _JOB_TYPE_KEY = "job_type"
+
+# Row cap for dispersion estimation. The profile search runs ~10-30 IRLS
+# fits, so the estimate samples the training frame (seeded, deterministic —
+# same sampler as training's RAM downsample) rather than paying full-data
+# cost per candidate. 200k rows pins a single dispersion scalar far tighter
+# than the search's own tolerance.
+_DISPERSION_ESTIMATE_ROW_CAP = 200_000
+
+# Which GLM family owns each estimable dispersion parameter.
+_DISPERSION_PARAM_FAMILIES = {"theta": "negbinomial", "var_power": "tweedie"}
+# Stub value injected so config machinery built for complete objectives
+# (training_objective_issue, build_training_job_kwargs) can run while the
+# parameter is still the one being estimated. Never reaches a fit: the
+# profile search overrides the parameter at every candidate.
+_DISPERSION_PARAM_STUBS = {"theta": 1.0, "var_power": 1.5}
 
 
 # Env-tunable defaults — resolved per call so overrides set after import
@@ -136,10 +157,13 @@ _VALID_GLM_LINKS: dict[str, tuple[str, ...]] = {
     # Quasi-Poisson estimates its dispersion from Pearson residuals (a fitted
     # scale, no user parameter), so it is safe to offer. RustyStats accepts
     # only log/identity for it — no sqrt.
-    # Negative Binomial is deliberately NOT here: its dispersion `theta` is not
-    # estimated by RustyStats — an unset theta silently fits at theta=1.0 — so
-    # it needs its own theta gate before it can be offered (tracked separately).
     "quasipoisson": ("log", "identity"),
+    # Negative Binomial's dispersion `theta` is not estimated by RustyStats —
+    # an unset theta silently fits at theta=1.0 — so the training objective
+    # gate (training_objective_issue) requires an explicit theta; the config
+    # panel offers profile-likelihood estimation on demand. RustyStats accepts
+    # only log/identity for it.
+    "negbinomial": ("log", "identity"),
     "gamma": ("inverse", "log", "identity"),
     "tweedie": ("log", "identity"),
     "inverse_gaussian": ("inverse_squared", "inverse", "log", "identity"),
@@ -649,6 +673,386 @@ class TrainService:
         )
         self._training_jobs.release(job_id)
         return updated_job if updated_job is not None else self._store.require_job(job_id)
+
+    # ------------------------------------------------------------------
+    # Dispersion estimation (NB theta / Tweedie var_power)
+    # ------------------------------------------------------------------
+
+    def start_dispersion_estimate(
+        self, body: DispersionEstimateRequest
+    ) -> DispersionEstimateResponse:
+        """Estimate a GLM dispersion parameter on the node's training data.
+
+        Materialises the training frame exactly as ``start()`` would (same
+        pipeline execution, projection, and seeded row sampling), then runs
+        a profile-likelihood search in a background thread. The estimate is
+        an explicit user action: the resolved value lands in the node config
+        where the training-objective gate requires it — never as a hidden
+        default (RustyStats fits silently at theta=1.0 / var_power=1.5).
+        """
+        node = _find_modelling_node(body.graph, body.node_id)
+        config = dict(node.data.config)
+        self._validate_dispersion_config(config, body.param)
+
+        with self._start_lock:
+            self._check_no_concurrent_jobs()
+            job_id = self._store.create_job(
+                {
+                    "status": "running",
+                    _JOB_TYPE_KEY: _DISPERSION_JOB_TYPE,
+                    "progress": 0.0,
+                    "message": "Starting",
+                    "param": body.param,
+                    "node_label": node.data.label,
+                }
+            )
+
+        execution_context: ExecutionContext | None = None
+        launch_started = False
+        try:
+            preamble_ns = self._compile_preamble(body.graph)
+            _ram_warning, row_limit, _total_rows, _probe_cols = self._estimate_ram(
+                body.graph,
+                body.node_id,
+                preamble_ns,
+                job_id,
+                source=body.source,
+            )
+            row_limit = _clamp_row_limit(row_limit, config.get("row_limit"))
+            row_limit = min(row_limit or _DISPERSION_ESTIMATE_ROW_CAP, _DISPERSION_ESTIMATE_ROW_CAP)
+
+            excluded = config.get("exclude", [])
+            keep_cols = list(_training_required_metadata_columns(config))
+            required_columns_by_node = _training_required_columns_by_node(
+                body.node_id,
+                config,
+            )
+            execution_context = create_admitted_execution_context(
+                operation="dispersion_estimate",
+                profile=ExecutionProfile.TRAINING_PREP,
+                job_id=job_id,
+            )
+            bind_running_execution_metrics_publisher(self._store, job_id, execution_context)
+            train_body = TrainRequest(
+                graph=body.graph,
+                node_id=body.node_id,
+                source=body.source,
+            )
+            tmp_parquet = self._execute_and_sink(
+                train_body,
+                preamble_ns,
+                row_limit,
+                job_id,
+                exclude=excluded or None,
+                keep_columns=keep_cols,
+                required_columns_by_node=required_columns_by_node,
+                execution_context=execution_context,
+            )
+            self._launch_dispersion_background(
+                job_id,
+                body.node_id,
+                config,
+                body.param,
+                tmp_parquet,
+                execution_context=execution_context,
+            )
+            launch_started = True
+        except (ExecutionAdmissionError, ExecutionMemoryLimitExceededError) as exc:
+            http_exc = _memory_limit_http_exception(exc)
+            self._lifecycle.transition(
+                job_id,
+                to="memory_limited",
+                message=str(http_exc.detail),
+                fields={"error": str(http_exc.detail)},
+            )
+            raise http_exc from None
+        except HTTPException as exc:
+            self._lifecycle.transition(
+                job_id,
+                to="contract_error" if 400 <= exc.status_code < 500 else "error",
+                message=str(exc.detail),
+                fields={"error": str(exc.detail)},
+            )
+            raise
+        except Exception as exc:
+            self._lifecycle.transition(
+                job_id,
+                to="error",
+                message=str(exc),
+                fields={"error": str(exc)},
+            )
+            raise
+        finally:
+            if execution_context is not None and not launch_started:
+                execution_context.release_admission()
+
+        return DispersionEstimateResponse(status="started", job_id=job_id)
+
+    def dispersion_job(self, job_id: str) -> dict[str, Any]:
+        """Return a dispersion-estimation job, 404ing other job types."""
+        job = self._store.require_job(job_id)
+        if job.get(_JOB_TYPE_KEY) != _DISPERSION_JOB_TYPE:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Dispersion estimation job '{job_id}' not found",
+            )
+        return job
+
+    def cancel_dispersion(self, job_id: str) -> dict[str, Any]:
+        """Cancel a running dispersion-estimation job."""
+        job = self.dispersion_job(job_id)
+        if job.get("status") != "running":
+            return job
+        self._training_jobs.cancel(job_id, reason="cancelled")
+        updated_job = self._lifecycle.transition(
+            job_id,
+            to="cancelled",
+            message="Cancelled",
+            elapsed_seconds=_job_elapsed_seconds(job),
+        )
+        self._training_jobs.release(job_id)
+        return updated_job if updated_job is not None else self._store.require_job(job_id)
+
+    def _validate_dispersion_config(self, config: dict[str, Any], param: str) -> None:
+        """Fast upfront validation for a dispersion-estimation request."""
+        expected_family = _DISPERSION_PARAM_FAMILIES.get(param)
+        if expected_family is None:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Unknown dispersion parameter '{param}'. Estimable "
+                    f"parameters: {', '.join(_DISPERSION_PARAM_FAMILIES)}."
+                ),
+            )
+        if str(config.get("algorithm", "catboost")).lower() != "glm":
+            raise HTTPException(
+                status_code=400,
+                detail="Dispersion estimation applies to GLM modelling nodes only.",
+            )
+        params = config.get("params") or {}
+        family = str(params.get("family") or config.get("family", "") or "")
+        link = str(config.get("link", "") or "")
+        _validate_glm_family_link(family, link)
+        if family != expected_family:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Dispersion parameter '{param}' belongs to the "
+                    f"{expected_family} family, not '{family}'."
+                ),
+            )
+        if not isinstance(config.get("target"), str) or not config.get("target"):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "No target column selected. Open the config panel and choose a target column."
+                ),
+            )
+        # The rest of the training objective must be complete before the
+        # estimate is meaningful (the profile is conditional on the design).
+        # Stub the parameter being estimated so its own gate doesn't fire.
+        issue = training_objective_issue({**config, param: _DISPERSION_PARAM_STUBS[param]})
+        if issue is not None:
+            raise HTTPException(status_code=400, detail=issue)
+
+    def _launch_dispersion_background(
+        self,
+        job_id: str,
+        node_id: str,
+        config: dict[str, Any],
+        param: str,
+        tmp_parquet: str,
+        *,
+        execution_context: ExecutionContext,
+    ) -> None:
+        """Run the profile-likelihood search in a background thread."""
+        from haute.modelling import TrainingJob
+        from haute.modelling._rustystats import (
+            _build_interactions,
+            _resolve_glm_terms,
+            estimate_glm_dispersion,
+        )
+
+        start_time = time.monotonic()
+        self._training_jobs.register_latest(
+            (_DISPERSION_JOB_TYPE, job_id),
+            job_id,
+            execution_token=execution_context.cancellation_token,
+        )
+        self._store.atomic_update(job_id, {"start_time": start_time})
+
+        # ``build_training_job_kwargs`` shares data prep with real training so
+        # the estimate is profiled on exactly the frame training would see.
+        # The stub never reaches a fit — the search overrides the parameter
+        # at every candidate value.
+        stub_config = {**config, param: _DISPERSION_PARAM_STUBS[param]}
+        job_kwargs = build_training_job_kwargs(stub_config, data=tmp_parquet, default_name=node_id)
+        job = TrainingJob(**job_kwargs)
+        train_params = job_kwargs["params"]
+
+        def _progress(msg: str, frac: float) -> None:
+            self._raise_if_training_stopped(job_id, execution_context=execution_context)
+            self._store.atomic_update(
+                job_id,
+                {
+                    "progress": frac,
+                    "message": msg,
+                    "elapsed_seconds": time.monotonic() - start_time,
+                },
+                expected_status="running",
+            )
+
+        def _worker() -> None:
+            try:
+                prepared = job._prepare_data(_progress, execution_context=execution_context)
+
+                features = prepared.features
+                cat_features = prepared.cat_features
+                raw_terms = train_params.get("terms") or {}
+                if raw_terms:
+                    # Mirror TrainingJob.run's GLM narrowing: the design only
+                    # carries the columns the user's terms reference.
+                    term_names = set(raw_terms)
+                    missing = term_names - set(features)
+                    if missing:
+                        raise ValueError(
+                            f"GLM terms reference columns not present in the "
+                            f"training data: {sorted(missing)}."
+                        )
+                    features = [f for f in features if f in term_names]
+                    cat_features = [f for f in cat_features if f in term_names]
+
+                terms = _resolve_glm_terms(train_params, features, cat_features)
+                interactions = _build_interactions(
+                    train_params.get("interactions", []) or [],
+                    terms,
+                )
+                target = str(job_kwargs["target"])
+                weight = job_kwargs.get("weight") or None
+                offset = job_kwargs.get("offset") or None
+                needed = list(
+                    dict.fromkeys(
+                        [
+                            *terms,
+                            target,
+                            *([weight] if weight else []),
+                            *([offset] if offset else []),
+                        ]
+                    )
+                )
+                _progress("Loading estimation sample", 0.35)
+                from haute._polars_utils import streaming_collect
+
+                frame = streaming_collect(
+                    pl.scan_parquet(prepared.data_path)
+                    .filter(pl.col(target).is_not_null())
+                    .select(needed),
+                    profile=ExecutionProfile.TRAINING_PREP,
+                    execution_context=execution_context,
+                )
+
+                family = str(train_params.get("family"))
+
+                def _on_fit(fit_index: int) -> None:
+                    self._raise_if_training_stopped(job_id, execution_context=execution_context)
+                    # A bounded 1-D search converges in ~10-30 fits.
+                    frac = 0.4 + 0.55 * min(fit_index / 30.0, 1.0)
+                    self._store.atomic_update(
+                        job_id,
+                        {
+                            "progress": frac,
+                            "message": f"Profile likelihood fit {fit_index + 1}",
+                            "elapsed_seconds": time.monotonic() - start_time,
+                        },
+                        expected_status="running",
+                    )
+
+                estimate = estimate_glm_dispersion(
+                    data=frame,
+                    terms=terms,
+                    target=target,
+                    family=family,
+                    param=param,
+                    link=train_params.get("link") or None,
+                    intercept=bool(train_params.get("intercept", True)),
+                    weight=weight,
+                    offset=offset,
+                    interactions=interactions or None,
+                    on_fit=_on_fit,
+                )
+                self._lifecycle.transition(
+                    job_id,
+                    to="completed",
+                    message="Completed",
+                    fields={
+                        "param": estimate.param,
+                        "value": estimate.value,
+                        "llf": estimate.llf,
+                        "n_fits": estimate.n_fits,
+                        "elapsed_seconds": time.monotonic() - start_time,
+                    },
+                )
+            except BackgroundJobStoppedError as exc:
+                logger.info(
+                    "dispersion_worker_stopped",
+                    job_id=job_id,
+                    terminal_reason=exc.terminal_reason,
+                )
+            except ExecutionCancelledError:
+                self._lifecycle.transition(
+                    job_id,
+                    to="cancelled",
+                    message="Cancelled",
+                    elapsed_seconds=time.monotonic() - start_time,
+                )
+            except ValueError as exc:
+                error_msg = str(exc)
+                logger.warning("dispersion_validation_error", error=error_msg, node_id=node_id)
+                self._lifecycle.transition(
+                    job_id,
+                    to="contract_error",
+                    message=error_msg,
+                    fields={"error": error_msg},
+                    elapsed_seconds=time.monotonic() - start_time,
+                )
+            except Exception as exc:
+                error_msg = _friendly_error(exc)
+                logger.error("dispersion_estimate_failed", error=str(exc), node_id=node_id)
+                self._lifecycle.transition(
+                    job_id,
+                    to="error",
+                    message=error_msg,
+                    fields={"error": error_msg},
+                    elapsed_seconds=time.monotonic() - start_time,
+                )
+            finally:
+                self._training_jobs.release(job_id)
+                execution_context.release_admission()
+                if Path(tmp_parquet).exists():
+                    os.unlink(tmp_parquet)
+
+        try:
+            thread = threading.Thread(target=_worker, daemon=True)
+            thread.start()
+        except Exception as exc:
+            if Path(tmp_parquet).exists():
+                os.unlink(tmp_parquet)
+            logger.error("dispersion_worker_start_failed", error=str(exc), node_id=node_id)
+            self._lifecycle.transition(
+                job_id,
+                to="error",
+                message=f"Failed to start dispersion estimation worker: {exc}",
+                elapsed_seconds=time.monotonic() - start_time,
+            )
+            self._training_jobs.release(job_id)
+            execution_context.release_admission()
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    "Dispersion estimation worker failed to start. "
+                    "Check the server logs for details."
+                ),
+            ) from exc
 
     def _raise_if_training_stopped(
         self,
