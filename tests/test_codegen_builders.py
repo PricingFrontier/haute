@@ -1238,15 +1238,16 @@ class TestCodegenExecValidation:
         ):
             ns["quotes"]()
 
-    def test_output_exec_is_passthrough(self) -> None:
-        """v2: the generated OUTPUT body is a plain passthrough.
+    def test_output_exec_assembles_document(self, tmp_path: Path) -> None:
+        """The generated OUTPUT body assembles the response document.
 
-        Column selection / assembly no longer lives in the generated code — it
-        moved to the runtime assembler driven by the sidecar ``outputMapping``.
-        So executing the generated function body returns its input unchanged
-        (all columns survive); the mapping-driven projection is exercised by the
-        ``_build_output`` / assembler tests, not here.
+        It routes through the shared ``assemble_output_from_config`` — the
+        same assembler the canvas executor calls — driven by the node's saved
+        schema JSON.  A passthrough body would leak the raw upstream frame
+        (all columns, no document shape) from a standalone run.
         """
+        import json
+
         import polars as pl
 
         node = _make_codegen_node(
@@ -1271,6 +1272,18 @@ class TestCodegenExecValidation:
             label="result",
         )
         code = _node_to_code(node, source_names=["upstream"])
+        cfg_file = tmp_path / "config" / "quote_response" / "result.json"
+        cfg_file.parent.mkdir(parents=True)
+        cfg_file.write_text(json.dumps(node.data.config))
+
+        ns: dict = {"__file__": str(tmp_path / "__exec_test__.py")}
+        exec(
+            "import polars as pl\nimport haute\n"
+            "from pathlib import Path\n"
+            "pipeline = haute.Pipeline('exec_test')\n\n"
+            f"{code}\n",
+            ns,
+        )
         input_lf = pl.DataFrame(
             {
                 "premium": [1.0],
@@ -1278,10 +1291,13 @@ class TestCodegenExecValidation:
                 "extra": [99],
             }
         ).lazy()
-        result = self._exec_generated(code, input_df=input_lf)
+        result = ns["result"](input_lf)
         assert isinstance(result, pl.LazyFrame)
         collected = result.collect()
-        assert set(collected.columns) == {"premium", "Area", "extra"}
+        # The mapped columns survive as document fields; the unmapped one is
+        # projected away — the raw frame did NOT pass through.
+        assert set(collected.columns) == {"premium", "Area"}
+        assert collected.to_dicts() == [{"premium": 1.0, "Area": "A"}]
 
     def test_multi_frame_output_dedupes_duplicate_params(self) -> None:
         """A multi-frame OUTPUT (one apiInput feeding several edges) must codegen
@@ -1309,8 +1325,9 @@ class TestCodegenExecValidation:
         # Distinct, valid params — not four bare `quotes`.
         assert "quotes: pl.LazyFrame, quotes_2: pl.LazyFrame" in code
         assert "quotes_3: pl.LazyFrame, quotes_4: pl.LazyFrame" in code
-        # The passthrough body returns the (unchanged) first param.
-        assert "return quotes\n" in code
+        # The body forwards ALL frames (deduped names) to the shared assembler.
+        assert "assemble_output_from_config(" in code
+        assert "source_names=['quotes', 'quotes_2', 'quotes_3', 'quotes_4']" in code
         # compile() (unlike ast.parse) rejects duplicate arg names — must pass.
         _compile_node_code(code)
 

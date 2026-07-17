@@ -38,6 +38,9 @@ from haute._node_apply import (
     apply_optimiser_apply_from_config as apply_optimiser_apply_from_config,
 )
 from haute._node_apply import (
+    assemble_output_from_config as assemble_output_from_config,
+)
+from haute._node_apply import (
     expand_scenarios_from_config as expand_scenarios_from_config,
 )
 from haute._node_apply import (

@@ -1077,20 +1077,29 @@ def _gen_data_output(node: GraphNode, source_names: list[str]) -> str:
 @_register_codegen(NodeType.OUTPUT)
 def _gen_output(node: GraphNode, source_names: list[str]) -> str:
     func_name, description, _config = _common_node_fields(node)
+    param_names = _dedup_param_names(source_names)
     params = _build_params(source_names)
-    first = _first_source(source_names)
-    # v2: the outputMapping lives in a JSON sidecar (like every other
+    # v2: the outputMapping lives in a JSON schema mapping (like every other
     # config-folder node — apiInput, dataSource, …), referenced by
-    # ``config=``. The function body is a plain passthrough; the runtime
-    # assembles the response document from the mapping, not from the body.
-    # The legacy v1 ``fields=`` / ``.select(...)`` form is gone.
+    # ``config=``. The body routes through the SAME assembler the canvas
+    # executor calls, so a standalone ``pipeline.run()`` / ``score()``
+    # returns the assembled response document — not a passthrough of the
+    # raw upstream frame. The legacy v1 ``fields=`` / ``.select(...)`` form
+    # is gone.
     cfg_path = config_path_for_node(node.data.nodeType, func_name).as_posix()
-    body = f"    return {first}" if first else "    return pl.LazyFrame()"
+    args = "".join(f"        {p},\n" for p in param_names)
     return (
         f"@pipeline.output(config={_safe_path(cfg_path)})\n"
         f"def {func_name}({params}) -> pl.LazyFrame:\n"
         f'    """{description}"""\n'
-        f"{body}\n"
+        f"    from pathlib import Path\n"
+        f"    from haute.graph_utils import assemble_output_from_config\n"
+        f"    return assemble_output_from_config(\n"
+        f"{args}"
+        f"        config={_safe_path(cfg_path)},\n"
+        f"        base_dir=Path(__file__).parent,\n"
+        f"        source_names={param_names!r},\n"
+        f"    )\n"
     )
 
 

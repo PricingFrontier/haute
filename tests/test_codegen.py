@@ -352,12 +352,14 @@ class TestNodeToCode:
             }
         )
         code = _node_to_code(node, source_names=["transform"])
-        # v2: the outputMapping lives in the JSON sidecar; the generated body is
-        # a plain passthrough (assembly happens at runtime from the mapping, not
-        # via a `.select(...)` baked into the body).
+        # v2: the outputMapping lives in the JSON schema mapping; the generated
+        # body routes through the shared assembler the executor calls (not a
+        # passthrough, not a `.select(...)` baked into the body).
         assert 'config="config/quote_response/Output.json"' in code
         assert "transform.select(" not in code
-        assert "return transform" in code
+        assert "assemble_output_from_config(" in code
+        assert "return transform" not in code
+        assert "source_names=['transform']" in code
         assert "def Output(transform: pl.LazyFrame)" in code
         _compile_node_code(code)
 
@@ -373,7 +375,8 @@ class TestNodeToCode:
             }
         )
         code = _node_to_code(node, source_names=["src"])
-        assert "return src" in code
+        assert "assemble_output_from_config(" in code
+        assert "return src" not in code
         assert ".select" not in code
         _compile_node_code(code)
 
@@ -1352,7 +1355,7 @@ class TestCodegenEdgeCases:
         _compile_node_code(code)
 
     def test_output_with_none_fields(self):
-        """Output node with an empty outputMapping should generate passthrough."""
+        """Output node with an empty outputMapping still routes via the assembler."""
         node = _n(
             {
                 "id": "out",
@@ -1364,7 +1367,8 @@ class TestCodegenEdgeCases:
             }
         )
         code = _node_to_code(node, source_names=["src"])
-        assert "return src" in code
+        assert "assemble_output_from_config(" in code
+        assert "return src" not in code
         assert ".select" not in code
         _compile_node_code(code)
 
@@ -2983,7 +2987,8 @@ class TestGenOutputEdgeCases:
             }
         )
         code = _node_to_code(node, source_names=["src"])
-        assert "return src" in code
+        assert "assemble_output_from_config(" in code
+        assert "return src" not in code
         assert ".select" not in code
         _compile_node_code(code)
 
@@ -2999,7 +3004,8 @@ class TestGenOutputEdgeCases:
             }
         )
         code = _node_to_code(node, source_names=["src"])
-        assert "return src" in code
+        assert "assemble_output_from_config(" in code
+        assert "return src" not in code
         assert ".select" not in code
         _compile_node_code(code)
 
