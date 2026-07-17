@@ -1015,7 +1015,7 @@ def _fix_upstream_values(
             # Step has null but we know the correct value — try to find
             # the right row in the source DataFrame using the known value.
             df = eager_outputs.get(s.node_id)
-            if df is None or col_name not in df.columns:
+            if not isinstance(df, pl.DataFrame) or col_name not in df.columns:
                 break
             try:
                 # Filter to rows where this column matches the known value.
@@ -1772,8 +1772,16 @@ def enrich_steps(
                         factor_input_dtypes: dict[str, Any] = {}
                         for pid in parents_of.get(step.node_id, []):
                             pdf = eager_outputs.get(pid)
-                            if pdf is not None:
-                                for cname, cdtype in pdf.schema.items():
+                            # Multi-frame parents store dict[label, DataFrame]
+                            frames = (
+                                pdf.values()
+                                if isinstance(pdf, dict)
+                                else [pdf]
+                                if pdf is not None
+                                else []
+                            )
+                            for frame in frames:
+                                for cname, cdtype in frame.schema.items():
                                     factor_input_dtypes.setdefault(cname, cdtype)
                         detail = trace_mod.enrich_banding(
                             cfg,
@@ -1799,7 +1807,7 @@ def enrich_steps(
                         input_frames = [
                             eager_outputs[pid]
                             for pid in parent_ids
-                            if pid in eager_outputs and eager_outputs[pid] is not None
+                            if isinstance(eager_outputs.get(pid), pl.DataFrame)
                         ]
                         source_names = [
                             _sanitize_func_name(node_map[pid].data.label)
@@ -1847,7 +1855,10 @@ def enrich_steps(
                     parent_row_count = 0
                     for pid in parent_ids:
                         df = eager_outputs.get(pid)
-                        if df is not None:
+                        if isinstance(df, dict):
+                            for frame in df.values():
+                                parent_row_count = max(parent_row_count, len(frame))
+                        elif df is not None:
                             parent_row_count = max(parent_row_count, len(df))
                     child_df = eager_outputs.get(step.node_id)
                     child_row_count = len(child_df) if child_df is not None else 0

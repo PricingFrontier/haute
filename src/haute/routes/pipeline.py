@@ -505,6 +505,9 @@ async def trace_row(body: TraceRequest) -> TraceResponse:
         if detail.startswith("row_index ") and "out of range" in detail:
             logger.warning("trace_row_out_of_range", error=detail)
             raise HTTPException(status_code=400, detail=detail)
+        if detail.startswith("Target node") and "multiple frames" in detail:
+            logger.warning("trace_target_multi_frame", error=detail)
+            raise HTTPException(status_code=400, detail=detail)
         if detail.startswith("Target node ") and "not found in graph" in detail:
             logger.warning("trace_target_not_found", error=detail)
             raise HTTPException(status_code=404, detail=detail)

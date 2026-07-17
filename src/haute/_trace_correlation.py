@@ -668,6 +668,7 @@ def _correlate_rows_posthoc(
     *,
     node_map: Mapping[str, GraphNode],
     diagnostics: list[dict[str, Any]] | None = None,
+    source_frame_of: Mapping[tuple[str, str], str | None] | None = None,
 ) -> dict[str, dict[str, Any] | None]:
     """Extract the correct row from each node using post-hoc correlation.
 
@@ -726,6 +727,29 @@ def _correlate_rows_posthoc(
             result[nid] = None
             row_indices[nid] = -1
             continue
+
+        # Multi-frame sources store dict[label, DataFrame]. The edge's
+        # sourceHandle names the frame each child consumes (the same
+        # selection _pick_source_frame makes at execution time) — resolve
+        # to that frame before correlating.
+        if isinstance(parent_df, dict):
+            handle = (source_frame_of or {}).get((nid, resolved_child_id))
+            frame = parent_df.get(handle) if handle is not None else None
+            if frame is None or len(frame) == 0:
+                if diagnostics is not None:
+                    diagnostics.append(
+                        {
+                            "code": "unresolved_source_frame",
+                            "node_id": nid,
+                            "child_id": resolved_child_id,
+                            "source_handle": handle,
+                            "frames": sorted(parent_df.keys()),
+                        }
+                    )
+                result[nid] = None
+                row_indices[nid] = -1
+                continue
+            parent_df = frame
 
         child_row = result[resolved_child_id]
         child_row_idx = row_indices.get(resolved_child_id, 0)
