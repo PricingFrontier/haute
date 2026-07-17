@@ -73,9 +73,7 @@ class TestFastPathArtifactPerturbation:
                 task="regression",
             )
 
-    def test_relogged_artifact_bytes_invalidate_in_process_cache(
-        self, tmp_path, monkeypatch
-    ):
+    def test_relogged_artifact_bytes_invalidate_in_process_cache(self, tmp_path, monkeypatch):
         """Re-log under the same run ref → the NEW model is served, not stale."""
         monkeypatch.chdir(tmp_path)
         local = _artifact_cache_path(tmp_path / ".cache" / "models", RUN_ID, ARTIFACT)

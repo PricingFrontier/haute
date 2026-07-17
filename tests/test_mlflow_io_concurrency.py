@@ -913,9 +913,7 @@ class TestLockAcquisitionRaces:
                 version="",
                 artifact_path="model.cbm",
                 task="regression",
-                artifact_fingerprint=_local_artifact_fingerprint(
-                    "model.cbm", str(local_file)
-                ),
+                artifact_fingerprint=_local_artifact_fingerprint("model.cbm", str(local_file)),
             )
             _model_cache.put(cache_key, winner_model)
 
