@@ -1154,6 +1154,21 @@ class OptimiserFrontierResponse(BaseModel):
     constraint_names: list[str] = Field(default_factory=list)
     points_limit: int | None = None
     points_truncated: bool = False
+    job_id: str | None = None
+    """Pollable frontier job handle when ``status == "started"``."""
+
+
+class OptimiserFrontierStatusResponse(BaseModel):
+    status: JobStatus
+    progress: float = 0.0
+    message: str = ""
+    elapsed_seconds: float = 0.0
+    result: OptimiserFrontierResponse | None = None
+    terminal_reason: str | None = None
+    error_code: str | None = None
+    http_status_code: int | None = None
+    error_detail: ExecutionMemoryLimitErrorPayload | dict[str, Any] | str | None = None
+    execution_metrics: ExecutionMetricsPayload | None = None
 
 
 class OptimiserHistoryEntry(BaseModel):

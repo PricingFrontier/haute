@@ -80,7 +80,8 @@
         "loss"
       ],
       "points_limit": 2000,
-      "points_truncated": false
+      "points_truncated": false,
+      "job_id": null
     }
   },
   "frontier": {
@@ -97,7 +98,8 @@
       "loss"
     ],
     "points_limit": 2000,
-    "points_truncated": false
+    "points_truncated": false,
+    "job_id": null
   },
   "terminal_reason": null,
   "execution_metrics": null

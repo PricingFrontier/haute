@@ -167,6 +167,7 @@ _JOB_TYPE_KEY = "job_type"
 _SOLVE_JOB_TYPE = "solve"
 _ESTIMATE_JOB_TYPE = "estimate"
 _FRONTIER_AUTO_RANGE_JOB_TYPE = "frontier_auto_range"
+_FRONTIER_RECOMPUTE_JOB_TYPE = "frontier_recompute"
 _GRAPH_NODE_SETUP_COORDINATION_TYPE = "optimiser_graph_node_setup"
 _NULL_QUOTE_ID_DETAIL_PREFIX = "Null quote_id values found in optimiser input"
 _NON_FINITE_DETAIL_PREFIX = "Non-finite values found in optimiser input"
@@ -192,6 +193,10 @@ _NON_BLOCKING_RUNNING_JOB_TYPES = frozenset(
     {
         _ESTIMATE_JOB_TYPE,
         _FRONTIER_AUTO_RANGE_JOB_TYPE,
+        # A frontier recompute re-solves on a completed job's stored runtime
+        # state; it never reserved the solve slot when it ran inline, and the
+        # background offload keeps that semantics.
+        _FRONTIER_RECOMPUTE_JOB_TYPE,
     }
 )
 

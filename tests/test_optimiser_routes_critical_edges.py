@@ -11,6 +11,7 @@ import polars as pl
 from fastapi import HTTPException
 
 from tests.optimiser_fixtures import make_select_job as _make_select_job
+from tests.optimiser_fixtures import run_frontier_and_wait
 
 # ``clean_job_store`` lives in tests/conftest.py — single source of truth.
 
@@ -575,15 +576,15 @@ def test_run_frontier_returns_409_when_atomic_update_loses_race(
     }
 
     with patch.object(clean_job_store, "atomic_update", return_value=None):
-        resp = client.post(
-            "/api/optimiser/frontier",
-            json={"job_id": "frontier_race"},
+        status = run_frontier_and_wait(
+            client,
+            {"job_id": "frontier_race"},
         )
 
-    assert resp.status_code == 409
-    detail = resp.json()["detail"]
-    assert "recomputing the frontier" in detail.lower()
-    assert "re-run the solve" in detail.lower()
+    assert status["status"] == "contract_error"
+    assert status["http_status_code"] == 409
+    assert "recomputing the frontier" in status["message"].lower()
+    assert "re-run the solve" in status["message"].lower()
 
 
 # ---------------------------------------------------------------------------
@@ -1395,10 +1396,11 @@ def test_run_frontier_rejects_invalid_apply_handle_shape(
         "created_at": time.time(),
     }
 
-    resp = client.post(
-        "/api/optimiser/frontier",
-        json={"job_id": "frontier_bad_handle"},
+    status = run_frontier_and_wait(
+        client,
+        {"job_id": "frontier_bad_handle"},
     )
 
-    assert resp.status_code == 500
-    assert "frontier apply artifact handle is invalid" in resp.json()["detail"].lower()
+    assert status["status"] == "error"
+    assert status["http_status_code"] == 500
+    assert "frontier apply artifact handle is invalid" in status["message"].lower()

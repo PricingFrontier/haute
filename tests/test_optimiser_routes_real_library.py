@@ -40,6 +40,7 @@ from haute.routes._optimiser_limits import (
     enforce_frontier_compute_budget,
 )
 from tests.conftest import make_edge, make_graph
+from tests.optimiser_fixtures import run_frontier_and_wait
 
 if TYPE_CHECKING:
     from fastapi.testclient import TestClient
@@ -371,16 +372,16 @@ class TestRatebookApplyDetailContract:
         scored_path, banding_path = _ratebook_fixture_paths(tmp_path)
         job_id = _solve_completed(client, _ratebook_graph(scored_path, banding_path))
 
-        frontier_resp = client.post(
-            "/api/optimiser/frontier",
-            json={
+        frontier_status = run_frontier_and_wait(
+            client,
+            {
                 "job_id": job_id,
                 "threshold_ranges": {"volume": [4.0, 6.0]},
                 "n_points_per_dim": 2,
             },
         )
-        assert frontier_resp.status_code == 200, frontier_resp.text
-        assert frontier_resp.json()["n_points"] == 2
+        assert frontier_status["status"] == "completed", frontier_status.get("message", "")
+        assert frontier_status["result"]["n_points"] == 2
 
         resp = client.post(
             "/api/optimiser/apply",
@@ -409,15 +410,15 @@ class TestRatebookApplyDetailContract:
         scored_path, banding_path = _ratebook_fixture_paths(tmp_path)
         job_id = _solve_completed(client, _ratebook_graph(scored_path, banding_path))
 
-        frontier_resp = client.post(
-            "/api/optimiser/frontier",
-            json={
+        frontier_status = run_frontier_and_wait(
+            client,
+            {
                 "job_id": job_id,
                 "threshold_ranges": {"volume": [4.0, 6.0]},
                 "n_points_per_dim": 2,
             },
         )
-        assert frontier_resp.status_code == 200, frontier_resp.text
+        assert frontier_status["status"] == "completed", frontier_status.get("message", "")
 
         select_resp = client.post(
             "/api/optimiser/frontier/select",
@@ -530,16 +531,16 @@ class TestOnlineApplyDetailRealSchema:
         df.write_parquet(path)
         job_id = _solve_completed(client, _online_graph(str(path)))
 
-        frontier_resp = client.post(
-            "/api/optimiser/frontier",
-            json={
+        frontier_status = run_frontier_and_wait(
+            client,
+            {
                 "job_id": job_id,
                 "threshold_ranges": {"volume": [4.0, 6.0]},
                 "n_points_per_dim": 3,
             },
         )
-        assert frontier_resp.status_code == 200, frontier_resp.text
-        assert frontier_resp.json()["n_points"] == 3
+        assert frontier_status["status"] == "completed", frontier_status.get("message", "")
+        assert frontier_status["result"]["n_points"] == 3
 
         first = client.post(
             "/api/optimiser/apply",
@@ -625,16 +626,16 @@ class TestFrontierComputeBudgetContract:
         df.write_parquet(path)
         job_id = _solve_completed(client, _online_graph(str(path)))
 
-        resp = client.post(
-            "/api/optimiser/frontier",
-            json={
+        status = run_frontier_and_wait(
+            client,
+            {
                 "job_id": job_id,
                 "threshold_ranges": {"volume": [4.0, 6.0]},
                 "n_points_per_dim": 3,
             },
         )
-        assert resp.status_code == 200, resp.text
-        assert resp.json()["n_points"] == 3
+        assert status["status"] == "completed", status.get("message", "")
+        assert status["result"]["n_points"] == 3
 
     def test_budget_error_names_exact_projection_when_computable(self) -> None:
         with pytest.raises(FrontierComputeBudgetExceededError) as exc:

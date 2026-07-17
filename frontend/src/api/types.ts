@@ -628,6 +628,8 @@ export interface FrontierResponse {
   constraint_names: string[]
   points_limit: number | null
   points_truncated: boolean
+  /** Pollable frontier job handle when `status === "started"`. */
+  job_id?: string | null
 }
 
 export type FrontierData = Omit<FrontierResponse, 'status'>
@@ -658,6 +660,19 @@ export interface FrontierAutoRangeStartResponse {
   status: "started" | "error"
   job_id: string | null
   error: string | null
+}
+
+export interface FrontierStatusResponse {
+  status: JobStatus
+  progress: number
+  message: string
+  elapsed_seconds: number
+  result: FrontierResponse | null
+  terminal_reason?: string | null
+  error_code?: string | null
+  http_status_code?: number | null
+  error_detail?: unknown
+  execution_metrics?: ExecutionMetrics | null
 }
 
 export interface FrontierAutoRangeStatusResponse {

@@ -144,7 +144,7 @@ def test_frontier_route_caps_response_before_serialising_large_point_frame(
         "created_at": time.time(),
     }
 
-    response = client.post(
+    start = client.post(
         "/api/optimiser/frontier",
         json={
             "job_id": "large-frontier",
@@ -152,9 +152,20 @@ def test_frontier_route_caps_response_before_serialising_large_point_frame(
             "n_points_per_dim": 100,
         },
     )
+    assert start.status_code == 200, start.text
+    frontier_job_id = start.json()["job_id"]
+    deadline = time.monotonic() + 30.0
+    while True:
+        response = client.get(f"/api/optimiser/frontier/status/{frontier_job_id}")
+        assert response.status_code == 200, response.text
+        if response.json()["status"] != "running":
+            break
+        assert time.monotonic() < deadline, "frontier sweep did not finish in time"
+        time.sleep(0.02)
 
-    assert response.status_code == 200, response.text
-    payload = response.json()
+    status_payload = response.json()
+    assert status_payload["status"] == "completed", status_payload.get("message", "")
+    payload = status_payload["result"]
     assert payload["n_points"] == _LARGE_FRONTIER_POINT_COUNT
     assert payload["points_returned"] == FRONTIER_POINT_LIMIT
     assert payload["points_limit"] == FRONTIER_POINT_LIMIT
