@@ -558,6 +558,47 @@ def transform(load_data: pl.DataFrame) -> pl.DataFrame:
         # Regex fallback must still find the first (valid) node
         assert len(graph.nodes) >= 1
         assert graph.pipeline_name == "broken"
+
+    def test_fallback_keeps_preserved_blocks(self, tmp_path):
+        """A preserve block must survive a fallback-parse -> codegen cycle.
+
+        Production failure: saving a half-edited file (syntax error) went
+        through the regex fallback, which built its graph without
+        ``preserved_blocks`` — silently deleting every ``# haute:preserve``
+        block on the next save.
+        """
+        from haute.codegen import graph_to_code
+
+        code = '''\
+import polars as pl
+import haute
+
+pipeline = haute.Pipeline("broken_preserve")
+
+# haute:preserve-start
+KEEP_ME = True
+# haute:preserve-end
+
+
+@pipeline.polars
+def transform() -> pl.DataFrame:
+    """Transform."""
+    return pl.DataFrame()
+
+
+broken = (
+'''  # <-- unclosed paren = SyntaxError
+        p = _write_pipeline(tmp_path, code)
+        graph = parse_pipeline_file(p)
+
+        assert graph.warning  # proves the fallback path fired
+        assert len(graph.preserved_blocks) == 1
+        assert "KEEP_ME" in graph.preserved_blocks[0]
+
+        generated = graph_to_code(graph, pipeline_name="broken_preserve")
+        assert "KEEP_ME = True" in generated
+        assert "# haute:preserve-start" in generated
+        assert "# haute:preserve-end" in generated
         assert graph.warning is not None
         assert "syntax error" in graph.warning.lower()
 
