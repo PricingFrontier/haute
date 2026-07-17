@@ -1,6 +1,7 @@
 import { useState, useCallback } from "react"
 import type { OnUpdateConfig } from "./editors"
-import { trainModel, estimateTrainingRam, runDispersionEstimate } from "../api/client"
+import { trainModel, estimateTrainingRam } from "../api/client"
+import { runDispersionEstimate } from "../api/dispersion"
 import type { DispersionParam } from "../api/types"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
 import useSettingsStore from "../stores/useSettingsStore"

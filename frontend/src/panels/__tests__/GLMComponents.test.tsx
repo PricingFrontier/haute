@@ -27,10 +27,13 @@ import type { TrainResult } from "../../stores/useNodeResultsStore"
 vi.mock("../../api/client", () => ({
   trainModel: vi.fn(() => new Promise(() => {})),
   estimateTrainingRam: vi.fn(() => new Promise(() => {})),
-  runDispersionEstimate: vi.fn(() => new Promise(() => {})),
   // GLMTargetConfig narrows errors with `instanceof ApiError`, so the mock
   // must export a real class or the instanceof check throws.
   ApiError: class ApiError extends Error {},
+}))
+
+vi.mock("../../api/dispersion", () => ({
+  runDispersionEstimate: vi.fn(() => new Promise(() => {})),
 }))
 
 vi.mock("../../utils/buildGraph", () => ({

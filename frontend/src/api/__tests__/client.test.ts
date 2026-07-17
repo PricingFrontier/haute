@@ -20,10 +20,6 @@ import {
   checkMlflow,
   getTrainStatus,
   estimateTrainingRam,
-  estimateGlmDispersion,
-  getDispersionStatus,
-  cancelDispersion,
-  runDispersionEstimate,
   getWarehouses,
   getCatalogs,
   getGitStatus,
@@ -589,100 +585,6 @@ describe("endpoint contracts", () => {
 // ═══════════════════════════════════════════════════════════════════════════
 // Git endpoints
 // ═══════════════════════════════════════════════════════════════════════════
-
-describe("dispersion estimation endpoints", () => {
-  function makeDispersionStatus(overrides: Record<string, unknown> = {}) {
-    return {
-      status: "running",
-      progress: 0.5,
-      message: "Profile likelihood fit 3",
-      elapsed_seconds: 1.2,
-      param: "theta",
-      value: null,
-      llf: null,
-      n_fits: null,
-      error: null,
-      terminal_reason: null,
-      ...overrides,
-    }
-  }
-
-  it("estimateGlmDispersion posts graph, node, param and default source", async () => {
-    mockFetch.mockReturnValue(jsonResponse({ status: "started", job_id: "disp-1" }))
-    const result = await estimateGlmDispersion({ graph: dummyGraph, node_id: "n1", param: "theta" })
-    const [url, opts] = mockFetch.mock.calls[0]
-    expect(url).toBe("/api/modelling/dispersion/estimate")
-    expect(opts.method).toBe("POST")
-    const body = JSON.parse(opts.body)
-    expect(body.node_id).toBe("n1")
-    expect(body.param).toBe("theta")
-    expect(body.source).toBe("live")
-    expect(result.job_id).toBe("disp-1")
-  })
-
-  it("getDispersionStatus GETs the job status", async () => {
-    mockFetch.mockReturnValue(jsonResponse(makeDispersionStatus({ status: "completed", value: 2.45 })))
-    const status = await getDispersionStatus("disp-1")
-    const [url] = mockFetch.mock.calls[0]
-    expect(url).toBe("/api/modelling/dispersion/status/disp-1")
-    expect(status.status).toBe("completed")
-    expect(status.value).toBe(2.45)
-  })
-
-  it("cancelDispersion posts to the cancel endpoint", async () => {
-    mockFetch.mockReturnValue(jsonResponse(makeDispersionStatus({ status: "cancelled" })))
-    const status = await cancelDispersion("disp-1")
-    const [url, opts] = mockFetch.mock.calls[0]
-    expect(url).toBe("/api/modelling/dispersion/cancel/disp-1")
-    expect(opts.method).toBe("POST")
-    expect(status.status).toBe("cancelled")
-  })
-
-  it("runDispersionEstimate polls to completion and resolves with the value", async () => {
-    mockFetch
-      .mockReturnValueOnce(jsonResponse({ status: "started", job_id: "disp-1" }))
-      .mockReturnValueOnce(jsonResponse(makeDispersionStatus()))
-      .mockReturnValueOnce(jsonResponse(makeDispersionStatus({ status: "completed", value: 2.4487, llf: -693.0, n_fits: 11 })))
-    const value = await runDispersionEstimate(
-      { graph: dummyGraph, node_id: "n1", param: "theta" },
-      { pollIntervalMs: 0 },
-    )
-    expect(value).toBe(2.4487)
-    expect(mockFetch).toHaveBeenCalledTimes(3)
-  })
-
-  it("runDispersionEstimate rejects with the job message on terminal failure", async () => {
-    mockFetch
-      .mockReturnValueOnce(jsonResponse({ status: "started", job_id: "disp-1" }))
-      .mockReturnValueOnce(jsonResponse(makeDispersionStatus({ status: "contract_error", error: "no converged fit" })))
-    await expect(
-      runDispersionEstimate({ graph: dummyGraph, node_id: "n1", param: "theta" }, { pollIntervalMs: 0 }),
-    ).rejects.toThrow("no converged fit")
-  })
-
-  it("runDispersionEstimate rejects when completed without a value", async () => {
-    mockFetch
-      .mockReturnValueOnce(jsonResponse({ status: "started", job_id: "disp-1" }))
-      .mockReturnValueOnce(jsonResponse(makeDispersionStatus({ status: "completed", value: null })))
-    await expect(
-      runDispersionEstimate({ graph: dummyGraph, node_id: "n1", param: "theta" }, { pollIntervalMs: 0 }),
-    ).rejects.toThrow("without a value")
-  })
-
-  it("runDispersionEstimate aborts via signal and requests a cancel", async () => {
-    const controller = new AbortController()
-    mockFetch
-      .mockReturnValueOnce(jsonResponse({ status: "started", job_id: "disp-1" }))
-      .mockReturnValue(jsonResponse(makeDispersionStatus({ status: "cancelled" })))
-    controller.abort()
-    await expect(
-      runDispersionEstimate(
-        { graph: dummyGraph, node_id: "n1", param: "theta" },
-        { pollIntervalMs: 0, signal: controller.signal },
-      ),
-    ).rejects.toThrow()
-  })
-})
 
 describe("git endpoints", () => {
   beforeEach(() => {

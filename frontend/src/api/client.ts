@@ -48,9 +48,6 @@ import type {
   GitSetWorkingBranchResponse,
   GitStatus,
   GitWorkingBranchResponse,
-  DispersionEstimateStart,
-  DispersionEstimateStatus,
-  DispersionParam,
   GraphPayload,
   IoFormatsResponse,
   JsonCacheBuildResponse,
@@ -92,8 +89,6 @@ import {
   parseDatabricksSchemasResponse,
   parseDatabricksTablesResponse,
   parseDatabricksWarehousesResponse,
-  parseDispersionEstimateResponse,
-  parseDispersionStatusResponse,
   parseDissolveSubmodelResponse,
   parseExploreRunResponse,
   parseExploreStatusResponse,
@@ -450,7 +445,10 @@ async function attemptFetch<T>(
   }
 }
 
-async function request<T>(
+// Exported for split-chunk API modules (e.g. api/dispersion.ts): endpoints
+// consumed only by lazy-loaded panels live outside this module so their code
+// stays out of the initial bundle, but they share the same fetch machinery.
+export async function request<T>(
   url: string,
   options: RequestOptions = {},
 ): Promise<T> {
@@ -485,7 +483,7 @@ async function request<T>(
   throw lastError
 }
 
-function post<T>(url: string, body: unknown, options: MutationOptions = {}): Promise<T> {
+export function post<T>(url: string, body: unknown, options: MutationOptions = {}): Promise<T> {
   return request<T>(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -842,87 +840,6 @@ export function estimateTrainingRam(
 ): Promise<TrainEstimate> {
   return post<unknown>("/api/modelling/estimate", { ...payload, source: payload.source ?? "live" }, { timeout: 30_000, ...options })
     .then(parseTrainEstimateResponse)
-}
-
-export interface EstimateDispersionArgs {
-  graph: GraphPayload
-  node_id: string
-  param: DispersionParam
-  source?: string
-  signal?: AbortSignal
-}
-
-export function estimateGlmDispersion(args: EstimateDispersionArgs): Promise<DispersionEstimateStart> {
-  const { signal, ...payload } = args
-  // Pipeline execution can take minutes for large datasets — match /train.
-  return post<unknown>(
-    "/api/modelling/dispersion/estimate",
-    { ...payload, source: payload.source ?? "live" },
-    { signal, timeout: 600_000 },
-  ).then(parseDispersionEstimateResponse)
-}
-
-export function getDispersionStatus(
-  jobId: string,
-  options?: { signal?: AbortSignal },
-): Promise<DispersionEstimateStatus> {
-  return request<unknown>(
-    `/api/modelling/dispersion/status/${encodeURIComponent(jobId)}`,
-    options,
-  ).then(parseDispersionStatusResponse)
-}
-
-export function cancelDispersion(
-  jobId: string,
-  options?: { signal?: AbortSignal },
-): Promise<DispersionEstimateStatus> {
-  return post<unknown>(
-    `/api/modelling/dispersion/cancel/${encodeURIComponent(jobId)}`,
-    {},
-    options,
-  ).then(parseDispersionStatusResponse)
-}
-
-const _DISPERSION_TERMINAL_STATUSES = new Set([
-  "completed",
-  "error",
-  "cancelled",
-  "superseded",
-  "timed_out",
-  "memory_limited",
-  "contract_error",
-])
-
-/** Start a dispersion estimation and poll it to completion.
- *
- * Resolves with the estimated value; rejects with the job's message on any
- * non-completed terminal status. The value is returned to the caller (the
- * config panel) for the user to accept into the config — the estimate is an
- * explicit user choice, never a silently applied default.
- */
-export async function runDispersionEstimate(
-  args: EstimateDispersionArgs,
-  options?: { signal?: AbortSignal; pollIntervalMs?: number },
-): Promise<number> {
-  const { job_id } = await estimateGlmDispersion({ ...args, signal: options?.signal })
-  const pollInterval = options?.pollIntervalMs ?? 500
-  for (;;) {
-    if (options?.signal?.aborted) {
-      void cancelDispersion(job_id).catch(() => undefined)
-      throw new DOMException("Dispersion estimation aborted", "AbortError")
-    }
-    const status = await getDispersionStatus(job_id, { signal: options?.signal })
-    if (status.status === "completed") {
-      if (status.value === null) {
-        throw new ApiError("Dispersion estimation completed without a value", 500)
-      }
-      return status.value
-    }
-    if (_DISPERSION_TERMINAL_STATUSES.has(status.status)) {
-      throw new ApiError(status.error || status.message || `Dispersion estimation ${status.status}`, 500)
-    }
-    await new Promise((resolve) => setTimeout(resolve, pollInterval))
-  }
 }
 
 export function logToMlflow(

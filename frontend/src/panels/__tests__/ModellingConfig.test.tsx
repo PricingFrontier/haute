@@ -17,10 +17,13 @@ const mockEstimateTrainingRam = vi.fn()
 vi.mock("../../api/client", () => ({
   trainModel: (...args: unknown[]) => mockTrainModel(...args),
   estimateTrainingRam: (...args: unknown[]) => mockEstimateTrainingRam(...args),
-  runDispersionEstimate: vi.fn(() => new Promise(() => {})),
   // GLMTargetConfig narrows errors with `instanceof ApiError`, so the mock
   // must export a real class or the instanceof check throws.
   ApiError: class ApiError extends Error {},
+}))
+
+vi.mock("../../api/dispersion", () => ({
+  runDispersionEstimate: vi.fn(() => new Promise(() => {})),
 }))
 
 vi.mock("../../utils/buildGraph", () => ({
