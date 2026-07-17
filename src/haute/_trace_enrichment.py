@@ -34,6 +34,7 @@ import dataclasses
 import math
 import re
 import sys
+from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
 import polars as pl
@@ -870,6 +871,21 @@ def enrich_optimiser_apply(
 # ---------------------------------------------------------------------------
 
 
+def _node_output_row_count(df: pl.DataFrame | dict[str, pl.DataFrame] | None) -> int:
+    """Row count of a node's materialised output for lineage detection.
+
+    Multi-frame sources store ``dict[label, DataFrame]`` in
+    ``eager_outputs`` — count the widest frame's rows (mirroring the
+    parent-side handling in ``enrich_steps``), never ``len(dict)``,
+    which would count FRAMES, not rows.
+    """
+    if df is None:
+        return 0
+    if isinstance(df, dict):
+        return max((len(frame) for frame in df.values()), default=0)
+    return len(df)
+
+
 def detect_row_lineage_type(
     *,
     input_row_count: int | None = None,
@@ -1431,6 +1447,7 @@ def enrich_steps(
     column: str | None,
     source: str,
     preamble_ns: dict[str, Any] | None = None,
+    source_frames_of: Mapping[tuple[str, str], Sequence[str | None]] | None = None,
 ) -> None:
     """Enrich trace steps in-place with expression/calculation/detail data.
 
@@ -1439,6 +1456,11 @@ def enrich_steps(
     expression-parser and node-type enricher references are resolved at
     call time via ``haute.trace`` attribute lookup so pytest
     monkeypatching at that location flows through unchanged.
+
+    *source_frames_of* maps a (source, target) node pair to the
+    ``sourceHandle`` of every edge between them — the per-edge frame
+    selection for multi-frame sources, used to scope parent-frame
+    lookups to the frame(s) a node actually consumes.
     """
     trace_mod = _trace_module()
 
@@ -1824,14 +1846,25 @@ def enrich_steps(
                         factor_input_dtypes: dict[str, Any] = {}
                         for pid in parents_of.get(step.node_id, []):
                             pdf = eager_outputs.get(pid)
-                            # Multi-frame parents store dict[label, DataFrame]
-                            frames = (
-                                pdf.values()
-                                if isinstance(pdf, dict)
-                                else [pdf]
-                                if pdf is not None
-                                else []
-                            )
+                            # Multi-frame parents store dict[label, DataFrame].
+                            # Scope to the frame(s) this node's incoming
+                            # edge(s) actually consume (per-edge sourceHandle)
+                            # so a column name that recurs across frames with
+                            # a different dtype resolves in the consumed
+                            # frame's numeric domain, not by dict-iteration
+                            # order across every emitted frame.
+                            frames: list[pl.DataFrame]
+                            if isinstance(pdf, dict):
+                                handles = (source_frames_of or {}).get((pid, step.node_id))
+                                frames = [
+                                    pdf[h]
+                                    for h in dict.fromkeys(handles or ())
+                                    if h is not None and h in pdf
+                                ] or list(pdf.values())
+                            elif pdf is not None:
+                                frames = [pdf]
+                            else:
+                                frames = []
                             for frame in frames:
                                 for cname, cdtype in frame.schema.items():
                                     factor_input_dtypes.setdefault(cname, cdtype)
@@ -1906,14 +1939,14 @@ def enrich_steps(
                     parent_ids = parents_of.get(step.node_id, [])
                     parent_row_count = 0
                     for pid in parent_ids:
-                        df = eager_outputs.get(pid)
-                        if isinstance(df, dict):
-                            for frame in df.values():
-                                parent_row_count = max(parent_row_count, len(frame))
-                        elif df is not None:
-                            parent_row_count = max(parent_row_count, len(df))
-                    child_df = eager_outputs.get(step.node_id)
-                    child_row_count = len(child_df) if child_df is not None else 0
+                        parent_row_count = max(
+                            parent_row_count,
+                            _node_output_row_count(eager_outputs.get(pid)),
+                        )
+                    # The node's own output may itself be a multi-frame
+                    # bundle (the source appearing as an intermediate
+                    # step) — same dict guard as the parent side.
+                    child_row_count = _node_output_row_count(eager_outputs.get(step.node_id))
 
                     # Sniff operation type from code string
                     operation_type = _sniff_operation_type(code) if code else ""
