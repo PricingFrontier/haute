@@ -52,12 +52,12 @@ from haute._node_apply import (
 )
 from haute._node_apply import (
     apply_optimiser_apply_from_config,
+    assemble_output_from_config,
     expand_scenarios_from_config,
     select_live_switch_input,
 )
 from haute._output_assembler import (
     OutputMappingSchemaError,
-    assemble_output_from_mapping,
     is_active_mapping_entry,
 )
 from haute._rating import (
@@ -814,11 +814,10 @@ def _output_columns(config: dict[str, Any]) -> ColumnContract:
     return (set(), referenced)
 
 
-@_register(NodeType.OUTPUT, columns=_output_columns)
+@_register(NodeType.OUTPUT, columns=_output_columns, is_behavioural=True)
 def _build_output(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
-    mapping = config.get("outputMapping")
-    if mapping is None:
+    if config.get("outputMapping") is None:
         raise OutputMappingSchemaError(
             f"OUTPUT node {ctx.node.data.label!r} has no `outputMapping`; the "
             "legacy `fields` shape is no longer supported — open the OUTPUT "
@@ -826,45 +825,29 @@ def _build_output(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
         )
 
     # The executor binds incoming edges positionally — ``fn(*input_lfs)`` in
-    # _execute_lazy, ordered by incoming edge — not as kwargs-by-port. So
-    # recover the ``{source_port: frame}`` map the assembler wants from the
-    # positional order. ``ctx.source_ports[i]`` is edge *i*'s port name
-    # (``sourceHandle or source-node-name``), which both aligns with
-    # ``input_lfs[i]`` and disambiguates a multi-port source (one apiInput
-    # feeding several edges has one node name but distinct sourceHandles).
-    # Fall back to ``source_names`` when a caller didn't supply ports (e.g. a
-    # direct ``_build_node_fn`` call in a unit test).
+    # _execute_lazy, ordered by incoming edge — not as kwargs-by-port. So the
+    # shared helper recovers the ``{source_port: frame}`` map the assembler
+    # wants from the positional order. ``ctx.source_ports[i]`` is edge *i*'s
+    # port name (``sourceHandle or source-node-name``), which both aligns
+    # with ``input_lfs[i]`` and disambiguates a multi-port source (one
+    # apiInput feeding several edges has one node name but distinct
+    # sourceHandles). Fall back to ``source_names`` when a caller didn't
+    # supply ports (e.g. a direct ``_build_node_fn`` call in a unit test).
     source_ports = list(ctx.source_ports if ctx.source_ports is not None else ctx.source_names)
-    referenced_ports = {e["source_port"] for e in mapping if e.get("enabled", True)}
     label = ctx.node.data.label
 
     def output_fn(*dfs_positional: _Frame, **dfs_by_name: _Frame) -> _Frame:
-        positional = [lf.lazy() for lf in dfs_positional]
-        named = {name: lf.lazy() for name, lf in dfs_by_name.items()}
-        frames: dict[str, _Frame] = dict(zip(source_ports, positional, strict=False))
-        # A future kwarg-by-port executor binding would win over the positional
-        # reconstruction; until then ``dfs_by_name`` is empty here.
-        frames.update(named)
-        # Single-parent OUTPUT carries exactly one frame, so whichever
-        # ``source_port`` the editor named (the upstream *table* label) resolves
-        # to it — that name need not equal the sanitized *node* label the
-        # executor uses as the positional key (and may be absent entirely when a
-        # builder is invoked without edge wiring). A genuine multi-frame OUTPUT
-        # (≥ 2 incoming frames) requires the names to line up and fails loud
-        # below. Gate on the incoming-frame *count*, not the reconstructed dict,
-        # so an unnamed lone frame still resolves.
-        incoming = positional + list(named.values())
-        if len(incoming) == 1 and referenced_ports:
-            frames = {port: incoming[0] for port in referenced_ports}
-        missing = referenced_ports - frames.keys()
-        if missing:
-            raise OutputMappingSchemaError(
-                f"OUTPUT node {label!r} maps source frame(s) {sorted(missing)!r} "
-                f"that no incoming edge provides; available frames: "
-                f"{sorted(frames.keys())!r}.",
-            )
-        document = assemble_output_from_mapping(frames, mapping)
-        return pl.LazyFrame(document)
+        # Delegate to the shared config-driven twin so the canvas executor
+        # and a saved standalone ``pipeline.run()`` assemble via ONE code
+        # path. ``dfs_by_name`` is the future kwarg-by-port executor binding
+        # (empty today); the helper lets it win over the positional map.
+        return assemble_output_from_config(
+            *dfs_positional,
+            config=config,
+            source_names=source_ports,
+            named_frames=dfs_by_name,
+            label=label,
+        )
 
     return ctx.func_name, output_fn, False
 

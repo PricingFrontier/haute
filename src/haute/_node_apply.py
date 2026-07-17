@@ -230,3 +230,72 @@ def apply_optimiser_apply_from_config(
 
     input_lf = _select_optimiser_apply_input(dfs, artifact, ratebook_input, names, ids)
     return _dispatch_apply(input_lf, artifact, version_col, optimised_value_col)
+
+
+# ---------------------------------------------------------------------------
+# OUTPUT
+# ---------------------------------------------------------------------------
+
+
+def assemble_output_from_config(
+    *dfs: _Frame,
+    config: dict[str, Any] | str | PathLike[str],
+    base_dir: str | Path | None = None,
+    source_names: list[str] | None = None,
+    named_frames: dict[str, _Frame] | None = None,
+    label: str | None = None,
+) -> _Frame:
+    """Assemble an OUTPUT node's response document from its incoming frames.
+
+    The generated-code twin of the executor's ``_build_output`` — and the
+    single code path both sides run: the executor's ``output_fn`` delegates
+    here, and saved pipeline files embed
+    ``assemble_output_from_config(df, config="config/quote_response/<name>.json",
+    base_dir=..., source_names=[...])`` so a standalone ``pipeline.run()`` /
+    ``score()`` assembles the SAME document instead of passing the raw
+    upstream frame through.
+
+    *dfs* are the incoming frames in declared order; *source_names* are the
+    aligned frame identifiers the mapping's ``source_port`` entries resolve
+    against (the executor passes its per-edge port names; generated code
+    passes its parameter names).  A single incoming frame resolves to every
+    referenced port regardless of naming — the editor's ``source_port`` is
+    the upstream *table* label, which need not equal the positional key — so
+    the common one-parent OUTPUT never fails on a name mismatch; a genuine
+    multi-frame OUTPUT requires the names to line up and fails loud.
+    *named_frames* is the future kwarg-by-port executor binding (empty
+    today); it wins over the positional reconstruction.
+    """
+    cfg = _resolve_node_config(config, base_dir)
+    mapping = cfg.get("outputMapping")
+
+    from haute._output_assembler import (
+        OutputMappingSchemaError,
+        assemble_output_from_mapping,
+    )
+
+    if mapping is None:
+        raise OutputMappingSchemaError(
+            f"OUTPUT node {label or '<unnamed>'!r} has no `outputMapping`; the "
+            "legacy `fields` shape is no longer supported — open the OUTPUT "
+            "editor to migrate.",
+        )
+
+    positional = [lf.lazy() for lf in dfs]
+    named = {name: lf.lazy() for name, lf in (named_frames or {}).items()}
+    names = list(source_names) if source_names is not None else []
+    frames: dict[str, _Frame] = dict(zip(names, positional, strict=False))
+    frames.update(named)
+    referenced_ports = {e["source_port"] for e in mapping if e.get("enabled", True)}
+    incoming = positional + list(named.values())
+    if len(incoming) == 1 and referenced_ports:
+        frames = {port: incoming[0] for port in referenced_ports}
+    missing = referenced_ports - frames.keys()
+    if missing:
+        raise OutputMappingSchemaError(
+            f"OUTPUT node {label or '<unnamed>'!r} maps source frame(s) "
+            f"{sorted(missing)!r} that no incoming edge provides; available "
+            f"frames: {sorted(frames.keys())!r}.",
+        )
+    document = assemble_output_from_mapping(frames, mapping)
+    return pl.LazyFrame(document)
