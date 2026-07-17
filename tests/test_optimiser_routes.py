@@ -1261,6 +1261,82 @@ class TestEstimateRoute:
         ]
         assert running_jobs == [], f"Validation failure left running job(s) behind: {running_jobs}"
 
+    @pytest.mark.parametrize(
+        ("column", "null_series", "expected_fragment"),
+        [
+            pytest.param(
+                "volume",
+                pl.Series([0.9, None, 1.0, 0.9], dtype=pl.Float32),
+                "'volume' (1 null row)",
+                id="constraint-null",
+            ),
+            pytest.param(
+                "scenario_value",
+                pl.Series([0.9, None, 0.9, 1.1], dtype=pl.Float32),
+                "'scenario_value' (1 null row)",
+                id="scenario-value-null",
+            ),
+            pytest.param(
+                "scenario_index",
+                pl.Series([0, None, 0, 1], dtype=pl.Int32),
+                "'scenario_index' (1 null row)",
+                id="scenario-index-null",
+            ),
+        ],
+    )
+    @pytest.mark.usefixtures("_widen_sandbox_root")
+    def test_solve_rejects_null_input_values(
+        self,
+        client,
+        tmp_path,
+        clean_job_store,
+        column,
+        null_series,
+        expected_fragment,
+    ):
+        """A genuinely-null objective/constraint/scenario value must fail as
+        loudly as NaN does.
+
+        The non-finite gate only sees NaN/inf: ``is_nan()``/``is_infinite()``
+        return null for null inputs, so ``sum()`` skips them and a null value
+        sails through to the solver, where the external aggregation's
+        treatment of null is undefined (silent-corruption risk). Pin the
+        contract: nulls are rejected before any solve, with a 400-class
+        contract error naming the offending column, and no running job is
+        left behind.
+        """
+        df = pl.DataFrame(
+            {
+                "quote_id": ["q1", "q1", "q2", "q2"],
+                "scenario_index": pl.Series([0, 1, 0, 1], dtype=pl.Int32),
+                "scenario_value": pl.Series([0.9, 1.0, 0.9, 1.1], dtype=pl.Float32),
+                "expected_income": pl.Series([100.0, 110.0, 80.0, 90.0], dtype=pl.Float32),
+                "volume": pl.Series([0.9, 0.95, 1.0, 0.9], dtype=pl.Float32),
+            }
+        ).with_columns(null_series.alias(column))
+        path = tmp_path / f"null_{column}.parquet"
+        df.write_parquet(path)
+        graph = _make_optimiser_graph(str(path))
+
+        resp = client.post(
+            "/api/optimiser/solve",
+            json={"graph": graph, "node_id": "opt"},
+        )
+
+        assert resp.status_code == 200, resp.text
+        status = _poll_until_done(client, resp.json()["job_id"])
+        assert status["status"] == "contract_error"
+        detail = status["message"]
+        assert "Null values found in optimiser input" in detail
+        assert expected_fragment in detail, (
+            f"Error detail does not name the offending column: {detail!r}"
+        )
+
+        running_jobs = [
+            (jid, j) for jid, j in clean_job_store.jobs.items() if j.get("status") == "running"
+        ]
+        assert running_jobs == [], f"Validation failure left running job(s) behind: {running_jobs}"
+
     def test_estimate_rejects_unknown_node_loudly(self, client, scored_data):
         graph = _make_optimiser_graph(scored_data)
         resp = client.post(
@@ -1528,6 +1604,63 @@ class TestEstimateRoute:
         assert "Non-finite values found in optimiser input" in exc_info.value.detail
         assert expected_fragment in exc_info.value.detail
         assert "finite objective, constraint, and scenario values" in exc_info.value.detail
+        status = service.frontier_auto_range_status(job_id)
+        assert status.status == "contract_error"
+        assert status.http_status_code == 400
+        assert status.error_detail == exc_info.value.detail
+
+    @pytest.mark.parametrize(
+        ("column", "expected_fragment"),
+        [
+            pytest.param("expected_income", "'expected_income' (1 null row)", id="objective-null"),
+            pytest.param("volume", "'volume' (1 null row)", id="constraint-null"),
+        ],
+    )
+    def test_frontier_auto_range_rejects_null_values_before_deriving_ranges(
+        self,
+        scored_data,
+        column,
+        expected_fragment,
+    ):
+        """Null objective/constraint values must fail as loudly as NaN: the
+        finite check skips nulls, so without a dedicated null gate they reach
+        the range estimator silently."""
+        from haute.routes._job_store import JobStore
+        from haute.routes._optimiser_service import OptimiserSolveService
+        from haute.schemas import OptimiserFrontierAutoRangeRequest
+
+        graph = _make_optimiser_graph(scored_data)
+        body = OptimiserFrontierAutoRangeRequest(graph=graph, node_id="opt")
+        source_df = pl.DataFrame(
+            {
+                "quote_id": ["q1", "q1"],
+                "expected_income": pl.Series([100.0, 110.0], dtype=pl.Float32),
+                "volume": pl.Series([1.0, 2.0], dtype=pl.Float32),
+            }
+        )
+        values = source_df[column].to_list()
+        values[1] = None
+        source_lf = source_df.with_columns(pl.Series(column, values, dtype=pl.Float32)).lazy()
+        store = JobStore()
+        service = OptimiserSolveService(store)
+        job_id = store.create_job({"status": "running", "job_type": "frontier_auto_range"})
+        prepared = service._prepare_frontier_auto_range(body)
+        prepared["streaming_plan"] = None
+
+        with (
+            patch.object(service, "_execute_pipeline", return_value={"opt": source_lf}),
+            patch(
+                "haute.routes._optimiser_service._estimate_scenario_frontier_ranges",
+                side_effect=AssertionError("range derivation should not run"),
+            ),
+            pytest.raises(HTTPException) as exc_info,
+        ):
+            service._run_frontier_auto_range_job(body, job_id, **prepared)
+
+        assert exc_info.value.status_code == 400
+        assert "Null values found in optimiser input" in exc_info.value.detail
+        assert expected_fragment in exc_info.value.detail
+        assert "non-null objective, constraint, and scenario values" in exc_info.value.detail
         status = service.frontier_auto_range_status(job_id)
         assert status.status == "contract_error"
         assert status.http_status_code == 400

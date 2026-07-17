@@ -170,8 +170,10 @@ _FRONTIER_AUTO_RANGE_JOB_TYPE = "frontier_auto_range"
 _GRAPH_NODE_SETUP_COORDINATION_TYPE = "optimiser_graph_node_setup"
 _NULL_QUOTE_ID_DETAIL_PREFIX = "Null quote_id values found in optimiser input"
 _NON_FINITE_DETAIL_PREFIX = "Non-finite values found in optimiser input"
+_NULL_VALUE_DETAIL_PREFIX = "Null values found in optimiser input"
 _QUOTE_ID_NULL_COUNT_ALIAS = "__haute_quote_id_null_count"
 _NON_FINITE_COUNT_ALIAS_PREFIX = "__haute_non_finite_count_"
+_NULL_COUNT_ALIAS_PREFIX = "__haute_null_count_"
 _AUTO_RANGE_BUCKET_COLUMN = "__haute_frontier_auto_range_bucket"
 _FRONTIER_AUTO_RANGE_CANCELLED_STATUS = "cancelled"
 _FRONTIER_AUTO_RANGE_SUPERSEDED_STATUS = "superseded"
@@ -241,11 +243,16 @@ def _non_finite_check_columns(schema: Any, column_names: Iterable[str]) -> list[
     ]
 
 
+def _null_check_columns(schema: Any, column_names: Iterable[str]) -> list[str]:
+    return [cname for cname in dict.fromkeys(column_names) if cname in schema]
+
+
 def _value_contract_validation_exprs(
     *,
     quote_id_col: str,
     validate_quote_id_nulls: bool,
     non_finite_check_cols: list[str],
+    null_check_cols: list[str],
     cast_to_float32_cols: set[str],
 ) -> list[Any]:
     import polars as pl
@@ -260,6 +267,13 @@ def _value_contract_validation_exprs(
         )
         validation_exprs.append(
             checked.is_infinite().sum().alias(f"{_NON_FINITE_COUNT_ALIAS_PREFIX}inf_{index}")
+        )
+    # Nulls are checked on the source dtype: is_nan()/is_infinite() return
+    # null for null inputs, so sum() skips them and the finite check alone
+    # cannot see a genuinely-null value.
+    for index, cname in enumerate(null_check_cols):
+        validation_exprs.append(
+            pl.col(cname).null_count().alias(f"{_NULL_COUNT_ALIAS_PREFIX}{index}")
         )
     return validation_exprs
 
@@ -289,6 +303,26 @@ def _non_finite_detail_from_counts(
         f"{_NON_FINITE_DETAIL_PREFIX}: {', '.join(non_finite_summaries)}. "
         "The optimiser requires finite objective, constraint, and scenario values; "
         "check upstream joins and calculations for division by zero or overflow."
+    )
+
+
+def _null_value_detail_from_counts(
+    validation_counts: Any,
+    null_check_cols: list[str],
+) -> str | None:
+    null_summaries = []
+    for index, cname in enumerate(null_check_cols):
+        null_count = int(validation_counts.get_column(f"{_NULL_COUNT_ALIAS_PREFIX}{index}").item())
+        if null_count > 0:
+            null_summaries.append(
+                f"'{cname}' ({null_count} null row{'s' if null_count != 1 else ''})"
+            )
+    if not null_summaries:
+        return None
+    return (
+        f"{_NULL_VALUE_DETAIL_PREFIX}: {', '.join(null_summaries)}. "
+        "The optimiser requires non-null objective, constraint, and scenario values; "
+        "check upstream joins and filters for rows with missing values."
     )
 
 
@@ -4464,6 +4498,8 @@ class OptimiserSolveService:
             # so float columns are checked at that precision to also reject
             # Float64 values that overflow to ±inf on the cast. scenario_index
             # is cast to Int32 downstream, so its source values are checked.
+            # Genuinely-null values (any dtype) are rejected in the same pass:
+            # the external aggregation's treatment of null is undefined.
             self._validate_input_value_contracts(
                 source_lf,
                 schema,
@@ -4508,11 +4544,14 @@ class OptimiserSolveService:
         streaming_chunk_size: int | None,
         profile: ExecutionProfile,
     ) -> None:
+        finite_columns = list(finite_columns)
         non_finite_check_cols = _non_finite_check_columns(schema, finite_columns)
+        null_check_cols = _null_check_columns(schema, finite_columns)
         validation_exprs = _value_contract_validation_exprs(
             quote_id_col=quote_id_col,
             validate_quote_id_nulls=validate_quote_id_nulls,
             non_finite_check_cols=non_finite_check_cols,
+            null_check_cols=null_check_cols,
             cast_to_float32_cols=set(cast_to_float32_columns),
         )
         if not validation_exprs:
@@ -4548,6 +4587,19 @@ class OptimiserSolveService:
                 execution_context=execution_context,
             )
             raise HTTPException(status_code=400, detail=non_finite_detail)
+
+        null_value_detail = _null_value_detail_from_counts(
+            validation_counts,
+            null_check_cols,
+        )
+        if null_value_detail is not None:
+            self._record_http_setup_failure(
+                job_id,
+                status_code=400,
+                detail=null_value_detail,
+                execution_context=execution_context,
+            )
+            raise HTTPException(status_code=400, detail=null_value_detail)
 
     def _validate_and_project_auto_range(
         self,
