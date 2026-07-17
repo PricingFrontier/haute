@@ -50,6 +50,8 @@ import textwrap
 from dataclasses import dataclass
 from pathlib import Path
 
+import pytest
+
 from tests._write_sandbox import ENV_ROOT, STRICT_FILES
 
 _TESTS_DIR = Path(__file__).resolve().parent
@@ -528,11 +530,16 @@ EXPECTED_VIOLATIONS: dict[str, int] = {
 }
 
 
+@pytest.mark.timeout(180)
 def test_write_apis_derive_from_scratch_fixture() -> None:
-    observed = {rel: len(violations) for rel, violations in scan_tests().items()}
+    # The full-corpus AST scan is slow and load-sensitive under `-n 4` +
+    # coverage, so scan once and give the test headroom beyond the default
+    # pytest-timeout.
+    scanned = scan_tests()
+    observed = {rel: len(violations) for rel, violations in scanned.items()}
     details = {
         rel: [f"  {v.file}:{v.line} {v.kind} ({v.detail})" for v in violations]
-        for rel, violations in scan_tests().items()
+        for rel, violations in scanned.items()
     }
 
     unexpected = {
