@@ -513,7 +513,10 @@ EXPECTED_VIOLATIONS: dict[str, int] = {
     "tests/test_json_cache_coverage_uplift.py": 19,
     "tests/test_json_cache_integrity.py": 1,
     "tests/test_json_shred_mut_stragglers.py": 1,
-    "tests/test_mlflow_io.py": 2,
+    # 2 pre-existing + 2 cache-key-contract tests writing through
+    # _artifact_cache_path(tmp_path / ...) results (tmp_path-rooted, but the
+    # static taint cannot see through the helper call).
+    "tests/test_mlflow_io.py": 4,
     "tests/test_mlflow_io_concurrency.py": 12,
     "tests/test_model_score_executor.py": 1,
     "tests/test_optimiser_routes.py": 2,

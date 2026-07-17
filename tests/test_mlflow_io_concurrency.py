@@ -41,7 +41,9 @@ from haute._mlflow_io import (
     _active_disk_cache_runs,
     _artifact_cache_path,
     _evict_disk_cache,
+    _local_artifact_fingerprint,
     _model_cache,
+    _model_cache_key,
     _resolve_artifact_local,
     load_mlflow_model,
 )
@@ -783,17 +785,18 @@ class TestLockAcquisitionRaces:
     """
 
     @staticmethod
-    def _hooked_lock(hook):
-        """Return a drop-in for ``_artifact_io_lock`` running *hook* once."""
+    def _hooked_lock(hook, fire_on: int = 1):
+        """Return a drop-in for ``_artifact_io_lock`` running *hook* once,
+        at the *fire_on*-th acquisition."""
         from haute import _mlflow_io
 
         real_lock = _mlflow_io._artifact_io_lock
-        fired = []
+        calls = [0]
 
         def locked(run_id: str, artifact_path: str):
             lock = real_lock(run_id, artifact_path)
-            if not fired:
-                fired.append(True)
+            calls[0] += 1
+            if calls[0] == fire_on:
                 hook()
             return lock
 
@@ -812,7 +815,14 @@ class TestLockAcquisitionRaces:
         cached_file.parent.mkdir(parents=True)
         cached_file.write_bytes(b"bytes")
         winner_model = ScoringModel(_StubCatBoost(), ["a"], frozenset(), "catboost")
-        fast_key = ("run", "run-h", "model.cbm", "regression")
+        fast_key = _model_cache_key(
+            source_type="run",
+            run_id="run-h",
+            version="",
+            artifact_path="model.cbm",
+            task="regression",
+            artifact_fingerprint=_local_artifact_fingerprint("model.cbm", str(cached_file)),
+        )
 
         def winner_populates_cache() -> None:
             _model_cache.put(fast_key, winner_model)
@@ -880,19 +890,40 @@ class TestLockAcquisitionRaces:
 
     def test_resolve_path_waiter_reuses_model_cached_while_waiting(self, tmp_path, monkeypatch):
         """No disk file (resolve path); the 'winner' populates the cache
-        while this caller waits — no download, no load."""
+        while this caller waits for the load lock — no model load.
+
+        The artifact download itself happens before the cache check (its
+        byte identity is part of the cache key), so the winner's entry is
+        keyed at hook time from the freshly downloaded file, and this
+        caller's single download is expected.
+        """
         monkeypatch.chdir(tmp_path)
         winner_model = ScoringModel(_StubCatBoost(), ["a"], frozenset(), "catboost")
-        cache_key = ("run", "run-r", "model.cbm", "regression")
         transport = _FakeTransport()
+        local_file = _artifact_cache_path(
+            tmp_path / ".cache" / "models",
+            "run-r",
+            "model.cbm",
+        )
 
         def winner_populates_cache() -> None:
+            cache_key = _model_cache_key(
+                source_type="run",
+                run_id="run-r",
+                version="",
+                artifact_path="model.cbm",
+                task="regression",
+                artifact_fingerprint=_local_artifact_fingerprint("model.cbm", str(local_file)),
+            )
             _model_cache.put(cache_key, winner_model)
 
         with (
             patch(
                 "haute._mlflow_io._artifact_io_lock",
-                side_effect=self._hooked_lock(winner_populates_cache),
+                # First acquisition is the download lock inside
+                # _resolve_artifact_local (file not yet present); the load
+                # lock is the second — that's where the winner races us.
+                side_effect=self._hooked_lock(winner_populates_cache, fire_on=2),
             ),
             patch(
                 "haute._mlflow_io.resolve_mlflow_source",
@@ -908,5 +939,5 @@ class TestLockAcquisitionRaces:
             )
 
         assert result is winner_model
-        assert transport.calls == 0, "cache hit under the lock must skip the download"
+        assert transport.calls == 1, "byte-identity keying requires exactly one download"
         load_catboost.assert_not_called()
