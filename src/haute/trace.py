@@ -330,6 +330,7 @@ def execute_trace(
     row_values: dict[str, Any] | None = None,
     preamble_ns: dict[str, Any] | None = None,
     preview: PreviewReader | dict[str, Any] | None = None,
+    fingerprint_memo: GraphFingerprintMemo | None = None,
 ) -> TraceResult:
     """Execute a pipeline graph and return a single-row trace.
 
@@ -356,6 +357,12 @@ def execute_trace(
                  upstream graph; when ``None`` (tests, CLI, cold requests)
                  the trace falls back to a fresh execution.  This keeps the
                  trace module decoupled from ``haute.executor._preview_cache``.
+        fingerprint_memo: Optional request-scoped
+                 :class:`~haute._cache.GraphFingerprintMemo` shared with the
+                 caller (the trace route reuses the memo from its
+                 supersession-key computation) so preamble utility files are
+                 hashed at most once per request.  ``None`` creates a fresh
+                 memo scoped to this call.
 
     Returns:
         TraceResult with per-node steps showing how the row was produced.
@@ -383,7 +390,11 @@ def execute_trace(
     # The pipeline structure doesn't change between trace clicks — only the
     # row_index and column change.  Cache the materialized DataFrames and
     # reuse them: first click ~1.7s, subsequent clicks <10ms.
-    fingerprint_memo = GraphFingerprintMemo()
+    # A caller (the trace route) may pass in the request-scoped memo it
+    # already used for the supersession key, so the preamble's utility
+    # files are hashed once per request rather than once per call.
+    if fingerprint_memo is None:
+        fingerprint_memo = GraphFingerprintMemo()
     # Runtime-input extras (flat-file dataSource / external-file / model-
     # artifact signatures + the apiInput JSON-cache state) are part of the
     # trace key so an out-of-band re-export or cache rebuild invalidates
