@@ -42,7 +42,7 @@ Pricing models sit at the centre of regulated businesses. They determine what cu
 
 Open source changes that relationship. The engine that calculates your prices is fully visible. Anyone on your team can inspect how it works, verify its behaviour, or extend it. There is no hidden logic, no opaque compilation step, no proprietary runtime sitting between your model and your output.
 
-This also means your work is portable. Your pipelines are Python files. Your models are standard formats. Your data stays in your infrastructure. If you ever want to stop using Haute, everything you've built still works - it's just Python.
+This also means your work is portable. Your pipelines are Python files. Your models are standard formats. Your data stays in your infrastructure. If you ever want to stop using Haute, everything you've built still works: your pipelines are ordinary Python files (with JSON config saved alongside) that run with the open-source library - there's no hosted service or proprietary runtime to lose access to.
 
 Being open source and code means Haute can lean on best-in-class tools and engineering practices instead of reinventing them. Polars, Catboost, MLFlow, GIT, CI/CD, Haute doesn't try to rebuild these things behind a proprietary wall. It connects them and wraps them in an interface designed for pricing work.
 
@@ -148,7 +148,7 @@ Behind the scenes, it uses Git with guardrails. Protected branches can't be over
 
 Before training a model on a large dataset, Haute probes a sample of your data to estimate how much memory the full run will need. If it would exceed your machine's available memory, it tells you before you start - and suggests a safe dataset size.
 
-This is a small detail, but it prevents the kind of silent crash that can lose work.
+This is a small detail, but it catches the kind of silent crash that can lose work before it happens. The estimate reads your machine's available memory directly; inside a memory-capped container it can't see the cap, and where it can't read memory at all it falls back to a conservative default.
 
 ---
 

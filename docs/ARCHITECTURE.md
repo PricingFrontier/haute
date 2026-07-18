@@ -46,7 +46,7 @@ pipeline = haute.Pipeline("motor_pricing_v2")
 
 ### 3.2 Nodes
 
-Nodes are the building blocks. Each node is a decorated Python function with defined inputs, outputs, and logic. There are 19 node types grouped by function:
+Nodes are the building blocks. Each node is a decorated Python function with defined inputs, outputs, and logic. There are 21 node types grouped by function:
 
 #### Entry / Exit (singleton — max 1 per pipeline)
 
@@ -60,6 +60,8 @@ Nodes are the building blocks. Each node is a decorated Python function with def
 | Node Type | Enum | Purpose |
 |---|---|---|
 | **Data Source** | `dataSource` | Read from local CSV/Parquet or Databricks Unity Catalog table |
+| **Data Input** | `dataInput` | Read data via any native polars `read_*`/`scan_*` function (full argument width) |
+| **Data Output** | `dataOutput` | Write data via any native polars `write_*`/`sink_*` function (full argument width) |
 | **Data Sink** | `dataSink` | Write results to parquet, CSV, or directory |
 | **External File** | `externalFile` | Load pickle, JSON, or joblib file as a DataFrame |
 | **Constant** | `constant` | Named constant values injected as a 1-row DataFrame |
@@ -92,7 +94,7 @@ Nodes are the building blocks. Each node is a decorated Python function with def
 | **Submodel** | `submodel` | Reusable sub-pipeline (drill-down in GUI, flattened at execution) |
 | **Submodel Port** | `submodelPort` | Input/output port for submodel boundary wiring |
 
-All 19 types are defined in `_types.py` as a `NodeType(StrEnum)` enum, with per-type `TypedDict` config schemas, registered builder functions in `_builders.py`, and code generators in `codegen.py`.
+All 21 types are defined in `_types.py` as a `NodeType(StrEnum)` enum, with per-type `TypedDict` config schemas, registered builder functions in `_builders.py`, and code generators in `codegen.py`.
 
 ### 3.3 External Config Files
 
@@ -104,12 +106,14 @@ def vehicle_age_band(df):
     ...
 ```
 
-14 of the 19 node types store external config (all except `polars`, `edgeJoin`, `explore`, `submodel`, and `submodelPort`). The folder-per-type mapping is defined in `_config_io.py`:
+16 of the 21 node types store external config (all except `polars`, `edgeJoin`, `explore`, `submodel`, and `submodelPort`). The folder-per-type mapping is defined in `_config_io.py`:
 
 | Node Type | Config Folder |
 |---|---|
 | Quote Input | `config/quote_input/` |
 | Data Source | `config/data_source/` |
+| Data Input | `config/data_input/` |
+| Data Output | `config/data_output/` |
 | Source Switch | `config/source_switch/` |
 | Model Scoring | `config/model_scoring/` |
 | Banding | `config/banding/` |
@@ -797,8 +801,8 @@ pipeline.connect("load_claims", "clean_vehicle")
 pipeline.connect("clean_vehicle", "score_frequency")
 ```
 
-### 8.3 Rating tables → All in Databricks
-All rating tables (even small ones) live in Databricks Unity Catalog. Referenced by `catalog.schema.table` URI. Viewable/editable in the GUI. This keeps a single source of truth and avoids CSV sprawl in git.
+### 8.3 Rating tables → In-repo JSON, versioned with the pipeline
+Rating tables live as JSON schema-mapping files in the repository, under `config/rating_step/` beside the pipeline `.py` (lookup entries stored as compact factor-value maps). Viewable/editable in the GUI, and versioned in git alongside the code that uses them - so a pipeline commit is self-contained and reviewable as one diff, with no external table dependency. (An early design placed rating tables in Databricks Unity Catalog; that was superseded by the in-repo sidecar model.)
 
 ### 8.4 Shared preprocessing logic
 Preprocessing transforms (e.g., categorical grouping) are defined once in `utility/` and reused across both modelling pipelines (for training) and rating pipelines (for deployment). The rating pipeline is the deployable unit; modelling pipelines are a separate workflow that produces MLflow-registered models.

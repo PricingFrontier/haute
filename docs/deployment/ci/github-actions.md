@@ -114,8 +114,8 @@ Your CI/CD workflows need credentials stored securely in GitHub.
 
 | Secret name | Value |
 |---|---|
-| `DATABRICKS_HOST` | Your workspace URL (e.g. `https://adb-xxx.12.azuredatabricks.net`) |
-| `DATABRICKS_TOKEN` | Your personal access token (starts with `dapi`) |
+| `DATABRICKS_RATING_HOST` | Your workspace URL (e.g. `https://adb-xxx.12.azuredatabricks.net`) |
+| `DATABRICKS_RATING_TOKEN` | Your personal access token (starts with `dapi`) |
 
 **For Docker/Container targets:**
 
