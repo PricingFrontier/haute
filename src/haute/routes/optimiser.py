@@ -56,6 +56,7 @@ from haute.routes._optimiser_service import (
     _serialise_ratebook_factor_tables,
     _solve_timeout_from_config,
     _with_flattened_optimiser_graph,
+    solver_worker_context,
 )
 from haute.schemas import (
     OptimiserApplyRequest,
@@ -1379,16 +1380,17 @@ def _run_frontier_sweep(
     frontier payload as its result.
     """
     try:
-        frontier_result = _compute_frontier(
-            solver,
-            quote_grid,
-            mode=mode,
-            ratebook_factors=ratebook_factors,
-            factor_columns=factor_columns,
-            threshold_ranges=ranges,
-            n_points_per_dim=n_points_per_dim,
-            initial_lambdas=initial_lambdas,
-        )
+        with solver_worker_context():
+            frontier_result = _compute_frontier(
+                solver,
+                quote_grid,
+                mode=mode,
+                ratebook_factors=ratebook_factors,
+                factor_columns=factor_columns,
+                threshold_ranges=ranges,
+                n_points_per_dim=n_points_per_dim,
+                initial_lambdas=initial_lambdas,
+            )
         response = OptimiserFrontierResponse(
             **limited_frontier_payload(
                 frontier_result.points,

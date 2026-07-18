@@ -6,7 +6,10 @@ The route handler becomes a thin adapter that delegates to
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import dataclasses
+import functools
 import gc
 import math
 import os
@@ -14,7 +17,7 @@ import shutil
 import tempfile
 import threading
 import time
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import nullcontext
 from dataclasses import dataclass
 from itertools import product
@@ -199,6 +202,54 @@ _NON_BLOCKING_RUNNING_JOB_TYPES = frozenset(
         _FRONTIER_RECOMPUTE_JOB_TYPE,
     }
 )
+
+
+# ---------------------------------------------------------------------------
+# Solver worker-context guard
+#
+# The heavy solver entrypoints (full solves, frontier sweeps) are minutes of
+# sequential CPU work; running one inline in a request handler silently
+# starves the FastAPI worker pool. The guard turns that regression class into
+# an immediate loud failure: only the background job runners enter
+# ``solver_worker_context()``, and every guarded entrypoint refuses to run
+# outside it. Pinned by
+# ``tests/test_optimiser_routes.py::TestSolverWorkerContextGuard``.
+# ---------------------------------------------------------------------------
+
+_SOLVER_WORKER_ACTIVE: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "haute_optimiser_solver_worker",
+    default=False,
+)
+
+
+@contextlib.contextmanager
+def solver_worker_context() -> Iterator[None]:
+    """Mark the current thread of execution as an optimiser solver worker.
+
+    Entered only by the background job runners (solve worker, frontier sweep
+    worker). Guarded entrypoints refuse to run outside it.
+    """
+    token = _SOLVER_WORKER_ACTIVE.set(True)
+    try:
+        yield
+    finally:
+        _SOLVER_WORKER_ACTIVE.reset(token)
+
+
+def require_solver_worker_context(fn: Callable[..., Any]) -> Callable[..., Any]:
+    """Fail loud if a heavy solver entrypoint runs outside a worker context."""
+
+    @functools.wraps(fn)
+    def _guarded(*args: Any, **kwargs: Any) -> Any:
+        if not _SOLVER_WORKER_ACTIVE.get():
+            raise RuntimeError(
+                f"{fn.__name__} is a heavy solver entrypoint and must run inside a "
+                "background solver worker (solver_worker_context), never inline in a "
+                "request handler. Submit a job and poll its status instead."
+            )
+        return fn(*args, **kwargs)
+
+    return _guarded
 
 
 def _with_flattened_optimiser_graph(
@@ -1374,6 +1425,7 @@ def _compute_scenario_value_stats(
     return stats, histogram
 
 
+@require_solver_worker_context
 def _compute_frontier(
     solver: Any,
     quote_grid: QuoteGrid,
@@ -2375,6 +2427,7 @@ def _finalize_solve_result(
     # API-facing summaries/metadata while preserving the 24h status record.
 
 
+@require_solver_worker_context
 def _solve_online(
     quote_grid: QuoteGrid,
     config: dict[str, Any],
@@ -2441,6 +2494,7 @@ class SolveContext:
     check_cancelled: Callable[[], None] | None = None
 
 
+@require_solver_worker_context
 def _solve_ratebook(
     ctx: SolveContext,
     *,
@@ -5078,7 +5132,11 @@ class OptimiserSolveService:
                             event="solve_worker_orphan_ratebook_factors_cleanup_failed",
                         )
 
-        thread = threading.Thread(target=_solve_background, daemon=True)
+        def _solve_background_in_worker_context() -> None:
+            with solver_worker_context():
+                _solve_background()
+
+        thread = threading.Thread(target=_solve_background_in_worker_context, daemon=True)
         try:
             thread.start()
         except Exception as exc:

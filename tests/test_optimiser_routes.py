@@ -354,6 +354,16 @@ def _poll_auto_range_until_done(client: TestClient, job_id: str, timeout: float 
     raise TimeoutError(f"Auto-range job {job_id} did not finish within {timeout}s")
 
 
+@pytest.fixture()
+def _in_solver_worker_context():
+    """Enter the solver worker context for unit tests that call the heavy
+    solver entrypoints directly (they are guarded against inline execution)."""
+    from haute.routes._optimiser_service import solver_worker_context
+
+    with solver_worker_context():
+        yield
+
+
 def _poll_frontier_until_done(client: TestClient, job_id: str, timeout: float = 30) -> dict:
     """Poll /frontier/status/{job_id} until a terminal status."""
     poll_interval = 0.02
@@ -5235,6 +5245,52 @@ class TestExpanderSolve:
         assert "total_objective" in normal_result
 
 
+class TestSolverWorkerContextGuard:
+    """Pin the worker-context guard on the heavy solver entrypoints.
+
+    The guard is the architectural defence against reintroducing an inline
+    solve/sweep in a request handler: outside ``solver_worker_context()`` the
+    entrypoints must fail loud, immediately.
+    """
+
+    @pytest.mark.parametrize(
+        "entrypoint_name",
+        ["_compute_frontier", "_solve_online", "_solve_ratebook"],
+    )
+    def test_heavy_entrypoints_fail_loud_outside_worker_context(self, entrypoint_name):
+        import haute.routes._optimiser_service as service
+
+        entrypoint = getattr(service, entrypoint_name)
+        with pytest.raises(RuntimeError, match="must run inside a background solver worker"):
+            entrypoint(MagicMock(), MagicMock())
+
+    def test_compute_frontier_runs_inside_worker_context(self):
+        from haute.routes._optimiser_service import _compute_frontier, solver_worker_context
+
+        mock_solver = MagicMock()
+        mock_solver.frontier.return_value = SimpleNamespace(
+            points=pl.DataFrame({"total_objective": [1.0]})
+        )
+        with solver_worker_context():
+            result = _compute_frontier(
+                mock_solver,
+                MagicMock(),
+                mode="online",
+                ratebook_factors=None,
+                threshold_ranges={"a": (0.5, 1.0)},
+                n_points_per_dim=3,
+            )
+        assert len(result.points) == 1
+
+    def test_worker_context_resets_after_exit(self):
+        from haute.routes._optimiser_service import _compute_frontier, solver_worker_context
+
+        with solver_worker_context():
+            pass
+        with pytest.raises(RuntimeError, match="must run inside a background solver worker"):
+            _compute_frontier(MagicMock(), MagicMock())
+
+
 class TestFrontierRoute:
     @pytest.mark.usefixtures("_widen_sandbox_root")
     def test_frontier_returns_job_handle_promptly(self, client, scored_data):
@@ -7913,6 +7969,7 @@ class TestComputeScenarioValueStatsExtended:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("_in_solver_worker_context")
 class TestFinalizeSolveResult:
     def _make_solve_result(self, *, converged=True):
         df = pl.DataFrame({"optimal_scenario_value": [0.9, 1.0, 1.1, 1.2, 0.8]})
@@ -10826,6 +10883,7 @@ class TestSolveStatusTimeout:
         assert data["elapsed_seconds"] == 0.0
 
 
+@pytest.mark.usefixtures("_in_solver_worker_context")
 class TestSolveOnlineUnit:
     """Unit tests for _solve_online."""
 
@@ -10932,6 +10990,7 @@ class TestSolveOnlineUnit:
         assert job["result"]["history"] is None
 
 
+@pytest.mark.usefixtures("_in_solver_worker_context")
 class TestSolveRatebookUnit:
     """Unit tests for _solve_ratebook."""
 
@@ -13381,6 +13440,7 @@ class TestMlflowLogExceptionPath:
         assert "solve_result" in job
 
 
+@pytest.mark.usefixtures("_in_solver_worker_context")
 class TestSolveRatebookFallbackQuoteId:
     """Test _solve_ratebook branch where quote_id col is absent but 'quote_id' exists."""
 
@@ -14130,9 +14190,9 @@ class TestOptimiserHelperValidators:
         assert overrides == {"a": {"min": 0.95}, "b": {"max": 1.05}}
 
     def test_compute_frontier_ratebook_requires_factor_contexts(self) -> None:
-        from haute.routes._optimiser_service import _compute_frontier
+        from haute.routes._optimiser_service import _compute_frontier, solver_worker_context
 
-        with pytest.raises(RuntimeError) as exc:
+        with solver_worker_context(), pytest.raises(RuntimeError) as exc:
             _compute_frontier(
                 MagicMock(),
                 MagicMock(),
