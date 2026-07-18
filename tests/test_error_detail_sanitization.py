@@ -21,6 +21,8 @@ import polars as pl
 import pytest
 from fastapi.testclient import TestClient
 
+from tests.optimiser_fixtures import run_frontier_and_wait
+
 # -- Shared constants and helpers ------------------------------------------
 
 _SAFE_DETAIL = "Operation failed. Check the server logs for details."
@@ -477,17 +479,17 @@ class TestOptimiserRoutesSafeDetail:
             "quote_grid": MagicMock(),
             "created_at": time.time(),
         }
-        resp = client.post(
-            "/api/optimiser/frontier",
-            json={
+        status = run_frontier_and_wait(
+            client,
+            {
                 "job_id": "test_frontier_err",
                 "threshold_ranges": {"volume": [0.9, 1.1]},
             },
         )
-        assert resp.status_code == 500
-        detail = resp.json()["detail"]
-        assert "lib.rs:42" not in detail
-        assert detail == _SAFE_DETAIL
+        assert status["status"] == "error"
+        message = status["message"]
+        assert "lib.rs:42" not in message
+        assert message == _SAFE_DETAIL
 
     def test_save_oserror_no_path_leak(
         self, client: TestClient, clean_job_store, tmp_path, monkeypatch

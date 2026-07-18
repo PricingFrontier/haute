@@ -27,6 +27,7 @@ import type {
   FrontierAutoRangeStatusResponse,
   FrontierResponse,
   FrontierSelectResponse,
+  FrontierStatusResponse,
   GitArchiveResponse,
   GitDeleteBranchResponse,
   GitCommitResponse,
@@ -98,6 +99,7 @@ import {
   parseFrontierAutoRangeStartResponse,
   parseFrontierAutoRangeStatusResponse,
   parseFrontierResponse,
+  parseFrontierStatusResponse,
   parseFrontierSelectResponse,
   parseGitArchiveResponse,
   parseGitDeleteBranchResponse,
@@ -925,12 +927,52 @@ export function logOptimiserToMlflow(
   return post<unknown>("/api/optimiser/mlflow/log", payload, options).then(parseMlflowLogResponse)
 }
 
-export function runFrontier(
+export function getFrontierStatus(
+  jobId: string,
+  options?: { signal?: AbortSignal },
+): Promise<FrontierStatusResponse> {
+  return request<unknown>(
+    `/api/optimiser/frontier/status/${encodeURIComponent(jobId)}`,
+    options,
+  ).then(parseFrontierStatusResponse)
+}
+
+const FRONTIER_POLL_INTERVAL_MS = 500
+
+/**
+ * Start a frontier sweep and poll its background job until it finishes.
+ *
+ * The backend runs the sweep off the request thread and returns a job
+ * handle immediately; this wrapper preserves the old promise contract by
+ * resolving with the final frontier payload (or rejecting on job failure).
+ */
+export async function runFrontier(
   payload: { job_id: string; threshold_ranges: Record<string, [number, number]>; n_points_per_dim?: number },
   options?: { signal?: AbortSignal },
 ): Promise<FrontierResponse> {
-  return post<unknown>("/api/optimiser/frontier", payload, { timeout: 120_000, ...options })
+  const started = await post<unknown>("/api/optimiser/frontier", payload, { timeout: 120_000, ...options })
     .then((data) => parseFrontierResponse(data))
+  if (started.status !== "started" || !started.job_id) return started
+  for (;;) {
+    const status = await getFrontierStatus(started.job_id, options)
+    if (status.status === "completed") {
+      if (!status.result) {
+        throw new ApiError("Frontier job completed without a result", 500, status.message)
+      }
+      return status.result
+    }
+    if (status.status !== "running") {
+      throw new ApiError(
+        status.message || "Frontier computation failed",
+        status.http_status_code ?? 500,
+        status.message,
+      )
+    }
+    if (options?.signal?.aborted) {
+      throw new DOMException("Frontier polling aborted", "AbortError")
+    }
+    await new Promise((resolve) => setTimeout(resolve, FRONTIER_POLL_INTERVAL_MS))
+  }
 }
 
 export interface EstimateOptimiserFrontierAutoRangeArgs {

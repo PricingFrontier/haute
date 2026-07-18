@@ -354,6 +354,46 @@ def _poll_auto_range_until_done(client: TestClient, job_id: str, timeout: float 
     raise TimeoutError(f"Auto-range job {job_id} did not finish within {timeout}s")
 
 
+@pytest.fixture()
+def _in_solver_worker_context():
+    """Enter the solver worker context for unit tests that call the heavy
+    solver entrypoints directly (they are guarded against inline execution)."""
+    from haute.routes._optimiser_service import solver_worker_context
+
+    with solver_worker_context():
+        yield
+
+
+def _poll_frontier_until_done(client: TestClient, job_id: str, timeout: float = 30) -> dict:
+    """Poll /frontier/status/{job_id} until a terminal status."""
+    poll_interval = 0.02
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        resp = client.get(f"/api/optimiser/frontier/status/{job_id}")
+        assert resp.status_code == 200
+        data = resp.json()
+        if data["status"] in _TERMINAL_JOB_STATUSES:
+            return data
+        time.sleep(poll_interval)
+    raise TimeoutError(f"Frontier job {job_id} did not finish within {timeout}s")
+
+
+def _frontier_result(client: TestClient, payload: dict, timeout: float = 30) -> dict:
+    """Start a frontier sweep, poll it to completion, and return the payload.
+
+    Mirrors what the inline ``POST /frontier`` used to return before the
+    sweep moved onto the background-job machinery.
+    """
+    resp = client.post("/api/optimiser/frontier", json=payload)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["status"] == "started"
+    assert body["job_id"]
+    status = _poll_frontier_until_done(client, body["job_id"], timeout=timeout)
+    assert status["status"] == "completed", status.get("message", "")
+    return status["result"]
+
+
 def _frontier_point_summary(
     *,
     lambda_volume: float,
@@ -5205,9 +5245,58 @@ class TestExpanderSolve:
         assert "total_objective" in normal_result
 
 
+class TestSolverWorkerContextGuard:
+    """Pin the worker-context guard on the heavy solver entrypoints.
+
+    The guard is the architectural defence against reintroducing an inline
+    solve/sweep in a request handler: outside ``solver_worker_context()`` the
+    entrypoints must fail loud, immediately.
+    """
+
+    @pytest.mark.parametrize(
+        "entrypoint_name",
+        ["_compute_frontier", "_solve_online", "_solve_ratebook"],
+    )
+    def test_heavy_entrypoints_fail_loud_outside_worker_context(self, entrypoint_name):
+        import haute.routes._optimiser_service as service
+
+        entrypoint = getattr(service, entrypoint_name)
+        with pytest.raises(RuntimeError, match="must run inside a background solver worker"):
+            entrypoint(MagicMock(), MagicMock())
+
+    def test_compute_frontier_runs_inside_worker_context(self):
+        from haute.routes._optimiser_service import _compute_frontier, solver_worker_context
+
+        mock_solver = MagicMock()
+        mock_solver.frontier.return_value = SimpleNamespace(
+            points=pl.DataFrame({"total_objective": [1.0]})
+        )
+        with solver_worker_context():
+            result = _compute_frontier(
+                mock_solver,
+                MagicMock(),
+                mode="online",
+                ratebook_factors=None,
+                threshold_ranges={"a": (0.5, 1.0)},
+                n_points_per_dim=3,
+            )
+        assert len(result.points) == 1
+
+    def test_worker_context_resets_after_exit(self):
+        from haute.routes._optimiser_service import _compute_frontier, solver_worker_context
+
+        with solver_worker_context():
+            pass
+        with pytest.raises(RuntimeError, match="must run inside a background solver worker"):
+            _compute_frontier(MagicMock(), MagicMock())
+
+
 class TestFrontierRoute:
     @pytest.mark.usefixtures("_widen_sandbox_root")
-    def test_frontier_after_solve(self, client, scored_data):
+    def test_frontier_returns_job_handle_promptly(self, client, scored_data):
+        """The sweep must run off the request thread: POST /frontier returns a
+        pollable job handle, and the polled result carries the same payload the
+        inline route used to return."""
         graph = _make_optimiser_graph(scored_data)
         resp = client.post(
             "/api/optimiser/solve",
@@ -5225,7 +5314,45 @@ class TestFrontierRoute:
             },
         )
         assert resp.status_code == 200
-        data = resp.json()
+        body = resp.json()
+        assert body["status"] == "started"
+        assert body["job_id"]
+        # The sweep result arrives via polling, never inline.
+        assert body["points"] == []
+
+        status = _poll_frontier_until_done(client, body["job_id"])
+        assert status["status"] == "completed", status.get("message", "")
+        result = status["result"]
+        assert result["status"] == "ok"
+        assert result["n_points"] > 0
+        assert result["points_returned"] == len(result["points"]) > 0
+        assert result["constraint_names"] == ["volume"]
+        for point in result["points"]:
+            assert "total_objective" in point
+
+        # The parent solve job carries the recomputed frontier exactly as the
+        # inline route used to store it.
+        parent = client.get(f"/api/optimiser/solve/status/{job_id}").json()
+        assert parent["result"]["frontier"]["n_points"] == result["n_points"]
+
+    @pytest.mark.usefixtures("_widen_sandbox_root")
+    def test_frontier_after_solve(self, client, scored_data):
+        graph = _make_optimiser_graph(scored_data)
+        resp = client.post(
+            "/api/optimiser/solve",
+            json={"graph": graph, "node_id": "opt"},
+        )
+        job_id = resp.json()["job_id"]
+        _poll_until_done(client, job_id)
+
+        data = _frontier_result(
+            client,
+            {
+                "job_id": job_id,
+                "threshold_ranges": {"volume": [0.85, 0.95]},
+                "n_points_per_dim": 3,
+            },
+        )
         assert data["status"] == "ok"
         assert data["n_points"] > 0
         assert data["constraint_names"] == ["volume"]
@@ -5253,17 +5380,16 @@ class TestFrontierRoute:
             "created_at": time.time(),
         }
 
-        resp = client.post(
-            "/api/optimiser/frontier",
-            json={
+        data = _frontier_result(
+            client,
+            {
                 "job_id": "ratebook_frontier",
                 "threshold_ranges": {"volume": [0.85, 0.95]},
                 "n_points_per_dim": 3,
             },
         )
 
-        assert resp.status_code == 200
-        assert resp.json()["points"][0]["total_volume"] == pytest.approx(0.9)
+        assert data["points"][0]["total_volume"] == pytest.approx(0.9)
         mock_solver.frontier.assert_called_once()
         assert mock_solver.frontier.call_args.args == (mock_grid, factor_contexts)
         assert mock_solver.frontier.call_args.kwargs["threshold_ranges"] == {"volume": (0.85, 0.95)}
@@ -5300,18 +5426,17 @@ class TestFrontierRoute:
             "created_at": time.time(),
         }
 
-        resp = client.post(
-            "/api/optimiser/frontier",
-            json={
+        data = _frontier_result(
+            client,
+            {
                 "job_id": "auto_frontier_ranges",
                 "n_points_per_dim": 3,
             },
         )
 
-        assert resp.status_code == 200
-        assert resp.json()["points"][0]["total_volume"] == pytest.approx(0.9)
-        assert resp.json()["points"][0]["total_loss"] == pytest.approx(12.0)
-        assert resp.json()["constraint_names"] == ["volume", "loss"]
+        assert data["points"][0]["total_volume"] == pytest.approx(0.9)
+        assert data["points"][0]["total_loss"] == pytest.approx(12.0)
+        assert data["constraint_names"] == ["volume", "loss"]
         assert mock_solver.frontier.call_args.kwargs["threshold_ranges"] == {
             "volume": (10.0, 20.0),
             "loss": (10.0, 20.0),
@@ -5360,16 +5485,15 @@ class TestFrontierRoute:
             "created_at": time.time(),
         }
 
-        resp = client.post(
-            "/api/optimiser/frontier",
-            json={
+        _frontier_result(
+            client,
+            {
                 "job_id": "frontier_no_initial_lambdas",
                 "threshold_ranges": {"loss_ratio": [0.8, 0.95]},
                 "n_points_per_dim": 3,
             },
         )
 
-        assert resp.status_code == 200
         assert solver.calls == [
             {
                 "quote_grid": quote_grid,
@@ -5528,16 +5652,15 @@ class TestFrontierRoute:
             "created_at": time.time(),
         }
 
-        resp = client.post(
-            "/api/optimiser/frontier",
-            json={
+        _frontier_result(
+            client,
+            {
                 "job_id": "frontier_compute_ok",
                 "threshold_ranges": {"volume": [0.85, 0.95]},
                 "n_points_per_dim": 100,  # 100 ** 1 = 100 — well within budget.
             },
         )
 
-        assert resp.status_code == 200
         mock_solver.frontier.assert_called_once()
 
     def test_frontier_missing_job(self, client):
@@ -7846,6 +7969,7 @@ class TestComputeScenarioValueStatsExtended:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("_in_solver_worker_context")
 class TestFinalizeSolveResult:
     def _make_solve_result(self, *, converged=True):
         df = pl.DataFrame({"optimal_scenario_value": [0.9, 1.0, 1.1, 1.2, 0.8]})
@@ -8933,16 +9057,14 @@ class TestRunFrontierUnit:
             "quote_grid": MagicMock(),
             "created_at": time.time(),
         }
-        resp = client.post(
-            "/api/optimiser/frontier",
-            json={
+        data = _frontier_result(
+            client,
+            {
                 "job_id": "frontier_unit",
                 "threshold_ranges": {"volume": [0.85, 0.95]},
                 "n_points_per_dim": 3,
             },
         )
-        assert resp.status_code == 200
-        data = resp.json()
         assert data["status"] == "ok"
         assert data["n_points"] == 3
         assert len(data["points"]) == 3
@@ -9012,16 +9134,15 @@ class TestRunFrontierUnit:
             "created_at": time.time(),
         }
 
-        resp = client.post(
-            "/api/optimiser/frontier",
-            json={
+        _frontier_result(
+            client,
+            {
                 "job_id": "frontier_recompute_selected",
                 "threshold_ranges": {"volume": [0.9, 1.0]},
                 "n_points_per_dim": 2,
             },
         )
 
-        assert resp.status_code == 200
         job = clean_job_store.jobs["frontier_recompute_selected"]
         assert job["selected_frontier_point"] is None
         assert "selected_frontier_point" not in job["result"]
@@ -9102,15 +9223,14 @@ class TestRunFrontierUnit:
             "created_at": time.time(),
         }
 
-        resp = client.post(
-            "/api/optimiser/frontier",
-            json={
+        _frontier_result(
+            client,
+            {
                 "job_id": "frontier_recompute_artifacts",
                 "threshold_ranges": {"volume": [0.9, 1.0]},
                 "n_points_per_dim": 2,
             },
         )
-        assert resp.status_code == 200
 
         job = clean_job_store.jobs["frontier_recompute_artifacts"]
         assert job["artifact_handles"] == {"apply_result": base_apply_handle}
@@ -9215,16 +9335,15 @@ class TestRunFrontierUnit:
             "created_at": time.time(),
         }
 
-        resp = client.post(
-            "/api/optimiser/frontier",
-            json={
+        _frontier_result(
+            client,
+            {
                 "job_id": "frontier_recompute_concurrent",
                 "threshold_ranges": {"volume": [0.9, 1.0]},
                 "n_points_per_dim": 2,
             },
         )
 
-        assert resp.status_code == 200
         job = clean_job_store.jobs["frontier_recompute_concurrent"]
         assert job["artifact_handles"] == {"apply_result": base_apply_handle}
         assert base_apply_path.is_file()
@@ -9247,17 +9366,14 @@ class TestRunFrontierUnit:
             "created_at": time.time(),
         }
 
-        resp = client.post(
-            "/api/optimiser/frontier",
-            json={
+        data = _frontier_result(
+            client,
+            {
                 "job_id": "frontier_capped",
                 "threshold_ranges": {"volume": [0.85, 0.95]},
                 "n_points_per_dim": 3,
             },
         )
-
-        assert resp.status_code == 200
-        data = resp.json()
         assert data["n_points"] == FRONTIER_POINT_LIMIT + 1
         assert len(data["points"]) == FRONTIER_POINT_LIMIT
         assert data["points_returned"] == FRONTIER_POINT_LIMIT
@@ -9296,17 +9412,14 @@ class TestRunFrontierUnit:
             "created_at": time.time(),
         }
 
-        resp = client.post(
-            "/api/optimiser/frontier",
-            json={
+        data = _frontier_result(
+            client,
+            {
                 "job_id": "frontier_serialise_budget",
                 "threshold_ranges": {"volume": [0.85, 0.95]},
                 "n_points_per_dim": 3,
             },
         )
-
-        assert resp.status_code == 200
-        data = resp.json()
         assert data["n_points"] == FRONTIER_POINT_LIMIT + 1
         assert len(data["points"]) == FRONTIER_POINT_LIMIT
         assert data["points_truncated"] is True
@@ -10770,6 +10883,7 @@ class TestSolveStatusTimeout:
         assert data["elapsed_seconds"] == 0.0
 
 
+@pytest.mark.usefixtures("_in_solver_worker_context")
 class TestSolveOnlineUnit:
     """Unit tests for _solve_online."""
 
@@ -10876,6 +10990,7 @@ class TestSolveOnlineUnit:
         assert job["result"]["history"] is None
 
 
+@pytest.mark.usefixtures("_in_solver_worker_context")
 class TestSolveRatebookUnit:
     """Unit tests for _solve_ratebook."""
 
@@ -12893,8 +13008,8 @@ class TestApplyException:
 class TestFrontierException:
     """Test frontier endpoint exception handling."""
 
-    def test_frontier_solver_exception_returns_500(self, client, clean_job_store):
-        """When solver.frontier raises, endpoint returns 500."""
+    def test_frontier_solver_exception_surfaces_as_job_error(self, client, clean_job_store):
+        """When solver.frontier raises, the polled sweep job reports an error."""
         mock_solver = MagicMock()
         mock_solver.frontier.side_effect = RuntimeError("frontier boom")
         clean_job_store.jobs["front_err"] = {
@@ -12912,7 +13027,11 @@ class TestFrontierException:
                     "n_points_per_dim": 3,
                 },
             )
-        assert resp.status_code == 500
+            assert resp.status_code == 200
+            status = _poll_frontier_until_done(client, resp.json()["job_id"])
+        assert status["status"] == "error"
+        # The raw solver message never reaches the client.
+        assert "frontier boom" not in status["message"]
         log_error.assert_called_once()
         assert log_error.call_args.args == ("frontier_failed",)
         assert log_error.call_args.kwargs["error"] == "frontier boom"
@@ -13321,6 +13440,7 @@ class TestMlflowLogExceptionPath:
         assert "solve_result" in job
 
 
+@pytest.mark.usefixtures("_in_solver_worker_context")
 class TestSolveRatebookFallbackQuoteId:
     """Test _solve_ratebook branch where quote_id col is absent but 'quote_id' exists."""
 
@@ -14070,9 +14190,9 @@ class TestOptimiserHelperValidators:
         assert overrides == {"a": {"min": 0.95}, "b": {"max": 1.05}}
 
     def test_compute_frontier_ratebook_requires_factor_contexts(self) -> None:
-        from haute.routes._optimiser_service import _compute_frontier
+        from haute.routes._optimiser_service import _compute_frontier, solver_worker_context
 
-        with pytest.raises(RuntimeError) as exc:
+        with solver_worker_context(), pytest.raises(RuntimeError) as exc:
             _compute_frontier(
                 MagicMock(),
                 MagicMock(),
@@ -14421,16 +14541,14 @@ class TestOptimiserMutationBoundaries:
             "created_at": time.time(),
         }
 
-        resp = client.post(
-            "/api/optimiser/frontier",
-            json={
+        data = _frontier_result(
+            client,
+            {
                 "job_id": "frontier_singleton",
                 "n_points_per_dim": 1,
             },
         )
 
-        assert resp.status_code == 200, resp.text
-        data = resp.json()
         # Exactly one point returned, with the constraint name preserved.
         assert data["n_points"] == 1
         assert data["points_returned"] == 1
@@ -14473,16 +14591,15 @@ class TestOptimiserMutationBoundaries:
         }
 
         # Equal min/max is the pin case — must be accepted.
-        resp = client.post(
-            "/api/optimiser/frontier",
-            json={
+        _frontier_result(
+            client,
+            {
                 "job_id": "frontier_pinned",
                 "threshold_ranges": {"volume": [0.9, 0.9]},
                 "n_points_per_dim": 3,
             },
         )
 
-        assert resp.status_code == 200, resp.text
         # Solver received the degenerate range as a tuple of the same value.
         assert mock_solver.frontier.call_args.kwargs["threshold_ranges"] == {
             "volume": (0.9, 0.9),
@@ -14517,17 +14634,16 @@ class TestOptimiserMutationBoundaries:
             "created_at": time.time(),
         }
 
-        resp = client.post(
-            "/api/optimiser/frontier",
-            json={
+        data = _frontier_result(
+            client,
+            {
                 "job_id": "frontier_lambda_zero",
                 "threshold_ranges": {"volume": [0.8, 0.95]},
                 "n_points_per_dim": 2,
             },
         )
 
-        assert resp.status_code == 200
-        points = resp.json()["points"]
+        points = data["points"]
         assert len(points) == 2
         # Exact zero must serialise as 0 / 0.0, not be coerced to None or string.
         assert points[0]["lambda_volume"] == 0.0

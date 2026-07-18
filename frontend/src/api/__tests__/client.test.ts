@@ -1442,3 +1442,88 @@ describe("streaming_chunk_size in request bodies", () => {
     expect(JSON.parse(opts.body)).not.toHaveProperty("streaming_chunk_size")
   })
 })
+
+// ═══════════════════════════════════════════════════════════════════════════
+// runFrontier — the backend now returns a pollable job handle and the client
+// polls /frontier/status/{job_id} until the sweep finishes, preserving the
+// old resolve-with-final-payload contract.
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("runFrontier background polling", () => {
+  const startedBody = { status: "started", job_id: "frontier-job-1", points: [], n_points: 0, points_returned: 0, constraint_names: [], points_limit: null, points_truncated: false }
+  const completedResult = { status: "ok", points: [{ total_objective: 1.0 }], n_points: 1, points_returned: 1, constraint_names: ["volume"], points_limit: 2000, points_truncated: false }
+  const statusBody = (status: string, extra: Record<string, unknown> = {}) => ({
+    status,
+    progress: 1,
+    message: "",
+    elapsed_seconds: 0.1,
+    result: null,
+    ...extra,
+  })
+
+  it("starts the sweep then resolves with the polled result", async () => {
+    const { runFrontier } = await import("../client")
+    mockFetch
+      .mockReturnValueOnce(jsonResponse(startedBody))
+      .mockReturnValueOnce(jsonResponse(statusBody("completed", { result: completedResult })))
+
+    const frontier = await runFrontier({ job_id: "opt-job-1", threshold_ranges: { volume: [0.8, 1.0] } })
+
+    expect(frontier.n_points).toBe(1)
+    expect(frontier.constraint_names).toEqual(["volume"])
+    expect(mockFetch.mock.calls[0][0]).toBe("/api/optimiser/frontier")
+    expect(mockFetch.mock.calls[1][0]).toBe("/api/optimiser/frontier/status/frontier-job-1")
+  })
+
+  it("keeps polling while the job is running", async () => {
+    vi.useFakeTimers()
+    try {
+      const { runFrontier } = await import("../client")
+      mockFetch
+        .mockReturnValueOnce(jsonResponse(startedBody))
+        .mockReturnValueOnce(jsonResponse(statusBody("running")))
+        .mockReturnValueOnce(jsonResponse(statusBody("completed", { result: completedResult })))
+
+      const promise = runFrontier({ job_id: "opt-job-1", threshold_ranges: { volume: [0.8, 1.0] } })
+      await vi.advanceTimersByTimeAsync(600)
+
+      await expect(promise).resolves.toMatchObject({ n_points: 1 })
+      expect(mockFetch).toHaveBeenCalledTimes(3)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("rejects with an ApiError carrying the job message on terminal failure", async () => {
+    const { runFrontier } = await import("../client")
+    mockFetch
+      .mockReturnValueOnce(jsonResponse(startedBody))
+      .mockReturnValueOnce(jsonResponse(statusBody("contract_error", { message: "Optimiser job state changed", http_status_code: 409 })))
+
+    const promise = runFrontier({ job_id: "opt-job-1", threshold_ranges: { volume: [0.8, 1.0] } })
+
+    await expect(promise).rejects.toBeInstanceOf(ApiError)
+    await expect(promise).rejects.toMatchObject({ status: 409, message: "Optimiser job state changed" })
+  })
+
+  it("rejects when a completed job has no result payload", async () => {
+    const { runFrontier } = await import("../client")
+    mockFetch
+      .mockReturnValueOnce(jsonResponse(startedBody))
+      .mockReturnValueOnce(jsonResponse(statusBody("completed")))
+
+    await expect(
+      runFrontier({ job_id: "opt-job-1", threshold_ranges: { volume: [0.8, 1.0] } }),
+    ).rejects.toMatchObject({ message: "Frontier job completed without a result" })
+  })
+
+  it("returns the immediate payload when the backend answers inline", async () => {
+    const { runFrontier } = await import("../client")
+    mockFetch.mockReturnValueOnce(jsonResponse(completedResult))
+
+    const frontier = await runFrontier({ job_id: "opt-job-1", threshold_ranges: { volume: [0.8, 1.0] } })
+
+    expect(frontier.status).toBe("ok")
+    expect(mockFetch).toHaveBeenCalledTimes(1)
+  })
+})
