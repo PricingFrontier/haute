@@ -54,6 +54,13 @@ extra:
 extra_css:
   - stylesheets/extra.css
 
+# Internal engineering material lives under docs/ for repo convenience but is
+# not part of the public site: component specs, and the review/audit archives.
+exclude_docs: |
+  specs/
+  review/
+  fable-Review/
+
 dev_addr: 127.0.0.1:8001
 
 copyright: Copyright &copy; 2025-2026 Pricing Frontier LTD. Licensed under AGPL-3.0.

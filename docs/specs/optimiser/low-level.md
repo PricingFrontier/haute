@@ -249,7 +249,7 @@ validation) or attach it as an MLflow run artifact alongside metrics/params and 
 frontier-points CSV. Tracking-URI/registry setup and experiment-name resolution for `mlflow_log`
 go through the same shared `configure_mlflow_tracking()` / `resolve_experiment_name()` /
 `build_run_url()` helpers in `haute.modelling._mlflow_log` that `routes/modelling.py` uses
-(see [modelling low-level](../modelling/low-level.md#shared-mlflow-tracking-experiment-name-resolution))
+(see [modelling low-level](../modelling/low-level.md#shared-mlflow-trackingexperiment-name-resolution))
 — this component previously duplicated that logic inline rather than calling through
 `log_experiment()` itself, since the optimiser's artifact shape (solver params, frontier CSV,
 `optimiser_result.json`) doesn't fit `log_experiment()`'s model-diagnostics-shaped signature.
