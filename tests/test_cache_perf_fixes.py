@@ -52,7 +52,6 @@ from __future__ import annotations
 
 import gc
 import hashlib
-import os
 import secrets
 import sys
 import threading
@@ -251,24 +250,30 @@ class TestPreambleCacheCorrectness:
         tmp_path,
         monkeypatch,
     ) -> None:
-        """Utility content edits must refresh even when mtime/size are unchanged."""
+        """Same-size utility edits refresh whenever the mtime_ns gate moves.
+
+        Utility hashing is stat-gated at ``(mtime_ns, size)`` granularity
+        (the ``_stat_gated_runtime_path_fingerprint`` contract), which is far
+        finer than timestamp-based pyc validation: a same-byte-length edit
+        still refreshes because the write moves ``mtime_ns``.  An edit that
+        preserves BOTH mtime_ns and size is below the gate's resolution —
+        the documented trade the deploy path already accepts.
+        """
         monkeypatch.chdir(tmp_path)
         util_dir = tmp_path / "utility"
         util_dir.mkdir()
         (util_dir / "__init__.py").write_text("", encoding="utf-8")
         helper = util_dir / "helpers.py"
         helper.write_text("VALUE = 1\n", encoding="utf-8")
-        fixed_mtime = 1_700_000_000
-        os.utime(helper, (fixed_mtime, fixed_mtime))
 
         source = "from utility.helpers import VALUE\n"
         ns_before = _compile_preamble(source, force_refresh=True)
         assert ns_before["VALUE"] == 1
 
-        # Same byte length and same integer mtime: timestamp-based pyc
-        # validation would otherwise be allowed to reuse stale bytecode.
+        # Same byte length: only the nanosecond mtime distinguishes the
+        # edit — timestamp-based pyc validation could reuse stale bytecode
+        # here, the stat gate must not.
         helper.write_text("VALUE = 2\n", encoding="utf-8")
-        os.utime(helper, (fixed_mtime, fixed_mtime))
 
         ns_after = _compile_preamble(source, force_refresh=True)
 

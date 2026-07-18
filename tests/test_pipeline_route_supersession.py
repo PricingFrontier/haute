@@ -1458,6 +1458,42 @@ def test_preview_trace_concurrency_limit_env_must_be_positive_integer(
             route_mod._positive_int_from_env("HAUTE_PREVIEW_MAX_CONCURRENCY", 2)
 
 
+def test_trace_supersession_key_shared_memo_pins_memoless_key(tmp_path) -> None:
+    """Pin: a request-scoped fingerprint memo must not change the key.
+
+    The trace route computes its supersession key with a
+    ``GraphFingerprintMemo`` that is then shared with ``execute_trace``.
+    The memo is a pure read-cache — the key it produces must equal the
+    memoless key on the same graph, including when the preamble imports
+    the project ``utility`` module (the path where the memo actually
+    caches file hashes).
+    """
+    from haute._cache import GraphFingerprintMemo
+    from haute.routes.pipeline import _trace_supersession_key
+
+    (tmp_path / "utility.py").write_text("X = 1\n")
+    graph = make_graph(
+        {
+            "nodes": [make_transform_node("target")],
+            "edges": [],
+            "preamble": "import utility\n",
+            "source_file": str(tmp_path / "pipeline.py"),
+        }
+    )
+
+    key_args = (graph, "live", "target", 0, None, 100, {"a": 1})
+    memoless = _trace_supersession_key(*key_args)
+    memo = GraphFingerprintMemo()
+    first_with_memo = _trace_supersession_key(*key_args, memo=memo)
+    # Second call with the same memo hits the memoised utility hashes —
+    # the key must still be byte-identical.
+    second_with_memo = _trace_supersession_key(*key_args, memo=memo)
+
+    assert first_with_memo == memoless
+    assert second_with_memo == memoless
+    assert memo.utility_file_hashes, "expected the utility hash memo to be populated"
+
+
 @pytest.mark.asyncio
 async def test_trace_worker_limit_serializes_different_keys(
     monkeypatch: pytest.MonkeyPatch,
