@@ -103,7 +103,6 @@ exclude = [
     ".python-version",
     "haute.toml",
     "uv.lock",
-    "ARCHITECTURE.md",
 ]
 
 [tool.hatch.build.targets.wheel]

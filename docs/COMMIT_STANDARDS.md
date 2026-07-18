@@ -443,7 +443,7 @@ The script runs these checks in order and reports every selected failure:
 | `mypy src/haute/` | Python type errors | 5s |
 | `tsc -b --noEmit` (frontend) | TypeScript type errors | 5s |
 | `eslint .` (frontend) | JS/TS lint errors (no-explicit-any, unused vars, React hooks rules) | 3s |
-| `pytest tests/ -n 4 --cov=src/haute` | Python test failures, coverage < 85% | 4 min |
+| `pytest tests/ -n 4 --cov=src/haute` | Python test failures, coverage < 90% | 4 min |
 | `npm test` (frontend) | Frontend test failures | 20s |
 
 Use `--quick` during active development (catches ~80% of CI failures in 15 seconds). Run the full version before opening a PR. Set `PYTEST_WORKERS=<n>` to tune the backend test worker count for unusually small or large machines.
@@ -497,7 +497,7 @@ cd frontend && npm test -- src/__tests__/your_new_file.test.ts  # frontend
 | `prefer-const` | `npm run lint` | Used `let` for a variable that's never reassigned |
 | `FAILED ... DID NOT RAISE` | `uv run pytest tests/test_file.py -v` | Test expects an exception on one platform but not another |
 | `xfail(strict=True) XPASS` | `uv run pytest tests/test_file.py -v` | Race condition test passed unexpectedly — use `strict=False` |
-| `coverage fail_under=85` | `uv run pytest --cov=src/haute --cov-fail-under=85` | New code without tests, or test file not discovered |
+| `coverage fail_under=90` | `uv run pytest --cov=src/haute --cov-fail-under=90` | New code without tests, or test file not discovered |
 
 ---
 

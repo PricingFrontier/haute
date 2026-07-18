@@ -1,0 +1,284 @@
+# Pipeline Config — Low-Level Specification
+
+## Module map
+
+| File | Responsibility |
+|---|---|
+| `pipeline.py` | `Node` / `NodeRegistry` / `Pipeline` / `Submodel`: the decorator API, `connect()`, the standalone `run()`/`score()` executor, `to_graph()` (live-object → React-Flow dict). |
+| `_config_builder.py` | Per-node-type config dict construction from decorator kwargs + function body (`_build_node_config`); sidecar resolution and the parse-time `contract=` cross-check (`_resolve_node_config`). |
+| `_config_io.py` | Sidecar JSON path conventions (`NODE_TYPE_TO_FOLDER`), read/write helpers, `collect_node_configs` (graph → sidecar files), Windows-reserved-filename guard. |
+| `_config_validation.py` | `VALID_KEYS` registry derived from each node type's `TypedDict`, and `warn_unrecognized_config_keys`. |
+| `_builders.py` | `NODE_REGISTRY`-backed per-`NodeType` exec-builder and column-contract registrations (`NodeBuildContext`, `_register`, `get_column_contract`). The runtime callables it registers belong conceptually to execution — see `../execution-engine/low-level.md` — but the registration mechanics and contract plumbing this component depends on live here. |
+| `_node_builder.py` | `NodeBuildHooks` / `wrap_builder` — lets an alternate execution mode (e.g. deploy scoring) override individual node-type builders without duplicating the dispatcher. |
+| `_graph_builders.py` | AST-derived raw node dicts → `GraphNode`/`GraphEdge` Pydantic models (`_extract_decorated_nodes`, `_build_edges`, `_build_rf_nodes`). |
+| `_graph_shape.py` | Topology-only invariants independent of any single node's config (`validate_graph_shape_contracts`, `validate_pipeline_graph_shape_contracts`), including submodel child graphs. |
+| `_scaffold.py` | `haute init` template strings: `haute.toml`, `.env.example`, CI YAML for 3 providers × 7 deploy targets, starter pipeline/tests/utilities, pre-commit hook. |
+| `_project.py` | Project-root discovery (`get_project_root`, `is_haute_project`) and pipeline-file resolution (`resolve_pipeline_file`, 4-tier fallback). |
+| `haute.toml` (repo root) | Concrete instance of the schema `_scaffold.haute_toml()` emits; `[project].pipeline` is read back by `_project._toml_configured_pipeline`. |
+
+## Key types and data structures
+
+- **`Node`** (dataclass, `pipeline.py`) — `name`, `description`, `fn`, `is_source`,
+  `config: dict`. Derived properties: `is_deploy_input` (config `_node_type == API_INPUT` or
+  `api_input=True`), `is_live_switch`, `n_inputs`, `input_arity` (an `_InputArity` computed by
+  inspecting `fn`'s signature — keyword-only params are config, not edges; positional params
+  with defaults are optional edges). `__call__` validates the number of wired DataFrame
+  arguments against `input_arity` before invoking `fn`.
+- **`_InputArity`** (frozen dataclass) — `min_inputs`, `max_inputs: int | None` (`None` means
+  unbounded via `*args`). `accepts(received)` / `describe()`.
+- **`RegisteredEdge`** (frozen dataclass) — `source`, `target`, `source_port`, `target_port`:
+  the in-memory edge representation `NodeRegistry`/`Pipeline` operate on. Distinct from the
+  Pydantic `GraphEdge` (`haute._types`) that `_graph_builders.py` produces for the parsed
+  source graph.
+- **`NodeRegistry`** — base class for `Pipeline` and `Submodel`; holds `_nodes: list[Node]`,
+  `_node_map: dict[str, Node]`, `_edges: list[RegisteredEdge]`, `_submodel_files: list[str]`.
+- **`Pipeline(NodeRegistry)`** — adds `run()`, `score()`, `to_graph()`, `submodel()`,
+  `submodel_files`.
+- **`Submodel(NodeRegistry)`** — no `run`/`score`/`to_graph`; its nodes and edges only
+  participate in execution once imported onto a `Pipeline` via `pipeline.submodel(file)`.
+- **`NodeBuildContext`** (frozen dataclass, slots — `_builders.py`) — the parameter bundle
+  shared by every per-type exec builder: `node`, `source_names`, `source_ids`,
+  `target_handles`, `row_limit`, `node_map`, `orig_source_names`, `preamble_ns`, `source`,
+  `upstream_ids`, `required_output_columns`, `reuse_loaded_model`, `execution_profile`,
+  `source_ports`. `func_name` and `config` are derived properties.
+- **`ColumnContract`** = `tuple[set[str] | None, set[str] | None]` — `(produced, referenced)`;
+  `None` on either side means opaque for that side. `OPAQUE_CONTRACT = (None, None)` is the
+  explicit "declared opaque" sentinel, distinct from "no contract registered at all".
+- **`NODE_REGISTRY`** (`haute._registry`, populated via `_builders._register`) — the single
+  source of truth mapping `NodeType → (exec builder callable, column_contract callback,
+  is_behavioural flag)`. Both `_config_builder.py`'s parse-time contract check and (out of
+  scope here) the executor/codegen read this registry; a `NodeType` with no exec entry is
+  treated as a registration bug (`KeyError`), never silently skipped.
+- **`VALID_KEYS`** (`_config_validation.py`) — `dict[NodeType, frozenset[str]]`, precomputed
+  at import time from each node type's config `TypedDict.__annotations__` plus
+  `_UNIVERSAL_KEYS` (`instanceOf`, `inputMapping`, `selected_columns`, `column_renames`,
+  `categorical_levels`, `contract` — keys any node type may legitimately carry).
+- **`NODE_TYPE_TO_FOLDER` / `FOLDER_TO_NODE_TYPE`** (`_config_io.py`) — the 16-entry
+  bidirectional map between a `NodeType` and its `config/<folder>/` sidecar directory name.
+- **`TARGETS`** (`_scaffold.py`) — `dict[str, _TargetConfig]`, the 7-entry registry (one per
+  supported `--target`) that every scaffold template dispatches through: `label` (for the
+  `.env.example` header), `env_body` (literal credential block), `secrets` (ordered CI
+  secret/env-var names), and `toml_section` (a `Callable[[str], str]` building that target's
+  `[deploy.*]` TOML block from the project name). `_get_target` raises `ValueError` on an
+  unknown target rather than returning a default.
+- **`GraphNode` / `GraphEdge` / `NodeData` / `PipelineGraph`** (`haute._types`, not owned by
+  this component but constructed here in `_graph_builders.py`).
+
+## Control flow
+
+There are two independent ways to arrive at "a graph", and they use different heuristics:
+
+**1. Live Python object graph (`pipeline.py`).** A `Pipeline` instance is built directly by
+decorator calls at import time. `Pipeline.run()`/`Pipeline.score(df)` topologically sort the
+in-memory `_edges`/`_nodes` via `haute.graph_utils.topo_sort_ids` (raising `ValueError` on a
+cycle or a disconnected node), execute each `Node`'s `fn` in order, threading DataFrames along
+declared edges via `_execute_transform`, and resolve the return value through
+`_resolve_output_node`: an explicit `@pipeline.output` node wins if there is exactly one;
+otherwise the single node with no outgoing edge; otherwise raise, naming every candidate node.
+`Pipeline.to_graph()` independently converts the same live objects into a React-Flow-shaped
+plain `dict`, inferring each node's display type from `config["_node_type"]` if present, else
+`DATA_SOURCE` for a source node, else `OUTPUT` for the last-registered node, else `POLARS`.
+
+**2. Static source graph (`_graph_builders.py` + `_config_builder.py`).** Given an
+already-parsed AST module and pre-extracted function bodies (produced upstream, not by this
+component), `_extract_decorated_nodes` walks top-level `FunctionDef`/`AsyncFunctionDef` nodes
+matching the pipeline-decorator checker. For each match it calls `_resolve_node_config`, which
+either: loads and normalises a `config=` sidecar via `_config_io.load_node_config` and
+attaches code parsed from the function body (`_attach_code_from_body`); raises
+`_sidecar_required_error` if the node type is folder-backed but no `config=` was given; or
+dispatches into `_build_node_config`'s per-`NodeType` branch to build the config purely from
+decorator kwargs + body. `_resolve_node_config` also pops a `contract=` kwarg before
+delegating (so per-type builders don't flag it as unrecognised), cross-checks it via
+`_validate_user_contract`, and re-attaches it to the config afterwards. The resulting raw node
+dicts feed `_build_edges` (explicit `connect()` tuples in 2/3/4-arity legacy/port-aware forms,
+plus implicit parameter-name-matching edges, plus a definition-order linear-chain fallback
+when no edges exist at all) and `_build_rf_nodes` (assigns x-spaced GUI positions) to produce
+the final `list[GraphNode]`/`list[GraphEdge]` — the graph the frontend, codegen, and the real
+executor operate on.
+
+**Sidecar write path.** `_config_io.collect_node_configs(graph)` walks a `PipelineGraph`,
+skips node types without a config folder, instance nodes (`config["instanceOf"]` set), and
+nodes flagged `config["_load_error"]` (protects the on-disk file from a bad in-memory state
+clobbering it), remaps `optimiserApply.ratebook_input` from a GUI node id to the codegen-
+stable id via `_remap_config_ids_for_saved_graph` (logging a WARNING and leaving the config
+unchanged if the referenced upstream node can't be resolved), filters each config through
+`_prepare_config_for_sidecar` (strips `code`/`_`-prefixed keys recursively via
+`_strip_internal_keys`, applies the `VALID_KEYS` allowlist — logging any dropped keys at
+WARNING — then per-type compaction for `BANDING`/`RATING_STEP`), and serialises the result to
+`{relative_path: json_string}`.
+
+**Registry-driven dispatch.** `_builders._register(node_type, columns=..., opaque=...,
+is_behavioural=...)` decorates roughly twenty per-type builder functions, registering both the
+exec builder and — mutually exclusive — either a column-contract callback or the `opaque=True`
+sentinel into `NODE_REGISTRY`. `get_column_contract(node_type, config)`, called from
+`_config_builder._derive_parse_time_contract` during the parse-time contract cross-check,
+looks up and invokes the registered callback; a `NodeType` with none registered raises
+`KeyError` rather than silently falling back to opaque, so a new node type added without a
+contract registration is caught immediately.
+
+**Project/pipeline resolution (`_project.py`).** `resolve_pipeline_file(path)`: `None` →
+`_resolve_default_in(cwd)`; an existing directory → the same fallback scoped to it; an
+existing file → resolved as-is, no discovery; a non-existent path → `FileNotFoundError`.
+`_resolve_default_in` tries, in order: `[project].pipeline` from `haute.toml` (existence and
+"looks like a pipeline" both checked — either failure raises `FileNotFoundError` naming the
+configured path, so a typo never silently falls through to auto-discovery); a root-level
+`main.py`; the single root-level `.py` file containing the literal substring
+`"haute.Pipeline"`; otherwise raise, enumerating zero or multiple candidates.
+
+**Scaffold generation (`_scaffold.py`, driven by `cli/_init_cmd.py::handle_init`).** Every
+template function is parameterised by `target`/`ci` and looks up per-target facts through
+`TARGETS`/`_get_target` rather than branching on the target string directly, so adding a
+target means adding one registry entry, not touching every template function.
+`haute_toml()` assembles `[project]`/`[deploy]`/`[test_quotes]`/`[safety]`/`[safety.approval]`
+(`min_approvers` hardcoded to 2 in the template — solo users lower it by hand)/`[ci]`/
+`[ci.staging]` sections, splicing in `_target_section()`'s `[deploy.<target>]` block.
+`env_example()` and the three CI-YAML generators (`github_ci_yml`/`github_deploy_yml`/
+`github_deploy_prod_yml`, `gitlab_ci_yml`, `azure_devops_yml`) all pull the same `secrets`
+list out of `TARGETS` through provider-specific formatters (`_github_secrets_env`,
+`_gitlab_secrets_env`, `_azure_devops_secrets_env`) so a target's credential list is defined
+once and rendered three ways. `handle_init` calls exactly the generator(s) for the chosen
+`ci` value (`"none"` calls none of them); on `--force` it first calls
+`_prune_stale_ci_files(project_dir, keep=ci)`, which deletes every other provider's known
+artifact paths (from the `_CI_ARTIFACTS` map) and removes the resulting empty
+`.github/workflows/`/`.github` directories, before writing the new provider's files.
+
+## Edge cases and invariants
+
+- The live `to_graph()` path and the static `_graph_builders` path can disagree on node
+  typing. `to_graph()` infers `OUTPUT` for "the last registered node" whenever no node has an
+  explicit `_node_type` and it isn't a source; the static path only ever assigns `OUTPUT` from
+  an explicit `@pipeline.output` decorator.
+  > NOTE: for an all-`@pipeline.polars` pipeline with no explicit `@pipeline.output`, both
+  > paths happen to treat the last/only-leaf node as the output — but for different reasons —
+  > and they diverge for a graph with several leaves and no explicit output: `run()` raises
+  > naming every leaf, while `to_graph()` still assigns some type to the last-registered node
+  > without checking degree at all.
+- Duplicate node function names are rejected twice, independently: at live registration
+  (`NodeRegistry._register_node`, `ValueError`) and at static parse time
+  (`_extract_decorated_nodes`, `ParseError`) — because the function name becomes the graph
+  node id and a silent collision would drop a node's config entirely.
+- `async def` node bodies are rejected only in the static parse path. A live `Pipeline` can
+  register an `async def`-defined function via a decorator with no error; the rejection only
+  fires once that same source file is parsed by `_graph_builders`.
+- `OUTPUT` and `DATA_INPUT`/`DATA_OUTPUT` are folder-backed types, so their branches inside
+  `_build_node_config` are unreachable on the healthy path — `_resolve_node_config`'s sidecar-
+  required check raises first. The branches are kept as explicit no-ops (not removed) so a
+  stray inline decorator usage can't silently fall through to the generic "transform" branch
+  and pick up a `code` config it shouldn't have.
+- `warn_unrecognized_config_keys` treats an unrecognised `NodeType` string (e.g. from a
+  hand-edited or forward-incompatible sidecar) as "nothing to validate against" and returns an
+  empty list rather than raising.
+- Windows-reserved device filenames (`CON`, `PRN`, `AUX`, `NUL`, `COM1`–`COM9`, `LPT1`–`LPT9`)
+  are matched on the stem before the first dot, casefolded, with trailing dots/spaces
+  stripped — and rejected on every OS, not gated behind a platform check, so a project saved
+  on Linux/macOS stays loadable on a Windows checkout.
+- `_toml_configured_pipeline` swallows every exception from `tomllib.load` (malformed TOML)
+  and returns `None` rather than surfacing a syntax error — `resolve_pipeline_file` never
+  reports a TOML parse failure itself, only a missing or non-pipeline-looking configured path.
+  A genuinely malformed `haute.toml` is instead caught elsewhere (e.g. `DeployConfig.from_toml`,
+  outside this component).
+- Ambiguous auto-discovery (2+ root `.py` files matching, no `main.py`, no configured TOML
+  pipeline) raises rather than picking one alphabetically — deliberate, per the module
+  docstring's "never silently picks a random file" contract.
+- `_looks_like_pipeline_file` is a literal substring check for `"haute.Pipeline"` in the file
+  text, not an AST/import check, so the string appearing in a comment or docstring would
+  false-positive; an `OSError` reading one candidate file is silently skipped rather than
+  failing discovery for the whole directory.
+- `_prepare_config_for_sidecar`'s `VALID_KEYS` allowlist step is skipped entirely for any
+  `NodeType` absent from `VALID_KEYS` (e.g. `SUBMODEL_PORT`, which has no `TypedDict` to
+  anchor an allowlist on) — such configs fall through to the pre-existing code/internal-key
+  stripping only, with no key-level filtering.
+- A polars node with a self-contained code body and no upstream wiring (`_build_transform` in
+  `_builders.py`) is treated as a source (`is_source=True`) rather than requiring an input —
+  the code is expected to construct its own frame (e.g. `pl.DataFrame(...)`).
+- `_azure_devops_secrets_env` takes an explicit `indent` because the same secrets block is
+  spliced into the generated YAML at two different nesting depths: job-level `env:` blocks
+  sit at 12 spaces (so keys need 14), while the `DeployProduction` stage's `runOnce.deploy`
+  strategy nests `env:` at 18 spaces (so keys need 20). `azure_devops_yml` calls the helper
+  twice with different `indent` values for this reason — sharing one indent across both call
+  sites would under-indent the production secrets block into unparseable YAML.
+  > NOTE: the Azure DevOps workflow's `environment: production` block only names the
+  > environment; the approval check itself is configured on that environment inside the Azure
+  > DevOps portal, not emitted by `_scaffold.py`. A freshly-scaffolded Azure DevOps project's
+  > production stage runs unapproved until a human configures the environment's approval
+  > check out-of-band.
+
+## Error handling
+
+- **`ConfigError`** (`haute.errors`) — missing/unreadable/invalid-JSON sidecar; sidecar
+  content failing schema validation; a folder-backed node type used without `config=`;
+  `optimiserApply` misconfiguration (`artifact_path` set without `sourceType`); `modelScore`
+  misconfiguration (blank `run_id`/`registered_model` for the declared `sourceType`); project
+  root not found, or found without a surrounding git repository.
+- **`ParseError`** (`haute.errors`) — `async def` node body; duplicate node function name;
+  Explore-node topology violations (`_graph_shape.py`).
+- **`ContractMismatchError`** (`haute.errors`) — a user-declared `contract=` disagrees with
+  the config-derived contract on the inputs and/or outputs side; the message lists which
+  columns are missing from, or extra in, the builder-derived side.
+- **`ValueError`** — cycle or disconnected node in `Pipeline._topo_order`; unknown source or
+  target node in `connect()`; empty-string port name; duplicate key in a sidecar JSON object
+  (`reject_duplicate_keys_hook`); non-`dict` sidecar JSON content; a resolved config path
+  escaping the `config/` directory (`config_path_for_node`); a node name containing path
+  separators or `..`.
+- **`FileNotFoundError`** — `resolve_pipeline_file`/`_resolve_default_in`: a configured-but-
+  missing `[project].pipeline` path; a configured path that doesn't look like a pipeline file;
+  ambiguous or absent auto-discovery, enumerating what was tried either way.
+- **`KeyError`** — `get_column_contract` when a `NodeType` has no registered contract callback
+  (a registration bug, not a runtime/user-facing condition); a `NODE_REGISTRY` lookup miss in
+  the exec-builder dispatcher.
+- **`TypeError`** — an invalid (non-`str`, non-`None`) `source_port`/`target_port` passed to
+  `connect()`, raised from `_validate_port`.
+- **Never raises** — `warn_unrecognized_config_keys` logs at WARNING and returns the offending
+  key list instead; this is the one deliberate departure from the component's fail-loud
+  default, applied both when a config is first built and again when it is written to its
+  sidecar.
+
+## Testing
+
+Tests live under `tests/`, predominantly as behavioural unit tests against the real decorator
+API and real JSON round-trips rather than mocks:
+
+- **`test_pipeline.py`** (80 tests) — `Node`/`Pipeline`/`Submodel` decorator registration,
+  arity validation (`TestNodeArityValidation`), edge wiring and topo-order delegation, output
+  resolution (`TestOutputResolution`), duplicate-name rejection
+  (`TestDuplicateNodeName`), instance-reference fail-loud behaviour
+  (`TestInstanceReferencesFailLoud`), the API-input deploy-seed marker
+  (`TestApiInputDecoratorMarksSeed`), and `to_graph()` shape/inference (`TestPipelineEdgeCases`
+  and scattered `to_graph` tests across other classes).
+- **`test_config_io.py`** + **`test_config_io_gaps.py`** (~97 tests) — sidecar save/load
+  round-trips, path conventions (`TestConfigPathForNode`), Windows-reserved-filename rejection
+  (`TestIsWindowsReservedFilename`), `collect_node_configs` (including load-error protection
+  and id remapping), and banding/rating-step sidecar compaction/expansion.
+- **`test_config_validation.py`** (44 tests) — `VALID_KEYS` registry completeness
+  (`TestValidKeysRegistry`), `warn_unrecognized_config_keys` behaviour, and alignment between
+  each type's decorator kwargs and the config keys `_build_node_config` actually produces
+  (`TestBuildNodeConfigProducesValidKeys`, `TestConfigKeyTupleAlignment`).
+- **`test_parser_helpers.py`** + **`test_parser_helpers_split.py`** +
+  **`test_parser_helper_patch_targets.py`** — AST extraction (`TestExtractDecoratedNodes`),
+  decorator kwarg parsing, `_build_node_config` per node type
+  (`TestBuildNodeConfigExtended`), `_resolve_node_config` sidecar and contract paths
+  (`TestResolveNodeConfig`), and edge/GraphNode building (`TestBuildEdges`,
+  `TestBuildRfNodes`).
+- **`test_graph_shape_contracts.py`** (14 tests) — Explore in/out-degree contracts
+  (`TestExploreGraphShape`), single-node and empty-graph edge cases, submodel boundary handle
+  matching, and round-trip drift (`TestRoundTripDrift`).
+- **`test_scaffold.py`** (116 tests) — every CI provider × deploy target combination, YAML/TOML
+  structural validation, and starter pipeline/test content.
+- **`test_project_root.py`** + **`test_project_gaps.py`** — `get_project_root` walk-up
+  behaviour, `is_haute_project`, and the full `resolve_pipeline_file` four-tier fallback
+  (`TestResolvePipelineFile`, `TestTomlConfiguredPipeline`, `TestLooksLikePipelineFile`).
+- **`test_node_builder.py`** — `NodeBuildHooks`/`wrap_builder` interception semantics.
+- **`test_executor_builders.py`** + **`test_codegen_builders*.py`** — per-`NodeType` builder
+  and column-contract behaviour; this is shared fixture territory between this component's
+  registry and execution-engine/codegen, since all three read the same `NODE_REGISTRY`.
+- **`test_strict_v2_contract.py`** — pins the write-time `VALID_KEYS` allowlist and the
+  `apiInput` legacy-key stripping behaviour.
+
+Property/round-trip style coverage (`TestRoundTripDrift` in `test_graph_shape_contracts.py`,
+`test_codegen_roundtrip_property.py`) asserts that parse → build → save → parse is stable for
+generated graphs.
+
+> Known gap: the live `Pipeline.to_graph()` path and the static `_graph_builders.py` path are
+> exercised by separate test files with no explicit cross-check asserting they produce
+> equivalent graphs for the same source pipeline — consistent with the type-inference
+> divergence noted above under Edge cases.

@@ -2,8 +2,8 @@
 
 Runs a pipeline graph on a single row and captures per-node snapshots
 (input schema, output schema, row values, schema diffs).  This is the
-foundation for the data-lineage / explainability feature described in
-ARCHITECTURE.md §9.3.
+foundation for the data-lineage / explainability feature specified in
+docs/specs/tracing/high-level.md.
 
 Current surface:
   • execute_trace()  - run graph, collect 1-row snapshots at every node

@@ -1,0 +1,335 @@
+# Explore EDA — Low-Level Specification
+
+## Module map
+
+| File | Responsibility |
+| --- | --- |
+| `src/haute/routes/explore.py` | FastAPI router (`/api/explore`): thin `run`/`status`/`cancel` endpoints. Wires `flatten_graph`, `_ensure_source_file`, and `_validate_runtime_input_paths` before delegating to a module-level `ExploreService` singleton. |
+| `src/haute/routes/_explore_service.py` | Core service: cache-key derivation (`ExploreCacheSpec`), background job execution (`_run_job`, `_materialise_and_summarise`), and all statistics/summary computation (`_build_frame_stats`, `_build_column_stats`, `_build_data_quality_summary`, `_build_categorical_summary`, `_build_overview_summary`). |
+| `src/haute/_explore_overview.py` | Standalone validator for the Explore node's `overview` config dict (`validate_explore_overview`, `EXPLORE_OVERVIEW_TOGGLE_KEYS`). Imported by codegen (`_codegen_builders.py`) and the parser (`_config_builder.py`), not by the service or route module. |
+
+Related schemas live in `src/haute/schemas.py` (search `# /api/explore`): `ExploreColumnKind`,
+`ExploreColumnStat`, `ExploreDistinctValueCount`, `ExploreCategoricalColumnProfile`,
+`ExploreDataQualityIssue`, `ExploreDataQualitySummary`, `ExploreOverviewSummary`,
+`ExploreCacheReport`, `ExploreRunRequest`, `ExploreRunResponse`, `ExploreStatusResponse`.
+
+## Key types and data structures
+
+- **`ExploreCacheSpec`** (`_explore_service.py`, frozen dataclass) — the resolved identity of one
+  Explore run: `node_id`, `upstream_node_id`, `source`, the
+  `execution_facade.DataFrameExecutionCacheRequest`, the derived `dataframe_cache_key`, the
+  derived `report_cache_key`, and a `family_key` tuple (`("explore", source_file, node_id,
+  source)`) used to detect superseding runs of "the same" Explore node.
+- **`ExploreFrameStats`** (`_explore_service.py`, frozen dataclass) — the intermediate result of
+  one batched aggregation: `row_count`, `columns: list[ExploreColumnStat]`, and
+  `overview_summary: ExploreOverviewSummary`.
+- **`ExploreColumnStat`** (`schemas.py`) — per-column stats. `distinct_count` is `None` exactly
+  when the dtype is unhashable (`pl.Object`, per `_UNHASHABLE_DTYPES`). Numeric-only fields
+  (`p25_value`, `median_value`, `mean_value`, `p75_value`, `std_value`, `zero_count`,
+  `negative_count`) default to `None` and are only populated when `dtype.is_numeric()`.
+- **`ExploreOverviewSummary`** (`schemas.py`) — `data_quality: ExploreDataQualitySummary` plus
+  `categorical_summary: list[ExploreCategoricalColumnProfile]`, one profile per non-numeric
+  column that has a schema stat.
+- **`ExploreCacheReport`** (`schemas.py`) — the full response payload: identity fields
+  (`node_id`, `upstream_node_id`, `source`, `dataframe_cache_key`), `row_count`, `column_count`,
+  `columns`, `overview_summary`, `generated_at` (epoch seconds), and `execution_metrics`
+  (attached after materialisation, not during `_build_frame_stats`).
+- **`EXPLORE_OVERVIEW_TOGGLE_KEYS`** (`_explore_overview.py`) — frozenset of the five known
+  overview card keys: `dataset_snapshot`, `data_quality`, `numeric_summary`,
+  `categorical_summary`, `schema`. These must map to `bool`; any other key must map to a
+  "round-trippable" value per `_is_round_trippable_overview_value` (recursively: `None`, `str`,
+  `bool`, `int`, finite `float`, or `list`/`dict` of the same, with dict keys required to be
+  `str`).
+- **`EXPLORE_CACHE_VERSION = 2`** and **`EXPLORE_REPORT_CACHE_MAX_ENTRIES = 16`** — module
+  constants in `_explore_service.py`. The version is folded into `report_cache_key` so an
+  incompatible report schema never collides with old cached payloads; the LRU is capped at 16
+  entries (`LRUCache`, from `caching`).
+
+## Control flow
+
+### `POST /api/explore/run` (`routes/explore.py:run_explore` → `ExploreService.start`)
+
+1. `flatten_graph(body.graph)` resolves any subgraph/composite references in the posted graph.
+2. `_ensure_source_file(graph)` and `_validate_runtime_input_paths(graph)` (shared route
+   helpers) validate the graph has a resolvable source file and that runtime input paths are
+   legal, before any Explore-specific logic runs.
+3. `ExploreService.start(body)`:
+   a. `_prepare_spec(body)` — see below — resolves node/upstream, builds the dataframe cache
+      request, and derives both cache keys. Raises `HTTPException(400)` if the node is not
+      Explore-typed or does not have exactly one parent.
+   b. If `self._report_cache.get(spec.report_cache_key)` hits, return
+      `ExploreRunResponse(status="completed", cached=True, result=cached)` immediately — no job,
+      no thread.
+   c. Otherwise create a job via `JobStore.create_job` with initial fields (`status="running"`,
+      `progress=0.0`, `node_id`, `upstream_node_id`, `source`, `analysis_key`).
+   d. `CancellableJobRegistry.register_latest(spec.family_key, job_id)` returns a cancellation
+      token and the previous job id (if any) for the same family. If a previous job existed, it
+      is transitioned to `superseded` via `JobLifecycle.transition` (guarded by
+      `expected_status="running"` — a no-op if it already finished).
+   e. A daemon thread (`haute-explore-{job_id}`) runs `_run_job`; the route returns
+      `ExploreRunResponse(status="started", job_id=job_id)` without waiting.
+
+### `_prepare_spec` (`ExploreService._prepare_spec`)
+
+1. `find_typed_node(graph, body.node_id, NodeType.EXPLORE, "explore")` — raises 400 if the node
+   is missing or not Explore-typed.
+2. Reads `graph.parents_of[node.id]`; raises `HTTPException(400)` unless there is exactly one
+   parent.
+3. `execution_facade.dataframe_graph_input_fingerprint(...)` computes an input fingerprint over
+   the graph reachable to the Explore node, the source, etc.
+4. `execution_facade.build_dataframe_execution_cache_request(...)` builds the
+   `DataFrameExecutionCacheRequest` in the `"explore_dataset"` namespace, using
+   `ExecutionProfile.EXPLORE_ANALYSIS`, `ENFORCE_CONTRACTS` (imported lazily from
+   `haute.executor` to avoid an import cycle), and `body.streaming_chunk_size or
+   DEFAULT_STREAMING_CHUNK_SIZE`.
+5. `dataframe_key = dataframe_cache_request.keys_by_node[node.id].cache_key`.
+6. `report_cache_key` is `"explore:v{EXPLORE_CACHE_VERSION}:{digest}"` where `digest` is
+   `content_hash_bytes` of a canonical JSON encoding
+   (`json.dumps(..., sort_keys=True, separators=(",", ":"), default=str)`) of
+   `{dataframe_cache_key, node_id, source, version}`. Notably the `overview` config block is
+   **not** part of this payload, which is what makes an overview-only config change reuse the
+   cached report.
+
+### `_run_job` (background thread)
+
+1. `create_admitted_execution_context(operation="explore_cache", profile=EXPLORE_ANALYSIS,
+   job_id, cancellation_token=token.execution_token)` — admission-gated context creation; raises
+   `ExecutionAdmissionError` if the run cannot be admitted under current memory limits.
+2. `bind_running_execution_metrics_publisher(store, job_id, execution_context)` streams live
+   execution metrics into the job store while the job runs.
+3. `_materialise_and_summarise(body, spec, job_id, execution_context)` — see below.
+4. `execution_context.checkpoint(label="explore_before_store", node_id=spec.node_id)`.
+5. The report is copied with `execution_metrics` attached
+   (`ExecutionMetricsPayload.model_validate(execution_context.metrics_payload(status="completed"))`).
+6. The report is stored in `self._report_cache` under `spec.report_cache_key`, then
+   `JobLifecycle.transition(job_id, to="completed", fields={progress: 1.0, result: report,
+   execution_metrics})`.
+7. `finally`: `execution_context.release_admission()` (if a context was created) and
+   `self._jobs.release(job_id)` always run, even on the exception paths below.
+
+Exception handling (each maps to a distinct terminal status via `JobLifecycle.transition`, see
+Error handling section): `ExecutionCancelledError` → `token.terminal_reason or "cancelled"`;
+`ExecutionAdmissionError` / `ExecutionMemoryLimitExceededError` → `"memory_limited"`;
+`ContractMismatchError` / `SchemaMismatchError` / `BoundedMemoryUnsupportedError` →
+`"contract_error"`; any other `Exception` → `"error"` (logged via `logger.error(
+"explore_cache_failed", ...)` with `exc_info=True`).
+
+### `_materialise_and_summarise`
+
+1. Updates job progress to `0.1` ("Executing Explore pipeline").
+2. `_compile_preamble(body.graph.preamble or "", pipeline_dir=_pipeline_dir(body.graph))`
+   (imported lazily from `haute.executor`).
+3. `execution_facade.execute_lazy_graph(body.graph, _build_node_fn, target_node_id=spec.node_id,
+   preamble_ns=preamble_ns or None, source=body.source, enforce_contracts=ENFORCE_CONTRACTS,
+   execution_context=execution_context, dataframe_cache_request=spec.dataframe_cache_request)` —
+   executes the graph lazily up to (and including) the Explore node's own analysis code, reusing
+   the dataframe cache when the request's cache key already has a hit.
+4. `lazy_outputs.get(spec.node_id)` must not be `None`; if it is,
+   `ValueError(f"No data arrived at Explore node '{spec.node_id}'.")` is raised (caught by the
+   generic `except Exception` branch in `_run_job`, i.e. surfaces as job status `error`).
+5. Updates progress to `0.85` ("Reading cached schema"); `explore_lf.collect_schema()`.
+6. `execution_context.stage("explore_frame_stats")` wraps `_build_frame_stats(explore_lf, schema,
+   execution_context=execution_context)` — the single aggregation pass (see below).
+7. Returns a populated `ExploreCacheReport` (without `execution_metrics`, which `_run_job` attaches
+   afterward).
+
+### `_build_frame_stats` — the single batched aggregation
+
+Given `lf: pl.LazyFrame` and `schema: pl.Schema`:
+
+1. Builds one `aggregations: list[pl.Expr]` list: `pl.len().alias("row_count")`, then per column
+   `name`/`dtype`:
+   - `null_count().alias(f"null::{name}")` always.
+   - `n_unique().alias(f"unique::{name}")` unless `_is_unhashable_dtype(dtype)`.
+   - min/max (via `_min_max_column_expr`, casting text-like/boolean bases to `String`) when
+     `_supports_min_max(dtype)` (numeric, temporal, boolean, or lexical text-like bases).
+   - if `dtype.is_numeric()`: p25/median/mean/p75/std, plus `zero::{name}` and
+     `negative::{name}` boolean-sum counts.
+   - `elif _has_categorical_value_counts(dtype)`: one `_categorical_value_counts_expr(name,
+     dtype)` — `value_counts(sort=True).struct.rename_fields(...).head(50).implode()` — aliased
+     `categorical_values::{name}`.
+2. `streaming_collect(lf.select(aggregations), profile=EXPLORE_ANALYSIS,
+   execution_context=execution_context).row(0, named=True)` — exactly one Polars collection for
+   the entire frame, regardless of column count.
+3. Iterates columns again to build `ExploreColumnStat` entries from the single aggregate row,
+   plus a `categorical_values_by_column` dict for columns with
+   `_has_categorical_value_counts(dtype)`, parsed via `_parse_categorical_value_counts` (which
+   sorts by descending count, then `value is None` last, then value ascending).
+4. `row_count = int(aggregate_row["row_count"])`.
+5. Returns `ExploreFrameStats(row_count, columns, overview_summary=_build_overview_summary(...))`.
+
+`_build_column_stats(lf, schema, execution_context=...)` is a thin wrapper returning only
+`_build_frame_stats(...).columns`, kept for tests and legacy internal callers that only need
+per-column stats.
+
+### Data-quality summary (`_build_data_quality_summary`)
+
+Given `row_count` and `columns`, in this fixed order, each condition appends at most one
+`ExploreDataQualityIssue` (so up to 4 issues total per report):
+
+1. **Missing values** — any column with `null_count > 0`, sorted by descending null ratio then
+   name. Severity is `"danger"` if any of those columns are ≥50% null
+   (`mostly_null_columns`), else `"warning"`. Label counts all missing-value columns; detail
+   names only the single worst column and its percentage (via `_percent_text`, which renders
+   `"<1%"` for a nonzero ratio under 1%).
+2. **Constant/single-value columns** — `distinct_count is not None and distinct_count <= 1 and
+   null_count < row_count`, excluding columns already flagged zero-heavy (see below) so a column
+   is not double-counted between the two issues.
+3. **Numeric columns with negatives** — any column with `negative_count > 0`, sorted by
+   descending count; detail names only the top offender with its row count.
+4. **Mostly-zero numeric columns** — `(row_count - null_count) > 0 and zero_count > 0 and
+   zero_count / (row_count - null_count) >= 0.95`, sorted by descending zero count; this issue is
+   computed and referenced (via `zero_heavy_names`) before the constant-column issue is appended,
+   even though it is appended last.
+
+`_names_text`/`_limited_names` cap the number of names listed in a detail string at 3
+(`_SUMMARY_NAME_LIMIT`), joined with `", "`; `_plural` pluralises "column"/"columns" based on
+count.
+
+### Categorical summary (`_build_categorical_summary`)
+
+For each `ExploreColumnStat` whose dtype (looked up in `schema`) is not numeric, builds one
+`ExploreCategoricalColumnProfile`:
+
+- `expandable = distinct_count not in (None, 0) and _has_categorical_value_counts(dtype) and
+  bool(values)` — i.e. the column both qualifies for bounded value counts *and* actually has
+  computed values (an all-null column with 0 rows would not be expandable).
+- `values_truncated = distinct_count is not None and distinct_count > 50`.
+- `values` comes from the `values_by_column` dict built in `_build_frame_stats`; columns without
+  an entry get `[]`.
+
+## Edge cases and invariants
+
+- **Object dtype**: excluded from `n_unique` entirely (`_is_unhashable_dtype`); `distinct_count`
+  is `None`, never computed and never guessed.
+- **All-null column**: min/max are `None` (Polars aggregate returns `None`); for numeric columns
+  all of p25/median/mean/p75/std are `None` but `zero_count`/`negative_count` are `0`, not
+  `None` — a numeric column's count fields are always present even when every value is null.
+- **Binary columns with non-UTF-8 bytes**: `_categorical_value_label_expr` uses
+  `map_elements(_lossy_decode_binary, ...)` instead of `cast(pl.String)`; undecodable bytes
+  become `"�"` (the invariant under test in
+  `test_build_frame_stats_survives_non_utf8_binary_column`).
+- **Duration columns**: `map_elements(_format_duration, ...)` (i.e. `str(timedelta)`) instead of
+  `cast`, because Polars cannot cast `Duration` to `String`; the same formatting is reused for
+  min/max display via `_STRING_MIN_MAX_DTYPE_BASES` *not* including `Duration`, so Duration
+  min/max go through the generic `_format_display_value(str(value))` path and happen to produce
+  identical text to the value-count labels (documented as intentional, not incidental, in the
+  module docstring of `_format_duration`).
+- **Boolean columns**: cast to `String` for both min/max and value counts
+  (`_STRING_MIN_MAX_DTYPE_BASES` includes `pl.Boolean`) so `"true"`/`"false"` display identically
+  in the Schema and Categorical cards, instead of Python's `str(bool)` capitalisation.
+- **High-cardinality columns**: value counts are capped at exactly 50
+  (`_CATEGORICAL_VALUE_COUNT_LIMIT`) via `.head(50)`; `values_truncated` is `True` only when
+  `distinct_count > 50` (exactly 50 distinct values is not truncated — see
+  `test_build_frame_stats_returns_all_values_for_exactly_50_categorical_groups`).
+  `expandable`/`values_truncated` are independent booleans — a column can be expandable without
+  being truncated.
+- **Nested/unsupported dtypes** (e.g. `List`): not numeric and not text-like, so
+  `_has_categorical_value_counts` is `False`; `distinct_count` is still computed (nested types
+  are hashable in Polars) but the profile has `expandable=False`, `values=[]`.
+  `_column_kind` classifies any `dtype.is_nested()` as `"Nested"`.
+  `_supports_categorical_value_counts` is a superset check used only to decide the
+  Categorical/Schema *card* eligibility (`_build_categorical_summary` still emits a profile row
+  for these columns), while `_has_categorical_value_counts` gates whether the aggregation
+  actually collects value counts for that column.
+- **Column named `count`**: the aliasing scheme (`categorical_values::{name}`,
+  `_CATEGORICAL_VALUE_FIELD`/`_CATEGORICAL_COUNT_FIELD` prefixed with `__haute_`) avoids
+  colliding with a user column literally named `count` (regression test
+  `test_build_frame_stats_categorical_value_counts_handle_count_column_name`).
+- **Empty schema**: `_build_column_stats`/`_build_frame_stats` on a zero-column `LazyFrame`
+  return `columns == []` without error.
+- **Value truncation for display**: any min/max or categorical value longer than 80 characters
+  (`_VALUE_DISPLAY_MAX_CHARS`) is clipped to exactly 80 characters plus a single `"…"` marker
+  (`_VALUE_DISPLAY_TRUNCATION_MARKER`), so the returned string is always ≤81 characters.
+- **Single aggregation guarantee**: `_build_frame_stats` performs exactly one `streaming_collect`
+  call regardless of the number of columns or how many need categorical value counts — asserted
+  directly in tests by monkeypatching `streaming_collect` and counting invocations, and by
+  inspecting the query plan for absence of `UNION`/`CACHE` nodes (ruling out an unpivot-based
+  implementation).
+- **`overview` config round-trip**: an explicit `False` toggle value must be preserved through
+  codegen → parse (not treated the same as an absent key); an empty `overview: {}` dict must
+  *not* be emitted as `overview={}` in generated source at all (codegen only emits the kwarg when
+  the validated dict is non-empty).
+- **Downstream-edit cache stability**: `dataframe_cache_key` is unchanged by edits to nodes
+  downstream of the Explore node (verified by comparing `_prepare_spec(...).dataframe_cache_key`
+  across two graphs differing only in a downstream node's label) and by adding an `overview`
+  block to the Explore node's own config (the overview payload is not part of either cache key's
+  input). It *is* changed by editing the Explore node's own analysis `code`.
+
+## Error handling
+
+- `HTTPException(status_code=400, ...)` — raised synchronously (not inside the background job)
+  from `_prepare_spec` when the target node has zero or multiple upstream parents, and from
+  `find_typed_node` when the node id is missing or not Explore-typed. These surface directly as
+  the HTTP response; no job is created.
+- `ConfigError` (from `haute.errors`) — raised by `validate_explore_overview` for structurally
+  invalid `overview` dicts (non-dict value, non-string key, wrong-typed known toggle, or
+  non-round-trippable unknown value). Raised during codegen/parse, not during the run/status/
+  cancel routes.
+- `ExecutionCancelledError`, `ExecutionAdmissionError`, `ExecutionMemoryLimitExceededError`,
+  `ContractMismatchError`, `SchemaMismatchError`, `BoundedMemoryUnsupportedError` — all caught
+  inside `_run_job` and translated into a terminal job status with a message payload (see
+  Control flow); none propagate out of the background thread, and none abort the process.
+  `exc.to_payload()` is used (not `str(exc)` directly) for `ExecutionAdmissionError` and
+  `ExecutionMemoryLimitExceededError` to get a structured message.
+- Any other `Exception` — caught by the final `except Exception` clause in `_run_job`, logged via
+  `logger.error("explore_cache_failed", job_id=job_id, error=str(exc), exc_info=True)`, and
+  translated to job status `"error"`. This includes the `ValueError` raised by
+  `_materialise_and_summarise` when no data arrives at the Explore node.
+- `JobStore.require_job` (used by `status`/`cancel`) raises `HTTPException(404, "Job '{job_id}'
+  not found")` directly on an unknown job id (verified by
+  `test_explore_status_unknown_job_is_404`); this behaviour is inherited from the shared
+  [server-api](../server-api/high-level.md) `JobStore`, not implemented in this component.
+
+## Testing
+
+- `tests/test_explore_routes.py` — the primary suite, exercising the service end-to-end through
+  the FastAPI `TestClient`:
+  - `test_explore_run_returns_cache_descriptor` / `test_explore_run_applies_node_polars_code_before_caching`
+    — happy-path run, including that the Explore node's own analysis code executes before
+    caching (row/column counts reflect the post-code frame).
+  - `test_explore_reuses_completed_report_for_same_analysis_key` /
+    `test_explore_reuses_typed_report_cache_without_reexecuting_sources` — report-cache hits
+    return synchronously and skip `_materialise_and_summarise` entirely (asserted by
+    monkeypatching it to raise on any call).
+  - `test_explore_downstream_edits_do_not_invalidate_analysis_dataframe_cache` /
+    `test_explore_overview_config_does_not_invalidate_analysis_dataframe_cache` /
+    `test_explore_code_config_change_invalidates_analysis_dataframe_cache` — pin the cache-key
+    invalidation invariants directly via `_prepare_spec(...).dataframe_cache_key` comparisons.
+  - `test_explore_rejects_non_explore_node_before_execution` — 400 with a message containing
+    `"is not a explore node"`.
+  - `test_explore_cancel_stops_in_flight_job` — gates `streaming_collect` on a `threading.Event`
+    to force a mid-flight cancel, then asserts the worker thread actually exits (not just that
+    the status flips).
+  - `test_explore_status_unknown_job_is_404`.
+  - A block of column-stat regression tests (`test_cache_report_includes_one_column_stat_per_column`,
+    `test_null_count_matches_input`, `test_distinct_count_matches_input`,
+    `test_min_value_truncated_at_80_chars_with_ellipsis`,
+    `test_all_null_column_has_none_min_max_values`, `test_column_order_matches_schema`) driven
+    through the full `/api/explore/run` → poll path with an identity prep step, so per-column
+    assertions are deterministic.
+  - A large block of direct unit tests against `_build_column_stats`/`_build_frame_stats` (no
+    HTTP layer) covering: Object vs. Struct distinct-count handling, empty schema, numeric
+    profile fields, boolean min/max-vs-value-count casing consistency, all-null numeric columns,
+    the full data-quality summary issue set and ordering, bounded categorical value counts
+    (including exactly-50 and >50 truncation boundaries), unsupported (nested/list) categorical
+    profiles, the `count`-named-column aliasing collision guard, Binary/Duration lenient
+    formatting, and the single-batched-collect invariant (call-count assertion plus query-plan
+    inspection for absence of `UNION`/`CACHE`).
+  - `_clean_explore_state` autouse fixture snapshots/restores `_store.jobs` and clears
+    `_explore_service._report_cache` around each test so report-cache and job-store state never
+    leaks between tests.
+- `tests/test_explore_round_trip.py` — exercises `validate_explore_overview` indirectly through
+  `graph_to_code` → `parse_pipeline_source`: known-toggle round trip (`dataset_snapshot`,
+  `schema`, both together), explicit `False` toggle preservation, unknown-key round trip with
+  simple literal values (including nested dict/list and `None`), and that an empty `overview`
+  dict is dropped from generated source rather than emitted as `overview={}`. This is the
+  authoritative test suite for `_explore_overview.py`; there is no separate unit-test module for
+  that file's `ConfigError` branches (e.g. non-dict input, non-string key, non-round-trippable
+  unknown value) — those validation branches are not directly exercised by any test currently in
+  the suite.
+
+> NOTE: no test in the codebase directly calls `validate_explore_overview` with an invalid input
+> to assert the `ConfigError` branches (non-dict, non-string key, wrong-typed toggle,
+> non-round-trippable unknown value). Coverage for that function is entirely indirect, through the
+> round-trip tests' valid-input paths.

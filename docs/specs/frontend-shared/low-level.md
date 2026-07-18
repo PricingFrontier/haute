@@ -1,0 +1,306 @@
+# Frontend Shared Infrastructure — Low-Level Specification
+
+## Module map
+
+| File | Responsibility |
+|---|---|
+| `frontend/src/main.tsx` | App bootstrap: mounts `App` inside `StrictMode` + a root `ErrorBoundary`. |
+| `frontend/src/api/client.ts` | Typed `fetch()` wrapper: retry/backoff, timeout, abort handling, session-expiry event, and one function per backend endpoint. |
+| `frontend/src/api/types.ts` | Request/response TypeScript interfaces mirrored from `src/haute/schemas.py`; re-exports canonical node/trace types. |
+| `frontend/src/types/node.ts` | `HauteNodeData`/`PipelineFlowNode`/`SubmodelNodeData` shapes, `ColumnInfo`, `BackendNodeStatus`/`NodeStatus`, the `nodeData()`/`effectiveNodeType()` accessors used everywhere a React Flow `Node.data` needs typed access. |
+| `frontend/src/types/trace.ts` | Trace playback shapes (`TraceStep`, `TraceResult`, per-node-type `TraceNodeDetail` variants) mirroring backend trace output. |
+| `frontend/src/types/banding.ts` | Banding-factor rule shapes shared between the banding node editor and its trace rendering. |
+| `frontend/src/types/guards.ts` | Runtime parsers (`parse*`) and type guards for every API response shape; the JSON/DOM trust boundary. |
+| `frontend/src/stores/useNodeResultsStore.ts` | Zustand store: preview/solve/train/explore result caches, column cache, derived-getter memoization, LRU eviction. |
+| `frontend/src/stores/useSettingsStore.ts` | Zustand store: row limit, streaming chunk size, section open/closed state, MLflow status cache, data sources, file-listing cache. |
+| `frontend/src/stores/useToastStore.ts` | Zustand store: toast queue with dedup, capped at 10 entries. |
+| `frontend/src/stores/useUIStore.ts` | Zustand store: modal/panel open flags, sync banner, node panel width, per-node UI selection memory, hover highlight, node search open flag. |
+| `frontend/src/theme/colors.ts` | CSS-variable-backed colour token constants (`STRUCTURE_COLORS`, `STATUS_COLORS`, `MODEL_COLORS`, `CHART_COLORS`, `SYNTAX_COLORS`) plus the fixed hex `NODE_GROUP_COLORS` palette. |
+| `frontend/src/utils/formatBytes.ts` | Byte count → `B`/`KB`/`MB` string. |
+| `frontend/src/utils/formatTime.ts` | Unix timestamp → `HH:MM` / coarse relative-time label. |
+| `frontend/src/utils/formatValue.ts` | Renders backend's non-finite-float sentinel (`{__haute_type__: "non_finite_float", ...}`) as `NaN`/`Infinity`/`-Infinity`. |
+| `frontend/src/utils/color.ts` | Hex → `rgba(...)` string with alpha, for CSS-var-driven accent colours. |
+| `frontend/src/utils/dtypeColors.ts` | Dtype string → Tailwind text-colour class for column-type badges. |
+| `frontend/src/utils/sanitizeName.ts` | Human label → valid Python identifier; MUST stay in sync with `src/haute/_graph_utils.py::_sanitize_func_name`. |
+| `frontend/src/components/ErrorBoundary.tsx` | Class-component error boundary with a "Try again" fallback UI. |
+| `frontend/src/components/Toast.tsx` | `ToastMessage` type + `ToastContainer`, rendering `useToastStore`'s queue with per-type icon/colour and auto-dismiss. |
+| `frontend/src/components/ModalShell.tsx` | Shared dialog chrome: backdrop, Escape-close, full Tab focus trap, focus restore on unmount. |
+| `frontend/src/components/Tooltip.tsx` | Zero-delay CSS-hover tooltip with edge-clamped horizontal position and top/bottom auto-flip. |
+| `frontend/src/components/ContextMenu.tsx` | Node right-click menu: rename/duplicate/create-instance/dissolve-submodel/delete, arrow-key roving focus. |
+| `frontend/src/components/KeyboardShortcuts.tsx` | `?`-triggered modal listing keyboard shortcuts, built on `ModalShell`. |
+| `frontend/src/components/Toolbar.tsx` | App top chrome: source selector, row-limit/chunk-size inputs, undo/redo, timing/memory breakdowns, utility/imports buttons, zoom, centre/layout, save split-button. Composes `BreakdownDropdown` and `BranchIndicator` (git-ui). |
+| `frontend/src/components/SettingsModal.tsx` | Pipeline-imports/preamble editor dialog (custom overlay, not `ModalShell`). |
+| `frontend/src/components/BackgroundJobPolling.tsx` | Zero-render mount point (`memo`) that only invokes `useBackgroundJobs()`. |
+| `frontend/src/components/NodeSearch.tsx` | Ctrl+K command palette: filters/windows the current React Flow node list, arrow-key navigation, jumps the canvas viewport to the selected node. |
+| `frontend/src/components/BreadcrumbBar.tsx` | Pipeline → submodel navigation trail; renders nothing at stack depth ≤ 1. |
+| `frontend/src/hooks/useClickOutside.ts` | Attaches/detaches a `mousedown` listener that fires `onClose` when the click lands outside `ref`, only while `active`. |
+| `frontend/src/hooks/useDragResize.ts` | Bottom-panel drag-to-resize: DOM-direct mutation while dragging, commits to React state on mouseup. |
+| `frontend/src/hooks/useJobPolling.ts` | Generic background-job poller: exponential backoff, 24h max lifetime, per-job state via refs, consecutive-failure toast. |
+| `frontend/src/hooks/useBackgroundJobs.ts` | Wires `useJobPolling` to the optimiser/train/explore endpoints and `useNodeResultsStore` actions; mounted once in `App.tsx`. |
+| `frontend/src/hooks/useMlflowBrowser.ts` | Lazy-loads MLflow experiments/runs/models/versions for dropdown UIs; shared by `ModelScoreEditor` and `OptimiserApplyEditor` (node-editors). |
+| `frontend/src/hooks/useSchemaFetch.ts` | Fetch-schema-on-mount-and-on-path-change pattern shared by `DataSourceEditor`/`ApiInputEditor` (node-editors). |
+| `frontend/src/hooks/useStaleConfigEstimate.ts` | Generic "estimate endpoint keyed by config hash, refetch when config changes" pattern, built on `hashConfig`. |
+| `frontend/src/hooks/useKeyboardShortcuts.ts` | **Out of scope for this component** — App-level canvas key bindings (undo/redo/copy/paste/delete/search); documented under [frontend-graph-canvas](../frontend-graph-canvas/low-level.md). Listed here only because `KeyboardShortcuts.tsx` (the help modal) shares its name. |
+
+## Key types and data structures
+
+- **`ApiError`** (`api/client.ts`): `status: number`, `detail?: string`,
+  `body?: unknown` (parsed JSON error body), `rawDetail?: unknown`
+  (`body.detail` or the whole body, pre-stringify — consumed by
+  `executionDiagnostics` in node-editors to read structured failure fields
+  without re-parsing `detail`).
+- **`ApiTimeoutError`**: `timeoutMs: number`, `url: string`; thrown only
+  when the *timeout guard's own* `AbortController` fired (tracked via an
+  internal `abortSource` flag in `attemptFetch`), never for a
+  caller-supplied signal.
+- **`RetryPolicy`** / **`ApiClientOptions`**: `{ maxRetries?, baseDelayMs? }`
+  and `{ signal?, timeout?, retry? }`. `DEFAULT_RETRY_POLICY` is
+  `{ maxRetries: 3, baseDelayMs: 100 }`; `resolveRetryPolicy` throws if a
+  caller passes a non-integer/negative `maxRetries` or a non-positive
+  `baseDelayMs`.
+- **`HauteNodeData`** (`types/node.ts`): the typed view of a pipeline
+  node's `Record<string, unknown>` data — `label`, `nodeType`, `config`,
+  transient `_columns`/`_availableColumns`/`_schemaWarnings`/`_status`
+  fields set by `usePipelineAPI` (graph-canvas) and `useTracing`
+  ([frontend-trace-ui](../frontend-trace-ui/low-level.md)), and
+  `_diffStatus` used only by the read-only git comparison view. `nodeData()`
+  is the single cast boundary — callers should never write
+  `node.data as HauteNodeData` directly.
+- **`CachedPreview` / `CachedSolveResult` / `CachedTrainResult` /
+  `CachedExploreResult`** (`stores/useNodeResultsStore.ts`): one struct per
+  result category, each carrying enough to redraw its panel plus a
+  `configHash`/`structuralVersion` for staleness comparison.
+  `CachedSolveResult` additionally carries both `result` (current,
+  possibly frontier-point-derived) and `originalResult` (the as-solved
+  baseline), so switching frontier points never loses the original.
+- **`NodeResultsState`**: the store's full shape — six job/result record
+  pairs (`{previews, solveResults+solveJobs, trainResults+trainJobs,
+  exploreResults+exploreJobs}`), a `columnCache` keyed
+  `"nodeId"` or `"nodeId:source"`, and a `pinnedPreviewNodeId` that is
+  exempted from LRU eviction across all four result caches.
+- **`SettingsState.mlflow`**: `{status: "pending"|"connected"|"error",
+  backend, host, installed, importable, trackingConfigured, detail}` —
+  `useMlflowStatus()` (exported alongside the store) maps `"pending"` to
+  `"loading"` for display purposes only; the store itself never uses the
+  word "loading".
+- **`ToastMessage`** (`components/Toast.tsx`): `{id, type: "success"|
+  "error"|"info"|"warning", text}`. `id` is a monotonically increasing
+  string counter, not a UUID.
+- **`GraphPayload`** (`api/types.ts`): `{nodes, edges, submodels?,
+  preamble?}` — the minimal shape every pipeline-mutating endpoint accepts;
+  distinct from the richer `PipelineGraph` (adds pipeline metadata) that
+  `loadPipeline`/`getCommitPipeline` return.
+
+## Control flow
+
+**Request lifecycle (`api/client.ts`)**: `request()` resolves the retry
+policy, then loops `attempt = 0..maxRetries`. Each attempt calls
+`attemptFetch`, which owns a fresh `AbortController` per attempt — a
+`setTimeout` aborts it on timeout, and an external caller signal (if any)
+is bridged to the same controller with its listener removed in a `finally`
+so listeners don't accumulate across retries. On failure, `shouldRetry`
+gates continuation: non-idempotent method → no; `AbortError` → no (user
+cancelled, propagate immediately); `TypeError` (network layer) or 5xx → yes,
+provided attempts remain, in which case `backoffSleep` waits
+`backoffDelayMs(attempt)` (equal-jitter exponential: `[base·2ⁿ/2,
+base·2ⁿ]`) before the next attempt, itself abortable by the external
+signal. A non-timeout `AbortError` from `backoffSleep`/`attemptFetch`
+propagates as-is.
+
+**Response parsing**: every exported client function pipes its raw
+`request<unknown>()` result through the matching `parse*` guard from
+`types/guards.ts` before returning — `previewNode`, `loadPipeline`, etc.
+never hand an unvalidated object to a caller. `loadPipeline` is the one
+function with a `.catch` that inspects `err.status`: a 404 becomes an empty
+`PipelineGraph` (first-run UX); every other error rethrows.
+
+**Result-cache write path** (`useNodeResultsStore`): each `complete*Job`
+action (1) removes the corresponding entry from the `*Jobs` in-flight map,
+(2) builds the next cached record, (3) calls `trimCacheByRecency` to bound
+the record count (recency tracked in a module-level `Map`, not store state,
+so touching a cache entry for read purposes doesn't trigger a re-render),
+(4) evicts the module-level derived-getter cache
+(`_optimiserPreviewCache`/`_modellingPreviewCache`) for anything
+`trimCacheByRecency` dropped, and (5) recomputes the derived-getter cache
+entry for the just-written node. `getOptimiserPreview`/`getModellingPreview`
+are safe to call during render because they only ever read the memoized
+derived cache or recompute it inline — they never call `set()`.
+
+**Frontier point selection** (`selectFrontierPoint`,
+`updateFrontierAfterSelect`): selecting a point is a pure local
+re-derivation (`deriveSolveResultForFrontierPoint`) from the cached
+frontier's `points` array — no network call. `updateFrontierAfterSelect` is
+the network-driven counterpart used after an explicit backend
+`/optimiser/frontier/select`; it validates the echoed `point_index` matches
+the request, merges the richer per-point fields the backend returned back
+into the cached frontier's `points` array (so later re-selecting that point
+doesn't need another round trip), and — critically — if the user has since
+selected a *different* point while the request was in flight, it keeps the
+frontier-array enrichment but does not regress the displayed
+`result`/`selectedPointIndex` to the stale response's point (the
+"stale-response guard").
+
+**Background job polling** (`useJobPolling` + `useBackgroundJobs`):
+`useBackgroundJobs` mounts three `useJobPolling` instances (solve/train/
+explore), each driven by the store's `*Jobs` record. `useJobPolling`
+reconciles active jobs against a ref-tracked map of running pollers on every
+render; a poller not yet in the map gets a `setTimeout`-driven loop starting
+at `BASE_INTERVAL_MS` (500ms), doubling up to `MAX_INTERVAL_MS` (5s) on
+success/no-change, capped by `POLL_TIMEOUT_MS` (30s) per request and
+`MAX_LIFETIME_MS` (24h) total. `CONSECUTIVE_FAILURES_FOR_TOAST` consecutive
+poll errors trigger a toast (poll errors are tolerated silently up to that
+point — the network hiccup case is expected). A 404/410 from the poll
+endpoint (`TERMINAL_MISSING_JOB_STATUSES`, checked via
+`getMissingJobPollErrorMessage`) is treated as "job is gone, stop polling"
+rather than a retryable transient error.
+
+**Modal focus trap** (`ModalShell`): on mount, stashes
+`document.activeElement`, focuses the dialog container, and installs a
+`keydown` listener that (a) closes on Escape or any `extraCloseKeys` match,
+and (b) on Tab, redirects focus back inside the container if it has somehow
+landed outside, otherwise wraps first↔last focusable element. On unmount,
+focus is restored to the element that was focused before the modal opened.
+
+## Edge cases and invariants
+
+- **Retry budget is `maxRetries + 1` attempts total**, not `maxRetries`
+  retries after the first try counted separately from it — the loop is
+  `attempt <= maxRetries`.
+- **External abort takes priority over timeout**: `attemptFetch` tracks
+  which source (`"timeout"` vs `"external"`) fired first via
+  `abortSource ??= source`; only a timeout-sourced abort becomes
+  `ApiTimeoutError`, so a caller-cancelled request never gets misreported
+  as a timeout even if both fire near-simultaneously.
+- **`hauteSessionToken()`** prefers `window.__HAUTE_SESSION_TOKEN__` over
+  the Vite env var — the former can be injected post-load (e.g. by a test
+  harness or embedding shell) without a rebuild.
+- **Column cache freshness** (`useNodeResultsStore.getColumns`) is
+  `structuralVersion === useGraphStore.getState().structuralVersion` — a
+  direct cross-store read at call time, not a subscription, so a stale
+  read only happens if the caller doesn't re-invoke `getColumns` after a
+  structural change.
+- **`hashConfig`** strips `_nodeId`/`_columns`/`_schemaWarnings`/
+  `_availableColumns` (transient runtime fields) before hashing, and
+  recursively sorts object keys so key-order differences in the same
+  logical config don't produce different hashes. It's a djb2 hash, not
+  cryptographic — collisions are a theoretical staleness false-negative,
+  accepted for this use case.
+- **`trimCacheByRecency`** first prunes any recency-map entries whose key
+  no longer exists in `records` (handles external deletion, e.g.
+  `clearNode`), then evicts the least-recently-touched entries beyond
+  `maxEntries`, always excluding `pinnedKey` — if pinning would leave more
+  entries than `maxEntries`, the pinned entry is still never evicted (the
+  bound is soft in that one case).
+- **`addSource`** returns `null` (and performs no state change) both for a
+  blank/whitespace-only name and for a name whose sanitized key already
+  exists in `sources` — callers must check the return value before setting
+  `activeSource`.
+- **Toast dedup** compares only `(type, text)`; it does not advance the
+  toast id counter on a suppressed duplicate, so the counter's absence of
+  increment is itself the observable "nothing was added" signal used by
+  tests.
+- **`NodeSearch`** windows rendering to `NODE_SEARCH_VISIBLE_ROWS +
+  2 × NODE_SEARCH_OVERSCAN_ROWS` rows regardless of result-set size, but
+  keeps the currently-active result in the accessibility tree (visually
+  hidden, off-screen-clipped) even when scrolled out of the rendered
+  window, so `aria-activedescendant` always resolves to a real DOM node.
+- **`ModalShell`** guards the zero-focusable-elements case: if
+  `querySelectorAll(FOCUSABLE_SELECTOR)` returns nothing, Tab is
+  `preventDefault`ed and focus is forced back onto the container itself
+  rather than escaping.
+
+> NOTE: `useSettingsStore.fetchMlflow` guards re-entrancy with a *module-level*
+> `let _mlflowFetchingGuard` boolean rather than store state. This means the
+> guard is shared across every store instance created in the process
+> (relevant for tests that create fresh store instances but don't reset this
+> module-level flag) — tests that exercise `fetchMlflow` concurrency need to
+> account for this shared guard rather than assuming per-instance isolation.
+
+## Error handling
+
+- `ApiError` and `ApiTimeoutError` are the only two error types the API
+  layer manufactures; both extend `Error` and set `name` accordingly, so
+  `instanceof` checks work standardly. All other thrown values (e.g. raw
+  `TypeError` from `fetch()` on a network failure) pass through unwrapped.
+- Every `parse*` function in `types/guards.ts` throws a plain `Error` with
+  a message of the form `"<parser>: expected <shape>, got <actual>"` —
+  there is no dedicated parse-error type; callers that need to distinguish
+  "backend contract violation" from "network/HTTP error" do so by checking
+  `instanceof ApiError` first (parse errors are never `ApiError`).
+- `useNodeResultsStore.updateFrontierAfterSelect` and the frontier-point
+  numeric/array coercion helpers (`numericFrontierValue`, `recordValue`,
+  `numericArrayValue`, etc.) throw plain `Error`s naming the offending
+  field — these are expected to be caught by the calling panel's own error
+  handling (typically surfaced as a toast), not by the store.
+- `assertValidCacheLimit` throws synchronously if misconfigured — this is a
+  programmer error (wrong constant), not a runtime condition, so it is
+  expected to fail fast in development/tests rather than be caught.
+- `ErrorBoundary.componentDidCatch` logs to `console.error` and never
+  rethrows; the boundary's `name` prop (e.g. `"Canvas"`, `"NodePanel"`,
+  `"Toast"` — see `App.tsx`'s per-region wrapping) is included in the log
+  prefix so a crash's origin is identifiable from the console alone.
+
+## Testing
+
+Tests are split between colocated `__tests__/` folders next to each source
+file and a parallel `frontend/src/__tests__/{hooks,components,stores,utils}`
+tree that adds gap-coverage and adversarial cases; both trees run under the
+same Vitest config.
+
+- **API client** (`api/__tests__/client.test.ts`,
+  `client.retry.test.ts`, `client.contract.test.ts`): unit tests cover
+  retry/backoff/abort semantics directly; `client.contract.test.ts` loads
+  shared fixtures from `testSupport/uiContractFixtures.ts` and asserts every
+  exported client function's request/response shape against them, so a
+  backend schema change that isn't mirrored in `api/types.ts` fails here
+  first.
+- **`types/guards.ts`** (`types/__tests__/guards.contract.test.ts`):
+  contract tests exercising the parse functions against both valid and
+  malformed payloads, asserting the exact thrown-error shape for the
+  malformed cases.
+- **`useNodeResultsStore`**: covered indirectly through consumer tests
+  (`hooks/__tests__/useJobPolling.dedup.test.ts`,
+  `useJobPolling.progressThrottle.test.ts`) rather than a standalone store
+  test file — the store's eviction/derived-cache logic is exercised via the
+  polling flow that drives it in practice.
+- **`useSettingsStore`** (`stores/__tests__/useSettingsStore.addSource.test.ts`):
+  covers the sanitize-then-dedup `addSource` path and the "reset to live if
+  active source removed" behaviour.
+- **`useToastStore`** (`stores/__tests__/useToastStore.test.ts`,
+  `useToastStore.dedup.test.ts`): dedup-by-`(type,text)`, cap-at-10, and
+  the counter-not-advancing-on-suppression invariant.
+- **`useUIStore`** (`stores/__tests__/useUIStore.test.ts`,
+  `useUIStore.dirty.derived.test.ts`): modal-mutual-exclusion (opening
+  utility/imports/git closes the other two) and per-node selection-map
+  helpers.
+- **Chrome components**: `components/__tests__/ErrorBoundary.test.tsx`
+  (root-level, under `__tests__/components/`), `ModalShell.test.tsx` +
+  `ModalShell.focusTrap.test.tsx` (focus trap and restore-on-close in
+  particular), `Toast.test.tsx`, `Tooltip.test.tsx`, `ContextMenu.test.tsx`,
+  `NodeSearch.test.tsx`, `Toolbar.test.tsx`,
+  `SettingsModal.gaps.test.tsx`, `BreadcrumbBar.test.tsx` (root-level),
+  `KeyboardShortcuts.test.tsx` (root-level),
+  `BackgroundJobPolling.renderIsolation.test.tsx` (asserts the component
+  itself never re-renders its own subtree — it exists purely to host the
+  hook's side effects).
+- **Generic hooks**: `useClickOutside.test.ts` + `.gaps.test.tsx`,
+  `useDragResize.test.ts`, `useJobPolling.test.ts` (root-level, generic
+  poller mechanics) plus the colocated dedup/progress-throttle variants,
+  `useBackgroundJobs.test.ts` + `.gaps.test.ts` (root-level, orchestration
+  wiring), `useWebSocketSync.test.ts` + `.gaps.test.ts` (root-level — note
+  `useWebSocketSync` itself is a graph-canvas hook, but its session-expiry
+  interaction with `api/client.ts`'s `HAUTE_SESSION_EXPIRED_EVENT` is
+  exercised here since that event is this component's contract).
+- **Generic utils**: `utils/__tests__/formatTime.test.ts`,
+  `formatValue.test.ts`, `color.test.ts`, `sanitizeName.test.ts` +
+  `sanitizeParity.diff.test.ts` (the latter checks the frontend sanitizer
+  stays byte-for-byte in parity with the backend's `_sanitize_func_name`
+  via a shared fixture, `sanitizeParity.fixture.json`), plus root-level
+  `__tests__/utils/formatBytes.test.ts` and `dtypeColors.test.ts`.
+
+Known gaps: `Toolbar.tsx`'s inline timing/memory formatting helpers
+(`formatTiming`/`formatMemory`, distinct from and not delegating to
+`utils/formatTime.ts`/`formatBytes.ts`) have no dedicated unit test, only
+indirect coverage via `Toolbar.test.tsx`; `theme/colors.ts` has no test (it
+is a constants file with no logic to verify beyond TypeScript's own
+type-checking).
