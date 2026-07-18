@@ -445,7 +445,10 @@ async function attemptFetch<T>(
   }
 }
 
-async function request<T>(
+// Exported for split-chunk API modules (e.g. api/dispersion.ts): endpoints
+// consumed only by lazy-loaded panels live outside this module so their code
+// stays out of the initial bundle, but they share the same fetch machinery.
+export async function request<T>(
   url: string,
   options: RequestOptions = {},
 ): Promise<T> {
@@ -480,7 +483,7 @@ async function request<T>(
   throw lastError
 }
 
-function post<T>(url: string, body: unknown, options: MutationOptions = {}): Promise<T> {
+export function post<T>(url: string, body: unknown, options: MutationOptions = {}): Promise<T> {
   return request<T>(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },

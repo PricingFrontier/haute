@@ -64,9 +64,9 @@ class NodeRegistryEntry:
     #: per-type metadata.
     column_contract: Callable[[dict[str, Any]], Any] | None = field(default=None, repr=False)
     #: Whether this NodeType applies a genuine, stateful transform (banding,
-    #: rating, modelScore, liveSwitch, scenarioExpander, optimiserApply) as
-    #: opposed to a pure passthrough (modelling, optimiser preview, output,
-    #: dataSink, submodel).  Set on the EXEC side at registration.
+    #: rating, modelScore, liveSwitch, scenarioExpander, optimiserApply,
+    #: output) as opposed to a pure passthrough (modelling, optimiser
+    #: preview, dataSink, submodel).  Set on the EXEC side at registration.
     #:
     #: The invariant :func:`validate_registry_complete` enforces at import:
     #: a behavioural type's codegen body must NOT be a bare
