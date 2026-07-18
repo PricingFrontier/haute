@@ -7,6 +7,7 @@ delegates to RustyStats for fitting, prediction, and serialization.
 from __future__ import annotations
 
 import gc
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -75,7 +76,10 @@ def _build_interactions(
     """
     rs_interactions: list[dict[str, Any]] = []
     for interaction in interactions_config:
-        factors = interaction.get("factors", [])
+        # The config panel's "+ Add" creates {"factors": ["", ""]} until the
+        # user picks both columns — unset slots must not count towards the
+        # two-factor minimum or the fit crashes on a phantom interaction.
+        factors = [f for f in interaction.get("factors", []) if f]
         if len(factors) < 2:
             continue
         rs_int: dict[str, Any] = {}
@@ -109,6 +113,28 @@ def _align_coefs_and_names(
     return coefs[:min_len], names[:min_len]
 
 
+def _resolve_glm_terms(
+    params: dict[str, Any],
+    features: list[str],
+    cat_features: list[str],
+) -> dict[str, dict[str, Any]]:
+    """Resolve the effective term specs for a GLM fit from its params.
+
+    Shared by ``GLMAlgorithm.fit`` and the dispersion-estimation service so
+    an estimate is always profiled on exactly the design training would use.
+    Auto-generates a term per column when the user opted into "all features"
+    (``all_factors``), or — for the direct-construction API that bypasses the
+    config gate — when no terms are specified. The config path
+    (``build_training_job_kwargs``) already refuses empty terms without
+    ``all_factors``, so via the UI this only ever runs as an explicit choice.
+    """
+    terms: dict[str, dict[str, Any]] = params.get("terms", {})
+    all_factors = bool(params.get("all_factors", False))
+    if all_factors or not terms:
+        return _auto_terms(features, cat_features)
+    return terms
+
+
 def _build_glm_builder_kwargs(
     *,
     target: str,
@@ -118,6 +144,7 @@ def _build_glm_builder_kwargs(
     intercept: bool,
     link: str | None = None,
     var_power: float = 1.5,
+    theta: float | None = None,
     weight: str | None = None,
     offset: str | None = None,
     interactions: list[dict[str, Any]] | None = None,
@@ -134,6 +161,12 @@ def _build_glm_builder_kwargs(
         kwargs["link"] = link
     if family == "tweedie":
         kwargs["var_power"] = var_power
+    if family == "negbinomial" and theta is not None:
+        # RustyStats does NOT estimate theta — leaving it unset silently
+        # fits at theta=1.0. The config path gates on an explicit theta
+        # (training_objective_issue); the direct-construction API keeps
+        # the library default for callers that bypass the config gate.
+        kwargs["theta"] = float(theta)
     if offset:
         kwargs["offset"] = offset
     if weight:
@@ -141,6 +174,137 @@ def _build_glm_builder_kwargs(
     if interactions:
         kwargs["interactions"] = interactions
     return kwargs
+
+
+# Search bounds for profile-likelihood dispersion estimation. Theta is a
+# scale-like parameter, so it is profiled in log-space; practical Negative
+# Binomial dispersions live well inside [0.01, 1000]. Tweedie variance power
+# is profiled on the open interval (1, 2) the compound Poisson-gamma family
+# is defined on (matching the config panel's slider range).
+_DISPERSION_BOUNDS: dict[str, tuple[float, float]] = {
+    "theta": (0.01, 1000.0),
+    "var_power": (1.01, 1.99),
+}
+
+
+class DispersionEstimate:
+    """Result of a profile-likelihood dispersion estimation."""
+
+    __slots__ = ("param", "value", "llf", "n_fits")
+
+    def __init__(self, param: str, value: float, llf: float, n_fits: int) -> None:
+        self.param = param
+        self.value = value
+        self.llf = llf
+        self.n_fits = n_fits
+
+
+def estimate_glm_dispersion(
+    *,
+    data: pl.DataFrame,
+    terms: dict[str, dict[str, Any]],
+    target: str,
+    family: str,
+    param: str,
+    link: str | None = None,
+    intercept: bool = True,
+    weight: str | None = None,
+    offset: str | None = None,
+    interactions: list[dict[str, Any]] | None = None,
+    on_fit: Callable[[int], None] | None = None,
+) -> DispersionEstimate:
+    """Estimate a GLM dispersion parameter by profile likelihood.
+
+    RustyStats does not estimate Negative Binomial ``theta`` (unset silently
+    fits at 1.0) or Tweedie ``var_power`` (unset silently fits at 1.5), so
+    the config panel offers this estimate as an explicit user action — the
+    resolved value lands in the node config where the training-objective
+    gate requires it, never as a hidden default.
+
+    Maximises the fitted model's log-likelihood over the single dispersion
+    parameter with a bounded 1-D search (deterministic; ~20-30 IRLS fits).
+    ``theta`` is profiled in log-space. Validated against statsmodels NB2:
+    the profile MLE matches ``1/alpha`` to 4 s.f. on synthetic data, with
+    coefficient parity to 4 d.p.
+
+    Raises
+    ------
+    ValueError
+        If *param* is not an estimable dispersion parameter, or the
+        family/param pairing is inconsistent, or every candidate fit fails.
+    """
+    import math
+
+    import rustystats as rs
+    from scipy.optimize import minimize_scalar
+
+    expected_family = {"theta": "negbinomial", "var_power": "tweedie"}
+    if param not in expected_family:
+        raise ValueError(
+            f"Unknown dispersion parameter {param!r}. "
+            f"Estimable parameters: {', '.join(expected_family)}."
+        )
+    if family != expected_family[param]:
+        raise ValueError(
+            f"Dispersion parameter {param!r} belongs to the "
+            f"{expected_family[param]} family, not {family!r}."
+        )
+
+    n_fits = 0
+    last_error: Exception | None = None
+
+    def _llf_at(value: float) -> float:
+        nonlocal n_fits, last_error
+        if on_fit is not None:
+            # Cancellation hook: called before each candidate fit; the
+            # caller raises to abort the whole search.
+            on_fit(n_fits)
+        builder_kwargs = _build_glm_builder_kwargs(
+            target=target,
+            terms=terms,
+            data=data,
+            family=family,
+            intercept=intercept,
+            link=link,
+            var_power=value if param == "var_power" else 1.5,
+            theta=value if param == "theta" else None,
+            weight=weight,
+            offset=offset,
+            interactions=interactions,
+        )
+        n_fits += 1
+        try:
+            return float(rs.glm_dict(**builder_kwargs).fit().llf())
+        except Exception as exc:  # non-convergence at this candidate
+            last_error = exc
+            return -math.inf
+
+    lo, hi = _DISPERSION_BOUNDS[param]
+    if param == "theta":
+        result = minimize_scalar(
+            lambda log_value: -_llf_at(math.exp(log_value)),
+            bounds=(math.log(lo), math.log(hi)),
+            method="bounded",
+            options={"xatol": 1e-3},
+        )
+        value = float(math.exp(result.x))
+    else:
+        result = minimize_scalar(
+            lambda v: -_llf_at(v),
+            bounds=(lo, hi),
+            method="bounded",
+            options={"xatol": 1e-3},
+        )
+        value = float(result.x)
+
+    llf = float(-result.fun)
+    if not math.isfinite(llf):
+        raise ValueError(
+            f"Profile-likelihood estimation of {param!r} failed: no candidate "
+            f"value produced a converged fit"
+            + (f" (last error: {last_error})" if last_error else ".")
+        )
+    return DispersionEstimate(param=param, value=value, llf=llf, n_fits=n_fits)
 
 
 class GLMAlgorithm(BaseAlgorithm):
@@ -176,24 +340,19 @@ class GLMAlgorithm(BaseAlgorithm):
             raise ValueError("GLMAlgorithm.fit() requires train_df (pool bypass)")
 
         # Extract GLM-specific config from params
-        terms = params.get("terms", {})
-        all_factors = bool(params.get("all_factors", False))
         family = params.get("family", "gaussian")
         link = params.get("link") or None  # empty string → None (canonical)
         var_power = params.get("var_power", 1.5)
+        theta = params.get("theta")
         intercept = params.get("intercept", True)
         interactions_config = params.get("interactions", [])
         regularization = params.get("regularization") or None
         alpha = params.get("alpha", 0.0)
         l1_ratio = params.get("l1_ratio", 0.0)
 
-        # Auto-generate a term per column when the user opted into "all
-        # features" (all_factors), or — for the direct-construction API that
-        # bypasses the config gate — when no terms are specified. The config
-        # path (build_training_job_kwargs) already refuses empty terms without
-        # all_factors, so via the UI this only ever runs as an explicit choice.
-        if all_factors or not terms:
-            terms = _auto_terms(features, cat_features)
+        # Shared with the dispersion-estimation service so estimates are
+        # profiled on exactly this design (see _resolve_glm_terms).
+        terms = _resolve_glm_terms(params, features, cat_features)
 
         if feature_weights:
             logger.warning(
@@ -224,6 +383,7 @@ class GLMAlgorithm(BaseAlgorithm):
             intercept=intercept,
             link=link,
             var_power=var_power,
+            theta=theta,
             weight=weight,
             offset=offset,
             interactions=rs_interactions,

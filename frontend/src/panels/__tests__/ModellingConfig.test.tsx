@@ -17,6 +17,13 @@ const mockEstimateTrainingRam = vi.fn()
 vi.mock("../../api/client", () => ({
   trainModel: (...args: unknown[]) => mockTrainModel(...args),
   estimateTrainingRam: (...args: unknown[]) => mockEstimateTrainingRam(...args),
+  // GLMTargetConfig narrows errors with `instanceof ApiError`, so the mock
+  // must export a real class or the instanceof check throws.
+  ApiError: class ApiError extends Error {},
+}))
+
+vi.mock("../../api/dispersion", () => ({
+  runDispersionEstimate: vi.fn(() => new Promise(() => {})),
 }))
 
 vi.mock("../../utils/buildGraph", () => ({
@@ -496,6 +503,40 @@ describe("ModellingConfig", () => {
       const trainBtn = screen.getByRole("button", { name: /Train Model/ })
       expect(trainBtn).toHaveProperty("disabled", true)
       expect(screen.getByText(/Tweedie variance power required before training/)).toBeTruthy()
+    })
+
+    it("train button is gated on Neg. Binomial without a theta (glm)", () => {
+      // RustyStats does not estimate theta — an unset value would silently
+      // fit at theta=1.0, so the UI must not submit one.
+      renderConfig({
+        config: {
+          _nodeId: "node_1",
+          target: "loss_ratio",
+          task: "regression",
+          algorithm: "glm",
+          family: "negbinomial",
+          all_factors: true,
+        },
+      })
+      const trainBtn = screen.getByRole("button", { name: /Train Model/ })
+      expect(trainBtn).toHaveProperty("disabled", true)
+      expect(screen.getByText(/dispersion \(theta\) required before training/)).toBeTruthy()
+    })
+
+    it("train button enables on Neg. Binomial once theta is set (glm)", () => {
+      renderConfig({
+        config: {
+          _nodeId: "node_1",
+          target: "loss_ratio",
+          task: "regression",
+          algorithm: "glm",
+          family: "negbinomial",
+          all_factors: true,
+          theta: 2.5,
+        },
+      })
+      const trainBtn = screen.getByRole("button", { name: /Train Model/ })
+      expect(trainBtn).toHaveProperty("disabled", false)
     })
 
     it("train button is gated on elastic-net without an L1 ratio (glm)", () => {

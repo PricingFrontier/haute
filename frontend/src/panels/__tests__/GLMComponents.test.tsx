@@ -27,6 +27,13 @@ import type { TrainResult } from "../../stores/useNodeResultsStore"
 vi.mock("../../api/client", () => ({
   trainModel: vi.fn(() => new Promise(() => {})),
   estimateTrainingRam: vi.fn(() => new Promise(() => {})),
+  // GLMTargetConfig narrows errors with `instanceof ApiError`, so the mock
+  // must export a real class or the instanceof check throws.
+  ApiError: class ApiError extends Error {},
+}))
+
+vi.mock("../../api/dispersion", () => ({
+  runDispersionEstimate: vi.fn(() => new Promise(() => {})),
 }))
 
 vi.mock("../../utils/buildGraph", () => ({
@@ -120,16 +127,26 @@ describe("GLMTargetConfig", () => {
 
   it("renders all backend-accepted family buttons", () => {
     render(<GLMTargetConfig config={baseConfig} onUpdate={onUpdate} columns={defaultColumns} />)
-    // Every family the backend _VALID_GLM_LINKS validates, incl. Quasi-Poisson
-    // (dispersion estimated from Pearson residuals — no user parameter).
+    // Every family the backend _VALID_GLM_LINKS validates. Quasi-Poisson's
+    // dispersion is estimated from Pearson residuals (no user parameter);
+    // Neg. Binomial is offered now its theta gate exists — an explicit theta
+    // is required before training, closing the silent theta=1.0 failover.
     for (const label of [
       "Poisson", "Gamma", "Tweedie", "Gaussian", "Binomial", "Quasi-Poisson",
+      "Neg. Binomial",
     ]) {
       expect(screen.getByRole("button", { name: label })).toBeTruthy()
     }
-    // Neg. Binomial is held: its dispersion `theta` fits silently at 1.0 with
-    // no gate yet, so the backend rejects it and the UI must not offer it.
-    expect(screen.queryByRole("button", { name: "Neg. Binomial" })).toBeNull()
+  })
+
+  it("selecting Neg. Binomial sets family, canonical link and count metrics", () => {
+    render(<GLMTargetConfig config={baseConfig} onUpdate={onUpdate} columns={defaultColumns} />)
+    fireEvent.click(screen.getByRole("button", { name: "Neg. Binomial" }))
+    expect(onUpdate).toHaveBeenCalledWith({
+      family: "negbinomial",
+      link: "",
+      metrics: ["gini", "poisson_deviance"],
+    })
   })
 
   it("selecting Quasi-Poisson sets family, canonical link and count metrics", () => {
@@ -159,6 +176,84 @@ describe("GLMTargetConfig", () => {
 
     render(<GLMTargetConfig config={{ ...baseConfig, family: "tweedie" }} onUpdate={onUpdate} columns={defaultColumns} />)
     expect(screen.getByText(/Variance power/)).toBeTruthy()
+  })
+
+  it("shows the theta field only when family=negbinomial, empty by default", () => {
+    // The gate starts from an empty field: an unselected theta must LOOK
+    // unselected — faking a value here would show a chosen dispersion the
+    // config doesn't actually have (RustyStats would silently fit at 1.0).
+    const { unmount } = render(<GLMTargetConfig config={baseConfig} onUpdate={onUpdate} columns={defaultColumns} />)
+    expect(screen.queryByText(/Dispersion theta/)).toBeNull()
+    unmount()
+
+    render(<GLMTargetConfig config={{ ...baseConfig, family: "negbinomial" }} onUpdate={onUpdate} columns={defaultColumns} />)
+    expect(screen.getByText(/Dispersion theta/)).toBeTruthy()
+    const input = screen.getByPlaceholderText("e.g. 1.5") as HTMLInputElement
+    expect(input.value).toBe("")
+  })
+
+  it("typing a theta updates the config", () => {
+    render(<GLMTargetConfig config={{ ...baseConfig, family: "negbinomial" }} onUpdate={onUpdate} columns={defaultColumns} />)
+    fireEvent.change(screen.getByPlaceholderText("e.g. 1.5"), { target: { value: "2.5" } })
+    expect(onUpdate).toHaveBeenCalledWith("theta", 2.5)
+  })
+
+  it("clearing the theta field unsets it (re-arms the gate)", () => {
+    render(<GLMTargetConfig config={{ ...baseConfig, family: "negbinomial", theta: 2.5 }} onUpdate={onUpdate} columns={defaultColumns} />)
+    fireEvent.change(screen.getByPlaceholderText("e.g. 1.5"), { target: { value: "" } })
+    expect(onUpdate).toHaveBeenCalledWith("theta", null)
+  })
+
+  it("estimate button profiles theta and fills the field for the user", async () => {
+    // The estimate is an explicit user action: the resolved value lands in
+    // the editable field via onUpdate — never applied silently.
+    const onEstimateDispersion = vi.fn(() => Promise.resolve(2.4487))
+    render(
+      <GLMTargetConfig
+        config={{ ...baseConfig, family: "negbinomial" }}
+        onUpdate={onUpdate}
+        columns={defaultColumns}
+        onEstimateDispersion={onEstimateDispersion}
+      />,
+    )
+    fireEvent.click(screen.getByRole("button", { name: "Estimate from data" }))
+    expect(onEstimateDispersion).toHaveBeenCalledWith("theta")
+    await vi.waitFor(() => expect(onUpdate).toHaveBeenCalledWith("theta", 2.4487))
+  })
+
+  it("estimate failure surfaces the error instead of filling a value", async () => {
+    const onEstimateDispersion = vi.fn(() => Promise.reject(new Error("no converged fit")))
+    render(
+      <GLMTargetConfig
+        config={{ ...baseConfig, family: "negbinomial" }}
+        onUpdate={onUpdate}
+        columns={defaultColumns}
+        onEstimateDispersion={onEstimateDispersion}
+      />,
+    )
+    fireEvent.click(screen.getByRole("button", { name: "Estimate from data" }))
+    await vi.waitFor(() => expect(screen.getByText(/Estimation failed: no converged fit/)).toBeTruthy())
+    expect(onUpdate).not.toHaveBeenCalled()
+  })
+
+  it("hides the estimate buttons when no estimation handler is provided", () => {
+    render(<GLMTargetConfig config={{ ...baseConfig, family: "negbinomial" }} onUpdate={onUpdate} columns={defaultColumns} />)
+    expect(screen.queryByRole("button", { name: "Estimate from data" })).toBeNull()
+  })
+
+  it("tweedie variance-power gate offers estimation too", async () => {
+    const onEstimateDispersion = vi.fn(() => Promise.resolve(1.47))
+    render(
+      <GLMTargetConfig
+        config={{ ...baseConfig, family: "tweedie" }}
+        onUpdate={onUpdate}
+        columns={defaultColumns}
+        onEstimateDispersion={onEstimateDispersion}
+      />,
+    )
+    fireEvent.click(screen.getByRole("button", { name: "Estimate from data" }))
+    expect(onEstimateDispersion).toHaveBeenCalledWith("var_power")
+    await vi.waitFor(() => expect(onUpdate).toHaveBeenCalledWith("var_power", 1.47))
   })
 
   it("renders link function buttons with auto default", () => {

@@ -313,6 +313,26 @@ export interface TrainEstimate {
   gpu_warning: string | null
 }
 
+export type DispersionParam = "theta" | "var_power"
+
+export interface DispersionEstimateStart {
+  status: "started"
+  job_id: string
+}
+
+export interface DispersionEstimateStatus {
+  status: JobStatus
+  progress: number
+  message: string
+  elapsed_seconds: number
+  param: string | null
+  value: number | null
+  llf: number | null
+  n_fits: number | null
+  error: string | null
+  terminal_reason: string | null
+}
+
 export interface TrainFeatureImportanceRow {
   feature: string
   importance: number

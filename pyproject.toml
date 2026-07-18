@@ -42,6 +42,9 @@ dependencies = [
     "orjson>=3.11.7,<4",
     "price-contour>=0.4.1,<0.5",
     "rustystats>=0.7.0,<0.8",
+    # Direct dependency (not just transitive via catboost): the GLM
+    # dispersion estimator uses scipy.optimize.minimize_scalar.
+    "scipy>=1.16.0,<2",
     "xxhash>=3.6.0,<4",
     "packaging>=25.0,<26",
 ]
@@ -432,6 +435,7 @@ module = [
     "databricks.*",
     "pyarrow.*",
     "pandas.*",
+    "scipy.*",
     "sklearn.*",
     "price_contour.*",
 ]

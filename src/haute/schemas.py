@@ -943,6 +943,38 @@ class TrainEstimateResponse(BaseModel):
     gpu_warning: str | None = None
 
 
+class DispersionEstimateRequest(BaseModel):
+    """Estimate a GLM dispersion parameter (NB theta / Tweedie var_power).
+
+    The estimate is an explicit user action in the config panel: the resolved
+    value lands in the node config where the training-objective gate requires
+    it, never as a hidden default.
+    """
+
+    graph: Graph
+    node_id: str
+    source: str = "live"
+    param: Literal["theta", "var_power"]
+
+
+class DispersionEstimateResponse(BaseModel):
+    status: Literal["started"]
+    job_id: str
+
+
+class DispersionEstimateStatusResponse(BaseModel):
+    status: JobStatus
+    progress: float = 0.0
+    message: str = ""
+    elapsed_seconds: float = 0.0
+    param: str | None = None
+    value: float | None = None
+    llf: float | None = None
+    n_fits: int | None = None
+    error: str | None = None
+    terminal_reason: str | None = None
+
+
 class ExportScriptRequest(BaseModel):
     node_id: str
     graph: Graph
