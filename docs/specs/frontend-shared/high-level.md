@@ -21,7 +21,12 @@ panel instead of a blank white screen.
 
 In scope:
 - The typed HTTP client (`api/`) and the runtime response parsers that
-  guard the JSON/DOM boundary.
+  guard the JSON/DOM boundary. This includes bundle-split companion modules
+  like `api/dispersion.ts` (GLM dispersion-estimation endpoints) that live
+  outside `api/client.ts` so their code — reachable only from a lazy-loaded
+  panel — stays out of the initial JS bundle, while still sharing the
+  client's exported `request`/`post` fetch machinery rather than
+  reimplementing it.
 - Cross-cutting Zustand stores: node computation results
   (`useNodeResultsStore`), app-wide settings/caches (`useSettingsStore`),
   toast notifications (`useToastStore`), and layout/modal chrome
@@ -94,7 +99,20 @@ site instead of `undefined` propagating silently into a component. A 403
 whose detail matches the "missing/invalid session" reason fires a
 `window` `CustomEvent` (`HAUTE_SESSION_EXPIRED_EVENT`) rather than being
 handled locally — any part of the app can listen for session expiry without
-the client needing to know about auth UI.
+the client needing to know about auth UI. `request`/`post` are exported so
+bundle-split modules (`api/dispersion.ts`) can build endpoint functions on
+the same machinery without re-implementing fetch/retry. `api/dispersion.ts`
+does own its response parsing locally rather than adding to
+`types/guards.ts` — a deliberate exception to the "every response goes
+through `types/guards.ts`" rule below, made for the same bundle-size reason
+the module is split out in the first place. Some
+mutation endpoints (`runFrontier`, `runDispersionEstimate`) front a
+backend job that runs off the request thread: the client function itself
+polls a `.../status/{job_id}` endpoint on a fixed interval and resolves
+only once the job reaches a terminal status, so callers can still `await`
+a single promise for what is, on the wire, a start-then-poll sequence —
+distinct from `useJobPolling`/`useBackgroundJobs`, which track jobs the
+user can navigate away from and revisit.
 
 **Result caching.** `useNodeResultsStore` is the only place preview rows,
 optimiser solves, training runs, and explore reports are kept once computed.
@@ -113,7 +131,12 @@ size, per-section open/closed UI memory, the MLflow connectivity check
 named data sources plus which is active, and a 30-second file-listing cache.
 Adding a source runs the label through the shared `sanitizeName()` so two
 labels that only differ by case or punctuation don't collide on the
-persisted key.
+persisted key. `addSource` returns a discriminated `AddSourceResult`
+(`{ok: true, key}` or `{ok: false, reason: "empty" | "duplicate", key?}`)
+rather than a bare `string | null`, so a caller like `Toolbar` can tell
+the user *why* the add was rejected — blank name vs. a label that
+sanitises onto an already-existing key — instead of the form silently
+closing with no feedback.
 
 **Toasts.** `useToastStore` deduplicates by exact `(type, text)` match while
 an identical toast is still on screen; the toast queue is capped at 10
@@ -160,6 +183,22 @@ pipeline → submodel navigation stack and is hidden entirely at depth 1.
   the underlying CSS custom properties) rather than literal colours,
   except for the small `NODE_GROUP_COLORS` palette, which is
   fixed-per-node-type branding rather than a theme concern.
+- **Endpoint modules split out of `api/client.ts` when their only
+  consumer is lazy-loaded.** `api/dispersion.ts` exists as a separate file
+  — not more exports on `client.ts` — specifically so its code isn't
+  reachable from the initial bundle graph; `scripts/check-bundle-size.mjs`
+  gates the initial-gzip budget this layout exists to respect. The
+  pattern generalises: a future lazy-panel-only endpoint set follows the
+  same split rather than growing `client.ts` unconditionally.
+- **A cached result's staleness key is `configHash` + `source` +
+  `structuralVersion`, never `configHash` alone.** `CachedExploreResult`
+  already tracked all three; solve/train results and
+  `useStaleConfigEstimate`'s cached-result contract used to compare
+  `configHash` alone, which let a cached solve/train/estimate result from
+  one data source silently read as current after switching to another —
+  same config hash, wrong source's data. Both were widened to the same
+  three-field key in one change rather than leaving two different
+  staleness definitions in the codebase.
 
 ## Interactions
 
@@ -201,6 +240,16 @@ pipeline → submodel navigation stack and is hidden entirely at depth 1.
 - Cache-limit misconfiguration (`MAX_CACHED_*` set to a non-positive
   integer) throws immediately from `assertValidCacheLimit` rather than
   silently disabling eviction.
+- `runFrontier`/`runDispersionEstimate`'s embedded poll loop rejects with
+  an `ApiError` (carrying the job's message and, for frontier, its
+  `http_status_code`) on any non-`running`/non-`completed` terminal
+  status, and with a plain `Error` if a `"completed"` status arrives
+  without a result/value payload — a job that finishes without the data
+  it promised is a contract violation, not treated as success. A caller
+  `AbortSignal` fired mid-poll rejects with a `DOMException`
+  (`"AbortError"`); `runDispersionEstimate` additionally best-effort
+  cancels the backend job on abort (`cancelDispersion`, failure swallowed)
+  so an abandoned poll doesn't leave an orphaned job running server-side.
 - `ErrorBoundary` is the last line of defence for render-time exceptions:
   it logs via `console.error` and shows a "Try again" fallback scoped to
   the boundary it wraps, so one panel's crash is visible and recoverable

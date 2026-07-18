@@ -47,7 +47,9 @@ In scope:
   the DAG, assembling `TraceStep`s, enriching them, pruning to column relevance,
   and building a waterfall.
 - Post-hoc row correlation, including the edge-join-aware provenance rules needed
-  because Polars renames colliding columns on the JOIN-role parent.
+  because Polars renames colliding columns on the JOIN-role parent, and the
+  per-edge frame selection needed because a multi-frame source (e.g. a ≥2-table
+  `apiInput`) stores `dict[label, DataFrame]` rather than a single `DataFrame`.
 - Schema diff computation (added / removed / modified / passed) between a node's
   input and output row.
 - Per-node-type enrichment: rating-step table/lookup detail, banding factor/rule
@@ -106,7 +108,11 @@ Out of scope (owned elsewhere, linked where relevant):
   clicked row's values, the trace checks that the target node's row at
   `row_index` still matches them. A mismatch (e.g. because a Polars join
   reordered rows after a cache eviction) triggers a search for the row that does
-  match before falling back to a loud `ValueError` if no match exists.
+  match before falling back to a loud `ValueError` if no match exists. If more
+  than one row matches the clicked values, the relocation is genuinely ambiguous
+  — silently anchoring to the first match could correlate the whole trace
+  upstream from the wrong row — so this also raises `ValueError` rather than
+  guessing.
 - **Row correlation never guesses.** Each parent row is matched to its resolved
   child row either by a verified positional alignment (only trusted when the
   child transform provably preserves order, or the shared key uniquely pins one
@@ -115,6 +121,28 @@ Out of scope (owned elsewhere, linked where relevant):
   verified leaves that node's step unresolved — it is omitted from the trace
   rather than shown with a wrong row — and is recorded as a non-fatal entry in
   `correlation_diagnostics`.
+- **Multi-frame sources correlate per edge, not per node pair.** A multi-frame
+  source (e.g. a ≥2-table `apiInput`) stores `dict[label, DataFrame]`; each edge
+  out of it carries a `sourceHandle` naming the frame that edge consumes, and the
+  same source can feed one child through *several* edges at once (the canonical
+  four-port `apiInput` → `OUTPUT` topology, or a join of two data levels straight
+  off the input). Row correlation resolves the frame per edge — matching every
+  candidate frame against the resolved child row — rather than assuming one frame
+  per (source, target) pair, which would silently correlate against whichever
+  edge happened to be listed last. When several frames match, the frame carrying
+  the traced column wins; a remaining tie is broken by edge order and recorded as
+  a non-fatal `ambiguous_source_frame` diagnostic. Tracing the multi-frame node
+  itself (rather than a node downstream of a specific frame) raises a `ValueError`
+  naming the problem instead of crashing on a bare `dict`.
+- **Self-referential assignments substitute the pre-assignment value.** When a
+  step's expression reassigns a column from itself (`premium = premium * factor`),
+  showing the substitution requires the value the RHS actually read — the
+  post-assignment output would otherwise appear on the right-hand side too,
+  producing an arithmetically false substitution (e.g. `200.0 * 2.0` displayed for
+  an output of `200.0`). The same pre-assignment-value discipline applies to
+  multi-entry expression chains: each chain entry evaluates in order against
+  values fed forward from prior entries, seeded from pre-node input values rather
+  than the node's final output values.
 - **Column-scoped traces prune to relevance.** When a `column` is supplied, the
   trace tags every step by whether it touches that column, then keeps: (a) for a
   pass-through column, only the nodes whose output actually carries it; (b) for a
@@ -140,7 +168,11 @@ Out of scope (owned elsewhere, linked where relevant):
   row/column on the same pipeline is near-instant after the first click. The
   cache is invalidated by model retraining (`routes/_train_service.py` calls
   `haute.trace._cache.invalidate()`) and is bounded by both entry count and
-  retained bytes, evicting least-recently-used entries first.
+  retained bytes, evicting least-recently-used entries first. `execute_trace`
+  accepts an optional caller-supplied `GraphFingerprintMemo`; the trace route
+  passes in the same memo it already used to compute its supersession key, so a
+  preamble's utility files are hashed once per request rather than once per call.
+  A `None` (tests, CLI, cold requests) creates a fresh memo scoped to that call.
 - **Output is fully JSON-safe.** `trace_result_to_dict()` converts every dataclass
   field — including non-finite floats, out-of-JS-safe-integer-range integers, and
   arbitrary Python values captured during enrichment — into a shape safe to
@@ -188,6 +220,16 @@ Out of scope (owned elsewhere, linked where relevant):
   regex-matched `"unable to find column"` in an execution error and silently
   retried with `swallow_errors=True`, which masked genuine column-name typos.
   Cold-execution failures now propagate unchanged.
+- **Per-edge, not per-node-pair, multi-frame resolution.** A naive design would
+  cache one resolved `sourceHandle` per (source, target) node pair. That is
+  provably wrong for the four-port `apiInput` → `OUTPUT` topology and for a node
+  joining two data levels straight off the same multi-frame source: both wire
+  several edges between the same pair, each naming a different frame, so a
+  per-pair cache would collapse them to whichever edge was recorded last and
+  correlate every consumer against an arbitrary frame. Resolution instead keeps
+  one `sourceHandle` per *edge* and matches every distinct candidate frame
+  against the resolved child row independently, at the cost of a small
+  per-child fan-out over candidate frames instead of an O(1) lookup.
 - **Byte-bounded trace cache mirrors the preview cache.** The trace execution
   cache defaults its byte budget (`HAUTE_TRACE_CACHE_MAX_BYTES`) to the preview
   cache's budget and reuses its frame-size estimator, because both caches retain
@@ -236,10 +278,14 @@ Out of scope (owned elsewhere, linked where relevant):
 
 - **Structural preconditions fail loudly as `ValueError`.** An empty graph, a
   `target_node_id` that does not exist in the graph, a `row_index` beyond the
-  target node's row count, and a `row_values` mismatch that cannot be resolved by
-  relocating the row all raise `ValueError` with a message the HTTP layer pattern
+  target node's row count, a `row_values` mismatch that cannot be resolved by
+  relocating the row (including a relocation that matches more than one row —
+  ambiguous, not just missing), and a `target_node_id` that resolves to a
+  multi-frame source's `dict` output (tracing must target a node downstream of a
+  specific frame) all raise `ValueError` with a message the HTTP layer pattern
   -matches to choose a specific status code (404 for missing target node, 400 for
-  out-of-range row, 409 for a genuine row mismatch).
+  out-of-range row or a multi-frame target, 409 for a genuine or ambiguous row
+  mismatch).
 - **A malformed `preview` argument fails loudly as `TypeError`.** `execute_trace`
   only accepts `None`, a `PreviewReader`-shaped reader, or a snapshot dict; any
   other type, or a reader whose `try_get` returns something other than
@@ -253,7 +299,11 @@ Out of scope (owned elsewhere, linked where relevant):
   than just "not on the path") is recorded in `correlation_diagnostics` with a
   `code`, `severity`, `reason`, human-readable `message`, and the specific
   matched-row indices — enough for a caller to explain the gap to a user rather
-  than silently showing an incomplete trace.
+  than silently showing an incomplete trace. Multi-frame source resolution adds
+  two diagnostic codes to the same list: `unresolved_source_frame` when no
+  candidate frame yields any match, and `ambiguous_source_frame` (`severity:
+  "warning"`) when more than one frame matches equally well and the tie is
+  broken by edge order.
 - **Per-step enrichment failures are caught, logged, and surfaced as an `error`
   field**, never raised out of `execute_trace`. This applies uniformly across
   expression parsing/evaluation, chain analysis, input-source derivation, rename

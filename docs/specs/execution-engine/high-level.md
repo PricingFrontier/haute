@@ -47,9 +47,12 @@ running heavy work in a child process the parent can kill on timeout or memory l
 - Metadata-based RAM pre-estimation for training (`_ram_estimate.py`) so a training run
   can downsample before it starts rather than OOM mid-fit.
 - Shared config-driven node-apply logic (`_node_apply.py`) for `liveSwitch`,
-  `scenarioExpander`, and `optimiserApply` — the one implementation both the canvas
-  executor and codegen-generated `.py` files call, so a saved pipeline's
-  `pipeline.run()` behaves identically to the GUI.
+  `scenarioExpander`, `optimiserApply`, and `OUTPUT` response-document assembly —
+  the one implementation both the canvas executor and codegen-generated `.py`
+  files call, so a saved pipeline's `pipeline.run()` behaves identically to the
+  GUI. Before `assemble_output_from_config` unified the two, a saved `OUTPUT`
+  node's generated code was a bare passthrough of the raw upstream frame instead
+  of the assembled document.
 
 **Out of scope** (owned elsewhere, linked where relevant):
 - *What* each node type computes (reading a data source, applying a banding table,

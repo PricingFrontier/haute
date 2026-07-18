@@ -11,7 +11,7 @@ preview panels in the app are built from.
 
 It also owns the Explore node's specific preview workflow. Explore is the pipeline's
 EDA node: instead of showing a capped row preview, it lets the user materialize and
-cache full-dataset summary statistics (row/column counts, per-field null%/distinct/
+cache full-dataset summary statistics (row/column counts, per-field null%/NaN%/distinct/
 min/max, numeric distributions, categorical value counts, data-quality issues) on
 demand, because computing those over the full dataset is too expensive to do on every
 keystroke the way the row preview is.
@@ -96,6 +96,17 @@ Out of scope (owned elsewhere, linked where relevant):
   errors, and in-flight build/poll state before the new key's status load resolves,
   so a slow status check for the new key can never render stale data borrowed from
   the old key.
+- **NaN is reported as its own bucket, separate from null and from "Distinct."** A
+  float column's invalid-numeric values (`NaN`) are counted and shown as their own
+  "NaN %" column (Numeric Summary, Schema table) alongside "Null %" — the two are not
+  merged into one "missing" figure, since a null and a `NaN` mean different things
+  upstream. Non-float columns cannot hold `NaN` at all: their NaN cell renders a plain
+  "-" placeholder rather than a `0`, distinguishing "not applicable to this dtype" from
+  "counted and found to be zero." The Distinct count itself is unaffected either way —
+  it always counts unique *valid* values only, never folding in the null or NaN
+  buckets — and a small "?" info button (`DistinctInfoButton`) next to every
+  "Distinct" column header spells this out on hover so the three figures (Null %,
+  NaN %, Distinct) aren't misread as overlapping.
 
 ## Design rationale
 
@@ -130,6 +141,10 @@ Out of scope (owned elsewhere, linked where relevant):
   request for an old key (or a superseded request for the same key) from clobbering
   what's on screen. See [Failure model](#failure-model) for how this interacts with
   errors specifically.
+- **The NaN info button is one shared component, not copy duplicated at each call
+  site.** `DistinctInfoButton` centralises the exact wording of what "Distinct"
+  does and doesn't count so the Numeric Summary card's header and the Schema
+  table's header can't drift into inconsistent explanations of the same figure.
 
 ## Interactions
 

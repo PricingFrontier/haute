@@ -14,9 +14,10 @@ source, while refusing to let the analyst submit a run whose meaning is ambiguou
 Both node types share one recurring problem: several of the underlying libraries and
 statistics have "reasonable-looking" defaults that are actually silent behaviour changes
 (CatBoost training without an explicit loss, a GLM with no family, Tweedie's variance power
-defaulting to 1.5, elastic-net collapsing to pure Ridge, an empty GLM factor list silently
-becoming "one term per every column"). This UI exists to make each of those an explicit,
-visible choice rather than an invisible fallback.
+defaulting to 1.5, a Negative Binomial GLM's dispersion `theta` defaulting to 1.0,
+elastic-net collapsing to pure Ridge, an empty GLM factor list silently becoming "one term
+per every column"). This UI exists to make each of those an explicit, visible choice rather
+than an invisible fallback.
 
 ## Scope
 
@@ -57,12 +58,20 @@ Out of scope (see linked specs):
   sections shared by both algorithms: split strategy + MLflow + monotonic constraints, and
   the train action/result section.
 - The Train button is disabled whenever the training objective is incomplete — no loss
-  function/family chosen, Tweedie selected without a variance power, GLM with no factors
-  and "All features" unticked, or elastic-net selected without an L1 ratio. The disabled
-  state shows the specific missing field so the user knows what to set.
+  function/family chosen, Tweedie selected without a variance power, Negative Binomial
+  selected without a dispersion `theta`, GLM with no factors and "All features" unticked,
+  or elastic-net selected without an L1 ratio. The disabled state shows the specific
+  missing field so the user knows what to set.
 - Several of those same gated fields render a "Set X (required)" button in place of a
   slider/value until the user makes an explicit choice, plus a hover tooltip explaining
   what the silent default would otherwise have been.
+- For the two dispersion-shaped GLM parameters — Tweedie's variance power and Negative
+  Binomial's `theta` — the gate also offers an "Estimate from data" action: it runs a
+  profile-likelihood fit over the node's upstream training data on the backend and fills
+  the resolved value into the same editable field the user could type into by hand. The
+  estimate is always an explicit, cancellable-by-navigating-away user action; the field is
+  never populated automatically, and a failed estimate shows an inline error without
+  touching the field's current value.
 - A RAM/VRAM estimate is fetched automatically as the config or upstream graph changes;
   the panel shows the estimate, warns when the row count will be downsampled to fit memory,
   and separately warns when GPU VRAM would be exceeded (training then falls back to CPU
@@ -149,6 +158,19 @@ Out of scope (see linked specs):
   closing/reopening the panel) never discards an expensive run; a config-hash comparison
   (not a deep diff) flags staleness cheaply without needing to keep the previous config
   object around.
+- **Staleness is config hash + data source + structural version, not config hash alone.**
+  A cached train/solve result whose `source` or `structuralVersion` no longer matches the
+  live values reads as stale even when its `configHash` still matches — otherwise switching
+  the active data source, or an upstream node's structure changing, could leave a result on
+  screen that was computed against different data but happens to share the same config. A
+  cached result predating this contract (missing `source`/`structuralVersion`) fails the
+  comparison and reads as stale, never as current, by construction.
+- **Dispersion estimation is a separate, explicit action, not a smarter default.** Rather
+  than picking a "less wrong" default for Tweedie's variance power or Negative Binomial's
+  `theta`, the "Estimate from data" button runs the same kind of computation a silent
+  default would have skipped — a real fit against the node's actual training data — but
+  surfaces it as a value the user reviews and can override, on the same principle as the
+  rest of this UI's gating.
 - **The optimiser's column source is the selected data input, not the column union.**
   Early designs that unioned all upstream columns let a ratebook's per-level factor table
   leak into the objective/constraint dropdowns of an otherwise-unrelated online optimiser
@@ -175,9 +197,11 @@ Out of scope (see linked specs):
 ## Interactions
 
 - **Depends on** [modelling](../modelling/high-level.md) for the training pipeline and the
-  `TrainResult` contract this UI renders, and
-  [optimiser](../optimiser/high-level.md) for the solve pipeline and `OptimiserSolveResult`/
-  `FrontierData` contracts.
+  `TrainResult` contract this UI renders, its GLM dispersion-estimation endpoints
+  (`/api/modelling/dispersion/estimate|status|cancel`, wired through `api/dispersion.ts`'s
+  `runDispersionEstimate` and consumed here as `ModellingConfig.handleEstimateDispersion`),
+  and [optimiser](../optimiser/high-level.md) for the solve pipeline and
+  `OptimiserSolveResult`/`FrontierData` contracts.
 - **Depends on** [background-jobs](../background-jobs/high-level.md): once a train/solve
   call returns `status: "started"`, this UI only registers the job id in the results store
   (`startTrainJob` / `startSolveJob`) — polling, progress updates, and completion are driven
@@ -221,3 +245,9 @@ Out of scope (see linked specs):
   populated dropdowns until the fetch is retried (e.g. by changing the data input).
 - **RAM/solve-cost estimate failures are non-blocking.** They surface via toast and leave
   the estimate panel absent; they never prevent the user from training or solving.
+- **A dispersion-estimate failure is local to its field, not the whole panel.** It shows an
+  inline "Estimation failed: …" message under the gated Tweedie/Negative-Binomial field
+  (preferring the backend's structured error detail over a generic HTTP message) and leaves
+  the field exactly as it was — still gated/empty if the user hadn't set anything, unchanged
+  if they had. It never disables the rest of the config or the Train button beyond what the
+  gate itself already does.

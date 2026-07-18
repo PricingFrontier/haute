@@ -11,8 +11,9 @@
 | `panels/ExplorePreview.tsx` | Explore node's compound preview: run/cancel cache job, tab switching, wires `DataPreview` (Preview tab) and `ExploreOverviewPane` (Overview tab). |
 | `panels/explore/cacheIdentity.ts` | Builds the object hashed into Explore's cache key: upstream-lineage node/edge subset plus submodels/preamble, with `overview` config stripped. |
 | `panels/explore/ExploreOverviewPane.tsx` | Card registry dispatcher: picks which overview cards to render based on `config.overview` toggles and report presence. |
-| `panels/explore/ExploreSummaryCards.tsx` | Four of the five overview cards: dataset snapshot, data quality, numeric summary, categorical summary (with per-field expandable value lists). |
-| `panels/explore/SchemaTableCard.tsx` | The fifth overview card: paginated, searchable per-column schema table (dtype, null%, distinct, min/max). |
+| `panels/explore/ExploreSummaryCards.tsx` | Four of the five overview cards: dataset snapshot, data quality, numeric summary (incl. a NaN-count column, float-only), categorical summary (with per-field expandable value lists). |
+| `panels/explore/SchemaTableCard.tsx` | The fifth overview card: paginated, searchable per-column schema table (dtype, null%, NaN% (float-only), distinct, min/max). |
+| `panels/explore/DistinctInfoButton.tsx` | Shared "?" tooltip affordance placed next to every "Distinct" column header (Numeric Summary, Schema table) clarifying that the count excludes null and NaN. |
 | `panels/explore/overviewCardDefinitions.ts` | The ordered card registry (key, label, description) and the `isOverviewCardEnabled` gate. |
 | `panels/explore/overviewConfig.ts` | `readOverview`: defensively parses `node.data.config.overview` into a typed, boolean-only record. |
 | `panels/explore/StatValueCell.tsx` | Shared `<td>` for an optional monospaced stat value (used by schema + numeric summary tables). |
@@ -60,7 +61,9 @@
   this array's order, independent of the order keys appear in `config.overview`.
 - **`ExploreCacheReport`/`ExploreColumnStat`** (`api/types.ts`, consumed not owned) —
   the materialised Explore result: `row_count`, `column_count`, `generated_at`,
-  `columns: ExploreColumnStat[]` (per-column `kind`, `null_count`, `distinct_count`,
+  `columns: ExploreColumnStat[]` (per-column `kind`, `null_count`, `nan_count`
+  (float-NaN count; `null`/`undefined` for non-float dtypes — the invalid-numeric
+  bucket, distinct from `null_count`), `distinct_count`,
   min/p25/median/mean/p75/max/std/zero/negative), `overview_summary` (data-quality
   issues, categorical profiles).
 
@@ -188,6 +191,16 @@
   muted ("uninteresting"), >50% is `--warning-strong` styled, everything in between is
   primary-styled; `rowCount === 0` short-circuits to muted regardless of
   `null_count` (division-by-zero guard, not a real percentage).
+- **NaN% reuses the same three-way severity buckets and colour ramp as Null%**
+  (`nullSeverity`/`nullPctStyle` in `SchemaTableCard.tsx` are called with `nan_count`
+  as well as `null_count`), but only when `nan_count` is present. A `null`/`undefined`
+  `nan_count` (any non-float dtype) renders a plain muted `"-"` in both
+  `SchemaTableCard` (`data-testid="explore-schema-nan-pct"`, `data-nan-severity="none"`)
+  and `ExploreSummaryCards`' `NumericSummaryCard` (`data-testid=
+  "explore-numeric-nan-count"`) — distinct from an actual `0`, which is styled muted
+  but still renders the digit. `NumericSummaryCard` only ever shows numeric-kind
+  columns, so its NaN column is populated far more often than `SchemaTableCard`'s
+  (which lists every column, numeric or not).
 - **`SchemaTableCard` search runs before the 50-row page limit is applied** — the
   search filters `report.columns` first, then pagination slices the filtered result,
   so a match can be on any page of the unfiltered set and will still be found (test:
@@ -268,13 +281,23 @@
 - `frontend/src/panels/explore/__tests__/SchemaTableCard.test.tsx` — row-per-column
   rendering, absence of any auto-grouping/inventory UI (explicitly asserted not
   present), pagination (50/page, disabled next at the last page), search-before-
-  pagination, null% formatting and severity buckets, min/max rendering (not
-  "examples"), sanitised `data-testid`s for special-character column names, empty-
-  column-list state, and dtype colour-class delegation.
+  pagination, null% formatting and severity buckets, NaN% formatting and severity
+  (an all-NaN float column reading `100.0%`/`data-nan-severity="high"` despite 0%
+  null, and a non-float column rendering the `"-"`/`"none"` placeholder pair), the
+  `colSpan={7}` empty-state cells (bumped from 6 to account for the new NaN% column),
+  the Distinct-header info button (`getByRole("button", { name: /Null and NaN are
+  not values/i })` resolving to `data-testid="explore-distinct-info"`), min/max
+  rendering (not "examples"), sanitised `data-testid`s for special-character column
+  names, empty-column-list state, and dtype colour-class delegation.
 - `frontend/src/panels/explore/__tests__/ExploreSummaryCards.test.tsx` and
   `overviewConfig.test.ts` — card-level rendering (not read in full for this spec;
-  see file for detail) and `readOverview`'s defensive parsing (missing/null/wrong-
-  type `overview`, non-boolean per-key values, unknown extra keys ignored).
+  see file for detail), the Data Quality card's empty-state copy (now naming NaN
+  alongside missing/constant/negative/mostly-zero fields), `NumericSummaryCard`'s
+  NaN column (populated `nan_count` for a float column vs. the `"-"` placeholder for
+  an integer column via `explore-numeric-nan-count`), the same Distinct-header info
+  button assertion as `SchemaTableCard.test.tsx`, and `readOverview`'s defensive
+  parsing (missing/null/wrong-type `overview`, non-boolean per-key values, unknown
+  extra keys ignored).
 - `frontend/src/components/__tests__/ColumnTable.test.tsx` — column/dtype rendering,
   checkbox presence/absence/toggle (including click-through on interactive rows with
   `stopPropagation` verified via call-count), custom `nameColor`/accent class/
@@ -292,11 +315,12 @@
 - `frontend/src/__tests__/components/BreakdownDropdown.test.tsx` — empty-state
   (faint, non-interactive), total display, open/close toggle, descending sort order,
   per-item and total formatted-value display.
-- No dedicated unit test exists for `FramesTable` (`components/FramesTable.tsx`) or
-  `explore/StatValueCell.tsx`; `FramesTable` is exercised indirectly through
-  `__tests__/editors/ApiInputEditor.test.tsx` (owned by
-  [json-shredding](../json-shredding/high-level.md)), and `StatValueCell` only
-  through the schema/numeric-summary card tests that render it.
+- No dedicated unit test exists for `FramesTable` (`components/FramesTable.tsx`),
+  `explore/StatValueCell.tsx`, or `explore/DistinctInfoButton.tsx`; `FramesTable` is
+  exercised indirectly through `__tests__/editors/ApiInputEditor.test.tsx` (owned by
+  [json-shredding](../json-shredding/high-level.md)), and `StatValueCell` and
+  `DistinctInfoButton` only through the schema/numeric-summary card tests that
+  render them.
 - **`frontend/e2e/data-preview-scroll.benchmark.spec.ts`** — a Playwright
   benchmark (tagged `@benchmark`, excluded from the default `npm run test:e2e`
   lane, run via `npm run test:e2e:benchmark`) that scrolls a 10k-row ×

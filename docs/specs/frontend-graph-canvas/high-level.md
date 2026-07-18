@@ -197,6 +197,17 @@ Out of scope (owned by neighbouring components, linked where they exist):
   (bounded concurrency, diamond-shaped fan-in deduplicated so a shared
   child previews once), each terminating in a definite ok/error state even
   if the graph structure changes mid-flight.
+- **Column stash source identity.** Every node's `_columns`/
+  `_availableColumns`/`_schemaWarnings` stash is tagged with the active
+  source (`_columnsSource`) it was captured under. A dedicated effect runs
+  on mount and on every active-source change, stripping the stash from any
+  node whose `_columnsSource` disagrees with (or is missing relative to)
+  the now-active source; a stripped node returns to the same
+  never-previewed state a first load leaves it in, and the existing
+  lazy stale-upstream gap-fill in `refreshPreview` repopulates it on next
+  preview. `refreshPreview`'s upstream-staleness filter also checks
+  `_columnsSource` directly (not just presence of `_columns`), covering the
+  window before the invalidation effect's `setNodesRaw` has flushed.
 - **Live code sync.** External edits to a pipeline's `.py` file arrive over
   WebSocket and replace the in-memory graph — but never while the user has
   unsaved local edits, where a banner asks them to reload or discard first.
@@ -309,6 +320,20 @@ Out of scope (owned by neighbouring components, linked where they exist):
   column name or dtype that happens to contain the separator character
   cannot collide with a different schema — correctness over a simpler but
   collision-prone plain string join.
+- **Column stashes are tagged with the source they were captured under,
+  not just left to go stale silently.** Before `_columnsSource` existed, a
+  node previewed under source A kept its `_columns` on the node data
+  indefinitely; switching to source B left editors reading source A's
+  columns as if they were current, because `_columns`'s mere *presence*
+  was the only signal `refreshPreview`'s stale-upstream check looked at.
+  Tagging the stash with its capture source and invalidating on mismatch
+  closes the same class of "cached result silently outlives the source it
+  was computed for" bug that motivated widening `useNodeResultsStore`'s
+  solve/train staleness key (see
+  [frontend-shared](../frontend-shared/high-level.md)) — stripping the
+  stash and re-triggering the existing lazy gap-fill was preferred over
+  keying the cache by `(nodeId, source)`, since editors already tolerate
+  "columns not loaded yet" as a normal transient state.
 
 ## Interactions
 

@@ -355,6 +355,15 @@ for route-level tests, and direct unit tests for the pure-function modules.
   its worker and that cancellation actually propagates to the execution token.
 - **`test_pipeline_route_parity.py`** — shared guard behaviour (runtime input path
   validation, printable-id checks) applied consistently across preview/trace/sink.
+- **`test_trace_api.py`**, **`test_trace.py`**, **`test_trace_multi_frame.py`** —
+  `/api/pipeline/trace` route and `execute_trace` coverage, including two fail-loud
+  cases `trace_row` translates to HTTP errors rather than silently guessing: a
+  duplicate-row relocation match (`_find_target_row_index` raising on an
+  ambiguous match → 409 `"Trace row match is ambiguous"`) and a multi-frame
+  apiInput correlation walk that must select the same `sourceHandle`-named frame
+  per edge the target actually consumes, not the last edge's frame for a
+  (source, target) pair (→ 400 `"Target node ... multiple frames"` when it can't
+  be resolved).
 - **`test_files_routes.py`**, **`test_formats_route.py`**, **`test_utility_routes.py`** —
   route-level coverage of file browsing, the I/O format registry endpoint, and utility-script
   CRUD (including AST-syntax-error rejection with line numbers).

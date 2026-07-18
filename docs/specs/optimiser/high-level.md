@@ -78,7 +78,12 @@ ratebook) factor tables are available as a job summary. From there a user can:
 
 - Compute an efficient frontier — a grid of alternative constraint-threshold trade-off points —
   over explicit or auto-estimated absolute threshold ranges, and select one point as the active
-  result without re-running the full solve.
+  result without re-running the full solve. Like the solve itself, the sweep runs as a background
+  job: the request validates synchronously (runtime availability, range resolution, the
+  compute-budget cap) and returns a pollable frontier job id, and the caller polls a separate
+  frontier-status endpoint to a terminal state. Only one frontier sweep may be in flight per solve
+  job at a time; a second `/frontier` request against the same solve job while one is running is
+  rejected as a conflict.
 - Preview the online result as a capped table of per-quote selected scenarios (ratebook has no
   such per-quote view — see Failure model).
 - Save the result to a JSON artifact on disk, or log it to MLflow together with a frontier CSV
@@ -185,6 +190,18 @@ with nothing to ever poll it down. Adding a frontend fallback for an incomplete 
 point was rejected because a frontier point missing its numeric summary fields cannot produce a
 faithful solve summary — a guessed or partial one would misrepresent the actual solve.
 
+A frontier sweep is hundreds of sequential re-solves at 2-3 constraints — the same class of
+sustained CPU work as a full solve — so it was moved off the request thread onto a background job
+for the same reason solves are: holding an HTTP connection open for minutes is impractical, and a
+FastAPI worker thread blocked on it cannot serve other requests. This closes a regression class
+where a future change to the heavy solver entrypoints (`_compute_frontier`, `_solve_online`,
+`_solve_ratebook`) could quietly reintroduce inline request-thread execution: each is wrapped with
+`require_solver_worker_context`, a decorator that raises immediately unless the call is running
+inside `solver_worker_context()` — entered only by the background job runners (the solve worker
+thread, the frontier sweep worker thread). The guard turns "someone called a heavy solver function
+from a request handler" into an immediate, loud `RuntimeError` instead of a silent worker-pool
+stall discovered later under load.
+
 ## Interactions
 
 - [execution-engine](../execution-engine/high-level.md) — runs the pipeline graph up to the
@@ -214,16 +231,22 @@ faithful solve summary — a guessed or partial one would misrepresent the actua
 Configuration and input problems surface as 4xx errors with a specific, actionable message:
 missing objective/mode/ratebook `factor_columns`, missing required columns in the scored data,
 a non-string/categorical quote-id column, null quote ids, non-finite (NaN/Infinity) values in
-any numeric solver column, an unresolvable or disconnected `data_input`, or (ratebook) an empty
-or missing banding source. A second solve/auto-range request against the same graph and
-optimiser node while one is already active is rejected as a conflict rather than queued or
-silently superseded.
+any numeric solver column, a null value in any objective/constraint/scenario column (any dtype,
+not just numeric — the solver's external aggregation has undefined behaviour on a null input), an
+unresolvable or disconnected `data_input`, or (ratebook) an empty or missing banding source. A
+second solve/auto-range request against the same graph and optimiser node while one is already
+active is rejected as a conflict rather than queued or silently superseded.
 
 A frontier request whose projected solver grid exceeds the compute budget is rejected before
 the solver ever runs, naming both the projected size and the cap. A pipeline that cannot run in
 bounded/streaming memory mode is rejected with a specific message rather than being forced
 through and failing deep inside the executor. A memory-admission failure (the executor's own
-budget controller refusing to reserve the memory a stage needs) surfaces as a 507.
+budget controller refusing to reserve the memory a stage needs) surfaces as a 507. Once a
+frontier sweep has passed this synchronous validation and started as a background job, any
+failure inside the sweep itself (a lost race against a concurrent job-state change, an invalid
+persisted apply-artifact handle, an unclassified exception) is reported through the frontier job's
+own terminal status rather than as a synchronous HTTP error from the original `/frontier` request
+— the caller only learns of it by polling the frontier-status endpoint to a terminal state.
 
 Ratebook mode has no per-quote result dataframe, so the apply-preview and apply-trace
 affordances return an explicit 422 contract error naming the correct alternative (the factor

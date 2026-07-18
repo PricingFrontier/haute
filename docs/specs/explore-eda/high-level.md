@@ -60,12 +60,22 @@ Out of scope (owned elsewhere):
 - `POST /api/explore/cancel/{job_id}` interrupts an in-flight materialisation (not just a status
   flip — the underlying collection is cancelled) and transitions the job to `cancelled`.
 - The completed report contains, per column: dtype, a coarse `kind` classification (Numeric,
-  Text, Temporal, Boolean, Nested, Other), null count, distinct count (`None` when the dtype is
-  unhashable, e.g. `Object`), and — depending on dtype — min/max, quartiles/mean/std, zero and
-  negative counts, or a bounded list of the most frequent distinct values (top 50).
-- The report also contains a derived data-quality summary: columns with missing values, constant
-  (single-value) columns, numeric columns with negative values, and numeric columns that are
-  ≥95% zero, each rendered as a short, human-readable issue with a severity.
+  Text, Temporal, Boolean, Nested, Other), null count, NaN count (float dtypes only; `None` for
+  every other dtype — not applicable, mirroring `zero_count`/`negative_count`), distinct count
+  (`None` when the dtype is unhashable, e.g. `Object`), and — depending on dtype — min/max,
+  quartiles/mean/std, zero and negative counts, or a bounded list of the most frequent distinct
+  values (top 50). Missingness is a three-way split, not a valid/invalid dichotomy: null (absent),
+  NaN (an invalid-numeric value — a float column that is usually numeric but carries a non-numeric
+  error/default value materialises NaN, which `null_count` does not see), and everything else
+  valid. `distinct_count` counts only those valid values — the null and NaN buckets are excluded,
+  so an all-NaN float column reports `distinct_count == 0`, not `1`.
+- The report also contains a derived data-quality summary: columns with missing (null) values,
+  numeric columns with NaN values, constant (single-value) columns, numeric columns with negative
+  values, and numeric columns that are ≥95% zero, each rendered as a short, human-readable issue
+  with a severity. A missing-values or NaN issue is `"danger"` severity when its worst offending
+  column is ≥50% affected, else `"warning"`. A column counts as constant only when every row holds
+  the same valid value — one with nulls or NaNs alongside its single value is reported under the
+  missing-values/NaN issues instead, not double-counted as constant (ruled 2026-07-16).
 - Materialisation always completes even when a column contains data that cannot be strictly cast
   to text (non-UTF-8 `Binary` bytes, `Duration` values): those columns are formatted leniently
   rather than aborting the whole report.
@@ -84,6 +94,16 @@ Out of scope (owned elsewhere):
 
 ## Design rationale
 
+- **Three-way missingness split (valid / null / NaN).** Polars' `null_count` does not see NaN, so
+  a float column that is fully populated by `null_count`'s measure could still be entirely
+  unusable (all-NaN) without a separate signal. NaN counting is gated strictly on float dtype
+  (`_is_float_dtype`, i.e. `Float32`/`Float64`) rather than the broader `is_numeric()`, because
+  Polars' `is_nan()` raises `InvalidOperationError` against a non-float numeric column (e.g. an
+  integer) — NaN is representationally only possible for float dtypes. `distinct_count` was
+  changed to count only valid values (excluding both the null and NaN buckets) so it answers "how
+  many distinct real values does this column have" rather than conflating missingness with
+  cardinality; this required bumping the report cache-schema version (`EXPLORE_CACHE_VERSION`),
+  since an older cached report computed the field differently and would otherwise be served stale.
 - **Report/dataframe cache separation.** The dataframe cache (parquet on disk, keyed by
   execution lineage) and the lightweight `ExploreCacheReport` cache (in-process LRU, keyed by
   dataframe cache key + node id + source + report schema version) are deliberately independent.
@@ -147,4 +167,7 @@ Out of scope (owned elsewhere):
 > quartile fields only for numeric columns and set them to `None` otherwise; a column reclassified
 > between numeric and non-numeric across two runs of the same pipeline (e.g. by an upstream code
 > change) will show a different populated-field set with no explicit migration note in the report
-> itself — this is describing existing behaviour, not a defect being fixed here.
+> itself — this is describing existing behaviour, not a defect being fixed here. `nan_count` is
+> narrower still: it is populated only for float dtypes (`Float32`/`Float64`), not the broader
+> numeric set, so an integer column reclassified to/from float across two runs will also flip
+> `nan_count` between `0` and `None` in addition to the zero/negative/quartile fields above.

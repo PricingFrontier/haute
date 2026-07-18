@@ -5,7 +5,8 @@
 | File | Responsibility |
 |---|---|
 | `frontend/src/main.tsx` | App bootstrap: mounts `App` inside `StrictMode` + a root `ErrorBoundary`. |
-| `frontend/src/api/client.ts` | Typed `fetch()` wrapper: retry/backoff, timeout, abort handling, session-expiry event, and one function per backend endpoint. |
+| `frontend/src/api/client.ts` | Typed `fetch()` wrapper: retry/backoff, timeout, abort handling, session-expiry event, and one function per backend endpoint. Exports `request`/`post` so split-chunk endpoint modules can reuse the same fetch machinery. `runFrontier` starts a frontier sweep then polls `getFrontierStatus` to a terminal state, preserving the old resolve-with-final-payload contract over what is now a backend background job. |
+| `frontend/src/api/dispersion.ts` | GLM dispersion-estimation endpoints (NB `theta` / Tweedie `var_power`): `estimateGlmDispersion`, `getDispersionStatus`, `cancelDispersion`, and `runDispersionEstimate` (starts + polls to completion, resolving with the estimated number). Split out of `client.ts` so its code — reachable only from the lazy-loaded modelling config panel — stays out of the initial JS bundle; built on `client.ts`'s exported `request`/`post` and owns its own runtime parsers (`parseDispersionEstimateResponse`, `parseDispersionStatusResponse`) rather than routing through `types/guards.ts`. |
 | `frontend/src/api/types.ts` | Request/response TypeScript interfaces mirrored from `src/haute/schemas.py`; re-exports canonical node/trace types. |
 | `frontend/src/types/node.ts` | `HauteNodeData`/`PipelineFlowNode`/`SubmodelNodeData` shapes, `ColumnInfo`, `BackendNodeStatus`/`NodeStatus`, the `nodeData()`/`effectiveNodeType()` accessors used everywhere a React Flow `Node.data` needs typed access. |
 | `frontend/src/types/trace.ts` | Trace playback shapes (`TraceStep`, `TraceResult`, per-node-type `TraceNodeDetail` variants) mirroring backend trace output. |
@@ -39,7 +40,7 @@
 | `frontend/src/hooks/useBackgroundJobs.ts` | Wires `useJobPolling` to the optimiser/train/explore endpoints and `useNodeResultsStore` actions; mounted once in `App.tsx`. |
 | `frontend/src/hooks/useMlflowBrowser.ts` | Lazy-loads MLflow experiments/runs/models/versions for dropdown UIs; shared by `ModelScoreEditor` and `OptimiserApplyEditor` (node-editors). |
 | `frontend/src/hooks/useSchemaFetch.ts` | Fetch-schema-on-mount-and-on-path-change pattern shared by `DataSourceEditor`/`ApiInputEditor` (node-editors). |
-| `frontend/src/hooks/useStaleConfigEstimate.ts` | Generic "estimate endpoint keyed by config hash, refetch when config changes" pattern, built on `hashConfig`. |
+| `frontend/src/hooks/useStaleConfigEstimate.ts` | Generic "estimate endpoint keyed by config hash + source + structural version, refetch when any of the three changes" pattern, built on `hashConfig`. Takes a required `context: {source, structuralVersion}` argument alongside the cached result. |
 | `frontend/src/hooks/useKeyboardShortcuts.ts` | **Out of scope for this component** — App-level canvas key bindings (undo/redo/copy/paste/delete/search); documented under [frontend-graph-canvas](../frontend-graph-canvas/low-level.md). Listed here only because `KeyboardShortcuts.tsx` (the help modal) shares its name. |
 
 ## Key types and data structures
@@ -60,19 +61,46 @@
   `baseDelayMs`.
 - **`HauteNodeData`** (`types/node.ts`): the typed view of a pipeline
   node's `Record<string, unknown>` data — `label`, `nodeType`, `config`,
-  transient `_columns`/`_availableColumns`/`_schemaWarnings`/`_status`
-  fields set by `usePipelineAPI` (graph-canvas) and `useTracing`
+  transient `_columns`/`_availableColumns`/`_schemaWarnings`/`_columnsSource`/
+  `_status` fields set by `usePipelineAPI` (graph-canvas) and `useTracing`
   ([frontend-trace-ui](../frontend-trace-ui/low-level.md)), and
-  `_diffStatus` used only by the read-only git comparison view. `nodeData()`
-  is the single cast boundary — callers should never write
-  `node.data as HauteNodeData` directly.
+  `_diffStatus` used only by the read-only git comparison view.
+  `_columnsSource` tags which active data source the `_columns`/
+  `_availableColumns`/`_schemaWarnings` stash was captured under — a
+  graph-canvas concern (see
+  [frontend-graph-canvas](../frontend-graph-canvas/low-level.md)) but the
+  field itself lives on this shared type. `nodeData()` is the single cast
+  boundary — callers should never write `node.data as HauteNodeData`
+  directly.
 - **`CachedPreview` / `CachedSolveResult` / `CachedTrainResult` /
   `CachedExploreResult`** (`stores/useNodeResultsStore.ts`): one struct per
   result category, each carrying enough to redraw its panel plus a
-  `configHash`/`structuralVersion` for staleness comparison.
+  `configHash`/`source`/`structuralVersion` staleness key.
   `CachedSolveResult` additionally carries both `result` (current,
   possibly frontier-point-derived) and `originalResult` (the as-solved
-  baseline), so switching frontier points never loses the original.
+  baseline), so switching frontier points never loses the original. A
+  direct `complete*Job` call with no active job recorded (no in-flight
+  `ActiveSolveJob`/`ActiveTrainJob` to read `source`/`structuralVersion`
+  from) falls back to `source: ""` and `structuralVersion: -1` — sentinels
+  that can never equal a real value, so the record reads as stale rather
+  than silently matching whatever the caller happens to be viewing.
+- **`AddSourceResult`** (`stores/useSettingsStore.ts`): `addSource`'s
+  return type — `{ok: true, key: string}` on success, or
+  `{ok: false, reason: "empty"}` / `{ok: false, reason: "duplicate", key}`
+  on rejection. Replaces a bare `string | null` so a caller can surface
+  *why* the add failed rather than treating `null` as an unexplained
+  no-op.
+- **`DispersionParam`** (`"theta" | "var_power"`), **`DispersionEstimateStart`**
+  (`{status: "started", job_id}`), **`DispersionEstimateStatus`**
+  (`{status: JobStatus, progress, message, elapsed_seconds, param, value,
+  llf, n_fits, error, terminal_reason}`) (`api/types.ts`): the GLM
+  dispersion-estimation job shapes consumed by `api/dispersion.ts`.
+- **`FrontierStatusResponse`** (`api/types.ts`): `{status: JobStatus,
+  progress, message, elapsed_seconds, result: FrontierResponse | null,
+  terminal_reason?, error_code?, http_status_code?, error_detail?,
+  execution_metrics?}` — the poll target for `runFrontier`'s background
+  job. `FrontierResponse` itself gained an optional `job_id` for the
+  `status === "started"` case.
 - **`NodeResultsState`**: the store's full shape — six job/result record
   pairs (`{previews, solveResults+solveJobs, trainResults+trainJobs,
   exploreResults+exploreJobs}`), a `columnCache` keyed
@@ -112,7 +140,24 @@ propagates as-is.
 `types/guards.ts` before returning — `previewNode`, `loadPipeline`, etc.
 never hand an unvalidated object to a caller. `loadPipeline` is the one
 function with a `.catch` that inspects `err.status`: a 404 becomes an empty
-`PipelineGraph` (first-run UX); every other error rethrows.
+`PipelineGraph` (first-run UX); every other error rethrows. `api/dispersion.ts`
+is the one endpoint module that parses its own responses (`parseDispersion*`)
+rather than adding to `types/guards.ts`, for the bundle-size reason it's
+split out in the first place.
+
+**Client-embedded job polling** (`runFrontier`, `runDispersionEstimate`):
+a third polling shape alongside `useJobPolling` and `useNodeResultsStore`'s
+result caches — the poll loop lives directly inside the `async` client
+function rather than in a hook or store action. The initial POST either
+returns the finished payload inline (small/fast sweeps) or a
+`{status: "started", job_id}` handle; on the latter, the function loops
+`await getFrontierStatus(jobId)` / `getDispersionStatus(jobId)` on a fixed
+interval (`FRONTIER_POLL_INTERVAL_MS` / `pollIntervalMs` option, both
+500ms by default) until the status is terminal, resolving or rejecting the
+single outer promise. Because there is no store entry for this job, a
+caller that unmounts mid-poll relies entirely on its own `AbortSignal` to
+stop the loop — there is no background-job registry to fall back on the
+way `useBackgroundJobs` provides for solve/train/explore.
 
 **Result-cache write path** (`useNodeResultsStore`): each `complete*Job`
 action (1) removes the corresponding entry from the `*Jobs` in-flight map,
@@ -191,10 +236,19 @@ focus is restored to the element that was focused before the modal opened.
   `maxEntries`, always excluding `pinnedKey` — if pinning would leave more
   entries than `maxEntries`, the pinned entry is still never evicted (the
   bound is soft in that one case).
-- **`addSource`** returns `null` (and performs no state change) both for a
-  blank/whitespace-only name and for a name whose sanitized key already
-  exists in `sources` — callers must check the return value before setting
-  `activeSource`.
+- **`addSource`** performs no state change for a blank/whitespace-only name
+  (`{ok: false, reason: "empty"}`) or for a name whose sanitized key
+  already exists in `sources` (`{ok: false, reason: "duplicate", key}`) —
+  callers must check `result.ok` before reading `result.key` and setting
+  `activeSource`. `Toolbar`'s add-source form keeps itself open and shows
+  the reason as inline error text on rejection, rather than closing
+  silently as it did when the return type was a bare `string | null`.
+- **`useStaleConfigEstimate`'s staleness check fails toward "stale", never
+  toward "current", on an incomplete cached-result shape.** A
+  `cachedResult` missing `source`/`structuralVersion` (a pre-contract
+  shape) compares as `undefined !== context.source`, which is always
+  true, so the estimate is always treated as stale rather than
+  risking a false "still current" read against an old cache entry.
 - **Toast dedup** compares only `(type, text)`; it does not advance the
   toast id counter on a suppressed duplicate, so the counter's absence of
   increment is itself the observable "nothing was added" signal used by
@@ -253,7 +307,18 @@ same Vitest config.
   shared fixtures from `testSupport/uiContractFixtures.ts` and asserts every
   exported client function's request/response shape against them, so a
   backend schema change that isn't mirrored in `api/types.ts` fails here
-  first.
+  first. `client.test.ts`'s "runFrontier background polling" block covers
+  the started→poll→completed happy path, continued polling while
+  `"running"`, an `ApiError` on a terminal non-completed status (message +
+  `http_status_code` preserved), a completed-without-result rejection, and
+  the inline-answer (no `job_id`) fast path resolving from a single fetch.
+- **`api/dispersion.ts`** (`api/__tests__/dispersion.test.ts`): the same
+  shape of coverage as `runFrontier` — `estimateGlmDispersion` request
+  shape (including the `source` default and the 600s timeout matching
+  `/train`), `runDispersionEstimate`'s poll-to-completion and
+  poll-to-terminal-failure paths, abort mid-poll rejecting with
+  `DOMException("AbortError")` and firing a best-effort `cancelDispersion`,
+  and a completed-without-value rejection.
 - **`types/guards.ts`** (`types/__tests__/guards.contract.test.ts`):
   contract tests exercising the parse functions against both valid and
   malformed payloads, asserting the exact thrown-error shape for the
@@ -263,9 +328,15 @@ same Vitest config.
   `useJobPolling.progressThrottle.test.ts`) rather than a standalone store
   test file — the store's eviction/derived-cache logic is exercised via the
   polling flow that drives it in practice.
+  `hooks/__tests__/useStaleConfigEstimate.sourceKey.test.ts` additionally
+  drives the store directly (not through a hook) for its second
+  describe block, pinning that `completeSolveJob`/`completeTrainJob` stamp
+  the in-flight job's `source`/`structuralVersion` onto the cached result.
 - **`useSettingsStore`** (`stores/__tests__/useSettingsStore.addSource.test.ts`):
-  covers the sanitize-then-dedup `addSource` path and the "reset to live if
-  active source removed" behaviour.
+  covers the sanitize-then-dedup `addSource` path (asserting the
+  discriminated `{ok, reason, key}` result for the empty and duplicate
+  rejection cases, not just that state is unchanged) and the "reset to
+  live if active source removed" behaviour.
 - **`useToastStore`** (`stores/__tests__/useToastStore.test.ts`,
   `useToastStore.dedup.test.ts`): dedup-by-`(type,text)`, cap-at-10, and
   the counter-not-advancing-on-suppression invariant.
@@ -278,6 +349,10 @@ same Vitest config.
   `ModalShell.focusTrap.test.tsx` (focus trap and restore-on-close in
   particular), `Toast.test.tsx`, `Tooltip.test.tsx`, `ContextMenu.test.tsx`,
   `NodeSearch.test.tsx`, `Toolbar.test.tsx`,
+  `Toolbar.addSource.test.tsx` (the add-source form's rejection UI:
+  empty-name and duplicate-name error text, `aria-invalid`/
+  `aria-describedby` wiring, the error clearing on next keystroke and on
+  successful submission),
   `SettingsModal.gaps.test.tsx`, `BreadcrumbBar.test.tsx` (root-level),
   `KeyboardShortcuts.test.tsx` (root-level),
   `BackgroundJobPolling.renderIsolation.test.tsx` (asserts the component
@@ -290,7 +365,13 @@ same Vitest config.
   wiring), `useWebSocketSync.test.ts` + `.gaps.test.ts` (root-level — note
   `useWebSocketSync` itself is a graph-canvas hook, but its session-expiry
   interaction with `api/client.ts`'s `HAUTE_SESSION_EXPIRED_EVENT` is
-  exercised here since that event is this component's contract).
+  exercised here since that event is this component's contract),
+  `useStaleConfigEstimate.sourceKey.test.ts` (the `context.source`/
+  `context.structuralVersion` half of the staleness key: a source or
+  structural-version-only change re-triggers the estimate even with an
+  unchanged `configHash`, a cached result missing either field reads as
+  stale, and the effect's dependency array re-fires on `context.source`/
+  `context.structuralVersion` changes alone).
 - **Generic utils**: `utils/__tests__/formatTime.test.ts`,
   `formatValue.test.ts`, `color.test.ts`, `sanitizeName.test.ts` +
   `sanitizeParity.diff.test.ts` (the latter checks the frontend sanitizer

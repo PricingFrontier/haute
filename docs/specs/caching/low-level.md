@@ -5,20 +5,26 @@
 | File | Responsibility |
 | --- | --- |
 | `src/haute/_hashing.py` | Deterministic xxh64 content hashing for bytes and files (`content_hash_bytes`, `content_hash`). The primitive every other digest in this component builds on. |
-| `src/haute/_cache.py` | `canonical_json()` — the single canonical JSON encoder for digest material; `graph_fingerprint()` / `preamble_execution_fingerprint()` — deterministic, versioned digests of a `PipelineGraph`'s execution-relevant inputs; `GraphFingerprintMemo` — request-scoped memo for repeated utility-file hashing. |
+| `src/haute/_cache.py` | `canonical_json()` — the single canonical JSON encoder for digest material; `graph_fingerprint()` / `preamble_execution_fingerprint()` — deterministic, versioned digests of a `PipelineGraph`'s execution-relevant inputs; `GraphFingerprintMemo` — request-scoped pin over the process-wide `StatGatedCache`-backed utility-file hash cache. |
 | `src/haute/_lru_cache.py` | `LRUCache[K, V]` — thread-safe bounded LRU cache with optional TTL, pinning, and optional byte-budget eviction. The shared eviction/pinning core for the other in-process caches below. |
 | `src/haute/_fingerprint_cache.py` | `FingerprintCache` — thin `LRUCache` subclass adding multi-slot dict-valued semantics (`store`, `try_get`, `update_slot`), used by the preview and trace caches (execution engine). |
 | `src/haute/_dataframe_execution_cache.py` | `DataFrameExecutionCache` — parquet-artifact-backed `LRUCache` subclass for materialized backend dataframes, plus `dataframe_execution_cache_key()` and `materialize_lazy_frame_with_cache()`, the entry points backend callers use. |
-| `src/haute/_stat_gated_cache.py` | `StatGatedCache[K, V]` — single-flight, `(mtime_ns, size)`-gated cache of loaded file artifacts; used for external-object/optimiser/mlflow artifact loading (not itself dataframe- or graph-specific). |
+| `src/haute/_stat_gated_cache.py` | `StatGatedCache[K, V]` — single-flight, `(mtime_ns, size)`-gated cache of loaded file artifacts; a generic primitive (not itself dataframe- or graph-specific) instantiated per use site — external-object/optimiser/mlflow artifact loading, and (`_cache.py`) the process-wide utility-file content-hash cache behind `_utility_file_hash`. |
 | `src/haute/routes/json_cache.py` | FastAPI router (`/api/json-cache`) for building, polling status of, inferring a schema for, cancelling, and deleting the on-disk JSON→parquet shredded cache. Delegates the actual shredding to `_json_shred.py`/`_json_flatten.py`. |
 
 ## Key types and data structures
 
 - **`GraphFingerprintMemo`** (`_cache.py`) — `dict[_UtilityFileStatKey, str]` mapping
-  a utility file's `(path, mtime_ns, size)` to its content hash. Scoped to one
-  request/operation; not safe to reuse across independent calls because file
-  metadata alone cannot detect every edit (an editor can preserve both `mtime`
-  and `size` while changing bytes).
+  a utility file's `(path, mtime_ns, size)` to its content hash. `_utility_file_hash`
+  reads/writes it as a thin per-request pin on top of the module-level
+  `_utility_file_hash_cache` (a `StatGatedCache[str, str]`, keyed by
+  `artifact_cache_key`) — the memo's job is only to guarantee every
+  `graph_fingerprint`/`execute_trace` call *within one request* agrees on the digest
+  for a given gate, not to provide the primary caching (the process-wide cache
+  already does that across requests). Scoped to one request/operation regardless;
+  not safe to reuse across independent calls because file metadata alone cannot
+  detect every edit (an editor can preserve both `mtime` and `size` while changing
+  bytes).
 - **`ALGO_VERSION: int`** (`_cache.py`, currently `6`) — read dynamically inside
   `graph_fingerprint()` (not captured at import time) so tests can monkeypatch it
   to simulate a version bump. Embedded as a `"v<N>:"` prefix on every fingerprint.
@@ -215,10 +221,13 @@
   graph under the old raw-concatenation scheme (fixed at `ALGO_VERSION` bump to
   6, tracked as "W1-cache F164"/"F163" in the version-history comment in
   `_cache.py`).
-- **Utility-file hashing re-stats after reading**, and retries once on a torn
-  read (metadata changed between the pre- and post-read stats) before raising
-  `RuntimeError` — this is the same discipline `StatGatedCache.get_or_load` uses
-  independently, not shared code.
+- **Utility-file hashing now routes through `StatGatedCache.get_or_load` itself**,
+  rather than an independent re-stat-after-reading implementation: `_utility_file_hash`
+  delegates to the process-wide `_utility_file_hash_cache`, which retries once on a
+  torn load (metadata changed between the pre- and post-load stats) before raising
+  `RuntimeError`. This makes the retry discipline literally shared code with every
+  other `StatGatedCache` consumer, not merely the same pattern reimplemented
+  independently.
 - **`GraphFingerprintMemo` is explicitly NOT a complete correctness boundary** —
   its own docstring states an editor that preserves both `mtime` and `size`
   while changing bytes defeats it; it must be scoped to one immutable

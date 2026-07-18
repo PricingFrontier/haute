@@ -6,9 +6,9 @@
 |---|---|
 | `modelling/__init__.py` | Public API surface: `FitResult`, `MLflowLogResult`, `TrainingJob`, `TrainResult`, `SplitConfig`, `generate_training_script`, `log_experiment`. |
 | `modelling/_algorithms.py` | `BaseAlgorithm` ABC, `CatBoostAlgorithm`, `ALGORITHM_REGISTRY`, memory-checkpoint helpers, CatBoost `Pool` construction, GPU fit-thread lifecycle. |
-| `modelling/_rustystats.py` | `GLMAlgorithm` implementing `BaseAlgorithm` via RustyStats; GLM-only diagnostics (`coefficients_table`, `relativities`, `fit_statistics`, `glm_diagnostics`). |
+| `modelling/_rustystats.py` | `GLMAlgorithm` implementing `BaseAlgorithm` via RustyStats; GLM-only diagnostics (`coefficients_table`, `relativities`, `fit_statistics`, `glm_diagnostics`); `estimate_glm_dispersion()` — profile-likelihood estimation of Negative Binomial `theta` / Tweedie `var_power`; `_resolve_glm_terms()` shared term-resolution helper. |
 | `modelling/_training_job.py` | `TrainingJob` orchestrator — the full pipeline (prepare data → split → train → metrics → save artifacts → MLflow log); `TrainResult` and the intermediate stage types. |
-| `modelling/_train_config.py` | Single source of truth for modelling-node config → `TrainingJob` kwargs (`build_training_job_kwargs`, `build_train_params`, `training_objective_issue`, `default_metrics`). |
+| `modelling/_train_config.py` | Single source of truth for modelling-node config → `TrainingJob` kwargs (`build_training_job_kwargs`, `build_train_params`, `training_objective_issue`, `default_metrics`); `GLM_CONFIG_KEYS` includes `theta`. |
 | `modelling/_split.py` | `SplitConfig` dataclass, `split_data`/`split_mask` (random/temporal/group strategies), partition constants. |
 | `modelling/_metrics.py` | `compute_metrics` + individual metric functions (Gini, RMSE, MAE, MSE, R², AUC, log loss, Poisson/Tweedie deviance); diagnostics (double lift, AvE per feature, residuals histogram, actual-vs-predicted, Lorenz curve, PDP). |
 | `modelling/_feature_contract.py` | `FeatureContract` dataclass; build/save/load/cache; `assert_contracts_match`; categorical-level normalisation and validation. |
@@ -18,8 +18,8 @@
 | `modelling/_mlflow_log.py` | Tracking-backend resolution, `log_experiment()`, model+signature logging, model-card artifact logging. |
 | `modelling/_result_types.py` | `ModelDiagnostics` / `ModelCardMetadata` — shared bundling dataclasses. |
 | `modelling/_export.py` | `generate_training_script()` — codegen for standalone Python training scripts. |
-| `routes/modelling.py` | FastAPI router: `/train`, `/train/status/{id}`, `/train/cancel/{id}`, `/estimate`, `/mlflow/check`, `/mlflow/log`, `/export`, `/model-cache`. |
-| `routes/_train_service.py` | `TrainService` — validates config, estimates RAM/VRAM, executes the upstream pipeline to a temp parquet, launches `TrainingJob` in a background thread, manages job lifecycle and cancellation. |
+| `routes/modelling.py` | FastAPI router: `/train`, `/train/status/{id}`, `/train/cancel/{id}`, `/estimate`, `/mlflow/check`, `/mlflow/log`, `/export`, `/model-cache`, `/dispersion/estimate`, `/dispersion/status/{id}`, `/dispersion/cancel/{id}`. |
+| `routes/_train_service.py` | `TrainService` — validates config, estimates RAM/VRAM, executes the upstream pipeline to a temp parquet, launches `TrainingJob` in a background thread, manages job lifecycle and cancellation; also owns GLM dispersion-estimation jobs (`start_dispersion_estimate`, `dispersion_job`, `cancel_dispersion`), sharing the same data-materialisation path as training. |
 
 ## Key types and data structures
 
@@ -79,9 +79,25 @@
 - **`GLMInferenceUnavailableError`** (`_rustystats.py`, `RuntimeError` subclass) —
   raised by `coefficients_table()` when real SE/z/p-value statistics cannot be
   obtained; never fabricated.
+- **`DispersionEstimate`** (`_rustystats.py`, `__slots__`-based) — result of
+  `estimate_glm_dispersion()`: `param` (`"theta"|"var_power"`), `value` (the resolved
+  parameter), `llf` (the profile-maximised log-likelihood), `n_fits` (candidate fits the
+  search performed). `_DISPERSION_BOUNDS` fixes the search interval per parameter:
+  `theta` in `(0.01, 1000.0)` (profiled in log-space), `var_power` in `(1.01, 1.99)`
+  (the open interval the compound Poisson-gamma family is defined on, matching the
+  config panel's slider range).
+- **`DispersionEstimateRequest`/`DispersionEstimateResponse`/`DispersionEstimateStatusResponse`**
+  (`schemas.py`) — request carries `graph`, `node_id`, `source`, and `param:
+  Literal["theta", "var_power"]`; the start response carries only `status`/`job_id`
+  (job-based, like `/train`); the status response mirrors `TrainStatusResponse`'s
+  progress/message/elapsed shape plus the resolved `param`/`value`/`llf`/`n_fits` once
+  complete.
 - **`TrainService`** (`routes/_train_service.py`) — wraps a `JobStore`, `JobLifecycle`,
   and `CancellableJobRegistry`; owns the HTTP-facing training lifecycle
-  (`start`/`cancel`/`timeout`).
+  (`start`/`cancel`/`timeout`) and the dispersion-estimation lifecycle
+  (`start_dispersion_estimate`/`dispersion_job`/`cancel_dispersion`), distinguished in
+  the shared job store by a `job_type` field (`"training"` vs. `"dispersion_estimate"`)
+  so `dispersion_job()` 404s if asked for a job of the other type.
 
 ## Control flow
 
@@ -176,6 +192,55 @@ that runs the job and prints its metrics. `_training_job_uses_tweedie_variance_p
 decides whether `variance_power` needs to be rendered (CatBoost `Tweedie` loss, or GLM
 `family == "tweedie"`).
 
+### Dispersion estimation (HTTP)
+
+1. `POST /api/modelling/dispersion/estimate` → `routes/modelling.py:estimate_dispersion`
+   → `TrainService.start_dispersion_estimate(body)`.
+2. `_validate_dispersion_config`: reject an unknown `param`, a non-GLM node, an
+   invalid family/link combination, a `param` that doesn't belong to the request's GLM
+   family (`theta` ⇒ `negbinomial`, `var_power` ⇒ `tweedie`), a missing target column,
+   or (via `training_objective_issue`, called with the parameter being estimated
+   stubbed to its RustyStats silent default so its own gate doesn't fire) any other
+   incomplete part of the training objective.
+3. Under `_start_lock`, reject if a job is already running (shared with training —
+   `_check_no_concurrent_jobs` does not distinguish job type) and create the job
+   record (`job_type="dispersion_estimate"`).
+4. `_estimate_ram` and `_execute_and_sink` reuse the exact same helpers `start()` uses
+   to materialise the node's training frame — same pipeline execution, projection, and
+   seeded row sampling — so the profiled data matches what a real training run would
+   see. The row limit is additionally clamped to `_DISPERSION_ESTIMATE_ROW_CAP`
+   (200,000): the profile search runs ~10-30 IRLS fits, so it samples rather than
+   paying full-data cost per candidate — 200k rows pins a single dispersion scalar far
+   tighter than the search's own tolerance.
+5. `_launch_dispersion_background` builds a stub `TrainingJob` via
+   `build_training_job_kwargs` with the parameter being estimated set to its RustyStats
+   silent default (`_DISPERSION_PARAM_STUBS`: `theta=1.0`, `var_power=1.5`) so the
+   shared config machinery can run; the stub value never reaches a fit — the search
+   overrides it at every candidate. A daemon thread then: runs `job._prepare_data`
+   (identical to training), narrows `features`/`cat_features` to the GLM terms exactly
+   as `TrainingJob.run` does, resolves the effective terms via `_resolve_glm_terms`
+   (shared with `GLMAlgorithm.fit`, so the profiled design can never drift from what
+   training would actually fit), collects only the columns the design needs, and calls
+   `estimate_glm_dispersion`.
+6. `estimate_glm_dispersion` (`_rustystats.py`) validates `param` is estimable and
+   matches `family`, then runs a bounded 1-D `scipy.optimize.minimize_scalar` search
+   (`method="bounded"`) maximising `rs.glm_dict(**builder_kwargs).fit().llf()` over the
+   parameter — `theta` searched in log-space over `_DISPERSION_BOUNDS`. Each candidate
+   fit that raises is treated as `-inf` log-likelihood rather than aborting the search;
+   only a search where every candidate fails raises `ValueError`. An `on_fit` callback
+   fires before each candidate fit, used here as both a progress signal
+   (`job_id`'s `progress`/`message` updated per fit, capped visually at fit 30) and a
+   cancellation checkpoint (`_raise_if_training_stopped`).
+7. On success, the job transitions to `"completed"` with `param`/`value`/`llf`/`n_fits`
+   fields. `ValueError` (including "no candidate converged") maps to `contract_error`;
+   `ExecutionCancelledError`/`BackgroundJobStoppedError` map identically to the training
+   background thread's handling; anything else maps to `error` via `_friendly_error`.
+   The `finally` block always releases the job registry entry and the RAM admission,
+   and deletes the temp parquet the estimation frame was sunk to.
+8. `GET /dispersion/status/{job_id}` and `POST /dispersion/cancel/{job_id}` mirror the
+   training job's status/cancel routes, scoped to `job_type="dispersion_estimate"` via
+   `TrainService.dispersion_job`.
+
 ### Shared MLflow tracking/experiment-name resolution
 
 `_mlflow_log.py` exposes three helpers that both this component's routes and the optimiser
@@ -250,6 +315,16 @@ calls `log_experiment` via `run_in_threadpool` to keep the event loop responsive
   construction time, before any data is touched.
 - GLM `terms` naming a column absent from the training data raise before fitting,
   listing the missing names and a truncated sample of what is available.
+- `_build_interactions` (`_rustystats.py`) filters unset factor slots (`""`) out of an
+  interaction's `factors` list before checking the two-factor minimum. The config
+  panel's "+ Add" control creates `{"factors": ["", ""]}` before the user has picked
+  both columns; without the filter, that phantom two-empty-string interaction passed
+  the length check and crashed the fit rather than being silently skipped as intended.
+- A Negative Binomial GLM (`family="negbinomial"`) requires an explicit `theta` before
+  training or export can proceed — `training_objective_issue` gates it identically to
+  Tweedie's variance power, since RustyStats fits silently at `theta=1.0` if unset.
+  `estimate_glm_dispersion` exists specifically to give the user a principled value to
+  set rather than guessing.
 - GLM interaction terms whose factors are all already present as main terms force
   `include_main=False` — RustyStats' `include_main=True` would otherwise duplicate the
   main effect in the design matrix and produce a singular matrix.
@@ -350,6 +425,15 @@ calls `log_experiment` via `run_in_threadpool` to keep the event loop responsive
   `try/except Exception: logger.warning(...)`, so a model-card bug never fails an
   otherwise-successful experiment log; `build_run_url` similarly catches and returns
   `None` with a debug log rather than failing the whole call.
+- **Dispersion estimation** — `_validate_dispersion_config` raises `HTTPException(400)`
+  for an unknown parameter, a non-GLM node, a family/link mismatch, a parameter/family
+  pairing mismatch, a missing target, or any other incomplete training objective;
+  raised before any job record is created. Inside `estimate_glm_dispersion`, `ValueError`
+  covers an unrecognised or mismatched `param` and "every candidate fit failed"; inside
+  the background worker, `ValueError` maps the job to `contract_error`,
+  `ExecutionCancelledError`/`BackgroundJobStoppedError` map identically to training's
+  handling, and any other exception maps to `error` via `_friendly_error` — the same
+  taxonomy `_train_background` uses.
 
 ## Testing
 
@@ -358,13 +442,17 @@ roughly 700+ test functions across about 30 files that exercise this component:
 
 - `test_modelling.py` (105 tests) — the broad unit-test base for `TrainingJob`,
   algorithms, metrics, and splits.
-- `test_modelling_routes.py` (102 tests) — HTTP-level integration tests for every route
-  in `routes/modelling.py`.
+- `test_modelling_routes.py` (123 tests) — HTTP-level integration tests for every route
+  in `routes/modelling.py`, including `TestDispersionEstimateEndpoint` (happy path,
+  status polling, completion payload) and `TestDispersionErrorPaths` (every 400
+  validation branch, worker-side failure mapping, cancellation).
 - `test_modelling_export.py` (74 tests) — exhaustive coverage of
   `generate_training_script` and its kwarg-rendering rules.
-- `test_train_config_builder.py` (43 tests) — unit tests for the config→kwargs builder,
+- `test_train_config_builder.py` (48 tests) — unit tests for the config→kwargs builder,
   including regression coverage for the GLM-vs-CatBoost key-routing bugs it was written
-  to prevent.
+  to prevent, and the Negative Binomial `theta` gate (unset fails loud, set via `params`
+  or top-level config passes, non-negbinomial families are unaffected, `theta` survives
+  script export).
 - `test_metrics.py` (96 tests) and `test_metrics_gini_ties.py` (27 tests, labelled the
   "C6 regression suite") — metric correctness and the tie-corrected Gini/Lorenz
   row-order-independence guarantee.
@@ -376,9 +464,16 @@ roughly 700+ test functions across about 30 files that exercise this component:
   regressions: feature/categorical order mismatch, MLflow signature round-trip,
   categorical type mismatch, GLM column selection preserving categorical metadata
   across save/load.
-- `test_rustystats_algorithm.py` (28 tests, skipped when RustyStats isn't installed)
+- `test_rustystats_algorithm.py` (37 tests, skipped when RustyStats isn't installed)
   and `test_glm_integration.py` (24 tests) — GLM fit/predict/save/diagnostics and
-  integration-gap regressions.
+  integration-gap regressions. `TestNegBinomialThetaThreading` pins that an unset
+  `theta` really is RustyStats' silent-1.0 default and that a set `theta` reaches the
+  fit; `TestEstimateGlmDispersion` validates the profile-likelihood search itself — the
+  NB `theta` MLE against a statsmodels NB2 reference (to 4 s.f.) with coefficient parity
+  (to 4 d.p.) on synthetic data, determinism, an interior Tweedie `var_power` maximum,
+  the `on_fit` cancellation hook, and the unknown-parameter/family-mismatch rejections;
+  `TestBuildInteractionsEmptySlots` pins the unfilled-interaction-row fix described
+  above.
 - `test_train_service_coverage.py` (40 tests) and
   `test_train_service_helpers_coverage.py` (13 tests) — `TrainService` error/cleanup
   branches and its pure column-demand helper functions.

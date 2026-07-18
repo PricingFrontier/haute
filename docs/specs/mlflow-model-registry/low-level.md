@@ -4,7 +4,7 @@
 
 | File | Responsibility |
 |---|---|
-| `src/haute/_mlflow_io.py` | Model loading, disk + in-memory caching, per-artifact I/O locks, artifact discovery, flavor-specific loaders, the `ScoringModel` carrier, predict-frame preparation per flavor, the shared eager-scoring delegate (`_score_eager`) used by both `_model_scorer.py` and deploy. |
+| `src/haute/_mlflow_io.py` | Model loading, disk + in-memory caching (keyed in part on artifact byte identity via `_local_artifact_fingerprint`), per-artifact I/O locks, artifact discovery, flavor-specific loaders, the `ScoringModel` carrier, predict-frame preparation per flavor, the shared eager-scoring delegate (`_score_eager`) used by both `_model_scorer.py` and deploy. |
 | `src/haute/_mlflow_utils.py` | Shared MLflow bootstrap used by `_mlflow_io.py`, the optimiser IO layer, and deploy's bundler: version resolution, safe model-version search, and `resolve_mlflow_source` (import mlflow, set tracking URI, build a client, resolve `source_type` to a concrete run ID/version). |
 | `src/haute/_model_flavors.py` | Single source of truth for the scoring flavor domain: `ModelFlavor` (`Literal["catboost", "pyfunc", "rustystats"]`) and `_SUPPORTED_FLAVORS`, derived via `get_args` so the two can never drift apart. Dependency-free leaf module (see high-level Design rationale for why). |
 | `src/haute/_model_scorer.py` | MODEL_SCORE node logic: the `ModelScorer` class, the unified `score_frame` dispatch (eager vs batched), the feature-validation cache, offset-column resolution, write-projection application, and `score_from_config` (codegen's delegation target). |
@@ -59,9 +59,16 @@
   — every explanation failure mode raises this.
 - **Cache key shapes:**
   - Model cache key: `_model_cache_key(...)` →
-    `(source_type, run_id, artifact_path, task)`, or with a fifth element
-    inserted before `artifact_path` when `version` is non-empty:
-    `(source_type, run_id, version, artifact_path, task)`.
+    `(source_type, run_id, artifact_path, task, artifact_fingerprint)`, or
+    with an extra element inserted before `artifact_path` when `version` is
+    non-empty: `(source_type, run_id, version, artifact_path, task,
+    artifact_fingerprint)`. `run_id` stays fixed at slot 1 regardless of
+    `version`'s presence so a targeted `clear_model_cache(run_id=...)` can
+    match on `key[1]` without branching on key shape.
+    `artifact_fingerprint` (`_local_artifact_fingerprint`, a required
+    keyword arg) is the byte-identity hash of the local model file for
+    `catboost`/`rustystats`; pyfunc models (no local file — loaded by
+    MLflow URI) key with `artifact_fingerprint=""`.
   - Feature-validation cache key:
     `((tuple(feature_names), frozenset(cat_feature_names),
     offset_column), tuple(schema.items()))` — content-addressed, never
@@ -87,28 +94,46 @@
 
 1. Validate `task` is `"regression"` or `"classification"`.
 2. **Fast path.** If `source_type == "run"` and both `run_id` and
-   `artifact_path` are given, build the cache key without touching the
-   tracking server. Check the in-memory cache; on a hit, record a hit and
-   return immediately. On a miss, derive the flavor from the artifact
-   extension via `_flavor_from_artifact`; if it's a native flavor
-   (`catboost`/`rustystats`) and the disk-cached file already exists,
-   acquire the per-artifact lock, re-check the memory cache (a concurrent
-   caller may have finished while this one waited), then load directly
-   from the disk-cached file, populate the memory cache, and return. If
-   the file vanishes between the existence check and acquiring the lock
-   (a concurrent corrupt-retry deleted it), fall through to the full path.
+   `artifact_path` are given, derive the flavor from the artifact extension
+   via `_flavor_from_artifact` before building any cache key, since the key
+   now includes an artifact-fingerprint component that differs by flavor:
+   - **Pyfunc** has no local artifact file to fingerprint, so the key is
+     built once with `artifact_fingerprint=""` (no tracking-server round
+     trip). Check the in-memory cache; on a hit, record a hit and return
+     immediately.
+   - **Native flavors (`catboost`/`rustystats`)** first check whether the
+     disk-cached file already exists; if so, compute
+     `_local_artifact_fingerprint` from that file (a stat-gated memo, so an
+     unchanged file is cheap), build the key with that fingerprint, and
+     check the in-memory cache. On a hit, record a hit and return; on a
+     miss, acquire the per-artifact lock, re-check the memory cache (a
+     concurrent caller may have finished while this one waited), then load
+     directly from the disk-cached file, populate the memory cache, and
+     return.
+   - In both native and pyfunc cases, if the disk-cached file vanishes
+     between the existence check and acquiring the lock (a concurrent
+     corrupt-retry deleted it), or the file was never disk-cached to begin
+     with, fall through to the full path.
 3. **Full path.** Call `resolve_mlflow_source` (imports mlflow, resolves
    the tracking URI/backend, builds a client, resolves `source_type` to a
    concrete `run_id`/`version`). If `artifact_path` was empty,
    auto-discover it via `_find_model_artifact`. Derive `flavor` from the
-   resolved artifact path and build the real cache key.
+   resolved artifact path. For a native flavor, resolve the local artifact
+   file up front (`_resolve_artifact_local`, itself a stat-gated memo for an
+   already-cached artifact — only a genuinely new artifact downloads here)
+   and compute its fingerprint; for pyfunc, the fingerprint is `""`. Build
+   the real cache key with that fingerprint.
 4. Check the memory cache again under the resolved key; on a hit, return.
 5. Acquire the per-`(run_id, artifact)` lock; re-check the cache
    (single-flight); on a hit, return. Otherwise record a miss, then load:
    native flavors go through `_load_with_bounded_retry`; anything else
    loads via MLflow's pyfunc flavor (`_load_pyfunc_model` +
-   `_wrap_pyfunc`). Store the result in the memory cache before releasing
-   the lock.
+   `_wrap_pyfunc`). For a native flavor, the bounded retry may have deleted
+   and re-downloaded the artifact, so the fingerprint is re-derived after
+   loading (a no-op stat when nothing changed) and the cache key rebuilt
+   from it before the result is stored, so the stored entry is always keyed
+   by the bytes actually loaded. Store the result in the memory cache
+   before releasing the lock.
 
 ### Disk-cache resolution — `_resolve_artifact_local` (`_mlflow_io.py`)
 
@@ -279,6 +304,12 @@ endpoint.
   memory cache check — each re-checks the cache immediately after
   acquiring the relevant lock, because a concurrent caller may have
   completed the same work while this caller was waiting to acquire.
+- **The in-memory cache key's artifact-fingerprint component is a required
+  keyword argument to `_model_cache_key`**, not one with a default of
+  `""` — so a new call site cannot silently omit byte-identity from the
+  key by forgetting the parameter. `""` is only ever passed explicitly, and
+  only for pyfunc (the one flavor with no local artifact file to
+  fingerprint).
 - **Disk-cache eviction excludes any run currently "in use"** —
   `_disk_cache_active_runs` is a reference count, not a boolean, so
   nested/concurrent callers touching the same run correctly keep it
@@ -349,7 +380,7 @@ plain `RuntimeError`, not a `HauteError` subclass.
 
 ## Testing
 
-Tests live across ten files. Strategy is unit-level with `mlflow`,
+Tests live across eleven files. Strategy is unit-level with `mlflow`,
 `catboost`, and `rustystats` either mocked or exercised against small
 real artifacts fixture-built in `tmp_path`; there is no test that talks
 to a live MLflow tracking server.
@@ -371,10 +402,11 @@ to a live MLflow tracking server.
   `_resolve_artifact_local`'s cache-hit/miss/download-failure/partial-
   write-cleanup/nested-path paths, `clear_model_cache` (blanket, targeted,
   nonexistent, invalid run_id), the fast-cache-check and post-resolve
-  cache-check paths of `load_mlflow_model`, the bounded retry for both
-  native flavors, `_score_eager`'s dispatch for every task/flavor
-  combination, and `TestFlavorSsot` (the cross-module SSOT pin described
-  above).
+  cache-check paths of `load_mlflow_model` (now exercised with the
+  artifact-fingerprint component of the cache key present), the bounded
+  retry for both native flavors, `_score_eager`'s dispatch for every
+  task/flavor combination, and `TestFlavorSsot` (the cross-module SSOT pin
+  described above).
 - **`tests/test_mlflow_io_concurrency.py`** — single-flight download and
   load correctness under real threads: a second caller waits rather than
   re-downloading, distinct artifacts proceed concurrently, a failed
@@ -388,6 +420,19 @@ to a live MLflow tracking server.
   run active before probing), and waiters on both the fast-path and
   full-resolve-path reusing a model that finished loading while they
   waited.
+- **`tests/test_mlflow_model_cache_key_contract.py`** (new) — pins cache-key
+  *completeness* specifically for the artifact-fingerprint component:
+  `TestFastPathArtifactPerturbation` and `TestFullPathArtifactPerturbation`
+  each rewrite the local artifact's bytes in place (disk-cache file for the
+  fast path, resolved local path for the full path) under an unchanged run
+  reference and assert the next `load_mlflow_model` call returns a model
+  built from the new bytes rather than the stale in-memory entry;
+  `TestKeyContract` covers the key-shape invariants directly (`run_id`
+  fixed at slot 1 regardless of `version`'s presence, pyfunc keyed with an
+  empty-string fingerprint). This is a regression suite for a real bug: a
+  re-logged run or a `version="latest"` retrain-in-place used to keep
+  serving the previously loaded model on a long-lived server until
+  `clear_model_cache` was called by hand.
 - **`tests/test_mlflow_io_real_pyfunc.py`** — pyfunc wrapping and predict-
   frame dtype fidelity against a real (non-mocked) MLflow pyfunc model,
   including the named-column signature contract and declared-dtype

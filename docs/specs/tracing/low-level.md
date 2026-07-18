@@ -5,8 +5,8 @@
 | File | Responsibility |
 | --- | --- |
 | `src/haute/trace.py` | Public facade and orchestrator. `execute_trace()` entry point, `PreviewReader` protocol, `TraceStep`/`TraceResult` dataclasses, the trace execution cache (`_cache`, `TRACE_CACHE_MAX_BYTES`), row/step assembly (`_assemble_steps`), column-relevance pruning, and JSON serialisation (`trace_result_to_dict`). Re-imports and re-exports expression-parser and node-type enricher names so `monkeypatch.setattr("haute.trace.<name>", ...)` in tests reaches the dispatch code in `_trace_enrichment.py`. |
-| `src/haute/_trace_correlation.py` | Post-hoc row correlation and schema diff. Value predicates/coercion (`_trace_values_match`, `_jsonify_row`), `SchemaDiff` computation, dtype-robust Polars match-expression construction, exact/relaxed row matching with ambiguity diagnostics, edge-join provenance-aware parent-row projection, and the backward-walk driver `_correlate_rows_posthoc`. |
-| `src/haute/_trace_enrichment.py` | Node-type enrichers (`enrich_rating_step`, `enrich_banding`, `enrich_model_score`, `enrich_scenario_expansion`, `enrich_live_switch`, `enrich_optimiser_apply`), row-lineage-type detection (`detect_row_lineage_type`), and the per-step dispatch walk (`enrich_steps`) that drives expression parsing/evaluation, intra-node chain analysis, recursive upstream input-source derivation, rename detection, and node-type dispatch for every `TraceStep`. |
+| `src/haute/_trace_correlation.py` | Post-hoc row correlation and schema diff. Value predicates/coercion (`_trace_values_match`, `_jsonify_row`), `SchemaDiff` computation, dtype-robust Polars match-expression construction, exact/relaxed row matching with ambiguity diagnostics, edge-join provenance-aware parent-row projection, per-frame row matching (`_match_parent_row`, shared by the single-frame and multi-frame paths), multi-frame per-edge parent resolution (`_resolve_multi_frame_parent`), and the backward-walk driver `_correlate_rows_posthoc`. |
+| `src/haute/_trace_enrichment.py` | Node-type enrichers (`enrich_rating_step`, `enrich_banding`, `enrich_model_score`, `enrich_scenario_expansion`, `enrich_live_switch`, `enrich_optimiser_apply`), row-lineage-type detection (`detect_row_lineage_type`, backed by `_node_output_row_count` for multi-frame-safe row counting), and the per-step dispatch walk (`enrich_steps`) that drives expression parsing/evaluation (with a pre-assignment-value guard for self-referential columns), intra-node chain analysis, recursive upstream input-source derivation, rename detection, and node-type dispatch for every `TraceStep`. |
 | `src/haute/_trace_export.py` | `export_trace()` — converts a `TraceResult` into a report-shape dict (`header`, `formula`, `sources`, `data_flow`, `metadata`) for markdown/PDF report generation. |
 | `src/haute/_trace_waterfall.py` | Waterfall assembly for sequential multiplicative/additive rating chains. `WaterfallEntry`/`WaterfallResult` dataclasses, the generic `build_waterfall()` API (hand-authored factor lists), the value-derived `build_waterfall_from_steps()` (traced-path driver), and the C8 arithmetic-reconciliation guards. |
 
@@ -53,7 +53,18 @@
   via `HAUTE_TRACE_CACHE_MAX_BYTES`. Bounded by both entry count and retained
   bytes; sizing reuses `_estimate_preview_cache_entry_bytes` from
   `haute.executor`, and only the `eager_outputs` slot is treated as
-  byte-size-sensitive.
+  byte-size-sensitive. `eager_outputs` values are `pl.DataFrame | dict[str,
+  pl.DataFrame]` — a multi-frame source (e.g. a ≥2-table `apiInput`) stores its
+  per-table frames as a `dict[label, DataFrame]` rather than a single
+  `DataFrame`, and every call site that indexes `eager_outputs` (correlation,
+  enrichment, row-count/dtype lookups, the target-row-identity check) must
+  branch on `isinstance(..., dict)` rather than assume a bare `DataFrame`.
+- **`source_frames_of`** (`trace.py`, built in `execute_trace`; threaded through
+  `_correlate_rows_posthoc` and `enrich_steps`) — `dict[tuple[source_id,
+  target_id], list[str | None]]`, one `sourceHandle` entry per edge between that
+  pair, in edge order. Lets both correlation and enrichment resolve which
+  frame(s) of a multi-frame parent a given child edge actually consumes, mirroring
+  the per-edge selection `_pick_source_frame` makes at execution time.
 - **`_ROW_REORDERING_TOKENS`** (`_trace_correlation.py`) — a fixed tuple of code
   substrings (`.sort`, `.join(`, `.group_by(`, `.gather`, `.unique(`, `.pivot(`,
   etc.) used to conservatively classify whether a node's code can reorder rows.
@@ -72,31 +83,48 @@
    independent of CPython hash randomisation).
 2. Compute `runtime_input_extra_keys(graph)` (execution-engine) and a
    `graph_fingerprint()` over the graph, target, `f"{row_limit}:{source}"`, and
-   those extra keys, memoised via a request-scoped `GraphFingerprintMemo`.
+   those extra keys, memoised via a `GraphFingerprintMemo` — the caller's, if one
+   was passed in `fingerprint_memo` (the trace route reuses the memo it already
+   built for its supersession key), otherwise a fresh one scoped to this call.
 3. On a trace-cache hit (`_cache.try_get(fp)`), reuse the cached
    `eager_outputs`/`order`/`parents_of`/`node_map`/`source_ids`. On a miss, call
    `_materialize_eager_outputs()` (below) and store the result under `fp`.
-4. If the caller supplied `row_values`, verify the target DataFrame's row at
+4. If `eager_outputs[target_node_id]` is a `dict` (a multi-frame source targeted
+   directly, with no downstream node to pick a frame), raise `ValueError` naming
+   the node and directing the caller to trace a node downstream of a specific
+   frame instead.
+5. Build `source_frames_of`: for every edge in the graph, append its
+   `sourceHandle` to the list keyed by `(edge.source, edge.target)`, preserving
+   edge order. One entry per edge, not per pair — a multi-frame source can feed
+   the same child through several edges.
+6. If the caller supplied `row_values`, verify the target DataFrame's row at
    `row_index` matches them (`_trace_values_match` per column). On mismatch,
    search the target DataFrame for a row that does match
    (`_find_target_row_index`) and relocate `row_index` to it; if none matches,
-   raise `ValueError`.
-5. If the target node produced output, call `_correlate_rows_posthoc()` (below)
-   to get a JSON-safe row dict per node (or `None` for unresolved nodes). If the
-   target node's execution failed, build partial rows directly from whatever
-   `eager_outputs` are available instead (no correlation).
-6. `_assemble_steps()` builds `TraceStep`s from the correlated rows: source nodes
+   raise `ValueError`. `_find_target_row_index` itself raises `ValueError` if the
+   clicked values match *more than one* row (ambiguous relocation — mirrors the
+   correlation-layer policy of failing loud over guessing at the first match).
+7. If the target node produced output, call `_correlate_rows_posthoc()` (below,
+   passed `source_frames_of` and `column` as `traced_column`) to get a JSON-safe
+   row dict per node (or `None` for unresolved nodes). If the target node's
+   execution failed, build partial rows directly from whatever `eager_outputs`
+   are available instead (no correlation), skipping any node whose output is a
+   multi-frame `dict`.
+8. `_assemble_steps()` builds `TraceStep`s from the correlated rows: source nodes
    get `input_values = {}`; other nodes' `input_values` merge each parent's
    correlated row (namespacing a colliding key as `f"{pid}.{k}"` on collision).
    Nodes whose row correlation returned `None` are skipped entirely.
-7. `_enrich_steps()` (from `_trace_enrichment.py`) enriches every step in place.
-8. If `column` is set, `_prune_to_column_relevance()` tags and filters steps.
-9. Resolve `output_value` from the target row (whole row dict if `column` is
-   `None`, else the single value). Resolve `row_id_column`/`row_id_value` by
-   scanning `nodes` for an `apiInput` node with a `row_id_column` config entry.
-10. If `column` is set, compute `integer_output_node_ids` (which steps' output
-    column is an integer dtype) and call `build_waterfall_from_steps()`.
-11. Return the assembled `TraceResult`, logging a single `trace_executed` info
+9. `_enrich_steps()` (from `_trace_enrichment.py`, passed `source_frames_of`)
+   enriches every step in place.
+10. If `column` is set, `_prune_to_column_relevance()` tags and filters steps.
+11. Resolve `output_value` from the target row (whole row dict if `column` is
+    `None`, else the single value). Resolve `row_id_column`/`row_id_value` by
+    scanning `nodes` for an `apiInput` node with a `row_id_column` config entry.
+12. If `column` is set, compute `integer_output_node_ids` (which steps' output
+    column is an integer dtype, via `_is_integer_output_column`; a multi-frame
+    `dict` output resolves to `False` rather than raising on the missing
+    `.schema` attribute) and call `build_waterfall_from_steps()`.
+13. Return the assembled `TraceResult`, logging a single `trace_executed` info
     event with cache-hit status and duration.
 
 ### `_materialize_eager_outputs()` (`trace.py`)
@@ -117,6 +145,64 @@
    genuine execution failure propagates unmodified rather than being retried or
    masked.
 
+### `_match_parent_row()` (`_trace_correlation.py`)
+
+Correlates ONE candidate frame (a bare parent `DataFrame`, or one frame of a
+multi-frame parent) against the resolved child row. Factored out of
+`_correlate_rows_posthoc` so the single-frame and multi-frame paths share
+identical matching logic:
+
+1. Project the child's row onto the parent's columns (`_build_parent_match_row`)
+   — a generic name-based projection, except for the JOIN-role parent of an
+   `edgeJoin` child, which is routed through `_edge_join_right_match_row` (see
+   Edge cases below).
+2. **Fast path**: if the parent and child DataFrames have equal row counts and
+   the child's row index is in range, try the parent row at that same
+   positional index. Trust it only if (a) there are no shared columns and
+   either the parent has exactly one row or the child transform provably
+   cannot reorder (`_child_transform_may_reorder` returns `False`); or (b)
+   there are shared columns, they all value-match, and either the child cannot
+   reorder or the shared key uniquely identifies one row in the parent
+   (`_shared_key_is_unique`).
+3. **Value-matching fallback**: `_find_matching_row()` tries an exact match on
+   all shared columns first; on no exact match (and `allow_relaxed=True`), it
+   scores every row by how many shared columns match and picks the widest
+   relaxed subset — but only if exactly one row achieves that width. Any tie
+   (multiple exact or multiple best-relaxed matches) is recorded via
+   `_record_ambiguous_row_match` / `_record_relaxed_candidate_ambiguity` into
+   `diagnostics` and returns `(None, -1)`. `allow_relaxed` is forced to `False`
+   for an edge-join's JOIN-role parent (`_allows_relaxed_parent_match`) — a
+   relaxed miss there must not manufacture false lineage.
+4. Returns `(row_dict, positional_index, match_width)`, where `match_width` is
+   the number of child columns projected onto this frame — the specificity a
+   multi-frame resolution uses to rank competing candidate frames.
+
+### `_resolve_multi_frame_parent()` (`_trace_correlation.py`)
+
+Correlates a multi-frame parent (`dict[label, DataFrame]`) row for one child.
+Called once per (parent, child) pair from `_correlate_rows_posthoc`, with
+`handles` set to `source_frames_of[(parent_id, child_id)]` — one `sourceHandle`
+per edge between that pair, in edge order:
+
+1. Deduplicate `handles` into an ordered set of non-`None` handles, then keep
+   only the frames that exist in the parent's `dict` and are non-empty as
+   `candidates`. No candidates → record an `unresolved_source_frame` diagnostic
+   and return `(None, -1)`.
+2. Exactly one candidate → delegate straight to `_match_parent_row` on that
+   frame (this is the common case: a single edge, or several edges all naming
+   the same frame).
+3. Several candidates → call `_match_parent_row` on *each* independently
+   (diagnostics suppressed per-candidate to avoid noise), keeping only frames
+   that produced a confident row match. No frame matches → record
+   `unresolved_source_frame` and return `(None, -1)`.
+4. Disambiguate the surviving matches in order: (a) if `traced_column` is set
+   and any matched frame's `DataFrame` has that column, narrow to those frames;
+   (b) narrow further to the frame(s) with the widest `match_width`; (c) if more
+   than one frame still survives, pick the first by edge order and record an
+   `ambiguous_source_frame` diagnostic (`severity: "warning"`) naming the
+   candidates and the chosen frame.
+5. Return the winning frame's `(row_dict, positional_index)`.
+
 ### `_correlate_rows_posthoc()` (`_trace_correlation.py`)
 
 1. Extract and jsonify the target node's row at `row_index`; seed `result` and
@@ -126,27 +212,12 @@
    - Find a child of that node already resolved with a non-empty row
      (`resolved_child_id`); if none exists, the node is not on the path to the
      target and is marked unresolved (`None`, index `-1`).
-   - Project the child's row onto the parent's columns
-     (`_build_parent_match_row`) — a generic name-based projection, except for
-     the JOIN-role parent of an `edgeJoin` child, which is routed through
-     `_edge_join_right_match_row` (see Edge cases below).
-   - **Fast path**: if the parent and child DataFrames have equal row counts and
-     the child's row index is in range, try the parent row at that same
-     positional index. Trust it only if (a) there are no shared columns and
-     either the parent has exactly one row or the child transform provably
-     cannot reorder (`_child_transform_may_reorder` returns `False`); or (b)
-     there are shared columns, they all value-match, and either the child cannot
-     reorder or the shared key uniquely identifies one row in the parent
-     (`_shared_key_is_unique`).
-   - **Value-matching fallback**: `_find_matching_row()` tries an exact match on
-     all shared columns first; on no exact match (and `allow_relaxed=True`), it
-     scores every row by how many shared columns match and picks the widest
-     relaxed subset — but only if exactly one row achieves that width. Any tie
-     (multiple exact or multiple best-relaxed matches) is recorded via
-     `_record_ambiguous_row_match` / `_record_relaxed_candidate_ambiguity` into
-     `diagnostics` and returns `(None, -1)`. `allow_relaxed` is forced to `False`
-     for an edge-join's JOIN-role parent (`_allows_relaxed_parent_match`) — a
-     relaxed miss there must not manufacture false lineage.
+   - If the parent's output (`eager_outputs[nid]`) is a `dict` (a multi-frame
+     source), delegate to `_resolve_multi_frame_parent()` (above) with
+     `handles=source_frames_of.get((nid, resolved_child_id))` and the caller's
+     `traced_column`, and continue to the next node.
+   - Otherwise, delegate to `_match_parent_row()` (above) on the bare
+     `DataFrame`.
 4. Return the per-node row dict (or `None`) map.
 
 ### `enrich_steps()` (`_trace_enrichment.py`)
@@ -159,10 +230,33 @@ one step's unforeseen failure cannot abort the whole enrichment pass) and:
 2. Parses/evaluates the expression for `column` when the column is
    added/modified at this step, or (for the *target* step only) walks upstream
    to find the step that created a pass-through column and borrows its
-   expression/calculation.
+   expression/calculation. **Self-referential guard**: if `column` is both
+   `columns_modified` (per the step's `SchemaDiff`) and one of the parsed
+   expression's own `referenced_columns` (e.g. `premium = premium * factor`),
+   evaluating against `{**input_values, **output_values}` unmodified would seed
+   the RHS's `premium` with the *post-assignment* output — producing an
+   arithmetically false substitution (`200.0 * 2.0` displayed for an output of
+   `200.0`). When a pre-assignment `input_values[column]` exists, it overrides
+   the output value in the evaluation namespace before calling
+   `evaluate_expression`. When it doesn't (the column was newly created this
+   step, so there is no pre-assignment value to show), evaluation is skipped
+   entirely and `step.calculation` is set directly from the output value
+   (`{"target_column", "substituted_text": f"{column} = {value!r}",
+   "result_value": value}`) rather than risk a false substitution.
 3. Parses the intra-node expression chain (`parse_expression_chain`) when the
-   node assigns multiple dependent columns in one `.with_columns(...)` call, and
-   evaluates each chain entry against the combined input+output values.
+   node assigns multiple dependent columns in one `.with_columns(...)` call.
+   Chain entries evaluate **in order**, feeding each entry's result forward into
+   the next: the evaluation namespace (`combined_values`) starts from
+   `{**input_values, **output_values}`, but every column that is itself a chain
+   target is first reset to its *pre-node* `input_values` entry (or removed if
+   the column is newly created this step, i.e. absent from `input_values`) —
+   otherwise the entry that reassigns that column would see its own
+   post-assignment output on the RHS, the same self-referential problem as step
+   2. As each chain entry evaluates successfully, its `result_value` is written
+   back into `combined_values` under its `target_column` so the *next* entry
+   sees the correct fed-forward intermediate. A failing entry's fallback
+   `result_value` prefers the fed-forward `combined_values` entry and falls back
+   to `step.output_values` only if that is also absent.
 4. Recursively derives `input_sources` for every referenced column
    (`_build_input_sources`, depth-limited to 3, cycle-guarded via a
    `(node_id, column)` visited set) — for each reference, finds the nearest
@@ -181,12 +275,22 @@ one step's unforeseen failure cannot abort the whole enrichment pass) and:
    `modelScore`, `scenarioExpander`, `liveSwitch`, `optimiserApply`) into
    `step.node_detail`; for `banding`, additionally attaches lineage
    (`_attach_banding_lineage`) directly into `step.expression`/`step.calculation`
-   using the matched factor.
+   using the matched factor. Building `factor_input_dtypes` for `enrich_banding`
+   walks each parent's materialized output; when a parent is a multi-frame `dict`,
+   it is scoped to the frame(s) named by `source_frames_of.get((pid,
+   step.node_id))` (falling back to every frame if no handle is recorded) rather
+   than merged across every frame the source emits — a column name recurring
+   across frames with a different dtype must resolve in the *consumed* frame's
+   dtype, not by dict-iteration order over frames the node never sees.
 8. Classifies `step.row_lineage_type` via `detect_row_lineage_type()`, using the
    node type first (source nodes → `"created"`, `liveSwitch` → `"selected"`,
    `edgeJoin` → `"joined"` — checked before any code-sniffing because a join's
    config-driven code carries no literal `.join(` token), then a code-sniffed
    `operation_type` (`_sniff_operation_type`), then a row-count-delta fallback.
+   Parent and child row counts for the fallback go through
+   `_node_output_row_count()`, which counts the widest frame's rows for a
+   multi-frame `dict` output rather than `len(dict)` (which would count frames,
+   not rows).
 
 ### `build_waterfall_from_steps()` (`_trace_waterfall.py`)
 
@@ -298,12 +402,41 @@ produces an ordered `data_flow` summary plus `metadata` counts.
   store time** (same admit-or-reject-at-store policy as the dataframe-execution
   cache) rather than silently evicting every other entry to fit it; the trace
   result returned to the caller is unaffected, only its cache hit is lost.
+- **Multi-frame source resolution is per edge, never per (source, target) pair.**
+  A multi-frame source's edges each carry a `sourceHandle` naming the frame that
+  edge consumes; the same source can feed the same child through several edges
+  at once (the canonical four-port `apiInput` → `OUTPUT` topology, or a node
+  joining two data levels straight off one multi-frame source). `source_frames_of`
+  therefore stores a `list[str | None]` per pair — one entry per edge, in edge
+  order — and `_resolve_multi_frame_parent` matches every distinct candidate
+  frame against the resolved child row independently rather than assuming a
+  single frame per pair.
+- **Multi-frame disambiguation order is deterministic, not a first-match
+  guess.** When several frames of one source all confidently match the child
+  row, the traced column (if any) wins first, then the widest `match_width`
+  (most specific match), and only then edge order — and that final tie-break is
+  always recorded as an `ambiguous_source_frame` diagnostic so a caller can see
+  the resolution was not unique, even though the trace itself proceeds.
+- **A duplicate row match during target-row relocation fails loud.**
+  `_find_target_row_index` (`trace.py`) collects *every* row index matching the
+  clicked values on the shared columns; more than one match raises `ValueError`
+  naming the match count and the shared columns, rather than silently returning
+  the first index — mirroring the row-correlation layer's ambiguous-match policy
+  (`_record_ambiguous_row_match`) at the row-identity-verification layer.
+- **Self-referential column assignments never let the output value leak into
+  its own substitution's input side.** Both the single-expression path
+  (`enrich_steps` step 2) and the intra-node chain path (step 3) detect when a
+  step's target column is also referenced on its own right-hand side and
+  substitute the pre-assignment value instead of the final output value —
+  otherwise a step like `premium = premium * factor` would display an
+  arithmetically false substitution built from its own result.
 
 ## Error handling
 
 | Exception | Raised by | Propagates to |
 | --- | --- | --- |
-| `ValueError` | `execute_trace` — empty graph, unknown `target_node_id`, `row_index` out of range (also raised inside `_correlate_rows_posthoc`), unresolved row-value mismatch after relocation attempt | HTTP route (`routes/pipeline.py`), pattern-matched on message prefix to 404 / 400 / 409 |
+| `ValueError` | `execute_trace` — empty graph, unknown `target_node_id`, `row_index` out of range (also raised inside `_correlate_rows_posthoc`), unresolved row-value mismatch after relocation attempt, `target_node_id` resolving to a multi-frame source's `dict` output | HTTP route (`routes/pipeline.py`), pattern-matched on message prefix to 404 / 400 / 409 |
+| `ValueError` (ambiguous duplicate match) | `_find_target_row_index` (`trace.py`) — the clicked `row_values` match more than one row on the shared columns during target-row relocation | Propagates unchanged out of `execute_trace`; HTTP route maps to 409 |
 | `TypeError` | `_resolve_preview_snapshot` — `preview` is not `None`/reader/dict, or a reader's `try_get` returns a non-`dict` non-`None` value | Caller of `execute_trace` |
 | `ContractMismatchError` | Propagated unchanged from `_execute_eager_core` (execution-engine) on a cold-execution contract violation | HTTP route, mapped to 422 |
 | Any exception from cold execution (`_execute_eager_core`, `swallow_errors=False`) | Propagated unchanged — no regex-based masking/retry | HTTP route, mapped to 500 (or a specific status if it happens to be one of the recognised `ValueError` shapes) |
@@ -322,11 +455,14 @@ integration/regression suites:
 
 - **`tests/test_trace.py`** — core unit coverage of `execute_trace`,
   `SchemaDiff`/`TraceResult`/`TraceStep`, and `_find_matching_row` directly
-  against `haute._trace_correlation`.
+  against `haute._trace_correlation`; includes the fail-loud duplicate-match
+  regression for `_find_target_row_index` (ambiguous relocation raises
+  `ValueError` rather than returning the first matching index).
 - **`tests/test_trace_api.py`** — the `POST /api/pipeline/trace` HTTP layer via
   FastAPI `TestClient`: request validation, response shape, serialisation, and
   error-status mapping. Explicitly deferred to `test_trace_integration.py` for
-  core trace-logic correctness.
+  core trace-logic correctness. Includes the end-to-end 409 case for a
+  duplicate-row relocation conflict.
 - **`tests/test_trace_integration.py`** — the largest suite (71 tests):
   end-to-end cell-click → backend computation → enriched result flow across every
   pipeline topology, node type, data shape, caching behaviour, and error path;
@@ -345,8 +481,12 @@ integration/regression suites:
   **`tests/test_trace_hero_tdd.py`** (36 tests) — the expression/calculation
   ("Calculation Hero") feature: conditional-branch indication, waterfall data
   generation, preamble constant resolution, window-function fallback, intra-node
-  dependency chains, column-rename tracking, null explanation, and copy/export
-  data-structure shape.
+  dependency chains, column-rename tracking, null explanation, copy/export
+  data-structure shape, and (`TestSelfReferentialCalculation`) the
+  pre-assignment-value substitution fix for self-referential assignments
+  (`premium = premium * factor`), both as a single expression and as an
+  intra-node chain that feeds a self-referential intermediate forward into a
+  dependent entry.
 - **`tests/test_trace_waterfall.py`** (25 tests) — the C8 arithmetic-contract
   regression suite, driving flagship multiplicative/additive scenarios through
   `execute_trace` end-to-end (not hand-fed factors) so a regression in
@@ -354,6 +494,20 @@ integration/regression suites:
 - **`tests/test_trace_edge_join.py`** (12 tests) — the W1.7 edge-join provenance
   remediation: correlation path and per-step row values for both the base and
   JOIN-role parents of an `edgeJoin` node, including suffix collision cases.
+- **`tests/test_trace_multi_frame.py`** — multi-frame (≥2-table `apiInput`) row
+  correlation: tracing a node downstream of a multi-frame source correlates
+  through the edge's named frame instead of crashing on the bare `dict`;
+  targeting the multi-frame node itself (directly, or through the HTTP route)
+  raises a clear `ValueError`/400 rather than an opaque 500; the four-port
+  `apiInput` → `OUTPUT` topology (one source, one target, four edges) correlates
+  the source step to the frame that actually identifies the traced row rather
+  than whichever edge's `sourceHandle` came last; a single polars node joining
+  two frames of the same source via two edges resolves the correlated source row
+  to the drivers frame or the vehicles frame depending on which column is
+  traced; `_node_output_row_count` counts a multi-frame bundle's rows (max
+  across frames) rather than its frame count; and a banding node fed by one
+  frame of a multi-frame source resolves factor dtypes from that frame alone,
+  not a dict-iteration-order merge across every frame the source emits.
 - **`tests/test_trace_banding_lineage.py`** (6 tests) — lineage tests specific to
   banding-created fields.
 - **`tests/test_optimiser_apply_trace_enrichment.py`** (20 tests) — optimiser-apply

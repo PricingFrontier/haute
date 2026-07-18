@@ -28,8 +28,12 @@ In scope:
 - MLflow experiment logging, including a `ModelSignature` built from the same contract.
 - Self-contained HTML model card generation with embedded SVG charts.
 - Standalone training-script codegen, guaranteed to train the same model as a live run.
+- Profile-likelihood estimation of a GLM dispersion parameter (Negative Binomial
+  `theta`, Tweedie `var_power`) as an on-demand background job, so a user can resolve a
+  value RustyStats itself does not estimate before starting a real training run.
 - HTTP routes for starting/polling/cancelling training, RAM/VRAM estimation, MLflow
-  logging of a completed job, script export, and model-cache clearing.
+  logging of a completed job, script export, model-cache clearing, and GLM dispersion
+  estimation.
 
 Out of scope, owned elsewhere:
 - Interactive/exploratory GLM model development — **Atelier**, a separate standalone GLM
@@ -69,13 +73,20 @@ Out of scope, owned elsewhere:
   after the fact (the "Log to MLflow" button), reusing the persisted feature contract
   so the logged model's signature matches what was actually trained.
 - `POST /api/modelling/train/cancel/{job_id}` cooperatively stops an in-flight run.
+- `POST /api/modelling/dispersion/estimate` estimates a GLM node's Negative Binomial
+  `theta` or Tweedie `var_power` by profile likelihood over the node's own training
+  data, as a background job the client polls
+  (`GET /api/modelling/dispersion/status/{job_id}`) and can cancel
+  (`POST /api/modelling/dispersion/cancel/{job_id}`); the resolved value is returned
+  for the user to accept into the node config, never written there automatically.
 
 Invariants that always hold:
 - Live training and script export always produce the same model for the same config —
   both go through one shared config→kwargs builder (`_train_config.build_training_job_kwargs`).
 - The training objective must be fully specified before a job starts or a script is
-  exported: an unset loss/family, Tweedie variance power, GLM factor set, or elastic-net
-  L1 ratio is rejected with an actionable message rather than silently defaulting.
+  exported: an unset loss/family, Tweedie variance power, Negative Binomial `theta`, GLM
+  factor set, or elastic-net L1 ratio is rejected with an actionable message rather than
+  silently defaulting.
 - Every trained model is saved together with a feature contract pinning its exact
   feature order, dtypes, categorical domains, target, and offset column. Any drift
   detected later (train vs. score) raises rather than producing a plausible-looking
@@ -100,12 +111,28 @@ terms/family/link/regularization config and training a plain Gaussian all-featur
 model instead. Both are permanently closed off by making the builder the only path.
 
 "Loud, actionable failure over silent fallback" is applied deliberately to the training
-objective: an unset Tweedie variance power, GLM factor set, or elastic-net L1 ratio
-would otherwise fall through to a library default (variance power 1.5, auto-terms over
-every column, pure ridge) that produces a real, trainable, plausible-looking model —
-just not the one the user intended. `training_objective_issue` gates this identically
-at config-build time and at the route's upfront validation, so the two paths cannot
-drift apart on what counts as "complete."
+objective: an unset Tweedie variance power, Negative Binomial `theta`, GLM factor set,
+or elastic-net L1 ratio would otherwise fall through to a library default (variance
+power 1.5, theta 1.0, auto-terms over every column, pure ridge) that produces a real,
+trainable, plausible-looking model — just not the one the user intended.
+`training_objective_issue` gates this identically at config-build time and at the
+route's upfront validation, so the two paths cannot drift apart on what counts as
+"complete."
+
+RustyStats does not estimate either GLM dispersion parameter it accepts as a fit
+argument — an unset Negative Binomial `theta` silently fits at 1.0, an unset Tweedie
+`var_power` silently fits at 1.5 — so neither can be safely defaulted and both are
+gated by `training_objective_issue`. Because a user still needs *some* principled way to
+choose a value, `estimate_glm_dispersion` (`_rustystats.py`) offers a profile-likelihood
+search as an explicit, on-demand action: it holds every other part of the design fixed
+(the same terms/interactions/weight/offset the config already specifies, resolved via
+the same `_resolve_glm_terms` helper `GLMAlgorithm.fit` uses, so the profiled design is
+never allowed to drift from what training would actually fit) and maximises the fitted
+model's log-likelihood over the single dispersion parameter with a bounded 1-D search
+(`scipy.optimize.minimize_scalar`, ~20-30 IRLS fits; `theta` is searched in log-space
+since it is scale-like). The resulting value is returned to the client to review and
+accept — it is never written into the node config automatically, preserving the
+"no hidden defaults" invariant the gate itself enforces.
 
 The feature contract is a separate artifact (rather than relying on the model file's
 own metadata) because CatBoost and RustyStats models predict correctly only when fed
@@ -179,3 +206,10 @@ browser without a server or JS bundle.
 - MLflow logging is best-effort where it can be: a model-card generation failure inside
   `log_experiment` is caught and warned, never failing an otherwise-successful
   experiment log.
+- Dispersion-estimation requests are validated up front (unknown parameter, non-GLM
+  node, wrong family for the requested parameter, invalid family/link combination, no
+  target column, or an otherwise-incomplete training objective) as HTTP 400 before any
+  pipeline execution starts. Once running, a failed candidate fit is absorbed inside the
+  search (treated as `-inf` log-likelihood, not a hard error); only a search where *no*
+  candidate converges raises, surfacing as the job's `contract_error`/`error` terminal
+  state exactly like a training job's equivalent failure classes.

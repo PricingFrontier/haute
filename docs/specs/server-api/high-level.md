@@ -198,7 +198,8 @@ the deploy-time render path.
   define the `NodeType` dispatch table and column contracts the executor consumes.
 - **[background-jobs](../background-jobs/high-level.md)** — job-status response shapes
   (`TrainStatusResponse`, `OptimiserStatusResponse`, `ExploreStatusResponse`,
-  `OptimiserFrontierAutoRangeStatusResponse`) are defined in `schemas.py`; the polling/job-
+  `OptimiserFrontierAutoRangeStatusResponse`, `OptimiserFrontierStatusResponse`,
+  `DispersionEstimateStatusResponse`) are defined in `schemas.py`; the polling/job-
   runner mechanics live in that component's own routers.
 - **[git-integration](../git-integration/high-level.md)** — every `Git*` schema
   (`GitStatusResponse`, `GitCommitResponse`, `GitGraphResponse`, etc.) is defined in

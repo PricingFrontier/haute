@@ -16,7 +16,7 @@
 | `TargetAndTaskConfig.tsx` | CatBoost target/weight/offset/task/loss-function/metrics section; gates Tweedie variance power. |
 | `FeatureAndAlgorithmConfig.tsx` | CatBoost feature include/exclude list (with stale-entry handling) and the hyperparameters JSON editor + GPU toggle. |
 | `SplitAndMetricsConfig.tsx` | Split strategy (random/temporal/group), row limit, MLflow experiment/model name fields, monotonic constraints — shared by both algorithms. |
-| `GLMTargetConfig.tsx` | GLM target/weight/offset, family/link buttons, Tweedie variance power gate, intercept toggle, metrics. |
+| `GLMTargetConfig.tsx` | GLM target/weight/offset, family/link buttons (incl. Negative Binomial), Tweedie variance power gate, Negative Binomial dispersion `theta` gate, per-gate "Estimate from data" action, intercept toggle, metrics. |
 | `GLMFactorConfig.tsx` | GLM factor builder (per-column term type + type-specific params) or raw JSON editor, "All features" opt-in gate, interactions list. |
 | `GLMRegularizationConfig.tsx` | Regularisation type toggle, alpha, elastic-net L1 ratio gate. |
 | `TrainingActionsAndResults.tsx` | Staleness banner, RAM/VRAM estimate display (with row-limit-adjusted recompute), Train button, live progress, completion badge, inline error. |
@@ -68,7 +68,10 @@
 `frontend/src/utils/trainingObjective.ts` (`trainingObjectiveIssue`),
 `frontend/src/utils/executionDiagnostics.ts` (error/diagnostic formatting),
 `frontend/src/utils/configField.ts` (`configField`, `safeParseFloat`, `safeParseInt`),
-`frontend/src/stores/useNodeResultsStore.ts` (result/job cache, `hashConfig`).
+`frontend/src/stores/useNodeResultsStore.ts` (result/job cache, `hashConfig`),
+`frontend/src/api/dispersion.ts` (`runDispersionEstimate` — GLM Tweedie/Negative-Binomial
+profile-likelihood dispersion estimation, kept out of `api/client.ts` and the initial bundle
+since `ModellingConfig` is its only consumer).
 
 ## Key types and data structures
 
@@ -107,39 +110,82 @@
   type strips params irrelevant to the new type.
 - **Store slices** (`useNodeResultsStore.ts`): `trainJobs`/`trainResults` and
   `solveJobs`/`solveResults`, each keyed by `nodeId`. A cached result carries the
-  `configHash` it was produced from; `ActiveTrainJob`/`ActiveSolveJob` carry the job's own
-  `configHash` snapshot taken at submission time. `CachedSolveResult` additionally carries
-  `frontier` and `selectedPointIndex` so frontier selection survives panel remount.
+  `configHash`, `source`, and `structuralVersion` it was produced from — all three, not just
+  `configHash`, are the staleness key (see `useStaleConfigEstimate` below);
+  `ActiveTrainJob`/`ActiveSolveJob` carry the same three as a snapshot taken at submission
+  time. `CachedSolveResult` additionally carries `frontier` and `selectedPointIndex` so
+  frontier selection survives panel remount. A result completed with no active job (a
+  synchronous completion) has no submission-time snapshot to draw from — `source` falls back
+  to `""` and `structuralVersion` to `-1`, sentinels chosen so they can never equal a real
+  live value and the result always reads as stale rather than accidentally current.
 
 ## Control flow
 
 ### Modelling train submission (`ModellingConfig.handleTrain`)
 
-1. Sets `submitting`, builds the graph via `buildGraph(allNodes, edges, submodels, preamble)`.
+1. Sets `submitting`, builds the graph via `buildGraph(allNodes, edges, submodels, preamble)`, and snapshots `trainSource`/`trainStructuralVersion` from `useSettingsStore`/`useGraphStore` at call time (not read later inside the `.then`, so a source/graph change mid-request can't relabel a job that was actually submitted against the old values).
 2. Calls `trainModel({ graph, node_id, source, streamingChunkSize })`.
-3. Three outcomes: `status: "started"` with a `job_id` → `startTrainJob(nodeId, jobId, nodeLabel, currentConfigHash)`, handing off to the background-jobs poller; `status: "error"` → `completeTrainJob(nodeId, result)` immediately, no job registered; any other status (synchronous completion) → also `completeTrainJob` directly.
+3. Three outcomes: `status: "started"` with a `job_id` → `startTrainJob(nodeId, jobId, nodeLabel, currentConfigHash, trainSource, trainStructuralVersion)`, handing off to the background-jobs poller; `status: "error"` → `completeTrainJob(nodeId, result)` immediately, no job registered; any other status (synchronous completion) → also `completeTrainJob` directly.
 4. A thrown error (network/validation) is caught, converted via `trainErrorMessage`/`trainFailureStatus` (which extract `execution_metrics`/`terminal_reason` from the error's `detail` payload when present), and stored as an error `TrainResult` via `completeTrainJob`.
 5. `submitting` is cleared in `finally` regardless of outcome.
 
 ### Optimiser solve submission (`OptimiserConfig.handleSolve`)
 
-Same three-outcome shape as training, via `solveOptimiser` / `startSolveJob` /
-`failSolveJob`. Note `startSolveJob` is called even on immediate error/throw (before
-`failSolveJob`), so the job entry always exists to attach the `constraints` snapshot and
-`configHash` the error is associated with.
+Same three-outcome shape as training (including the submission-time `solveSource`/
+`solveStructuralVersion` snapshot), via `solveOptimiser` / `startSolveJob` / `failSolveJob`.
+Note `startSolveJob` is called even on immediate error/throw (before `failSolveJob`), so the
+job entry always exists to attach the `constraints` snapshot and `configHash`/`source`/
+`structuralVersion` the error is associated with.
 
 ### RAM / solve-cost estimate (`useStaleConfigEstimate`)
 
 Both `ModellingConfig` and `OptimiserConfig` wrap their estimate endpoint in a
-`useCallback` and pass it to `useStaleConfigEstimate(nodeId, config, cachedResult, endpoint, options)`.
-The hook: computes `configHash = hashConfig(config)` on every render; derives
-`isStale = cachedResult.configHash !== configHash`; and re-fires the estimate fetch in a
-`useEffect` keyed on `[nodeId, configHash, estimateKey, enabled]` — the estimate `endpoint`
-function itself is read through a ref so a new callback identity each render does not
-retrigger the fetch. `estimateKey` is typically `"${activeSource}:${structuralVersion}"` so
-a source switch or upstream structural change also invalidates the estimate. Each fetch
-gets its own `AbortController`; the previous fetch is aborted (not merely ignored) on
-re-trigger or unmount.
+`useCallback` and pass it to
+`useStaleConfigEstimate(nodeId, config, cachedResult, endpoint, context, options)`, where
+`context = { source: activeSource, structuralVersion }` is a required positional argument
+(not folded into `options` as an `estimateKey` string). The hook: computes
+`configHash = hashConfig(config)` on every render; derives `isStale` as true whenever the
+cached result's `configHash`, `source`, *or* `structuralVersion` disagrees with the live
+values (a cached result predating this three-field contract is missing `source`/
+`structuralVersion` and so always fails the comparison — read as stale, never as
+accidentally current); and re-fires the estimate fetch in a `useEffect` keyed on
+`[nodeId, configHash, context.source, context.structuralVersion, estimateKey, enabled]` —
+the estimate `endpoint` function itself is read through a ref so a new callback identity
+each render does not retrigger the fetch. (`estimateKey` remains a supported `options`
+field on the hook itself — an additional, caller-supplied invalidation key beyond `context`
+— but neither `ModellingConfig` nor `OptimiserConfig` passes one any more now that
+`source`/`structuralVersion` are checked directly via the required `context` argument.)
+Each fetch gets its own `AbortController`; the previous fetch is aborted (not merely
+ignored) on re-trigger or unmount.
+
+### GLM dispersion estimate (`ModellingConfig.handleEstimateDispersion` → `GLMTargetConfig`)
+
+1. `ModellingConfig` passes `handleEstimateDispersion` to `GLMTargetConfig` as
+   `onEstimateDispersion`; the prop is optional — `GLMTargetConfig` renders no "Estimate
+   from data" button anywhere when it's absent (e.g. in isolated tests that don't wire it).
+2. `handleEstimateDispersion(param: DispersionParam)` (`param` is `"theta"` or `"var_power"`)
+   calls `runDispersionEstimate({ graph: buildGraphCb(), node_id: nodeId, param, source: useSettingsStore.getState().activeSource })` and returns the resolved `Promise<number>`
+   straight through — it does not itself touch component state or the config.
+3. `runDispersionEstimate` (`api/dispersion.ts`) posts to
+   `/api/modelling/dispersion/estimate`, gets back a `job_id`, then polls
+   `/api/modelling/dispersion/status/:job_id` on a fixed interval (default 500ms) until a
+   terminal status: `"completed"` resolves with `status.value` (throwing `ApiError` if the
+   backend completed without a value — never resolving with `null`/`undefined`);
+   `"error"`/`"cancelled"`/`"superseded"`/`"timed_out"`/`"memory_limited"`/
+   `"contract_error"` all reject with an `ApiError` built from `status.error` or
+   `status.message`. An aborted caller signal cancels the job server-side
+   (best-effort, failure swallowed) and rejects with a `DOMException("AbortError")`.
+4. `GLMTargetConfig.handleEstimate` is the actual click handler: guards against a second
+   click while one param is already `estimating`, clears any previous `estimateError`, and
+   on success calls `onUpdate(param, value)` — the same `onUpdate` the manual slider/input
+   for that field uses, so the estimate lands in the ordinary editable config field rather
+   than a separate read-only display. On failure it prefers `ApiError.detail` (the backend's
+   actionable message, e.g. "GLM config has no factors…") over the generic error message.
+5. Each of the Tweedie and Negative Binomial sections tracks and renders its own
+   `estimateError` independently — both use the same `estimating`/`estimateError` state
+   pair in `GLMTargetConfig`, but only the section matching the current `family` is mounted,
+   so there is never a case where an error from one dispersion field is shown against the
+   other.
 
 ### Optimiser data-input column resolution
 
@@ -223,10 +269,19 @@ just the current quote) until the tab is actually opened.
   and losing the GPU checkbox click would be more surprising than reverting stray edits).
 - **`task_type: "GPU"` is stripped from the displayed/edited JSON** and merged back in on
   commit, so the GPU checkbox and the JSON editor never fight over the same key.
-- **Elastic-net / Tweedie collapse-and-restore**: unticking a regularisation type or
-  switching away from Tweedie does not clear `l1_ratio`/`var_power` from the config — the
-  gated UI (`l1RatioSet`/`config.var_power === undefined` checks) just stops showing the
-  control, so switching back restores the previously chosen value instead of re-prompting.
+- **Elastic-net / Tweedie / Negative-Binomial collapse-and-restore**: unticking a
+  regularisation type or switching the GLM family away from Tweedie or Negative Binomial
+  does not clear `l1_ratio`/`var_power`/`theta` from the config — the gated UI
+  (`l1RatioSet`/`config.var_power === undefined`/the `family === "negbinomial"` mount check)
+  just stops showing the control, so switching back restores the previously chosen or
+  estimated value instead of re-prompting.
+- **Negative Binomial's `theta` gate starts empty, not with a "Set X" button.** Unlike
+  Tweedie's variance power (which shows a "Set variance power" call-to-action button until
+  clicked), the theta field is always a visible, editable number input — empty and
+  warning-styled (`--warning-soft-subtle`/`--warning-border`) when unset, normally styled
+  once a number is typed or estimated. Clearing the input back to blank calls
+  `onUpdate("theta", null)`, explicitly re-arming the training gate rather than leaving a
+  stale numeric string the parser would silently coerce.
 - **"All features" gate greys out but preserves the individual builder** (`GLMFactorConfig`):
   ticking `all_factors` visually disables (`opacity/pointerEvents`) the term builder and JSON
   editor without clearing `terms`, so unticking restores exactly what was configured before.
@@ -307,17 +362,21 @@ Coverage by area:
 - **`ModellingConfig.test.tsx`** is the largest file, organised by `describe` block: config
   rendering per algorithm, the hyperparameter JSON editor (including GPU toggle + invalid-
   JSON fallback), split/eval section, training actions (submit/started/error/sync paths),
-  the staleness indicator, training results display, RAM estimate (including downsample/GPU
-  VRAM-exceeded warnings), collapsible sections, edge cases, the algorithm gateway, task-
-  switching metrics defaults, loss-function selection (including the Tweedie gate), row
-  limit input, feature exclude/include updates, and split strategy selection.
+  the staleness indicator (now asserting against fixture jobs/results that carry `source`/
+  `structuralVersion` alongside `configHash`), training results display, RAM estimate
+  (including downsample/GPU VRAM-exceeded warnings), collapsible sections, edge cases, the
+  algorithm gateway, task-switching metrics defaults, loss-function selection (including the
+  Tweedie gate), the GLM Negative-Binomial `theta` gate (disabled Train button without
+  `theta`, enabled once set), row limit input, feature exclude/include updates, and split
+  strategy selection.
 - **`ModellingPreview.test.tsx`** covers tab visibility gating per populated `TrainResult`
   field and the tab-reset-on-new-result behaviour.
 - **`OptimiserConfig.test.tsx`** mirrors the modelling breadth: mode toggle, input/objective
   selection, ratebook mode (banding auto-select), column mappings, constraints CRUD, solver
   tuning, advanced section, solve action (started/error/sync + extended variants), constraint
-  interactions, staleness (including an "extended" pass), results display, progress, and
-  result-type/efficient-frontier switching.
+  interactions, staleness (including an "extended" pass, with fixture jobs/results now
+  carrying `source`/`structuralVersion`), results display, progress, and result-type/
+  efficient-frontier switching.
 - **`OptimiserDataPreview.test.tsx`** covers `computeScenarioStatsBySeries` directly (moved
   under the component's test file rather than a separate stats-only suite — see also the
   dedicated `optimiserScenarioStats.test.ts`), header/metadata, quote navigation (incl.
@@ -336,12 +395,19 @@ Coverage by area:
   index throw, and empty-bucket handling.
 - **`GLMComponents.test.tsx`** (`frontend/src/panels/__tests__/`, not
   `panels/modelling/__tests__/`) is the dedicated suite for the GLM-specific components:
-  `GLMTargetConfig` (family/link buttons, Tweedie gate, offset, intercept, metrics),
+  `GLMTargetConfig` (family/link buttons including Negative Binomial, Tweedie gate, the
+  Negative-Binomial `theta` gate — empty by default, typing/clearing it, the "Estimate from
+  data" flow for both `theta` and `var_power` filling the field via `onUpdate` on success and
+  showing an inline error without calling `onUpdate` on failure, and the button being absent
+  when no `onEstimateDispersion` handler is passed — offset, intercept, metrics),
   `GLMFactorConfig` (add/remove factors, term-type switching, interactions, Builder/JSON
   mode sync), `GLMRegularizationConfig` (type toggle, alpha, elastic-net L1-ratio gate),
   `GLMCoefficientsTab` (sorting, significance stars, empty state), `GLMRelativitiesTab`
   (sort modes, CI whiskers, empty state), the GLM fit-statistics/regularisation extensions
-  to `SummaryTab`, and `ModellingConfig`'s GLM routing.
+  to `SummaryTab`, and `ModellingConfig`'s GLM routing. Both this file and
+  `ModellingConfig.test.tsx` mock `api/dispersion.ts`'s `runDispersionEstimate` and export a
+  real `ApiError` class from the `api/client` mock (`GLMTargetConfig` narrows caught errors
+  with `instanceof ApiError`, which throws against a plain mock object).
 - **`configPanelsDry.test.ts`** is a structural regression guard, not a behavioural test: it
   reads `ModellingConfig.tsx`/`OptimiserConfig.tsx` from disk and fails if either re-inlines
   the RAM/estimate state, the config-hash `useMemo`, or a bespoke polling loop that the

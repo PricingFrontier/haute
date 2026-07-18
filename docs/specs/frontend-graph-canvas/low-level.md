@@ -13,7 +13,7 @@
 | `frontend/src/stores/useGraphStore.ts` | Zustand store owning `nodes`/`edges`/`preamble`, undo/redo history (graph snapshots interleaved with VC entries), and three derived fingerprints (`structuralFingerprint`, `panelContextFingerprint`, `persistedFingerprint`) plus the `dirty` boolean derived from them. |
 | `frontend/src/hooks/useNodeHandlers.ts` | Node CRUD handlers: `handleDeleteNode` (atomic node+edges delete, deferred cache cleanup), `handleDuplicateNode`, `handleCreateInstance`, `handleRenameNode` (opens the rename dialog), `handleAutoLayout` (ELK, in-flight guarded). |
 | `frontend/src/hooks/useEdgeHandlers.ts` | Connection/gesture handlers: `commitConnection`/`onConnectEnd` (interprets React Flow handle-drag endings into a normal edge or an edge-join insertion), `onSelectionChange`/`onNodeClick` (panel + debounced preview), `handleDeleteEdge`, `onNodeContextMenu`, `onDragOver`/`onDrop` (palette node creation). |
-| `frontend/src/hooks/usePipelineAPI.ts` | Pipeline load-on-mount; debounced, cache-first, concurrency-limited-cascade preview fetching (`fetchPreview`/`fetchPreviewImmediate`/`refreshPreview`/`previewNodeFrame`); and `handleSave` (config-ref/edge-join pre-save validation, snapshot-scoped save-concurrency guard, `markSaved`). |
+| `frontend/src/hooks/usePipelineAPI.ts` | Pipeline load-on-mount; debounced, cache-first, concurrency-limited-cascade preview fetching (`fetchPreview`/`fetchPreviewImmediate`/`refreshPreview`/`previewNodeFrame`); an active-source-change effect (`invalidateStaleColumnStashes`) that strips any node's column stash tagged with a different (or no) `_columnsSource`; and `handleSave` (config-ref/edge-join pre-save validation, snapshot-scoped save-concurrency guard, `markSaved`). |
 | `frontend/src/hooks/useWebSocketSync.ts` | The `/ws/sync` WebSocket client: connect/reconnect with exponential backoff, fingerprint-based resync, applying `graph_update`/`parse_error` frames (with dirty-blocking and rollback-on-failure), and session-expiry handling. |
 | `frontend/src/hooks/useSubmodelNavigation.ts` | `handleCreateSubmodel`/`handleDrillIntoSubmodel`/`handleBreadcrumbNavigate`/`handleDissolveSubmodel` — the view-stack state machine, cross-boundary port-node/edge synthesis on drill-in, and the three submodel API calls. |
 | `frontend/src/utils/buildGraph.ts` | `buildGraph` (backend payload shape) and `resolveGraphFromRefs` (parent-graph-takes-priority resolution used by preview/save/submodel calls). |
@@ -74,9 +74,12 @@ elsewhere or covered only incidentally here):
 - **`HauteNodeData`** (`types/node.ts`) — base node data shape:
   `label`, `nodeType`, `description?`, `config?`, `code?`, `func_name?`, plus
   underscore-prefixed *transient* fields that are runtime-only and never
-  persisted: `_columns`, `_availableColumns`, `_schemaWarnings`, `_status`,
-  `_traceActive`, `_traceDimmed`, `_hoverDimmed`, `_traceValue`,
-  `_traceMotionDisabled`, `_diffStatus`.
+  persisted: `_columns`, `_availableColumns`, `_schemaWarnings`,
+  `_columnsSource` (the active source the column stash was captured
+  under — set alongside `_columns`/`_availableColumns`/`_schemaWarnings`
+  by `usePipelineAPI`, compared against the live active source to decide
+  staleness), `_status`, `_traceActive`, `_traceDimmed`, `_hoverDimmed`,
+  `_traceValue`, `_traceMotionDisabled`, `_diffStatus`.
 - **`SubmodelNodeData`** extends `HauteNodeData` with
   `config: { file?, childNodeIds?, inputPorts?, outputPorts? }`.
 - **`SubmodelPortData`** — `{ label, portDirection: "input" | "output", portName, _traceActive?, _traceDimmed?, _traceMotionDisabled? }`.
@@ -248,7 +251,24 @@ elsewhere or covered only incidentally here):
     `previewNode()` resolves into `resultToPreview`; if the response's
     columns differ from the node's previous columns
     (`columnsEqualByFingerprint`), `propagate(nodeId)` kicks off the
-    downstream cascade.
+    downstream cascade. Every write of `_columns`/`_availableColumns`/
+    `_schemaWarnings` onto node data — the direct-fetch path, the
+    schema-map path (`applyPreviewSchemaMapsToNodes`), and the
+    stale-upstream gap-fill in `refreshPreview` — also stamps
+    `_columnsSource` with the `activeSource` snapshotted at that fetch's
+    start, so the stash records which source it's actually valid for. A
+    separate effect (`useEffect(() => setNodesRaw((nds) =>
+    invalidateStaleColumnStashes(nds, activeSource)), [activeSource,
+    setNodesRaw])`) runs on mount and on every `activeSource` change:
+    `invalidateStaleColumnStashes` scans for any node with a column stash
+    (`_columns`/`_availableColumns` defined) whose `_columnsSource` doesn't
+    match the current `activeSource` — including a stash with no
+    `_columnsSource` at all, treated as unknown provenance — and only calls
+    `setNodesRaw` (a new array) if at least one node qualifies; a no-op
+    scan returns the input array unchanged. A qualifying node has
+    `_columns`/`_availableColumns`/`_schemaWarnings`/`_columnsSource`
+    deleted from its data via destructuring, returning it to the
+    pre-preview state.
 17. **Downstream cascade (`propagate`, inside
     `fetchPreviewImmediate`).** BFS-reaches every node downstream of the
     changed node, tracks per-node pending-parent counts, and only enqueues a
@@ -399,9 +419,15 @@ elsewhere or covered only incidentally here):
   data paints immediately in the meantime — never blocking the UI on a
   settings change.
 - **`refreshPreview`'s stale-upstream detection only looks at direct
-  parents lacking `_columns`**, not the full upstream closure — it lazily
-  fills exactly the one hop needed to preview the target node, not a full
-  re-preview of the pipeline.
+  parents lacking `_columns`, or whose `_columnsSource` no longer matches
+  the active source**, not the full upstream closure — it lazily fills
+  exactly the one hop needed to preview the target node, not a full
+  re-preview of the pipeline. The source check exists because the
+  invalidation effect (step 16) and this filter can observe the graph at
+  slightly different times — the effect's `setNodesRaw` may not have
+  flushed to the `nodeMap` this filter reads yet — so the filter re-checks
+  `_columnsSource` directly rather than assuming the effect has already
+  stripped every stale stash.
 - **`clusterSnap`/`alignPositions` (layout.ts) snap coordinates within a
   20px threshold to their cluster median**, so ELK's near-but-not-exact
   layer alignment renders as visually exact rows/columns; the ELK engine
@@ -668,6 +694,15 @@ elsewhere or covered only incidentally here):
     `handleSave` reads `activeSource` at invocation time, not a stale
     closure; a `rowLimit` change mid-fetch does not affect the
     already-running preview.
+  - `columnStashSourceIdentity.test.ts` (key-contract pin) — a captured
+    stash is stamped with the source the preview ran under; switching the
+    active source invalidates a stash tagged with a different source
+    (clearing `_columns`/`_availableColumns`/`_schemaWarnings`/
+    `_columnsSource` together) and treats an untagged stash the same way,
+    but a stash already tagged with the current source survives a
+    same-source re-set (no gratuitous invalidation); `refreshPreview`
+    re-previews an upstream node whose stash was captured under a
+    different source rather than treating it as already fresh.
 - **WebSocket sync — `frontend/src/hooks/__tests__/`:**
   - `useWebSocketSync.panelState.test.ts` (#39) — `renameDialog`/
     `submodelDialog` referencing a node removed by a WS sync are cleared;

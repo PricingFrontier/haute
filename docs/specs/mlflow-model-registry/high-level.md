@@ -86,7 +86,11 @@ Out of scope (owned elsewhere):
   the highest numeric version currently registered).
 - Loaded models are cached in two tiers. An in-memory LRU (16 entries)
   holds fully-loaded `ScoringModel` objects keyed by the resolved source
-  identity plus `task`. A disk cache under `.cache/models/<run_id>/...`
+  identity plus `task` plus the byte-identity fingerprint of the local model
+  artifact — so a re-logged MLflow run, or a `version="latest"` model
+  retrained in place under the same run reference, misses the cache instead
+  of serving the previously loaded (now stale) model on a long-lived server.
+  A disk cache under `.cache/models/<run_id>/...`
   holds the downloaded bytes for CatBoost and RustyStats artifacts (not
   pyfunc, which relies on MLflow's own local artifact cache), bounded to
   50 run directories with oldest-first eviction. Both caches persist
@@ -162,6 +166,21 @@ Out of scope (owned elsewhere):
   interrupted download, a disk hiccup); a hard ceiling after that means
   persistent corruption becomes a loud, diagnosable failure instead of an
   invisible retry loop burning time and bandwidth on-call would never see.
+- **The in-memory cache key includes artifact byte identity, not just the
+  source reference.** A run ID + artifact path (or registered model +
+  `"latest"`) is a *reference*, not a value — the bytes behind it can change
+  underneath an unchanged reference when a run is re-logged or a `"latest"`
+  model is retrained in place. Keying only on the reference let a long-lived
+  server keep serving the model it loaded at process start indefinitely,
+  invisibly, until someone thought to call `clear_model_cache` by hand. The
+  fingerprint (`_mlflow_io._local_artifact_fingerprint`) reuses the deploy
+  path's `artifact_identity_fingerprint` (a stat-gated content hash) rather
+  than minting a parallel derivation, so the serve-path cache and the
+  deploy-side output-schema cache agree on what "the same artifact" means.
+  It is a required keyword argument on `_model_cache_key` specifically so no
+  call site can silently omit it; the one documented exception is a pyfunc
+  model, which loads by MLflow URI with no local artifact file to
+  fingerprint and is keyed with an empty string instead.
 - **Cache eviction cascades to feature-validation state.** The
   feature-validation cache in `_model_scorer.py` is keyed by *content*
   (feature names, categorical set, offset column) rather than by model

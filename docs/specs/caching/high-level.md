@@ -77,7 +77,8 @@ Out of scope (owned elsewhere, linked where relevant):
   regenerates it. This applies to the dataframe execution cache's parquet
   artifacts.
 - **File-derived cache entries invalidate on file metadata change.** The
-  stat-gated cache and the fingerprint cache's utility-file hashing both key on
+  stat-gated cache and the fingerprint's utility-file hashing — the latter now
+  itself a `StatGatedCache` instance, not a parallel implementation — both key on
   `(mtime_ns, size)`; a change either dimension reloads. A byte-identical rewrite
   that happens to preserve both `mtime_ns` and `size` is below this resolution and
   is accepted as a documented trade-off, not a defect.
@@ -104,7 +105,9 @@ Out of scope (owned elsewhere, linked where relevant):
   silently poison the cache in the places where content hashing is used directly.
   The `StatGatedCache` (`_stat_gated_cache.py`) is a deliberate exception — it
   trades that last increment of safety for avoiding a full re-read on every
-  lookup, documented as the same trade-off `GraphFingerprintMemo` makes.
+  lookup. Utility-file hashing (`_cache.py`) makes this same trade by construction:
+  it is a process-wide `StatGatedCache` instance, with `GraphFingerprintMemo`
+  layered on top only to pin one digest per gate within a single request.
 - **Structural fingerprint scoped to upstream lineage, not the whole graph.** The
   dataframe execution cache keys a node's materialization on that node's upstream
   subgraph only (`_upstream_subgraph`), so editing a downstream node never
@@ -177,9 +180,9 @@ Out of scope (owned elsewhere, linked where relevant):
   than falling back to `repr()`. A drift in config shape is caught at
   fingerprint time, not silently hashed into a meaningless digest.
 - **A torn read during file hashing raises, it does not retry silently forever.**
-  Both `_utility_file_hash` (`_cache.py`) and `StatGatedCache.get_or_load`
-  (`_stat_gated_cache.py`) retry once against a file whose stat metadata moved
-  during the read/load, then raise `RuntimeError` if the second attempt is also
+  `_utility_file_hash` (`_cache.py`) delegates to `StatGatedCache.get_or_load`
+  (`_stat_gated_cache.py`), which retries once against a file whose stat metadata
+  moved during the load, then raises `RuntimeError` if the second attempt is also
   torn — this is deliberately a hard failure, not an infinite retry loop.
 - **OS-level errors from hashing propagate unchanged.** `content_hash`/
   `content_hash_bytes` (`_hashing.py`) do not catch `FileNotFoundError`,

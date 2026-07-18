@@ -66,8 +66,9 @@ boundary.
 
 A job is a plain dict living in the shared `JobStore`. Fields this component reads or writes
 (non-exhaustive, see [background-jobs](../background-jobs/high-level.md) for the store itself):
-`status`, `job_type` (`"solve"` / `"frontier_auto_range"`; the `"estimate"` job type constant is
-defined but never actually assigned — see Edge cases), `progress`, `message`, `config`,
+`status`, `job_type` (`"solve"` / `"frontier_auto_range"` / `"frontier_recompute"`; the
+`"estimate"` job type constant is defined but never actually assigned — see Edge cases),
+`progress`, `message`, `config`,
 `node_label`, `start_time`, `timeout`, `result`, `base_result` (the pre-frontier-point-overlay
 summary, used to reconstruct any frontier point without re-solving), `frontier_data` (the raw,
 unlimited frontier points — distinct from `result["frontier"]`, which is the size-limited
@@ -92,6 +93,23 @@ root rejection, relative-path rejection, directory/file mismatch rejection).
 A `RuntimeError` subclass raised for every trace-enrichment failure; always caught at the
 top-level `explain_optimiser_apply_from_config` entry point and turned into an `"error"` status
 payload — it never escapes to the caller.
+
+### Solver worker-context guard (`_optimiser_service.py`)
+
+`_SOLVER_WORKER_ACTIVE` is a `contextvars.ContextVar[bool]` (default `False`) that marks the
+current thread of execution as running inside a background solver worker. `solver_worker_context()`
+is the sole way to set it (a context manager entered only by the solve background thread and the
+frontier sweep background thread); `require_solver_worker_context` is a decorator that raises
+`RuntimeError` immediately if the wrapped function is called while the contextvar is unset. It is
+applied to the three heavy, minutes-of-sequential-CPU solver entrypoints: `_compute_frontier`,
+`_solve_online`, `_solve_ratebook`. Because `contextvars.ContextVar` values propagate into threads
+started via `threading.Thread` only if the thread explicitly re-enters the context (they are not
+inherited automatically the way they are across `asyncio` tasks), both `_solve_background` and the
+frontier sweep's background function wrap their body in `with solver_worker_context():` themselves
+— the guard is a call-site check, not a mechanism that follows the thread implicitly. Pinned by
+`tests/test_optimiser_routes.py::TestSolverWorkerContextGuard` (a direct call to any guarded
+entrypoint outside the context raises; a call inside `solver_worker_context()` succeeds; the
+contextvar resets to `False` after the context exits, including via `finally`).
 
 ## Control flow
 
@@ -201,18 +219,50 @@ raising a 422 when the chunking itself is unsupported (`ChunkPlanUnsupportedErro
 
 ### Frontier computation and point selection (`optimiser.py`)
 
-`POST /frontier` (`optimiser.py:run_frontier`, `:1342`) resolves the job's solver/quote-grid
-runtime state (touching heavy objects back into presence if evicted), enforces the compute
-budget (`enforce_frontier_compute_budget`, `_optimiser_limits.py:30` — rejects with 422 before
-the solver is invoked if `n_points_per_dim ** n_constraints` would exceed
-`FRONTIER_COMPUTE_LIMIT`), then calls `_compute_frontier` (`_optimiser_service.py:1338`, a thin
-dispatcher: ratebook passes `ratebook_factors`/`factor_columns` kwargs to `solver.frontier(...)`,
-online omits them). The response is capped via `limited_frontier_payload`
-(`_optimiser_limits.py:81`, caps to `FRONTIER_POINT_LIMIT` while always reporting the true total
-and truncation flag) and the result stored as both the size-limited `result["frontier"]` and the
-raw `frontier_data` job field. Any previously materialised frontier-point apply artifacts are
-invalidated (their handles removed from `artifact_handles` and their files cleaned up) since a
-recomputed frontier makes old point indices meaningless.
+`POST /frontier` (`optimiser.py:run_frontier`, `:1468`) is split into a synchronous validation
+phase and a background sweep phase, mirroring the solve submission pattern:
+
+1. **Synchronous** (still on the request thread, so contract errors surface as 4xx on this
+   request exactly as the old fully-inline route did): resolves the job's solver/quote-grid
+   runtime state (touching heavy objects back into presence if evicted), enforces the compute
+   budget (`enforce_frontier_compute_budget`, `_optimiser_limits.py:30` — rejects with 422 before
+   the solver is invoked if `n_points_per_dim ** n_constraints` would exceed
+   `FRONTIER_COMPUTE_LIMIT`), then checks `_has_running_frontier_job(body.job_id)` (`:1349` — a
+   store scan for a `running` job of type `frontier_recompute` whose `parent_job_id` matches),
+   rejecting with 409 if a sweep is already in flight for this solve job.
+2. Creates a `frontier_recompute`-typed job (`status: "running"`, `parent_job_id` set to the solve
+   job id, `timeout` derived from the solve job's own config via `_solve_timeout_from_config`) and
+   spawns a daemon thread running `_run_frontier_sweep` (`:1360`) inside `solver_worker_context()`.
+   The route returns immediately with `OptimiserFrontierResponse(status="started",
+   job_id=<frontier_job_id>)` — a *different* job id from `body.job_id`, since the frontier sweep
+   is tracked as its own job.
+3. **Background** (`_run_frontier_sweep`): calls `_compute_frontier`
+   (`_optimiser_service.py:1338`, a thin dispatcher: ratebook passes
+   `ratebook_factors`/`factor_columns` kwargs to `solver.frontier(...)`, online omits them). The
+   response is capped via `limited_frontier_payload` (`_optimiser_limits.py:81`, caps to
+   `FRONTIER_POINT_LIMIT` while always reporting the true total and truncation flag) and the
+   result stored as both the size-limited `result["frontier"]` and the raw `frontier_data` field
+   on the *parent solve job* (via `_store.atomic_update(parent_job_id, ..., expected_status=
+   "completed")` — 409-shaped as a `contract_error` on the frontier job if the solve job's state
+   changed concurrently, since the atomic update itself cannot raise past the background thread).
+   Any previously materialised frontier-point apply artifacts are invalidated (their handles
+   removed from `artifact_handles` and their files cleaned up) since a recomputed frontier makes
+   old point indices meaningless. On success the frontier job itself transitions to `completed`
+   with the frontier payload as its own `result` field (a full `OptimiserFrontierResponse`, so a
+   status poll and the (historical) inline response shape carry the same fields). Every failure
+   path — an `HTTPException` raised inside the sweep (classified `contract_error` for 400/409/422,
+   `error` otherwise) or a bare `Exception` — transitions the frontier job to a terminal status via
+   `_frontier_lifecycle` (a dedicated `JobLifecycle(_store)` instance, `optimiser.py:1345`) rather
+   than propagating; nothing about a post-validation frontier failure is visible to the caller
+   except through polling.
+
+`GET /frontier/status/{job_id}` (`optimiser.py:frontier_status`, `:1586`) polls the frontier job:
+404s if the job type isn't `frontier_recompute`, lazily enforces the job's timeout on poll (the
+same "no dedicated timeout-watcher thread" pattern as frontier auto-range — see below), and
+returns `OptimiserFrontierStatusResponse` (`status`, `progress`, `message`, `elapsed_seconds`,
+`result: OptimiserFrontierResponse | None`, `terminal_reason`, `error_code`, `http_status_code`,
+`error_detail`, `execution_metrics`) — the same status-envelope shape used elsewhere in the
+component (solve status, frontier auto-range status).
 
 `POST /frontier/select` (`optimiser.py:select_frontier_point`, `:1446`) resolves one frontier
 point's totals/constraints/lambdas into a full result summary
@@ -426,6 +476,22 @@ returned as a generic `status: "error"` payload.
   Float32; `_validate_input_value_contracts` checks for NaN/Inf *after* the Float32 cast
   specifically so a Float64 value that only overflows to ±Infinity once down-cast is still caught
   as a contract violation, not silently passed through.
+- **Null-value validation spans every dtype; non-finite validation is float-only.**
+  `_null_check_columns` (`:302`) checks all of `finite_columns` (objective, constraint, and
+  scenario-value columns) regardless of dtype via `pl.col(cname).null_count()`, while
+  `_non_finite_check_columns` (`:294`) filters that same column set down to `schema[cname].is_float()`
+  before checking `is_nan()`/`is_infinite()` — a non-float column (e.g. an integer objective) can
+  never hold NaN/Inf, but it can hold null, so both checks run over the same source columns with
+  different dtype gates and are reported as two independently-named detail messages
+  (`_NON_FINITE_DETAIL_PREFIX` vs. `_NULL_VALUE_DETAIL_PREFIX`) if both fire.
+- **Frontier sweep concurrency is scoped to the parent solve job, not the graph/node coordination
+  key.** `_has_running_frontier_job` scans for a running `frontier_recompute` job whose
+  `parent_job_id` matches — a mechanism independent of `_graph_node_setup_jobs`/
+  `_graph_node_setup_singleflight` (which key by graph+node and gate solve/estimate/auto-range
+  submission). `_FRONTIER_RECOMPUTE_JOB_TYPE` is also listed in `_NON_BLOCKING_RUNNING_JOB_TYPES`
+  precisely because it never reserved a solve slot when frontier computation ran inline, and the
+  background offload preserves that semantics — an in-flight frontier sweep never blocks a new
+  solve/estimate/auto-range submission for the same graph/node.
 - **Streaming auto-range only engages for provably row-local pipeline chains.**
   `_looks_chunk_local_user_code` uses an AST allow-list to decide whether user code between the
   data-input node and the scenario expander is safe to run per-chunk; anything not provably
@@ -463,22 +529,30 @@ returned as a generic `status: "error"` payload.
 - **Synchronous request-thread paths** (`optimiser.py` route handlers, and
   `estimate_frontier_auto_range`) raise `fastapi.HTTPException` directly for validation and
   contract failures: 400 (bad config, missing/wrong-dtype columns, null quote ids, non-finite
-  values, disconnected `data_input`, missing ratebook banding source, malformed frontier-point
-  data, incomplete job summaries), 404 (job not found or wrong job type), 409 (concurrent
-  job/graph-node conflict, or an atomic job-store update losing a race against a concurrent
-  state change), 422 (`ProjectionImpossibleError`/`ChunkPlanUnsupportedError`/
+  values, a null value in an objective/constraint/scenario column, disconnected `data_input`,
+  missing ratebook banding source, malformed frontier-point data, incomplete job summaries), 404
+  (job not found or wrong job type), 409 (concurrent job/graph-node conflict, a frontier sweep
+  already running for the target solve job, or an atomic job-store update losing a race against a
+  concurrent state change), 422 (`ProjectionImpossibleError`/`ChunkPlanUnsupportedError`/
   `BoundedMemoryUnsupportedError`, and the frontier compute-budget rejection), 500 (a background
   worker thread failing to even start; a generic/unclassified pipeline failure; a missing or
   corrupt persisted artifact), 507 (`ExecutionAdmissionError`/`ExecutionMemoryLimitExceededError`
-  wrapped via `_memory_limit_http_exception`).
+  wrapped via `_memory_limit_http_exception`). This applies to `POST /frontier` only up through its
+  synchronous validation phase (runtime resolution, compute budget, already-running-sweep check);
+  once validation passes, the request always returns 200 with a `status: "started"` body.
 - **Background-thread paths** (the setup thread, the solver thread, the streaming/non-streaming
-  auto-range worker) never let an exception propagate out of the thread; every failure branch is
-  caught and converted into a `JobLifecycle.transition(...)` call recording a terminal status,
-  a human message, and (for `HTTPException`s specifically) the original status code and detail
-  string in the job for later inspection. `BackgroundJobStoppedError` is the unified signal for
-  both job-store-driven cancellation and execution-context-driven cancellation
-  (`_coerce_stopped_terminal_reason` maps it to `cancelled`/`superseded`/`timed_out` as
-  appropriate).
+  auto-range worker, and — since the frontier sweep offload — the frontier sweep worker) never let
+  an exception propagate out of the thread; every failure branch is caught and converted into a
+  `JobLifecycle.transition(...)` call recording a terminal status, a human message, and (for
+  `HTTPException`s specifically) the original status code and detail string in the job for later
+  inspection. `_run_frontier_sweep` follows the same pattern via its own `_frontier_lifecycle`
+  instance: an `HTTPException` with status 400/409/422 transitions the frontier job to
+  `contract_error` (preserving `http_status_code`/`error_detail`), any other `HTTPException`
+  transitions it to `error`, and a bare `Exception` is logged (`frontier_failed`, `exc_info=True`)
+  and also transitions it to `error` with the generic `_INTERNAL_ERROR_DETAIL` message.
+  `BackgroundJobStoppedError` is the unified signal for both job-store-driven cancellation and
+  execution-context-driven cancellation (`_coerce_stopped_terminal_reason` maps it to
+  `cancelled`/`superseded`/`timed_out` as appropriate).
 - **Domain exception types specifically handled**: `BoundedMemoryUnsupportedError`,
   `ChunkPlanUnsupportedError`, `ContractMismatchError`, `ProjectionImpossibleError`,
   `SchemaMismatchError` (`haute.errors`); `ExecutionAdmissionError`
@@ -506,6 +580,15 @@ share fixtures from `tests/optimiser_fixtures.py`. No dedicated property-based t
 for this component; coverage is unit + integration + golden-fixture + real-library contract
 tests.
 
+Since the frontier sweep became a background job, every test file that calls `POST /frontier` and
+expects a completed result now polls it via two shared helpers added to
+`tests/optimiser_fixtures.py`: `poll_frontier_until_done(client, job_id, timeout=30.0)` (polls
+`/frontier/status/{job_id}` to any terminal status) and `run_frontier_and_wait(client, payload,
+timeout=30.0)` (posts to `/frontier`, asserts the immediate response is `status: "started"` with a
+`job_id`, then polls it to completion) — used across `test_optimiser_routes.py`,
+`test_optimiser_routes_critical_edges.py`, `test_optimiser_routes_real_library.py`, and
+`tests/performance/test_optimiser_memory_response_perf.py`.
+
 - **`tests/test_optimiser_routes.py`** — by far the largest file (~14k lines, dozens of test
   classes) covering the full route surface end-to-end against the FastAPI test client: node
   registration/codegen/executor passthrough, solve/status/estimate/apply/save/frontier/
@@ -514,19 +597,34 @@ tests.
   guards (cancel/timeout/supersede races), pipeline-execution argument wiring, bounded-sink grid
   building, execute-pipeline cleanup, artifact-payload building (including extended/edge-case
   variants), mlflow-log extended paths, and many CAS/atomic-update race scenarios (`atomic_update`
-  returning `None`, artifact orphaning on a lost race, etc.).
+  returning `None`, artifact orphaning on a lost race, etc.). Also covers: null-input rejection
+  (`test_solve_rejects_null_input_values`,
+  `test_frontier_auto_range_rejects_null_values_before_deriving_ranges`); the frontier
+  background-job handshake (`test_frontier_returns_job_handle_promptly` — asserts the initial
+  response returns before the sweep finishes, `test_frontier_after_solve`,
+  `test_frontier_solver_exception_surfaces_as_job_error` — a solver exception inside the sweep
+  surfaces as the frontier job's terminal `error` status, not a synchronous 5xx); and
+  `TestSolverWorkerContextGuard` (`_compute_frontier`/`_solve_online`/`_solve_ratebook` each raise
+  `RuntimeError` when called outside `solver_worker_context()`, succeed inside it, and the guard's
+  contextvar resets after the context exits).
 - **`tests/test_optimiser_routes_critical_edges.py`** — targeted edge cases not covered by the
   main route test file: rejecting non-mapping/invalid artifact handles, missing/incomplete
   artifact summaries, runtime state disappearing mid-request after a `touch_heavy_objects` call,
   orphan-artifact cleanup after a lost atomic-update race, frontier-select null-point-index
-  clearing, and 409-on-race paths for both `/frontier` and `/frontier/select`.
+  clearing, and race/invalid-handle paths for `/frontier` (now asserted through
+  `run_frontier_and_wait`'s terminal frontier-job status — `contract_error`/`http_status_code: 409`
+  for a lost atomic-update race, `error`/`http_status_code: 500` for an invalid persisted apply
+  artifact handle — rather than a synchronous response code) and 409-on-race for `/frontier/select`
+  (still synchronous; point selection was not moved to a background job).
 - **`tests/test_optimiser_routes_real_library.py`** — runs against the real `price-contour`
   library (not mocked) rather than a stub, organized into `TestRealLibraryShapeContracts` (pins
   that the route's frontier compute budget constant equals the library's own
   `max_total_points` default — the two must never drift apart), `TestRatebookApplyDetailContract`,
   `TestOnlineApplyDetailRealSchema`, `TestFrontierComputeBudgetContract`, and
   `TestEstimateSingleScanContract` (pins the "exactly one streaming scan" cost contract for
-  `/estimate`).
+  `/estimate`); the frontier-touching tests in these classes all go through
+  `run_frontier_and_wait` and assert on the polled `result` payload rather than an immediate
+  response body.
 - **`tests/test_optimiser_service_coverage.py`** — scenario-expander/optimiser-input streaming
   contiguity, slim-projection column pruning, ratebook non-source-banding-input preservation
   across a checkpoint, ratebook factor extraction under a low memory limit, non-finite/null
@@ -568,9 +666,10 @@ tests.
   `_build_artifact_payload` against `tests/fixtures/golden/optimiser_artifact_online.json` /
   `optimiser_artifact_ratebook.json`.
 - **`tests/performance/test_optimiser_memory_response_perf.py`** — the frontier route's response-
-  size cap under a large point frame, and that completed optimiser jobs get their heavy runtime
-  objects slimmed and owned artifacts evicted (a job-store/memory-discipline test, not a
-  wall-clock benchmark).
+  size cap under a large point frame (polls `/frontier/status/{job_id}` to `completed` and asserts
+  the cap against the polled `result`, since the sweep itself now runs off the request thread), and
+  that completed optimiser jobs get their heavy runtime objects slimmed and owned artifacts
+  evicted (a job-store/memory-discipline test, not a wall-clock benchmark).
 
 Known coverage gaps: no property-based/fuzz testing of the ratebook level-canonicalisation
 tie-breaking logic beyond the specific fixture cases in

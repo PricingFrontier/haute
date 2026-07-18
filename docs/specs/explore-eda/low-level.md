@@ -24,9 +24,14 @@ Related schemas live in `src/haute/schemas.py` (search `# /api/explore`): `Explo
   one batched aggregation: `row_count`, `columns: list[ExploreColumnStat]`, and
   `overview_summary: ExploreOverviewSummary`.
 - **`ExploreColumnStat`** (`schemas.py`) — per-column stats. `distinct_count` is `None` exactly
-  when the dtype is unhashable (`pl.Object`, per `_UNHASHABLE_DTYPES`). Numeric-only fields
-  (`p25_value`, `median_value`, `mean_value`, `p75_value`, `std_value`, `zero_count`,
-  `negative_count`) default to `None` and are only populated when `dtype.is_numeric()`.
+  when the dtype is unhashable (`pl.Object`, per `_UNHASHABLE_DTYPES`); otherwise it counts only
+  valid (non-null, non-NaN) values — `n_unique()` counts the null bucket and the NaN bucket each as
+  one distinct value, so column-stat assembly subtracts one for each bucket that is actually
+  present before storing it. Numeric-only fields (`p25_value`, `median_value`, `mean_value`,
+  `p75_value`, `std_value`, `zero_count`, `negative_count`) default to `None` and are only
+  populated when `dtype.is_numeric()`. `nan_count` is narrower still — `None` unless the dtype is
+  float (`Float32`/`Float64`, per `_is_float_dtype`), since `is_nan()` raises against a non-float
+  numeric column and NaN cannot occur in an integer column at all.
 - **`ExploreOverviewSummary`** (`schemas.py`) — `data_quality: ExploreDataQualitySummary` plus
   `categorical_summary: list[ExploreCategoricalColumnProfile]`, one profile per non-numeric
   column that has a schema stat.
@@ -40,10 +45,13 @@ Related schemas live in `src/haute/schemas.py` (search `# /api/explore`): `Explo
   "round-trippable" value per `_is_round_trippable_overview_value` (recursively: `None`, `str`,
   `bool`, `int`, finite `float`, or `list`/`dict` of the same, with dict keys required to be
   `str`).
-- **`EXPLORE_CACHE_VERSION = 2`** and **`EXPLORE_REPORT_CACHE_MAX_ENTRIES = 16`** — module
+- **`EXPLORE_CACHE_VERSION = 3`** and **`EXPLORE_REPORT_CACHE_MAX_ENTRIES = 16`** — module
   constants in `_explore_service.py`. The version is folded into `report_cache_key` so an
   incompatible report schema never collides with old cached payloads; the LRU is capped at 16
-  entries (`LRUCache`, from `caching`).
+  entries (`LRUCache`, from `caching`). Bumped from 2 to 3 when NaN counts were added and
+  `distinct_count` was changed to count valid values only — both change what a cached report
+  computes for an *unchanged* underlying dataframe, so a v2 report would otherwise be served with
+  stale distinct counts and no NaN data under an identical dataframe cache key.
 
 ## Control flow
 
@@ -144,7 +152,9 @@ Given `lf: pl.LazyFrame` and `schema: pl.Schema`:
    - min/max (via `_min_max_column_expr`, casting text-like/boolean bases to `String`) when
      `_supports_min_max(dtype)` (numeric, temporal, boolean, or lexical text-like bases).
    - if `dtype.is_numeric()`: p25/median/mean/p75/std, plus `zero::{name}` and
-     `negative::{name}` boolean-sum counts.
+     `negative::{name}` boolean-sum counts; additionally, if `_is_float_dtype(dtype)`:
+     `is_nan().sum().alias(f"nan::{name}")` — `is_nan()` yields null (not true) for null rows, so
+     `.sum()` counts only genuine NaN values, distinct from the null count.
    - `elif _has_categorical_value_counts(dtype)`: one `_categorical_value_counts_expr(name,
      dtype)` — `value_counts(sort=True).struct.rename_fields(...).head(50).implode()` — aliased
      `categorical_values::{name}`.
@@ -154,7 +164,11 @@ Given `lf: pl.LazyFrame` and `schema: pl.Schema`:
 3. Iterates columns again to build `ExploreColumnStat` entries from the single aggregate row,
    plus a `categorical_values_by_column` dict for columns with
    `_has_categorical_value_counts(dtype)`, parsed via `_parse_categorical_value_counts` (which
-   sorts by descending count, then `value is None` last, then value ascending).
+   sorts by descending count, then `value is None` last, then value ascending). `distinct_count`
+   starts as the raw `unique::{name}` aggregate and is then decremented by 1 if `null_count > 0`
+   and again by 1 if `nan_count` is truthy — `n_unique()` counts the null bucket and (for float
+   columns) the NaN bucket each as one distinct group, and the stat's `distinct_count` is defined
+   as valid-values-only.
 4. `row_count = int(aggregate_row["row_count"])`.
 5. Returns `ExploreFrameStats(row_count, columns, overview_summary=_build_overview_summary(...))`.
 
@@ -165,19 +179,27 @@ per-column stats.
 ### Data-quality summary (`_build_data_quality_summary`)
 
 Given `row_count` and `columns`, in this fixed order, each condition appends at most one
-`ExploreDataQualityIssue` (so up to 4 issues total per report):
+`ExploreDataQualityIssue` (so up to 5 issues total per report):
 
 1. **Missing values** — any column with `null_count > 0`, sorted by descending null ratio then
    name. Severity is `"danger"` if any of those columns are ≥50% null
    (`mostly_null_columns`), else `"warning"`. Label counts all missing-value columns; detail
    names only the single worst column and its percentage (via `_percent_text`, which renders
    `"<1%"` for a nonzero ratio under 1%).
-2. **Constant/single-value columns** — `distinct_count is not None and distinct_count <= 1 and
-   null_count < row_count`, excluding columns already flagged zero-heavy (see below) so a column
-   is not double-counted between the two issues.
-3. **Numeric columns with negatives** — any column with `negative_count > 0`, sorted by
+2. **NaN values** — any column with `(nan_count or 0) > 0`, sorted by descending NaN ratio then
+   name; severity/label/detail follow the same `"danger"`-if-≥50%-else-`"warning"` pattern as
+   missing values, with the label reading `"N numeric column(s) with NaN values"`. Computed and
+   appended immediately after missing values, before the zero-heavy/constant checks below.
+3. **Constant/single-value columns** — `distinct_count == 1 and null_count == 0 and not
+   (nan_count or 0)`, excluding columns already flagged zero-heavy (see below) so a column is not
+   double-counted between the two issues. Tightened from a looser `distinct_count <= 1 and
+   null_count < row_count` rule (which allowed a column with some nulls alongside its one valid
+   value to still count as constant): "constant" now means every row holds the same valid value,
+   with zero tolerance for null or NaN rows — a column that is single-valued except for missing or
+   NaN rows is reported under issue 1/2 instead (ruled 2026-07-16).
+4. **Numeric columns with negatives** — any column with `negative_count > 0`, sorted by
    descending count; detail names only the top offender with its row count.
-4. **Mostly-zero numeric columns** — `(row_count - null_count) > 0 and zero_count > 0 and
+5. **Mostly-zero numeric columns** — `(row_count - null_count) > 0 and zero_count > 0 and
    zero_count / (row_count - null_count) >= 0.95`, sorted by descending zero count; this issue is
    computed and referenced (via `zero_heavy_names`) before the constant-column issue is appended,
    even though it is appended last.
@@ -194,7 +216,14 @@ For each `ExploreColumnStat` whose dtype (looked up in `schema`) is not numeric,
 - `expandable = distinct_count not in (None, 0) and _has_categorical_value_counts(dtype) and
   bool(values)` — i.e. the column both qualifies for bounded value counts *and* actually has
   computed values (an all-null column with 0 rows would not be expandable).
-- `values_truncated = distinct_count is not None and distinct_count > 50`.
+- `values_truncated`: the underlying `value_counts(...).head(50)` expression emits one group per
+  distinct value *including* the null bucket, then clips to 50 — but `distinct_count` now excludes
+  the null bucket (valid-values-only, see above), so comparing `distinct_count > 50` directly would
+  under-count the groups the aggregation actually produced whenever the column has any nulls. The
+  actual comparison instead reconstructs `group_count = distinct_count + (1 if null_count > 0 else
+  0)` (or `None` if `distinct_count is None`) and sets `values_truncated = group_count is not None
+  and group_count > 50` — e.g. a column with exactly 50 distinct non-null values *and* some nulls
+  produces 51 aggregation groups and is truncated, even though `distinct_count` alone reads 50.
 - `values` comes from the `values_by_column` dict built in `_build_frame_stats`; columns without
   an entry get `[]`.
 
@@ -205,6 +234,22 @@ For each `ExploreColumnStat` whose dtype (looked up in `schema`) is not numeric,
 - **All-null column**: min/max are `None` (Polars aggregate returns `None`); for numeric columns
   all of p25/median/mean/p75/std are `None` but `zero_count`/`negative_count` are `0`, not
   `None` — a numeric column's count fields are always present even when every value is null.
+- **All-NaN float column**: `null_count` alone would read this column as fully populated (NaN is
+  not null); `nan_count` catches it, and `distinct_count` reads `0` rather than `1` since the NaN
+  bucket is subtracted out along with the null bucket (`test_build_frame_stats_reports_nan_counts_for_float_columns_only`,
+  `test_build_frame_stats_distinct_count_excludes_nan_bucket`). The column is flagged under the
+  NaN data-quality issue, not the constant-column issue
+  (`test_build_frame_stats_all_nan_column_is_not_flagged_constant`).
+- **A single valid value plus nulls or NaNs is not constant.** A column with exactly one distinct
+  non-null value but any null or NaN rows fails the strict `null_count == 0 and not nan_count` gate
+  and is reported only under the missing-values/NaN issue, never double-counted as constant
+  (`test_build_frame_stats_single_valid_value_with_nan_is_not_constant`,
+  `test_build_frame_stats_single_valid_value_with_nulls_is_not_constant`).
+- **NaN counting is gated on float dtype, not `is_numeric()`.** `is_nan()` raises
+  `InvalidOperationError` against a non-float numeric column (e.g. `Int64`); `_is_float_dtype`
+  restricts the `nan::{name}` aggregation and the resulting `nan_count` field to
+  `Float32`/`Float64` columns only, leaving it `None` for every other dtype including other
+  numeric ones.
 - **Binary columns with non-UTF-8 bytes**: `_categorical_value_label_expr` uses
   `map_elements(_lossy_decode_binary, ...)` instead of `cast(pl.String)`; undecodable bytes
   become `"�"` (the invariant under test in
@@ -219,11 +264,13 @@ For each `ExploreColumnStat` whose dtype (looked up in `schema`) is not numeric,
   (`_STRING_MIN_MAX_DTYPE_BASES` includes `pl.Boolean`) so `"true"`/`"false"` display identically
   in the Schema and Categorical cards, instead of Python's `str(bool)` capitalisation.
 - **High-cardinality columns**: value counts are capped at exactly 50
-  (`_CATEGORICAL_VALUE_COUNT_LIMIT`) via `.head(50)`; `values_truncated` is `True` only when
-  `distinct_count > 50` (exactly 50 distinct values is not truncated — see
-  `test_build_frame_stats_returns_all_values_for_exactly_50_categorical_groups`).
-  `expandable`/`values_truncated` are independent booleans — a column can be expandable without
-  being truncated.
+  (`_CATEGORICAL_VALUE_COUNT_LIMIT`) via `.head(50)`; `values_truncated` is `True` only when the
+  reconstructed group count (`distinct_count` plus 1 if the column has any nulls — see Categorical
+  summary above) exceeds 50 (exactly 50 distinct non-null values with no nulls is not truncated —
+  see `test_build_frame_stats_returns_all_values_for_exactly_50_categorical_groups`; exactly 50
+  distinct non-null values *plus* nulls is 51 groups and *is* truncated — see
+  `test_categorical_truncation_counts_null_bucket_as_a_group`). `expandable`/`values_truncated`
+  are independent booleans — a column can be expandable without being truncated.
 - **Nested/unsupported dtypes** (e.g. `List`): not numeric and not text-like, so
   `_has_categorical_value_counts` is `False`; `distinct_count` is still computed (nested types
   are hashable in Polars) but the profile has `expandable=False`, `values=[]`.
@@ -303,7 +350,7 @@ For each `ExploreColumnStat` whose dtype (looked up in `schema`) is not numeric,
     the status flips).
   - `test_explore_status_unknown_job_is_404`.
   - A block of column-stat regression tests (`test_cache_report_includes_one_column_stat_per_column`,
-    `test_null_count_matches_input`, `test_distinct_count_matches_input`,
+    `test_null_count_matches_input`, `test_distinct_count_matches_input`, `test_nan_count_matches_input`,
     `test_min_value_truncated_at_80_chars_with_ellipsis`,
     `test_all_null_column_has_none_min_max_values`, `test_column_order_matches_schema`) driven
     through the full `/api/explore/run` → poll path with an identity prep step, so per-column
@@ -315,7 +362,19 @@ For each `ExploreColumnStat` whose dtype (looked up in `schema`) is not numeric,
     (including exactly-50 and >50 truncation boundaries), unsupported (nested/list) categorical
     profiles, the `count`-named-column aliasing collision guard, Binary/Duration lenient
     formatting, and the single-batched-collect invariant (call-count assertion plus query-plan
-    inspection for absence of `UNION`/`CACHE`).
+    inspection for absence of `UNION`/`CACHE`). The three-way missingness split added: NaN counts
+    populated only for float columns (`test_build_frame_stats_reports_nan_counts_for_float_columns_only`),
+    the NaN data-quality issue and its danger/warning severity threshold
+    (`test_build_frame_stats_flags_nan_columns_in_quality_summary`,
+    `test_build_frame_stats_nan_issue_is_warning_below_half`), `distinct_count` excluding the null
+    and NaN buckets (`test_build_frame_stats_distinct_count_excludes_null_bucket`,
+    `test_build_frame_stats_distinct_count_excludes_nan_bucket`), the tightened constant-column
+    rule rejecting a single valid value alongside nulls or NaNs
+    (`test_build_frame_stats_single_valid_value_with_nan_is_not_constant`,
+    `test_build_frame_stats_all_nan_column_is_not_flagged_constant`,
+    `test_build_frame_stats_single_valid_value_with_nulls_is_not_constant`), and the categorical
+    `values_truncated` group-count reconstruction counting the null bucket as its own group
+    (`test_categorical_truncation_counts_null_bucket_as_a_group`).
   - `_clean_explore_state` autouse fixture snapshots/restores `_store.jobs` and clears
     `_explore_service._report_cache` around each test so report-cache and job-store state never
     leaks between tests.

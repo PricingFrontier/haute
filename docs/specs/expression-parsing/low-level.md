@@ -65,8 +65,16 @@ regex value parsing) → per-node: if the function body itself fails to re-parse
 chain-link following for `.connect(...).connect(...)`, then a real `ast.parse` of the recovered
 span handed to the *same* `_extract_connect_calls` the healthy path uses) → build nodes/edges with
 the shared `_build_edges`/`_build_rf_nodes` helpers, so both parse paths emit identically-shaped
-output → optionally recover and merge submodels via `_recover_submodels`, mirroring the healthy
-path's submodel step.
+output → recover `# haute:preserve` blocks via `_extract_preserved_blocks` — a pure line scan, so
+it works unchanged on the syntactically-broken source that triggered the fallback in the first
+place — and populate `preserved_blocks` on the result, mirroring the healthy path's preamble
+extraction → optionally recover and merge submodels via `_recover_submodels`, mirroring the
+healthy path's submodel step.
+
+> NOTE: prior to this fix, `fallback_parse` built its `PipelineParseResult` without
+> `preserved_blocks` at all, so any file that hit the regex-fallback path (e.g. a save while the
+> file had a transient syntax error) silently dropped every `# haute:preserve` block on the next
+> codegen round.
 
 **`merge_submodels`** (`_parser_submodels.py`): always builds the hierarchical form first — one
 `submodel__<name>` placeholder node per child graph (via `build_submodel_placeholder`), with

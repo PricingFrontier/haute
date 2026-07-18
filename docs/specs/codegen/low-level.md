@@ -281,7 +281,11 @@ than one file per module:
   same result as the in-process executor for the same batch, covering
   scenario-expander, optimiser-apply, live-switch, and modelling nodes
   (the "genuine passthrough" node types called out in the high-level
-  Design rationale).
+  Design rationale), plus `OUTPUT` — for the opposite reason: `OUTPUT` is
+  *not* a passthrough, and this harness is what catches a standalone run
+  silently reverting to one (its generated body once regressed to a bare
+  `return {first}`, so a saved pipeline's `pipeline.run()` returned the raw
+  upstream frame instead of the assembled response document).
 - **`test_codegen_builders_contracts.py`** — small focused contracts not
   covered elsewhere: live-switch body scenario-awareness, and model-score
   registered-source decorator kwargs.
