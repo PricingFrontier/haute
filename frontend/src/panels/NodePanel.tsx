@@ -598,6 +598,7 @@ const CACHED_PREVIEW_KEYS: readonly (keyof HauteNodeData)[] = [
   "_columns",
   "_availableColumns",
   "_schemaWarnings",
+  "_columnsSource",
 ]
 
 function clearCachedResultShape(data: HauteNodeData): HauteNodeData {

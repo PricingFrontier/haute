@@ -24,6 +24,7 @@ from haute._ast_helpers import (
     _extract_connect_calls,
     _extract_pipeline_meta,
     _extract_preamble,
+    _extract_preserved_blocks,
     _get_docstring,
 )
 from haute._config_builder import (
@@ -931,6 +932,10 @@ def fallback_parse(
         pipeline_name=pipeline_name,
         pipeline_description=pipeline_desc,
         preamble=preamble,
+        # The marker scan is a pure line scan, so it works on the
+        # syntactically-broken source that triggered this fallback; without
+        # it a fallback-parse -> save cycle deletes every preserve block.
+        preserved_blocks=_extract_preserved_blocks(source),
         source_file=source_file,
         warning=f"File has syntax errors (line {syntax_error.lineno}); parsed via regex fallback",
     )

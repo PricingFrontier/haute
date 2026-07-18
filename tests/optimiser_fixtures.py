@@ -375,3 +375,43 @@ def make_select_job(
         frontier_data=fd,
         **extra,
     )
+
+
+# ---------------------------------------------------------------------------
+# Background frontier-sweep polling
+# ---------------------------------------------------------------------------
+
+_FRONTIER_TERMINAL_STATUSES = frozenset(
+    {"completed", "error", "contract_error", "memory_limited", "timed_out", "cancelled"}
+)
+
+
+def poll_frontier_until_done(client: Any, job_id: str, timeout: float = 30.0) -> dict[str, Any]:
+    """Poll ``/frontier/status/{job_id}`` until a terminal status."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        resp = client.get(f"/api/optimiser/frontier/status/{job_id}")
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        if data["status"] in _FRONTIER_TERMINAL_STATUSES:
+            return data
+        time.sleep(0.02)
+    raise TimeoutError(f"Frontier job {job_id} did not finish within {timeout}s")
+
+
+def run_frontier_and_wait(
+    client: Any,
+    payload: dict[str, Any],
+    timeout: float = 30.0,
+) -> dict[str, Any]:
+    """Start a frontier sweep and poll it to a terminal state.
+
+    Returns the terminal status payload; callers assert on ``status``,
+    ``message``/``http_status_code`` (errors) or ``result`` (success).
+    """
+    resp = client.post("/api/optimiser/frontier", json=payload)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["status"] == "started"
+    assert body["job_id"]
+    return poll_frontier_until_done(client, body["job_id"], timeout=timeout)

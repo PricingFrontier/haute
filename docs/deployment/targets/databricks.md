@@ -93,8 +93,11 @@ The two values you need are:
 
 | Secret name | Value |
 |---|---|
-| `DATABRICKS_HOST` | Your workspace URL from Step 1 |
-| `DATABRICKS_TOKEN` | Your personal access token from Step 2 |
+| `DATABRICKS_RATING_HOST` | Your workspace URL from Step 1 |
+| `DATABRICKS_RATING_TOKEN` | Your personal access token from Step 2 |
+
+!!! note "Why the `RATING` in the name?"
+    The deploy pipeline uses these `DATABRICKS_RATING_*` names for the production serving credentials, keeping them separate from the general `DATABRICKS_HOST`/`DATABRICKS_TOKEN` pair the editor uses for data access and MLflow. The values can be the same workspace URL and token - only the names differ, and the deploy will fail with a clear error if the `RATING` names are missing.
 
 How to add them depends on your CI provider:
 
@@ -200,7 +203,7 @@ Here's what your complete `haute.toml` should look like:
 ```toml
 [project]
 name = "motor-pricing"
-pipeline = "main.py"
+pipeline = "rating/main.py"
 
 [deploy]
 target = "databricks"
@@ -350,7 +353,7 @@ Or in the Databricks UI: click **Serving** in the left sidebar and look for your
 
 ### Token expired
 
-Tokens have a lifetime (default 90 days). If your deploy suddenly fails with an authentication error, generate a new token (Step 2) and update the `DATABRICKS_TOKEN` secret in your CI provider.
+Tokens have a lifetime (default 90 days). If your deploy suddenly fails with an authentication error, generate a new token (Step 2) and update the `DATABRICKS_RATING_TOKEN` secret in your CI provider.
 
 ### Slow first request (cold start)
 
@@ -368,7 +371,7 @@ Before your first deploy, confirm:
 
 - [ ] You have your Databricks workspace URL
 - [ ] You have a Personal Access Token
-- [ ] Both are added as CI secrets (`DATABRICKS_HOST`, `DATABRICKS_TOKEN`)
+- [ ] Both are added as CI secrets (`DATABRICKS_RATING_HOST`, `DATABRICKS_RATING_TOKEN`)
 - [ ] Unity Catalog is enabled with a catalog and schema
 - [ ] `haute.toml` has the correct `experiment_name`, `catalog`, and `schema`
 - [ ] Model Serving is available in your workspace

@@ -1,4 +1,7 @@
+import { useState } from "react"
 import type { OnUpdateConfig } from "../editors"
+import { ApiError } from "../../api/client"
+import type { DispersionParam } from "../../api/types"
 import { configField } from "../../utils/configField"
 import { toggleButtonStyle } from "./styles"
 import { FailoverHelp } from "./FailoverHelp"
@@ -7,9 +10,7 @@ import { OffsetFieldLabel } from "./OffsetFieldLabel"
 type Column = { name: string; dtype: string }
 
 // Families the backend validates (_VALID_GLM_LINKS in
-// routes/_train_service.py). Keep in sync with that dict. Neg. Binomial is
-// intentionally absent: its dispersion `theta` fits silently at 1.0 with no
-// gate yet — it returns once that gate exists (tracked separately).
+// routes/_train_service.py). Keep in sync with that dict.
 const FAMILIES = [
   { value: "poisson", label: "Poisson", hint: "Claim frequency" },
   { value: "gamma", label: "Gamma", hint: "Claim severity" },
@@ -17,6 +18,7 @@ const FAMILIES = [
   { value: "gaussian", label: "Gaussian", hint: "Linear regression" },
   { value: "binomial", label: "Binomial", hint: "Binary outcomes" },
   { value: "quasipoisson", label: "Quasi-Poisson", hint: "Overdispersed counts" },
+  { value: "negbinomial", label: "Neg. Binomial", hint: "Overdispersed counts (explicit theta)" },
 ] as const
 
 const CANONICAL_LINKS: Record<string, string> = {
@@ -26,13 +28,23 @@ const CANONICAL_LINKS: Record<string, string> = {
   gaussian: "identity",
   binomial: "logit",
   quasipoisson: "log",
+  negbinomial: "log",
 }
 
 const TWEEDIE_HELP =
   "Tweedie interpolates between Poisson (power 1) and Gamma (power 2); the " +
   "variance power sets where. There is no sensible default — leaving it unset " +
-  "would silently fit at power 1.5, so a choice is required. You can change it " +
-  "later; the value is kept if you switch family and back."
+  "would silently fit at power 1.5, so a choice is required. Estimate profiles " +
+  "the likelihood over the power on the node's training data; the result is " +
+  "filled in for you to accept or adjust. You can change it later; the value " +
+  "is kept if you switch family and back."
+
+const THETA_HELP =
+  "Negative Binomial dispersion: variance = mean + mean²/theta (smaller theta " +
+  "= more overdispersion). RustyStats does not estimate theta — leaving it " +
+  "unset would silently fit at theta=1.0, so a choice is required. Estimate " +
+  "profiles the likelihood over theta on the node's training data; the result " +
+  "is filled in for you to accept or adjust."
 
 const LINK_FUNCTIONS = ["log", "identity", "logit", "inverse", "sqrt", "cloglog", "probit"]
 
@@ -51,9 +63,16 @@ export type GLMTargetConfigProps = {
   config: Record<string, unknown>
   onUpdate: OnUpdateConfig
   columns: Column[]
+  /** Run a profile-likelihood dispersion estimate on the node's training
+   *  data and resolve with the value. The estimate is an explicit user
+   *  action — the resolved value is filled into the config field for the
+   *  user to accept or adjust, never applied silently. */
+  onEstimateDispersion?: (param: DispersionParam) => Promise<number>
 }
 
-export function GLMTargetConfig({ config, onUpdate, columns }: GLMTargetConfigProps) {
+export function GLMTargetConfig({ config, onUpdate, columns, onEstimateDispersion }: GLMTargetConfigProps) {
+  const [estimating, setEstimating] = useState<DispersionParam | null>(null)
+  const [estimateError, setEstimateError] = useState<string | null>(null)
   const target = configField(config, "target", "")
   const weight = configField(config, "weight", "")
   // No display default: an unselected family must LOOK unselected — the
@@ -65,6 +84,37 @@ export function GLMTargetConfig({ config, onUpdate, columns }: GLMTargetConfigPr
   const intercept = configField(config, "intercept", true)
   const metrics = configField<string[]>(config, "metrics", ["gini", "poisson_deviance"])
   const canonicalLink = CANONICAL_LINKS[family] || "log"
+
+  const handleEstimate = async (param: DispersionParam) => {
+    if (!onEstimateDispersion || estimating) return
+    setEstimating(param)
+    setEstimateError(null)
+    try {
+      const value = await onEstimateDispersion(param)
+      // Filled in, not applied silently: the value lands in the visible,
+      // editable field and the user keeps the final say.
+      onUpdate(param, value)
+    } catch (e) {
+      // Prefer the backend's actionable detail ("GLM config has no factors…")
+      // over the generic "HTTP 400" message.
+      const detail = e instanceof ApiError ? e.detail : undefined
+      setEstimateError(detail || (e instanceof Error ? e.message : String(e)))
+    } finally {
+      setEstimating(null)
+    }
+  }
+
+  const estimateButton = (param: DispersionParam) =>
+    onEstimateDispersion && (
+      <button
+        onClick={() => handleEstimate(param)}
+        disabled={estimating !== null}
+        className="px-2.5 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap"
+        style={{ background: "var(--bg-input)", border: "1px solid var(--border)", color: "var(--text-primary)", opacity: estimating ? 0.6 : 1 }}
+      >
+        {estimating === param ? "Estimating…" : "Estimate from data"}
+      </button>
+    )
 
   return (
     <div>
@@ -133,6 +183,7 @@ export function GLMTargetConfig({ config, onUpdate, columns }: GLMTargetConfigPr
                       gaussian: ["gini", "rmse"],
                       binomial: ["auc", "logloss"],
                       quasipoisson: ["gini", "poisson_deviance"],
+                      negbinomial: ["gini", "poisson_deviance"],
                     }
                     onUpdate({
                       family: f.value,
@@ -185,13 +236,16 @@ export function GLMTargetConfig({ config, onUpdate, columns }: GLMTargetConfigPr
               <FailoverHelp label={TWEEDIE_HELP} />
             </label>
             {config.var_power === undefined ? (
-              <button
-                onClick={() => onUpdate("var_power", 1.5)}
-                className="w-full mt-1 px-2.5 py-1.5 rounded-lg text-xs font-medium"
-                style={{ background: "var(--warning-soft-subtle)", border: "1px solid var(--warning-border)", color: "var(--warning)" }}
-              >
-                Set variance power (required for Tweedie)
-              </button>
+              <div className="mt-1 flex gap-1.5">
+                <button
+                  onClick={() => onUpdate("var_power", 1.5)}
+                  className="flex-1 px-2.5 py-1.5 rounded-lg text-xs font-medium"
+                  style={{ background: "var(--warning-soft-subtle)", border: "1px solid var(--warning-border)", color: "var(--warning)" }}
+                >
+                  Set variance power (required for Tweedie)
+                </button>
+                {estimateButton("var_power")}
+              </div>
             ) : (
               <>
                 <input
@@ -200,10 +254,53 @@ export function GLMTargetConfig({ config, onUpdate, columns }: GLMTargetConfigPr
                   onChange={(e) => onUpdate("var_power", parseFloat(e.target.value))}
                   className="w-full mt-0.5"
                 />
-                <div className="text-[11px] font-mono text-right" style={{ color: "var(--text-muted)" }}>
-                  {configField(config, "var_power", 1.5).toFixed(2)}
+                <div className="mt-0.5 flex items-center justify-between gap-1.5">
+                  {estimateButton("var_power")}
+                  <div className="text-[11px] font-mono text-right" style={{ color: "var(--text-muted)" }}>
+                    {configField(config, "var_power", 1.5).toFixed(2)}
+                  </div>
                 </div>
               </>
+            )}
+            {estimateError && estimating === null && (
+              <div className="mt-1 text-[11px]" style={{ color: "var(--warning)" }}>
+                Estimation failed: {estimateError}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Negative Binomial dispersion — gated: no silent theta=1.0
+            failover. Starts empty; the user types a value or triggers an
+            explicit estimate from the training data. */}
+        {family === "negbinomial" && (
+          <div>
+            <label className="flex items-center gap-1 text-[11px]" style={{ color: "var(--text-muted)" }}>
+              Dispersion theta (required for Neg. Binomial)
+              <FailoverHelp label={THETA_HELP} />
+            </label>
+            <div className="mt-1 flex gap-1.5">
+              <input
+                type="number" min={0} step="any"
+                value={typeof config.theta === "number" ? config.theta : ""}
+                placeholder="e.g. 1.5"
+                onChange={(e) => {
+                  const parsed = parseFloat(e.target.value)
+                  onUpdate("theta", Number.isFinite(parsed) ? parsed : null)
+                }}
+                className="flex-1 min-w-0 px-2.5 py-1.5 rounded-lg text-xs font-mono"
+                style={
+                  typeof config.theta === "number"
+                    ? { background: "var(--bg-input)", border: "1px solid var(--border)", color: "var(--text-primary)" }
+                    : { background: "var(--warning-soft-subtle)", border: "1px solid var(--warning-border)", color: "var(--text-primary)" }
+                }
+              />
+              {estimateButton("theta")}
+            </div>
+            {estimateError && estimating === null && (
+              <div className="mt-1 text-[11px]" style={{ color: "var(--warning)" }}>
+                Estimation failed: {estimateError}
+              </div>
             )}
           </div>
         )}

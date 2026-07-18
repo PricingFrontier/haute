@@ -308,10 +308,41 @@ def _model_cache_key(
     version: str,
     artifact_path: str,
     task: str,
+    artifact_fingerprint: str,
 ) -> tuple[str, ...]:
+    """Build the in-process model cache key.
+
+    ``artifact_fingerprint`` folds the identity of the model artifact
+    *bytes* into the key (see :func:`_local_artifact_fingerprint`), so a
+    re-logged run or a ``version="latest"`` retrain-in-place — same run
+    reference, different bytes — misses instead of serving the previously
+    loaded model on a long-lived server.  It is a required keyword so no
+    call site can silently drop the byte-identity component.  Pass ``""``
+    only where no local artifact file exists to fingerprint (pyfunc
+    models loaded through MLflow by URI — a documented residual).
+
+    ``run_id`` stays in slot 1: targeted ``clear_model_cache(run_id=...)``
+    eviction matches on ``key[1]``.
+    """
     if version:
-        return (source_type, run_id, version, artifact_path, task)
-    return (source_type, run_id, artifact_path, task)
+        return (source_type, run_id, version, artifact_path, task, artifact_fingerprint)
+    return (source_type, run_id, artifact_path, task, artifact_fingerprint)
+
+
+def _local_artifact_fingerprint(artifact_path: str, local_path: str) -> str:
+    """Byte-identity fingerprint of the local model artifact file.
+
+    Reuses the deploy path's
+    :func:`~haute.deploy._scorer.artifact_identity_fingerprint` derivation
+    (stat-gated content hash) rather than minting a parallel one, so the
+    serve-path in-process cache and the deploy output-schema cache agree
+    on what "the same artifact" means.  Imported lazily to avoid a
+    module-import cycle (``haute.deploy._scorer`` imports from this
+    module's dependents).
+    """
+    from haute.deploy._scorer import artifact_identity_fingerprint
+
+    return artifact_identity_fingerprint({artifact_path: local_path})
 
 
 # ---------------------------------------------------------------------------
@@ -781,7 +812,8 @@ def clear_model_cache(run_id: str | None = None) -> int:
         _model_cache.clear()
         _reset_model_cache_stats()
     else:
-        # Cache keys are ``(source_type, resolved_run_id, version_or_artifact, task)``.
+        # Cache keys are ``(source_type, resolved_run_id, [version,]
+        # artifact, task, artifact_fingerprint)`` — run_id is always slot 1.
         # Evict every entry whose run_id slot matches (may be multiple,
         # different task / version per run) and let the cascade handle
         # feature-validation-cache invalidation.  Counters are left
@@ -895,7 +927,10 @@ def load_mlflow_model(
     with categorical feature support.  All other models are loaded via
     MLflow's pyfunc flavor.
 
-    Cached by ``(source_type, identifier, version/artifact, task)``.
+    Cached by ``(source_type, identifier, version/artifact, task,
+    artifact_fingerprint)`` — the fingerprint is the byte identity of the
+    local model artifact, so re-logging a run or retraining a
+    ``version="latest"`` model in place invalidates the in-process entry.
 
     Args:
         source_type: ``"run"`` to load from a specific run, or ``"registered"``
@@ -921,25 +956,33 @@ def load_mlflow_model(
     # resolve_mlflow_source() (which hits the MLflow tracking server)
     # on every invocation when the model is already cached.
     # For source_type="run" with a known artifact_path, the cache key
-    # components are fully determined without any network call.
+    # components are fully determined without any network call.  The
+    # artifact-fingerprint component is derived from the disk-cached file,
+    # so the in-process entry can never outlive the bytes it was loaded
+    # from; a fingerprint change (re-log / retrain-in-place) is a miss.
     if source_type == "run" and run_id and artifact_path:
-        fast_key = _model_cache_key(
-            source_type=source_type,
-            run_id=run_id,
-            version="",
-            artifact_path=artifact_path,
-            task=task,
-        )
-        cached = _model_cache.get(fast_key)
-        if cached is not None:
-            _record_cache_hit(
-                run_id=run_id,
-                artifact_path=artifact_path,
-                flavor=_flavor_from_artifact(artifact_path),
-            )
-            return cached
         flavor = _flavor_from_artifact(artifact_path)
-        if flavor in ("catboost", "rustystats"):
+        if flavor == "pyfunc":
+            # No local artifact file exists to fingerprint — pyfunc loads
+            # by MLflow URI.  Keyed without byte identity (documented
+            # residual in _model_cache_key).
+            fast_key = _model_cache_key(
+                source_type=source_type,
+                run_id=run_id,
+                version="",
+                artifact_path=artifact_path,
+                task=task,
+                artifact_fingerprint="",
+            )
+            cached = _model_cache.get(fast_key)
+            if cached is not None:
+                _record_cache_hit(
+                    run_id=run_id,
+                    artifact_path=artifact_path,
+                    flavor=flavor,
+                )
+                return cached
+        else:
             with _disk_cache_run_in_use(run_id):
                 local_path = _artifact_cache_path(
                     Path.cwd() / ".cache" / "models",
@@ -947,6 +990,24 @@ def load_mlflow_model(
                     artifact_path,
                 )
                 if local_path.is_file():
+                    fast_key = _model_cache_key(
+                        source_type=source_type,
+                        run_id=run_id,
+                        version="",
+                        artifact_path=artifact_path,
+                        task=task,
+                        artifact_fingerprint=_local_artifact_fingerprint(
+                            artifact_path, str(local_path)
+                        ),
+                    )
+                    cached = _model_cache.get(fast_key)
+                    if cached is not None:
+                        _record_cache_hit(
+                            run_id=run_id,
+                            artifact_path=artifact_path,
+                            flavor=flavor,
+                        )
+                        return cached
                     with _artifact_io_lock(run_id, artifact_path):
                         # Single-flight: a concurrent caller may have loaded
                         # this exact model while we waited for the lock.
@@ -997,12 +1058,30 @@ def load_mlflow_model(
     # Detect flavor from artifact path
     flavor = _flavor_from_artifact(resolved_artifact)
 
+    # Resolve the local artifact up front so its byte identity can be part
+    # of the cache key: a "latest" retrain or re-logged run must miss, not
+    # serve the previously loaded model.  For a cached artifact this is a
+    # stat-gated memo lookup; only a genuinely new artifact downloads here.
+    # Pyfunc models load by MLflow URI with no local file to fingerprint —
+    # keyed without byte identity (documented residual in _model_cache_key).
+    local_artifact_path: str | None = None
+    artifact_fp = ""
+    if flavor in ("catboost", "rustystats"):
+        with _disk_cache_run_in_use(resolved_run_id):
+            local_artifact_path = _resolve_artifact_local(
+                mlflow_mod,
+                resolved_run_id,
+                resolved_artifact,
+            )
+            artifact_fp = _local_artifact_fingerprint(resolved_artifact, local_artifact_path)
+
     cache_key = _model_cache_key(
         source_type=source_type,
         run_id=resolved_run_id,
         version=resolved_version,
         artifact_path=resolved_artifact,
         task=task,
+        artifact_fingerprint=artifact_fp,
     )
 
     cached = _model_cache.get(cache_key)
@@ -1052,6 +1131,21 @@ def load_mlflow_model(
                     artifact=resolved_artifact,
                     flavor=flavor,
                     task=task,
+                )
+                # The bounded retry may have deleted and re-downloaded the
+                # artifact; re-derive the fingerprint so the entry is keyed
+                # by the bytes that were actually loaded (stat-gated memo —
+                # a no-op stat when nothing changed).
+                assert local_artifact_path is not None
+                cache_key = _model_cache_key(
+                    source_type=source_type,
+                    run_id=resolved_run_id,
+                    version=resolved_version,
+                    artifact_path=resolved_artifact,
+                    task=task,
+                    artifact_fingerprint=_local_artifact_fingerprint(
+                        resolved_artifact, local_artifact_path
+                    ),
                 )
         else:
             raw_model = _load_pyfunc_model(mlflow_mod, resolved_run_id, resolved_artifact)

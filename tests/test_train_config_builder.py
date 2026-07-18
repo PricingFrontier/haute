@@ -108,6 +108,7 @@ class TestBuildTrainParams:
             "l1_ratio",
             "intercept",
             "var_power",
+            "theta",
             "offset",
         }
 
@@ -378,6 +379,7 @@ class TestDefaultMetricsDerivation:
                 "family": family,
                 "all_factors": True,
                 "var_power": 1.5,
+                "theta": 1.5,
             },
             data="d",
         )
@@ -466,6 +468,78 @@ class TestFailoverGates:
             data="d",
         )
         assert kwargs["variance_power"] == 1.6
+
+    # -- Negative Binomial dispersion (theta) ------------------------------
+
+    def test_glm_negbinomial_without_theta_fails_loud(self):
+        """RustyStats does not estimate theta — unset fits silently at 1.0."""
+        with pytest.raises(TrainingConfigError, match="theta"):
+            build_training_job_kwargs(
+                {
+                    "target": "y",
+                    "algorithm": "glm",
+                    "family": "negbinomial",
+                    "all_factors": True,
+                },
+                data="d",
+            )
+
+    def test_glm_negbinomial_with_theta_passes(self):
+        kwargs = build_training_job_kwargs(
+            {
+                "target": "y",
+                "algorithm": "glm",
+                "family": "negbinomial",
+                "all_factors": True,
+                "theta": 2.5,
+            },
+            data="d",
+        )
+        # theta must round-trip into the fit params — the gate is pointless
+        # if the threaded value never reaches GLMAlgorithm.fit.
+        assert kwargs["params"]["theta"] == 2.5
+
+    def test_glm_negbinomial_with_params_theta_passes(self):
+        kwargs = build_training_job_kwargs(
+            {
+                "target": "y",
+                "algorithm": "glm",
+                "family": "negbinomial",
+                "all_factors": True,
+                "params": {"theta": 1.8},
+            },
+            data="d",
+        )
+        assert kwargs["params"]["theta"] == 1.8
+
+    def test_glm_non_negbinomial_does_not_require_theta(self):
+        build_training_job_kwargs(
+            {
+                "target": "y",
+                "algorithm": "glm",
+                "family": "quasipoisson",
+                "all_factors": True,
+            },
+            data="d",
+        )
+
+    def test_negbinomial_theta_survives_script_export(self):
+        """The exported standalone script must carry theta — an export that
+        drops it would train the silent theta=1.0 model the gate forbids."""
+        from haute.modelling import generate_training_script
+
+        script = generate_training_script(
+            {
+                "target": "y",
+                "algorithm": "glm",
+                "family": "negbinomial",
+                "terms": {"age": {"type": "linear"}},
+                "theta": 2.5,
+            },
+            "data.parquet",
+        )
+        # params is rendered with repr(), so the key appears single-quoted.
+        assert "'theta': 2.5" in script
 
     # -- GLM factor set ---------------------------------------------------
 
@@ -561,6 +635,17 @@ class TestFailoverGates:
                 {
                     "algorithm": "glm",
                     "family": "gamma",
+                    "terms": {"age": {"type": "linear"}},
+                }
+            )
+            is None
+        )
+        assert (
+            training_objective_issue(
+                {
+                    "algorithm": "glm",
+                    "family": "negbinomial",
+                    "theta": 2.5,
                     "terms": {"age": {"type": "linear"}},
                 }
             )

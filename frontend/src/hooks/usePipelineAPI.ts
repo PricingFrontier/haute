@@ -136,7 +136,7 @@ function canPreviewNode(node: Node): boolean {
   return !NON_EXECUTABLE_PREVIEW_TYPES.has(effectiveNodeType(node))
 }
 
-function applyPreviewColumnsToNodes(nodes: Node[], nodeId: string, columns: ColumnDef[], result: NodeResult): Node[] {
+function applyPreviewColumnsToNodes(nodes: Node[], nodeId: string, columns: ColumnDef[], result: NodeResult, source: string): Node[] {
   return nodes.map((n) =>
     n.id === nodeId
       ? {
@@ -146,13 +146,14 @@ function applyPreviewColumnsToNodes(nodes: Node[], nodeId: string, columns: Colu
           _columns: columns,
           _availableColumns: result.available_columns ?? columns,
           _schemaWarnings: result.schema_warnings ?? [],
+          _columnsSource: source,
         },
       }
       : n,
   )
 }
 
-function applyPreviewSchemaMapsToNodes(nodes: Node[], result: NodeResult): Node[] {
+function applyPreviewSchemaMapsToNodes(nodes: Node[], result: NodeResult, source: string): Node[] {
   const nodeColumns = result.node_columns ?? {}
   if (Object.keys(nodeColumns).length === 0) return nodes
   const nodeAvailableColumns = result.node_available_columns ?? {}
@@ -167,15 +168,41 @@ function applyPreviewSchemaMapsToNodes(nodes: Node[], result: NodeResult): Node[
         _columns: columns,
         _availableColumns: nodeAvailableColumns[n.id] ?? columns,
         _schemaWarnings: nodeSchemaWarnings[n.id] ?? [],
+        _columnsSource: source,
       },
     }
   })
 }
 
-function applyPreviewResultColumnsToNodes(nodes: Node[], nodeId: string, result: NodeResult): Node[] {
-  const mapped = applyPreviewSchemaMapsToNodes(nodes, result)
+function applyPreviewResultColumnsToNodes(nodes: Node[], nodeId: string, result: NodeResult, source: string): Node[] {
+  const mapped = applyPreviewSchemaMapsToNodes(nodes, result, source)
   if (!result.columns || result.node_columns?.[nodeId]) return mapped
-  return applyPreviewColumnsToNodes(mapped, nodeId, result.columns as ColumnDef[], result)
+  return applyPreviewColumnsToNodes(mapped, nodeId, result.columns as ColumnDef[], result, source)
+}
+
+/**
+ * Drop column stashes whose capture source no longer matches the active
+ * source. The stash is a cache keyed (implicitly) by node id; the active
+ * source is an input that affects its contents, so a stash captured under
+ * another source — or under an unknown one (no `_columnsSource` tag) —
+ * must be invalidated, never served. Stripped nodes return to the
+ * never-previewed state the lazy gap-fill in `refreshPreview` already
+ * handles; editors see "columns not loaded yet", exactly as on first load.
+ * Returns the input array unchanged when nothing is stale.
+ */
+function invalidateStaleColumnStashes(nodes: Node[], activeSource: string): Node[] {
+  const isStale = (n: Node) => {
+    const data = nodeData(n)
+    return (data._columns !== undefined || data._availableColumns !== undefined) &&
+      data._columnsSource !== activeSource
+  }
+  if (!nodes.some(isStale)) return nodes
+  return nodes.map((n) => {
+    if (!isStale(n)) return n
+    const { _columns, _availableColumns, _schemaWarnings, _columnsSource, ...rest } = n.data
+    void _columns; void _availableColumns; void _schemaWarnings; void _columnsSource
+    return { ...n, data: rest }
+  })
 }
 
 function isAbortError(err: unknown): boolean {
@@ -235,6 +262,14 @@ export default function usePipelineAPI({
   useEffect(() => { streamingChunkSizeRef.current = streamingChunkSize }, [streamingChunkSize])
   const activeSourceRef = useRef(activeSource)
   useEffect(() => { activeSourceRef.current = activeSource }, [activeSource])
+
+  // Source switch invalidates column stashes captured under other sources.
+  // Runs on mount too: the invariant is "no stash disagrees with the active
+  // source", not just "clean up after a toggle" — a pipeline loaded with
+  // stashes of unknown provenance gets them stripped and lazily re-filled.
+  useEffect(() => {
+    setNodesRaw((nds) => invalidateStaleColumnStashes(nds, activeSource))
+  }, [activeSource, setNodesRaw])
 
   // Initial pipeline load
   useEffect(() => {
@@ -482,8 +517,8 @@ export default function usePipelineAPI({
                 return
               }
               const newColumns = result.columns as ColumnDef[]
-              cascadeNodes = applyPreviewResultColumnsToNodes(cascadeNodes, nodeId, result)
-              setNodesRaw((nds) => applyPreviewResultColumnsToNodes(nds, nodeId, result))
+              cascadeNodes = applyPreviewResultColumnsToNodes(cascadeNodes, nodeId, result, snapshotSource)
+              setNodesRaw((nds) => applyPreviewResultColumnsToNodes(nds, nodeId, result, snapshotSource))
               settleNode(nodeId, !columnsEqual(oldColumns, newColumns))
             })
             .catch((err: unknown) => {
@@ -558,8 +593,8 @@ export default function usePipelineAPI({
         if (result.columns) {
           const oldColumns = nodeData(node)._columns
           const newColumns = result.columns as ColumnDef[]
-          cascadeNodes = applyPreviewResultColumnsToNodes(cascadeNodes, node.id, result)
-          setNodesRaw((nds) => applyPreviewResultColumnsToNodes(nds, node.id, result))
+          cascadeNodes = applyPreviewResultColumnsToNodes(cascadeNodes, node.id, result, snapshotSource)
+          setNodesRaw((nds) => applyPreviewResultColumnsToNodes(nds, node.id, result, snapshotSource))
           // Cascade to downstream nodes if columns changed.
           if (!columnsEqual(oldColumns, newColumns)) {
             propagationDone = propagate(node.id)
@@ -668,12 +703,17 @@ export default function usePipelineAPI({
     const nodeMap = new Map(nodes.map((n) => [n.id, n]))
 
     // Find direct upstream nodes that have never been previewed (no _columns)
+    // or whose stash was captured under a different source (stale — the
+    // invalidation effect strips these, but the graph ref may not have
+    // flushed yet, so the filter checks the source tag directly too).
     const upstreamIds = edges
       .filter((e) => e.target === node.id)
       .map((e) => e.source)
     const staleUpstream = upstreamIds
       .map((id) => nodeMap.get(id))
-      .filter((n): n is Node => !!n && canPreviewNode(n) && !nodeData(n)._columns)
+      .filter((n): n is Node =>
+        !!n && canPreviewNode(n) &&
+        (!nodeData(n)._columns || nodeData(n)._columnsSource !== activeSourceRef.current))
 
     if (staleUpstream.length === 0) {
       // No upstream gaps — just preview the selected node directly
@@ -732,7 +772,7 @@ export default function usePipelineAPI({
             .then((result) => {
               if (!requestStillCurrent()) return
               if (result.columns) {
-                setNodesRaw((nds) => applyPreviewResultColumnsToNodes(nds, upstream.id, result))
+                setNodesRaw((nds) => applyPreviewResultColumnsToNodes(nds, upstream.id, result, snapshotSource))
               }
             })
             .catch((err: unknown) => {

@@ -313,6 +313,26 @@ export interface TrainEstimate {
   gpu_warning: string | null
 }
 
+export type DispersionParam = "theta" | "var_power"
+
+export interface DispersionEstimateStart {
+  status: "started"
+  job_id: string
+}
+
+export interface DispersionEstimateStatus {
+  status: JobStatus
+  progress: number
+  message: string
+  elapsed_seconds: number
+  param: string | null
+  value: number | null
+  llf: number | null
+  n_fits: number | null
+  error: string | null
+  terminal_reason: string | null
+}
+
 export interface TrainFeatureImportanceRow {
   feature: string
   importance: number
@@ -464,6 +484,8 @@ export interface ExploreColumnStat {
   dtype: string
   kind: ExploreColumnKind
   null_count: number
+  /** Float NaN count — the invalid-numeric bucket, distinct from null. Null for non-float dtypes. */
+  nan_count?: number | null
   distinct_count: number | null
   min_value?: string | null
   p25_value?: string | null
@@ -626,6 +648,8 @@ export interface FrontierResponse {
   constraint_names: string[]
   points_limit: number | null
   points_truncated: boolean
+  /** Pollable frontier job handle when `status === "started"`. */
+  job_id?: string | null
 }
 
 export type FrontierData = Omit<FrontierResponse, 'status'>
@@ -656,6 +680,19 @@ export interface FrontierAutoRangeStartResponse {
   status: "started" | "error"
   job_id: string | null
   error: string | null
+}
+
+export interface FrontierStatusResponse {
+  status: JobStatus
+  progress: number
+  message: string
+  elapsed_seconds: number
+  result: FrontierResponse | null
+  terminal_reason?: string | null
+  error_code?: string | null
+  http_status_code?: number | null
+  error_detail?: unknown
+  execution_metrics?: ExecutionMetrics | null
 }
 
 export interface FrontierAutoRangeStatusResponse {

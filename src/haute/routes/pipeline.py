@@ -11,7 +11,9 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException
 from fastapi.concurrency import run_in_threadpool
+from fastapi.responses import JSONResponse
 
+from haute._cache import GraphFingerprintMemo
 from haute._env import float_env
 from haute._execution_admission import (
     ExecutionAdmissionError,
@@ -206,12 +208,14 @@ def _supersession_key(
     operation: str,
     graph: PipelineGraph,
     source: str,
+    *,
+    memo: GraphFingerprintMemo | None = None,
 ) -> tuple[str, ...]:
     return (
         operation,
         graph.source_file or "",
         source,
-        graph_fingerprint(graph),
+        graph_fingerprint(graph, memo=memo),
     )
 
 
@@ -256,9 +260,11 @@ def _trace_supersession_key(
     column: str | None,
     row_limit: int,
     row_values: dict[str, Any] | None,
+    *,
+    memo: GraphFingerprintMemo | None = None,
 ) -> tuple[str, ...]:
     return (
-        *_supersession_key("trace", graph, source),
+        *_supersession_key("trace", graph, source, memo=memo),
         "target",
         target_node_id or "",
         "row_index",
@@ -423,7 +429,7 @@ async def read_json_file(body: ReadJsonRequest) -> ReadJsonResponse:
 
 
 @router.post("/pipeline/trace", response_model=TraceResponse)
-async def trace_row(body: TraceRequest) -> TraceResponse:
+async def trace_row(body: TraceRequest) -> JSONResponse:
     """Trace a single row through the pipeline, returning per-node snapshots."""
     graph = flatten_graph(body.graph)
     _ensure_source_file(graph)
@@ -433,13 +439,32 @@ async def trace_row(body: TraceRequest) -> TraceResponse:
     _validate_runtime_input_paths(graph)
 
     try:
+        # One memo per request: the supersession key below and every
+        # graph_fingerprint call inside execute_trace share it, so the
+        # preamble's utility/**/*.py files are read and hashed at most
+        # once per trace click instead of once per fingerprint call.
+        fingerprint_memo = GraphFingerprintMemo()
+        # Key computation hashes preamble utility files from disk and
+        # json-dumps row_values — off the event loop.
+        supersession_key = await run_in_threadpool(
+            lambda: _trace_supersession_key(
+                graph,
+                body.source,
+                body.target_node_id,
+                body.row_index,
+                body.column,
+                body.row_limit,
+                body.row_values,
+                memo=fingerprint_memo,
+            )
+        )
 
-        async def _run_trace() -> Any:
+        async def _run_trace() -> dict[str, Any]:
             chunk_size = body.streaming_chunk_size or DEFAULT_STREAMING_CHUNK_SIZE
 
-            def _execute_trace_with_chunk_size() -> Any:
+            def _execute_trace_with_chunk_size() -> dict[str, Any]:
                 with temporary_streaming_chunk_size(chunk_size):
-                    return execute_trace(
+                    result = execute_trace(
                         graph,
                         row_index=body.row_index,
                         target_node_id=body.target_node_id,
@@ -454,7 +479,12 @@ async def trace_row(body: TraceRequest) -> TraceResponse:
                         # protocol - its ``try_get`` returns the slot dict on hit
                         # or ``None`` on miss.
                         preview=_preview_cache,
+                        fingerprint_memo=fingerprint_memo,
                     )
+                    # Serialise to a JSON-safe dict here, still in the
+                    # worker thread, so the event loop never walks the
+                    # full trace payload.
+                    return trace_result_to_dict(result)
 
             return await run_blocking_with_response_timeout(
                 _execute_trace_with_chunk_size,
@@ -462,24 +492,18 @@ async def trace_row(body: TraceRequest) -> TraceResponse:
                 operation="pipeline_trace",
             )
 
-        result = await _trace_supersession.run_latest(
-            _trace_supersession_key(
-                graph,
-                body.source,
-                body.target_node_id,
-                body.row_index,
-                body.column,
-                body.row_limit,
-                body.row_values,
-            ),
+        trace_dict = await _trace_supersession.run_latest(
+            supersession_key,
             _run_trace,
             limiter=_trace_work_slots,
             superseded_message="Trace request superseded by a newer request",
         )
-        return TraceResponse(
-            status="ok",
-            trace=trace_result_to_dict(result),  # type: ignore[arg-type]
-        )
+        # ``trace_dict`` is already JSON-safe (``trace_result_to_dict``
+        # ends in ``to_json_safe``).  Encode it directly instead of
+        # re-validating through the ``TraceResponse`` model and encoding
+        # again — ``response_model`` is kept for the OpenAPI schema, and
+        # FastAPI skips model validation for explicit ``Response``s.
+        return JSONResponse({"status": "ok", "trace": trace_dict})
     except SupersededRequestError as e:
         raise HTTPException(status_code=409, detail=str(e)) from None
     except TimeoutError:
@@ -502,8 +526,14 @@ async def trace_row(body: TraceRequest) -> TraceResponse:
         if detail.startswith("Trace data does not match"):
             logger.warning("trace_row_mismatch", error=detail)
             raise HTTPException(status_code=409, detail=detail)
+        if detail.startswith("Trace row match is ambiguous"):
+            logger.warning("trace_row_match_ambiguous", error=detail)
+            raise HTTPException(status_code=409, detail=detail)
         if detail.startswith("row_index ") and "out of range" in detail:
             logger.warning("trace_row_out_of_range", error=detail)
+            raise HTTPException(status_code=400, detail=detail)
+        if detail.startswith("Target node") and "multiple frames" in detail:
+            logger.warning("trace_target_multi_frame", error=detail)
             raise HTTPException(status_code=400, detail=detail)
         if detail.startswith("Target node ") and "not found in graph" in detail:
             logger.warning("trace_target_not_found", error=detail)

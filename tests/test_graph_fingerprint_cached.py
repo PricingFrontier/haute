@@ -388,13 +388,21 @@ class TestUtilityFileContentHashMemo:
         assert fp_replaced != fp_deleted
         assert calls == [replaced.resolve()]
 
-    def test_independent_calls_detect_same_size_same_mtime_utility_edit(
+    def test_independent_calls_share_the_stat_gated_utility_hash_memo(
         self,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Independent fingerprints must not trust preserved file metadata."""
-        import os
+        """Independent fingerprints hit the process-wide stat-gated memo.
+
+        Utility hashing is memoised at the same ``(mtime_ns, size)``
+        granularity as ``_stat_gated_runtime_path_fingerprint`` — every
+        caller reuses the digest while the gate holds (hashing once), and
+        any metadata change re-hashes.  A byte edit that preserves both
+        mtime_ns and size is below the gate's resolution: the documented
+        trade the deploy path already accepts.
+        """
+        import haute._cache as cache_mod
 
         monkeypatch.chdir(tmp_path)
         utility_dir = tmp_path / "utility"
@@ -402,8 +410,6 @@ class TestUtilityFileContentHashMemo:
         (utility_dir / "__init__.py").write_text("", encoding="utf-8")
         helper = utility_dir / "helpers.py"
         helper.write_text("VALUE = 1\n", encoding="utf-8")
-        fixed_mtime = 1_700_000_000
-        os.utime(helper, (fixed_mtime, fixed_mtime))
         graph = PipelineGraph(
             nodes=[_make_node("a", {"code": "df = df"})],
             edges=[],
@@ -411,11 +417,29 @@ class TestUtilityFileContentHashMemo:
             source_file=str(tmp_path / "pipeline.py"),
         )
 
-        fp_before = graph_fingerprint(graph)
-        helper.write_text("VALUE = 2\n", encoding="utf-8")
-        os.utime(helper, (fixed_mtime, fixed_mtime))
+        calls: list[Path] = []
+        original_content_hash = cache_mod.content_hash
 
+        def counting_content_hash(path: Path) -> str:
+            calls.append(Path(path).resolve())
+            return original_content_hash(path)
+
+        monkeypatch.setattr(cache_mod, "content_hash", counting_content_hash)
+
+        fp_before = graph_fingerprint(graph)
+        first_round = len(calls)
+        assert first_round > 0
+
+        # Memoless repeat: unchanged gates reuse digests by construction.
+        assert graph_fingerprint(graph) == fp_before
+        assert len(calls) == first_round
+
+        # A metadata-visible edit re-hashes only the changed file and
+        # changes the fingerprint.
+        helper.write_text("VALUE = 2_000\n", encoding="utf-8")  # size moves the gate
+        calls.clear()
         assert graph_fingerprint(graph) != fp_before
+        assert calls == [helper.resolve()]
 
 
 class _CallCountingFingerprint:

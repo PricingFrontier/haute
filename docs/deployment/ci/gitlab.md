@@ -109,8 +109,8 @@ Your pipeline needs credentials to deploy. In GitLab, these are stored as **CI/C
 
 | Variable | Value | Options |
 |---|---|---|
-| `DATABRICKS_HOST` | Your workspace URL | Mask variable ✓ |
-| `DATABRICKS_TOKEN` | Your personal access token | Mask variable ✓ |
+| `DATABRICKS_RATING_HOST` | Your workspace URL | Mask variable ✓ |
+| `DATABRICKS_RATING_TOKEN` | Your personal access token | Mask variable ✓ |
 
 **For Docker/Container targets:**
 

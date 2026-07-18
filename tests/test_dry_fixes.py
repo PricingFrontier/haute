@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
 from haute.routes._job_store import JobStore
 
 # ──────────────────────────────────────────────────────────────────────
@@ -253,6 +255,16 @@ class TestFinalizeRatebook:
 # ──────────────────────────────────────────────────────────────────────
 
 
+@pytest.fixture()
+def _in_solver_worker_context():
+    """The heavy solver entrypoints are guarded against inline execution."""
+    from haute.routes._optimiser_service import solver_worker_context
+
+    with solver_worker_context():
+        yield
+
+
+@pytest.mark.usefixtures("_in_solver_worker_context")
 class TestFinalizeFrontier:
     """T2: Frontier computation within _finalize_solve_result."""
 

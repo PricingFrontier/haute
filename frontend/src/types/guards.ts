@@ -33,6 +33,7 @@ import type {
   FrontierAutoRangeResponse,
   FrontierAutoRangeStartResponse,
   FrontierAutoRangeStatusResponse,
+  FrontierStatusResponse,
   FrontierPoint,
   FrontierResponse,
   FrontierSelectResponse,
@@ -1280,6 +1281,7 @@ function parseExploreColumnStat(value: unknown, field: string): ExploreColumnSta
     dtype: expectString(parser, obj.dtype, `${field}.dtype`),
     kind: expectStringLiteral(parser, obj.kind, `${field}.kind`, EXPLORE_COLUMN_KINDS),
     null_count: expectNumber(parser, obj.null_count, `${field}.null_count`),
+    nan_count: optionalNullableNumber(parser, obj, "nan_count"),
     distinct_count: expectNullableNumber(parser, obj.distinct_count, `${field}.distinct_count`),
     min_value: optionalNullableString(parser, obj, "min_value"),
     p25_value: optionalNullableString(parser, obj, "p25_value"),
@@ -1497,6 +1499,28 @@ export function parseFrontierResponse(value: unknown, field = "object"): Frontie
     constraint_names: optionalStringArray("parseOptimiserStatusResponse", obj, "constraint_names"),
     points_limit: optionalNullableNumber("parseOptimiserStatusResponse", obj, "points_limit"),
     points_truncated: optionalBoolean("parseOptimiserStatusResponse", obj, "points_truncated"),
+    job_id: optionalNullableString("parseOptimiserStatusResponse", obj, "job_id"),
+  }
+}
+
+export function parseFrontierStatusResponse(value: unknown): FrontierStatusResponse {
+  const obj = expectPlainObject("parseFrontierStatusResponse", value)
+  return {
+    status: expectStringLiteral(
+      "parseFrontierStatusResponse",
+      obj.status,
+      "field `status`",
+      JOB_STATUSES,
+    ),
+    progress: optionalNumber("parseFrontierStatusResponse", obj, "progress"),
+    message: optionalString("parseFrontierStatusResponse", obj, "message"),
+    elapsed_seconds: optionalNumber("parseFrontierStatusResponse", obj, "elapsed_seconds"),
+    result: obj.result == null ? null : parseFrontierResponse(obj.result, "result"),
+    terminal_reason: optionalNullableString("parseFrontierStatusResponse", obj, "terminal_reason"),
+    error_code: optionalNullableString("parseFrontierStatusResponse", obj, "error_code"),
+    http_status_code: optionalNullableNumber("parseFrontierStatusResponse", obj, "http_status_code"),
+    error_detail: obj.error_detail,
+    execution_metrics: optionalExecutionMetrics("parseFrontierStatusResponse", obj, "execution_metrics"),
   }
 }
 

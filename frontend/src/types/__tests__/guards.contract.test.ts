@@ -584,6 +584,7 @@ describe("API response guards", () => {
             dtype: "Float64",
             kind: "Numeric",
             null_count: 3,
+            nan_count: 4,
             distinct_count: 42,
             min_value: "10",
             p25_value: "25",
@@ -603,6 +604,7 @@ describe("API response guards", () => {
       expect(col.dtype).toBe("Float64")
       expect(col.kind).toBe("Numeric")
       expect(col.null_count).toBe(3)
+      expect(col.nan_count).toBe(4)
       expect(col.distinct_count).toBe(42)
       expect(col.p25_value).toBe("25")
       expect(col.median_value).toBe("50")

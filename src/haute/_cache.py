@@ -15,6 +15,7 @@ from typing import Any
 
 from haute._hashing import content_hash, content_hash_bytes
 from haute._logging import get_logger
+from haute._stat_gated_cache import StatGatedCache, artifact_cache_key
 from haute._types import GraphNode, NodeType, PipelineGraph
 
 logger = get_logger(component="cache")
@@ -393,27 +394,46 @@ def _stat_key_for_utility_file(path: Path) -> _UtilityFileStatKey:
     return _UtilityFileStatKey(path=path.resolve(), mtime_ns=stat.st_mtime_ns, size=stat.st_size)
 
 
+# Process-wide stat-gated memo over utility file content hashes, so EVERY
+# preamble fingerprint caller (supersession keys, execute_trace, preview
+# keys, future call sites) hits the memo by construction rather than by
+# parameter-threading etiquette.  Same invalidation contract as
+# :func:`haute.execution._stat_gated_runtime_path_fingerprint`: a digest is
+# reused while ``(st_mtime_ns, st_size)`` is unchanged; any metadata change
+# re-hashes content; a gate that moves during the read is retried once and
+# then fails loudly.  A rewrite that preserves both mtime_ns and size is
+# below the gate's resolution — the documented trade the deploy path
+# already accepts.
+_utility_file_hash_cache: StatGatedCache[str, str] = StatGatedCache(
+    artifact_kind="Preamble utility file"
+)
+
+
 def _utility_file_hash(path: Path, memo: GraphFingerprintMemo | None) -> str:
-    """Return a content hash for *path*.
+    """Return a content hash for *path* via the process-wide stat-gated memo.
 
-    Without a caller-scoped memo this always reads the file so independent
-    fingerprint calls cannot reuse stale digests when metadata is preserved.
-    With a memo, unchanged metadata can reuse a digest inside the same request.
+    The optional request-scoped *memo* additionally pins the FIRST digest
+    observed for a given ``(path, mtime_ns, size)`` within one request, so a
+    file changing mid-request cannot make one fingerprint call disagree with
+    an earlier one inside the same operation.
     """
-    for _ in range(2):
-        key = _stat_key_for_utility_file(path)
-        cached = memo.utility_file_hashes.get(key) if memo is not None else None
-        if cached is not None:
-            return cached
+    key = _stat_key_for_utility_file(path)
+    cached = memo.utility_file_hashes.get(key) if memo is not None else None
+    if cached is not None:
+        return cached
 
-        digest = content_hash(path)
-        after_key = _stat_key_for_utility_file(path)
-        if after_key == key:
-            if memo is not None:
-                memo.utility_file_hashes[after_key] = digest
-            return digest
-
-    raise RuntimeError(f"Utility file changed while hashing: {path!s}")
+    resolved = key.path
+    digest = _utility_file_hash_cache.get_or_load(
+        artifact_cache_key(resolved),
+        str(resolved),
+        lambda: content_hash(resolved),
+    )
+    if memo is not None:
+        # Re-stat for the memo slot: if the gate moved during the load the
+        # StatGatedCache already retried against the settled state, so the
+        # digest belongs to the CURRENT gate, not the pre-load one.
+        memo.utility_file_hashes[_stat_key_for_utility_file(path)] = digest
+    return digest
 
 
 def _hash_utility_candidate(

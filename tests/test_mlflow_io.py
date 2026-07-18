@@ -18,7 +18,9 @@ from haute._mlflow_io import (
     _find_cbm_artifact,
     _find_model_artifact,
     _load_rustystats_model,
+    _local_artifact_fingerprint,
     _model_cache,
+    _model_cache_key,
     _prepare_predict_frame,
     _wrap_catboost,
     _wrap_pyfunc,
@@ -220,10 +222,21 @@ class TestInvalidSourceType:
 
 
 class TestModelCache:
-    def test_cache_hit(self, mock_mlflow_env):
+    def test_cache_hit(self, mock_mlflow_env, tmp_path, monkeypatch):
         """Second call with same args returns cached model without re-download."""
+        monkeypatch.chdir(tmp_path)
+        cached_file = _artifact_cache_path(tmp_path / ".cache" / "models", "abc123", "model.cbm")
+        cached_file.parent.mkdir(parents=True)
+        cached_file.write_bytes(b"model bytes")
         fake_sm = ScoringModel(MagicMock(), ["a"], frozenset(), "catboost")
-        cache_key = ("run", "abc123", "model.cbm", "regression")
+        cache_key = _model_cache_key(
+            source_type="run",
+            run_id="abc123",
+            version="",
+            artifact_path="model.cbm",
+            task="regression",
+            artifact_fingerprint=_local_artifact_fingerprint("model.cbm", str(cached_file)),
+        )
         _model_cache.put(cache_key, fake_sm)
 
         mock_mlflow, _, modules_patch, resolve_patch = mock_mlflow_env
@@ -244,11 +257,13 @@ class TestModelCache:
         # download_artifacts should NOT be called (cache hit)
         mock_mlflow.artifacts.download_artifacts.assert_not_called()
 
-    def test_cache_lru_eviction(self, mock_mlflow_env):
+    def test_cache_lru_eviction(self, mock_mlflow_env, tmp_path):
         """Exceeding max cache size evicts oldest entry."""
         for i in range(_MODEL_CACHE_MAX_SIZE + 2):
-            _model_cache.put(("run", f"run_{i}", f"art_{i}", "regression"), MagicMock())
+            _model_cache.put(("run", f"run_{i}", f"art_{i}", "regression", ""), MagicMock())
 
+        local_file = tmp_path / "model.cbm"
+        local_file.write_bytes(b"model bytes")
         fake_model = MagicMock()
         fake_model.feature_names_ = ["a"]
         fake_model.get_cat_feature_indices.return_value = []
@@ -258,7 +273,7 @@ class TestModelCache:
             modules_patch,
             resolve_patch,
             patch("haute._mlflow_io._load_catboost_model", return_value=fake_model),
-            patch("haute._mlflow_io._resolve_artifact_local", return_value="/tmp/model.cbm"),
+            patch("haute._mlflow_io._resolve_artifact_local", return_value=str(local_file)),
             patch("haute._mlflow_io._find_cbm_artifact", return_value="model.cbm"),
         ):
             load_mlflow_model(
@@ -268,7 +283,15 @@ class TestModelCache:
                 task="regression",
             )
 
-        assert ("run", "new_run", "model.cbm", "regression") in _model_cache
+        expected_key = _model_cache_key(
+            source_type="run",
+            run_id="new_run",
+            version="",
+            artifact_path="model.cbm",
+            task="regression",
+            artifact_fingerprint=_local_artifact_fingerprint("model.cbm", str(local_file)),
+        )
+        assert expected_key in _model_cache
 
 
 # ---------------------------------------------------------------------------
@@ -1637,10 +1660,21 @@ class TestClearModelCache:
 class TestLoadMlflowModelFastCache:
     """Tests for the fast-path cache check in load_mlflow_model."""
 
-    def test_fast_path_cache_hit_for_run_with_artifact(self):
+    def test_fast_path_cache_hit_for_run_with_artifact(self, tmp_path, monkeypatch):
         """source_type=run with artifact_path hits fast-path cache."""
+        monkeypatch.chdir(tmp_path)
+        cached_file = _artifact_cache_path(tmp_path / ".cache" / "models", "abc123", "model.cbm")
+        cached_file.parent.mkdir(parents=True)
+        cached_file.write_bytes(b"model bytes")
         fake_sm = ScoringModel(MagicMock(), ["a"], frozenset(), "catboost")
-        cache_key = ("run", "abc123", "model.cbm", "regression")
+        cache_key = _model_cache_key(
+            source_type="run",
+            run_id="abc123",
+            version="",
+            artifact_path="model.cbm",
+            task="regression",
+            artifact_fingerprint=_local_artifact_fingerprint("model.cbm", str(cached_file)),
+        )
         _model_cache.put(cache_key, fake_sm)
 
         result = load_mlflow_model(
@@ -1682,14 +1716,31 @@ class TestLoadMlflowModelFastCache:
         load_local.assert_called_once_with(str(cached), task="regression")
         resolve_source.assert_not_called()
 
-        cache_key = ("run", "abc123", "model.cbm", "regression")
+        cache_key = _model_cache_key(
+            source_type="run",
+            run_id="abc123",
+            version="",
+            artifact_path="model.cbm",
+            task="regression",
+            artifact_fingerprint=_local_artifact_fingerprint("model.cbm", str(cached)),
+        )
         assert _model_cache.get(cache_key) is fake_sm
 
-    def test_post_resolve_cache_hit(self):
+    def test_post_resolve_cache_hit(self, tmp_path):
         """Cache hit after resolve_mlflow_source (second cache check, line 469)."""
+        local_file = tmp_path / "model.cbm"
+        local_file.write_bytes(b"model bytes")
         fake_sm = ScoringModel(MagicMock(), ["a"], frozenset(), "catboost")
-        # Key uses resolved version "" for run-based, artifact_path as third element
-        cache_key = ("run", "abc123", "model.cbm", "regression")
+        # Key uses resolved version "" for run-based; the fingerprint is the
+        # byte identity of the resolved local artifact.
+        cache_key = _model_cache_key(
+            source_type="run",
+            run_id="abc123",
+            version="",
+            artifact_path="model.cbm",
+            task="regression",
+            artifact_fingerprint=_local_artifact_fingerprint("model.cbm", str(local_file)),
+        )
         _model_cache.put(cache_key, fake_sm)
 
         with (
@@ -1700,6 +1751,10 @@ class TestLoadMlflowModelFastCache:
             patch(
                 "haute._mlflow_io._find_model_artifact",
                 return_value=("model.cbm", "catboost"),
+            ),
+            patch(
+                "haute._mlflow_io._resolve_artifact_local",
+                return_value=str(local_file),
             ),
         ):
             # No artifact_path → forces resolve + auto-discover, then second cache check hits

@@ -70,7 +70,7 @@ Here's what the container section of your `haute.toml` looks like:
 ```toml
 [project]
 name = "motor-pricing"
-pipeline = "main.py"
+pipeline = "rating/main.py"
 
 [deploy]
 target = "container"
@@ -79,7 +79,7 @@ model_name = "motor-pricing"
 [deploy.container]
 registry = ""
 port = 8080
-base_image = "python:3.11-slim"
+base_image = "python:3.11.9-slim"
 
 [test_quotes]
 dir = "tests/quotes"
@@ -93,7 +93,7 @@ dir = "tests/quotes"
 | `model_name` | Used as the Docker image name | `"motor-pricing"` |
 | `registry` | Where to push the image. Leave empty for local-only. | `"ghcr.io/myorg"` or `""` |
 | `port` | The [port](../before-you-start.md#quick-glossary) the API server listens on inside the container (like an extension number on a phone system) | `8080` |
-| `base_image` | The base Docker image to build from | `"python:3.11-slim"` |
+| `base_image` | The base Docker image to build from | `"python:3.11.9-slim"` |
 
 The `registry` value is the address your IT team gave you for where Docker images are stored. If you don't know it, ask them: *"What's our container registry URL?"* They'll give you something like `ghcr.io/yourorg` or `myregistry.azurecr.io`. Put that value in `haute.toml`.
 

@@ -2087,3 +2087,66 @@ class TestCalculationValueVerification:
         input_vals = step.calculation.get("input_values", {})
         assert input_vals.get("price") == 25.0
         assert input_vals.get("tax_rate") == 0.2
+
+
+class TestSelfReferentialCalculation:
+    """A column assigned from itself must substitute the PRE-assignment
+    input value, not the post-assignment output (which produced e.g.
+    ``200.0 * 2.0 = 400`` for a displayed output of 200)."""
+
+    def test_self_referential_multiply_uses_input_value(self, tmp_path):
+        p = tmp_path / "data.parquet"
+        pl.DataFrame({"premium": [100.0], "factor": [2.0]}).write_parquet(p)
+
+        graph = _g(
+            {
+                "nodes": [
+                    _source_node("src", str(p)),
+                    _transform_node(
+                        "t",
+                        "df = df.with_columns(premium=pl.col('premium') * pl.col('factor'))",
+                    ),
+                ],
+                "edges": [_edge("src", "t")],
+            }
+        )
+
+        result = execute_trace(graph, row_index=0, target_node_id="t", column="premium")
+        step = _step_by_id(result, "t")
+
+        assert step.calculation is not None
+        assert step.calculation["result_value"] == 200.0
+        assert "100" in step.calculation["substituted_text"]
+        assert "200.0 * 2.0" not in step.calculation["substituted_text"]
+
+    def test_self_referential_chain_feeds_intermediates_forward(self, tmp_path):
+        p = tmp_path / "data.parquet"
+        pl.DataFrame({"premium": [100.0], "factor": [2.0], "burn": [50.0]}).write_parquet(p)
+
+        graph = _g(
+            {
+                "nodes": [
+                    _source_node("src", str(p)),
+                    _transform_node(
+                        "t",
+                        "df = df.with_columns(premium=pl.col('premium') * pl.col('factor'))"
+                        ".with_columns(margin=pl.col('premium') - pl.col('burn'))",
+                    ),
+                ],
+                "edges": [_edge("src", "t")],
+            }
+        )
+
+        result = execute_trace(graph, row_index=0, target_node_id="t", column="margin")
+        step = _step_by_id(result, "t")
+
+        assert step.calculation is not None
+        chain = step.calculation.get("expression_chain")
+        assert isinstance(chain, list) and len(chain) == 2
+        by_col = {entry["target_column"]: entry for entry in chain}
+
+        # premium entry: input premium (100) * factor (2) = 200 — not 400
+        assert by_col["premium"]["result_value"] == 200.0
+        assert "100" in by_col["premium"]["substituted_text"]
+        # margin entry consumes the fed-forward intermediate: 200 - 50
+        assert by_col["margin"]["result_value"] == 150.0

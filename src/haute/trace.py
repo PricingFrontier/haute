@@ -265,10 +265,23 @@ def _find_target_row_index(df: pl.DataFrame, row_values: dict[str, Any]) -> int 
     if not shared:
         return None
 
-    for idx, row in enumerate(df.select(shared).iter_rows(named=True)):
-        if all(_trace_values_match(row.get(col), row_values.get(col)) for col in shared):
-            return idx
-    return None
+    # Duplicate rows on the shared columns are ambiguous: silently
+    # anchoring to the first match would correlate upstream from the
+    # wrong row.  Mirror the W4 policy (_record_ambiguous_row_match)
+    # and fail loud instead.
+    matches = [
+        idx
+        for idx, row in enumerate(df.select(shared).iter_rows(named=True))
+        if all(_trace_values_match(row.get(col), row_values.get(col)) for col in shared)
+    ]
+    if len(matches) > 1:
+        raise ValueError(
+            "Trace row match is ambiguous: "
+            f"{len(matches)} rows match the clicked values on "
+            f"columns {shared}. The preview data may have changed. "
+            "Please click the node to refresh, then retry."
+        )
+    return matches[0] if matches else None
 
 
 def _requested_preview_columns_from_row(
@@ -289,7 +302,7 @@ def _is_integer_output_column(
     column: str,
 ) -> bool:
     df = eager_outputs.get(node_id)
-    if df is None or column not in df.schema:
+    if not isinstance(df, pl.DataFrame) or column not in df.schema:
         return False
     is_integer = getattr(df.schema[column], "is_integer", None)
     return bool(is_integer()) if callable(is_integer) else False
@@ -317,6 +330,7 @@ def execute_trace(
     row_values: dict[str, Any] | None = None,
     preamble_ns: dict[str, Any] | None = None,
     preview: PreviewReader | dict[str, Any] | None = None,
+    fingerprint_memo: GraphFingerprintMemo | None = None,
 ) -> TraceResult:
     """Execute a pipeline graph and return a single-row trace.
 
@@ -343,6 +357,12 @@ def execute_trace(
                  upstream graph; when ``None`` (tests, CLI, cold requests)
                  the trace falls back to a fresh execution.  This keeps the
                  trace module decoupled from ``haute.executor._preview_cache``.
+        fingerprint_memo: Optional request-scoped
+                 :class:`~haute._cache.GraphFingerprintMemo` shared with the
+                 caller (the trace route reuses the memo from its
+                 supersession-key computation) so preamble utility files are
+                 hashed at most once per request.  ``None`` creates a fresh
+                 memo scoped to this call.
 
     Returns:
         TraceResult with per-node steps showing how the row was produced.
@@ -370,7 +390,11 @@ def execute_trace(
     # The pipeline structure doesn't change between trace clicks — only the
     # row_index and column change.  Cache the materialized DataFrames and
     # reuse them: first click ~1.7s, subsequent clicks <10ms.
-    fingerprint_memo = GraphFingerprintMemo()
+    # A caller (the trace route) may pass in the request-scoped memo it
+    # already used for the supersession key, so the preamble's utility
+    # files are hashed once per request rather than once per call.
+    if fingerprint_memo is None:
+        fingerprint_memo = GraphFingerprintMemo()
     # Runtime-input extras (flat-file dataSource / external-file / model-
     # artifact signatures + the apiInput JSON-cache state) are part of the
     # trace key so an out-of-band re-export or cache rebuild invalidates
@@ -462,6 +486,27 @@ def execute_trace(
             source_ids=source_ids,
         )
 
+    # Multi-frame sources (e.g. a ≥2-table apiInput) store a
+    # dict[label, DataFrame] in eager_outputs; a trace must target a node
+    # downstream of a specific frame, never the bundle itself.
+    if isinstance(eager_outputs.get(target_node_id), dict):
+        raise ValueError(
+            f"Target node {target_node_id!r} emits multiple frames; "
+            "trace a node downstream of a specific frame instead."
+        )
+
+    # Edge sourceHandles record which frame of a multi-frame source each
+    # child EDGE consumes (the selection _pick_source_frame makes at
+    # execution time); the correlation walk makes the same per-edge
+    # selection.  One entry per edge: a multi-frame source can feed the
+    # same child through several edges, each naming a distinct frame
+    # (e.g. the four-port apiInput → OUTPUT topology), so collapsing to
+    # one handle per (source, target) pair would correlate against an
+    # arbitrary frame.
+    source_frames_of: dict[tuple[str, str], list[str | None]] = {}
+    for e in graph.edges:
+        source_frames_of.setdefault((e.source, e.target), []).append(e.sourceHandle)
+
     # ---------- Verify row identity ----------
     # If the frontend sent the clicked row's values, verify that the
     # DataFrame at the target node has the same values at row_index.
@@ -509,12 +554,14 @@ def execute_trace(
             row_index,
             node_map=node_map,
             diagnostics=correlation_diagnostics,
+            source_frames_of=source_frames_of,
+            traced_column=column,
         )
     else:
         # Target node execution failed — build partial rows from available nodes
         cached_rows = {}
         for nid in order:
-            if nid in eager_outputs:
+            if nid in eager_outputs and not isinstance(eager_outputs[nid], dict):
                 df = eager_outputs[nid]
                 if row_index < len(df):
                     cached_rows[nid] = _jsonify_row(df.row(row_index, named=True))
@@ -541,6 +588,7 @@ def execute_trace(
         column,
         source,
         preamble_ns=preamble_ns,
+        source_frames_of=source_frames_of,
     )
 
     # ---------- Column relevance: tag then prune irrelevant ancestors ----------

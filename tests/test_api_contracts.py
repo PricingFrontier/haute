@@ -345,6 +345,24 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
             },
         },
     },
+    "/api/modelling/dispersion/cancel/{job_id}": {
+        "POST": {
+            "request_ref": None,
+            "success_schema": {"$ref": "#/components/schemas/DispersionEstimateStatusResponse"},
+        },
+    },
+    "/api/modelling/dispersion/estimate": {
+        "POST": {
+            "request_ref": "#/components/schemas/DispersionEstimateRequest",
+            "success_schema": {"$ref": "#/components/schemas/DispersionEstimateResponse"},
+        },
+    },
+    "/api/modelling/dispersion/status/{job_id}": {
+        "GET": {
+            "request_ref": None,
+            "success_schema": {"$ref": "#/components/schemas/DispersionEstimateStatusResponse"},
+        },
+    },
     "/api/modelling/estimate": {
         "POST": {
             "request_ref": "#/components/schemas/TrainEstimateRequest",
@@ -409,6 +427,12 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
         "POST": {
             "request_ref": "#/components/schemas/OptimiserFrontierRequest",
             "success_schema": {"$ref": "#/components/schemas/OptimiserFrontierResponse"},
+        },
+    },
+    "/api/optimiser/frontier/status/{job_id}": {
+        "GET": {
+            "request_ref": None,
+            "success_schema": {"$ref": "#/components/schemas/OptimiserFrontierStatusResponse"},
         },
     },
     "/api/optimiser/frontier/auto-range": {

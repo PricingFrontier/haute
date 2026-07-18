@@ -270,3 +270,54 @@ def test_modelling_run_matches_executor_batch(tmp_path):
     standalone = _collect(module.pipeline.run())
     reference = _executor_frame(graph, "m", source="batch")
     assert_frame_equal(standalone, reference)
+
+
+# ---------------------------------------------------------------------------
+# OUTPUT — the generated body must assemble the document, not pass through
+# ---------------------------------------------------------------------------
+
+
+def _output_graph() -> PipelineGraph:
+    src = _const("c", "rows", [{"name": "premium", "value": 120}, {"name": "tax", "value": 12}])
+    out = _node(
+        "out",
+        "quote_response",
+        NodeType.OUTPUT,
+        {
+            "outputMapping": [
+                {
+                    "source_port": "rows",
+                    "source_column": "premium",
+                    "output_path": "$[:].quote.premium",
+                    "enabled": True,
+                },
+                {
+                    "source_port": "rows",
+                    "source_column": "tax",
+                    "output_path": "$[:].quote.tax",
+                    "enabled": True,
+                },
+            ],
+        },
+    )
+    return PipelineGraph(nodes=[src, out], edges=[_edge("c", "out")])
+
+
+def test_output_run_matches_executor_batch(tmp_path):
+    """A saved OUTPUT node must assemble the response document standalone.
+
+    Before the fix the generated ``@pipeline.output`` body was a bare
+    ``return {first}`` passthrough, so a standalone ``pipeline.run()``
+    returned the raw upstream frame instead of the assembled document.
+    """
+    graph = _output_graph()
+    module = _write_and_import(graph, tmp_path)
+
+    standalone = _collect(module.pipeline.run())
+    reference = _executor_frame(graph, "out", source="batch")
+
+    # The generated body genuinely assembled (nested doc, not raw columns).
+    assert "quote" in standalone.columns
+    assert "premium" not in standalone.columns
+    assert standalone.to_dicts() == [{"quote": {"premium": 120, "tax": 12}}]
+    assert_frame_equal(standalone, reference)

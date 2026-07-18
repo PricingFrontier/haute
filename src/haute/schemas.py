@@ -422,14 +422,25 @@ ExploreColumnKind = Literal["Numeric", "Text", "Temporal", "Boolean", "Nested", 
 class ExploreColumnStat(BaseModel):
     """Per-column stats captured at Explore cache-materialisation time.
 
-    distinct_count may be None when the dtype is not hashable (Object/Struct
-    columns), in which case the UI renders an em-dash.
+    Missingness is reported as a three-way split rather than a valid/invalid
+    dichotomy: ``null_count`` (absent values), ``nan_count`` (float NaN — an
+    invalid-numeric value that a stream unable to distinguish string from int
+    materialises for non-numeric input), and everything else is valid. Polars
+    ``null_count`` ignores NaN, so an all-NaN float column would otherwise look
+    fully populated. ``nan_count`` is None for non-float dtypes (not
+    applicable), mirroring ``zero_count``/``negative_count`` on non-numeric
+    columns.
+
+    ``distinct_count`` counts distinct non-null values (the null bucket is
+    excluded) and may be None when the dtype is not hashable (Object columns),
+    in which case the UI renders an em-dash.
     """
 
     name: str
     dtype: str
     kind: ExploreColumnKind
     null_count: int
+    nan_count: int | None = None
     distinct_count: int | None
     min_value: str | None = None
     p25_value: str | None = None
@@ -932,6 +943,38 @@ class TrainEstimateResponse(BaseModel):
     gpu_warning: str | None = None
 
 
+class DispersionEstimateRequest(BaseModel):
+    """Estimate a GLM dispersion parameter (NB theta / Tweedie var_power).
+
+    The estimate is an explicit user action in the config panel: the resolved
+    value lands in the node config where the training-objective gate requires
+    it, never as a hidden default.
+    """
+
+    graph: Graph
+    node_id: str
+    source: str = "live"
+    param: Literal["theta", "var_power"]
+
+
+class DispersionEstimateResponse(BaseModel):
+    status: Literal["started"]
+    job_id: str
+
+
+class DispersionEstimateStatusResponse(BaseModel):
+    status: JobStatus
+    progress: float = 0.0
+    message: str = ""
+    elapsed_seconds: float = 0.0
+    param: str | None = None
+    value: float | None = None
+    llf: float | None = None
+    n_fits: int | None = None
+    error: str | None = None
+    terminal_reason: str | None = None
+
+
 class ExportScriptRequest(BaseModel):
     node_id: str
     graph: Graph
@@ -1143,6 +1186,21 @@ class OptimiserFrontierResponse(BaseModel):
     constraint_names: list[str] = Field(default_factory=list)
     points_limit: int | None = None
     points_truncated: bool = False
+    job_id: str | None = None
+    """Pollable frontier job handle when ``status == "started"``."""
+
+
+class OptimiserFrontierStatusResponse(BaseModel):
+    status: JobStatus
+    progress: float = 0.0
+    message: str = ""
+    elapsed_seconds: float = 0.0
+    result: OptimiserFrontierResponse | None = None
+    terminal_reason: str | None = None
+    error_code: str | None = None
+    http_status_code: int | None = None
+    error_detail: ExecutionMemoryLimitErrorPayload | dict[str, Any] | str | None = None
+    execution_metrics: ExecutionMetricsPayload | None = None
 
 
 class OptimiserHistoryEntry(BaseModel):
