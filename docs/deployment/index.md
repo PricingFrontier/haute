@@ -6,7 +6,7 @@ Deployment is how your pricing pipeline goes from a Python file on your laptop t
     If you haven't installed Haute yet, start with **[Getting Started](../getting-started/index.md)** - it covers installing everything and running your first `haute serve`. If you don't know what a pull request, CI/CD, or staging means, read **[Before You Start](before-you-start.md)** next - it explains every deployment concept in plain English.
 
 !!! tip "Haven't built your pipeline yet?"
-    These docs assume you already have a working pricing pipeline (`main.py`). If you haven't created one yet, start with the **Building Pipelines** guide first, then come back here when you're ready to deploy.
+    These docs assume you already have a working pricing pipeline (`rating/main.py`). If you haven't created one yet, start with the **Building Pipelines** guide first, then come back here when you're ready to deploy.
 
 Haute handles the entire deployment process for you. You **merge your changes to main** (apply them to the main version of the project - see [Before You Start](before-you-start.md#5-accept-the-changes-merge)) and Haute's [CI/CD pipeline](before-you-start.md#what-is-cicd) (an automated process that tests and deploys your code) does the rest - packaging, uploading, testing, and promoting to production. No Docker knowledge, no cloud consoles, no DevOps tickets. You never need to run a deploy command yourself.
 
@@ -60,16 +60,20 @@ This generates all the deployment files you need. You don't write them by hand -
 ```
 Before haute init:          After haute init:
 my-project/                 my-project/
-  main.py                     main.py
-  pyproject.toml              pyproject.toml
-                              haute.toml           ← deployment config
+  main.py                     pyproject.toml       ← haute added as a dependency
+  pyproject.toml              haute.toml           ← project, deploy & CI config
                               .env.example         ← credential template
                               .gitignore           ← keeps .env safe
+                              rating/main.py       ← starter pipeline
+                              rating/utility/      ← project-level utility functions
+                              data/                ← put your data files here
+                              prompts/             ← reusable AI prompts
                               tests/quotes/        ← test data for validation
+                              .githooks/           ← auto-format on commit
                               .github/workflows/   ← CI/CD pipeline files
 ```
 
-Nothing is overwritten - `haute init` only adds new files. If a file already exists (e.g. `.gitignore`), Haute appends to it rather than replacing it.
+Two existing files are touched: a root `main.py` left over from `uv init` is **removed** (your pipeline lives at `rating/main.py` instead), and `pyproject.toml` is updated to list `haute` as a dependency. Everything else is additive - if a file like `.gitignore` already exists, Haute appends to it rather than replacing it. If the project is already initialised (a `haute.toml` exists), `haute init` refuses to run unless you pass `--force`.
 
 !!! tip "Not sure which target to pick?"
     If your organisation uses Databricks, start with the **Databricks** target - it's the most mature and requires the least infrastructure setup. If you don't have Databricks, use **Docker** to start and move to a cloud target later.
@@ -83,7 +87,7 @@ The most important generated file is `haute.toml` - a plain text file that says 
 ```toml
 [project]
 name = "motor-pricing"
-pipeline = "main.py"
+pipeline = "rating/main.py"
 
 [deploy]
 target = "databricks"
@@ -99,6 +103,18 @@ serving_scale_to_zero = true
 
 [test_quotes]
 dir = "tests/quotes"
+
+[safety]
+impact_dataset = "data/portfolio_sample.parquet"
+
+[safety.approval]
+min_approvers = 2
+
+[ci]
+provider = "github"
+
+[ci.staging]
+endpoint_suffix = "-staging"
 ```
 
 Each section is explained in detail on the target-specific pages. The key idea is: **`haute.toml` says *what* gets deployed and *where***. It never contains passwords or secrets.

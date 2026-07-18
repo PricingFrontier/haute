@@ -38,7 +38,7 @@ haute init --target azure-container-apps --ci github
 ```toml
 [project]
 name = "motor-pricing"
-pipeline = "main.py"
+pipeline = "rating/main.py"
 
 [deploy]
 target = "azure-container-apps"
