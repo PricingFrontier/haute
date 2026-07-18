@@ -16,7 +16,8 @@ from haute._scaffold import TARGETS, haute_toml
 from haute._types import NodeType
 
 ROOT = Path(__file__).resolve().parents[1]
-ARCHITECTURE = ROOT / "docs" / "ARCHITECTURE.md"
+SPECS_README = ROOT / "docs" / "specs" / "README.md"
+PIPELINE_CONFIG_SPEC = ROOT / "docs" / "specs" / "pipeline-config" / "low-level.md"
 DEPLOYMENT_DOCS = sorted((ROOT / "docs" / "deployment").rglob("*.md"))
 
 DATABRICKS_SECRET_DOCS = [
@@ -27,36 +28,35 @@ DATABRICKS_SECRET_DOCS = [
 ]
 
 
-def test_architecture_node_type_count_matches_enum() -> None:
-    text = ARCHITECTURE.read_text(encoding="utf-8")
-    counts = re.findall(r"There are (\d+) node types", text)
-    counts += re.findall(r"All (\d+) types are defined", text)
-    assert counts, "ARCHITECTURE.md no longer states the node-type count"
+def test_specs_readme_node_type_count_matches_enum() -> None:
+    text = SPECS_README.read_text(encoding="utf-8")
+    counts = re.findall(r"covers all\s+(\d+) node types", text)
+    assert counts, "docs/specs/README.md no longer states the node-type count"
     for count in counts:
         assert int(count) == len(NodeType)
 
 
-def test_architecture_node_type_table_lists_every_enum_value() -> None:
-    text = ARCHITECTURE.read_text(encoding="utf-8")
+def test_specs_readme_node_type_table_lists_every_enum_value() -> None:
+    text = SPECS_README.read_text(encoding="utf-8")
     for node_type in NodeType:
         assert f"`{node_type.value}`" in text, (
-            f"ARCHITECTURE.md node-type tables are missing `{node_type.value}`"
+            f"docs/specs/README.md node-type table is missing `{node_type.value}`"
         )
 
 
-def test_architecture_sidecar_config_count_matches_mapping() -> None:
-    text = ARCHITECTURE.read_text(encoding="utf-8")
-    match = re.search(r"(\d+) of the (\d+) node types store external config", text)
-    assert match, "ARCHITECTURE.md no longer states the sidecar-config count"
+def test_pipeline_config_spec_sidecar_count_matches_mapping() -> None:
+    text = PIPELINE_CONFIG_SPEC.read_text(encoding="utf-8")
+    match = re.search(r"(\d+) of the (\d+)\s*\n?\s*node types store external config", text)
+    assert match, "pipeline-config low-level spec no longer states the sidecar-config count"
     assert int(match.group(1)) == len(NODE_TYPE_TO_FOLDER)
     assert int(match.group(2)) == len(NodeType)
 
 
-def test_architecture_config_folder_table_matches_mapping() -> None:
-    text = ARCHITECTURE.read_text(encoding="utf-8")
+def test_pipeline_config_spec_folder_table_matches_mapping() -> None:
+    text = PIPELINE_CONFIG_SPEC.read_text(encoding="utf-8")
     for folder in NODE_TYPE_TO_FOLDER.values():
         assert f"`config/{folder}/`" in text, (
-            f"ARCHITECTURE.md config-folder table is missing `config/{folder}/`"
+            f"pipeline-config low-level spec config-folder table is missing `config/{folder}/`"
         )
 
 

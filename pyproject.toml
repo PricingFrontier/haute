@@ -116,16 +116,16 @@ packages = ["src/haute"]
 line-length = 100
 target-version = "py311"
 # Root-level generated/demo pipelines are arbitrary user code; keep repo lint
-# focused on the package, tests, docs tooling, and scripts. review/ and
-# fable-Review/ are read-only engineering-audit deliverables (findings +
+# focused on the package, tests, docs tooling, and scripts. docs/review/ and
+# docs/fable-Review/ are read-only engineering-audit deliverables (findings +
 # runnable repro evidence) — their scripts are point-in-time evidence, not
 # package code.
 extend-exclude = [
     "modules/",
     "rating/",
     "outputs/",
-    "review/",
-    "fable-Review/",
+    "docs/review/",
+    "docs/fable-Review/",
 ]
 
 [tool.ruff.lint]

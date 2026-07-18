@@ -53,8 +53,29 @@
   at import time from each node type's config `TypedDict.__annotations__` plus
   `_UNIVERSAL_KEYS` (`instanceOf`, `inputMapping`, `selected_columns`, `column_renames`,
   `categorical_levels`, `contract` — keys any node type may legitimately carry).
-- **`NODE_TYPE_TO_FOLDER` / `FOLDER_TO_NODE_TYPE`** (`_config_io.py`) — the 16-entry
-  bidirectional map between a `NodeType` and its `config/<folder>/` sidecar directory name.
+- **`NODE_TYPE_TO_FOLDER` / `FOLDER_TO_NODE_TYPE`** (`_config_io.py`) — the bidirectional
+  map between a `NodeType` and its `config/<folder>/` sidecar directory name. 16 of the 21
+  node types store external config (all except `polars`, `edgeJoin`, `explore`, `submodel`,
+  and `submodelPort`):
+
+  | Node type | Sidecar folder |
+  |---|---|
+  | `apiInput` | `config/quote_input/` |
+  | `dataSource` | `config/data_source/` |
+  | `dataInput` | `config/data_input/` |
+  | `dataOutput` | `config/data_output/` |
+  | `liveSwitch` | `config/source_switch/` |
+  | `modelScore` | `config/model_scoring/` |
+  | `banding` | `config/banding/` |
+  | `ratingStep` | `config/rating_step/` |
+  | `output` | `config/quote_response/` |
+  | `dataSink` | `config/data_sink/` |
+  | `externalFile` | `config/load_file/` |
+  | `modelling` | `config/model_training/` |
+  | `optimiser` | `config/optimisation/` |
+  | `optimiserApply` | `config/apply_optimisation/` |
+  | `scenarioExpander` | `config/expander/` |
+  | `constant` | `config/constant/` |
 - **`TARGETS`** (`_scaffold.py`) — `dict[str, _TargetConfig]`, the 7-entry registry (one per
   supported `--target`) that every scaffold template dispatches through: `label` (for the
   `.env.example` header), `env_body` (literal credential block), `secrets` (ordered CI

@@ -59,8 +59,8 @@ Backend and frontend module-by-module layouts are not duplicated here — each c
 Specs are organised by owning subsystem, not one-per-node-type. Two blanket rules apply to
 every node type: its generated-code template (`_gen_*`) is specced in
 [codegen](codegen/high-level.md), and its config-editor UI in
-[frontend-node-editors](frontend-node-editors/high-level.md). The table below gives the
-components owning each node's core behaviour beyond those two.
+[frontend-node-editors](frontend-node-editors/high-level.md). The table below covers all
+21 node types and gives the components owning each node's core behaviour beyond those two.
 
 | Node type | Core behaviour specced in |
 |---|---|
