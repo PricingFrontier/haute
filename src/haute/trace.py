@@ -485,9 +485,16 @@ def execute_trace(
         )
 
     # Edge sourceHandles record which frame of a multi-frame source each
-    # child consumes (the selection _pick_source_frame makes at execution
-    # time); the correlation walk makes the same per-edge selection.
-    source_frame_of = {(e.source, e.target): e.sourceHandle for e in graph.edges}
+    # child EDGE consumes (the selection _pick_source_frame makes at
+    # execution time); the correlation walk makes the same per-edge
+    # selection.  One entry per edge: a multi-frame source can feed the
+    # same child through several edges, each naming a distinct frame
+    # (e.g. the four-port apiInput → OUTPUT topology), so collapsing to
+    # one handle per (source, target) pair would correlate against an
+    # arbitrary frame.
+    source_frames_of: dict[tuple[str, str], list[str | None]] = {}
+    for e in graph.edges:
+        source_frames_of.setdefault((e.source, e.target), []).append(e.sourceHandle)
 
     # ---------- Verify row identity ----------
     # If the frontend sent the clicked row's values, verify that the
@@ -536,7 +543,8 @@ def execute_trace(
             row_index,
             node_map=node_map,
             diagnostics=correlation_diagnostics,
-            source_frame_of=source_frame_of,
+            source_frames_of=source_frames_of,
+            traced_column=column,
         )
     else:
         # Target node execution failed — build partial rows from available nodes
@@ -569,6 +577,7 @@ def execute_trace(
         column,
         source,
         preamble_ns=preamble_ns,
+        source_frames_of=source_frames_of,
     )
 
     # ---------- Column relevance: tag then prune irrelevant ancestors ----------
