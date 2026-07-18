@@ -132,8 +132,7 @@ Out of scope (owned elsewhere, linked where relevant):
   repeat the same invalidation logic in every other backend caller. The cache
   instead lives in the execution engine and is consumed by optimiser, training,
   sink, and deploy paths through shared `DataFrameExecutionCacheRequest`
-  builders — see the retired DATAFRAME_EXECUTION_CACHE_DESIGN doc (git
-  history) for the original design discussion.
+  builders.
 - **A shared LRU/pinning core.** `LRUCache` (`_lru_cache.py`) consolidates
   eviction and pinning logic that used to be duplicated across the
   preview/trace fingerprint cache and the dataframe execution cache.

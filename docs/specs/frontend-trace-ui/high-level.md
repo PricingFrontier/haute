@@ -97,9 +97,10 @@ Showing every node by default buries the causal chain. The panel instead asks ea
 type to expose its own real dependency columns (ratebook factors, online-optimiser objective/
 constraint columns, model feature columns, banding input columns) rather than hard-coding
 per-node-type hiding rules, so new node types automatically integrate with focusing as long as
-they declare their dependencies. See the retired TRACE_PANEL_EXPERIENCE_DESIGN doc (git
-history) for the fuller design narrative and rejected alternatives (separate Calculation/Nodes
-tabs; showing every connected node by default; hard-coded per-node hiding).
+they declare their dependencies. Two alternatives were considered and rejected: showing every
+connected node by default (buries the causal chain, as above) and hard-coding per-node-type
+hiding rules (does not generalise to new node types). The separate-tabs alternative is covered
+below.
 
 **One story, not two tabs.** Earlier iterations of the panel split "Calculation" and "Nodes"
 into separate tabs; that was rejected because it forced the user to reconcile value, source, and
@@ -114,8 +115,7 @@ back to a generic view — a missing calculation is a backend contract violation
 would make debugging traces harder, not easier (see Failure model).
 
 **Node-detail rendering never re-derives a match.** Rating-step, banding, and every other
-structured `node_detail` block (see the retired RATING_STEP_TRACE_DETAIL_DESIGN doc, git
-history, for the rating-step-specific design discussion) is a pure renderer of fields the backend already
+structured `node_detail` block is a pure renderer of fields the backend already
 computed — `RatingStepDetail`/`ratingStepHelpers.ts` reads a table's `status`/`matched`/
 `default_used` fields straight off the payload rather than re-running the lookup against
 `input_values`/`output_values` itself. The backend has the runtime config and the row

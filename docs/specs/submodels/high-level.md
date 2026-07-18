@@ -135,26 +135,22 @@ Out of scope (owned elsewhere, linked where relevant):
   actually-executed pipeline would show different things.
 - **Nesting is disallowed by construction, not by convention.** Rejecting any
   selection that includes a submodel placeholder keeps the placeholder model,
-  the `in__`/`out__` handle scheme, and the flatten pass single-level; the
-  historical design notes in the retired SUBMODEL_DESIGN doc (git history)
-  describe recursive nesting as a possible future phase that was never
-  implemented. This closes
-  the GUI-authored path, but a hand-authored submodel `.py` file could still
+  the `in__`/`out__` handle scheme, and the flatten pass single-level;
+  recursive nesting (a submodel containing another submodel) was considered
+  as a possible future phase and never implemented. This closes the
+  GUI-authored path, but a hand-authored submodel `.py` file could still
   contain its own `pipeline.submodel(...)` call — the parser (owned by
   pipeline-config/expression-parsing) handles that case by detecting the
   nested call and *ignoring* it with a `nested_submodel_ignored` warning log,
-  not by raising. The retired SUBMODEL_DESIGN doc (git history) §8.2
-  describes circular submodel references as something the parser "must
-  detect... and raise a clear
-  error" — that was never built; nesting one level deep is structurally
-  impossible to trigger from the GUI, and nesting attempted from hand-written
-  code is silently dropped rather than erroring, so a cycle cannot form
-  either way.
+  not by raising. Detecting a circular submodel reference and raising a clear
+  error for it was proposed but never built; nesting one level deep is
+  structurally impossible to trigger from the GUI, and nesting attempted from
+  hand-written code is silently dropped rather than erroring, so a cycle
+  cannot form either way.
 - **Name-collision detection lives at save time, not in `haute lint`.**
-  The retired SUBMODEL_DESIGN doc (git history) §5.9/§8.1 describes `haute
-  lint` warning about (and blocking on) node-name collisions across
-  submodels. The CLI's lint command
-  has no submodel-specific rules today — collision checking is
+  Extending `haute lint` to warn about (and block on) node-name collisions
+  across submodels was proposed and never built — the CLI's lint command has
+  no submodel-specific rules today. Collision checking is instead
   `SavePipelineService._validate_unique_sanitized_names`, run against the
   pre-transform graph on create and against the post-inline graph on dissolve
   (see the `create_submodel`/`dissolve_submodel` control flow in

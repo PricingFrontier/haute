@@ -45,9 +45,10 @@ Out of scope:
   [execution-engine](../execution-engine/high-level.md).
 - The optimisation mathematics themselves (lambda solving, scenario scoring, ratio-constraint
   linearisation, ratebook coordinate descent) — these live in the external `price-contour`
-  library, which this component treats as a black box with a documented contract (see the
-  retired `PRICE_CONTOUR_APPLY_EXPLAINABILITY_SPEC` doc in git history for the original
-  API contract Haute specified for it).
+  library, which this component treats as a black box with a documented contract (for the
+  explainability surface specifically, see the
+  [`with_explainer_columns` contract](low-level.md#with_explainer_columns-contract) in the
+  low-level spec).
 - Background job storage, lifecycle transitions, cancellation registries, and artifact TTL
   eviction — see [background-jobs](../background-jobs/high-level.md).
 - MLflow tracking-URI resolution, experiment naming, and run-URL construction — see
@@ -137,8 +138,12 @@ requires Python to iterate and hold each chunk — kept as a fallback path, not 
 passing a `LazyFrame` straight to Rust (not supported by the `pyo3-polars` API in use). The
 Parquet round-trip's disk-I/O cost (roughly 1-2s for large files) is accepted because it is small
 relative to the memory it saves for large portfolios; for small datasets the round-trip overhead
-is more noticeable and memory pressure isn't the bottleneck. See the retired
-PARQUET_GRID_PIPELINE doc (git history) for the full trade-off writeup.
+is more noticeable and memory pressure isn't the bottleneck. A third alternative, Arrow IPC
+instead of Parquet, was also rejected: lower serialisation overhead, but less widely supported and
+without Parquet's column-level compression, whereas Parquet is already the standard interchange
+format used elsewhere. The upstream lazy plan also projects down to only solver-relevant columns
+before the sink, so the temporary Parquet file stays narrow regardless of how many columns the
+pipeline produces upstream.
 
 Frontier auto-range and frontier compute share the same schema validation and column-projection
 logic as the main solve, and the auto-range estimate can itself run either as a classic
@@ -149,11 +154,10 @@ frontier ranges.
 
 Frontier ranges are expressed as absolute threshold values, not multipliers of a baseline —
 multiplier semantics are ambiguous once constraints have different natural scales, and the
-`price-contour` frontier API itself is threshold-based (see the retired
-optimiser-frontier-design doc, git history). For the same reason, a frontier point that is missing the
-numeric fields needed to reconstruct a full solve summary is treated as a hard failure rather
-than being patched over with a fallback value — a partial, guessed summary would misrepresent
-the actual solve.
+`price-contour` frontier API itself is threshold-based. For the same reason, a frontier point
+that is missing the numeric fields needed to reconstruct a full solve summary is treated as a
+hard failure rather than being patched over with a fallback value — a partial, guessed summary
+would misrepresent the actual solve.
 
 Trace explainability deliberately does not reimplement `price-contour`'s scoring or
 ratio-constraint linearisation math in Haute. Instead `price-contour` exposes deterministic
@@ -171,11 +175,15 @@ compute cap in particular is checked *before* the solver runs, using the same gr
 `price-contour` itself uses, so an oversized request is rejected with an actionable message
 rather than dying inside the solver as an opaque failure.
 
-Rejected alternatives (see the retired optimiser-frontier-design doc, git history): treating frontier ranges as
-multipliers of a baseline; always returning a pollable job id for the (short-lived) auto-range
-estimate, which was rejected because there is no polling API for it and would leave
-unobservable job-store growth; adding frontend fallbacks for an incomplete selected frontier
-point, rejected because it cannot produce a faithful solve summary.
+Three further alternatives were considered and rejected during the frontier design. Treating
+frontier ranges as multipliers of a baseline was rejected for the reason above — a multiplier is
+ambiguous once constraints have different natural scales, and both the route's own API and the
+underlying `price-contour` integration operate on absolute threshold values. Always returning a
+pollable job id for the (short-lived) auto-range estimate was rejected because there is no polling
+API for it, and keeping such a job in the shared store would leave unobservable job-store growth
+with nothing to ever poll it down. Adding a frontend fallback for an incomplete selected frontier
+point was rejected because a frontier point missing its numeric summary fields cannot produce a
+faithful solve summary — a guessed or partial one would misrepresent the actual solve.
 
 ## Interactions
 

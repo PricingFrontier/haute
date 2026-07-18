@@ -327,14 +327,55 @@ source_names, source_ids)` is the sole public entry point:
 `_explain_online` (`:141`) builds the online apply input frame
 (`_prepare_online_apply_frame`), constructs a `price_contour.ApplyOptimiser` with the artifact's
 lambdas/constraints/column names, and calls `applier.with_explainer_columns(df)` — the
-`price-contour` API (contract originally specified in the retired
-`PRICE_CONTOUR_APPLY_EXPLAINABILITY_SPEC` doc, in git history) that returns
-the original candidate frame plus `decision_score`, `selected`, `is_baseline`, and per-constraint
-`linearised_<name>`/`lambda_term_<name>` columns, matching `ApplyOptimiser.apply(df)` exactly by
-construction. It filters to the clicked quote's rows, asserts exactly one `selected` and exactly
-one `is_baseline` candidate, and checks the selected candidate's `scenario_value` against the
-actual output column (tolerant numeric match, see `_values_match`) before returning the full
-candidate ladder plus the selected/baseline rows.
+`price-contour` API documented in full in
+[`with_explainer_columns` contract](#with_explainer_columns-contract) below. It filters to the
+clicked quote's rows, asserts exactly one `selected` and exactly one `is_baseline` candidate, and
+checks the selected candidate's `scenario_value` against the actual output column (tolerant
+numeric match, see `_values_match`) before returning the full candidate ladder plus the
+selected/baseline rows.
+
+#### `with_explainer_columns` contract
+
+`price_contour.ApplyOptimiser.with_explainer_columns(df)` is the one piece of online-apply
+explainability this component deliberately does not reimplement — ratio-constraint linearisation
+and exact fixed-lambda score semantics stay owned by `price-contour` so there is exactly one
+implementation of "how a scenario is scored." It takes the same candidate frame
+`ApplyOptimiser.apply(df)` would score and returns it unchanged plus these appended columns:
+
+- `decision_score` (float) — the exact fixed-lambda score used to choose the winning candidate.
+- `selected` (bool) — true for the one candidate `apply(df)` selects for that quote.
+- `is_baseline` (bool) — true for the one baseline scenario for that quote.
+- Per constraint `name`: `linearised_<name>` (the value used in the fixed-lambda score — the
+  original constraint column for a sum constraint, or the internal ratio-linearisation value for
+  a ratio constraint) and `lambda_term_<name>` (that value's signed contribution to
+  `decision_score`).
+
+Score reconstruction holds for every candidate row:
+
+```text
+decision_score == objective + sum(lambda_term_<constraint> for every constraint)
+lambda_term_<name> == signed_lambda_<name> * linearised_<name>
+```
+
+where `signed_lambda_<name>` is `+lambda` for a minimum constraint and `-lambda` for a maximum
+constraint. Ratio-constraint linearisation (the sum-shaped internal value substituted for the raw
+numerator/denominator columns) is entirely library-owned; this component never re-derives it, only
+reads `linearised_<name>`/`lambda_term_<name>` off the returned frame.
+
+Baseline selection (`is_baseline`) follows deterministic rules, applied per quote: prefer an exact
+`scenario_value == 1.0`; if none exists, take the scenario with `scenario_value` nearest to `1.0`;
+if still tied, fall back to stable scenario ordering. Exactly one candidate per quote with at least
+one row gets `is_baseline == True`.
+
+`selected` is required to match `ApplyOptimiser.apply(df)` exactly, including tie-breaking — this
+is the guarantee `_explain_online` leans on when it asserts exactly one `selected` row per quote
+and reconciles it against the real output value; a mismatch here would mean the trace is
+explaining a different decision than the one that actually priced the row.
+
+Validation is fail-loud with the same rules `apply(df)` itself applies: a missing quote id,
+scenario index, scenario value, objective, or constraint column; invalid/null data `apply(df)`
+would reject; an unknown lambda key; or an invalid ratio-constraint numerator/denominator column
+all raise rather than silently omitting explainer columns or falling back to an approximate score.
 
 `_explain_ratebook` (`:291`) locates the matching input row for the clicked output row
 (`_match_ratebook_input_row` — Polars-pushed-down equality filter first, falling back to a
@@ -408,11 +449,10 @@ returned as a generic `status: "error"` payload.
   > NOTE: worth confirming with the team whether this split is intentional policy or an
   > inconsistency to fix.
 - **`decision_score`/`is_baseline` tie-breaking is fully owned by `price-contour`.** The
-  explainability contract (the retired `PRICE_CONTOUR_APPLY_EXPLAINABILITY_SPEC` doc,
-  in git history) requires
-  `with_explainer_columns` to match `apply(df)`'s tie-breaking exactly, including which
-  `scenario_value` is treated as baseline (`== 1.0` exactly, else nearest to `1.0`, else stable
-  ordering) — this component never re-derives that rule, only consumes and reconciles the result.
+  [`with_explainer_columns` contract](#with_explainer_columns-contract) requires it to match
+  `apply(df)`'s tie-breaking exactly, including which `scenario_value` is treated as baseline
+  (`== 1.0` exactly, else nearest to `1.0`, else stable ordering) — this component never
+  re-derives that rule, only consumes and reconciles the result.
 - **Ratebook "unseen" factor levels are not errors.** A ratebook factor lookup that finds no
   matching entry for an input value is the engine's documented loud-neutral behaviour (counted
   and logged upstream, multiplicative identity `1.0` applied) — the trace payload marks it

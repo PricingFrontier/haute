@@ -11,31 +11,33 @@ what the row's values were before and after each node, which columns each node
 added/removed/modified/passed through, what formula or lookup produced a traced
 column's value, and (for numeric multiplicative/additive chains) a waterfall
 breakdown of how the value accumulated. This is the backend for the pipeline
-editor's "click a cell → see its lineage" feature, and the foundation named in
-the retired ARCHITECTURE doc (git history) §9.3 for regulatory explainability
-(Solvency II, IFRS 17, FCA Consumer Duty) and day-to-day debugging.
+editor's "click a cell → see its lineage" feature, and it exists to satisfy
+regulatory explainability requirements (Solvency II, IFRS 17, FCA Consumer
+Duty) as well as day-to-day debugging.
 
-The retired EXECUTION_TRACE_DESIGN doc (git history) records the original
-design discussion and rationale for why a trace layer is needed at all, the
-three levels of lineage it distinguishes (static node lineage, dynamic row
-trace, targeted cell trace), and the regulatory drivers.
+A trace layer generally distinguishes three levels of lineage: static node
+lineage (which nodes could feed a given node, derived from graph structure
+alone, with no execution involved), dynamic row trace (which rows and values
+actually flowed through a specific execution), and targeted cell trace (the
+value-level derivation of one cell for one row). This component implements
+the targeted cell trace.
 
-> NOTE: the design doc's proposed implementation strategy — injecting a
-> monotonic `__trace_row_id` column at every source node and threading it through
-> joins/group-bys — was not what got built. The shipped implementation performs
-> **post-hoc value-based correlation** instead: it reuses the exact DataFrames the
-> preview execution already produced and matches each parent row to its resolved
-> child row by shared column values, walking backward from the target node. This
-> guarantees the trace shows precisely the data the preview table shows, with no
-> extra columns threaded through user code. The design doc's `JoinInfo` /
-> `AggregationInfo` dataclasses, the `branches` dict on `TraceResult`, and the
-> `/api/pipeline/trace/column` and `/api/pipeline/trace/compare` endpoints were
-> also never implemented; the current `TraceResult` is a flat, linear list of
-> `TraceStep`s plus a `waterfall` summary and `correlation_diagnostics` list —
-> the design doc's `haute trace export` regulatory-report CLI command was
-> likewise never built (`export_trace()` exists, but only as a Python function
-> producing a report-shape dict for the API layer, not a CLI entry point) —
-> concepts absent from the original design.
+> NOTE: An alternative design — injecting a monotonic `__trace_row_id` column
+> at every source node and threading it through joins/group-bys — was
+> considered and never implemented. The shipped implementation instead
+> performs **post-hoc value-based correlation**: it reuses the exact
+> DataFrames the preview execution already produced and matches each parent
+> row to its resolved child row by shared column values, walking backward
+> from the target node. This guarantees the trace shows precisely the data
+> the preview table shows, with no extra columns threaded through user code.
+> Also never built: `JoinInfo` / `AggregationInfo` dataclasses for join/
+> aggregation provenance, a `branches` dict on `TraceResult`, the
+> `/api/pipeline/trace/column` and `/api/pipeline/trace/compare` endpoints,
+> and a `haute trace export` regulatory-report CLI command (`export_trace()`
+> exists, but only as a Python function producing a report-shape dict for the
+> API layer, not a CLI entry point). The current `TraceResult` is a flat,
+> linear list of `TraceStep`s plus a `waterfall` summary and a
+> `correlation_diagnostics` list.
 
 ## Scope
 
@@ -146,13 +148,13 @@ Out of scope (owned elsewhere, linked where relevant):
 
 ## Design rationale
 
-- **Post-hoc correlation over row-id injection.** The retired
-  EXECUTION_TRACE_DESIGN doc (git history) proposed injecting a
-  `__trace_row_id` column at every source and threading it through the DAG. The shipped design instead
-  matches rows after the fact by value, because it guarantees byte-for-byte
-  agreement with what the preview already computed and requires no changes to
-  user-authored node code, at the cost of needing careful, node-type-aware
-  matching logic (see the edge-join provenance rules below).
+- **Post-hoc correlation over row-id injection.** An alternative design would
+  inject a `__trace_row_id` column at every source node and thread it through
+  the DAG. The shipped design instead matches rows after the fact by value,
+  because it guarantees byte-for-byte agreement with what the preview already
+  computed and requires no changes to user-authored node code, at the cost of
+  needing careful, node-type-aware matching logic (see the edge-join
+  provenance rules below).
 - **Preview-cache decoupling via a `PreviewReader` protocol.** Rather than
   reaching into `haute.executor`'s private preview-cache singleton, the trace
   module accepts anything exposing `try_get(fingerprint) -> dict | None` (a

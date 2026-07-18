@@ -192,8 +192,7 @@ Out of scope (owned elsewhere):
   own prediction independently and compare it to the decomposition's sum
   before returning anything.
 - **RustyStats owns its own contribution decomposition; Haute never
-  reconstructs it.** The retired RUSTYSTATS_TRACE_EXPLAINABILITY doc (git
-  history) records the original design decision: RustyStats' GLM structure (spline bases,
+  reconstructs it.** RustyStats' GLM structure (spline bases,
   categorical/target encodings, interactions, offsets, complement logic)
   is implementation detail internal to the model library, so Haute calls
   RustyStats' own `predict_contributions(...)` API

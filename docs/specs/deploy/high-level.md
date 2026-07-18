@@ -118,8 +118,8 @@ approving it.
   intercepting only the handful of node types that need live-input injection or
   artefact-path remapping (`NodeBuildHooks(before_build=_intercept)`). This keeps
   dev/deploy behavioural drift structurally impossible for every other node type.
-- **The pruned graph JSON, not the `.py` file, is the deployment unit** (the retired
-  DEPLOY_DESIGN doc, git history, decision D2). `_utils.py::build_manifest` embeds `resolved.pruned_graph.model_dump()` verbatim into
+- **The pruned graph JSON, not the `.py` file, is the deployment unit.** This was a
+  deliberate design decision: `_utils.py::build_manifest` embeds `resolved.pruned_graph.model_dump()` verbatim into
   `deploy_manifest.json`, and at runtime `HauteModel.load_context`
   (`_model_code.py`) reconstructs the graph via `PipelineGraph.model_validate(manifest["pruned_graph"])`
   rather than re-parsing any source file. A self-contained graph JSON is inspectable without a
@@ -142,19 +142,27 @@ approving it.
   resolved against the process's working directory, because the deployed container's CWD
   (`/`) has no relation to the developer's CWD at build time; baking in a CWD-relative
   path silently breaks the container.
-- **Container-first, ML-platform-second.** Per the retired DEPLOY_STRATEGY doc (git
-  history), the FastAPI container is the recommended default — it needs no ML-platform lock-in, and SageMaker /
+- **Container-first, ML-platform-second.** This was a deliberate design decision: a
+  container is just an API surface that any team already knows how to operate, needs
+  no ML-platform lock-in or MLOps-specific knowledge, and runs anywhere (ECS,
+  Container Apps, Cloud Run, Kubernetes, a VM, a laptop) instead of being tied to one
+  platform's compute pricing — and it lets a third target arrive as a thin wrapper
+  around one build rather than requiring a bespoke packaging pipeline per platform.
+  The FastAPI container is therefore the recommended default, and SageMaker /
   Azure ML (`sagemaker`, `azure-ml` — both currently only stubs raising
   `NotImplementedError` from `__init__.py::_validate_target`) are designed as thin
   wrappers around the same container build once implemented. Databricks remains
   first-class for teams already on that platform, with a documented pandas bridge
   (`_model_code.py::HauteModel.predict`) as the one place the "Polars-native" rule is
   deliberately broken, because MLflow's `pyfunc` protocol requires it.
-- **No target abstraction until three targets exist** (the retired DEPLOY_DESIGN doc,
-  git history, decision D7).
-  Dispatch in `__init__.py::_dispatch_resolved` is a plain if-chain; container-platform
-  targets share `deploy_to_platform_container()` but there is no `Protocol` or base class
-  because the concrete shape of a third genuinely different target isn't known yet.
+- **No target abstraction until three targets exist.** This was a deliberate design
+  decision to avoid premature abstraction: with only two implemented targets
+  (Databricks, container) plus scaffolded container-platform variants, any `Protocol`
+  or base class would be guessing at a shape the codebase doesn't yet have enough
+  concrete implementations to justify. Dispatch in `__init__.py::_dispatch_resolved`
+  is a plain if-chain; container-platform targets share `deploy_to_platform_container()`
+  but there is no `Protocol` or base class because the concrete shape of a third
+  genuinely different target isn't known yet.
 
 ## Interactions
 
@@ -231,8 +239,10 @@ most: a silent wrong answer here mis-prices real policies.
 - **Docker/subprocess failures** (`docker info`, `docker build`, `docker push`) raise
   `RuntimeError` with the captured stderr; a `RuntimeError` telling the caller to run in
   CI is raised specifically when Docker itself isn't available, since local container
-  deploys are intentionally unsupported (the retired DEPLOY_DESIGN doc, git
-  history, §3.0).
+  deploys are intentionally unsupported: `haute deploy`, `haute smoke`, and
+  `haute impact` are designed to run only in CI, where Docker and cloud credentials are
+  already provisioned, so analysts never need Docker or cloud CLIs installed locally —
+  only `haute init` and `haute serve` are meant to run on a developer machine.
 - **Platform-container service update** (Azure Container Apps / AWS ECS / GCP Cloud Run)
   always raises `NotImplementedError` after a successful build+push, naming the pushed
   image tag so the operator can update the service manually.

@@ -209,14 +209,13 @@ Out of scope (owned by neighbouring components, linked where they exist):
   any ancestor level, not a re-fetch.
 - **Submodel creation is keyboard-triggered, not a context-menu item.**
   Selecting two or more nodes and pressing Ctrl+G opens `SubmodelDialog`
-  for the name; there is no "Group as Submodel" right-click entry (older
-  design notes in the retired SUBMODEL_DESIGN doc (git history) §2.1
-  describe one, but it was never built — Ctrl+G is the only creation
-  trigger). The context menu's entry for an existing submodel node reads
-  "Dissolve Submodel", not "Ungroup Submodel". Clicking a submodel node
+  for the name; there is no "Group as Submodel" right-click entry (a
+  context-menu item was considered but never built — Ctrl+G is the only
+  creation trigger). The context menu's entry for an existing submodel node
+  reads "Dissolve Submodel", not "Ungroup Submodel". Clicking a submodel node
   opens the standard node inspector but fetches no preview — submodel is a
-  non-previewable node type — rather than the output-port summary table the
-  retired SUBMODEL_DESIGN doc (git history) §11.5 once proposed.
+  non-previewable node type — rather than the output-port summary table that
+  was once proposed and never built.
 - **Version comparison.** A side-by-side (or, toggled, stacked) pair of
   read-only canvases shows a historical pipeline version against a frozen
   snapshot of the current one, with added/removed/changed/moved nodes ring-
