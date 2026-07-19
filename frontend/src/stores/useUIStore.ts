@@ -25,6 +25,8 @@ interface UIState {
   setUtilityOpen: (open: boolean) => void
   importsOpen: boolean
   setImportsOpen: (open: boolean) => void
+  assistantOpen: boolean
+  setAssistantOpen: (open: boolean) => void
   gitOpen: boolean
   setGitOpen: (open: boolean) => void
   shortcutsOpen: boolean
@@ -64,11 +66,13 @@ const useUIStore = create<UIState>()((set) => ({
   paletteOpen: true,
   setPaletteOpen: (open) => set({ paletteOpen: open }),
   utilityOpen: false,
-  setUtilityOpen: (open) => set({ utilityOpen: open, importsOpen: false, gitOpen: false }),
+  setUtilityOpen: (open) => set({ utilityOpen: open, importsOpen: false, assistantOpen: false, gitOpen: false }),
   importsOpen: false,
-  setImportsOpen: (open) => set({ importsOpen: open, utilityOpen: false, gitOpen: false }),
+  setImportsOpen: (open) => set({ importsOpen: open, utilityOpen: false, assistantOpen: false, gitOpen: false }),
+  assistantOpen: false,
+  setAssistantOpen: (open) => set({ assistantOpen: open, utilityOpen: false, importsOpen: false, gitOpen: false }),
   gitOpen: false,
-  setGitOpen: (open) => set({ gitOpen: open, utilityOpen: false, importsOpen: false }),
+  setGitOpen: (open) => set({ gitOpen: open, utilityOpen: false, importsOpen: false, assistantOpen: false }),
   shortcutsOpen: false,
   setShortcutsOpen: (open) => {
     if (typeof open === "function") {

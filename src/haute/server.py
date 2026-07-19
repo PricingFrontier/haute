@@ -55,6 +55,7 @@ from haute.routes._helpers import (
     ws_clients_discard,
     ws_clients_lock,
 )
+from haute.routes.assistant import router as assistant_router
 from haute.routes.databricks import router as databricks_router
 from haute.routes.explore import router as explore_router
 from haute.routes.files import router as files_router
@@ -455,6 +456,7 @@ async def get_session_status() -> SessionStatusResponse:
 
 
 app.include_router(pipeline_router)
+app.include_router(assistant_router)
 app.include_router(output_assemble_router)
 app.include_router(databricks_router)
 app.include_router(files_router)

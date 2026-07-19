@@ -1037,3 +1037,66 @@ class TestRollbackRobustness:
             "#50: _rollback swallowed a partial-rollback error without "
             "emitting save_rollback_failed"
         )
+
+
+# ---------------------------------------------------------------------------
+# save_graph_transactionally — field forwarding (assistant round-trip seam)
+# ---------------------------------------------------------------------------
+
+
+class TestTransactionalWrapperFieldForwarding:
+    """``save_graph_transactionally`` rebuilds a ``SavePipelineRequest``
+    from an already-parsed graph.  Every graph field the save path
+    consumes must be forwarded — a dropped field silently erases user
+    content on the next save.  ``preserved_blocks`` was dropped: any
+    caller saving a parsed graph (submodel create/dissolve, assistant
+    edits) deleted every ``# haute:preserve`` block from the file.
+    """
+
+    def test_preserved_blocks_survive_transactional_save(self, project_root: Path) -> None:
+        from haute.parser import parse_pipeline_source
+        from haute.routes._save_pipeline import SavePipelineService
+
+        source = "\n".join(
+            [
+                "import polars as pl",
+                "import haute",
+                "",
+                'pipeline = haute.Pipeline("main", description="test pipeline")',
+                "",
+                "# haute:preserve-start",
+                "CUSTOM_CONSTANT = 42",
+                "# haute:preserve-end",
+                "",
+                "",
+                "@pipeline.polars",
+                "def source() -> pl.LazyFrame:",
+                '    """Create source rows."""',
+                '    return pl.LazyFrame({"x": [1]})',
+                "",
+            ]
+        )
+        py_path = project_root / "main.py"
+        py_path.write_text(source)
+
+        graph = parse_pipeline_source(source)
+        assert graph.preserved_blocks, "precondition: parser extracted the block"
+
+        svc = SavePipelineService(project_root)
+        svc.save_graph_transactionally(
+            graph=graph,
+            name=graph.pipeline_name or "main",
+            description=graph.pipeline_description or "",
+            preamble=graph.preamble,
+            source_file="main.py",
+        )
+
+        saved = py_path.read_text()
+        assert "CUSTOM_CONSTANT = 42" in saved, (
+            "save_graph_transactionally dropped graph.preserved_blocks — "
+            "# haute:preserve content was erased by a graph-level save"
+        )
+        assert "# haute:preserve-start" in saved and "# haute:preserve-end" in saved, (
+            "preserve markers themselves must survive so the block stays "
+            "preserved on the following save"
+        )

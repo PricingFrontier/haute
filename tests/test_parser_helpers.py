@@ -605,17 +605,21 @@ class TestBuildEdges:
         # Explicit (a,c) + implicit (b,c) -- both present
         assert targets_of_c == [("a", "c"), ("b", "c")]
 
-    def test_fallback_linear_chain(self):
-        """With no edges and no matching params, nodes form a linear chain."""
+    def test_no_edges_are_invented_without_params_or_connects(self):
+        """Zero declared edges parse as zero edges — the parser never invents a chain.
+
+        Regression for the definition-order fallback that fabricated a linear
+        chain for any multi-node file with no explicit or implicit edges: a
+        deliberately disconnected graph was unrepresentable (deleting the last
+        edge resurrected it on reparse, and a GUI save then materialised the
+        invented edge into source).
+        """
         nodes = [
             self._raw("x", []),
             self._raw("y", ["unrelated"]),
             self._raw("z", ["other"]),
         ]
-        edges = _build_edges(nodes, [])
-        assert len(edges) == 2
-        assert edges[0].source == "x" and edges[0].target == "y"
-        assert edges[1].source == "y" and edges[1].target == "z"
+        assert _build_edges(nodes, []) == []
 
     def test_single_node_no_edges(self):
         nodes = [self._raw("only", [])]

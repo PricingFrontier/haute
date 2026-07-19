@@ -191,6 +191,10 @@ keys reordering incorrectly under concurrent structural edits.
   without allowing interaction; it is a deliberately separate, parallel switch statement from
   `NodePanel.renderEditor` rather than a shared one, so the heavily-tested live `NodePanel` stays
   untouched by read-only concerns.
+- **[frontend-assistant-ui](../frontend-assistant-ui/high-level.md)** — the assistant chat panel
+  renders inside the shared side-panel shell this component owns and follows the same
+  lazy-loading convention as the editor bodies; it consumes the shell only, none of the
+  editor plumbing.
 
 ## Failure model
 

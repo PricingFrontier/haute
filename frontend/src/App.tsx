@@ -77,6 +77,7 @@ const MilestoneCommitModal = lazy(() => import("./components/MilestoneCommitModa
 const MoveConfirmModal = lazy(() => import("./components/MoveConfirmModal"))
 const WorkingBranchModal = lazy(() => import("./components/WorkingBranchModal"))
 const GitPanel = lazy(() => import("./panels/GitPanel"))
+const AssistantPanel = lazy(() => import("./panels/assistant/AssistantPanel"))
 const ComparisonView = lazy(() => import("./components/ComparisonView"))
 const ComparisonInspector = lazy(() => import("./components/ComparisonInspector"))
 
@@ -145,6 +146,7 @@ function FlowEditor() {
   const setImportsOpen = useUIStore((s) => s.setImportsOpen)
   const gitOpen = useUIStore((s) => s.gitOpen)
   const setGitOpen = useUIStore((s) => s.setGitOpen)
+  const assistantOpen = useUIStore((s) => s.assistantOpen)
   const shortcutsOpen = useUIStore((s) => s.shortcutsOpen)
   const setShortcutsOpen = useUIStore((s) => s.setShortcutsOpen)
   const submodelDialog = useUIStore((s) => s.submodelDialog)
@@ -248,6 +250,7 @@ function FlowEditor() {
   const pipelineNameRef = useRef("main")
   const descriptionRef = useRef("")
   const sourceFileRef = useRef("")
+  const [currentSourceFile, setCurrentSourceFile] = useState<string | null>(null)
   const nodeIdCounter = useRef(0)
 
   // Keep graphRef in sync so callbacks never see stale state. Cache freshness
@@ -430,6 +433,15 @@ function FlowEditor() {
     preambleRef, descriptionRef, sourceFileRef, pipelineNameRef,
     fitView,
   })
+
+  useEffect(() => {
+    const sourceFile = sourceFileRef.current || null
+    if (sourceFile !== currentSourceFile) {
+      // The pipeline hook owns the mutable source ref; mirror it into render
+      // state when loading or submodel navigation changes the active file.
+      setCurrentSourceFile(sourceFile)
+    }
+  }, [currentSourceFile, loading, sourceFileRef, viewStack])
 
   useKeyboardShortcuts({
     handleSave: requestSave, setNodes, setEdges, setNodesAndEdges, undo, redo, fitView,
@@ -843,6 +855,15 @@ function FlowEditor() {
                 }}
                 onClose={() => setImportsOpen(false)}
               />
+            ) : assistantOpen ? (
+              <ErrorBoundary name="AssistantPanel">
+                <Suspense fallback={null}>
+                  <AssistantPanel
+                    isInsideSubmodel={viewStack.length > 1}
+                    currentSourceFile={currentSourceFile}
+                  />
+                </Suspense>
+              </ErrorBoundary>
             ) : traceResult ? (
               <TracePanel trace={traceResult} onClose={clearTrace} />
             ) : (

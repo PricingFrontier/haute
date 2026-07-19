@@ -55,11 +55,13 @@ extra_css:
   - stylesheets/extra.css
 
 # Internal engineering material lives under docs/ for repo convenience but is
-# not part of the public site: component specs, and the review/audit archives.
+# not part of the public site: component specs, the review/audit archives, and
+# the TRIP workflow artifacts (plans, changelogs, code reviews).
 exclude_docs: |
   specs/
   review/
   fable-Review/
+  trip/
 
 dev_addr: 127.0.0.1:8001
 

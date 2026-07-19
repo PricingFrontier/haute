@@ -100,6 +100,38 @@ pipeline.connect("a", "b")
         edge_pairs = [(e.source, e.target) for e in graph.edges]
         assert ("a", "b") in edge_pairs
 
+    def test_disconnected_nodes_parse_with_zero_edges(self, tmp_path):
+        """A multi-node file with no declared wiring parses as disconnected.
+
+        Regression for the definition-order chain fallback: adding an
+        independent data source next to an existing node fabricated an edge
+        between them on every reparse, so a deliberately disconnected graph
+        could never exist (the assistant's delete_edge was silently undone, and
+        a GUI save materialised the invented edge into source).
+        """
+        config_a = write_data_source_config(tmp_path, "quotes", "quotes.parquet")
+        config_b = write_data_source_config(tmp_path, "nb_batch", "nb_batch.parquet")
+        code = f"""\
+import polars as pl
+import haute
+
+pipeline = haute.Pipeline("disconnected")
+
+
+@pipeline.data_source(config="{config_a}")
+def quotes() -> pl.DataFrame:
+    return pl.DataFrame()
+
+
+@pipeline.data_source(config="{config_b}")
+def nb_batch() -> pl.DataFrame:
+    return pl.DataFrame()
+"""
+        p = _write_pipeline(tmp_path, code)
+        graph = parse_pipeline_file(p)
+        assert [n.id for n in graph.nodes] == ["quotes", "nb_batch"]
+        assert graph.edges == []
+
     def test_implicit_edges_from_param_names(self, tmp_path):
         source_config = write_data_source_config(tmp_path, "source", "data.parquet")
         code = f"""\

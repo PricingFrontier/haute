@@ -195,13 +195,6 @@ def _build_edges(
                         )
                     )
 
-    # Fallback: if still no edges, infer linear chain from definition order
-    if not edges and len(raw_nodes) > 1:
-        for i in range(1, len(raw_nodes)):
-            src = raw_nodes[i - 1]["func_name"]
-            tgt = raw_nodes[i]["func_name"]
-            edges.append(GraphEdge(id=f"e_{src}_{tgt}", source=src, target=tgt))
-
     return edges
 
 

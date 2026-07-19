@@ -22,7 +22,9 @@ panel instead of a blank white screen.
 In scope:
 - The typed HTTP client (`api/`) and the runtime response parsers that
   guard the JSON/DOM boundary. This includes bundle-split companion modules
-  like `api/dispersion.ts` (GLM dispersion-estimation endpoints) that live
+  like `api/dispersion.ts` (GLM dispersion-estimation endpoints) and
+  `api/assistant.ts` (assistant status/session endpoints and the SSE
+  message-stream reader) that live
   outside `api/client.ts` so their code — reachable only from a lazy-loaded
   panel — stays out of the initial JS bundle, while still sharing the
   client's exported `request`/`post` fetch machinery rather than
@@ -188,8 +190,10 @@ pipeline → submodel navigation stack and is hidden entirely at depth 1.
   — not more exports on `client.ts` — specifically so its code isn't
   reachable from the initial bundle graph; `scripts/check-bundle-size.mjs`
   gates the initial-gzip budget this layout exists to respect. The
-  pattern generalises: a future lazy-panel-only endpoint set follows the
-  same split rather than growing `client.ts` unconditionally.
+  pattern generalises — `api/assistant.ts` follows the same split for the
+  assistant panel's endpoints (including its SSE stream reader and local
+  event parsing, the same local-parsing exception `api/dispersion.ts`
+  makes) rather than growing `client.ts` unconditionally.
 - **A cached result's staleness key is `configHash` + `source` +
   `structuralVersion`, never `configHash` alone.** `CachedExploreResult`
   already tracked all three; solve/train results and
@@ -206,14 +210,18 @@ pipeline → submodel navigation stack and is hidden entirely at depth 1.
   ([frontend-graph-canvas](../frontend-graph-canvas/high-level.md)), node
   editors ([frontend-node-editors](../frontend-node-editors/high-level.md)),
   tracing ([frontend-trace-ui](../frontend-trace-ui/high-level.md)), git UI
-  ([frontend-git-ui](../frontend-git-ui/high-level.md)), and the
+  ([frontend-git-ui](../frontend-git-ui/high-level.md)), the assistant panel
+  ([frontend-assistant-ui](../frontend-assistant-ui/high-level.md)), and the
   modelling/optimiser, explore/EDA, and preview panels — all of them call
   through `api/client.ts`, read/write `useNodeResultsStore` /
   `useSettingsStore` / `useToastStore` / `useUIStore`, and render inside the
   chrome this component provides.
 - Talks to [server-api](../server-api/high-level.md) exclusively through the
   typed functions in `api/client.ts` — no other module in the frontend is
-  expected to call `fetch()` directly against `/api/*`.
+  expected to call `fetch()` directly against `/api/*`; split endpoint
+  modules (dispersion, assistant) consume `client.ts`'s exported fetch/stream
+  helpers rather than hand-rolling transport, which is how the rule holds
+  even for the assistant's non-JSON SSE stream.
 - `useBackgroundJobs` (mounted once via `BackgroundJobPolling`) polls solve,
   train, and explore jobs regardless of which panel is currently open, so
   those results reach `useNodeResultsStore` even after the user navigates

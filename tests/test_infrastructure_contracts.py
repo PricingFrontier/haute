@@ -108,12 +108,29 @@ class TestApiRouteContracts:
                 return all(is_pydantic_response(arg) for arg in get_args(model))
             return False
 
+        def is_declared_stream(route: APIRoute) -> bool:
+            """A route that explicitly declares a streaming transport.
+
+            SSE/streaming responses carry no JSON body to model; their wire
+            contract lives in the per-event schema union instead (the assistant
+            message stream is the first such route).  The exemption requires
+            the EXPLICIT ``response_class=StreamingResponse`` declaration —
+            an undeclared route still fails this contract.
+            """
+
+            from fastapi.responses import StreamingResponse
+
+            response_class = getattr(route, "response_class", None)
+            actual = getattr(response_class, "value", response_class)
+            return isinstance(actual, type) and issubclass(actual, StreamingResponse)
+
         offenders = sorted(
             f"{','.join(route.methods or [])} {route.path}: {route.response_model!r}"
             for route in app.routes
             if isinstance(route, APIRoute)
             and route.path.startswith("/api/")
             and not is_pydantic_response(route.response_model)
+            and not is_declared_stream(route)
         )
 
         assert offenders == []

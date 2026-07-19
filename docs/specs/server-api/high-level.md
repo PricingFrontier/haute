@@ -64,6 +64,10 @@ Out of scope (owned by neighbouring components, included as routers but not desc
   `_api_input_schema.py`'s codec — see [json-shredding](../json-shredding/high-level.md).
 - `routes/mlflow.py`, `routes/modelling.py`, `routes/optimiser.py`, `routes/submodel.py` —
   separate components not covered by this spec pass.
+- `routes/assistant.py` and the assistant agent loop/providers/tools — see
+  [assistant](../assistant/high-level.md). This component defines the `Assistant*` schemas in
+  `schemas.py` and provides the save service, event bus, self-write tracking, and
+  `save_lock` that component's mutation tools call.
 - The preview/execution cache and graph-fingerprint machinery consumed by the pipeline
   routes — see [caching](../caching/high-level.md).
 - Everything the browser does with these responses — see
@@ -215,6 +219,11 @@ the deploy-time render path.
 - **[caching](../caching/high-level.md)** — `routes/pipeline.py` reads `_preview_cache` and
   `graph_fingerprint` to key supersession and to inject the preview reader `execute_trace`
   needs.
+- **[assistant](../assistant/high-level.md)** — owns `routes/assistant.py`, included into the same
+  app; its `Assistant*` request/response/SSE-event models live in `schemas.py`; its mutation
+  tools run `SavePipelineService` under the shared `save_lock`, mark self-writes, and publish
+  `graph.update` on the shared event bus so assistant edits broadcast over `/ws/sync` exactly
+  like external edits.
 - **[codegen](../codegen/high-level.md)** — `SavePipelineService._write_code` calls
   `graph_to_code` / `graph_to_code_multi`; `_registry.py` is the shared dispatch table
   between codegen and the executor.

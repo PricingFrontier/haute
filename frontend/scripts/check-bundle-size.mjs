@@ -19,9 +19,13 @@ const DEFAULT_MAX_SINGLE_JS_GZIP_KIB = 650
 // The Explore NaN split added ~0.5 KiB of the same class again (nan_count in
 // types/guards, the NaN %/NaN columns, and the shared Tooltip + HelpCircle
 // icon newly reaching the initial chunk via the Distinct help button).
-// 244 KiB keeps a small margin while still catching accidental eager
+// The assistant feature added ~0.3 KiB of the same deliberate-eager class: the
+// always-visible Toolbar toggle (Bot icon + button + useUIStore selectors)
+// and client.ts's postRawStream helper. The panel, store, api module, and
+// markdown renderer are all lazy (guarded by App.assistantLazy.test.ts).
+// 245 KiB keeps a small margin while still catching accidental eager
 // editor/vendor imports.
-const DEFAULT_MAX_INITIAL_JS_GZIP_KIB = 244
+const DEFAULT_MAX_INITIAL_JS_GZIP_KIB = 245
 
 // Chunks that should only be fetched after a user opens a code/editor-heavy
 // surface. If one appears as a startup modulepreload, the app has likely

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "haute"
-version = "0.3.4"
+version = "0.4.0"
 description = "Haute - Open-source pricing engine for insurance teams"
 readme = "README.md"
 license = "AGPL-3.0-only"
@@ -47,6 +47,10 @@ dependencies = [
     "scipy>=1.16.0,<2",
     "xxhash>=3.6.0,<4",
     "packaging>=25.0,<26",
+    # Assistant provider SDKs are core: the assistant ships in every install
+    # (imported lazily at the adapter seam, so importing haute stays inert).
+    "anthropic>=0.40",
+    "openai>=1.55",
 ]
 
 [project.urls]
@@ -60,7 +64,6 @@ databricks = [
     "databricks-sdk>=0.88.0,<0.89",
     "databricks-sql-connector>=4.2.5,<5",
 ]
-
 [dependency-groups]
 dev = [
     "pytest==9.0.3",
@@ -193,6 +196,7 @@ filterwarnings = [
 [tool.coverage.run]
 source = ["src/haute"]
 branch = true
+omit = ["src/haute/assistant/assets/*"]
 # Store relative file paths in coverage data so the sharded backend-coverage CI
 # lane can `coverage combine` data files produced on separate runner VMs (whose
 # absolute checkout paths differ). Without this, combine sees disjoint absolute

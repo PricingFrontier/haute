@@ -294,6 +294,16 @@ async function waitForAppReady(): Promise<void> {
   )
 }
 
+/**
+ * First lookup after opening a node editor. Editor components are
+ * lazy-loaded chunks, so the initial mount pays a dynamic import; under
+ * full-suite worker contention that can exceed findBy's 1s default, so the
+ * first query after opening an editor waits with an explicit timeout.
+ */
+async function findEditorTestId(id: string): Promise<HTMLElement> {
+  return await screen.findByTestId(id, {}, { timeout: 10000 })
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Setup / teardown
 // ═══════════════════════════════════════════════════════════════════════════
@@ -974,7 +984,7 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
     fireEvent.click(await screen.findByText("Quote Source"))
 
     // Untick the 'drivers' table emit (table index 1).
-    const driversEmit = await screen.findByTestId("api-input-table-1-emit")
+    const driversEmit = await findEditorTestId("api-input-table-1-emit")
     fireEvent.click(driversEmit)
 
     // The orphaned edge is pruned from the graph store...
@@ -1007,7 +1017,7 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
     // characters. The label is the live handle id, so under the old
     // per-keystroke commit scheme the FIRST keystroke ("driversX" ≠
     // "drivers") destroyed the edge.
-    const label = (await screen.findByTestId("api-input-table-1-label")) as HTMLInputElement
+    const label = (await findEditorTestId("api-input-table-1-label")) as HTMLInputElement
     const undoDepthBefore = useGraphStore.getState().undoStack.length
     label.focus()
     for (const v of ["driver", "driver_", "driver_risk"]) {
@@ -1048,7 +1058,7 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
 
     fireEvent.click(await screen.findByText("Quote Source"))
 
-    const label = (await screen.findByTestId("api-input-table-1-label")) as HTMLInputElement
+    const label = (await findEditorTestId("api-input-table-1-label")) as HTMLInputElement
     label.focus()
     fireEvent.change(label, { target: { value: "" } })
     fireEvent.blur(label)
@@ -1074,7 +1084,7 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
     // Add a column to the drivers table (index 1) — the emit-port set is
     // unchanged (the table is already an emit+selected port), so the
     // 'drivers' edge must remain.
-    fireEvent.click(await screen.findByTestId("api-input-table-1-add-col"))
+    fireEvent.click(await findEditorTestId("api-input-table-1-add-col"))
 
     await waitFor(() => {
       // The config write went through (a column was added: 1 seed + 1 new)...
