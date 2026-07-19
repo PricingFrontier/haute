@@ -367,6 +367,12 @@ Out of scope (owned by neighbouring components, linked where they exist):
   `VcHistoryEntry` items on the same undo/redo stacks as graph snapshots via
   `pushVcEntry`, so canvas undo/redo and VC undo/redo share one linear
   history.
+- [frontend-assistant-ui](../frontend-assistant-ui/high-level.md) — depends on
+  this component in two read-only ways: assistant backend mutations arrive as
+  ordinary `graph.update` frames through `useWebSocketSync` (same apply,
+  rollback, and dirty-gating behaviour as any external edit — nothing here
+  special-cases them), and the assistant panel reads the derived dirty state
+  to gate sending while local edits are unsaved.
 - `frontend-shared` — the shared node-data types (`types/node.ts`) and the
   edge-join role/api-input-port handle-id conventions
   (`utils/edgeJoinRoles.ts`, `utils/apiInputPorts.ts`) that this component

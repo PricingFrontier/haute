@@ -22,8 +22,8 @@ root directory and pipeline entry file, including scaffolding a new one via `hau
 a user-declared `contract=`; the sidecar JSON path conventions, read/write helpers, and the
 write-time key allowlist; the `VALID_KEYS` registry that decides which config keys are
 recognised per node type; converting parsed source into `GraphNode`/`GraphEdge` models
-(explicit `connect()` edges, implicit parameter-name-matching edges, and the definition-order
-fallback); the topology-only shape contracts (currently: Explore node in/out-degree); Haute
+(explicit `connect()` edges and implicit parameter-name-matching edges — never invented
+ones); the topology-only shape contracts (currently: Explore node in/out-degree); Haute
 project-root and pipeline-file discovery; and `haute init` project scaffolding.
 
 **Out of scope:** actual node execution semantics — running a transform, scoring a model,
@@ -55,10 +55,15 @@ message naming the exact folder and pointing at `haute init` for a starter sidec
 other type builds its config directly from decorator keywords and, for several types, from
 Python code extracted out of the function body.
 
-**Wiring.** If no `connect()` calls are made at all, edges are inferred from function
-parameter names matching other node names; if that still produces nothing, nodes are chained
-in the order they were declared. Where explicit `connect()` calls exist, they take precedence
-and implicit inference only fills in what wasn't already covered.
+**Wiring.** Edges come from exactly two declared sources: explicit `connect()` calls, and
+function parameter names matching other node names. Explicit calls take precedence and
+implicit inference only fills in what wasn't already covered. Edges are never invented: a
+file that declares no wiring parses as a disconnected graph. (A definition-order chain
+fallback used to fabricate a linear chain for any multi-node file with zero declared edges;
+it was removed because it made deliberately disconnected graphs unrepresentable — deleting
+the last edge resurrected it on reparse, a GUI save then materialised the invented edge into
+source, and the fabricated chain disagreed with `run()`, which fails loudly on unwired
+transforms.)
 
 **Standalone execution.** `Pipeline.run()` and `Pipeline.score(df)` are a self-contained
 executor over the live decorator graph (distinct from the full graph executor used for

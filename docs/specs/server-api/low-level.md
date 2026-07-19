@@ -135,8 +135,9 @@ catches any unhandled exception and returns a sanitized 500, logs at `error`/`wa
 by status band) → `LocalSessionMiddleware` → `LocalTrustedHostMiddleware` → (dev mode only)
 `CORSMiddleware`.
 
-**Route registration order matters.** `pipeline_router` through `git_router` are included
-first; then two catch-all Starlette `Route`s (not typed `APIRoute`s — they carry no response
+**Route registration order matters.** The feature routers (`pipeline_router` through
+`git_router`, plus the assistant router owned by [assistant](../assistant/low-level.md)) are
+included first; then two catch-all Starlette `Route`s (not typed `APIRoute`s — they carry no response
 model by design) match any unhandled `/api/{rest:path}` or `/ws/{rest:path}` `GET` and return
 a clean JSON 404 — registered *before* the SPA catch-all so an unmatched API/WS path never
 falls through to `index.html` (which would otherwise return `200 text/html` and break the

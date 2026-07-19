@@ -79,6 +79,112 @@ class SessionStatusResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Assistant HTTP request/response models
+# ---------------------------------------------------------------------------
+
+
+class AssistantStatusResponse(BaseModel):
+    configured: bool
+    reason: str | None
+    provider: str | None
+    model: str | None
+    mutations_enabled: bool
+    mutations_reason: str | None
+
+
+class AssistantSessionRequest(BaseModel):
+    pipeline: str | None = None
+    # A previously issued session id the client wants to resume. Resume is an
+    # offer: unknown/pruned ids or a different pipeline yield a fresh session.
+    session_id: str | None = None
+
+
+class AssistantTranscriptEntry(BaseModel):
+    """One rehydratable transcript item from a resumed session's history."""
+
+    kind: Literal["user", "assistant", "tool"]
+    text: str = ""
+    name: str = ""
+    summary: str = ""
+    is_error: bool = False
+
+
+class AssistantSessionResponse(BaseModel):
+    session_id: str
+    # Non-empty only when the requested session was resumed: the stored turns
+    # mapped to transcript entries for the panel to rehydrate.
+    history: list[AssistantTranscriptEntry] = []
+
+
+class AssistantMessageRequest(BaseModel):
+    session_id: str
+    message: str
+
+
+# ---------------------------------------------------------------------------
+# Assistant stream contract
+# ---------------------------------------------------------------------------
+
+
+class AssistantUsage(BaseModel):
+    input_tokens: int
+    output_tokens: int
+
+
+class AssistantTextDeltaEvent(BaseModel):
+    type: Literal["text_delta"] = "text_delta"
+    text: str
+
+
+class AssistantToolStartedEvent(BaseModel):
+    type: Literal["tool_started"] = "tool_started"
+    id: str
+    name: str
+    # Compact rendering of the call's arguments for the chat activity row.
+    summary: str = ""
+
+
+class AssistantToolFinishedEvent(BaseModel):
+    type: Literal["tool_finished"] = "tool_finished"
+    id: str
+    name: str
+    is_error: bool
+    # Compact rendering of the result (or the error message) for the row.
+    summary: str = ""
+
+
+class AssistantGraphUpdatedEvent(BaseModel):
+    type: Literal["graph_updated"] = "graph_updated"
+    fingerprint: str
+
+
+class AssistantCompletedEvent(BaseModel):
+    type: Literal["completed"] = "completed"
+    usage: AssistantUsage
+
+
+class AssistantFailedEvent(BaseModel):
+    type: Literal["failed"] = "failed"
+    message: str
+
+
+class AssistantCancelledEvent(BaseModel):
+    type: Literal["cancelled"] = "cancelled"
+
+
+AssistantStreamEvent = Annotated[
+    AssistantTextDeltaEvent
+    | AssistantToolStartedEvent
+    | AssistantToolFinishedEvent
+    | AssistantGraphUpdatedEvent
+    | AssistantCompletedEvent
+    | AssistantFailedEvent
+    | AssistantCancelledEvent,
+    Field(discriminator="type"),
+]
+
+
+# ---------------------------------------------------------------------------
 # /api/pipeline/save
 # ---------------------------------------------------------------------------
 

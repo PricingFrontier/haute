@@ -106,6 +106,7 @@ every node type: its generated-code template (`_gen_*`) is specced in
 | [server-api](server-api/high-level.md) | FastAPI app shell, schemas/contracts, core pipeline/file/utility routes, logging, event bus |
 | [background-jobs](background-jobs/high-level.md) | Background job store, lifecycle, timeouts |
 | [explore-eda](explore-eda/high-level.md) | EDA/explore overview computation and routes |
+| [assistant](assistant/high-level.md) | In-app AI assistant: agent loop, LLM provider adapters, graph-authoring tools, chat sessions and streaming routes |
 | [deploy](deploy/high-level.md) | Deployment bundling: containerisation, pruning, scoring service, validators |
 | [cli](cli/high-level.md) | `haute` CLI commands: init, run, serve, train, deploy, lint, smoke, status, impact |
 
@@ -119,4 +120,5 @@ every node type: its generated-code template (`_gen_*`) is specced in
 | [frontend-modelling-optimiser-ui](frontend-modelling-optimiser-ui/high-level.md) | Modelling and optimiser configuration/preview panels |
 | [frontend-git-ui](frontend-git-ui/high-level.md) | Git panel, commit graph, branch management UI |
 | [frontend-trace-ui](frontend-trace-ui/high-level.md) | Trace panel and trace visualisation |
+| [frontend-assistant-ui](frontend-assistant-ui/high-level.md) | Assistant chat panel: transcript, streaming consumption, send gates |
 | [frontend-shared](frontend-shared/high-level.md) | API client, global stores, hooks, theme, shared widgets |

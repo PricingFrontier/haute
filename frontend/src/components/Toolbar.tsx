@@ -1,10 +1,11 @@
 import { useState, useMemo, useRef, useCallback } from "react"
-import { Undo2, Redo2, ZoomIn, ZoomOut, Timer, HardDrive, ChevronDown, Plus, Trash2, FileCode2, Package, GitMerge, Loader2 } from "lucide-react"
+import { Undo2, Redo2, ZoomIn, ZoomOut, Timer, HardDrive, ChevronDown, Plus, Trash2, FileCode2, Package, Bot, GitMerge, Loader2 } from "lucide-react"
 import type { WsStatus } from "../hooks/useWebSocketSync"
 import type { NodeTiming, NodeMemory } from "../api/types"
 import BreakdownDropdown, { type BreakdownItem } from "./BreakdownDropdown"
 import BranchIndicator from "./BranchIndicator"
 import useSettingsStore, { MAX_STREAMING_CHUNK_SIZE, MIN_STREAMING_CHUNK_SIZE } from "../stores/useSettingsStore"
+import useUIStore from "../stores/useUIStore"
 import useClickOutside from "../hooks/useClickOutside"
 
 function formatTiming(ms: number): string {
@@ -65,6 +66,8 @@ export default function Toolbar({
   const setActiveSource = useSettingsStore((s) => s.setActiveSource)
   const addSource = useSettingsStore((s) => s.addSource)
   const removeSource = useSettingsStore((s) => s.removeSource)
+  const assistantOpen = useUIStore((s) => s.assistantOpen)
+  const setAssistantOpen = useUIStore((s) => s.setAssistantOpen)
   const [addingSource, setAddingSource] = useState(false)
   const [newSourceName, setNewSourceName] = useState("")
   const [sourceError, setSourceError] = useState<string | null>(null)
@@ -306,6 +309,17 @@ export default function Toolbar({
         >
           <Package size={13} />
           Imports
+        </button>
+        <button
+          data-testid="toolbar-assistant"
+          onClick={() => setAssistantOpen(!assistantOpen)}
+          aria-label="Assistant"
+          aria-pressed={assistantOpen}
+          className="px-2.5 py-1 text-[12px] font-medium rounded-md flex items-center gap-1 hover-chrome"
+          title="Pricing assistant"
+        >
+          <Bot size={13} />
+          Assistant
         </button>
         {/* Zoom */}
         <button

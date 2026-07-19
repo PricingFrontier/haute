@@ -599,29 +599,16 @@ class Pipeline(NodeRegistry):
                 }
             )
 
-        if self._edges:
-            for edge in self._edges:
-                rf_edges.append(
-                    {
-                        "id": _edge_id(
-                            edge.source, edge.target, edge.source_port, edge.target_port
-                        ),
-                        "source": edge.source,
-                        "target": edge.target,
-                        "sourceHandle": edge.source_port,
-                        "targetHandle": edge.target_port,
-                    }
-                )
-        else:
-            # No explicit edges - infer linear chain
-            for i in range(1, len(self._nodes)):
-                rf_edges.append(
-                    {
-                        "id": f"e_{self._nodes[i - 1].name}_{self._nodes[i].name}",
-                        "source": self._nodes[i - 1].name,
-                        "target": self._nodes[i].name,
-                    }
-                )
+        for edge in self._edges:
+            rf_edges.append(
+                {
+                    "id": _edge_id(edge.source, edge.target, edge.source_port, edge.target_port),
+                    "source": edge.source,
+                    "target": edge.target,
+                    "sourceHandle": edge.source_port,
+                    "targetHandle": edge.target_port,
+                }
+            )
 
         return {"nodes": nodes, "edges": rf_edges}
 

@@ -298,6 +298,25 @@ function requestHeaders(headers: HeadersInit | undefined): Record<string, string
   return resolved
 }
 
+async function throwApiError(response: Response): Promise<never> {
+  let detail: string | undefined
+  let body: unknown
+  let rawDetail: unknown
+  try {
+    body = await response.json()
+    const raw = (body as { detail?: unknown }).detail ?? body
+    rawDetail = raw
+    detail = typeof raw === "string" ? raw : JSON.stringify(raw)
+  } catch {
+    detail = response.statusText
+    rawDetail = detail
+  }
+  if (response.status === 403 && isHauteSessionExpiredReason(detail)) {
+    notifyHauteSessionExpired(detail)
+  }
+  throw new ApiError(`HTTP ${response.status}`, response.status, detail, body, rawDetail)
+}
+
 const IDEMPOTENT_METHODS = new Set(["GET", "HEAD", "PUT", "DELETE", "OPTIONS"])
 
 function isIdempotent(method: string | undefined): boolean {
@@ -416,22 +435,7 @@ async function attemptFetch<T>(
       signal: controller.signal,
     })
     if (!res.ok) {
-      let detail: string | undefined
-      let body: unknown
-      let rawDetail: unknown
-      try {
-        body = await res.json()
-        const raw = (body as { detail?: unknown }).detail ?? body
-        rawDetail = raw
-        detail = typeof raw === "string" ? raw : JSON.stringify(raw)
-      } catch {
-        detail = res.statusText
-        rawDetail = detail
-      }
-      if (res.status === 403 && isHauteSessionExpiredReason(detail)) {
-        notifyHauteSessionExpired(detail)
-      }
-      throw new ApiError(`HTTP ${res.status}`, res.status, detail, body, rawDetail)
+      await throwApiError(res)
     }
     return await res.json() as T
   } catch (err) {
@@ -492,6 +496,27 @@ export function post<T>(url: string, body: unknown, options: MutationOptions = {
     body: JSON.stringify(body),
     ...options,
   })
+}
+
+/**
+ * POST JSON and return the untouched response for non-JSON transports.
+ * Split endpoint modules use this for authenticated SSE streams.
+ */
+export async function postRawStream(
+  url: string,
+  body: unknown,
+  options: Pick<ApiClientOptions, "signal"> = {},
+): Promise<Response> {
+  const response = await fetch(url, {
+    method: "POST",
+    headers: requestHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify(body),
+    signal: options.signal,
+  })
+  if (!response.ok) {
+    await throwApiError(response)
+  }
+  return response
 }
 
 function del<T>(url: string, options: ApiClientOptions = {}): Promise<T> {

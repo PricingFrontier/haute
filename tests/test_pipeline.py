@@ -304,8 +304,14 @@ class TestPipeline:
         assert node_map["source"]["data"]["nodeType"] == "dataSource"
         assert node_map["transform"]["data"]["nodeType"] == "polars"
 
-    def test_to_graph_inferred_linear_chain(self):
-        """Without explicit edges, to_graph() infers a linear chain."""
+    def test_to_graph_does_not_invent_edges(self):
+        """Without explicit edges, to_graph() reports exactly zero edges.
+
+        Regression for the registration-order chain invention: the canvas
+        showed a fabricated a→b→c flow that run() itself would refuse to
+        execute (unwired transforms fail loudly), so visualization and
+        execution disagreed.
+        """
         p = Pipeline("chain")
 
         @p.data_source
@@ -321,10 +327,7 @@ class TestPipeline:
             return df
 
         g = p.to_graph()
-        assert len(g["edges"]) == 2
-        edge_pairs = [(e["source"], e["target"]) for e in g["edges"]]
-        assert ("a", "b") in edge_pairs
-        assert ("b", "c") in edge_pairs
+        assert g["edges"] == []
 
     def test_run_sets_scenario_ctx_to_batch(self):
         """Pipeline.run() must set _scenario_ctx to 'batch' during execution."""

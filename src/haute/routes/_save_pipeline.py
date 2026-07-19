@@ -261,6 +261,7 @@ class SavePipelineService:
                 source_file=source_file,
                 sources=graph.sources,
                 active_source=graph.active_source,
+                preserved_blocks=graph.preserved_blocks,
             ),
             delete_module_files=delete_module_files,
         )

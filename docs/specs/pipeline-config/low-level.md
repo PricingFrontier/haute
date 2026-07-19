@@ -112,8 +112,8 @@ decorator kwargs + body. `_resolve_node_config` also pops a `contract=` kwarg be
 delegating (so per-type builders don't flag it as unrecognised), cross-checks it via
 `_validate_user_contract`, and re-attaches it to the config afterwards. The resulting raw node
 dicts feed `_build_edges` (explicit `connect()` tuples in 2/3/4-arity legacy/port-aware forms,
-plus implicit parameter-name-matching edges, plus a definition-order linear-chain fallback
-when no edges exist at all) and `_build_rf_nodes` (assigns x-spaced GUI positions) to produce
+plus implicit parameter-name-matching edges; edges are never invented, so a file declaring no
+wiring parses as a disconnected graph) and `_build_rf_nodes` (assigns x-spaced GUI positions) to produce
 the final `list[GraphNode]`/`list[GraphEdge]` — the graph the frontend, codegen, and the real
 executor operate on.
 

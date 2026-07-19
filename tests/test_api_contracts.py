@@ -55,6 +55,26 @@ def _api_contract_fingerprint() -> dict[str, dict[str, dict[str, Any]]]:
 
 
 EXPECTED_API_CONTRACT_FINGERPRINT = {
+    "/api/assistant/message": {
+        "POST": {
+            "request_ref": "#/components/schemas/AssistantMessageRequest",
+            # SSE StreamingResponse — an event stream, not a JSON body; the
+            # per-event wire contract is the AssistantStreamEvent union.
+            "success_schema": None,
+        },
+    },
+    "/api/assistant/session": {
+        "POST": {
+            "request_ref": "#/components/schemas/AssistantSessionRequest",
+            "success_schema": {"$ref": "#/components/schemas/AssistantSessionResponse"},
+        },
+    },
+    "/api/assistant/status": {
+        "GET": {
+            "request_ref": None,
+            "success_schema": {"$ref": "#/components/schemas/AssistantStatusResponse"},
+        },
+    },
     "/api/databricks/cache": {
         "DELETE": {
             "request_ref": None,

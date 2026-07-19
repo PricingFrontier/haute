@@ -60,6 +60,24 @@ Rating step nodes are built for the messy middle of pricing work: many factor ta
 
 ---
 
+## An AI assistant that authors your pipeline (early preview)
+
+Open the Assistant panel and describe what you want in plain language — "add
+`data/nb_batch.parquet` as a data source", "band vehicle age into five groups" — and the
+assistant reads your graph, checks the real columns in your data, and makes the edit
+through the same validated save path the visual editor uses. Every change lands in your
+Python file, on your git working branch, exactly as if you had made it by hand.
+
+Bring your own model: Anthropic or OpenAI API keys, or any OpenAI-compatible serving
+endpoint (including Databricks model serving) via a single `base_url` setting in
+`haute.toml`. Credentials stay in your `.env`; conversations persist per project in the
+untracked `.haute/` directory, so they survive server restarts and never enter git.
+
+This is an early preview — the core authoring loop is solid and fully tested, but expect
+rough edges while the experience gets tuned.
+
+---
+
 ## Click any price. See exactly how it was calculated.
 
 Click any cell in your output table. Haute traces the path through every node that contributed to it, showing the value at each step:
