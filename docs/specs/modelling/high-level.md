@@ -6,10 +6,12 @@ The modelling component trains, evaluates, and exports predictive models for ins
 pricing pipelines. It takes a pipeline graph's materialised training data and a
 declarative node configuration (target, weight, offset, algorithm, split strategy,
 hyperparameters) and produces a fitted model artifact, a train-to-deploy feature
-contract, evaluation metrics, diagnostic charts, an HTML model card, and — optionally —
-a logged MLflow experiment. It also generates standalone, runnable Python training
-scripts from the same configuration, so a pipeline author can hand a data scientist
-exactly what the "Train" button ran.
+contract, evaluation metrics, and diagnostic chart data. When the result is logged to
+MLflow, the logging path also generates and attaches a self-contained HTML model card;
+an ordinary training run does not write a model-card file beside the native model. The
+component also generates standalone, runnable Python training scripts from the same
+configuration, so a pipeline author can hand a data scientist exactly what the "Train"
+button ran.
 
 Two algorithm families are supported: CatBoost (gradient-boosted trees) and GLM (via
 RustyStats), covering both the "black box, high accuracy" and "interpretable,
@@ -36,6 +38,9 @@ In scope:
   estimation.
 
 Out of scope, owned elsewhere:
+- Executing a generated script through `haute train` — see
+  [cli](../cli/high-level.md); this component owns the generated `TrainingJob` source,
+  not the command-line runner.
 - Interactive/exploratory GLM model development — **Atelier**, a separate standalone GLM
   workbench, is where a user iteratively builds and curve-fits a GLM's terms/interactions.
   Haute only trains from the finished dict-spec config (the same `terms`/`interactions` JSON
@@ -58,12 +63,14 @@ Out of scope, owned elsewhere:
   (CatBoost hyperparameters, or GLM terms/family/link/regularization/interactions).
 - Starting training (`POST /api/modelling/train`) validates the config, estimates
   memory requirements, executes the upstream pipeline to materialise training data,
-  and runs the full train pipeline in a background thread. Only one training job may
-  be in flight at a time.
+  and runs the full train pipeline in a background thread. The training job store has
+  one process-wide running slot shared by training and GLM dispersion estimation; a
+  second request of either kind is rejected while the first is running.
 - The client polls for status (`GET /api/modelling/train/status/{job_id}`), receiving
   progress, an incrementally-growing loss/iteration history, and — on completion — the
   full result: metrics, feature importances, and every diagnostic chart's underlying
-  data.
+  data. Polling also enforces the configured/default training timeout: an overdue
+  running job is cooperatively cancelled and atomically transitions to `timed_out`.
 - `POST /api/modelling/estimate` returns a RAM/row-limit and (for GPU CatBoost) VRAM
   estimate without starting a job, so the UI can warn the user before they commit.
 - `POST /api/modelling/export` returns a standalone Python script that trains the
@@ -78,7 +85,9 @@ Out of scope, owned elsewhere:
   data, as a background job the client polls
   (`GET /api/modelling/dispersion/status/{job_id}`) and can cancel
   (`POST /api/modelling/dispersion/cancel/{job_id}`); the resolved value is returned
-  for the user to accept into the node config, never written there automatically.
+  for the user to accept into the node config, never written there automatically. Unlike
+  training-status polling, dispersion-status polling does not enforce a timeout; an estimate
+  runs until it completes, fails, or is explicitly cancelled.
 
 Invariants that always hold:
 - Live training and script export always produce the same model for the same config —
@@ -189,9 +198,9 @@ browser without a server or JS bundle.
   (missing required columns, bounded-streaming unsupported) or HTTP 500 (generic
   failure), and the job record transitions to `contract_error`/`error` accordingly.
 - Once a background training run has started, every terminal outcome (`completed`,
-  `cancelled`, `memory_limited`, `contract_error`, `error`) is reflected both in the
-  job's status and, for HTTP-raised failures, in the response — the two are kept in
-  sync by construction rather than by convention.
+  `cancelled`, `timed_out`, `memory_limited`, `contract_error`, `error`) is reflected
+  both in the job's status and, for HTTP-raised failures, in the response — the two are
+  kept in sync by construction rather than by convention.
 - A feature-contract mismatch (train vs. score, or a hand-edited/corrupted contract
   file) raises `FeatureMismatchError` naming the specific field and its expected vs.
   actual value.

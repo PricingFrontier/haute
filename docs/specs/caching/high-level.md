@@ -11,12 +11,13 @@ a preview. Recomputing all of this from scratch on every request would make the
 editor feel unresponsive and would repeat genuinely expensive work (large lazy
 Polars plans, JSON shredding, remote artifact loads).
 
-The caching component exists to make this reuse safe and bounded: safe in that a
-cached result is only ever served when the exact inputs that produced it (graph
-structure, node configs, edge wiring, preamble, runtime file contents, execution
-policy) are unchanged, and bounded in that no cache can grow forever — every cache
-in this component has an eviction policy, either an in-process LRU or an on-disk
-size/state signature.
+The caching component exists to make this reuse safe and operationally controlled:
+a cached result is served when its deterministic key still matches the inputs the key
+models (graph structure, node configs, edge wiring, preamble, runtime file state,
+execution policy). In-process caches have bounded entry counts (and optional byte
+budgets); the JSON cache maintains one replaceable `working/` and `committed/`
+snapshot per source path with explicit clear/mirror lifecycle, but has no
+process-wide disk quota.
 
 ## Scope
 
@@ -32,8 +33,8 @@ In scope:
 - A single-flight, stat-gated process cache for loaded file artifacts (external
   objects, optimiser/mlflow artifacts) that reload only when file metadata changes.
 - The on-disk JSON-to-parquet cache exposed over HTTP (`/api/json-cache/*`):
-  building, checking status of, and deleting per-port shredded parquet caches for
-  JSON/JSONL data sources.
+  building, checking status of, deleting per-port shredded parquet caches for
+  JSON/JSONL data sources, and preserving the compatibility cancel endpoint.
 
 Out of scope (owned elsewhere, linked where relevant):
 - What actually gets executed when a cache misses — the lazy Polars pipeline
@@ -41,10 +42,11 @@ Out of scope (owned elsewhere, linked where relevant):
   [execution engine](../execution-engine/high-level.md), not this component.
   This component only decides *whether* execution is needed and stores what came
   out of it.
-- The JSON shredding algorithm itself (how records become per-table parquet
-  columns) belongs to the io-layer's JSON handling
-  (`_json_shred.py`, `_json_flatten.py`); this component's `routes/json_cache.py`
-  is the HTTP surface and dispatch/aggregation logic around it, not the shredder.
+- The JSON shredding algorithm and its working/committed storage layout (how
+  records become per-table parquet columns and where those files live) belong to
+  [json-shredding](../json-shredding/high-level.md) (`_json_shred.py`,
+  `_json_flatten.py`); this component's `routes/json_cache.py` is the HTTP surface
+  and dispatch/aggregation logic around them, not the shredder.
 - HTTP request/response schemas, routing conventions, and error-response shape
   conventions belong to [server-api](../server-api/high-level.md); this component
   only supplies the json-cache route handlers themselves.
@@ -55,12 +57,14 @@ Out of scope (owned elsewhere, linked where relevant):
 
 ## Behaviour
 
-- **Fingerprints are stable and injective.** Two graphs that differ in any way
-  that could change execution output (node config, node type, edge wiring
-  including which frame/port an edge attaches to, preamble text, or the contents
-  of an imported `utility` module) always produce different fingerprints. Two
-  graphs that are structurally identical always produce the same fingerprint,
-  regardless of node/edge insertion order, dict key order, or set member order.
+- **Fingerprints are deterministic and execution-sensitive, not mathematically
+  injective.** Node config, node type, edge wiring (including frame/port handles),
+  preamble text, and imported `utility` content hashes are included in the key
+  material. Structurally identical graphs produce the same fingerprint regardless
+  of node/edge insertion order, dict key order, or set member order. The result is
+  a 64-bit xxh64 digest, so the implementation avoids known serialization
+  ambiguities but cannot promise collision-free hashing. Utility content is also
+  subject to the documented `(mtime_ns, size)` stat-gate limitation below.
 - **Fingerprints are versioned.** Every fingerprint is prefixed with an algorithm
   version tag (`v<N>:`). Changing the canonicalisation rules bumps the version, so
   old cache entries can never be silently reinterpreted under new rules — they
@@ -86,6 +90,11 @@ Out of scope (owned elsewhere, linked where relevant):
   build call populates) and `committed/` (the durable layer, promoted from
   `working/` by a save operation elsewhere in the system). Deleting the JSON cache
   through the API only clears `working/`; `committed/` is untouched.
+- **JSON-cache builds cannot be cancelled.** `POST /api/json-cache/cancel` is a
+  compatibility no-op: after validating the requested path it returns
+  `cancelled=false`. The editor's cancel action calls this endpoint but does not
+  interrupt or stop the worker thread, which continues until success, failure,
+  or timeout.
 - **Cache-miss failures are loud.** A build request that cannot resolve a schema,
   fails path validation, or hits corrupt on-disk state returns a structured 4xx/5xx
   error rather than silently falling back to an empty or partial result. See
@@ -97,8 +106,9 @@ Out of scope (owned elsewhere, linked where relevant):
   fingerprinting and dataframe-execution-policy fingerprinting used two subtly
   different JSON-canonicalisation routines. Divergent encoders are how silent
   cache collisions and phantom invalidations happen, so both call sites were
-  unified onto a single `canonical_json()` (`_cache.py`). Every digest-material
-  site in the codebase is required to route through it.
+  unified onto the shared `canonical_json()` (`_cache.py`). Graph fingerprints and
+  dataframe execution-cache policy/key payloads route through it; unrelated
+  digests may use another deterministic encoding appropriate to their own contract.
 - **Content hashing over mtime-only invalidation.** File-backed cache keys use
   xxh64 content hashes (`_hashing.py`), not just file metadata, specifically to be
   TOCTOU-safe: an edit that reuses a file's old size/mtime by coincidence cannot
@@ -120,7 +130,10 @@ Out of scope (owned elsewhere, linked where relevant):
   checkpointing strategy, rather than inventing a second materialization
   strategy. The intended payoff is avoiding repeated work for large dataframes,
   not raw scan speed — the cache has no byte cap by default for this reason;
-  operators can opt into one with `HAUTE_DATAFRAME_EXECUTION_CACHE_MAX_BYTES`.
+  operators can opt into one at process startup with
+  `HAUTE_DATAFRAME_EXECUTION_CACHE_MAX_BYTES`. That value is parsed when
+  `_dataframe_execution_cache.py` is imported; malformed/non-positive settings
+  fail import with `RuntimeError` rather than changing a live cache later.
 - **Rejected: reusing temporary checkpoint files directly as cache artifacts.**
   Lazy execution already writes temporary checkpoints to break large Polars
   plans, and reusing those files would save an extra sink in some cases. But
@@ -134,7 +147,7 @@ Out of scope (owned elsewhere, linked where relevant):
   needs), but a route-specific cache would create a parallel execution path and
   repeat the same invalidation logic in every other backend caller. The cache
   instead lives in the execution engine and is consumed by optimiser, training,
-  sink, and deploy paths through shared `DataFrameExecutionCacheRequest`
+  explore, sink, and deploy paths through shared `DataFrameExecutionCacheRequest`
   builders.
 - **A shared LRU/pinning core.** `LRUCache` (`_lru_cache.py`) consolidates
   eviction and pinning logic that used to be duplicated across the
@@ -159,7 +172,8 @@ Out of scope (owned elsewhere, linked where relevant):
   `PipelineGraph`/`GraphNode` types that `_cache.py` fingerprints, for the
   bounded-sink materialization that `_dataframe_execution_cache.py` calls into on
   a cache miss, and for `ExecutionProfile` used to key the dataframe cache.
-- Depends on the io-layer's JSON shredding (`_json_shred.py`, `_json_flatten.py`)
+- Depends on [json-shredding](../json-shredding/high-level.md)
+  (`_json_shred.py`, `_json_flatten.py`, `_api_input_schema.py`)
   for the actual build/status/inference logic that `routes/json_cache.py`
   dispatches to and aggregates responses from.
 - Depended on by [server-api](../server-api/high-level.md): `routes/json_cache.py`
@@ -199,7 +213,10 @@ Out of scope (owned elsewhere, linked where relevant):
   > NOTE: `store_artifact` raising `CacheArtifactTooLargeError` after a
   > successful sink is a legitimate operational outcome (the artifact was
   > written, then rejected and unlinked for being over budget), not a bug —
-  > every byte-capped cache path is expected to surface this to the caller.
+  > `materialize_lazy_frame_with_cache` propagates it to its immediate caller;
+  > `_execute_lazy` deliberately catches it, logs
+  > `dataframe_execution_cache_artifact_too_large_skip`, and continues with the
+  > already-built lazy frame uncached.
 - **The JSON cache routes fail loud on schema and data problems**, in a fixed
   precedence documented in `build_json_cache`'s docstring: path validation (400/403)
   before missing schema source (422 `ApiInputSchemaError`) before schema
@@ -223,11 +240,17 @@ Out of scope (owned elsewhere, linked where relevant):
   terminal node — a future improvement could let those callers consume the
   freshly written artifact directly, if that can be done without creating a
   second execution path.
-- **The dataframe execution cache has no global disk budget by default** —
-  entries are invalidated by key change and LRU eviction only, not a disk
-  quota. If a real deployment needs stronger disk controls, the intended fix
+- **The dataframe execution cache has no global byte budget by default** —
+  it retains at most 16 entries by default, but each parquet artifact can be
+  arbitrarily large. Key changes create a distinct entry; old entries disappear
+  only through replacement, explicit clear, or LRU eviction, not immediately on
+  invalidation. If a real deployment needs a byte quota, the intended fix
   is explicit operator configuration (see `HAUTE_DATAFRAME_EXECUTION_CACHE_MAX_BYTES`
   above), not silently skipping the cache.
+- **The JSON cache has no cross-project/global disk quota.** Each source path's
+  working and committed snapshots are replaced atomically and can be deleted or
+  propagated by the explicit lifecycle, but the component does not cap the aggregate
+  size or number of cached source paths under `.haute_cache/`.
 - **Narrow projected cache requests do not masquerade as broader reusable
   artifacts.** A cache request scoped to specific `required_columns` (e.g. an
   auto-range warm-up that only needs the columns a later solve step requires)

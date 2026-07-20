@@ -5,13 +5,11 @@
 | File | Responsibility |
 |---|---|
 | `src/haute/server.py` | App factory (`app = FastAPI(...)`), lifespan (bytecode clear, logging config, env load, pipeline-index priming, watcher task lifecycle), middleware registration, router inclusion, the `/api/session` health probe, the API/WS 404 guard, the `/ws/sync` WebSocket endpoint, the debounced file watcher, and static SPA serving. |
-| `src/haute/schemas.py` | Every Pydantic request/response model used by any route in the app (~1750 lines) — re-exports the canonical graph types from `_types.py` and defines per-feature model groups (pipeline save/preview/trace/sink, Explore, files/schema, Databricks, JSON cache, utility, submodel, modelling, MLflow, optimiser, git, I/O format capabilities). |
-| `src/haute/_api_input_schema.py` | The v2 `tables[]` schema-mapping codec for API Input nodes: path parsing (`parse_table_path`, `parse_column_path_full`, `parse_column_path`), shape detection (`is_v2_shape`), and full-config validation (`validate_v2_schema`) with the B1/B2/B3 guardrails. |
+| `src/haute/_local_security.py` | Per-process local-session token, trusted-Origin/Host parsing (including bracketed IPv6), `LocalSessionMiddleware`, `LocalTrustedHostMiddleware`, and the HTTP/WebSocket token-validation contract. |
+| `src/haute/schemas.py` | Shared Pydantic request/response models used across the app — re-exports the canonical graph types from `_types.py` and defines per-feature model groups (pipeline save/preview/trace/sink, Explore, files/schema, Databricks, JSON cache, utility, submodel, modelling, MLflow, optimiser, git, I/O format capabilities). The OUTPUT dry-run models are the deliberate route-local exception. |
 | `src/haute/errors.py` | The `HauteError` root and its direct subclasses (`ConfigError`, `ParseError`, `ExecutionError` and its `BoundedMemoryUnsupportedError`/`ChunkPlanUnsupportedError` descendants, `DeployError`, `FeatureMismatchError`, `SchemaMismatchError`, `ContractMismatchError`, `ProjectionImpossibleError`). |
 | `src/haute/_logging.py` | `configure_logging()` (structlog + stdlib bridge, dev-console vs. JSON-lines modes) and `get_logger()`. |
 | `src/haute/_event_bus.py` | `EventBus` — thread-safe synchronous pub/sub with typed `graph.update` / `parse.error` overloads; `default_bus` is the module-level singleton the watcher and server wire together. |
-| `src/haute/_registry.py` | `NODE_REGISTRY: dict[NodeType, NodeRegistryEntry]` — the single-source-of-truth exec/codegen/column-contract dispatch table, plus `validate_registry_complete()` and the behavioural-passthrough guard. Foundational for [execution-engine](../execution-engine/high-level.md) and [codegen](../codegen/high-level.md); bundled here for lack of a dedicated core-types component. |
-| `src/haute/_contracts.py` | `Contract` dataclass (typed mirror of the `(produced, referenced)` `ColumnContract` tuple) and `get_column_contract()`, the registry-backed lookup executors use for checkpoint projection. |
 | `src/haute/_types.py` | `NodeType` (`StrEnum`), the decorator↔NodeType maps, every per-node-type config `TypedDict`, the `SolveResultLike` Protocol family, and the canonical `NodeData` / `GraphNode` / `GraphEdge` / `PipelineGraph` Pydantic models (with `PipelineGraph`'s cached-property-invalidating `model_copy` override). |
 | `src/haute/routes/__init__.py` | Package docstring only — no code. |
 | `src/haute/routes/_helpers.py` | `SidecarModel` (the `.haute.json` on-disk schema); `validate_safe_path`; `pipeline_dir()`; the pipeline-name→path index (`_ensure_pipeline_index`, `invalidate_pipeline_index`, `lookup_pipeline_by_name`) and its module-dependency twin (`_ensure_module_deps`, `pipelines_importing_module`); self-write tracking (`mark_self_write`, `is_self_write`); watcher-pause (`pause_watcher`, `watcher_is_paused`); the WebSocket client registry and `broadcast()`; sidecar load/save (`load_sidecar`, `save_sidecar`); `parse_pipeline_to_graph` (parse + sidecar merge); `commit_pipeline_graph` (read-only historical-commit parse); the shared `save_lock` asyncio.Lock. |
@@ -21,7 +19,6 @@
 | `src/haute/routes/_save_pipeline.py` | `SavePipelineService` — the transactional save orchestrator: singleton/name-collision/load-error validation, codegen invocation, config-file + sidecar writes, stale-config cleanup, and rollback. |
 | `src/haute/routes/_supersession.py` | `SupersessionCoordinator` / `_SupersessionState` — generation-counted "run latest, cancel/skip the rest" concurrency primitive used by preview and trace. |
 | `src/haute/routes/output_assemble.py` | `POST /api/output-assemble/dry-run` — validates an unsaved `outputMapping`, swaps it into the target node's in-memory config, executes up to that node, returns the rendered document. |
-| `src/haute/_output_assembler.py` | The OUTPUT assembly algorithm: GYO-reduction cyclic-core detection (`_gyo_residue`), the surgical cut planner (`_plan_cut`, `_Core`, `_CutPlan`), the honoured bag-natural-join executor (`_execute_plan`, `_merge_groups`), prefix-nested serialisation (`_assemble_document`, `_prune`), and the public boundary (`validate_v2_output_mapping`, `assemble_output_from_mapping`, `render_output_document`). |
 
 ## Key types and data structures
 
@@ -42,7 +39,8 @@ HauteError
     └── ProjectionImpossibleError (also extends BoundedMemoryUnsupportedError)
 ```
 `_api_input_schema.ApiInputSchemaError` and `_output_assembler.OutputMappingSchemaError` are
-direct `HauteError` subclasses defined next to their raising code, not in `errors.py`. Not
+direct `HauteError` subclasses supplied by JSON-shredding and consumed by this component's
+routes, not defined in `errors.py`. Not
 every Haute exception is a `HauteError`: resource-exhaustion and deadline errors used
 elsewhere in the codebase deliberately extend `MemoryError` / `TimeoutError` /
 `FileNotFoundError` instead, so a single `except HauteError` does not catch the whole error
@@ -62,30 +60,6 @@ codegen, deploy, and this component's `schemas.py` (re-exported as `Graph`). It 
 `GraphEdge.sourceHandle`/`targetHandle` reject an empty string in a `field_validator`
 (`""` is not silently coerced to `None` — a port legitimately named `""` is a different,
 separately-invalid case).
-
-**`NodeRegistryEntry`** (`_registry.py`) bundles, per `NodeType`: `exec` (the executor
-builder), `codegen` (the codegen builder), `column_contract`, and `is_behavioural` (marks a
-stateful-apply type whose codegen body must route through a shared `apply_*_from_config`
-helper, never a bare passthrough). `register_exec` / `register_codegen` raise `RuntimeError`
-on a duplicate registration for the same `NodeType`; `validate_registry_complete()` — called
-once at import time via `ensure_registry_ready()` — asserts every `NodeType` has all three
-pieces and that no behavioural type's codegen probe emits a bare `return {param}`.
-
-**`Contract`** (`_contracts.py`) is a frozen dataclass mirror of the tuple-based
-`ColumnContract = tuple[set[str] | None, set[str] | None]` (produced, referenced columns;
-`None` = opaque). `Contract.from_user_declared` normalises five accepted input shapes
-(`Contract`, an object with `.inputs`/`.outputs`, the string `"opaque"`, a
-`{"inputs": ..., "outputs": ...}` dict, or a 2-tuple) into one canonical form.
-`OPAQUE_CONTRACT = (None, None)` is the explicit "declared opaque" sentinel, distinct from
-"forgot to declare" (a `KeyError` from `get_column_contract`).
-
-**`ApiInputV2Config` / `TableV2` / `ColumnV2`** (`_api_input_schema.py`) are `TypedDict`s for
-the on-disk `rating/config/<...>.json` shape. A table `path` is a `$[:]`-rooted JSONPath
-identifying the array-iteration depth (`PathSeg = tuple[key: str, is_array: bool]`);
-`array_depth()` counts the `[:]` hops. Object (1-1) nesting is relationally transparent —
-`$[:].a.b.c` and `$[:].p.q` are siblings — only an array-of-objects hop descends a level (the
-2026-06-17 inference ruling). `_RESERVED_LEAF = "$value"` addresses a scalar array element as
-itself; it is deliberately not a valid identifier so no real JSON key can collide with it.
 
 **`SidecarModel`** (`routes/_helpers.py`) is the typed `.haute.json` schema: `positions:
 dict[str, dict[str, float]]`, `sources: list[str]` (defaults to `["live"]`), `active_source:
@@ -114,12 +88,39 @@ the worker exclusively for that key.
 `(target: Path, previous_bytes: bytes | None)` — `None` means the file did not exist before
 this save (rollback deletes it); otherwise rollback restores the snapshotted bytes.
 
-**`_CutPlan` / `_Core`** (`_output_assembler.py`) are frozen dataclasses: `_Core` is one
-uncovered cyclic core (`tables`, `parent_keys` — carried by every core table, nest but don't
-merge — and `carriers` — carried by some, the genuine cycle obstruction that gets cut).
-`_CutPlan` is the full data-independent plan: `cores` in discovery order, `cuts` (the severed
-`(table, field)` incidences), and `merge_residue` (the post-cut incidence the honoured bag
-join runs over).
+**HTTP endpoint contracts owned here** (FastAPI adds its standard 422 validation envelope
+when a path/query/body fails model validation):
+
+| Method and path | Input contract | Success contract |
+|---|---|---|
+| `GET /api/session` | No body | `SessionStatusResponse {ok: bool=true}` |
+| `GET /api/pipelines` | No body | `list[PipelineSummary]`; each item is `{name, description, file, node_count, error}` |
+| `GET /api/pipeline` | No body | `PipelineGraph` for the first discovered pipeline |
+| `GET /api/pipeline/{name}` | Pipeline name path parameter | `PipelineGraph` |
+| `POST /api/pipeline/save` | `SavePipelineRequest {name="main", description="", graph={}, preamble=null, preserved_blocks=[], source_file="", sources=["live"], active_source="live"}` | `SavePipelineResponse {status="saved", file, pipeline_name, warnings=[], git_sha=null}` |
+| `POST /api/pipeline/read-json` | `ReadJsonRequest {path}` | `ReadJsonResponse`, a root JSON object (arrays/scalars are rejected) |
+| `POST /api/pipeline/preview` | `PreviewNodeRequest {graph, node_id, row_limit=100 (1..10000), source="live", requested_preview_columns=null (non-empty when present), streaming_chunk_size=null (1..10000000, bool rejected), port_label=null}` | `PreviewNodeResponse`, extending `NodeResult` with `node_id`, timings/memory, per-node schemas/statuses, and optional execution metrics |
+| `POST /api/pipeline/trace` | `TraceRequest {graph, row_index=0 (>=0), target_node_id=null, column=null, row_limit=100 (1..10000), source="live", row_values=null, streaming_chunk_size=null}` | Explicit JSON `TraceResponse {status, trace}`; the declared response model documents OpenAPI but the returned `JSONResponse` skips a second validation pass |
+| `POST /api/pipeline/sink` | `SinkRequest {graph, node_id, source="live", streaming_chunk_size=null}` | `SinkResponse {status, message="", row_count=0, path="", format="parquet", execution_metrics=null}` |
+| `GET /api/files` | Query `dir="."`, `extensions=".parquet,.csv,.json,.xml"` | `BrowseFilesResponse {dir, items:[{name,path,type,size?}]}` |
+| `GET /api/formats` | No body | `IoFormatsResponse {formats:[IoFormatCapability...]}` from the runtime I/O registry |
+| `GET /api/schema` | Required query `path` | `SchemaResponse {path, columns, row_count?, row_count_estimated=false, column_count, preview=[]}` |
+| `GET /api/schema/databricks` | Required query `table` in `catalog.schema.table` form | `SchemaResponse` from the local parquet cache |
+| `GET /api/utility` | No body | `UtilityListResponse {files:[{name,module}]}` |
+| `GET /api/utility/{module}` | Python-identifier module path | `UtilityReadResponse {name,module,content}` |
+| `POST /api/utility` | `UtilityCreateRequest {name, content=""}` | `UtilityWriteResponse {status="ok", name, module, import_line, error=null, error_line=null}` |
+| `PUT /api/utility/{module}` | `UtilityWriteRequest {content}` | `UtilityWriteResponse` |
+| `DELETE /api/utility/{module}` | Module path | `UtilityDeleteResponse {status="ok", module}` |
+| `POST /api/output-assemble/dry-run` | Route-local `OutputAssembleDryRunRequest {graph, node_id, output_mapping=[], output_format="json", row_limit=100 (1..10000), source="live"}` | Route-local `OutputAssembleDryRunResponse {status, document=[], row_count=0, error=null}` |
+
+**WebSocket contract.** `GET /ws/sync` upgrades only after local Origin/token validation.
+The client may send `{"type":"resync","source_file":str,"graph_fingerprint":str|null}`;
+plain text, malformed JSON, non-object JSON, and unknown message types are keep-alive no-ops.
+The server sends either `{"type":"graph_update","graph":object,
+"graph_fingerprint":sha256,"source_file":str}` or
+`{"type":"parse_error","error":str,"source_file":str}`. A matching fingerprint produces
+no frame. The frame builder rejects an event payload that already contains reserved key
+`type`.
 
 ## Control flow
 
@@ -129,11 +130,14 @@ join runs over).
 as a background task. Shutdown cancels that task and awaits its completion, suppressing
 `CancelledError`.
 
-**Request middleware chain** (registration order = outer-to-inner around the handler):
-`_RequestIdMiddleware` (binds `request_id` via `structlog.contextvars`, times the request,
-catches any unhandled exception and returns a sanitized 500, logs at `error`/`warning`/`info`
-by status band) → `LocalSessionMiddleware` → `LocalTrustedHostMiddleware` → (dev mode only)
-`CORSMiddleware`.
+**Request middleware chain.** `add_middleware` prepends entries and Starlette later wraps in
+reverse, so runtime outer-to-inner order is `(CORSMiddleware in dev) →
+LocalTrustedHostMiddleware → LocalSessionMiddleware → _RequestIdMiddleware → route`.
+Host/auth failures therefore bypass request-ID binding/logging/header injection. The request-
+ID backstop returns `{"detail":"Internal server error"}` on an escaped exception; route
+catch-alls use the different `_INTERNAL_ERROR_DETAIL` string. `LocalSessionMiddleware`
+checks Origin before its `OPTIONS` exception, so a trusted preflight bypasses the token while
+an untrusted preflight still receives 403.
 
 **Route registration order matters.** The feature routers (`pipeline_router` through
 `git_router`, plus the assistant router owned by [assistant](../assistant/low-level.md)) are
@@ -197,18 +201,21 @@ concurrent plain saves):
 5. Emit non-blocking warnings for JSON `apiInput` nodes with no `tables[]` yet.
 6. Write per-node config JSON sidecars (collision-checked against protected load-error paths
    and against each other, casefolded).
-7. Mirror each JSON/JSONL `apiInput`'s volatile cache to its committed layer.
+7. Best-effort mirror each JSON/JSONL `apiInput`'s volatile cache to its committed layer.
+   Mirror errors are logged and swallowed; mirrors are idempotent and are not recorded in
+   `_TouchedFile`, so partial cache state is outside rollback and repaired by a later save.
 8. Write the `.haute.json` position sidecar (collision warnings for label-sanitisation
    clashes, non-fatal).
 9. Stage deletion of any explicitly-requested submodel module files (skipping any that
    casefold-collide with a path this same save just wrote).
-10. On any exception in steps 4–9, roll back every staged write (restore snapshotted bytes,
-    delete newly-created files) and re-raise unchanged.
+10. On any propagated exception in steps 4–9, roll back every staged write (restore
+    snapshotted bytes, delete newly-created files) and re-raise unchanged.
 11. Only after every write commits: delete stale config files (the diff from step 3, minus
     what this save just wrote or protects), invalidate the pipeline index, and — if the
     project has a recorded git working branch — capture the save in the git ledger
-    (`_git.commit_save`); a ledger-capture failure degrades to a response warning, not a
-    save failure, since the on-disk save already succeeded.
+    (`_git.commit_save`); `GitDomainError`/`GitError` become response warnings because the
+    on-disk save already succeeded, while an unexpected exception still propagates after
+    the filesystem transaction and stale cleanup have committed.
 
 **Preview / trace supersession**, both routed through the same `SupersessionCoordinator`
 pattern (`_preview_supersession`, `_trace_supersession`, each bounded by its own
@@ -216,9 +223,15 @@ pattern (`_preview_supersession`, `_trace_supersession`, each bounded by its own
 build a composite key from `(operation, source_file, source, graph_fingerprint, ...
 operation-specific selectors)` → `run_latest()` → on preview, an
 `ExecutionCancellationToken` is threaded through so a superseded preview's in-flight work is
-actually cancelled, not just abandoned → both wrap the execution call in
-`run_blocking_with_response_timeout` (thread-pool execution + a response-level timeout that
-cancels the underlying token/context on expiry).
+asked to cancel cooperatively, not just abandoned. Trace has no corresponding token: its old
+route response is superseded, but the newer same-key trace waits on the condition until the
+old thread finishes. Both wrap execution in `run_blocking_with_response_timeout`. If that
+helper raises a
+`BlockingWorkTimeoutError`, `SupersessionCoordinator` extracts its `background_task` and
+defers clearing `state.active` and releasing the semaphore until the task finishes. Same-key
+work therefore cannot overlap after a 504 and timed-out calls cannot create a worker storm.
+Preview also cancels its token and defers admission release; trace has no cancellation token,
+so its thread runs to completion while retaining the key/permit.
 
 **OUTPUT dry-run** (`routes/output_assemble.py`): validate the mapping shape
 (`validate_v2_output_mapping`, data-independent) → flatten the graph → locate and type-check
@@ -226,6 +239,14 @@ the target node → validate every runtime input path stays inside the project r
 the node's `config` in-memory with the volatile mapping → `execute_graph(...,
 target_preview_only=True)` under a timeout → map the result's `status`/`error` to the
 response, or return the rendered `document` on success.
+
+> NOTE: unlike preview and sink, the implemented OUTPUT dry-run route never calls
+> `context.release_admission()` on success or failure, and its timeout handler also does not
+> call `context.cancel()`. It has no supersession coordinator retaining a concurrency permit.
+> `run_blocking_with_response_timeout` drains a late future (discarding a successful value and
+> logging an ordinary exception), but the route returns 504 while the thread continues. This
+> reservation-lifecycle gap is current behaviour, not an intended release/cancellation
+> guarantee.
 
 ## Edge cases and invariants
 
@@ -305,20 +326,29 @@ response, or return the rendered `document` on success.
 
 | Raised as | Route(s) | HTTP status | Notes |
 |---|---|---|---|
-| `ConfigError` | save, preview | 400 / embedded `NodeResult.error` | Save: bad `haute.toml`. Preview: swallowed into the node result so the canvas shows it in-situ. |
-| `ContractMismatchError` | trace, preview | 422 / embedded `NodeResult.error` | Message already names the node + symmetric column diff. |
+| `ConfigError` | save, preview, output-assemble dry-run | 400 / embedded `NodeResult.error` / 422 | Save: bad `haute.toml`. Preview: swallowed into the node result so the canvas shows it in-situ. |
+| `ContractMismatchError` | trace, preview, output-assemble dry-run | 422 / embedded `NodeResult.error` / 422 | Message already names the node + symmetric column diff. |
 | `ParseError` | preview | embedded `NodeResult.error` | Graph-shape issue surfaced per-node, not as a request failure. |
-| `ApiInputSchemaError` | (json-cache route, not in this component) | 422 with `type` discriminator | Raised by `_api_input_schema.validate_v2_schema`; this component only defines the exception and codec. |
+| `ApiInputSchemaError` | (json-cache route, owned by caching) | 422 with `type` discriminator | Raised by JSON-shredding's schema codec and mapped by the consuming cache route. |
 | `OutputMappingSchemaError` | output-assemble dry-run | 422 | Raised both by the schema-only pre-check and if execution surfaces it deeper (an unmapped port). |
-| `ExecutionAdmissionError`, `ExecutionMemoryLimitExceededError` | preview, sink | 507 | Payload is `exc.to_payload()`, a structured body, not a plain string. |
+| `ExecutionAdmissionError`, `ExecutionMemoryLimitExceededError` | preview, sink | 507 | Payload is `exc.to_payload()`, a structured body, not a plain string. OUTPUT dry-run maps `ExecutionAdmissionError` to 503 with `str(exc)`. |
 | `BoundedMemoryUnsupportedError` | sink | 422 | Distinguishes "cannot stream safely" from a hard resource limit. |
 | `SupersededRequestError` | preview, trace | 409 | Raised by `SupersessionCoordinator`; the worker never runs for a superseded generation. |
-| `BlockingWorkTimeoutError`, `TimeoutError` | preview, trace, sink, output-assemble | 504 | The associated cancellation token/context is cancelled before the exception is re-raised as HTTP. |
+| `BlockingWorkTimeoutError`, `TimeoutError` | preview, trace, sink, output-assemble | 504 | Worker threads are never killed. Preview/sink request cooperative cancellation; trace retains its supersession key/permit until completion; OUTPUT dry-run only drains the late future. |
 | `HTTPException` (raised directly) | path validation, node lookup, syntax checks | 400 / 403 / 404 / 409 | `raise_node_not_found`, `raise_node_type_error`, `raise_pipeline_not_found`, `raise_validation_error` centralise the structured-log + raise pattern. |
-| Any other `Exception` | every route | 500 | Logged with `exc_info=True` / full traceback; response body is always `_INTERNAL_ERROR_DETAIL`. |
+| Any other `Exception` | route catch-alls | 500 | Route handlers generally log and return `_INTERNAL_ERROR_DETAIL`; `_RequestIdMiddleware` is a separate backstop whose fixed detail is `Internal server error`. |
+
+Except for handlers that return a `JSONResponse` directly, `HTTPException` responses use
+FastAPI's `{"detail": <string-or-object>}` envelope; this includes structured 507 memory
+payloads nested under `detail`. Pydantic request/query validation uses
+`{"detail": [validation-error...]}`. `_RequestIdMiddleware` constructs its 500 JSON directly.
+The JSON-cache router's `ApiInputSchemaError` is another deliberate direct-response exception:
+`{"detail": str, "type": "ApiInputSchemaError"}`. Pipeline-list and live-sync parse failures
+surface `str(exc)` as `PipelineSummary.error` / `parse_error.error`, rather than passing
+through the internal-error sanitizer.
 
 Two safety nets exist above individual route handlers: `_RequestIdMiddleware` catches any
-exception a route handler failed to catch and returns the same sanitized 500 shape (with a
+exception a route handler failed to catch and returns its separately pinned sanitized 500 shape (with a
 structured log including the traceback), and the file watcher's `_watcher_forever` /
 `_flush` layers ensure an internal watcher failure never crashes the background task or
 silently drops a pending filesystem change. `EventBus.publish` isolates each subscriber's
@@ -341,6 +371,9 @@ for route-level tests, and direct unit tests for the pure-function modules.
   `/ws/sync` protocol (resync requests, fingerprint short-circuit, rejection reasons), and
   the file watcher end-to-end (debounce, module-dependency re-parse, config-triggered
   full-reparse, self-write suppression).
+- **`test_security_gaps.py`** — local-session token generation/override/disable behaviour,
+  HTTP and WebSocket Origin/token rejection, trusted hosts (including bracketed IPv6), and
+  session-token injection into the built SPA.
 - **`test_server_concurrency.py`**, **`test_save_lock_contract.py`** — concurrency
   correctness: the shared `save_lock` serialises concurrent saves/submodel operations; the
   WebSocket broadcaster's per-client serialization under concurrent rapid sends.
@@ -368,22 +401,16 @@ for route-level tests, and direct unit tests for the pure-function modules.
 - **`test_files_routes.py`**, **`test_formats_route.py`**, **`test_utility_routes.py`** —
   route-level coverage of file browsing, the I/O format registry endpoint, and utility-script
   CRUD (including AST-syntax-error rejection with line numbers).
-- **`test_output_assembler.py`** (60 tests) — the assembly algorithm itself: GYO-reduction
-  correctness, cut-planning on constructed cyclic/acyclic table sets, prefix-nested
-  serialisation, the empty-collection prune rule, mapping-schema validation (injectivity,
-  prefix-incomparability).
 - **`test_output_assemble_routes.py`** — the dry-run route: schema-pre-check ordering,
   volatile-config swap-in behaviour, timeout/error-status mapping.
-- **`test_v2_codec_and_shred.py`** (53 tests) / **`test_v1_removal_contract.py`** — exhaustive
-  `_api_input_schema.py` coverage: path parsing edge cases (root, nested arrays, object
-  transparency, ancestor columns), every B1/B2/B3 guardrail, and a positive assertion that
-  the deleted v1 legacy-migration codec stays absent (importing its old symbols raises).
+- The shared assembler and v2 codec suites (`test_output_assembler.py`,
+  `test_v2_codec_and_shred.py`, and `test_v1_removal_contract.py`) belong to
+  [json-shredding](../json-shredding/low-level.md); this component's route tests verify
+  only their HTTP consumption and error mapping.
 - **`test_errors.py`** — the `HauteError` hierarchy's `**context` rendering and `repr`/`str`
   behaviour.
 - **`test_event_bus_gaps.py`** — targeted edge-branch coverage for `EventBus` (idempotent
   unsubscribe, handler-exception isolation, empty-registry publish no-op).
-- **`test_registry_contracts.py`** — `NODE_REGISTRY` completeness, duplicate-registration
-  rejection, and the behavioural-passthrough-body guard.
 - **`test_logging.py`** — `configure_logging()`'s processors-list-identity invariant (so
   `capture_logs` and cached bound loggers keep working across reconfiguration).
 - **`test_routes_hygiene.py`**, **`test_routes_error_handling.py`** — cross-route regression
@@ -393,14 +420,8 @@ for route-level tests, and direct unit tests for the pure-function modules.
   **`test_ui_contract_golden.py`** — Pydantic model validation edge cases plus
   fingerprint/golden tests that fail loudly if a response schema's shape drifts from what the
   frontend expects.
-- **`test_types.py`**, **`test_column_contracts_adoption.py`** — `_types.py` model
-  construction/defaults/cached-property behaviour, and the column-contract adoption
-  specification (this suite is explicitly documented as failing until the wider contract
-  system is complete — see the file's own docstring).
+- **`test_types.py`** — `_types.py` model construction, defaults, validation, and
+  cached-property behaviour.
 
-Known gap: this pass did not locate a dedicated unit-test file for `_registry.py`'s
-`_validate_behavioural_bodies_not_passthrough` beyond what `test_registry_contracts.py`
-covers at the contract level, nor a file exercising `_contracts.py`'s `Contract.from_user_declared`
-normalisation branches in isolation — that coverage may live inside the broader
-`test_column_contracts_adoption.py` / codegen test suites rather than a `_contracts`-named
-file.
+Known gap: `test_output_assemble_routes.py` does not pin admission-context release; the
+implemented route currently omits release on every outcome, as noted above.

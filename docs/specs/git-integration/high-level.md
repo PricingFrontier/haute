@@ -7,8 +7,8 @@ version-control workflow — "save my work", "commit a milestone", "go back to a
 version", "push to share" — without exposing branches, merges, rebases, or conflict
 resolution as raw git concepts. Every git CLI interaction in the product goes through this
 one layer, so guardrails (no writing to protected branches, no force-push, no silent
-merges), user-friendly error translation, and safety nets (trash tombstones, atomic
-rollbacks) are enforced in exactly one place rather than scattered across call sites.
+merges), user-friendly error translation, and safety nets (trash tombstones, best-effort
+rollback paths) are enforced in exactly one place rather than scattered across call sites.
 
 The component owns the full lifecycle of a "working branch": creating one, saving
 incremental progress to it, promoting saves to a named milestone, forking a parallel
@@ -21,7 +21,8 @@ In scope:
 - The working-branch / save-ledger branch-pair engine (create, save, commit milestone,
   fork, move, archive, delete, undelete, restore).
 - Guardrails: protected-branch enforcement, ref-name injection prevention, unborn-repo
-  seeding, git-op-in-progress detection.
+  seeding, git-op-in-progress detection, and the shared `.gitignore` deny-list asserted
+  before a root commit can stage project files.
 - Read paths for the panel: status, branch listing, milestone history, ledger save
   expansion, whole-forest graph topology, commit "breadcrumb" context.
 - Remote interaction: listing remotes, throttled/hardened background fetch, deliberate
@@ -40,8 +41,6 @@ Out of scope (owned by neighbouring components):
   see [frontend-git-ui](../frontend-git-ui/high-level.md).
 - What files get committed as part of a pipeline save (config schema, pathspec meaning
   beyond the seed allow-list) — see [pipeline-config](../pipeline-config/high-level.md).
-- `.gitignore` guard content itself (this component only asserts the guards exist before
-  seeding a root commit) — implemented in `haute._gitignore_guard`.
 
 ## Behaviour
 
@@ -70,7 +69,8 @@ forward catch-up only ever advances refs when every leg is a clean fast-forward;
 else is refused so the user spins off a copy instead of triggering a silent merge. Background
 polling fetches (for the "main is ahead" badge, and for divergence detection) are throttled,
 time-bounded, and prompt-proof, so a slow or credential-walled remote can never hang a
-request.
+request. Remote URLs returned to the browser strip URL userinfo (`user:password@`) while
+leaving scp-style `git@host:path` and local paths unchanged.
 
 **History as read-only.** Viewing a historical commit's pipeline (`GET /show/{sha}`) never
 touches HEAD or the working tree. Actually moving the working directory to a historical
@@ -80,9 +80,15 @@ chooser rather than silently resuming an old branch.
 
 **Recoverability.** Deleting a working pair does not destroy it: both tips are pinned under
 a non-head ref namespace and a tombstone is recorded before the branch refs are removed, so
-`undelete` can rebuild the pair exactly. Any multi-step mutation (fork with move, branch-
-away, unborn-repo seeding) is all-or-nothing — a failure partway through rolls back every
-ref and file change already applied, so a retry is never blocked by a half-finished state.
+`undelete` can rebuild one of the 20 most recently tombstoned pairs exactly. Older trash
+pins remain reachable but lose their API tombstone when the cap rolls over. Multi-step ref
+mutations (fork with move, branch-away, and branch-pair creation after any unborn-repository
+seed has succeeded) have best-effort rollback of HEAD and refs so a partial failure does not
+normally strand half a pair. The seed phase itself is outside that rollback boundary: it may
+rename an unborn branch to `main`, append protective `.gitignore` entries, clear/rebuild the
+index, and create a permanent root commit before pair creation begins. A failure during that
+phase can leave those safe preparatory changes behind, although it does not deliberately
+remove working-tree files.
 
 ## Design rationale
 
@@ -128,9 +134,9 @@ ref and file change already applied, so a retry is never blocked by a half-finis
 - **[pipeline-config](../pipeline-config/high-level.md)** defines what a "save" actually
   commits (the pipeline's config files) and is the reason `commit_save` is pathspec-scoped
   rather than committing the whole index.
-- `haute._gitignore_guard.ensure_gitignore_guards` is asserted (not owned) by
-  `set_working_branch`'s unborn-repo seed path, as defence-in-depth against a foreign
-  `git init` repo that lacks haute's guard entries.
+- `haute._gitignore_guard.ensure_gitignore_guards` is shared with the CLI initializer and
+  asserted again by `set_working_branch`'s unborn-repo seed path, as defence-in-depth
+  against a foreign `git init` repo that lacks haute's guard entries.
 
 ## Failure model
 

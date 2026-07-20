@@ -35,8 +35,8 @@
 | `frontend/src/components/RenameDialog.tsx` | Node-rename modal with name-length and unsafe-character validation. |
 | `frontend/src/components/SubmodelDialog.tsx` | "Create submodel" name-entry modal. |
 
-Closely coupled files this component depends on but does not own (specced
-elsewhere or covered only incidentally here):
+Additional graph modules assigned to this component; the table which follows
+is the authoritative module map for their responsibilities:
 
 - `frontend/src/hooks/useGraphCanvasState.ts` — the React Flow adapter over
   the store; translates `NodeChange[]`/`EdgeChange[]` deltas into
@@ -53,6 +53,20 @@ elsewhere or covered only incidentally here):
 - `frontend/src/utils/graphSnapshot.ts`, `frontend/src/utils/shallowNodeHash.ts`
   — serialization and shallow-hashing helpers behind the store's
   fingerprints.
+
+| File | Responsibility |
+| --- | --- |
+| `frontend/src/hooks/useGraphCanvasState.ts` | React Flow adapter over `useGraphStore`: converts `NodeChange[]`/`EdgeChange[]` into raw graph updates, takes one snapshot at a drag's first structural position change, and avoids history churn for per-frame movement and selection-only changes. |
+| `frontend/src/hooks/usePanelGraphContext.ts` | Produces the typed, render-stable `PanelGraphContextSnapshot` (`allNodes`, `edges`, `nodeById`, `getNode`) only when the graph store's panel-context version changes, isolating editor consumers from React Flow UI-only updates. |
+| `frontend/src/hooks/useKeyboardShortcuts.ts` | App-level canvas keyboard bindings for save, undo/redo, copy/paste, delete, search, and panel dismissal; honours editable controls so keystrokes do not leak from a text field into graph mutation. |
+| `frontend/src/utils/apiInputPorts.ts` | Mirrors backend api-input frame identity: derives only runtime-emittable raw-label handles, validates blank/duplicate/filesystem-colliding labels, migrates edges on a conservative in-place table rename, then prunes only genuinely orphaned handles while preserving input array identity on no-op. |
+| `frontend/src/utils/edgeJoinRoles.ts` | Defines edge-join base/join handle roles and canonical role resolution, including compatibility handling for legacy/default handle ids. |
+| `frontend/src/utils/edgeJoinGraph.ts` | Pure edge-join insertion/rewrite helpers: split an existing edge or combine source gestures into a correctly configured join node and its role-bound edges. |
+| `frontend/src/utils/edgeJoinValidation.ts` | Save-time edge-join graph validation and readable warnings; rejects incomplete, duplicate, or otherwise inconsistent role/edge representations before the backend receives them. |
+| `frontend/src/utils/nodeTypeRegistry.ts` | React Flow node-type registry built from the canonical metadata, shared by the editable and read-only comparison canvases. |
+| `frontend/src/utils/graphSnapshot.ts` | Snapshot serialization/cloning helpers which omit transient node data so undo/redo and persisted fingerprints describe graph state rather than preview/UI residue. |
+| `frontend/src/utils/shallowNodeHash.ts` | Stable shallow data hashing used by the graph store's structural and persisted fingerprint calculations. |
+| `frontend/src/types/node.ts` | Canonical React Flow node, edge, submodel-port, column, and status shapes plus `nodeData()`/`effectiveNodeType()` accessors used at the untyped React Flow boundary. |
 
 ## Key types and data structures
 
@@ -512,6 +526,8 @@ elsewhere or covered only incidentally here):
   losing the breadcrumb is cosmetic, not blocking.
 
 ## Testing
+
+The pure connection/frame helpers are defended by `frontend/src/utils/__tests__/apiInputPorts.test.ts`, `edgeJoinGraph.test.ts`, and `edgeJoinValidation.test.ts`: they cover raw-label frame eligibility, blank/duplicate/unicode filesystem collisions, rename-before-prune migration, identity-preserving no-ops, edge-join insertion/role normalisation, and invalid saved graph diagnostics. These sit alongside the hook/store suites below because their contracts are exercised again through the editor and save paths.
 
 - **Store — `frontend/src/stores/__tests__/`:**
   - `useGraphStore.consolidation.test.ts` — store shape and required

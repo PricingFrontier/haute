@@ -67,11 +67,14 @@ Out of scope:
 
 A solve is submitted asynchronously: the request returns a job id immediately, and the caller
 polls a status endpoint until the job reaches a terminal state (`completed`, `error`,
-`contract_error`, `memory_limited`, `cancelled`, `superseded`, or `timed_out`). Only one
-blocking solve (or frontier auto-range, or the setup phase that precedes either) may be active
-for a given pipeline graph and optimiser node at a time; a second submission against the same
-graph/node is rejected outright while one is in flight, and a *different* graph/node may run
-concurrently.
+`contract_error`, `memory_limited`, `cancelled`, `superseded`, or `timed_out`). There is one
+process-wide blocking-solve slot, so a second solve is rejected while any solve is running,
+even for a different graph/node. Estimates, auto-range jobs, and frontier recomputes are
+non-blocking job types and do not reserve that global slot. Separately, a graph/node
+single-flight key prevents a solve setup and a background auto-range setup from overlapping
+for the same graph/node. A repeated background auto-range start with the same node id and graph
+fingerprint returns the active job id (request-only chunk-size differences are not part of that
+identity), while a conflicting operation receives HTTP 409.
 
 Once a solve completes, its lambdas, objective/constraint totals, convergence status, and (for
 ratebook) factor tables are available as a job summary. From there a user can:
@@ -139,7 +142,7 @@ the `QuoteGrid` without any Python-side `DataFrame` intermediate, so peak Python
 solve is close to just the `QuoteGrid` handle rather than the scored dataframe plus a Rust copy
 plus intermediate casts. The temp file is always removed in a `finally` block, on both success and
 failure. Two alternatives were rejected: a chunked builder via `QuoteGridBuilder.append()` (still
-requires Python to iterate and hold each chunk — kept as a fallback path, not the default) and
+requires Python to iterate and hold each chunk, and is not present as a runtime fallback) and
 passing a `LazyFrame` straight to Rust (not supported by the `pyo3-polars` API in use). The
 Parquet round-trip's disk-I/O cost (roughly 1-2s for large files) is accepted because it is small
 relative to the memory it saves for large portfolios; for small datasets the round-trip overhead
@@ -180,15 +183,16 @@ compute cap in particular is checked *before* the solver runs, using the same gr
 `price-contour` itself uses, so an oversized request is rejected with an actionable message
 rather than dying inside the solver as an opaque failure.
 
-Three further alternatives were considered and rejected during the frontier design. Treating
-frontier ranges as multipliers of a baseline was rejected for the reason above — a multiplier is
-ambiguous once constraints have different natural scales, and both the route's own API and the
-underlying `price-contour` integration operate on absolute threshold values. Always returning a
-pollable job id for the (short-lived) auto-range estimate was rejected because there is no polling
-API for it, and keeping such a job in the shared store would leave unobservable job-store growth
-with nothing to ever poll it down. Adding a frontend fallback for an incomplete selected frontier
-point was rejected because a frontier point missing its numeric summary fields cannot produce a
-faithful solve summary — a guessed or partial one would misrepresent the actual solve.
+Three further alternatives shape the frontier design. Treating frontier ranges as multipliers of
+a baseline was rejected for the reason above — a multiplier is ambiguous once constraints have
+different natural scales, and both the route's own API and the underlying `price-contour`
+integration operate on absolute threshold values. Auto-range deliberately exposes both a
+synchronous endpoint (direct response for short/legacy callers; its temporary job is always
+deleted) and a background start/status/cancel API (progress, timeout, and cancellation for longer
+runs); making either form the only API would discard one of those contracts. Adding a frontend
+fallback for an incomplete selected frontier point was rejected because a point missing its
+numeric summary fields cannot produce a faithful solve summary — a guessed or partial one would
+misrepresent the actual solve.
 
 A frontier sweep is hundreds of sequential re-solves at 2-3 constraints — the same class of
 sustained CPU work as a full solve — so it was moved off the request thread onto a background job
@@ -234,19 +238,24 @@ a non-string/categorical quote-id column, null quote ids, non-finite (NaN/Infini
 any numeric solver column, a null value in any objective/constraint/scenario column (any dtype,
 not just numeric — the solver's external aggregation has undefined behaviour on a null input), an
 unresolvable or disconnected `data_input`, or (ratebook) an empty or missing banding source. A
-second solve/auto-range request against the same graph and optimiser node while one is already
-active is rejected as a conflict rather than queued or silently superseded.
+second solve is rejected whenever the process-wide solve slot is occupied. For one graph/node,
+solve setup conflicts with a running background auto-range setup; a repeated background
+auto-range start for the same graph fingerprint/node returns the existing job id instead of
+creating, queuing, or superseding work.
 
 A frontier request whose projected solver grid exceeds the compute budget is rejected before
 the solver ever runs, naming both the projected size and the cap. A pipeline that cannot run in
 bounded/streaming memory mode is rejected with a specific message rather than being forced
 through and failing deep inside the executor. A memory-admission failure (the executor's own
-budget controller refusing to reserve the memory a stage needs) surfaces as a 507. Once a
-frontier sweep has passed this synchronous validation and started as a background job, any
+budget controller refusing to reserve the memory a stage needs) surfaces as HTTP 507 on a
+synchronous request path; when it occurs inside asynchronous solve/frontier/auto-range work, the
+job instead transitions to `memory_limited` and exposes the failure through status polling. Once
+a frontier sweep has passed its synchronous validation and started as a background job, any
 failure inside the sweep itself (a lost race against a concurrent job-state change, an invalid
-persisted apply-artifact handle, an unclassified exception) is reported through the frontier job's
-own terminal status rather than as a synchronous HTTP error from the original `/frontier` request
-— the caller only learns of it by polling the frontier-status endpoint to a terminal state.
+persisted apply-artifact handle, an unclassified exception) is reported through the frontier
+job's own terminal status rather than as a synchronous HTTP error from the original `/frontier`
+request — the caller only learns of it by polling the frontier-status endpoint to a terminal
+state.
 
 Ratebook mode has no per-quote result dataframe, so the apply-preview and apply-trace
 affordances return an explicit 422 contract error naming the correct alternative (the factor

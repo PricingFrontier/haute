@@ -18,8 +18,8 @@
 
 ## Key types and data structures
 
-Every command follows the same pattern: a frozen-in-spirit (not actually `frozen=True`) `@dataclass`
-holding parsed CLI inputs, consumed by a `handle_*` function.
+Every command uses a plain mutable `@dataclass` as a configuration value bag consumed by a
+`handle_*` function.
 
 - `InitConfig(target, ci, force=False)` — `_init_cmd.py`.
 - `RunConfig(pipeline_file: Path)` — `_run.py`.
@@ -43,6 +43,24 @@ Other notable types:
   readiness probe needs (`close()` only), used to type `_wait_for_tcp_ready`'s injectable `connect`
   callable for testability.
 
+### Command and option contract
+
+Every subcommand also exposes Click's eager `--help` option, which prints usage and exits 0
+without validating required positional arguments.
+
+| Command | Arguments and options | Exit and failure contract |
+|---|---|---|
+| `haute` | `--version`; `--help`. | Both print and exit 0. Unknown commands/options are Click usage errors (exit 2). |
+| `haute init` | `--target` choice: `databricks` (default), `container`, `azure-container-apps`, `aws-ecs`, `gcp-run`, `sagemaker`, `azure-ml`; `--ci` choice: `github` (default), `gitlab`, `azure-devops`, `none`; `-f`/`--force`. `sagemaker` and `azure-ml` are accepted scaffold choices even though deploy deliberately rejects those planned targets as unimplemented. | Success 0. Existing `haute.toml` without `--force` exits 1. Invalid choices exit 2 before the handler. File/TOML/scaffold write errors are not converted into a fallback. |
+| `haute run [PIPELINE_FILE]` | Optional path; absent input uses `resolve_pipeline_file` project/discovery rules. | Missing/ambiguous file, parse failure, empty graph, executor failure, or any node result with non-`ok` status exits 1; success exits 0 after the optional final preview. |
+| `haute lint [PIPELINE_FILE]` | Optional path resolved exactly as `run`. | Missing/ambiguous file, parse failure, empty graph, or any collected structural issue exits 1; a clean graph exits 0. |
+| `haute train TRAINING_SCRIPT` | Required positional path. | Omission is a Click exit-2 usage error. Missing/unsafe/unloadable script, missing `job`, script exception, or `job.run` failure exits 1; successful training exits 0. |
+| `haute serve` | `--host TEXT` (CLI → `[server].host` → `127.0.0.1`); `--port INTEGER` (effective default `8000`, not shown by current help); `--no-browser`. Port range is not Click-validated: negative/out-of-range integers reach socket setup and may raise rawly. | Port conflict or missing production static build exits 1; malformed `haute.toml` propagates `ConfigError`. A browser-launch failure prints the manual URL but leaves the running server path intact. |
+| `haute deploy [PIPELINE_FILE]` | Optional path; `--model-name TEXT`; `--dry-run`; `--endpoint-suffix TEXT`. | Non-dry-run outside recognised CI exits 1. Resolution, validation, either validation's quote pass or the separately printed quote pass, missing backend dependency, unimplemented target, and backend failure all exit 1. Dry-run success exits 0 before backend dispatch. |
+| `haute smoke` | `--endpoint-suffix TEXT`. | Missing config/quotes/endpoint, missing Databricks SDK, unsupported target, readiness timeout, health-request failure, or any scoring request failure exits 1. A successful request can currently pass with an empty prediction payload. |
+| `haute status [MODEL_NAME]` | Optional model name; `--version-only`. | Missing resolvable name or MLflow dependency exits 1. Normal mode prints “not found” and exits 0; `--version-only` prints only a version on success and raises `ClickException` (exit 1, stderr only) when no version exists. |
+| `haute impact` | `--sample INTEGER` (default `10000`; every value `<=0` currently means all, although help documents `0`); `--batch-size INTEGER` (default `500`, minimum `1`); `--endpoint-suffix TEXT`. | Invalid batch size exits 2. Missing config/suffix/dataset or missing Databricks SDK exits 1. Endpoint/scoring/arithmetic/write failures propagate. Unsupported transport returns successfully without a report only after TOML, suffix, and dataset/parquet loading have succeeded; otherwise success writes `impact_report.md` and exits 0. |
+
 ## Control flow
 
 **`init`**: `handle_init` checks for an existing `haute.toml` (abort unless `--force`), resolves the
@@ -65,7 +83,10 @@ run surfaces every issue rather than stopping at the first.
 
 **`train`**: validates the script exists, runs it through
 `haute._sandbox.validate_user_code(..., allow_imports=True)` before execution, loads it as a module
-via `importlib.util`, looks up a module-level `job` attribute, and calls `job.run(progress=_progress)`.
+via `importlib.util`, looks up a module-level `job` attribute, and calls
+`job.run(progress=_progress)` without an `isinstance(TrainingJob)` check. The documented/generated
+shape is a `TrainingJob`, but at runtime any object implementing that call and returning the fields
+the formatter reads is accepted.
 `_progress` renders a `\r`-carriage-return progress bar and explicitly flushes stdout after every
 write (documented as load-bearing — `click.echo(nl=False)` alone can leave the line buffered).
 
@@ -91,8 +112,9 @@ the warning still fires even if a later step aborts), `_configure_trusted_hosts`
 CLI args via `resolve_pipeline_file` + `DeployConfig.from_cli_args`. Blocks non-dry-run deploys
 outside CI (`_detect_ci_env`). Applies CLI overrides (`pipeline_file`, `model_name`,
 `endpoint_suffix`) on top of the loaded config via `.override(**overrides)`. Then: `resolve_config`
-(parse/prune/collect artifacts/infer schemas) → `validate_deploy` → `score_test_quotes` → (return
-early if `--dry-run`) → `deploy_resolved`. Each stage prints a `✓`/`✗` progress line; any stage
+(parse/prune/collect artifacts/infer schemas) → `validate_deploy` (which already scores configured
+quotes as part of its aggregate gate) → `score_test_quotes` again for per-file timing/status output
+→ (return early if `--dry-run`) → `deploy_resolved`. Each stage prints a `✓`/`✗` progress line; any stage
 failure is caught, formatted, and turns into `SystemExit(1)`.
 
 **`smoke`**: requires `haute.toml`; loads `DeployConfig`, applies an optional endpoint-suffix
@@ -115,9 +137,10 @@ version is registered.
 **`impact`**: requires `haute.toml` and `[safety].impact_dataset`; resolves the staging suffix (CLI
 flag wins, else `deploy_config.ci.staging_endpoint_suffix`, else loud error); reads and optionally
 samples (`df.sample(n=..., seed=42)`) the impact dataset parquet; dispatches to
-`_impact_databricks`/`_impact_http` based on `resolve_transport(...).kind`; each backend probes
-whether the production endpoint exists (only a "not found" signal flips `prod_exists = False`) and
-scores staging (always) and production (if it exists); builds an `ImpactReport` — a first-deploy
+`_impact_databricks`/`_impact_http` based on `resolve_transport(...).kind`; Databricks probes
+the production endpoint first, while HTTP treats a missing production URL as first deploy and
+otherwise discovers absence only when scoring yields HTTP 404. Both score staging and, when
+present, production, then build an `ImpactReport` — a first-deploy
 variant with empty comparison data when there is no production endpoint yet, otherwise a full
 `build_report` diff; prints the terminal report, always writes `impact_report.md`, and additionally
 appends to `$GITHUB_STEP_SUMMARY` when that env var is set.
@@ -151,8 +174,8 @@ appends to `$GITHUB_STEP_SUMMARY` when that env var is set.
   exception (e.g. an unresolvable hostname) propagates rather than being retried into a misleading
   timeout.
 - **`impact`'s sampling only triggers when it would shrink the dataset** (`config.sample > 0 and
-  total_rows > config.sample`) — a `--sample` larger than the dataset, or `--sample 0`, scores every
-  row.
+  total_rows > config.sample`) — a larger value, zero, or any negative value scores every row;
+  the negative-value behaviour is an unvalidated current gap rather than a documented option.
 - **`status --version-only`** distinguishes "no version" from a genuine version `0` by raising
   instead of printing — printing `0` unconditionally would be indistinguishable from a real version
   number to a scripted caller checking stdout.
@@ -163,9 +186,14 @@ appends to `$GITHUB_STEP_SUMMARY` when that env var is set.
 
 ## Error handling
 
-- Every `handle_*` function raises `SystemExit(1)` (via `click.echo(..., err=True)` followed by
-  `raise SystemExit(1)`) on user-facing failure; `status --version-only` uses
-  `click.ClickException` instead so Click's own formatting applies.
+- Explicitly handled operational failures use `SystemExit(1)` (normally after
+  `click.echo(..., err=True)`); Click argument parsing uses exit 2. This is not universal:
+  normal `status` treats a missing registry model as an informational exit 0, and `impact`
+  warns then returns 0 when the configured target has no transport implementation.
+  `status --version-only` deliberately converts its not-found/no-version case to
+  `click.ClickException` (exit 1) so scripts cannot mistake absence for version `0`.
+  Several configuration, SDK, I/O, scoring, and programming errors are outside these
+  formatting catches and propagate with their original exception/traceback (still exit 1).
 - `_serve._load_toml_server_host` distinguishes `OSError` (logged as a warning, treated as "no
   override so fall back to default") from `tomllib.TOMLDecodeError` (raised as `haute.errors.ConfigError`
   — a malformed `haute.toml` must not silently resolve to the loopback default, since that could mask
@@ -179,14 +207,18 @@ appends to `$GITHUB_STEP_SUMMARY` when that env var is set.
   supported), and a final `except Exception` fallback that formats and exits 1 for anything else.
 - `_train.handle_train` treats `UnsafeCodeError` from `validate_user_code` as a distinct, clearly
   labelled failure ("failed safety validation") from a plain execution/import error.
+- Browser auto-open is the one explicit UX fallback: `_helpers._open_browser` catches a
+  launcher exception or false return, prints the URL for manual opening, and does not stop
+  the server. This does not substitute data or hide a server failure.
 
 ## Testing
 
 Tests live under `tests/` as a flat set of `test_cli_*.py` files (plus `test_cli.py` and
 `test_cli_no_shadow.py`), using `click.testing.CliRunner` for end-to-end command invocation and
 direct calls into `handle_*` functions for unit-level coverage. `unittest.mock.patch`/`MagicMock`
-stub every external system (MLflow, the Databricks SDK, `uvicorn.run`, `subprocess`, `webbrowser`);
-no test hits a real deploy backend, endpoint, or network resource. Filesystem state goes through
+stub external systems (MLflow, the Databricks SDK, `uvicorn.run`, `subprocess`, `webbrowser`);
+no test hits a real deploy backend or remote endpoint. Port-conflict tests bind real loopback
+sockets; other SDK/HTTP/uvicorn/subprocess/browser calls are mocked. Filesystem state goes through
 pytest's `tmp_path`, and tests that need a specific cwd use `monkeypatch.chdir`.
 
 Key files and what they cover:
@@ -196,8 +228,7 @@ Key files and what they cover:
   `model_name` optionality across `deploy`/`status`, single shared `resolve_pipeline_file`, that no
   CLI module reimplements ad-hoc pipeline resolution (AST/source scan), that every command has a
   `handle_*` function, and that Click command bodies stay "thin" (AST-inspected line/statement
-  budget) versus the `handle_*` function doing the real work. Explicitly documents itself as a
-  TDD red-phase suite ("all tests are expected to fail before the dev patch lands").
+  budget) versus the `handle_*` function doing the real work.
 - `test_cli_helpers.py` — `_open_browser` (including the `webbrowser.open` failure path) and
   `_find_frontend_dir` walking-up-parents behaviour.
 - `test_cli_impact.py` / `test_cli_impact_gaps.py` — `impact` end-to-end and edge cases: unsupported
@@ -205,7 +236,8 @@ Key files and what they cover:
   first-deploy check.
 - `test_cli_status.py` — `status` output formatting and that catalog/schema from `haute.toml` are
   threaded through to `get_deploy_status`.
-- `test_cli_deploy.py` — `deploy` end-to-end (`TestDeploy`).
+- `test_cli_deploy.py` — deploy CI gating, dry-run, resolution/validation/quote failures,
+  exact resolved-object dispatch, dependency/unsupported-target errors, and suffix overrides.
 - `test_cli_smoke.py` — Databricks polling loop (including the "not ready" retry path), HTTP smoke
   path, and the unsupported-target error.
 - `test_cli_ux.py` — cross-cutting UX contracts: shared `ENDPOINT_SUFFIX_HELP` string reused across
@@ -227,7 +259,8 @@ Key files and what they cover:
   `test_cli.py` covers.
 - `test_cli_lint.py` — lint edge cases beyond the happy path already covered in `test_cli.py`.
 
-Known gaps: no test drives `haute serve` far enough to observe a real Vite subprocess or a live
-uvicorn server (both are patched out), so the actual dev-mode browser-open race and Vite process
-cleanup on signal receipt are exercised at the unit level (`_wait_for_tcp_ready`,
-`_start_vite_subprocess` wiring) rather than through a genuine end-to-end server boot.
+Known gaps: no test boots a real Vite subprocess or uvicorn server. Readiness/open ordering and
+`finally` cleanup after a mocked uvicorn interruption are covered, but no test invokes the
+registered SIGINT/SIGTERM callbacks themselves. No test snapshots the root plus all nine generated
+Click help surfaces, so defaults/types can drift; notably `serve` help currently omits its effective
+port-8000 default.

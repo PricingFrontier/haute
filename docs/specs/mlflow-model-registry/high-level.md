@@ -43,8 +43,8 @@ In scope:
 - Preparing an input DataFrame into the shape each flavor's `predict`
   expects (numpy/pandas dtype and categorical handling).
 - Feature-contract validation at score time: presence, relative order,
-  and categorical dtype, plus enforcing a model's trained-with
-  offset/exposure column.
+  categorical dtype and declared categorical value domains, plus enforcing a model's
+  trained-with offset/exposure column.
 - Eager (in-memory) and batched (disk, chunked-parquet) scoring, and an
   output/input column write-projection that can prune both to exactly
   what a caller needs.
@@ -86,14 +86,18 @@ Out of scope (owned elsewhere):
   the highest numeric version currently registered).
 - Loaded models are cached in two tiers. An in-memory LRU (16 entries)
   holds fully-loaded `ScoringModel` objects keyed by the resolved source
-  identity plus `task` plus the byte-identity fingerprint of the local model
-  artifact — so a re-logged MLflow run, or a `version="latest"` model
-  retrained in place under the same run reference, misses the cache instead
-  of serving the previously loaded (now stale) model on a long-lived server.
+  identity plus `task` plus the byte-identity fingerprint of the locally
+  resolved native-model file. Replacing those local bytes under the same
+  source reference invalidates the in-memory entry. The loader does not poll
+  MLflow to detect a remote artifact overwritten behind an already-populated
+  native disk-cache path; that local file remains authoritative until cache
+  clear/eviction or a failed load deletes it and triggers the bounded retry.
   A disk cache under `.cache/models/<run_id>/...`
   holds the downloaded bytes for CatBoost and RustyStats artifacts (not
-  pyfunc, which relies on MLflow's own local artifact cache), bounded to
-  50 run directories with oldest-first eviction. Both caches persist
+  pyfunc, which relies on MLflow's own local artifact cache). Oldest-first
+  eviction targets at most 50 inactive run directories; directories in active use are
+  protected, so the physical total can temporarily exceed 50 until a later download triggers
+  another eviction pass. Both caches persist
   across calls within a process; the disk cache also survives process
   restarts.
 - When the caller already knows the exact run + artifact (the common
@@ -119,9 +123,11 @@ Out of scope (owned elsewhere):
   same relative order the model was trained with (categorical feature
   indices are positional for CatBoost), with categorical columns
   presented as non-numeric — and, if the model declares a trained-with
-  offset/exposure column, that column must also be present. Any of these
-  failing raises before prediction runs; validation results are memoised
-  so repeated score calls against the same model/schema pair are cheap.
+  offset/exposure column, that column must also be present. Declared categorical
+  domains are then checked against the values in the exact materialised scoring frame.
+  Any of these failing raises before prediction runs; schema-validation results are
+  memoised for repeated model/schema pairs, while value-domain validation still runs
+  for each materialisation because values can change without a schema change.
 - Scoring runs either eagerly (the input is collected once, in memory,
   and predictions are appended to that same materialisation) or in
   batches (the input is written to a temp parquet file and predicted
@@ -166,21 +172,19 @@ Out of scope (owned elsewhere):
   interrupted download, a disk hiccup); a hard ceiling after that means
   persistent corruption becomes a loud, diagnosable failure instead of an
   invisible retry loop burning time and bandwidth on-call would never see.
-- **The in-memory cache key includes artifact byte identity, not just the
-  source reference.** A run ID + artifact path (or registered model +
-  `"latest"`) is a *reference*, not a value — the bytes behind it can change
-  underneath an unchanged reference when a run is re-logged or a `"latest"`
-  model is retrained in place. Keying only on the reference let a long-lived
-  server keep serving the model it loaded at process start indefinitely,
-  invisibly, until someone thought to call `clear_model_cache` by hand. The
-  fingerprint (`_mlflow_io._local_artifact_fingerprint`) reuses the deploy
+- **The in-memory cache key includes local artifact byte identity, not just
+  the source reference.** Keying only on run/version/path would let a
+  long-lived process continue serving its old deserialised object after the
+  corresponding disk-cache file was replaced. The fingerprint
+  (`_mlflow_io._local_artifact_fingerprint`) reuses the deploy
   path's `artifact_identity_fingerprint` (a stat-gated content hash) rather
   than minting a parallel derivation, so the serve-path cache and the
   deploy-side output-schema cache agree on what "the same artifact" means.
   It is a required keyword argument on `_model_cache_key` specifically so no
   call site can silently omit it; the one documented exception is a pyfunc
   model, which loads by MLflow URI with no local artifact file to
-  fingerprint and is keyed with an empty string instead.
+  fingerprint and is keyed with an empty string instead. This protects the
+  memory cache from locally changed bytes; it is not remote freshness polling.
 - **Cache eviction cascades to feature-validation state.** The
   feature-validation cache in `_model_scorer.py` is keyed by *content*
   (feature names, categorical set, offset column) rather than by model
@@ -280,9 +284,9 @@ Out of scope (owned elsewhere):
   corruption — they are never retried and propagate immediately with
   their real stack trace.
 - A scoring input that fails the feature contract (missing features,
-  wrong relative order, a categorical column with numeric dtype, or a
-  missing offset column): `FeatureMismatchError` with the full expected /
-  available / missing / type-mismatch detail.
+  wrong relative order, a categorical column with numeric dtype, an observed value outside a
+  declared categorical domain, or a missing offset column): `FeatureMismatchError` with the
+  relevant expected/actual context.
 - An unsupported or misspelled scoring flavor reaching `score_frame()`:
   `ConfigError` — never silently treated as pyfunc.
 - A `predict_proba` output representing more than two classes, where only

@@ -58,10 +58,10 @@ Out of scope (owned elsewhere):
 
 - **Create and poll.** A route creates a job with an initial status dict and receives
   a generated job ID. Callers poll by ID; a missing or expired ID surfaces as HTTP 404.
-- **One-way terminal transition.** A job moves from `running` to exactly one terminal
-  status: `completed`, `error`, `cancelled`, `superseded`, `timed_out`,
-  `memory_limited`, or `contract_error`. Once terminal, a job's status does not go
-  back to `running`.
+- **One-way terminal transition.** A job moves from `running` to a terminal status:
+  `completed`, `error`, `cancelled`, `superseded`, `timed_out`, `memory_limited`, or
+  `contract_error`. It never goes back to `running`; a non-completed terminal reason may
+  still be replaced by a strictly higher-precedence terminal reason as described below.
 - **Terminal reason precedence, not first-write-wins.** When multiple terminal
   transitions race for the same job (e.g. a timeout fires while the worker is also
   failing), the reason with the *highest* precedence wins, in the order (low to high):
@@ -69,29 +69,33 @@ Out of scope (owned elsewhere):
   `completed` is a special case: it can only be reached directly from `running`, and
   once a job is `completed` no other reason can ever overwrite it, regardless of
   precedence.
-- **Latest-job-per-key supersession.** Starting a new job for a key that already has
-  one running automatically requests cancellation of the previous job with reason
-  `superseded`. Cancellation is cooperative: the previous job's worker must itself
-  check for cancellation and stop; nothing in this component can forcibly kill a
-  running thread.
-- **Single-flight keys.** A key can have at most one *owning* job at a time. A second
-  attempt to acquire an already-owned key is rejected with a typed conflict rather than
-  queued or silently ignored; callers translate that into an HTTP 409.
-- **Bounded retention.** Job metadata (status, config, small result summaries) is kept
-  for a fixed TTL (24 hours by default) after which it is evicted on the next store
-  access. Heavy result payloads attached to a *completed* job (solver objects, full
+- **Latest-job-per-key supersession.** Registering a new job for a key that still has a
+  previous job registered automatically requests cancellation of the previous job with
+  reason `superseded`; the registry does not inspect the previous job's persisted status.
+  Cancellation is cooperative: the previous job's worker must itself check for cancellation
+  and stop; nothing in this component can forcibly kill a running thread.
+- **Single-flight keys.** A key can have at most one *owning job ID* at a time. An acquire by
+  a different job ID is rejected with a typed conflict rather than queued or silently
+  ignored; the current owner may re-acquire idempotently. Callers translate conflicts into
+  HTTP 409.
+- **Bounded retention.** Job metadata is evicted lazily on store access once its TTL
+  expires (24 hours by default). A running job uses its latest locked update time so active
+  progress keeps it alive; terminal jobs use their original `created_at`, not `ended_at`.
+  Heavy result payloads attached to a *completed* job (solver objects, full
   solve-result dataframes, quote grids) are stripped much sooner (15 minutes by
   default) so status polling keeps working without holding onto large in-memory
   objects for the full metadata TTL. Any artifact files referenced by an evicted job
   are also cleaned up via a registered cleaner.
 - **Isolated worker outcomes join the same lifecycle.** Work that runs in a separate
   process (for memory isolation) reports back through the identical terminal-reason
-  contract as in-process background threads — a route poller cannot tell the
-  difference from the job record alone.
+  contract as in-process background threads. Failure records additionally carry
+  worker-specific diagnostic fields, so a poller can distinguish those failures if it
+  inspects more than status and terminal reason.
 - **Bounded HTTP response latency, unbounded work.** A blocking call started on a
   worker thread can be capped so the HTTP response returns (504) within a timeout,
-  but the underlying work is *not* aborted — it keeps running and its eventual result
-  or failure is drained and logged rather than lost. If the HTTP request itself is
+  but the underlying work is *not* aborted — it keeps running. On completion the task is
+  drained: a late successful return value is discarded, while an ordinary late exception is
+  logged. If the HTTP request itself is
   cancelled (e.g. client disconnect), this component still waits for started thread
   work to actually finish before letting the cancellation propagate, since Python
   cannot forcibly terminate a running thread.
@@ -104,17 +108,17 @@ Out of scope (owned elsewhere):
   not surviving a process restart and not being visible across server replicas.
 - **Reason precedence over first-write-wins.** Multiple asynchronous signals (a
   worker's own error, a timeout timer, a memory-pressure callback, a new job
-  superseding this one) can all try to terminate the same job concurrently. Ranking
-  reasons by precedence, rather than letting whichever write lands first win, ensures
-  the *most informative* terminal reason survives races — e.g. an actual crash
-  (`error`) is never silently masked by a `superseded` write that happened to arrive
-  later in wall-clock time but represents a less specific signal.
+  superseding this one) can all try to terminate the same job concurrently. The explicit
+  ordering makes the result deterministic and deliberately gives later user/control-plane
+  stop intent priority over generic worker failure: for example, `superseded` can replace
+  an already-recorded `error`, but an `error` can never replace `superseded`. This is a
+  policy ranking, not a claim that the winner is always the most diagnostic reason.
 - **`completed` is sticky.** A user-visible success must never be quietly downgraded
   to a cancellation/timeout artifact of a race that occurs after the result is
   already in hand; the transition rules special-case `completed` to be both the only
   way in (from `running`) and immune to being overwritten once reached.
-- **Read-merge-swap over per-field mutation.** `JobStore` never mutates a stored job
-  dict in place. Every update builds a new dict and swaps it in with a single
+- **Read-merge-swap over per-field mutation.** `JobStore`'s mutation methods never mutate a
+  stored job dict in place. Every update builds a new dict and swaps it in with a single
   `dict.__setitem__`, which CPython's GIL makes atomic — a reader holding the previous
   reference always sees a fully-old or fully-new record, never a torn one. A single
   `RLock` still serialises the read-merge-swap sequence itself so two concurrent
@@ -130,12 +134,12 @@ Out of scope (owned elsewhere):
   `ExecutionCancellationToken`) that a worker must poll at safe checkpoints. This
   pushes responsibility for *where* it's safe to stop onto the worker code, which is
   a deliberate trade-off documented at the call sites that consume this component.
-- **Response-timeout without losing the result.** Returning a 504 to the client while
-  discarding the in-flight thread would both waste the completed work and risk a
-  second concurrent attempt at the same resource. Instead the background thread is
-  allowed to finish; its outcome is drained through a logged callback so a late
-  success or failure is never silently dropped, even though the original HTTP caller
-  already moved on.
+- **Response-timeout without abandoning the task.** Returning a 504 does not cancel the
+  in-flight thread. The task remains observable through `BlockingWorkTimeoutError`'s
+  `background_task` (used by supersession to retain real worker occupancy), and a done
+  callback consumes its eventual outcome. The helper does not preserve a late successful
+  value for the original caller or a job record; it discards that value, while logging an
+  ordinary late exception.
 - **Fail loudly on store misuse.** Constructing a `JobStore` with a negative TTL,
   updating an unknown job ID, or scheduling heavy-object cleanup without a concrete
   expiry all raise immediately rather than degrading gracefully — consistent with the
@@ -207,7 +211,8 @@ Depended on:
 
 - **Background work outliving its HTTP response.** If a client-facing response
   timeout fires, or the request itself is cancelled, the background thread is neither
-  killed nor abandoned: its eventual result or exception is drained through
-  `_drain_background_future_result` and logged. A `BaseException` (e.g. `SystemExit`)
+  killed nor left with an unobserved task exception: its eventual result or exception is
+  drained through `_drain_background_future_result`. A successful value is discarded; an
+  ordinary exception is logged. A `BaseException` (e.g. `SystemExit`)
   raised by the background work is intentionally *not* swallowed by the drain path
   and propagates out of the callback.

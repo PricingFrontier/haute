@@ -4,18 +4,19 @@
 
 | File | Responsibility |
 |---|---|
-| `executor.py` | GUI-facing eager entry point: `execute_graph()` (preview, with the `_preview_cache` `FingerprintCache`), `execute_sink()` (batch/data-output writes), preamble compilation + single-flight cache (`_compile_preamble`), preview-column projection/schema-warning assembly, sink path resolution/containment. |
-| `execution.py` | Stable internal facade re-exporting execution helpers (`execute_lazy_graph`, `plan_execution_strategy`, `build_dataframe_execution_cache_request`, graph/path/frame input-fingerprint helpers, `runtime_input_extra_keys`) so application code has one import boundary instead of reaching into `_execute_lazy`/`graph_utils` internals directly. |
-| `_execute_lazy.py` | The shared execution core: `_prepare_graph`/`_prepare_graph_with_edges` (topo order + adjacency), `_build_funcs` (per-node callable construction, shared by eager and lazy), `_execute_lazy` (lazy plan + adaptive checkpointing + dataframe-cache seeding), `_execute_eager_core`/`EagerResult` (eager materialisation with contract checks), column-contract assertion helpers, multi-frame (`dict[label, Frame]`) source routing (`_pick_source_frame`). |
-| `_execution_context.py` | `ExecutionContext`, `ExecutionProfile`, `ExecutionCancellationToken`, `ExecutionMetricsRecorder`, and the RSS-sampling/memory-pressure-event machinery every long-running operation runs through. |
-| `_execution_admission.py` | Resolves an `ExecutionBudget` per `ExecutionProfile` (fixed default / explicit env override / adaptive fraction of available RAM), performs pre-flight admission (`create_admitted_execution_context`), and tracks a process-wide in-flight reservation for "heavy" profiles. |
-| `_node_apply.py` | Config-driven implementations of `liveSwitch` input selection, `scenarioExpander` row expansion, `optimiserApply` artifact dispatch, and `OUTPUT` response-document assembly (`assemble_output_from_config`) — the single code path both the canvas executor (via `_builders.py`) and codegen-generated `.py` files call. |
-| `_topo.py` | `topo_sort_ids` (graphlib-backed topological sort with a custom multi-cycle reporter), `ancestors` (BFS over reversed edges). |
-| `graph_utils.py` | Canonical re-export facade for graph models, execution helpers, topo helpers, and IO helpers used by generated pipeline code and application modules. |
-| `_graph_utils.py` | Pure-function graph helpers decoupled from the Pydantic models: `build_parents_of`, `upstream_node_ids`, `_sanitize_func_name`, `build_instance_mapping`, `resolve_orig_source_names`, edge-id construction, sink-path normalisation. |
-| `_worker_isolation.py` | `run_isolated_worker()` — spawn a child process for one function call with an optional `RLIMIT_AS` cap, timeout, and cooperative stop-reason polling; typed error hierarchy for every terminal state. |
-| `chunking.py` | `ChunkPlanRequest`/`chunk_plan()` (proves a graph suffix is chunk-safe, sizes chunks), `iter_chunked_frames()`/`run_chunked_reduce()`/`collect_chunked()` (the runner), the per-`NodeType` `ChunkCapability` registry, and the AST-based row-local user-code whitelist. |
-| `_ram_estimate.py` | `available_ram_bytes()`/`available_vram_bytes()` (OS-level memory probing), `estimate_safe_training_rows()` (parquet-metadata-based peak-memory estimate and downsample decision). |
+| `src/haute/executor.py` | GUI-facing eager entry point: `execute_graph()` (preview, with the `_preview_cache` `FingerprintCache`), `execute_sink()` (batch/data-output writes), preamble compilation + single-flight cache (`_compile_preamble`), preview-column projection/schema-warning assembly, sink path resolution/containment. |
+| `src/haute/execution.py` | Stable internal facade re-exporting execution helpers (`execute_lazy_graph`, `plan_execution_strategy`, `build_dataframe_execution_cache_request`, graph/path/frame input-fingerprint helpers, `runtime_input_extra_keys`) so application code has one import boundary instead of reaching into `_execute_lazy`/`graph_utils` internals directly. |
+| `src/haute/_execute_lazy.py` | The shared execution core: `_prepare_graph`/`_prepare_graph_with_edges` (topo order + adjacency), `_build_funcs` (per-node callable construction, shared by eager and lazy), `_execute_lazy` (lazy plan + structural parquet checkpointing + dataframe-cache seeding), `_execute_eager_core`/`EagerResult` (eager materialisation with contract checks), column-contract assertion helpers, multi-frame (`dict[label, Frame]`) source routing (`_pick_source_frame`). |
+| `src/haute/projection.py` | Shared execution-strategy planner: backward column demand, strict-profile decisions, fan-in edge demands, materialisation/opaque boundaries, source-scan projection, and bounded strategy diagnostics. |
+| `src/haute/_execution_context.py` | `ExecutionContext`, `ExecutionProfile`, `ExecutionCancellationToken`, `ExecutionMetricsRecorder`, and RSS-sampling/memory-pressure-event machinery. Contexts created directly may be unbudgeted; admitted contexts carry the resolved limits. |
+| `src/haute/_execution_admission.py` | Resolves an `ExecutionBudget` per `ExecutionProfile` (fixed default / explicit env override / adaptive fraction of available RAM), performs pre-flight admission (`create_admitted_execution_context`), and tracks a process-wide in-flight reservation for "heavy" profiles. |
+| `src/haute/_node_apply.py` | Config-driven implementations of `liveSwitch` input selection, `scenarioExpander` row expansion, `optimiserApply` artifact dispatch, and `OUTPUT` response-document assembly (`assemble_output_from_config`) — the single code path both the canvas executor (via `_builders.py`) and codegen-generated `.py` files call. |
+| `src/haute/_topo.py` | `topo_sort_ids` (graphlib-backed topological sort with a custom multi-cycle reporter), `ancestors` (BFS over reversed edges). |
+| `src/haute/graph_utils.py` | Canonical re-export facade for graph models, execution helpers, topo helpers, and IO helpers used by generated pipeline code and application modules. |
+| `src/haute/_graph_utils.py` | Pure-function graph helpers decoupled from the Pydantic models: `build_parents_of`, `upstream_node_ids`, `_sanitize_func_name`, `build_instance_mapping`, `resolve_orig_source_names`, edge-id construction, sink-path normalisation. |
+| `src/haute/_worker_isolation.py` | `run_isolated_worker()` — spawn a child process for one function call with an optional `RLIMIT_AS` cap, timeout, and cooperative stop-reason polling; typed error hierarchy for every terminal state. |
+| `src/haute/chunking.py` | `ChunkPlanRequest`/`chunk_plan()` (proves a graph suffix is chunk-safe, sizes chunks), `iter_chunked_frames()`/`run_chunked_reduce()`/`collect_chunked()` (the serial runner), the per-`NodeType` `ChunkCapability` registry, and the AST-based row-local user-code whitelist. |
+| `src/haute/_ram_estimate.py` | `available_ram_bytes()`/`available_vram_bytes()` (OS-level memory probing), `estimate_safe_training_rows()` (parquet-metadata-based peak-memory estimate and downsample decision). |
 
 ## Key types and data structures
 
@@ -35,6 +36,11 @@
   `OPTIMISER_SETUP`, `EXPLORE_ANALYSIS`, `AUTO_RANGE`, `DEPLOY_LIVE`, `DEPLOY_BATCH`,
   `CHUNKED_MAP_REDUCE`. Keys every default memory budget, adaptive-policy entry, and
   environment-variable pair in `_execution_admission.py`.
+- **`ProjectionPlan`** (`src/haute/projection.py`, frozen dataclass) — immutable
+  execution-strategy result: `needed_by_node`, per-parent `edge_demands`,
+  `materialisation_boundaries`, `opaque_boundaries`, and bounded diagnostics.
+  `strategy_summary_payload()` reports projected/full-width/schema-derived/
+  materialisation-boundary choices without shipping the full column sets.
 - **`ExecutionAdmission`** (frozen dataclass) — the immutable admission decision
   (`memory_limit_bytes`, `rss_at_admission_bytes`, `rss_limit_bytes`,
   `process_rss_limit_bytes`, `headroom_bytes`, `config_key`, `budget_policy`,
@@ -124,12 +130,22 @@ optionally materialised into the shared dataframe cache
 (`materialize_lazy_frame_with_cache`), and then passed through
 `_checkpoint_decision()` — `SKIP` for sources and batch-mode `MODEL_SCORE` (which
 already checkpoints internally via its own `scan_parquet`), `PARQUET` for any node with
-more than one parent, more than one child, or that feeds a join. A `PARQUET` decision
-writes a projected (`needed_cols`-filtered) parquet file, replaces the in-memory
-`LazyFrame` with `pl.scan_parquet(tmp)`, and calls `_release_consumed_parents()` to drop
-now-unreferenced parent frames. `gc.collect()`/`_malloc_trim()` run every
+more than one parent, more than one child, or that feeds a join. When the dataframe
+cache did not already materialise the node **and** `checkpoint_dir` is non-`None`, a
+`PARQUET` decision writes a projected (`needed_cols`-filtered) parquet file, replaces
+the in-memory `LazyFrame` with `pl.scan_parquet(tmp)`, and calls
+`_release_consumed_parents()` to drop now-unreferenced parent frames. With no
+checkpoint directory, the decision has no materialisation effect. `gc.collect()`/
+`_malloc_trim()` run every
 `_GC_BATCH_INTERVAL` (3) checkpoints, not every one, since Polars/Arrow buffers are
 freed immediately on `del` and full GC only matters for cyclic Python garbage.
+
+`executor.execute_sink()` then writes the terminal lazy frame. A native `dataSink` or
+sink-capable `dataOutput` format uses a bounded Polars sink. Writer-only formats and
+database outputs use `write_polars_output()`, whose `streaming_collect()` evaluates
+with Polars' streaming engine but returns a fully materialised `DataFrame` before the
+eager writer/database API is called; bounded profiles do not permit a second broad
+`.collect()` fallback if streaming compatibility fails.
 
 **Admission (`_execution_admission.create_admitted_execution_context`).**
 `execution_budget_for_profile()` resolves an `ExecutionBudget`: checks profile-specific
@@ -138,7 +154,9 @@ profiles in `_ADAPTIVE_LOCAL_PROFILES` under the default `local_adaptive` memory
 policy — computes `usable = available_ram_bytes() - min(os_reserve, available/2)` then
 `limit = usable * basis_points / 10_000`, clamped to the profile's floor/ceiling
 (`budget_policy="adaptive_local"`), else the fixed per-profile default
-(`_DEFAULT_MEMORY_LIMIT_BYTES`). Admission then samples current RSS; refuses
+(`_DEFAULT_MEMORY_LIMIT_BYTES`). Both `fixed` and `strict_server` select the fixed
+defaults; an unknown `HAUTE_EXECUTION_MEMORY_POLICY` value raises `RuntimeError`.
+Admission then samples current RSS; refuses
 (`ExecutionAdmissionError`) if the sampler is unavailable or RSS already exceeds any
 configured process-RSS cap. For profiles in `_IN_FLIGHT_PROFILE_SET` (the "heavy"
 batch-shaped profiles), `_reserve_in_flight_budget()` adds this run's
@@ -156,14 +174,17 @@ every node from `chunk_start_node_id` to the target via `_capability_for_node()`
 chunk suffix is a single-parent chain, and sizes chunks either from an explicit
 `chunk_size` or from `target_chunk_bytes` (which requires building the real projected
 target-output schema through `execute_lazy_graph` and either costing fixed-width
-dtypes exactly or sampling up to 128 rows for variable-width columns). `
-iter_chunked_frames()` re-validates the plan still matches the currently-prepared
+dtypes exactly or sampling up to 128 rows for variable-width columns).
+`iter_chunked_frames()` re-validates the plan still matches the currently-prepared
 graph order, collects the source in `plan.source_chunk_size`-row batches via
 `bounded_collect_batches`, and for each batch runs the SAME `_build_funcs`-built node
 functions serially down the chunk suffix, projecting and checkpointing (optionally, to
 parquet) each `ChunkBatch` before yielding it. `run_chunked_reduce()` requires the
 caller's reducer to declare `bounded=True`; `collect_chunked()` requires an explicit
-`allow_unbounded=True` opt-in since it retains every chunk.
+`allow_unbounded=True` opt-in since it retains every chunk. For a non-root
+`chunk_start_node_id`, `ChunkRunnerRequest.start_frame` is mandatory; the runner
+batches that supplied frame but neither constructs nor bounds the caller-owned prefix
+represented by `pre_chunk_node_ids`.
 
 **Worker isolation (`run_isolated_worker`).** Starts a `spawn`-context child process
 running `_isolated_worker_entrypoint`, which applies an `RLIMIT_AS` cap (POSIX only,
@@ -246,6 +267,10 @@ rather than replacing it.
   (`_memory_pressure_seen`, a `set[int]` of `threshold_percent` values guarded by
   `_memory_pressure_lock`) — each of the 50/75/90% thresholds fires at most once per
   `ExecutionContext`, not once per checkpoint that happens to be above it.
+- **`_CheckpointAction.COLLECT_LAZY` is dormant.** The enum member and its docstring
+  describe an in-memory checkpoint, but `_checkpoint_decision()` currently returns
+  only `SKIP` or `PARQUET`, and `_execute_lazy()` handles only `PARQUET`. No current
+  execution path performs an in-memory `.collect().lazy()` checkpoint.
 - **RAM estimation returns `None` rather than guessing** when parquet metadata is
   unavailable (Databricks sources, JSON-shape `apiInput` caches which are one parquet
   per emit-true table rather than a single summarisable file) — callers must treat
@@ -261,19 +286,31 @@ rather than replacing it.
   preview-column projection references columns not present on the target frame.
 - `CycleError` (`_topo.py`, extends `HauteError`) — raised from `topo_sort_ids` on a
   cyclic graph, listing every participating node.
-- `ContractMismatchError`/`SchemaMismatchError` (`haute.errors`, both extend
-  `HauteError`) — raised by the boundary-check helpers in `_execute_lazy.py`
-  (missing input/output columns, join-key dtype mismatch, checkpoint/eager projection
-  referencing a column absent from the actual output schema) and by chunking's
-  `_project_frame`. These are never swallowed by `swallow_errors=True`.
+- `ContractMismatchError` (`haute.errors`, extends `HauteError`) — raised by
+  missing input/output columns and checkpoint/eager projection mismatches in
+  `_execute_lazy.py`, and by chunking's `_project_frame`; it is re-raised even when
+  eager preview uses `swallow_errors=True`.
+- `SchemaMismatchError` (`haute.errors`, extends `HauteError`) — raised for a
+  simple inferred join whose parent key dtypes differ. It propagates on lazy and
+  fail-fast eager calls. In ordinary eager preview (`swallow_errors=True`) it is
+  currently caught by the generic per-node failure handler and returned as the
+  node's error status.
+
+  > NOTE: The eager-preview treatment of `SchemaMismatchError` is an existing
+  > asymmetry: unlike `ContractMismatchError`, it is not in `_execute_eager_core`'s
+  > explicit re-raise clause. Specs and callers must not treat it as a run-level
+  > exception until the implementation changes.
 - `ExecutionCancelledError`/`ExecutionMemoryLimitExceededError`
   (`_execution_context.py`) — raised from `ExecutionContext.checkpoint()`/`stage()`;
   the latter carries `to_payload()` for route-layer serialisation and distinguishes
   `reason="rss_exceeds_memory_limit"` from `"process_rss_limit_exceeded"`.
 - `ExecutionAdmissionError` (`_execution_admission.py`, extends `MemoryError`) —
-  raised before a bounded operation starts (RSS already over cap, or in-flight budget
-  exhausted); carries `to_payload()` with the same shape family as the mid-run
-  variant.
+  raised before a bounded operation starts (the RSS sampler returned `None`, RSS is
+  already over a configured process cap, or the in-flight budget is exhausted);
+  carries `to_payload()` with the same shape family as the mid-run variant.
+- `RuntimeError` from admission configuration — raised before context creation for
+  an unknown `HAUTE_EXECUTION_MEMORY_POLICY`, a malformed/non-positive explicit
+  memory or RSS limit, an invalid OS-reserve override, or a non-positive RAM sample.
 - `ChunkPlanUnsupportedError` (`haute.errors`, extends `BoundedMemoryUnsupportedError`
   → `ExecutionError` → `HauteError`) — raised at `chunk_plan()` time for any
   unsupported node type, ambiguous chunk-suffix shape, or un-whitelisted user code;
@@ -294,7 +331,7 @@ rather than replacing it.
   first), `IsolatedWorkerCleanupError` (one or more cleanup callbacks raised; attached
   via `add_note()` to a primary error rather than replacing it, or raised alone if
   the worker itself succeeded).
-- Generic `ValueError`/`TypeError`/`RuntimeError` are used for internal-invariant
+- Other generic `ValueError`/`TypeError`/`RuntimeError` are used for internal-invariant
   violations that should never occur given the calling contract (e.g. a node
   returning a non-Polars-frame type, a dataframe-cache key that doesn't match the
   current graph/policy, a missing sink output path) — these are not part of the
@@ -304,7 +341,7 @@ rather than replacing it.
 
 Tests live in `tests/` (flat layout, no package-per-component subdirectories).
 
-- **`test_execute_lazy.py`** (70 tests) — the core suite: `_prune_live_switch_edges`,
+- **`test_execute_lazy.py`** — the core suite: `_prune_live_switch_edges`,
   `_prepare_graph`, `_execute_lazy`, `_build_funcs`, `_execute_eager_core` (swallow
   vs. raise, timings, memory accounting), `_apply_selected_columns`, `EagerResult`
   shape.
@@ -316,7 +353,7 @@ Tests live in `tests/` (flat layout, no package-per-component subdirectories).
 - **`test_execute_lazy_paths.py`**, **`test_checkpoint_projection.py`**,
   **`test_projection_planner.py`** — backward column-projection analysis and its
   effect on checkpoint/eager collection width.
-- **`test_executor.py`** (156 tests) — `execute_graph`/`execute_sink`/preamble
+- **`test_executor.py`** — `execute_graph`/`execute_sink`/preamble
   compilation end to end.
 - **`test_executor_critical_edges.py`**, **`test_executor_edge_cases.py`**,
   **`test_executor_mut_witnesses.py`** — focused/mutation-witness pins on the pure
@@ -331,7 +368,7 @@ Tests live in `tests/` (flat layout, no package-per-component subdirectories).
   shape.
 - **`test_trace_matches_preview.py`** — cross-checks that the preview cache and
   tracing's cache reconstruction agree on fingerprint/cache-key shape.
-- **`test_execution_context.py`** (75 tests) — `ExecutionContext` stage/checkpoint
+- **`test_execution_context.py`** — `ExecutionContext` stage/checkpoint
   behaviour, `ExecutionMetricsRecorder`, memory-pressure thresholding, and (via
   imports) `_execution_admission` budget resolution.
 - **`test_container.py`**, **`test_deploy_internals.py`**, **`test_explore_routes.py`**,
@@ -354,10 +391,10 @@ Tests live in `tests/` (flat layout, no package-per-component subdirectories).
   propagation used by the chunk runner and bounded-collect helpers.
 - **`test_topo.py`**, **`test_topo_contracts.py`** — topological sort ordering, cycle
   detection/reporting, ancestor traversal.
-- **`test_graph_utils.py`** (49 tests) — `_prepare_graph`, `_execute_lazy` re-export
+- **`test_graph_utils.py`** — `_prepare_graph`, `_execute_lazy` re-export
   surface, `_sanitize_func_name`, `_resolve_sink_path`, `ancestors`/`topo_sort_ids`
   via the `graph_utils` facade.
-- **`test_ram_estimate.py`** (129 tests) — RAM/VRAM probing across platforms (mocked),
+- **`test_ram_estimate.py`** — RAM/VRAM probing across platforms (mocked),
   source-metadata resolution (including edge-join key coalescing), and the
   downsample decision.
 - **`test_worker_isolation.py`** — picklable-result round-trip, remote-exception
@@ -373,9 +410,9 @@ Tests live in `tests/` (flat layout, no package-per-component subdirectories).
 - **`test_polars_execution_strategy_slice0.py`** — projection/streaming strategy
   selection (`plan_execution_strategy`/`plan_prepared_execution_strategy`).
 
-**Known coverage note:** `_execution_admission.py` has no file of its own; its
-behaviour is pinned indirectly through `test_execution_context.py` (direct imports)
-and the route/service test files that construct real admitted contexts. There is no
-single test asserting every `ExecutionProfile` has both a `_DEFAULT_MEMORY_LIMIT_BYTES`
-entry and (where adaptive) an `_ADAPTIVE_MEMORY_POLICY` entry beyond what a
-`KeyError` at first use would catch.
+**Known coverage note:** `_execution_admission.py` has no dedicated test file; its
+behaviour is tested directly from `test_execution_context.py` and through route/service
+tests that construct real admitted contexts. The direct suite asserts complete
+coverage of `_ADAPTIVE_MEMORY_POLICY`, `_PROFILE_MEMORY_ENV`, and
+`_PROFILE_PROCESS_RSS_ENV` for every `ExecutionProfile`, and exercises adaptive,
+fixed, strict-server, explicit-override, process-RSS, and in-flight-reservation paths.

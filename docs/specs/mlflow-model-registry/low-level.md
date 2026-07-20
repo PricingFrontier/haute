@@ -10,6 +10,7 @@
 | `src/haute/_model_scorer.py` | MODEL_SCORE node logic: the `ModelScorer` class, the unified `score_frame` dispatch (eager vs batched), the feature-validation cache, offset-column resolution, write-projection application, and `score_from_config` (codegen's delegation target). |
 | `src/haute/_model_explainability.py` | Per-prediction SHAP (CatBoost) and native GLM contribution (RustyStats) explanations for trace enrichment, plus `explain_model_score_from_config`, the config-driven entry point trace enrichment calls. |
 | `src/haute/routes/mlflow.py` | FastAPI router (`/api/mlflow/*`) exposing read-only experiment/run/model/version discovery for the MODEL_SCORE node's config UI. |
+| `src/haute/schemas.py` | Shared Pydantic contracts returned by the MLflow discovery routes (`MlflowExperimentSummary`, run/model/version summaries). |
 
 ## Key types and data structures
 
@@ -119,8 +120,8 @@
    concrete `run_id`/`version`). If `artifact_path` was empty,
    auto-discover it via `_find_model_artifact`. Derive `flavor` from the
    resolved artifact path. For a native flavor, resolve the local artifact
-   file up front (`_resolve_artifact_local`, itself a stat-gated memo for an
-   already-cached artifact — only a genuinely new artifact downloads here)
+   file up front (`_resolve_artifact_local`, which treats an already-present
+   disk-cache file as authoritative and downloads only when that path is absent)
    and compute its fingerprint; for pyfunc, the fingerprint is `""`. Build
    the real cache key with that fingerprint.
 4. Check the memory cache again under the resolved key; on a hit, return.
@@ -146,16 +147,17 @@
    the existence check itself).
 4. Otherwise acquire the per-artifact lock, re-check existence (another
    thread may have just finished downloading), and if still missing:
-   download to a fresh `tempfile.mkstemp`-rooted temp directory via
+   download to a fresh `tempfile.mkdtemp` directory via
    `mlflow.artifacts.download_artifacts`, verify the downloaded file
    exists (falling back to a name-based lookup if `download_artifacts`
    nested it), then `shutil.move` it into the cache path. Any exception
    during download/move deletes a partially-written cache file before
    re-raising; the temp directory is always cleaned up in a `finally`.
-5. After a successful download, run `_evict_disk_cache` (oldest-mtime
-   run directories beyond `_DISK_CACHE_MAX_DIRS` = 50 are removed,
-   skipping any run currently marked active by *any* in-flight caller,
-   not just this one).
+5. After a successful download, run `_evict_disk_cache`. It excludes run
+   directories currently marked active by *any* in-flight caller, then removes
+   the oldest inactive directories beyond `_DISK_CACHE_MAX_DIRS` = 50. Active
+   directories can therefore make the physical total temporarily exceed 50;
+   the next successful download triggers another eviction pass.
 
 ### Bounded retry — `_load_with_bounded_retry` (`_mlflow_io.py`)
 
@@ -380,7 +382,7 @@ plain `RuntimeError`, not a `HauteError` subclass.
 
 ## Testing
 
-Tests live across eleven files. Strategy is unit-level with `mlflow`,
+Tests live across twelve primary files. Strategy is unit-level with `mlflow`,
 `catboost`, and `rustystats` either mocked or exercised against small
 real artifacts fixture-built in `tmp_path`; there is no test that talks
 to a live MLflow tracking server.
@@ -429,10 +431,10 @@ to a live MLflow tracking server.
   built from the new bytes rather than the stale in-memory entry;
   `TestKeyContract` covers the key-shape invariants directly (`run_id`
   fixed at slot 1 regardless of `version`'s presence, pyfunc keyed with an
-  empty-string fingerprint). This is a regression suite for a real bug: a
-  re-logged run or a `version="latest"` retrain-in-place used to keep
-  serving the previously loaded model on a long-lived server until
-  `clear_model_cache` was called by hand.
+  empty-string fingerprint). These tests simulate re-log/retrain replacement
+  by rewriting the already-resolved local artifact path; they pin local-byte
+  invalidation of the in-memory cache, not detection of an unseen remote
+  overwrite behind an unchanged disk-cache file.
 - **`tests/test_mlflow_io_real_pyfunc.py`** — pyfunc wrapping and predict-
   frame dtype fidelity against a real (non-mocked) MLflow pyfunc model,
   including the named-column signature contract and declared-dtype

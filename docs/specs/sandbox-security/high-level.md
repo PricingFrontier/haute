@@ -2,9 +2,10 @@
 
 ## Purpose
 
-Haute pipelines run user-authored Python (polars transform nodes, preamble/utility
-code, training scripts) inside the same process as the local editor server, and the
-editor loads user-supplied model/data artifacts (pickle, joblib) from disk. Both are
+Haute pipelines run user-authored Python (polars transform nodes and preamble/utility
+code) inside the local editor process; the CLI validates then imports training scripts
+inside the separate CLI process. The editor also loads user-supplied model/data
+artifacts (pickle, joblib) from disk. These are
 attacker-shaped inputs even in a single-user local tool: a pipeline file can be
 copied between machines, shared, or opened from an untrusted source, and a model
 artifact can be swapped out from under the project directory. This component is the
@@ -13,7 +14,8 @@ from becoming "run whatever the file system contains" or "run whatever a hostile
 browser tab can smuggle through localhost."
 
 It covers three independent threat surfaces: (1) arbitrary code execution via
-`exec()` of user pipeline/training code, (2) arbitrary code execution via
+`exec()` of pipeline node/preamble code and normal module import of a CLI training
+script, (2) arbitrary code execution via
 deserializing untrusted pickle/joblib model artifacts, and (3) a random web page
 driving the local dev server through a user's browser (cross-site request/WebSocket
 hijack against `localhost`). A fourth, narrower concern — keeping generated
@@ -24,9 +26,9 @@ the others, not because it shares a threat model with the first three.
 ## Scope
 
 In scope:
-- AST-level static validation of user pipeline/training code before `exec()`
-  (`validate_user_code`), and the restricted builtins namespace `exec()` runs
-  against (`safe_globals`).
+- AST-level static validation of pipeline/preamble code before `exec()` and of CLI
+  training scripts before module import (`validate_user_code`), plus the restricted
+  builtins namespace used only by the `exec()` paths (`safe_globals`).
 - The actual `exec()` call sites for pipeline node code and its namespace assembly
   (`_exec_user_code`).
 - Restricted unpickling for both raw pickle files and joblib archives
@@ -35,10 +37,10 @@ In scope:
 - Local-session protection for the FastAPI/WebSocket server (`_local_security.py`):
   the per-process session token, trusted-Origin/trusted-Host checks, and the
   middleware/dependency wiring that enforces them.
-- Lazy, fail-soft environment-variable parsing for numeric tuning knobs (`_env.py`)
-  — included here because every timeout/limit that bounds sandboxed execution reads
-  through it, and a knob that silently reverts to a wrong frozen value at import
-  time is itself a security-relevant defect class (a limit that stops applying).
+- Lazy, fail-soft environment-variable parsing for the request timeouts and selected
+  chunk/history limits migrated to `_env.py`. Other components retain separately
+  documented parsers (for example execution admission and cache byte budgets); the
+  helper is not a universal environment-policy layer.
 - The shared `.gitignore` guard-entry list and the idempotent writer
   (`_gitignore_guard.py`) that keeps two independent call sites from drifting.
 
@@ -88,14 +90,15 @@ Out of scope (owned elsewhere, linked where relevant):
   sandbox (e.g. `x.__init__([4, 5])` on a list). Lambdas and nested lambdas are not
   specially restricted — their *bodies* are still walked and blocked the same as
   any other code, but the AST validator has no `visit_Lambda` gate of its own.
-- **`allow_imports=True` is an explicit, narrow escape hatch**, used only for
-  preamble/utility code and CLI training scripts that legitimately need to import
-  project utility modules. It disables the AST import check and restores the real
-  `__import__` in the exec namespace — meaning preamble content under this flag has
-  full import privileges (`import os`, `import subprocess`, …). This is documented
-  as an accepted trade-off, not a gap: preamble/training-script content is
-  first-party project code the user already controls, not per-node pipeline
-  expression text.
+- **`allow_imports=True` is an explicit, narrow escape hatch**, used for preamble
+  source and CLI training-script validation. It disables the AST import check.
+  Preamble execution also calls `safe_globals(allow_imports=True)`, restoring the
+  real `__import__` in that restricted exec namespace; the training command instead
+  imports the validated file as an ordinary Python module, so it runs with normal
+  module builtins. Modules imported by either path (including `utility` modules) are
+  not recursively AST-validated and execute in their normal module namespaces.
+  These paths therefore have full import privileges (`os`, `subprocess`, …); they
+  are treated as first-party project code, unlike per-node transform text.
 - **Validation results are cached per `(code, allow_imports)` pair** in a bounded
   LRU (`_validation_cache`, capped at 1024 entries) so a long-lived server
   previewing/tracing the same node repeatedly does not re-parse identical code.
@@ -110,21 +113,30 @@ Out of scope (owned elsewhere, linked where relevant):
   `safe_unpickle`/`safe_joblib_load` must first resolve inside the project root
   (`validate_project_path`) — a case-insensitive-filesystem-safe containment check,
   not a raw string-prefix check.
-- **Local HTTP/WebSocket access to the dev server requires three things to align**:
-  a trusted `Host` header (loopback names/addresses or an explicit allowlist via
-  `HAUTE_TRUSTED_HOSTS`), a trusted `Origin` (absent origin, or loopback, or the
-  same allowlist), and a per-process bearer session token compared with constant-time
-  `hmac.compare_digest`. All three checks fail closed: a missing or malformed value
-  is rejected, never treated as implicitly trusted. `OPTIONS` preflight requests
-  skip only the token check, not the Host/Origin checks. The whole scheme can be
-  disabled via `HAUTE_DISABLE_LOCAL_SESSION_AUTH` for advanced/CI use.
-- **Numeric tuning knobs (timeouts, chunk sizes, history limits) are always read
-  live from `os.environ` at call time**, never frozen at import, and a malformed
-  value logs a warning and degrades to a documented default rather than raising —
-  a bad knob must not crash server startup or the request path.
+- **Local API/WebSocket access to the dev server is gated by Host, Origin, and
+  token checks.** Host middleware applies to HTTP and WebSocket scopes. Its
+  allowlist is captured when `server.py` is imported: loopback names/addresses are
+  the defaults when `HAUTE_TRUSTED_HOSTS` is empty; a non-empty setting replaces
+  those defaults and may include supported `*.suffix` patterns. `/api/*` requests
+  and `/ws/sync` additionally receive Origin/session-token checks; static/non-API
+  HTTP paths receive only the Host check. `Origin`
+  may be absent (same-origin navigation and non-browser clients commonly omit it),
+  loopback, or an exact configured trusted host; origin checking does not apply the
+  Host middleware's wildcard matching. Authenticated requests also need a per-process
+  bearer token compared with constant-time `hmac.compare_digest`. Malformed Host/
+  Origin values and missing/invalid tokens fail closed. `OPTIONS` preflight requests
+  skip only the token check, not Host/Origin checks. The session-token/origin scheme
+  can be disabled via `HAUTE_DISABLE_LOCAL_SESSION_AUTH`; Host middleware remains a
+  separate gate.
+- **Knobs routed through `_env.py` are read live from `os.environ` at call time.**
+  A malformed value logs a warning and degrades to the supplied default (`None` for
+  `optional_int_env`). This contract covers the named request timeout/chunk/history
+  accessor call sites, not every numeric environment variable in Haute; admission
+  limits and cache-size constants deliberately have their own semantics.
 - **`.gitignore` guard entries are idempotent and additive**: re-running the guard
-  writer never duplicates an entry, never removes user-authored lines, and treats
-  non-UTF-8 existing content as replaceable bytes rather than raising.
+  writer never duplicates an entry and never removes user-authored bytes. Existing
+  content is decoded with replacement only for membership checks; missing entries are
+  appended as UTF-8, so non-UTF-8 bytes already present are preserved.
 
 ## Design rationale
 
@@ -187,7 +199,7 @@ Out of scope (owned elsewhere, linked where relevant):
   `routes/pipeline.py` for `_get_project_root()` when resolving user-supplied
   output paths against the project root.
 - Depended on by the CLI (`cli/_train.py`) for `validate_user_code` before
-  executing a training script as a module, and by `cli/_serve.py` for
+  importing a training script with ordinary module globals, and by `cli/_serve.py` for
   `ensure_local_session_token_env`/`TRUSTED_HOSTS_ENV` when starting the dev
   server and its child processes.
 - Depended on by [server-api](../server-api/high-level.md): `server.py` installs
@@ -196,7 +208,7 @@ Out of scope (owned elsewhere, linked where relevant):
   before `accept()`-ing a connection.
 - Depended on by `haute init` (project scaffolding, via `cli/_init_cmd.py`) and by
   `_git.py`'s unborn-repo commit seed for `ensure_gitignore_guards`.
-- Consumes numeric knobs via `_env.py` on behalf of callers across
+- Supplies numeric parsing helpers to callers across
   `routes/pipeline.py`, `routes/json_cache.py`, `routes/output_assemble.py`,
   `routes/databricks.py`, `routes/_optimiser_service.py`, and
   `routes/_train_service.py` — this component owns the parsing helpers, not the
@@ -231,8 +243,8 @@ Out of scope (owned elsewhere, linked where relevant):
   `LocalTrustedHostMiddleware`, and WebSocket rejections close with code `1008`
   and a reason string before `accept()` is ever called — an unauthenticated peer
   never reaches the socket's message loop.
-- **Malformed environment values degrade to a default with a logged warning**
-  (`_env.py`'s `float_env`/`int_env`/`optional_int_env`) rather than raising — this
+- **Malformed values passed through `_env.py` degrade to a default with a logged
+  warning** (`float_env`/`int_env`/`optional_int_env`) rather than raising — this
   is the one deliberate exception to "fail loudly" in this component, justified
   because a bad *tuning* value (not a security gate) should not take down server
   startup or an in-flight request; the warning still makes the drift observable in

@@ -7,11 +7,7 @@
 | `src/haute/routes/explore.py` | FastAPI router (`/api/explore`): thin `run`/`status`/`cancel` endpoints. Wires `flatten_graph`, `_ensure_source_file`, and `_validate_runtime_input_paths` before delegating to a module-level `ExploreService` singleton. |
 | `src/haute/routes/_explore_service.py` | Core service: cache-key derivation (`ExploreCacheSpec`), background job execution (`_run_job`, `_materialise_and_summarise`), and all statistics/summary computation (`_build_frame_stats`, `_build_column_stats`, `_build_data_quality_summary`, `_build_categorical_summary`, `_build_overview_summary`). |
 | `src/haute/_explore_overview.py` | Standalone validator for the Explore node's `overview` config dict (`validate_explore_overview`, `EXPLORE_OVERVIEW_TOGGLE_KEYS`). Imported by codegen (`_codegen_builders.py`) and the parser (`_config_builder.py`), not by the service or route module. |
-
-Related schemas live in `src/haute/schemas.py` (search `# /api/explore`): `ExploreColumnKind`,
-`ExploreColumnStat`, `ExploreDistinctValueCount`, `ExploreCategoricalColumnProfile`,
-`ExploreDataQualityIssue`, `ExploreDataQualitySummary`, `ExploreOverviewSummary`,
-`ExploreCacheReport`, `ExploreRunRequest`, `ExploreRunResponse`, `ExploreStatusResponse`.
+| `src/haute/schemas.py` | Shared Explore API/report contracts: column kinds/stats, distinct/categorical profiles, data-quality and overview summaries, cache report, run request/response, and status response. |
 
 ## Key types and data structures
 
@@ -326,7 +322,8 @@ For each `ExploreColumnStat` whose dtype (looked up in `schema`) is not numeric,
 - `JobStore.require_job` (used by `status`/`cancel`) raises `HTTPException(404, "Job '{job_id}'
   not found")` directly on an unknown job id (verified by
   `test_explore_status_unknown_job_is_404`); this behaviour is inherited from the shared
-  [server-api](../server-api/high-level.md) `JobStore`, not implemented in this component.
+  [background-jobs](../background-jobs/high-level.md) `JobStore`, not implemented in this
+  component.
 
 ## Testing
 

@@ -1,6 +1,6 @@
 # Docker
 
-This guide covers deploying a Haute pipeline as a **Docker container** - a self-contained package that can run anywhere. When you merge to main, CI builds the container image and pushes it to a registry. Your IT team (or a cloud platform like AWS ECS or Azure Container Apps) runs it from there.
+This guide covers packaging a Haute pipeline as a **Docker container** - a self-contained image that can run anywhere. The `container` target builds the image and pushes it when a registry is configured; it deliberately does **not** provision a host, create an endpoint, or start the container. Your IT team (or a separate platform workflow) runs it from there.
 
 !!! info "What is Docker?"
     Docker is a tool that packages your application and everything it needs (Python, libraries, model files) into a single **container** - like a shipping container for software. Anyone with Docker installed can run it, regardless of what's on their machine. You don't need to understand Docker to use this target - Haute and CI handle everything.
@@ -21,10 +21,10 @@ This guide covers deploying a Haute pipeline as a **Docker container** - a self-
 ## How it works
 
 1. **You edit your pipeline** locally and preview with `haute serve`
-2. **You merge to main** - CI automatically builds a Docker image containing your pipeline and pushes it to a container registry
+2. **You merge to main** - CI automatically builds a Docker image containing your pipeline and pushes it to a container registry when `registry` is configured
 3. **Your IT team** (or an automated platform) runs the image as a service, exposing the API
 
-You never touch Docker. CI handles the build and push; IT handles the infrastructure.
+The generated CI workflow can run the build and push; IT handles the infrastructure and must provide the endpoint before smoke or impact commands can use it.
 
 ---
 
@@ -107,18 +107,18 @@ You don't run any deploy command. When you merge to main, CI automatically:
 2. Generates an API app that wraps your pipeline (with two web addresses: `/quote` for scoring and `/health` for status checks)
 3. Generates a Dockerfile (a recipe that tells Docker how to build the container)
 4. Builds the Docker image
-5. Pushes the image to your registry
+5. Pushes the image to your registry when `registry` is configured (otherwise the image remains only on that CI runner)
 
-Once the image is in the registry, your IT team (or an automated platform) can pull and run it.
+Once the image is in the registry, your IT team (or a separate platform workflow) can pull and run it. A successful `haute deploy` for this target means image packaging completed; it is not evidence that a live endpoint exists.
 
 !!! success "What does success look like?"
-    After a successful merge to main, you should see:
+    After the `haute deploy` job succeeds, you should see:
 
-    1. **In your CI provider** - all pipeline steps show green ✓ (validation, build, push)
-    2. **In the CI logs** - a message like `Pushed motor-pricing:a1b2c3d to ghcr.io/yourorg/motor-pricing`
-    3. **From your IT team** - they'll confirm the container is running and give you the endpoint URL to test
+    1. **In the CI logs** - a successful image build, plus `Pushed ...` when `registry` is configured
+    2. **From your IT team** - confirmation that the image is running and the endpoint URL to test
+    3. **In the CI workflow** - smoke and impact jobs can pass only after your hosting process has created the configured staging and production endpoints
 
-    If CI is green and your IT team says the service is up, your pipeline is live.
+    The deploy job's success confirms only validation and image packaging/push. It does not make the later smoke and impact jobs green by itself, and the pipeline is live only after your hosting process has started the image and its health checks pass.
 
 ---
 

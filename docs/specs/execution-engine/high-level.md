@@ -13,10 +13,10 @@ run before it exhausts the host's memory rather than letting the OS kill the pro
 
 The execution engine is that layer. It owns graph traversal (topological ordering,
 ancestor/cycle detection), the two execution strategies (eager-with-caching for
-interactive preview, lazy-with-checkpointing for sinks/scoring/training), the shared
+interactive preview, lazy-with-parquet-checkpointing for sinks/scoring/training), the shared
 per-node building block both strategies call through (`_build_funcs`), column-contract
-enforcement at node boundaries, memory-budgeted "execution contexts" that every long
-running operation runs inside, a bounded chunked map-reduce mode for datasets too
+enforcement at node boundaries, execution contexts that route/service call sites admit
+with profile-specific memory budgets, a bounded chunked map-reduce mode for datasets too
 large to hold as a single Polars plan, and a small process-isolation primitive for
 running heavy work in a child process the parent can kill on timeout or memory limit.
 
@@ -32,12 +32,14 @@ running heavy work in a child process the parent can kill on timeout or memory l
 - Column-contract enforcement at node input/output boundaries (via `_contracts.py`'s
   `Contract`, consumed here) and the column-projection planning that lets checkpoints
   and lazy scans avoid materialising unused columns.
-- Adaptive checkpointing of the lazy plan (in-RAM `.collect().lazy()` or on-disk
-  parquet) at fan-in/fan-out/join-feeder boundaries to bound Polars plan duplication.
-- `ExecutionContext`/`ExecutionProfile`: the per-run cancellation token, memory budget,
-  stage-timing/RSS-sampling instrumentation, and admission control shared by every
-  long-running operation (preview, sink, training prep, optimiser setup, deploy,
-  chunked map-reduce).
+- Structural parquet checkpointing of the lazy plan at fan-in/fan-out/join-feeder
+  boundaries when the caller supplies a checkpoint directory (the normal sink path
+  does) to bound Polars plan duplication.
+- `ExecutionContext`/`ExecutionProfile`: the per-run cancellation token, optional
+  memory budget, stage-timing/RSS-sampling instrumentation, and admission control used
+  by route/service long-running operations (preview, sink, training prep, optimiser
+  setup, deploy, chunked map-reduce). Low-level callers may omit a context or construct
+  one without admission limits.
 - Bounded chunked execution (`chunking.py`): proving a graph's suffix is safe to run
   chunk-by-chunk (an AST whitelist for user Polars code, per-`NodeType` capability
   declarations), sizing chunks, and streaming chunk batches through the same node
@@ -84,34 +86,44 @@ running heavy work in a child process the parent can kill on timeout or memory l
   materialised node outputs from an in-process cache; calls that need more of the
   graph than is cached extend the cache rather than starting over. Node failures are
   captured per-node (`status="error"`) rather than aborting the whole preview, except
-  for column-contract violations, cancellation, and memory-limit exhaustion, which are
-  always raised.
+  for `ContractMismatchError`, cancellation, and memory-limit exhaustion, which are
+  always raised. A join-key dtype `SchemaMismatchError` is currently captured as a
+  node error on this swallow-errors path (but propagates from lazy/fail-fast execution).
 - **Sink/batch execution** (`executor.execute_sink`, `execution.execute_lazy_graph`)
-  builds one Polars lazy plan for the whole graph (or up to a target node), threads it
-  through Polars' own streaming engine, and never materialises the full dataset in
-  process memory at once — sinks fail loudly if Polars cannot execute the plan in
-  streaming mode rather than silently broadening to an eager collect.
+  builds one Polars lazy plan for the whole graph (or up to a target node). Native
+  sink-capable file formats use bounded Polars sinks and fail loudly if the plan cannot
+  be sunk in streaming mode. A `dataOutput` format with only an eager writer, and
+  database output, instead uses `streaming_collect` and therefore materialises the
+  result DataFrame before writing; it still refuses Polars' non-streaming broad-collect
+  fallback for bounded profiles.
 - **Chunked map-reduce execution** (`chunking.chunk_plan` / `iter_chunked_frames`)
   proves, ahead of running anything, that a graph's tail from a chosen `chunk_start`
   node to the target is chunk-safe — a single-parent chain of node types whose
   transforms are provably row-local — and then streams bounded batches through it,
   never holding more than one chunk's worth of intermediate rows. Any node or user-code
   construct outside the proven-safe set fails chunk *planning*, not execution, so
-  callers can fall back to the always-correct full executor.
-- Every long-running operation runs inside an `ExecutionContext` bound to an
-  `ExecutionProfile` (preview, lazy sink, training prep, optimiser setup, deploy live,
-  deploy batch, chunked map-reduce, ...). The context enforces a resident-memory
-  budget resolved from that profile (fixed default, environment override, or an
-  adaptive fraction of currently-available system RAM), samples RSS at stage
-  boundaries, and raises before the process gets anywhere near the OS killing it.
+  callers can fall back to the always-correct full executor. The shipped runner is
+  deliberately serial (`max_in_flight_chunks=1`); it does not execute chunks in
+  parallel. A non-root `chunk_start_node_id` requires the caller to supply a
+  `start_frame`; the runner bounds the suffix from that frame onward and does not
+  claim that producing or retaining the caller-owned start frame was bounded.
+- Route/service long-running operations create an admitted `ExecutionContext` bound
+  to an `ExecutionProfile` (preview, lazy sink, training prep, optimiser setup, deploy
+  live/batch, chunked map-reduce, ...). An admitted context enforces a resident-memory
+  growth budget resolved from that profile (fixed default, environment override, or
+  an adaptive fraction of currently-available system RAM), samples RSS at stage
+  boundaries, and raises after a sampled boundary crosses the limit. Low-level APIs
+  also accept `None` or a directly-constructed context; those direct/test/library
+  calls are not memory-admitted unless the caller supplies limits.
 - A cancellation token threaded through the same context lets a caller (e.g. a
   background-job supervisor) stop a run cooperatively between stages; the engine
   checks it at every checkpoint rather than polling continuously.
 - Column contracts are enforced at both input and output boundaries of every node
   whose builder declares a concrete (non-opaque) contract, on both the eager and lazy
-  paths, so a mismatch (missing column, wrong dtype on a join key) surfaces as a typed
-  `ContractMismatchError`/`SchemaMismatchError` immediately at the offending node
-  rather than as an opaque Polars error three nodes later.
+  paths, so a mismatch (missing column, wrong dtype on a join key) is detected at the
+  offending node rather than as an opaque Polars error three nodes later. Missing
+  columns use `ContractMismatchError`; join-key dtype disagreement uses
+  `SchemaMismatchError`, with the eager-preview reporting asymmetry noted above.
 
 ## Design rationale
 
@@ -127,14 +139,21 @@ running heavy work in a child process the parent can kill on timeout or memory l
   many small edits — caching materialised DataFrames keyed by a graph fingerprint
   wins. Batch/deploy/training need to process rows that may not fit in memory at all —
   Polars' lazy engine, with the executor breaking join-chain plan duplication via
-  periodic parquet/`.collect().lazy()` checkpoints, wins there instead. Running one
+  periodic parquet checkpoints, wins there instead. Running one
   strategy for both would either make preview too slow (rebuild the whole plan per
   click) or make batch runs memory-unsafe (materialise everything eagerly).
-- **Adaptive checkpointing only at structural fan-in/fan-out/join-feeder points.**
+- **Parquet checkpointing only at structural fan-in/fan-out/join-feeder points.**
   Polars duplicates the upstream plan for every downstream branch of a lazy frame
   (a known upstream limitation — pola-rs/polars#24206); checkpointing *every* node
   would erase the benefit of staying lazy at all, so the engine only checkpoints where
-  a node has more than one parent, more than one child, or feeds a join.
+  a node has more than one parent, more than one child, or feeds a join. The
+  decision is acted on only when `checkpoint_dir` is non-`None`; direct lazy callers
+  may intentionally omit checkpointing.
+
+  > NOTE: `_CheckpointAction.COLLECT_LAZY` is defined but `_checkpoint_decision()`
+  > never returns it and the executor has no handler for it. The current strategy is
+  > therefore `SKIP` or `PARQUET` only; in-memory `.collect().lazy()` checkpointing is
+  > not implemented behaviour.
 - **Profile-scoped memory budgets, not one global limit.** A preview click and a
   10M-row training run have wildly different acceptable memory footprints and
   latency expectations. `ExecutionProfile` lets each call site (preview route,
@@ -191,21 +210,29 @@ running heavy work in a child process the parent can kill on timeout or memory l
 - **Per-node failures during preview are swallowed and reported, not raised** —
   `execute_graph` returns a `NodeResult(status="error", error=...)` for the failing
   node (and every downstream node that depended on it) so one bad node doesn't blank
-  the whole canvas. Column-contract violations, cancellation, and memory-limit
-  exhaustion are the deliberate exceptions: these always propagate as exceptions even
-  in swallow mode, because they are API-level correctness/resource signals, not
-  user-code bugs a per-node error card should soften.
+  the whole canvas. `ContractMismatchError`, cancellation, and memory-limit exhaustion
+  are the deliberate exceptions: these propagate even in swallow mode because they
+  are API-level correctness/resource signals. A join-key dtype `SchemaMismatchError`
+  does not share that exception clause today and is returned as a node error.
 - **Lazy (sink/batch/deploy) execution never swallows node failures** — any exception
   during plan construction or the final streaming collect propagates to the caller.
-- **Contract mismatches raise `ContractMismatchError`/`SchemaMismatchError`**
-  immediately at the node whose input or output doesn't match its declared contract,
-  carrying the missing/extra columns and the node id so the failure is actionable
-  without a debugger.
+- **Contract mismatches are typed at the offending node.** Missing/extra columns raise
+  `ContractMismatchError`, carrying the column diff and node id. A simple inferred
+  join whose parent key dtypes differ raises `SchemaMismatchError`; it propagates on
+  lazy/fail-fast execution but is captured into a `NodeResult(status="error")` by
+  ordinary eager preview.
 - **Memory-budget exhaustion raises `ExecutionMemoryLimitExceededError`** (a
   `MemoryError` subclass) at the next checkpoint after RSS crosses the resolved
   budget; **admission is refused up front** with `ExecutionAdmissionError` if a
-  process is already over its RSS cap or a heavy profile's process-wide in-flight
-  reservation is exhausted before the run even starts.
+  current-RSS sample is unavailable, the process is already over its RSS cap, or a
+  heavy profile's process-wide in-flight reservation is exhausted before the run
+  starts. These guarantees apply only
+  when the caller uses an admitted/limited context; direct unbounded contexts have no
+  RSS limit to exceed.
+- **Invalid admission configuration raises `RuntimeError` before admission.** An
+  unknown `HAUTE_EXECUTION_MEMORY_POLICY`, malformed/non-positive memory/RSS limit,
+  or invalid reserve setting is configuration failure, not an
+  `ExecutionAdmissionError`; no context is created.
 - **Cancellation raises `ExecutionCancelledError`** at the next checkpoint once a
   context's cancellation token has been set; the engine does not poll independently,
   so cancellation latency is bounded by the distance between checkpoints, not
@@ -221,8 +248,9 @@ running heavy work in a child process the parent can kill on timeout or memory l
   `IsolatedWorkerCrashedError` (with a `terminal_reason="memory_limited"` guess when
   the exit code looks like `SIGKILL`/`SIGABRT` under a configured memory cap), a
   timeout becomes `IsolatedWorkerTimeoutError`, and parent-owned cleanup callback
-  failures are collected into `IsolatedWorkerCleanupError` and raised alongside (not
-  instead of) the primary failure.
+  failures are collected into `IsolatedWorkerCleanupError`. A cleanup-only failure is
+  raised; when there is already a primary worker failure, cleanup detail is attached
+  to it with `add_note()` rather than replacing it or raising a second exception.
 - **RAM estimation degrades to "unknown" rather than guessing.** When source row
   counts or column schema cannot be determined from parquet metadata (Databricks
   sources, JSON-shape apiInput caches), `estimate_safe_training_rows` returns

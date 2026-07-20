@@ -6,7 +6,7 @@ Haute pipelines need to read tables that live in a Databricks Unity Catalog
 warehouse, but running every pipeline execution against a live warehouse
 connection would be slow, expensive, and would make offline/local runs
 impossible. This component solves that by giving a data source node a
-one-time "fetch" step: pull a table (or a restricted `SELECT` over it) out
+one-time "fetch" step: pull a table (or a denylist-screened `SELECT` fragment) out
 of Databricks once, and persist it as a local Parquet file. Every
 subsequent pipeline run — locally, in CI, or at deploy time — reads that
 Parquet file directly with Polars, with no network dependency and full
@@ -23,8 +23,9 @@ for its whole duration.
 In scope:
 - Resolving Databricks connection credentials from the environment and
   node configuration.
-- Validating and executing a bounded, read-only `SELECT` against a single
-  fully-qualified table and streaming the result to a local cache file.
+- Validating a custom `SELECT` fragment with the implemented denylist,
+  appending one validated fully-qualified table, and streaming the resulting
+  query to a local cache file.
 - Managing that local cache: locating it, inspecting its metadata,
   deleting it, and reading it back as a lazy frame for pipeline execution.
 - Reporting in-progress fetch state so a caller can poll it.
@@ -63,15 +64,22 @@ Out of scope (owned elsewhere):
   since Databricks treats those as the same table.
 - While a fetch is running, its progress (rows/batches/elapsed time) can
   be polled by table name.
+  > NOTE: progress is one slot per literal table spelling, not one slot per
+  > fetch. Concurrent fetches using the same spelling overwrite that slot and
+  > either fetch's `finally` block can clear it while the other is still active;
+  > file publication remains safe, but progress is not reliable for this case.
 - Reading a table for pipeline execution only ever reads the local cache;
   it never talks to Databricks. If nothing has been fetched yet, this
   fails clearly rather than fetching implicitly.
 - The cache can be inspected (row/column counts, size, columns, fetch
   time) or deleted independently of fetching.
-- A restricted custom query (a `SELECT ... ` clause, no trailing `FROM`)
-  can be supplied instead of fetching the whole table; it is still scoped
-  to exactly one fully-qualified table and is validated as a read-only
-  statement before being combined with that table.
+- A custom truthy query fragment can be supplied instead of `SELECT *`. It
+  must begin with `SELECT` and pass the semicolon/comment/dangerous-keyword
+  checks before ` FROM <validated-table>` is appended.
+  > NOTE: the validator does not prove that the fragment contains no earlier
+  > `FROM`; a nested subquery can currently pass and be followed by the
+  > appended table clause. This is a documented validation gap, not a promise
+  > that arbitrary `SELECT` text is safely scoped to one table.
 - The catalog-browsing endpoints (warehouses, catalogs, schemas, tables)
   are read-only reflections of what the configured Databricks workspace
   reports, used to drive a GUI table picker; they do not touch the local
@@ -134,6 +142,11 @@ Out of scope (owned elsewhere):
   `read_cached_table`, which is how a Databricks-backed data source node
   actually gets its data during a pipeline run — see the
   [execution-engine](../execution-engine/high-level.md) component.
+- Is consumed by the Databricks picker/fetch controls in
+  [frontend-node-editors](../frontend-node-editors/high-level.md). The UI
+  cascades warehouse/catalog/schema/table selection, polls the literal table
+  name used for progress, and treats cache-status/fetch response shapes as
+  runtime-validated API contracts.
 - Depends on the third-party `databricks-sql-connector` package for the
   data-plane fetch (imported lazily inside `fetch_and_cache`) and the
   `databricks-sdk` package for the control-plane browsing endpoints

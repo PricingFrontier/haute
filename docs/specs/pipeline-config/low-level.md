@@ -4,16 +4,18 @@
 
 | File | Responsibility |
 |---|---|
-| `pipeline.py` | `Node` / `NodeRegistry` / `Pipeline` / `Submodel`: the decorator API, `connect()`, the standalone `run()`/`score()` executor, `to_graph()` (live-object → React-Flow dict). |
-| `_config_builder.py` | Per-node-type config dict construction from decorator kwargs + function body (`_build_node_config`); sidecar resolution and the parse-time `contract=` cross-check (`_resolve_node_config`). |
-| `_config_io.py` | Sidecar JSON path conventions (`NODE_TYPE_TO_FOLDER`), read/write helpers, `collect_node_configs` (graph → sidecar files), Windows-reserved-filename guard. |
-| `_config_validation.py` | `VALID_KEYS` registry derived from each node type's `TypedDict`, and `warn_unrecognized_config_keys`. |
-| `_builders.py` | `NODE_REGISTRY`-backed per-`NodeType` exec-builder and column-contract registrations (`NodeBuildContext`, `_register`, `get_column_contract`). The runtime callables it registers belong conceptually to execution — see `../execution-engine/low-level.md` — but the registration mechanics and contract plumbing this component depends on live here. |
-| `_node_builder.py` | `NodeBuildHooks` / `wrap_builder` — lets an alternate execution mode (e.g. deploy scoring) override individual node-type builders without duplicating the dispatcher. |
-| `_graph_builders.py` | AST-derived raw node dicts → `GraphNode`/`GraphEdge` Pydantic models (`_extract_decorated_nodes`, `_build_edges`, `_build_rf_nodes`). |
-| `_graph_shape.py` | Topology-only invariants independent of any single node's config (`validate_graph_shape_contracts`, `validate_pipeline_graph_shape_contracts`), including submodel child graphs. |
-| `_scaffold.py` | `haute init` template strings: `haute.toml`, `.env.example`, CI YAML for 3 providers × 7 deploy targets, starter pipeline/tests/utilities, pre-commit hook. |
-| `_project.py` | Project-root discovery (`get_project_root`, `is_haute_project`) and pipeline-file resolution (`resolve_pipeline_file`, 4-tier fallback). |
+| `src/haute/pipeline.py` | `Node` / `NodeRegistry` / `Pipeline` / `Submodel`: the decorator API, `connect()`, the standalone `run()`/`score()` executor, `to_graph()` (live-object → React-Flow dict). |
+| `src/haute/_config_builder.py` | Per-node-type config dict construction from decorator kwargs + function body (`_build_node_config`); sidecar resolution and the parse-time `contract=` cross-check (`_resolve_node_config`). |
+| `src/haute/_config_io.py` | Sidecar JSON path conventions (`NODE_TYPE_TO_FOLDER`), read/write helpers, `collect_node_configs` (graph → sidecar files), Windows-reserved-filename guard. |
+| `src/haute/_config_validation.py` | `VALID_KEYS` registry derived from each node type's `TypedDict`, and `warn_unrecognized_config_keys`. |
+| `src/haute/_builders.py` | Cross-component dependency owned by [execution-engine](../execution-engine/low-level.md): registers each per-`NodeType` runtime builder and its column-contract callback in `NODE_REGISTRY`. Pipeline-config consumes those callbacks through `src/haute/_contracts.py`; it does not own the runtime closures. |
+| `src/haute/_node_builder.py` | Cross-component dependency owned by [execution-engine](../execution-engine/low-level.md): `NodeBuildHooks` / `wrap_builder` allow deploy scoring to intercept runtime builders. It is listed here to make the boundary explicit, not because sidecar/static graph construction calls it. |
+| `src/haute/_contracts.py` | Cross-component contract model and registry-backed `get_column_contract()` lookup used by parse-time `contract=` validation. `Contract`, `ColumnContract`, and `OPAQUE_CONTRACT` are defined here, not in `src/haute/_builders.py`. |
+| `src/haute/_registry.py` | Cross-component `NODE_REGISTRY` storage shared by execution and codegen. Pipeline-config reads its column-contract registrations indirectly through `src/haute/_contracts.py`. |
+| `src/haute/_graph_builders.py` | AST-derived raw node dicts → `GraphNode`/`GraphEdge` Pydantic models (`_extract_decorated_nodes`, `_build_edges`, `_build_rf_nodes`). |
+| `src/haute/_graph_shape.py` | Topology-only invariants independent of any single node's config (`validate_graph_shape_contracts`, `validate_pipeline_graph_shape_contracts`), including submodel child graphs. |
+| `src/haute/_scaffold.py` | `haute init` template strings: `haute.toml`, `.env.example`, CI YAML for 3 providers × 7 deploy targets, starter pipeline/tests/utilities, pre-commit hook. |
+| `src/haute/_project.py` | Project-root discovery (`get_project_root`, `is_haute_project`) and pipeline-file resolution (`resolve_pipeline_file`, 4-tier fallback). |
 | `haute.toml` (repo root) | Concrete instance of the schema `_scaffold.haute_toml()` emits; `[project].pipeline` is read back by `_project._toml_configured_pipeline`. |
 
 ## Key types and data structures
@@ -34,17 +36,22 @@
   `_node_map: dict[str, Node]`, `_edges: list[RegisteredEdge]`, `_submodel_files: list[str]`.
 - **`Pipeline(NodeRegistry)`** — adds `run()`, `score()`, `to_graph()`, `submodel()`,
   `submodel_files`.
-- **`Submodel(NodeRegistry)`** — no `run`/`score`/`to_graph`; its nodes and edges only
-  participate in execution once imported onto a `Pipeline` via `pipeline.submodel(file)`.
-- **`NodeBuildContext`** (frozen dataclass, slots — `_builders.py`) — the parameter bundle
+- **`Submodel(NodeRegistry)`** — no `run`/`score`/`to_graph`. A live
+  `Pipeline.submodel(file)` call only records the path in `_submodel_files`; it does not import
+  the module or register the `Submodel` object's nodes onto the live `Pipeline`. Static parsing
+  resolves those files into the hierarchical/flat graph used by the full executor.
+- **`NodeBuildContext`** (frozen dataclass, slots — `src/haute/_builders.py`, owned by
+  execution-engine) — the parameter bundle
   shared by every per-type exec builder: `node`, `source_names`, `source_ids`,
   `target_handles`, `row_limit`, `node_map`, `orig_source_names`, `preamble_ns`, `source`,
   `upstream_ids`, `required_output_columns`, `reuse_loaded_model`, `execution_profile`,
   `source_ports`. `func_name` and `config` are derived properties.
-- **`ColumnContract`** = `tuple[set[str] | None, set[str] | None]` — `(produced, referenced)`;
+- **`ColumnContract`** (`src/haute/_contracts.py`) =
+  `tuple[set[str] | None, set[str] | None]` — `(produced, referenced)`;
   `None` on either side means opaque for that side. `OPAQUE_CONTRACT = (None, None)` is the
   explicit "declared opaque" sentinel, distinct from "no contract registered at all".
-- **`NODE_REGISTRY`** (`haute._registry`, populated via `_builders._register`) — the single
+- **`NODE_REGISTRY`** (`src/haute/_registry.py`, populated on the execution side via
+  `haute._builders._register`) — the single
   source of truth mapping `NodeType → (exec builder callable, column_contract callback,
   is_behavioural flag)`. Both `_config_builder.py`'s parse-time contract check and (out of
   scope here) the executor/codegen read this registry; a `NodeType` with no exec entry is
@@ -91,14 +98,17 @@ There are two independent ways to arrive at "a graph", and they use different he
 
 **1. Live Python object graph (`pipeline.py`).** A `Pipeline` instance is built directly by
 decorator calls at import time. `Pipeline.run()`/`Pipeline.score(df)` topologically sort the
-in-memory `_edges`/`_nodes` via `haute.graph_utils.topo_sort_ids` (raising `ValueError` on a
-cycle or a disconnected node), execute each `Node`'s `fn` in order, threading DataFrames along
-declared edges via `_execute_transform`, and resolve the return value through
+in-memory `_edges`/`_nodes` via `haute.graph_utils.topo_sort_ids` (raising `CycleError` on a
+cycle). With no edges, `_topo_order` returns registration order; it does not create a chain.
+Execution then fails at `_execute_transform` if a non-source node has no inbound edge, rather
+than inferring one from its parameter names. Otherwise it executes each `Node`'s `fn`, threading
+DataFrames along declared edges, and resolves the return value through
 `_resolve_output_node`: an explicit `@pipeline.output` node wins if there is exactly one;
 otherwise the single node with no outgoing edge; otherwise raise, naming every candidate node.
 `Pipeline.to_graph()` independently converts the same live objects into a React-Flow-shaped
 plain `dict`, inferring each node's display type from `config["_node_type"]` if present, else
-`DATA_SOURCE` for a source node, else `OUTPUT` for the last-registered node, else `POLARS`.
+`DATA_SOURCE` for a source node, else `OUTPUT` for the last-registered node, else `POLARS`, and
+serialising exactly the registered edges without parameter-name inference.
 
 **2. Static source graph (`_graph_builders.py` + `_config_builder.py`).** Given an
 already-parsed AST module and pre-extracted function bodies (produced upstream, not by this
@@ -113,7 +123,8 @@ delegating (so per-type builders don't flag it as unrecognised), cross-checks it
 `_validate_user_contract`, and re-attaches it to the config afterwards. The resulting raw node
 dicts feed `_build_edges` (explicit `connect()` tuples in 2/3/4-arity legacy/port-aware forms,
 plus implicit parameter-name-matching edges; edges are never invented, so a file declaring no
-wiring parses as a disconnected graph) and `_build_rf_nodes` (assigns x-spaced GUI positions) to produce
+wiring parses as a disconnected graph) and `_build_rf_nodes` (assigns x-spaced GUI positions) to
+produce
 the final `list[GraphNode]`/`list[GraphEdge]` — the graph the frontend, codegen, and the real
 executor operate on.
 
@@ -128,10 +139,10 @@ unchanged if the referenced upstream node can't be resolved), filters each confi
 WARNING — then per-type compaction for `BANDING`/`RATING_STEP`), and serialises the result to
 `{relative_path: json_string}`.
 
-**Registry-driven dispatch.** `_builders._register(node_type, columns=..., opaque=...,
+**Registry-driven contract lookup.** `haute._builders._register(node_type, columns=..., opaque=...,
 is_behavioural=...)` decorates roughly twenty per-type builder functions, registering both the
 exec builder and — mutually exclusive — either a column-contract callback or the `opaque=True`
-sentinel into `NODE_REGISTRY`. `get_column_contract(node_type, config)`, called from
+sentinel into `NODE_REGISTRY`. `haute._contracts.get_column_contract(node_type, config)`, called from
 `_config_builder._derive_parse_time_contract` during the parse-time contract cross-check,
 looks up and invokes the registered callback; a `NodeType` with none registered raises
 `KeyError` rather than silently falling back to opaque, so a new node type added without a
@@ -174,6 +185,9 @@ artifact paths (from the `_CI_ARTIFACTS` map) and removes the resulting empty
   > and they diverge for a graph with several leaves and no explicit output: `run()` raises
   > naming every leaf, while `to_graph()` still assigns some type to the last-registered node
   > without checking degree at all.
+- A static `pipeline.connect()` naming an unknown source or target is silently omitted by
+  `haute._graph_builders._build_edges`; the live `Pipeline.connect()` rejects the same mistake
+  immediately. There is no graph-level warning for the static omission.
 - Duplicate node function names are rejected twice, independently: at live registration
   (`NodeRegistry._register_node`, `ValueError`) and at static parse time
   (`_extract_decorated_nodes`, `ParseError`) — because the function name becomes the graph
@@ -236,8 +250,14 @@ artifact paths (from the `_CI_ARTIFACTS` map) and removes the resulting empty
 - **`ContractMismatchError`** (`haute.errors`) — a user-declared `contract=` disagrees with
   the config-derived contract on the inputs and/or outputs side; the message lists which
   columns are missing from, or extra in, the builder-derived side.
-- **`ValueError`** — cycle or disconnected node in `Pipeline._topo_order`; unknown source or
-  target node in `connect()`; empty-string port name; duplicate key in a sidecar JSON object
+- **`CycleError`** (`haute._topo`) — a cycle in the live `Pipeline` graph, propagated from
+  `topo_sort_ids` through `Pipeline._topo_order` with the participating node names.
+- **`ExecutionError`** (`haute.errors`) — live node arity mismatch; multiple explicit output
+  nodes; ambiguous terminal nodes; multiple or ambiguous `score()` seed sources; unresolved
+  `instanceOf`/`inputMapping` references in the standalone executor.
+- **`ValueError`** — empty live pipeline; an unwired non-source node or missing upstream result
+  during `Pipeline.run()`/`score()`; unknown source or target node in `connect()`; empty-string
+  port name; duplicate key in a sidecar JSON object
   (`reject_duplicate_keys_hook`); non-`dict` sidecar JSON content; a resolved config path
   escaping the `config/` directory (`config_path_for_node`); a node name containing path
   separators or `..`.
@@ -279,11 +299,12 @@ API and real JSON round-trips rather than mocks:
   decorator kwarg parsing, `_build_node_config` per node type
   (`TestBuildNodeConfigExtended`), `_resolve_node_config` sidecar and contract paths
   (`TestResolveNodeConfig`), and edge/GraphNode building (`TestBuildEdges`,
-  `TestBuildRfNodes`).
+  `TestBuildRfNodes`), including the deliberate static omission of connects whose endpoint is
+  not a parsed node.
 - **`test_graph_shape_contracts.py`** (14 tests) — Explore in/out-degree contracts
   (`TestExploreGraphShape`), single-node and empty-graph edge cases, submodel boundary handle
   matching, and round-trip drift (`TestRoundTripDrift`).
-- **`test_scaffold.py`** (116 tests) — every CI provider × deploy target combination, YAML/TOML
+- **`test_scaffold.py`** — every CI provider × deploy target combination, YAML/TOML
   structural validation, and starter pipeline/test content.
 - **`test_project_root.py`** + **`test_project_gaps.py`** — `get_project_root` walk-up
   behaviour, `is_haute_project`, and the full `resolve_pipeline_file` four-tier fallback
@@ -302,4 +323,5 @@ generated graphs.
 > Known gap: the live `Pipeline.to_graph()` path and the static `_graph_builders.py` path are
 > exercised by separate test files with no explicit cross-check asserting they produce
 > equivalent graphs for the same source pipeline — consistent with the type-inference
-> divergence noted above under Edge cases.
+> divergence noted above under Edge cases. The static unknown-endpoint omission is unit-tested
+> as current behaviour, but no end-to-end test requires it to produce a visible warning.

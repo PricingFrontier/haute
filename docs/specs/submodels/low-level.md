@@ -6,17 +6,15 @@
 |---|---|
 | `src/haute/_submodel_graph.py` | Shared helpers: build a `SUBMODEL` placeholder node, classify cross-boundary edges into input/output ports, rewire edges to/from a placeholder. Used by both the parser's hierarchical merge and the GUI create-submodel operation. |
 | `src/haute/_submodel_paths.py` | Resolve a submodel file reference (`modules/<name>.py`) to an absolute path plus its config base directory, honouring pipeline-local vs. project-root precedence. |
+| `src/haute/_flatten.py` | Dissolve one named submodel or every submodel into a flat graph: inline stored child nodes/internal edges, consume boundary handles, restore edge-join target roles, deduplicate edges, and retain metadata for untargeted submodels. |
 | `src/haute/routes/_submodel_ops.py` | Pure (no I/O) graph transform: extract selected nodes out of a `PipelineGraph` into a new submodel, producing the updated parent graph and submodel metadata. |
 | `src/haute/routes/submodel.py` | FastAPI router (`/api/submodel/*`): `POST /create`, `GET /{name}`, `POST /dissolve`. Wires validation, the pure transform, and the shared save transaction together; owns all file I/O and HTTP error mapping. |
 
 Related but external to this component:
-- `src/haute/_parser_submodels.py` (pipeline-config) — parses
+- `src/haute/_parser_submodels.py` (expression-parsing) — parses
   `pipeline.submodel(...)` calls and submodel `.py` files, and calls into
-  `_submodel_graph.py`'s same three helpers to build the hierarchical view at
+  `src/haute/_submodel_graph.py`'s same three helpers to build the hierarchical view at
   parse time.
-- `src/haute/_flatten.py::flatten_graph` (execution-engine) — dissolves
-  submodel placeholders into a flat graph; called directly by the dissolve
-  endpoint.
 - `src/haute/routes/_save_pipeline.py::SavePipelineService` (server-api) —
   provides `save_graph_transactionally`, reused by both create and dissolve.
 
@@ -41,7 +39,8 @@ Related but external to this component:
   target is the placeholder; `sourceHandle = f"out__{child_id}"` on an edge
   whose source is the placeholder. These are the only two synthetic handle
   shapes this component produces or consumes.
-- Pydantic request/response models (`schemas.py`): `CreateSubmodelRequest`
+- Pydantic request/response models (`src/haute/schemas.py`, owned by server-api):
+  `CreateSubmodelRequest`
   (`name`, `node_ids: list[str]`, `graph: Graph`, `preamble`, `source_file`,
   `pipeline_name = "main"`, `pipeline_description`), `CreateSubmodelResponse`
   (`status`, `submodel_file`, `parent_file`, `graph`), `DissolveSubmodelRequest`
@@ -106,6 +105,29 @@ wrapper calling the above with `rel_path=f"modules/{name}.py"` — this is the
 exact preference order `_parser_submodels.py` uses for `pipeline.submodel()`
 imports, so drill-down and the actually-loaded pipeline never disagree about
 which file is authoritative.
+
+### `flatten_graph(graph, target_name=None)`
+
+1. If `graph.submodels` is falsey, return the original graph object. With a target name, intersect
+   it with the metadata keys; if there is no match, also return the original object.
+2. Ask `build_edge_join_boundary_target_roles` for any target-port roles that must be restored on
+   inbound edges to child edge-join nodes.
+3. Copy the parent node/edge lists, remove placeholders for the selected names, and append each
+   selected submodel's stored child nodes/internal edges. Dict entries are Pydantic-validated;
+   existing `GraphNode`/`GraphEdge` objects are reused.
+4. For each edge, when its source is a selected placeholder and `sourceHandle` is non-empty, set
+   the source to `sourceHandle.removeprefix("out__")`, clear `sourceHandle`, and regenerate the id.
+   Apply the analogous `targetHandle.removeprefix("in__")` rewrite on selected placeholder
+   targets, restoring a target role from step 2 when available.
+5. Drop any edge that still references a selected placeholder (notably a boundary edge with a
+   missing handle), then deduplicate by `(source, target, sourceHandle, targetHandle)` preserving
+   first occurrence.
+6. Return `graph.model_copy(...)`, removing flattened metadata entries and setting `submodels=None`
+   when none remain. Untargeted placeholders/metadata remain intact.
+
+The flattener does not validate the expected prefix or child membership: any non-empty malformed
+handle is consumed verbatim after `removeprefix`, and no explicit exception is raised. Codegen has
+the stricter prefix/membership validation gate.
 
 ### `create_submodel_graph(graph, node_ids, name)`
 
@@ -226,6 +248,18 @@ Acquires `save_lock`, runs the body in a threadpool:
   already-set handle to `None` — this is why `sourceHandle`/`targetHandle`
   are explicitly *preserved from the input edge*, not always cleared, on the
   side that isn't being rewired in that pass.
+- **Flatten is identity-preserving on no-op calls.** With no submodel metadata, an empty metadata
+  dict, or a `target_name` absent from the metadata, `flatten_graph` returns the exact input object
+  (`is`, not merely equality).
+- **Flatten is permissive on malformed boundary handles.** It gates on the endpoint being a
+  selected placeholder and the relevant handle being truthy, but does not check `in__`/`out__` or
+  that the derived id belongs to the submodel. A wrong-prefix handle becomes an endpoint id
+  verbatim; a missing handle leaves the placeholder reference in place and that edge is silently
+  discarded. Internal and rewired edges are then deduplicated by the four endpoint/handle fields.
+- **Inbound edge-join roles survive flattening.** An `in__<child>` boundary targeting an
+  edge-join child recovers the base/join `targetHandle` through
+  `build_edge_join_boundary_target_roles`; ordinary inbound boundaries clear the synthetic handle
+  to `None`.
 - **`_submodel_paths.py`'s escapes-project-directory check runs against
   *both* the local and project-root candidate paths, before either is
   filesystem-checked** — a relative reference that would escape via either
@@ -254,15 +288,15 @@ Acquires `save_lock`, runs the body in a threadpool:
 | Drill-down target `.py` file missing | `HTTPException(404, f"Submodel '{name}' not found")` | `_get_submodel_blocking`. |
 | Drill-down path escapes project root | `HTTPException(403, ...)` | `_get_submodel_blocking` — see the NOTE in the high-level spec; not reachable via this route in practice. |
 | `resolve_submodel_reference` candidate path escapes project root | `ValueError` | `_submodel_paths.py` — propagates uncaught from `_get_submodel_blocking` if ever reached (no route-level catch); reachable only from callers that pass a `rel_path` containing path separators, which this route's single-segment `{name}` parameter cannot produce. |
+| Malformed/missing boundary handle passed directly to `flatten_graph` | No dedicated exception | Wrong-prefix non-empty handles are consumed as endpoint ids; edges still naming a removed placeholder are dropped. Codegen validates persisted graphs more strictly. |
 | Any write step in the underlying save transaction fails (config write, sidecar write, module delete) | Rolled back by `SavePipelineService`, re-raised | Surfaces as `HTTPException(500, ...)` from `save_graph_transactionally`; see [server-api](../server-api/high-level.md) low-level spec for the transaction/rollback mechanics. |
 
 ## Testing
 
 Tests live in `tests/test_submodel_graph.py`, `tests/test_submodel_ops.py`,
 `tests/test_submodel_routes.py`, and `tests/test_submodel_outport_invariant.py`,
-with related coverage in `tests/test_flatten.py` and
-`tests/test_parser_submodels.py` for the neighbouring components this one
-shares helpers/handle conventions with.
+plus `tests/test_flatten.py`, with related parser coverage in
+`tests/test_parser_submodels.py` for the neighbouring expression-parsing component.
 
 - `test_submodel_graph.py` — pure unit tests of the three
   `_submodel_graph.py` functions in isolation: placeholder construction
@@ -315,8 +349,11 @@ shares helpers/handle conventions with.
   exists specifically because the individual legs (production, flatten,
   codegen) are each covered piecemeal in their own component's test file, and
   none of those files alone pins the full produce → consume round trip.
+- `test_flatten.py` — direct unit coverage for identity returns, flatten-all and targeted
+  flattening, child node/edge dict-vs-model forms, internal-edge preservation, boundary rewiring
+  and handle clearing, silent drop of a still-placeholder edge, edge deduplication, empty/missing
+  child graph metadata, and preservation of unrelated `PipelineGraph` metadata.
 
-Known coverage gaps: none identified specific to this component's four
-source files at the time of writing; the adjacent `_flatten.py` and
-`_parser_submodels.py` (owned by execution-engine and pipeline-config
-respectively) have their own coverage documented in those components' specs.
+Known coverage gap: `tests/test_flatten.py` pins silent dropping for a missing handle, but does not
+directly pin the wrong-prefix non-empty `removeprefix` case or an unknown derived child id. The
+adjacent `src/haute/_parser_submodels.py` remains owned and covered by expression-parsing.

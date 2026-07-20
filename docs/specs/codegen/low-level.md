@@ -74,6 +74,12 @@ submodel files) → submodel import lines → `pipeline.connect(...)`/
 labels containing quotes/backslashes/non-ASCII survive; deduped when
 `dedup_connects=True`).
 
+Preserved-block extraction is intentionally structural rather than byte-for-byte: the shared
+`haute._ast_helpers._extract_preserved_blocks` line scan removes marker lines and leading/trailing
+blank lines inside each matched block, ignores an unmatched start marker, and returns blocks in
+source order. `_generate_pipeline_lines` then relocates them after object construction and before
+node functions, restoring fresh markers around each block.
+
 ### `_node_to_code` (per-node dispatch)
 
 1. `_role_order_node_sources` — for `EDGE_JOIN` nodes only, reorders
@@ -207,6 +213,11 @@ unchanged, avoiding a full re-parse on every save for the common case.
   synthetically-wrapped body (so a top-level `return` stays valid), not a
   substring search — a token matching the call name inside a string literal
   or comment cannot mis-anchor the boilerplate boundary.
+- **Hierarchical main files are a static-parser artifact, not a live import mechanism** —
+  `pipeline.submodel(path)` only appends the path to the live `Pipeline` object's
+  `_submodel_files`; it does not import child decorators. `_assert_emitted_files_parse` proves the
+  file tree is syntactically valid, while parser round-trip tests prove the static path. Direct
+  execution equivalence is covered only for flat/single-file generated graphs.
 
 ## Error handling
 
@@ -249,9 +260,8 @@ than one file per module:
   collision handling, and an explicit single-file guard for `graph_to_code`.
 - **`test_codegen_builders.py`** — per-builder unit tests (`_gen_api_input`,
   `_gen_banding`, `_gen_scenario_expander`, `_gen_optimiser`, `_gen_explore`,
-  `_gen_data_sink`) plus `TestCodegenExecValidation`, which appears to
-  execute generated code to check it's runnable, not just syntactically
-  valid.
+  `_gen_data_sink`) plus `TestCodegenExecValidation`, which executes
+  generated code to check that it is runnable, not just syntactically valid.
 - **`test_codegen_split.py`** — pins down the module-split refactor itself:
   the unified registry has no dead entries, no cyclic imports, and codegen
   output is behaviourally identical to (an implied) pre-split baseline;
@@ -325,3 +335,8 @@ explicitly framed around specific historical bug classes ("bug B2", "#122")
 rather than a generic fuzz sweep — regressions in that area are pinned down
 individually as they're found, consistent with the repo's TDD convention of
 writing a failing test before the fix.
+
+> Known gap: no test imports and runs a hierarchical `graph_to_code_multi()` main file through
+> the live `Pipeline.run()` API. That API only records `pipeline.submodel(...)` paths, so runtime
+> equivalence is intentionally established after static parse/flatten, not through live module
+> registration.

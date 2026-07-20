@@ -13,7 +13,9 @@ its own component; this one is the substrate they all sit on.
 
 It exists so that a pricing analyst editing a pipeline on the canvas gets sub-second preview
 feedback, sees their `.py` file edits reflected live without a page reload, and never has a
-raw Python traceback or an absolute filesystem path land in their browser.
+raw Python traceback land in their browser. Most internal failures are sanitized; parse
+diagnostics are deliberately returned/broadcast verbatim and may contain parser-authored
+file context.
 
 ## Scope
 
@@ -21,17 +23,16 @@ In scope:
 - The FastAPI app factory and its lifecycle: `haute.server` — lifespan startup/shutdown,
   middleware stack, static SPA serving, the `/ws/sync` live-sync WebSocket, and the
   filesystem watcher that drives it.
-- The shared Pydantic contract layer: `haute.schemas` (every request/response model in the
-  product) and `haute._api_input_schema` (the v2 `tables[]` schema-mapping codec for API
-  Input nodes — the on-the-wire contract the JSON-cache build/status routes validate
-  against).
+- Local HTTP/WebSocket protection (`haute._local_security`): trusted Host parsing,
+  local-Origin checks, and the per-process session token accepted through the
+  `x-haute-session-token` header (or `haute_session_token` WebSocket query parameter).
+- The shared Pydantic contract layer: `haute.schemas` (the cross-route request/response models;
+  OUTPUT dry-run keeps two route-local models). JSON-cache and output routes consume the
+  v2 input/output schema modules owned by [json-shredding](../json-shredding/high-level.md).
 - The typed exception hierarchy (`haute.errors`), structured logging setup
   (`haute._logging`), and the in-process pub/sub event bus (`haute._event_bus`) that
   decouples the file watcher from the WebSocket broadcaster.
-- The node-type dispatch registry (`haute._registry`, `haute._contracts`) and the canonical
-  graph types (`haute._types`) — foundational, cross-cutting modules that every parser,
-  executor, and codegen call site depends on, bundled here because `schemas.py` re-exports
-  the graph types directly and there is no dedicated "core types" component.
+- The canonical graph types (`haute._types`) that `schemas.py` re-exports at the API boundary.
 - Route-layer shared helpers (`haute.routes._helpers`): path-traversal guards, the
   pipeline-name→path index, self-write tracking (watcher feedback-loop prevention), the
   WebSocket client registry and broadcast fan-out, and the on-disk sidecar (`.haute.json`)
@@ -40,8 +41,8 @@ In scope:
   request-supersession and concurrency-limiting behaviour, and the transactional save
   service (`haute.routes._save_pipeline`).
 - The file-browsing and schema-inspection routes (`haute.routes.files`), the utility-script
-  CRUD routes (`haute.routes.utility`), and the OUTPUT-node dry-run assembler
-  (`haute.routes.output_assemble`, `haute._output_assembler`).
+  CRUD routes (`haute.routes.utility`), and the OUTPUT-node dry-run HTTP workflow
+  (`haute.routes.output_assemble`), which consumes the shared assembler.
 
 Out of scope (owned by neighbouring components, included as routers but not described here):
 - Pipeline execution itself — `execute_graph`, `execute_trace`, `execute_sink`, admission
@@ -60,8 +61,8 @@ Out of scope (owned by neighbouring components, included as routers but not desc
 - `routes/explore.py` and Explore materialisation — see
   [explore-eda](../explore-eda/high-level.md).
 - `routes/databricks.py` — see [databricks-io](../databricks-io/high-level.md).
-- `routes/json_cache.py` and the v2→parquet shredding pipeline that consumes
-  `_api_input_schema.py`'s codec — see [json-shredding](../json-shredding/high-level.md).
+- `routes/json_cache.py` — see [caching](../caching/high-level.md); its schema and
+  shredding dependencies are owned by [json-shredding](../json-shredding/high-level.md).
 - `routes/mlflow.py`, `routes/modelling.py`, `routes/optimiser.py`, `routes/submodel.py` —
   separate components not covered by this spec pass.
 - `routes/assistant.py` and the assistant agent loop/providers/tools — see
@@ -76,6 +77,10 @@ Out of scope (owned by neighbouring components, included as routers but not desc
   see [pipeline-config](../pipeline-config/high-level.md) and [codegen](../codegen/high-level.md).
 - Path sandboxing primitives (`_get_project_root`) — see
   [sandbox-security](../sandbox-security/high-level.md).
+- The shared node-type dispatch registry and column-contract lookup
+  (`haute._registry`, `haute._contracts`) — see
+  [pipeline-config](../pipeline-config/high-level.md),
+  [execution-engine](../execution-engine/high-level.md), and [codegen](../codegen/high-level.md).
 
 ## Behaviour
 
@@ -88,9 +93,14 @@ exist — a partial build is treated as absent, not served broken), every unmatc
 through to the SPA `index.html`; otherwise CORS is opened for the Vite dev server on
 `:5173`.
 
-**Middleware stack** (applied in this order): a request-ID/timing/exception-logging
-middleware that also catches any unhandled exception and returns a sanitized `500`, then
-local-session-token auth, then a trusted-host check, then (dev mode only) CORS.
+**Middleware stack.** Starlette prepends each middleware registration, so runtime
+outer-to-inner order is (dev mode only) CORS → trusted-host validation → local-session-token
+and Origin validation → request-ID/timing/exception logging → route. In built-SPA mode CORS
+is absent. Host/auth rejections therefore occur before request-ID middleware and have no
+`x-request-id` header. Real `/api/*` requests require the session token unless
+`HAUTE_DISABLE_LOCAL_SESSION_AUTH` is truthy; `OPTIONS` preflight requests still require a
+trusted Origin but bypass the token check. WebSocket handshakes apply the same Origin/token
+policy and close with code 1008 on rejection.
 
 **Live sync.** A pricing analyst can edit a pipeline's `.py` file directly in an IDE while
 the canvas is open. A background watcher (debounced 300ms) detects the change, re-parses
@@ -100,7 +110,7 @@ broadcast to every connected canvas. The canvas can also request a targeted resy
 same socket by sending `{"type": "resync", "source_file": ..., "graph_fingerprint": ...}`;
 the server replies only to that client, and skips the reply entirely if the client's
 fingerprint already matches (no redundant payload). Edits the server itself makes (via
-`/pipeline/save`) are tagged as self-writes so they never round-trip back through the watcher
+`/api/pipeline/save`) are tagged as self-writes so they never round-trip back through the watcher
 as a phantom external edit. A change to a `modules/*.py` file re-parses only the pipelines
 that import it; a change to a `config/*.json` file re-parses every discovered pipeline (a
 config change can affect any pipeline that reads it).
@@ -113,12 +123,18 @@ below. `POST /api/pipeline/preview` runs the graph up to one node and returns it
 sample rows, and per-node timing/memory; `POST /api/pipeline/trace` follows one row's values
 through every node it passed through; `POST /api/pipeline/sink` materialises a `dataSink` /
 `dataOutput` node to disk. Preview and trace are keyed on (graph fingerprint, source, node,
-row/column selectors): a newer request for the *same* key cancels the in-flight one
-(supersession) rather than queuing behind it, so a user editing the canvas quickly never
-waits on stale work; a *different* key runs independently, bounded by a small
-per-operation concurrency semaphore. All three long-running endpoints enforce a response
-timeout (`HAUTE_{PREVIEW,TRACE,SINK}_TIMEOUT`, default 120s/120s/300s) and go through memory
-admission control before execution begins.
+row/column selectors): a newer request for the *same* key supersedes the older request's
+response and waits for its active slot to clear, so same-key workers never overlap. Preview
+also requests cooperative cancellation of the active worker; trace has no route-level
+cancellation token, so a newer trace must wait for the older trace thread to finish before it
+can start. A *different* key runs independently, bounded by a small per-operation concurrency
+semaphore. All three long-running endpoints enforce a response timeout
+(`HAUTE_{PREVIEW,TRACE,SINK}_TIMEOUT`, default 120s/120s/300s). Preview and sink
+cooperatively cancel their execution token/context on timeout; trace's already-started thread
+finishes in the background. Preview/trace retain their supersession key and concurrency
+permit until that thread really finishes, despite having returned 504. Preview and sink use
+memory admission control at this route boundary; trace does not create an admission context
+here.
 
 **File browsing and schema inspection.** `GET /api/files` lists a directory (extension-
 filtered) for the file picker. `GET /api/schema` reads a data file's column schema, a 5-row
@@ -143,21 +159,23 @@ the deploy-time render path.
 
 ## Design rationale
 
-- **One shared schema module, one shared error hierarchy.** Every route in the product —
+- **One shared schema module, one shared error hierarchy.** Nearly every route in the product —
   including the ones owned by other components — imports its Pydantic models from
   `schemas.py` and raises through `errors.py`'s `HauteError` family. A single contract module
   means the frontend's TypeScript types (generated from these schemas) can never drift
   between route families, and a single `except HauteError` at any boundary catches the
-  entire product's domain-error surface (with the documented exceptions — resource-exhaustion
+  entire product's domain-error surface (with the documented exceptions — the OUTPUT
+  dry-run request/response models are route-local, and resource-exhaustion
   and deadline errors deliberately extend stdlib bases instead, so existing `except
   MemoryError` / `except TimeoutError` handlers keep working).
 - **Sanitized error detail, always.** `_INTERNAL_ERROR_DETAIL` ("Operation failed. Check the
   server logs for details.") is the only text most `except Exception` handlers return to the
   client; the real exception — which can embed absolute filesystem paths, OS error strings,
   or git stderr — is logged server-side with `exc_info=True`. This is deliberate defence
-  against information disclosure, not an oversight; contrast with `HauteError` subclasses
-  (`ConfigError`, `ContractMismatchError`, etc.), whose hand-authored messages are safe to
-  surface verbatim because their text never embeds raw system output.
+  against information disclosure, not an oversight; contrast with explicitly surfaced
+  domain subclasses such as `ConfigError` and `ContractMismatchError`, whose hand-authored
+  messages are safe to return. `HauteError` ancestry alone is not a safety marker: plain
+  `GitError` can wrap raw stderr and is deliberately sanitized.
 - **Event bus, not a direct watcher→WebSocket call.** The file watcher publishes typed
   events; it has no reference to the WebSocket client set. This keeps the watcher unit-
   testable in isolation and lets other subscribers (metrics, audit, future features) hang off
@@ -168,13 +186,15 @@ the deploy-time render path.
   `asyncio.Condition`, guaranteeing at most one active worker per key and that a superseded
   waiter never starts running — the alternative (semaphore-only limiting) does not, by
   itself, prevent stale results winning a race with fresh ones.
-- **Save as an all-or-nothing transaction.** A pipeline save touches multiple files (the
-  `.py`, N config JSON sidecars, the position sidecar) plus a git ledger commit. Every write
-  is staged (previous bytes snapshotted, or recorded as new-file) before any lands; any
-  failure mid-save rolls every touched file back to its prior state and re-raises the
-  original error. The alternative — writing files as generated and hoping nothing fails
-  partway — would leave a pipeline in a state where the `.py` disagrees with its own config
-  sidecars, silently corrupting the next load.
+- **Transactional core, post-commit cleanup.** Generated code, config JSON sidecars, the
+  position sidecar, and requested submodel deletions form the rollback-covered
+  transaction: previous bytes are snapshotted (or a file is recorded as new) before mutation,
+  and a failure restores/deletes every touched path best-effort before re-raising. Stale-config
+  deletion and git-ledger capture occur only after that transaction succeeds and are not
+  rolled back. Typed git failures become response warnings because the filesystem save is
+  already durable; an unexpected non-`GitError` still propagates. API-input cache mirroring is
+  independently idempotent/best-effort: failures are logged and partial cache state is left
+  for a later save to repair, outside `_TouchedFile` rollback.
 - **Self-write tracking instead of debounce-only.** The file watcher's 300ms debounce alone
   cannot distinguish a server-originated write from a user's IDE edit that happens to land in
   the same window. Every write the server makes is registered by absolute path just before
@@ -188,18 +208,13 @@ the deploy-time render path.
   Windows-reserved device names, casefold-collision-checked) because codegen output paths
   come from a different trust boundary (generated strings, not direct user path input) and
   need a narrower allowlist than general file browsing.
-- **The registry pattern for `NodeType` dispatch.** `_registry.py` centralises the
-  `NodeType → (exec builder, codegen builder, column contract)` mapping so the executor and
-  codegen can never silently disagree about a node type — a gap here previously fell through
-  to a generic passthrough builder undetected. `validate_registry_complete()` runs at import
-  time and fails loudly (not lazily, at first dispatch) if any `NodeType` is missing a piece.
 
 ## Interactions
 
 - **[execution-engine](../execution-engine/high-level.md)** — `routes/pipeline.py` and
   `routes/output_assemble.py` call `execute_graph`, `execute_trace`, `execute_sink`, and the
-  execution-admission/context APIs directly; `_registry.py`/`_contracts.py`/`_types.py`
-  define the `NodeType` dispatch table and column contracts the executor consumes.
+  execution-admission/context APIs directly; the routes consume the shared registry/contract
+  dispatch and canonical `_types.py` graph models used by the executor.
 - **[background-jobs](../background-jobs/high-level.md)** — job-status response shapes
   (`TrainStatusResponse`, `OptimiserStatusResponse`, `ExploreStatusResponse`,
   `OptimiserFrontierAutoRangeStatusResponse`, `OptimiserFrontierStatusResponse`,
@@ -211,11 +226,10 @@ the deploy-time render path.
   `haute._git.commit_save` to capture each successful save in the clone's ledger; the file
   watcher's `pause_watcher()` / `watcher_is_paused()` contract (`routes/_helpers.py`) lets
   haute-initiated git operations suspend live-sync for their duration.
-- **[explore-eda](../explore-eda/high-level.md)**, **[databricks-io](../databricks-io/high-level.md)**,
-  **[json-shredding](../json-shredding/high-level.md)** — each owns a router included into
-  the same app (`routes/explore.py`, `routes/databricks.py`, `routes/json_cache.py`);
-  json-shredding's build/status routes are the runtime consumer of
-  `_api_input_schema.py`'s `validate_v2_schema` / `parse_table_path` / `parse_column_path`.
+- **[explore-eda](../explore-eda/high-level.md)** and
+  **[databricks-io](../databricks-io/high-level.md)** own routers included into the same app;
+  [caching](../caching/high-level.md) owns the included `routes/json_cache.py` router, which
+  consumes [json-shredding](../json-shredding/high-level.md)'s schema/shred modules.
 - **[caching](../caching/high-level.md)** — `routes/pipeline.py` reads `_preview_cache` and
   `graph_fingerprint` to key supersession and to inject the preview reader `execute_trace`
   needs.
@@ -225,7 +239,7 @@ the deploy-time render path.
   `graph.update` on the shared event bus so assistant edits broadcast over `/ws/sync` exactly
   like external edits.
 - **[codegen](../codegen/high-level.md)** — `SavePipelineService._write_code` calls
-  `graph_to_code` / `graph_to_code_multi`; `_registry.py` is the shared dispatch table
+  `graph_to_code` / `graph_to_code_multi` and therefore depends on the shared registry
   between codegen and the executor.
 - **[pipeline-config](../pipeline-config/high-level.md)** — `_save_pipeline.py` calls
   `collect_node_configs` / `config_path_for_node` to decide which config JSON sidecars a
@@ -242,28 +256,34 @@ the deploy-time render path.
 This codebase prefers loud failure over silent fallbacks, and the server layer's job is to
 turn that loudness into a well-typed HTTP response rather than a raw traceback.
 
-- **Domain errors** (`HauteError` subclasses) carry a hand-authored message plus structured
-  `**context` and are safe to surface verbatim: `ConfigError` → 400, `ContractMismatchError`
-  → 422 (trace) or embedded in a `NodeResult.error` (preview, so the canvas can show it
-  in-situ rather than as a banner), `ApiInputSchemaError` / `OutputMappingSchemaError` → 422
-  with a `type` discriminator in the body so the frontend never string-matches the message.
-- **Everything else** — any exception not explicitly mapped — is caught at the route level,
-  logged server-side with `exc_info=True`, and returned as a sanitized `500`
-  (`_INTERNAL_ERROR_DETAIL`). If a route-level handler is somehow bypassed, the top-level
-  `_RequestIdMiddleware` still catches it and returns the same shape, so no request can ever
-  return a raw Python traceback to the browser.
+- **Explicitly mapped domain errors** carry a hand-authored message (and, for
+  `HauteError`, optional structured `**context`) that the relevant route treats as safe to
+  surface: save-time `ConfigError` → 400; output dry-run `ConfigError` /
+  `ContractMismatchError` → 422; trace `ContractMismatchError` → 422; and preview
+  config/contract failures are embedded in `NodeResult.error` so the canvas can show them
+  in-situ rather than as a banner. `ApiInputSchemaError` → a direct 422 JSON body with a
+  `type` discriminator, and `OutputMappingSchemaError` → FastAPI's
+  `{"detail": <message>}` 422 envelope.
+- **Everything else** — any exception not explicitly mapped — is normally caught at the
+  route level, logged server-side, and returned as `{"detail": "Operation failed. Check the
+  server logs for details."}`. If a route-level handler is bypassed,
+  `_RequestIdMiddleware` returns the separately pinned sanitized envelope
+  `{"detail": "Internal server error"}`. Neither exposes a traceback; outer trusted-host
+  and session middleware rejections bypass request-ID middleware entirely.
 - **Resource limits** surface as their own status codes rather than a generic 500:
-  `ExecutionAdmissionError` / `ExecutionMemoryLimitExceededError` → 507 (Insufficient
-  Storage, repurposed for "would exceed the memory budget"); a superseded request →
-  `SupersededRequestError` → 409; a timed-out blocking operation → 504, with the underlying
-  execution explicitly cancelled so it does not keep running after the client has given up.
+  `ExecutionAdmissionError` / `ExecutionMemoryLimitExceededError` → 507 for preview/sink
+  (OUTPUT dry-run maps admission refusal to 503); a superseded request →
+  `SupersededRequestError` → 409; a timed-out blocking operation → 504. Worker threads are
+  never forcibly killed: preview/sink request cooperative cancellation, while trace and
+  OUTPUT dry-run drain the late result/error after returning.
 - **Path-safety violations** (`validate_safe_path`, the save-time output-path allowlist,
   runtime-input-path validation) return 400 for malformed input (null bytes, empty codegen
   paths, traversal segments) and 403 for a resolved path that escapes its allowed root —
   never a 500, since these are user-input-shaped failures, not internal ones.
-- **Save is transactional**: any failure during `SavePipelineService.save` rolls back every
-  file already written in that call before the exception propagates, so a failed save never
-  leaves a partially-updated pipeline on disk. Stale-config cleanup (deleting config files
+- **Save has a transactional write stage**: a propagated failure during code/config/sidecar
+  writes or requested module deletion rolls back every tracked target before the exception
+  propagates. Best-effort API cache mirroring is deliberately excluded. Stale-config cleanup
+  (deleting config files
   the new graph no longer references) is deliberately *not* part of the transaction — it only
   runs after every write has succeeded, because those deletions are non-recoverable; a
   cleanup that never got the chance to run is simply retried on the next successful save.

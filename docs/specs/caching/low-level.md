@@ -5,12 +5,12 @@
 | File | Responsibility |
 | --- | --- |
 | `src/haute/_hashing.py` | Deterministic xxh64 content hashing for bytes and files (`content_hash_bytes`, `content_hash`). The primitive every other digest in this component builds on. |
-| `src/haute/_cache.py` | `canonical_json()` — the single canonical JSON encoder for digest material; `graph_fingerprint()` / `preamble_execution_fingerprint()` — deterministic, versioned digests of a `PipelineGraph`'s execution-relevant inputs; `GraphFingerprintMemo` — request-scoped pin over the process-wide `StatGatedCache`-backed utility-file hash cache. |
+| `src/haute/_cache.py` | `canonical_json()` — the shared canonical JSON encoder for graph/dataframe cache-key material; `graph_fingerprint()` / `preamble_execution_fingerprint()` — deterministic, versioned digests of a `PipelineGraph`'s execution-relevant inputs; `GraphFingerprintMemo` — request-scoped pin over the process-wide `StatGatedCache`-backed utility-file hash cache. |
 | `src/haute/_lru_cache.py` | `LRUCache[K, V]` — thread-safe bounded LRU cache with optional TTL, pinning, and optional byte-budget eviction. The shared eviction/pinning core for the other in-process caches below. |
 | `src/haute/_fingerprint_cache.py` | `FingerprintCache` — thin `LRUCache` subclass adding multi-slot dict-valued semantics (`store`, `try_get`, `update_slot`), used by the preview and trace caches (execution engine). |
 | `src/haute/_dataframe_execution_cache.py` | `DataFrameExecutionCache` — parquet-artifact-backed `LRUCache` subclass for materialized backend dataframes, plus `dataframe_execution_cache_key()` and `materialize_lazy_frame_with_cache()`, the entry points backend callers use. |
 | `src/haute/_stat_gated_cache.py` | `StatGatedCache[K, V]` — single-flight, `(mtime_ns, size)`-gated cache of loaded file artifacts; a generic primitive (not itself dataframe- or graph-specific) instantiated per use site — external-object/optimiser/mlflow artifact loading, and (`_cache.py`) the process-wide utility-file content-hash cache behind `_utility_file_hash`. |
-| `src/haute/routes/json_cache.py` | FastAPI router (`/api/json-cache`) for building, polling status of, inferring a schema for, cancelling, and deleting the on-disk JSON→parquet shredded cache. Delegates the actual shredding to `_json_shred.py`/`_json_flatten.py`. |
+| `src/haute/routes/json_cache.py` | FastAPI router (`/api/json-cache`) for building, polling status of, inferring a schema for, deleting the on-disk JSON→parquet shredded cache, and serving a path-validating compatibility cancel no-op. Delegates schema, shredding, and storage lifecycle to the JSON-shredding component. |
 
 ## Key types and data structures
 
@@ -35,6 +35,9 @@
   single `threading.RLock` (`_lock`). Invariant: `_capacity_entry_count()` — the
   count of *unpinned* entries — never exceeds `max_size` except transiently while
   every live entry is pinned.
+  TTL is insertion/update based rather than sliding: `get()` lazily removes an
+  expired entry and returns `None`, even if it is pinned; `__contains__` is only a
+  lightweight presence probe and neither checks TTL nor promotes the entry.
 - **`FingerprintCache`** (`_fingerprint_cache.py`) — `LRUCache[str, dict[str, Any]]`
   where each value is a dict with a fixed set of declared `slots`. `_capacity_entry_count`
   is overridden to count *all* entries (not just unpinned ones) — a fully-pinned
@@ -58,6 +61,9 @@
   (per-cache-key `WeakValueDictionary` of `RLock`s for serialising same-key
   writes), `_scan_refcounts` (live `pl.scan_parquet` handles per `(key, path)`),
   `_store_pins` (open store+first-consume windows, reentrant count per key).
+  Its default byte cap comes from `DATAFRAME_EXECUTION_CACHE_MAX_BYTES`, parsed
+  once at module import from `HAUTE_DATAFRAME_EXECUTION_CACHE_MAX_BYTES`; unset or
+  empty means `None`, while malformed/non-positive values raise `RuntimeError`.
 - **`StatGatedCache[K, V]`** (`_stat_gated_cache.py`) — `_entries: dict[K, tuple[int, int, V]]`
   (gate `mtime_ns`, gate `size`, value) plus `_load_locks: dict[K, threading.Lock]`
   for single-flight loading, both guarded by one `threading.Lock`.
@@ -79,7 +85,8 @@
    for the lifetime of that graph instance. `model_copy` on a `PipelineGraph`
    produces a new instance and clears the memo, so structural edits (via the
    immutable `model_copy(update=...)` idiom used elsewhere) never serve a stale
-   base digest.
+   base digest. Direct in-place mutation after the cached property has been read is
+   unsupported and can leave the graph instance's base fingerprint stale.
 2. `_graph_base_fingerprint` canonically encodes every node as
    `[id, nodeType, config]` (via `canonical_json`, EXPLORE nodes drop their
    `overview` key first) and every edge as `[source, sourceHandle, target,
@@ -206,6 +213,10 @@
 - **`_aggregate_v2_tables`** is the single aggregation core both the build
   response and the status response reduce their per-port `tables[]` list
   through, so the two response shapes cannot drift independently.
+- **Cancel** (`POST /cancel`) resolves and validates `body.path`, then always
+  returns `JsonCacheCancelResponse(cancelled=False, data_path=body.path)`. There
+  is no cancellation token or build-registry stop signal: the compatibility
+  endpoint and the editor action that calls it do not stop an in-progress build.
 
 ## Edge cases and invariants
 
@@ -214,13 +225,14 @@
   from every finite/`inf` value, so a set containing `NaN` canonicalises
   identically regardless of insertion order — `NaN != NaN` would otherwise make
   `sorted()` order-dependent.
-- **Fingerprint framing is injective.** Node lines, edge lines, and the
+- **Fingerprint framing is unambiguous before hashing.** Node lines, edge lines, and the
   extra-keys/context/base join in `graph_fingerprint` are all framed through
   `canonical_json` (JSON arrays), specifically so a node id or extra key
   containing a literal `|` or `\n` cannot collide with a logically different
   graph under the old raw-concatenation scheme (fixed at `ALGO_VERSION` bump to
   6, tracked as "W1-cache F164"/"F163" in the version-history comment in
-  `_cache.py`).
+  `_cache.py`). The final xxh64 digest remains a finite 64-bit hash and therefore
+  is not mathematically collision-free.
 - **Utility-file hashing now routes through `StatGatedCache.get_or_load` itself**,
   rather than an independent re-stat-after-reading implementation: `_utility_file_hash`
   delegates to the process-wide `_utility_file_hash_cache`, which retries once on a
@@ -272,13 +284,14 @@
 | --- | --- | --- |
 | `TypeError` | `canonical_json`/`_canonicalise` on non-JSON-shaped values, non-string mapping keys, non-list/tuple/set iterables | Any fingerprinting call site; not caught internally |
 | `RuntimeError` | `_utility_file_hash` (torn read after retry), `StatGatedCache.get_or_load` (torn gate after retry) | Caller of `graph_fingerprint`/`get_or_load` |
+| `RuntimeError` | `_dataframe_execution_cache.py` import with a malformed/non-positive `HAUTE_DATAFRAME_EXECUTION_CACHE_MAX_BYTES` | Importing caller; no default cache is constructed |
 | `FileNotFoundError`/`IsADirectoryError`/`PermissionError`/`OSError` | `_hashing.content_hash` (via `Path.open`), `_stat_gated_cache` stat calls | Propagate unchanged — not wrapped |
 | `ValueError` | `LRUCache.__init__` (bad `max_size`/`max_bytes`/`size_of` combination), `LRUCache.put` size-callback contract violation, `FingerprintCache.__init__`/`.store`/`.update_slot` (unknown slot names, empty `slots` tuple), `DataFrameExecutionCacheRequest.__post_init__`, `_normalise_required_columns`/`_normalise_extra_keys`/`_normalise_non_empty` | Caller constructing the cache/request |
 | `TypeError` | `DataFrameExecutionCacheRequest.__post_init__` (wrong types for `cache`/`keys_by_node`/key values) | Caller constructing the request |
 | `DataFrameExecutionCacheError` (base) | `_dataframe_execution_cache.py` | Caller of `materialize_lazy_frame_with_cache`/`store_artifact` |
 | `CacheArtifactMissingError` (`DataFrameExecutionCacheError`, `FileNotFoundError`) | `_validate_entry` | `_evict_if_invalid` (caught, treated as eviction+miss) or re-raised to caller when it's the just-written artifact failing validation |
 | `CacheArtifactCorruptError` (`DataFrameExecutionCacheError`) | `_validate_entry` (unreadable parquet) | Same as above |
-| `CacheArtifactTooLargeError` (`DataFrameExecutionCacheError`) | `store_artifact` when `size_bytes > max_bytes` | Caller of `store_artifact`/`materialize_lazy_frame_with_cache` — artifact is unlinked first |
+| `CacheArtifactTooLargeError` (`DataFrameExecutionCacheError`) | `store_artifact` when `size_bytes > max_bytes` | Propagates through `materialize_lazy_frame_with_cache` after the artifact is unlinked; `_execute_lazy` catches it and continues uncached |
 | `ApiInputSchemaError` | `_read_v2_config`, `_select_v2_config`, `validate_v2_schema` (via `_v2_status_response`), `build_per_port_cache`, `infer_v2_schema_from_data` | Caught at each route handler and turned into a 422 JSON response (or, on the read-only GET status path, downgraded to `cached=False`) |
 | `HTTPException` | `_resolve_data_path`/`_resolve_config_path` (400/403), `build_json_cache`/`infer_json_cache_schema` (404/422/500/504) | FastAPI's standard exception handling |
 | `orjson.JSONDecodeError` | `build_per_port_cache`/`infer_v2_schema_from_data` (unparseable data file) | Caught in the route handler, turned into 422 |
@@ -361,16 +374,18 @@ cross-cutting regression/property files:
   identity, lazifies a bare `DataFrame`) guarding
   `materialize_lazy_frame_with_cache`'s input contract.
 - **`tests/test_json_cache_routes.py`, `test_json_cache_coverage_uplift.py`,
-  `test_json_cache_integrity.py`, `test_json_cache_mut_witnesses.py`,
-  `test_json_cache_corrupt_and_errors.py`** — the JSON cache route surface:
-  build/status/delete/cancel/infer happy paths and error precedence, path
+  `test_json_cache_mut_witnesses.py`, `test_json_cache_corrupt_and_errors.py`** —
+  the JSON cache route surface:
+  build/status/delete/infer happy paths, the cancel endpoint's validated
+  `cancelled=false` compatibility response, error precedence, path
   traversal/null-byte rejection (400/403), build-progress accounting (balanced
   start/finish, overlapping builds), aggregation correctness (missing vs
   present parquet files, summed counts across tables), corrupt-vs-absent config
-  distinction (422 vs migration `None`), legacy-key stripping, duplicate-JSON-key
-  rejection, `working/`→`committed/` mirroring on production builds,
-  data-file-signature validity, atomic/serialized build behaviour, skipped-record
-  surfacing, and date-column type-mismatch rejection.
+  distinction (422 vs migration `None`) and route-level surfacing of shred/build
+  failures. `tests/test_json_cache_integrity.py` and the schema/shred assertions
+  inside these cross-component files are indexed by
+  [json-shredding](../json-shredding/low-level.md); they verify the storage and
+  shredding modules consumed by this router rather than cache primitives owned here.
 
 Known coverage gaps: none identified from a read of the test file list and
 class/function names above — the JSON-cache and dataframe-execution-cache

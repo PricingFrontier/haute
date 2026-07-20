@@ -7,7 +7,6 @@
 | `frontend/src/main.tsx` | App bootstrap: mounts `App` inside `StrictMode` + a root `ErrorBoundary`. |
 | `frontend/src/api/client.ts` | Typed `fetch()` wrapper: retry/backoff, timeout, abort handling, session-expiry event, and one function per backend endpoint. Exports `request`/`post` so split-chunk endpoint modules can reuse the same fetch machinery, and an authenticated raw-stream helper (auth headers + `ApiError` mapping, no JSON parse) for split modules with non-JSON transports — the assistant SSE stream (see [frontend-assistant-ui](../frontend-assistant-ui/low-level.md)). `runFrontier` starts a frontier sweep then polls `getFrontierStatus` to a terminal state, preserving the old resolve-with-final-payload contract over what is now a backend background job. |
 | `frontend/src/api/dispersion.ts` | GLM dispersion-estimation endpoints (NB `theta` / Tweedie `var_power`): `estimateGlmDispersion`, `getDispersionStatus`, `cancelDispersion`, and `runDispersionEstimate` (starts + polls to completion, resolving with the estimated number). Split out of `client.ts` so its code — reachable only from the lazy-loaded modelling config panel — stays out of the initial JS bundle; built on `client.ts`'s exported `request`/`post` and owns its own runtime parsers (`parseDispersionEstimateResponse`, `parseDispersionStatusResponse`) rather than routing through `types/guards.ts`. |
-| `frontend/src/api/assistant.ts` | Assistant endpoints (status, session create, streamed message turn). Split out of `client.ts` so its code — reachable only from the lazy-loaded assistant panel — stays out of the initial JS bundle; built on `client.ts`'s exported auth/header helpers and owns its own SSE stream reader and event parsing (throwing on an unrecognised event type) rather than routing through `types/guards.ts`. Full behaviour specced in [frontend-assistant-ui](../frontend-assistant-ui/low-level.md), its sole consumer. |
 | `frontend/src/api/types.ts` | Request/response TypeScript interfaces mirrored from `src/haute/schemas.py`; re-exports canonical node/trace types. |
 | `frontend/src/types/node.ts` | `HauteNodeData`/`PipelineFlowNode`/`SubmodelNodeData` shapes, `ColumnInfo`, `BackendNodeStatus`/`NodeStatus`, the `nodeData()`/`effectiveNodeType()` accessors used everywhere a React Flow `Node.data` needs typed access. |
 | `frontend/src/types/trace.ts` | Trace playback shapes (`TraceStep`, `TraceResult`, per-node-type `TraceNodeDetail` variants) mirroring backend trace output. |
@@ -31,7 +30,8 @@
 | `frontend/src/components/ContextMenu.tsx` | Node right-click menu: rename/duplicate/create-instance/dissolve-submodel/delete, arrow-key roving focus. |
 | `frontend/src/components/KeyboardShortcuts.tsx` | `?`-triggered modal listing keyboard shortcuts, built on `ModalShell`. |
 | `frontend/src/components/Toolbar.tsx` | App top chrome: source selector, row-limit/chunk-size inputs, undo/redo, timing/memory breakdowns, utility/imports buttons, zoom, centre/layout, save split-button. Composes `BreakdownDropdown` and `BranchIndicator` (git-ui). |
-| `frontend/src/components/SettingsModal.tsx` | Pipeline-imports/preamble editor dialog (custom overlay, not `ModalShell`). |
+| `frontend/src/panels/ImportsPanel.tsx` | Active pipeline-imports right panel: `PanelShell` plus `CodeEditor`, explanatory always-included imports, and callback-only preamble mutation/close handling. `App.tsx` supplies the graph-store-backed preamble and selects it through `importsOpen`. |
+| `frontend/src/components/SettingsModal.tsx` | Legacy pipeline-imports/preamble editor dialog (custom overlay, not `ModalShell`). It has component tests but no production import or render site; `ImportsPanel` is the active UI. |
 | `frontend/src/components/BackgroundJobPolling.tsx` | Zero-render mount point (`memo`) that only invokes `useBackgroundJobs()`. |
 | `frontend/src/components/NodeSearch.tsx` | Ctrl+K command palette: filters/windows the current React Flow node list, arrow-key navigation, jumps the canvas viewport to the selected node. |
 | `frontend/src/components/BreadcrumbBar.tsx` | Pipeline → submodel navigation trail; renders nothing at stack depth ≤ 1. |
@@ -42,7 +42,18 @@
 | `frontend/src/hooks/useMlflowBrowser.ts` | Lazy-loads MLflow experiments/runs/models/versions for dropdown UIs; shared by `ModelScoreEditor` and `OptimiserApplyEditor` (node-editors). |
 | `frontend/src/hooks/useSchemaFetch.ts` | Fetch-schema-on-mount-and-on-path-change pattern shared by `DataSourceEditor`/`ApiInputEditor` (node-editors). |
 | `frontend/src/hooks/useStaleConfigEstimate.ts` | Generic "estimate endpoint keyed by config hash + source + structural version, refetch when any of the three changes" pattern, built on `hashConfig`. Takes a required `context: {source, structuralVersion}` argument alongside the cached result. |
-| `frontend/src/hooks/useKeyboardShortcuts.ts` | **Out of scope for this component** — App-level canvas key bindings (undo/redo/copy/paste/delete/search); documented under [frontend-graph-canvas](../frontend-graph-canvas/low-level.md). Listed here only because `KeyboardShortcuts.tsx` (the help modal) shares its name. |
+| File | Responsibility |
+| --- | --- |
+| `frontend/src/index.css` | Global Tailwind import and dark-theme CSS-variable contract: root sizing/type, native-control and scrollbar defaults, React Flow interaction overrides, and semantic surface/status/chart/git-node tokens consumed by the theme module and components. |
+| `frontend/src/utils/chartHelpers.ts` | Small pure chart leaf helpers: compact K/M/scientific axis labels and inclusive evenly spaced Y ticks (a degenerate range yields one tick). |
+| `frontend/src/utils/formatTrace.ts` | Cross-surface trace-value/expression/calculation/schema-summary presentation formatting: retains date-shaped strings, represents non-finite numbers explicitly, quotes ordinary strings, escapes column names before substitution, and uses longest names first to avoid partial replacement. |
+| `frontend/src/utils/mlflowOptimiser.ts` | Pure MLflow run/model metadata classifier: explicit `params.mode` wins; legacy convergence metrics infer ratebook versus online; insufficient evidence yields the empty mode rather than guessing. |
+| `frontend/src/components/NodeTypeIcon.tsx` | Shared node-type icon wrapper: looks up canonical metadata and deliberately renders the Polars icon for an absent or unknown type, so compact lists never crash on incomplete historical data. |
+| `frontend/src/components/ToggleButtonGroup.tsx` | Generic controlled segmented single-choice group with radio semantics, roving `tabIndex`, Arrow/Home/End selection and focus movement, optional accessible name, and token-derived active styling. |
+| `frontend/src/components/form/CommittedTextField.tsx` | Controlled-looking input/textarea with a local draft: commits once on blur (and Enter for the input), skips no-op commits, and discards a stale draft when the external value changes, preserving one edit/one undo snapshot. |
+| `frontend/src/components/form/ConfigCheckbox.tsx` | Labelled controlled checkbox using a caller id or React `useId`, disabled semantics, and shared accent/text tokens. |
+| `frontend/src/components/form/EditorLabel.tsx` | Consistent micro-label primitive; can be a correctly associated `<label>` or non-form span/div for display-only content. |
+| `frontend/src/components/form/index.ts` | Public barrel for the committed text field/area, checkbox, and editor-label primitives; editor callers import the shared contract rather than deep paths. |
 
 ## Key types and data structures
 
@@ -354,7 +365,8 @@ same Vitest config.
   empty-name and duplicate-name error text, `aria-invalid`/
   `aria-describedby` wiring, the error clearing on next keystroke and on
   successful submission),
-  `SettingsModal.gaps.test.tsx`, `BreadcrumbBar.test.tsx` (root-level),
+  `SettingsModal.gaps.test.tsx` (the standalone legacy dialog), `ImportsPanel.test.tsx`
+  (the active imports surface), `BreadcrumbBar.test.tsx` (root-level),
   `KeyboardShortcuts.test.tsx` (root-level),
   `BackgroundJobPolling.renderIsolation.test.tsx` (asserts the component
   itself never re-renders its own subtree — it exists purely to host the
@@ -379,6 +391,8 @@ same Vitest config.
   stays byte-for-byte in parity with the backend's `_sanitize_func_name`
   via a shared fixture, `sanitizeParity.fixture.json`), plus root-level
   `__tests__/utils/formatBytes.test.ts` and `dtypeColors.test.ts`.
+
+Additional leaf coverage: `components/__tests__/ToggleButtonGroup.test.tsx` covers click and Arrow/Home/End radio-group selection/focus behaviour; `components/form/__tests__/CommittedTextField.test.tsx`, `__tests__/components/form/ConfigCheckbox.test.tsx`, and `__tests__/components/form/EditorLabel.test.tsx` cover commit boundaries, no-op blur, external-value draft reset, and form-label/control semantics. `utils/__tests__/chartHelpers.test.ts` and `formatTrace.test.ts` respectively pin numeric ticks/formatting and trace substitutions/non-finite display. `NodeTypeIcon.tsx`, `components/form/index.ts`, `index.css`, and `mlflowOptimiser.ts` currently have no dedicated test file; the icon/form/CSS files are simple presentation or re-export surfaces, while the optimiser classifier is an uncovered pure helper.
 
 Known gaps: `Toolbar.tsx`'s inline timing/memory formatting helpers
 (`formatTiming`/`formatMemory`, distinct from and not delegating to

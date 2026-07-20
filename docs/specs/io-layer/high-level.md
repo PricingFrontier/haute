@@ -77,9 +77,12 @@ Out of scope (owned elsewhere):
   config) for every column that will be read, for any execution profile
   outside `preview_eager`/`deploy_live` — without declared dtypes, `scan_csv`
   would infer types by reading the data itself, which those profiles forbid.
-- Every path handed to this component — a legacy `dataSource` `path`, or a
-  `dataInput`/`dataOutput` node's `path` — is rejected up front if it looks
-  like a URL (`scheme://...`) or contains a `..` path segment.
+- Every *input* path handed to this component — a legacy `dataSource` path or
+  a path-kind `dataInput` path — is rejected up front if it looks like a URL
+  (`scheme://...`) or contains a `..` path segment. `dataOutput` receives an
+  already-resolved filesystem target from the executor; the registry itself
+  checks only that its configured target is non-empty. The generated-code
+  wrapper resolves relative output paths against the pipeline directory.
 - The format registry (`FORMATS`) enumerates every polars I/O format Haute
   exposes to `dataInput`/`dataOutput` nodes — CSV, JSON, NDJSON, Parquet,
   Arrow IPC (file and stream), Avro, Excel, ODS, text lines, database (URI),
@@ -102,13 +105,23 @@ Out of scope (owned elsewhere):
   argument names that are actually allowed.
 - Struct/List/Array/Decimal/Datetime/Duration/Enum/Categorical dtypes in a
   node's schema declaration decode through a dedicated JSON grammar
-  (`_polars_dtypes.parse_dtype`) whose encoder (`dtype_to_spec`) is its
-  exact inverse, so a config editor can round-trip what it displays.
-- Every file write this component performs — `atomic_write_bytes`/`_text`,
-  the `Writer` context manager, `_polars_utils.atomic_write`, and the
-  streaming sinks — commits via a sibling temp file renamed onto the
-  target. A reader can never observe a torn or partially-written file; it
-  either sees the complete previous payload or the complete new one.
+  (`_polars_dtypes.parse_dtype`) whose encoder (`dtype_to_spec`) produces a
+  canonical spec that decodes to the same dtype (aliases need not preserve
+  their original spelling), so a config editor can round-trip semantics.
+- The explicitly atomic write surfaces — `atomic_write_bytes`/`_text`, the
+  `Writer` context manager, and `_polars_utils.atomic_write` — stage to a
+  sibling temporary file and rename it onto the target. The
+  `streaming_sink`/`bounded_sink`/`best_effort_sink` family uses that staging
+  path when the target's parent already exists; if it does not, the helper
+  calls Polars on the target directly so the missing-parent error surfaces.
+  `_file_ops` gives concurrent writers unique temp names;
+  `_polars_utils.atomic_write` uses one fixed `.parquet.tmp` sibling and
+  therefore assumes a single writer per destination.
+  Direct registry calls (`write_polars_output`) invoke the selected Polars
+  `write_*`/`sink_*`
+  method on the caller-supplied path and do not add another atomic wrapper;
+  generated `write_polars_output_from_config` calls also create the target's
+  parent directories before that direct write.
 - Bounded-memory collection (`streaming_collect`, `bounded_collect_batches`,
   `bounded_sink`) never silently widens to a full in-memory collect when
   Polars cannot honour streaming execution — it raises a typed
@@ -130,10 +143,10 @@ Out of scope (owned elsewhere):
   on one filesystem's case sensitivity can silently resolve to a different
   file (or fail to resolve at all) on another.
 - `discover_pipelines` finds pipeline entry points by literal substring
-  search for `"haute.Pipeline"` in `.py` file contents: it first tries the
-  path configured in `haute.toml`'s `[project].pipeline`, then falls back
-  to root-level `*.py` files (excluding `__init__.py`/`setup.py`/
-  `conftest.py`).
+  search for `"haute.Pipeline"` in `.py` file contents: it checks the path
+  configured in `haute.toml`'s `[project].pipeline` first, then also scans
+  root-level `*.py` files (excluding `__init__.py`/`setup.py`/`conftest.py`)
+  and de-duplicates the configured match.
 - `load_external_object` deserialises a model/JSON/pickle/joblib file and
   memoises the result keyed by `(path, content_hash, file_type,
   model_class)`, so repeated calls for an unchanged file skip re-parsing
@@ -162,14 +175,20 @@ Out of scope (owned elsewhere):
   are always excluded from what a node config can set, keeping the
   local-path-only security posture uniform across every format rather than
   something each format has to remember to enforce.
-- **Atomic write, always, not "usually".** Every write path in this
-  component commits by rename rather than in-place write. This closes the
-  torn-write window regardless of which layer initiates the write (a
-  user-facing config save, a pipeline checkpoint, a streaming sink), rather
-  than relying on each call site to remember to do it correctly.
-- **Fail loud over silent fallback.** Parent directories are never
-  auto-created by the write primitives; unsupported extensions and dtypes
-  raise immediately; a bounded collect that cannot stream raises a typed
+- **Atomicity is an explicit primitive, not an implicit registry promise.**
+  File/config saves use a temp-then-rename boundary, as do profiled streaming
+  sinks when their target parent exists. The generic registry stays a faithful
+  adapter to Polars and writes to the exact resolved target it is given, so
+  callers that require atomic publication must supply a staged target or use
+  an atomic helper. Same-target concurrent Polars sinks additionally require
+  caller-side serialisation because their shared temp filename is not a
+  concurrent-writer protocol.
+- **Fail loud over silent fallback.** `_file_ops` writes never create parent
+  directories, and the profiled sink family deliberately takes its direct,
+  normally failing path when a parent is absent. `_polars_utils.atomic_write`
+  itself and generated registry-output wrappers do create parents as part of
+  their explicit contracts. Unsupported extensions and dtypes raise
+  immediately; a bounded collect that cannot stream raises a typed
   error instead of transparently materialising a potentially huge frame.
   Of the two functions that *do* offer a broadening fallback,
   `best_effort_sink` requires the caller to pass `allow_broad=True`
@@ -227,8 +246,10 @@ Out of scope (owned elsewhere):
   valid alternatives.
 - File-write failures (permission errors, disk full, a Windows rename
   blocked by a concurrent reader) propagate as the underlying `OSError`
-  subtype; the write primitives guarantee only that the *target* file is
-  never left partially written, not that the write eventually succeeds.
+  subtype. `_file_ops`'s unique-temp primitives protect the target from torn
+  writes even with concurrent writers; `_polars_utils.atomic_write` protects
+  ordinary single-writer publication but does not make concurrent writes to
+  the same destination safe.
 - None of these errors are swallowed or converted into a default value —
   every failure surfaces to the caller (executor, route handler, or CLI)
   for it to report or convert into an HTTP status as appropriate.

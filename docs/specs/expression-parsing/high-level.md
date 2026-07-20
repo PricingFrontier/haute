@@ -34,9 +34,12 @@ In scope:
 
 Out of scope (owned by neighbouring components, cross-linked below):
 - Writing pipeline files back to disk / formatting-preserving edits — [codegen](../codegen/high-level.md).
-- The actual `GraphNode`/config-dict construction, AST utility primitives (`_ast_helpers`),
-  user-code extraction (`_code_extraction`), and node/edge builders (`_graph_builders`) that this
-  component's `parser.py` and `_parser_regex.py` call into — also [codegen](../codegen/high-level.md).
+- AST utility primitives (`_ast_helpers`) and user-code extraction (`_code_extraction`) that this
+  component's `parser.py` and `_parser_regex.py` call into — owned by
+  [codegen](../codegen/high-level.md).
+- Config-dict construction (`_config_builder`) and conversion of parsed node/edge data into
+  `GraphNode`/`GraphEdge` models (`_graph_builders`) — owned by
+  [pipeline-config](../pipeline-config/high-level.md).
 - The submodel placeholder/port-classification and flatten algorithms themselves
   (`_flatten.py`, `_submodel_graph.py`) — [submodels](../submodels/high-level.md); this component
   only decides *when* to invoke them and supplies the parsed child graphs.
@@ -50,11 +53,15 @@ Out of scope (owned by neighbouring components, cross-linked below):
 ## Behaviour
 
 **Structural parsing**
-- `parse_pipeline_file`/`parse_pipeline_source` always return a `PipelineGraph`; a syntactically
-  invalid file never raises to the caller — it falls back to regex-based partial recovery so the
-  GUI can still render whatever nodes/edges are recoverable, with the broken parts marked.
-- Per-node config load failures surface as a single graph-level `warning` string listing the
-  affected node labels (first three, `"and N more"` for the rest), not as exceptions.
+- `parse_pipeline_file`/`parse_pipeline_source` use regex-based partial recovery after a
+  whole-file `SyntaxError`, allowing the GUI to render recoverable nodes and edges. Recovery is
+  deliberately conservative: malformed constructs the fallback can locate but cannot safely
+  reconstruct raise `ParseError` rather than returning a plausible-but-incomplete graph.
+- Missing, unreadable, invalid, or schema-invalid config sidecars raise `ConfigError` on the
+  healthy AST path. In regex recovery, a syntactically broken individual function body is kept as
+  a node carrying `config["_load_error"]`; the fallback graph's warning remains the file-level
+  syntax-recovery message. The healthy parser's load-error warning aggregator only reports nodes
+  already carrying `_load_error`; normal sidecar load failures do not enter that path.
 - `pipeline.submodel(...)` references are resolved relative to the project root / pipeline
   directory; a referenced file that does not exist is silently skipped.
   > NOTE: unlike a config-load failure or an ignored nested submodel, a missing/typo'd submodel
@@ -82,27 +89,33 @@ Out of scope (owned by neighbouring components, cross-linked below):
   understand this" signal rather than a guessed value.
 - `evaluate_expression(code, target_column, row_values, ...)` additionally substitutes concrete
   column values into the formula text and computes a concrete result by walking the AST with a
-  hand-written interpreter tuned to Polars' runtime semantics rather than Python's: null
+  hand-written interpreter for a constrained Polars subset, tuned to Polars' runtime semantics
+  rather than Python's where implemented: null
   propagates through arithmetic and comparisons; `&`/`|` use Kleene three-valued logic when either
   side is boolean or both are null; division/floor-division/modulo by zero yield `±inf`/`nan`
   (float) or `null` (int) instead of raising; an integer result outside the signed-64-bit range is
   reported as uncomputable (`None`) rather than a wrong wraparound value; `.round()` matches
   Polars' float-scale-then-half-to-even rounding, not Python's decimal-accurate `round()`; a
   negative base raised to a non-integer float exponent is `NaN`, matching Polars' float domain.
-  Unlike `parse_expression`, an internal evaluator failure **propagates** rather than being
-  swallowed — see Failure model.
+  Unsupported AST nodes and methods commonly return `None`; several malformed-call guards also
+  return `None`, ignore unknown arguments, or retain an input value rather than reproducing
+  Polars' exception. For supported operations, an internal evaluator failure **propagates**
+  rather than being swallowed — see Failure model.
 - For `pl.when()/.then()/.otherwise()` conditionals, evaluation additionally reports which branch
   was actually taken (and, for nested conditionals, which branch was taken at each inner level),
   so the trace UI can highlight the live branch and dim the others.
 - `parse_expression_chain(code, target_column)` walks backward through the same node's
   `with_columns()` calls to build the transitive dependency chain feeding `target_column` — every
-  intermediate column referenced along the way, in dependency order (earliest first).
+  intermediate column referenced along the way, in dependency order (earliest first). A syntax
+  error is converted into a one-element opaque chain (or `[]`), while non-syntax internal failures
+  are not caught.
 
 ## Design rationale
 
 - The primary structural parser uses Python's `ast` module because pipeline files are executable
-  Python; `libcst` is deliberately reserved for the codegen write-back path where preserving
-  original formatting matters, not for read-only parsing.
+  Python and this path only needs structural reads. Codegen is a separate text-generation path:
+  it currently uses source templates plus `tokenize`-aware rewrites, not this parser's AST and not
+  a LibCST write-back implementation.
 - The regex fallback exists so that a single syntax error anywhere in a large pipeline file does
   not blank out the entire GUI graph — the user can see and fix the one broken node while
   everything else keeps rendering. Recovered call/decorator *sites* are found textually (the file
@@ -116,6 +129,10 @@ Out of scope (owned by neighbouring components, cross-linked below):
   question, and lets the evaluator intentionally diverge from Python semantics wherever Polars'
   own semantics differ (null propagation, Kleene logic, dtype-driven overflow/div-by-zero
   behaviour).
+- The evaluator is explanatory, not a complete Polars engine. The parity suite directly compares
+  a curated set of operations and values against the pinned Polars runtime; it does not establish
+  parity for every namespace method, dtype, malformed call, or window operation. Returning `None`
+  is the current "unsupported/uncomputable" result for many of those gaps.
 - `evaluate_expression` used to fall back to the pipeline's actually-observed output value
   (`row_values.get(target_column)`) whenever the evaluator raised. That fallback was removed: it
   laundered evaluator bugs into a result that looked self-consistent with the trace, hiding
@@ -133,10 +150,12 @@ Out of scope (owned by neighbouring components, cross-linked below):
 - Depends on [pipeline-config](../pipeline-config/high-level.md) for project-root inference and
   config file loading (`_project.get_project_root`, `_config_io.find_config_by_func_name`,
   `_config_io.has_config_folder`).
-- Depends on [codegen](../codegen/high-level.md) for the AST/source utility primitives, node/edge
-  builders, and config-dict construction that both `parser.py` (healthy path) and
-  `_parser_regex.py` (fallback path) import directly, so both paths
-  produce identically-shaped `GraphNode`/`GraphEdge` objects.
+- Depends on [codegen](../codegen/high-level.md) for the AST/source utility and user-code
+  extraction primitives shared by generation and parsing.
+- Depends on [pipeline-config](../pipeline-config/high-level.md) for config-dict construction and
+  the node/edge builders that both `parser.py` (healthy path) and `_parser_regex.py` (fallback
+  path) import directly, so both paths produce identically-shaped `GraphNode`/`GraphEdge`
+  objects.
 - Depends on and cooperates with [submodels](../submodels/high-level.md): this component decides
   when a `pipeline.submodel(...)` reference must be resolved and parsed, but the placeholder-node
   construction, boundary-port classification, and flatten algorithm live there.
@@ -159,11 +178,13 @@ Out of scope (owned by neighbouring components, cross-linked below):
   `async def` pipeline node, or a config sidecar folder with no `config=` kwarg. A parse that
   silently returned a plausible-but-incomplete graph here would corrupt the file on the next save,
   which this codebase treats as strictly worse than a loud failure.
-- Per-node config load failures are *not* raised — they surface as a graph-level `warning` string,
-  because one broken config file should not prevent the rest of the graph from rendering.
+- Config sidecar load/validation failures are raised as `ConfigError`. `_load_error` is used by
+  regex recovery for a function body fragment that cannot be parsed, not as the normal sidecar
+  failure transport.
 - `parse_expression` never raises: any internal exception becomes an `"opaque"` result. This is
   the single deliberate catch-all in the expression parser, justified as the honest "could not
   statically understand this" signal.
-- `evaluate_expression` and `parse_expression_chain` do **not** catch evaluator failures — they
-  propagate to the trace/enrichment caller, which is expected to record a visible error marker on
-  the step rather than receive a fabricated value.
+- `evaluate_expression` does not catch evaluator failures, and `parse_expression_chain` does not
+  catch non-syntax internal failures; they propagate to the trace/enrichment caller, which is
+  expected to record a visible error marker. `parse_expression_chain` does catch `SyntaxError` and
+  returns the opaque `parse_expression` result as a singleton when available.

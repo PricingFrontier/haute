@@ -43,6 +43,10 @@ This codebase prefers loud failure over silent fallbacks — specs must state wh
 
 ## Module map
 Table of the source files that make up the component, one line each on their responsibility.
+Use an inline-code, repository-root-relative path for every maintained source or operational
+artifact (for example, `src/haute/executor.py` or `frontend/src/App.tsx`). Enumerate files rather
+than relying on a directory wildcard; generated outputs and large non-normative corpora may be
+grouped only when their lifecycle and exclusion are stated explicitly.
 
 ## Key types and data structures
 The central classes/dataclasses/TypedDicts/interfaces, their fields and invariants.
@@ -67,9 +71,19 @@ the key scenarios covered, and known coverage gaps.
 
 - Describe the code **as it is**, not as it should be. If behaviour looks like a bug, describe
   the behaviour and add a `> NOTE:` callout rather than speccing the intended-but-absent behaviour.
-- Reference source as `path/to/file.py` and functions as `module.function()`. Do not paste long
-  code excerpts; the spec must survive refactors that keep behaviour.
-- Cross-link related components with relative links, e.g. `[caching](../caching/high-level.md)`.
+- Reference source with an exact repository-root-relative path such as `src/haute/parser.py`, and
+  functions as `haute.parser.parse_pipeline_file()`. Do not use an ambiguous basename when a path
+  is available. Do not paste long code excerpts; the spec must survive refactors that keep
+  behaviour.
+- Every maintained backend and frontend runtime file must appear in at least one low-level module
+  map. Build, CI, developer-tooling, and reference-project artifacts are subject to the same rule;
+  generated and historical material must instead be explicitly classified by the owning spec and
+  the coverage contract in [README.md](README.md).
+- A file normally has one **primary owner**: its component documents the file's behaviour. A
+  second component may name it only to describe a real direct interaction; then it is a consumer
+  and the exact primary/consumer set must be recorded in [ownership.toml](ownership.toml).
+- Cross-link related components with relative links. From a component document the target is
+  `../caching/high-level.md`; see [caching](caching/high-level.md) for a live link from this file.
 - British or American spelling both fine; match the terminology used in the code
   (e.g. "optimiser", "modelling").
 - In high-level.md, prefer component-level language over file paths, but citing a module

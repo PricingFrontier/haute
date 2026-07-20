@@ -70,14 +70,17 @@ the agent rewire a graph the analyst is not currently looking at invites unseen 
 The gate derives from the canvas's existing submodel-navigation state (supplied by the app
 shell, which owns it), exactly as the dirty gate derives from the canvas's dirty state.
 
-**Stop is immediate and honest.** Stop aborts the stream request; the backend halts between
-tool executions. The transcript marks the turn as stopped and keeps everything already
-streamed; edits already applied remain applied (they are real saves), and the transcript
-says so rather than implying an undo happened.
+**Stop is immediate.** Stop aborts the stream request; the backend halts between tool
+executions. The transcript keeps everything already streamed and adds its generic stopped
+marker. Edits already applied remain applied (they are real saves); the marker does not imply
+an undo, but it also does not spell that consequence out.
 
-**One turn, one session, per pipeline.** The store holds one session per loaded pipeline,
-created lazily on first send. While a turn is in flight the composer is locked (stop is the
-only action); the backend's 409 on concurrent sends therefore has exactly one
+**One turn, one locally keyed session.** The store holds one active session, created lazily on
+first send. The current source-file string scopes the browser's remembered-session key and
+causes a source change to clear the in-memory transcript/session; it is not passed as the
+`pipeline` value in the session-create request (the current client sends `null`). While a turn
+is in flight the composer is locked (stop is the only action); the backend's 409 on concurrent
+sends therefore has exactly one
 normal-operation window — a send in the moments after a stop, while the backend finishes an
 in-flight edit — rendered with its own "still finishing" notice rather than a generic
 error.
@@ -122,10 +125,10 @@ as if the model finished.
   lists); rendering it as such is table stakes for a chat product surface. The renderer is
   loaded with the lazy panel body so its cost never lands in the initial bundle (the
   bundle-size gate stays authoritative).
-- **No optimistic transcript persistence.** The transcript mirrors exactly what the stream
-  delivered; nothing is written to storage, so there is no stale-transcript class of bug and
-  nothing to reconcile on reload. Persistence is a deliberate non-goal until the UX settles
-  (mirrors the backend's in-memory session choice).
+- **No optimistic transcript persistence.** The browser persists only a per-source session id,
+  not transcript entries. On resume it replaces its empty/in-memory transcript with the
+  server-returned history before appending the new turn; this avoids reconciling speculative
+  client transcript state after reload.
 
 ## Interactions
 
@@ -149,8 +152,8 @@ as if the model finished.
 - **Send-time rejections** (400 unconfigured, 404 stale session, 409 concurrent turn) map to
   distinct inline messages; the stale-session case offers starting a new chat, and none of
   them silently retry.
-- **A `failed` terminal event** renders the backend's typed, sanitized error message inline
-  at the failure point plus an error toast; the composer re-enables.
+- **A `failed` terminal event** renders the backend-provided error message inline at the
+  failure point plus an error toast; the composer re-enables.
 - **A transport drop mid-stream** (network error, aborted reader without a terminal event)
   marks the turn interrupted — visually distinct from completed — and re-enables the
   composer.

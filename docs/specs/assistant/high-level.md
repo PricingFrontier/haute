@@ -40,8 +40,7 @@ In scope:
 - The assistant HTTP surface: session create, readiness/status, and the message endpoint that
   streams a turn as server-sent events.
 - Assistant configuration and readiness: the `[assistant]` table in `haute.toml` (provider,
-  model, optional base URL) and API keys from the environment (the project `.env` the server
-  already loads at startup).
+  model, optional base URL) and API keys inherited from the server process environment.
 
 Out of scope:
 
@@ -62,13 +61,19 @@ Out of scope:
 **Configuration and readiness.** The assistant is configured per project: `haute.toml`'s
 `[assistant]` table names the `provider` (`"anthropic"` or `"openai"`), the `model`, and
 optionally a `base_url` (OpenAI adapter only). Credentials come exclusively from the
-environment — `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`, typically via the project `.env` the
-server loads at startup — never from `haute.toml`. A status endpoint reports whether the
+environment — `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` — never from `haute.toml`.
+`haute serve` does not currently load the project `.env`, so those keys must be exported
+or otherwise inherited by the server process. A status endpoint reports whether the
 assistant is ready and, if not, exactly which piece is missing (no `[assistant]` table, unknown
 provider, missing model, missing key, a provider SDK missing from the installation, or an
 invalid output-token budget), so the
 UI can disable the input with a reason instead of letting a send fail. Sending a message while unconfigured is rejected with a 400 naming the missing
 piece — there is no default provider and no silent degradation.
+
+> NOTE: configuration validation is intentionally narrow in the current implementation:
+> `provider`, `model`, and `base_url` are interpreted, but additional keys in `[assistant]`
+> are ignored rather than rejected. OpenAI accepts any string `base_url` without URL-syntax
+> validation; Anthropic rejects the presence of `base_url` as a readiness failure.
 
 **Sessions.** A chat session is created explicitly, bound to one pipeline, and held in
 process memory as the runtime authority, with every committed turn written through to
@@ -84,7 +89,7 @@ prompt and catalog are always re-sent in full), stored history is capped per ses
 live sessions are LRU-capped — evicting an idle session drops only its in-memory record;
 its persisted file revives it on the next lookup, so eviction is invisible to the client.
 A session with a running turn is never evicted. Persisted files have their own cap:
-beyond it the oldest files by last use are pruned at session creation, and a pruned or
+beyond it the oldest files by session-file modification time are pruned at session creation, and a pruned or
 never-persisted id 404s on message send (and starts fresh on session create).
 
 **Authoring knowledge.** Every turn's system prompt carries — alongside the node-type
@@ -100,7 +105,7 @@ documentation edit, not a code change.
 assistant text deltas, tool-call started/finished activity (name plus a compact argument and
 result summary), a graph-updated notification after each successful mutation (carrying the
 new graph fingerprint), and exactly one terminal event — completed (with token usage),
-failed (with a typed error), or cancelled. One turn may be in flight per session; a second
+failed (with a sanitized message), or cancelled. One turn may be in flight per session; a second
 send while one is running is rejected with 409, not queued. A turn ends when the model stops
 on its own, when a per-turn tool-call cap or wall-clock timeout is hit (both surfaced as a
 named terminal event, never a silent truncation), or when the client disconnects — on
@@ -308,9 +313,10 @@ Loud, typed, and never averaged away:
   same reason machine-readably. No default provider, no fallback model.
 - **Provider failures** (bad key, rate limit, overloaded, network, malformed stream) raise a
   assistant-specific `HauteError` subclass whose hand-authored message carries the provider
-  name and failure class but never the raw provider response body; mid-stream it becomes the
-  terminal `failed` event, before streaming it becomes the HTTP error. The turn dies with
-  the error — there is no silent retry cascade and never a fallback to a different
+  name and failure class but never the raw provider response body. Provider construction
+  failures before response creation become HTTP 502; SDK request and stream failures occur
+  after the streaming response starts and become the terminal `failed` event. The turn dies
+  with the error — there is no silent retry cascade and never a fallback to a different
   provider or model.
 - **Tool-level failures** (unknown node id, invalid op, save-layer validation rejection,
   missing dataset, a schema the engine cannot resolve — unfetched Databricks cache, missing

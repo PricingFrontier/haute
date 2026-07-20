@@ -21,23 +21,26 @@ panel instead of a blank white screen.
 
 In scope:
 - The typed HTTP client (`api/`) and the runtime response parsers that
-  guard the JSON/DOM boundary. This includes bundle-split companion modules
-  like `api/dispersion.ts` (GLM dispersion-estimation endpoints) and
-  `api/assistant.ts` (assistant status/session endpoints and the SSE
-  message-stream reader) that live
-  outside `api/client.ts` so their code — reachable only from a lazy-loaded
-  panel — stays out of the initial JS bundle, while still sharing the
-  client's exported `request`/`post` fetch machinery rather than
-  reimplementing it.
+  guard the JSON/DOM boundary. This includes the bundle-split companion
+  `api/dispersion.ts` (GLM dispersion-estimation endpoints), which lives
+  outside `api/client.ts` so code reachable only from a lazy-loaded panel
+  stays out of the initial JS bundle while sharing the client's exported
+  `request`/`post` fetch machinery rather than reimplementing it. The
+  assistant-owned split endpoint module consumes the same shared transport
+  contract but belongs to
+  [frontend-assistant-ui](../frontend-assistant-ui/high-level.md).
 - Cross-cutting Zustand stores: node computation results
   (`useNodeResultsStore`), app-wide settings/caches (`useSettingsStore`),
   toast notifications (`useToastStore`), and layout/modal chrome
   (`useUIStore`).
 - The design-token layer (`theme/colors.ts`) — CSS-variable-backed colour
   constants used by every visual component.
-- Chrome widgets mounted once at the app shell: `ErrorBoundary`, `Toast`,
+- Chrome widgets and app-shell surfaces: `ErrorBoundary`, `Toast`,
   `ModalShell`, `Tooltip`, `ContextMenu`, `KeyboardShortcuts`, `Toolbar`,
-  `SettingsModal`, `BackgroundJobPolling`, `NodeSearch`, `BreadcrumbBar`.
+  `ImportsPanel`, `BackgroundJobPolling`, `NodeSearch`, `BreadcrumbBar`.
+  `ImportsPanel` is conditionally rendered; the older `SettingsModal` remains
+  a maintained, directly testable component but is not mounted by the
+  application.
 - Small generic hooks with no domain knowledge: `useClickOutside`,
   `useDragResize`, `useJobPolling` (+ its orchestrator
   `useBackgroundJobs`), `useMlflowBrowser`, `useSchemaFetch`,
@@ -86,6 +89,13 @@ the directories this spec covers):
   `utils/shallowNodeHash.ts`, `utils/validateConfigRefs.ts`,
   `utils/layout.ts`) — these are graph-canvas internals despite living in
   the shared `utils/` folder.
+
+The global styling contract (`index.css`), reusable compact-choice and
+node-icon controls, and the `components/form/` public form primitives are
+also shared infrastructure. `chartHelpers`, `formatTrace`, and
+`mlflowOptimiser` are side-effect-free shared leaf utilities: their domain
+panels own the workflows that consume them, while this component owns their
+consistent formatting and classification contracts.
 
 ## Behaviour
 
@@ -158,6 +168,27 @@ inputs, undo/redo, timing/memory breakdowns, save (with a "save & commit"
 split-button). `NodeSearch` is the Ctrl+K command palette, windowed to
 render only visible rows for large graphs. `BreadcrumbBar` shows the
 pipeline → submodel navigation stack and is hidden entirely at depth 1.
+
+**Reusable controls and style.** The global stylesheet establishes the initial dark canvas and
+semantic tokens that all panels consume; it also owns native-control, scrollbar, and React
+Flow interaction defaults. `NodeTypeIcon` displays the canonical icon/colour and maps an
+unknown historical node type to Polars. `ToggleButtonGroup` is a real single-choice radio
+group: only the selected option is in the tab order and Arrow keys/Home/End change both
+selection and focus. The shared form primitives associate labels with controls, honour
+disabled state, and buffer text locally until an explicit commit boundary, so typing into a
+graph-backed configuration cannot create one undo entry per character.
+
+**Pipeline imports.** The active imports UI is the right-side `ImportsPanel`, opened from the
+toolbar and rendered by the app's mutually-exclusive right-panel cascade. It delegates editing
+to `CodeEditor` and calls its parent for every editor change; the app applies those changes with
+the graph store's raw preamble setter, so importing text immediately affects derived dirty state
+without making an undo entry per keystroke. `SettingsModal` has the older dialog implementation
+of the same callback contract, but no production import or render site.
+
+**Leaf helpers.** Chart ticks and optimiser-mode inference are deterministic and side-effect
+free. Trace formatting makes special values and calculation substitution visible rather than
+normalising them away; malformed/circular object values are not caught by the formatter and
+therefore fail at the caller, consistent with the application's fail-loud policy.
 
 ## Design rationale
 

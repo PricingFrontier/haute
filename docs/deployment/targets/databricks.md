@@ -1,6 +1,6 @@
 # Databricks
 
-This guide walks you through setting up a Haute pipeline to deploy to **Databricks Model Serving** - step by step, from scratch. Once set up, every time you merge a change to main, CI automatically deploys your pipeline as a live API.
+This guide walks you through setting up a Haute pipeline to deploy to **Databricks Model Serving** - step by step, from scratch. The Databricks adapter is the end-to-end deployment path: it registers the model and creates or updates its serving endpoint. A CI run performs that action only when your team enables the generated workflow and supplies the required credentials.
 
 !!! info "What is Databricks Model Serving?"
     Databricks is a cloud platform for data and AI. **Model Serving** is a feature that takes a model (in this case, your pricing pipeline) and hosts it as a live web address (called an [API](../before-you-start.md#what-is-an-api)) that accepts quote data and returns results. You don't need to manage any servers.
@@ -20,14 +20,14 @@ This guide has **9 steps**. You don't need to do them all in one sitting.
 
 ## How it works
 
-You never run `haute deploy` yourself. Your workflow is:
+The generated CI workflow is designed to run `haute deploy`; you may use it after reviewing and adapting it. A typical workflow is:
 
 1. **Edit your pipeline** locally and preview with `haute serve`
 2. **Push your changes** and open a pull request - CI validates automatically
-3. **Merge to main** - CI deploys to a staging endpoint, runs smoke tests, generates an impact report
-4. **Review the impact report** and approve - CI deploys to production
+3. **Merge to main** - the generated workflow runs a staging deploy, then smoke and impact commands if the deploy succeeds
+4. **Review the result** and use a CI-provider approval/process to decide whether to run the separate production workflow
 
-All you need to set up is the configuration (`haute.toml`), the Databricks infrastructure (steps below), and CI secrets. After that, merging to main triggers everything automatically.
+Set up the configuration (`haute.toml`), Databricks infrastructure (steps below), CI secrets, and your CI provider's branch/environment protections. Haute does not enforce approval counts or create those protections.
 
 ---
 
@@ -238,24 +238,24 @@ dir = "tests/quotes"
 
 ## Step 8: Deploy by merging to main
 
-Once your configuration is set up and CI secrets are in place, you're ready to deploy. You don't run any deploy command - you just merge to main:
+Once your configuration is set up and CI secrets are in place, you can deploy through your CI process. The starter workflow is a sequence of commands, not an enforced governance policy:
 
 1. **Push your changes** to a branch and open a [pull request](../before-you-start.md#4-ask-for-a-review-pull-request)
 2. **CI validates automatically** - lints your code, runs tests, and does a dry-run deploy to check your pipeline parses and test quotes pass
-3. **Merge the PR** - CI deploys to a staging endpoint (`motor-pricing-staging`), runs smoke tests, and generates an impact report
-4. **Review the impact report** - download it from CI and check the premium changes make sense
-5. **Approve** - CI deploys to the real production endpoint
+3. **Merge the PR** - the generated staging workflow requests deployment to `motor-pricing-staging`, then invokes smoke and impact commands if that command succeeds
+4. **Review the impact report** - download it from CI if the impact job ran, and check the premium changes make sense
+5. **Promote deliberately** - use the separate production workflow and any CI-provider approval rule your team configured
 
-The first deploy will also create the serving endpoint. This can take **5–10 minutes** to provision.
+The first deploy creates the serving endpoint, but `haute deploy` returns after Databricks accepts the create or update request. Provisioning can take **5–10 minutes**. The generated workflow does not wait for readiness before it invokes `haute smoke`, so add a Databricks readiness wait/retry to that workflow (or rerun smoke and impact after the endpoint is **Ready**) before treating the sequence as a release gate.
 
 !!! success "What does success look like?"
-    After a successful deploy, you should see:
+    After Databricks reports the endpoint **Ready** and the corresponding smoke and impact commands have run, you should see:
 
-    1. **In your CI provider** - all pipeline steps show green ✓ (validation, staging deploy, smoke test, impact analysis)
+    1. **In your CI provider** - green validation and deploy jobs; smoke and impact can be green only after endpoint readiness and valid endpoint configuration
     2. **In Databricks** - click **Serving** in the left sidebar and you'll see your endpoint (e.g. `motor-pricing`) with status **Ready** and a green indicator
     3. **In MLflow** - click **Experiments** in the left sidebar, navigate to your experiment (e.g. `/Shared/haute/motor-pricing`), and you'll see a new run logged with the deployment details
 
-    If you see all three, congratulations - your pipeline is live and serving premiums!
+    If you see all three, your pipeline is live and serving premiums.
 
 If CI reports errors during validation, the most common causes are:
 
