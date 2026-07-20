@@ -48,15 +48,18 @@ tries to register them. `connect(source, target, source_port=, target_port=)` de
 edge and is chainable; both endpoints must already be registered nodes, and port names, if
 given, must be non-empty strings.
 
-Some node types store their declarative config in a JSON sidecar file (referenced via
-`config="config/<folder>/<name>.json"`) instead of inline decorator keywords — the folder
-convention is fixed per type. Using one of these types without `config=` is rejected with a
-message naming the exact folder and pointing at `haute init` for a starter sidecar. Every
-other type builds its config directly from decorator keywords and, for several types, from
-Python code extracted out of the function body.
+In the statically parsed representation, some node types store their declarative config in a
+JSON sidecar file (referenced via `config="config/<folder>/<name>.json"`) instead of inline
+decorator keywords — the folder convention is fixed per type. Parsing one of these types without
+`config=` is rejected with a message naming the exact folder and pointing at `haute init` for a
+starter sidecar. Every other type builds its config directly from decorator keywords and, for
+several types, from Python code extracted out of the function body. The live `Pipeline` decorator
+API does not load or validate a `config=` path; it records the keyword as ordinary node metadata,
+and generated function bodies/runtime graph builders own the corresponding executable behaviour.
 
-**Wiring.** Edges come from exactly two declared sources: explicit `connect()` calls, and
-function parameter names matching other node names. Explicit calls take precedence and
+**Wiring.** In the statically parsed source graph, edges come from exactly two declared
+sources: explicit `connect()` calls and function parameter names matching other node names.
+Explicit calls take precedence and
 implicit inference only fills in what wasn't already covered. Edges are never invented: a
 file that declares no wiring parses as a disconnected graph. (A definition-order chain
 fallback used to fabricate a linear chain for any multi-node file with zero declared edges;
@@ -64,6 +67,16 @@ it was removed because it made deliberately disconnected graphs unrepresentable 
 the last edge resurrected it on reparse, a GUI save then materialised the invented edge into
 source, and the fabricated chain disagreed with `run()`, which fails loudly on unwired
 transforms.)
+
+A static `connect()` whose source or target does not name a parsed node is omitted rather than
+raising. This differs from the live `Pipeline.connect()` API, which requires both endpoints to be
+registered and raises immediately. The static omission is covered as compatibility behaviour,
+but it means an invalid authored connect is not itself surfaced as a parse warning.
+
+The parameter-name rule belongs to static source parsing. A live `Pipeline` object records only
+edges added through `connect()`; its `run()`, `score()`, and `to_graph()` methods do not infer
+wiring from function signatures. With no registered edges, execution visits nodes in registration
+order but still rejects any non-source node when it has no inbound edge.
 
 **Standalone execution.** `Pipeline.run()` and `Pipeline.score(df)` are a self-contained
 executor over the live decorator graph (distinct from the full graph executor used for
@@ -123,11 +136,13 @@ Sidecar writes pass every config dict through an allowlist derived from each nod
 catches off-spec keys smuggled in by external tooling, a not-yet-hardened code path, or a
 frontend bug, without failing the save itself.
 
-Contract validation at parse time deliberately treats a model-scoring node's contract as
-unresolvable-but-acceptable when deriving it would require contacting MLflow: parsing runs
-during server startup, before a port is bound, and must not block on remote model I/O. Only
-infrastructure/IO-shaped failures are treated this way — a programmer error surfaces
-immediately rather than being silently absorbed into "opaque".
+Contract validation at parse time deliberately avoids contacting MLflow for model-scoring nodes:
+their input side is treated as opaque while the locally configured output column is still
+checked. For other node types, a `ConfigError`, `OSError`, `ImportError`, `RuntimeError`, or
+`MlflowException` raised while deriving a contract causes that comparison to use an opaque
+contract; programmer-shaped errors such as `TypeError`, `AttributeError`, and `KeyError`
+propagate. This fallback is broader than infrastructure-only failure because `ConfigError` and
+`RuntimeError` are included by the implementation.
 
 Windows-reserved device filenames (`CON`, `NUL`, `COM1`, etc.) are rejected on every
 platform, not only when running on Windows, so a project saved on Linux or macOS stays

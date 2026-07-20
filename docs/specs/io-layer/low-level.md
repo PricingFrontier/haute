@@ -174,7 +174,7 @@ sinker and returns `None`, `mode="write"` streaming-collects then calls the
    without checking that the file exists or that its content matches;
    `discover_pipelines` itself then checks `configured.exists()` and that
    `haute.Pipeline` appears in its text before accepting it.
-2. Falls back to `sorted(root.glob("*.py"))`, skipping `_SKIP` names and
+2. Independently scans `sorted(root.glob("*.py"))`, skipping `_SKIP` names and
    anything already matched in step 1, appending any file containing
    `haute.Pipeline`.
 3. `strict=True` converts an `OSError` while reading a candidate file into
@@ -204,6 +204,12 @@ sinker and returns `None`, `mode="write"` streaming-collects then calls the
   > gate upstream), that `mkdir` call is effectively dead code in this call
   > path — the net behaviour (never auto-create a missing parent) matches
   > `_file_ops`'s stated invariant, just via a different mechanism.
+  > NOTE: unlike `_file_ops._temp_path_for`, `_polars_utils.atomic_write`
+  > derives the same `dest.with_suffix(".parquet.tmp")` path for every writer.
+  > Concurrent calls targeting the same destination can overwrite, move, or
+  > remove one another's staging file (and on POSIX a rename can expose an
+  > inode another writer still has open). The helper is atomic only under its
+  > implicit single-writer-per-destination precondition.
 
 ### Streaming collect/sink (`_polars_utils.py`)
 
@@ -297,6 +303,10 @@ sinker and returns `None`, `mode="write"` streaming-collects then calls the
   `open()`/`read_bytes`/`read_text`). This is a deliberate fail-loud miss —
   not retried — under the single-user trust model; see the `_file_ops.py`
   module docstring and `tests/test_file_ops.py::TestAtomicWriteWindowsReaderContention`.
+- Concurrent `atomic_write_bytes` calls are isolated by pid/UUID temp names and
+  remain last-rename-wins. `_polars_utils.atomic_write` and the profiled sink
+  family do not have that isolation: their fixed `.parquet.tmp` path requires
+  external serialisation for same-destination concurrent writes.
 - `_malloc_trim` is platform-conditional: `ctypes.CDLL("libc.so.6").
   malloc_trim(0)` on Linux, `kernel32.HeapCompact` (with an explicit
   `HANDLE` return-type declaration to avoid 64-bit pointer truncation) on
@@ -388,7 +398,7 @@ Tests live across several files, split roughly by module:
   Hypothesis-style property coverage (`TestPathResolutionProperties`,
   `TestWindowsReservedNameProperties`).
 - `tests/test_discovery.py` / `tests/test_discovery_fail_loudly.py` —
-  configured-pipeline precedence over glob fallback, empty/single/multiple
+  configured-pipeline-first ordering plus the root glob scan, empty/single/multiple
   matches, `_SKIP` filtering, content-matching (`haute.Pipeline` substring),
   unreadable-file handling in both non-strict (log-and-continue, other
   files still processed) and `strict=True` (raises `ConfigError`) modes,
@@ -402,11 +412,15 @@ Tests live across several files, split roughly by module:
   process-global `temporary_streaming_chunk_size` lock; `_malloc_trim`
   dispatch across simulated platforms.
 
-Known coverage gaps: none called out explicitly in the source or test
-files reviewed for this spec; the streaming-error classification helpers
+Known coverage gaps: the streaming-error classification helpers
 (`_is_streaming_compatibility_error`/`_is_streaming_sink_error`) rely on a
 string-matching heuristic (`"stream" in str(exc).lower()`) to distinguish
 a genuine streaming-incompatibility `ComputeError`/`InvalidOperationError`/
 `SchemaError` from an unrelated Polars error of the same exception type;
 the test suite exercises both branches but does not exhaustively probe
 every Polars error message shape that could hit this heuristic.
+
+No test exercises two concurrent `_polars_utils.atomic_write`/profiled-sink
+calls to the same destination. The fixed temp path makes that unsupported in
+the current implementation; only `_file_ops`'s unique-temp concurrent-writer
+contract is directly tested.

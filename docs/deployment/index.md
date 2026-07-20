@@ -1,6 +1,6 @@
 # Deployment
 
-Deployment is how your pricing pipeline goes from a Python file on your laptop to a **live API** that other systems can call. When your policy admin system needs a premium for a new quote, it sends a request to this API, and the API runs your pipeline and returns the answer.
+Deployment packages a pricing pipeline for a serving target. For **Databricks**, Haute also registers the model and creates or updates a Model Serving endpoint. For the **container** target, Haute builds an image (and pushes it when a registry is configured); your platform team runs that image. The Azure Container Apps, AWS ECS, and GCP Cloud Run adapters currently stop after the image push and require a manual service update.
 
 !!! warning "New to Haute? Start here."
     If you haven't installed Haute yet, start with **[Getting Started](../getting-started/index.md)** - it covers installing everything and running your first `haute serve`. If you don't know what a pull request, CI/CD, or staging means, read **[Before You Start](before-you-start.md)** next - it explains every deployment concept in plain English.
@@ -8,7 +8,7 @@ Deployment is how your pricing pipeline goes from a Python file on your laptop t
 !!! tip "Haven't built your pipeline yet?"
     These docs assume you already have a working pricing pipeline (`rating/main.py`). If you haven't created one yet, start with the **Building Pipelines** guide first, then come back here when you're ready to deploy.
 
-Haute handles the entire deployment process for you. You **merge your changes to main** (apply them to the main version of the project - see [Before You Start](before-you-start.md#5-accept-the-changes-merge)) and Haute's [CI/CD pipeline](before-you-start.md#what-is-cicd) (an automated process that tests and deploys your code) does the rest - packaging, uploading, testing, and promoting to production. No Docker knowledge, no cloud consoles, no DevOps tickets. You never need to run a deploy command yourself.
+`haute init` generates CI examples, but they are ordinary workflow files that your team owns. They run Haute commands in sequence; they do **not** themselves provision infrastructure, create a staging environment, or enforce an approval policy. Review the generated workflow and configure your CI provider's own branch protections, environments, and approvals before relying on it for a release process.
 
 ---
 
@@ -19,22 +19,22 @@ As a pricing analyst, your day-to-day workflow is:
 1. **Edit your pipeline** - change your Python file, update a model, adjust a transform
 2. **Preview it** - run `haute serve` to open the visual editor and check everything looks right
 3. **Push and open a pull request** - CI (an automated checker - see [Before You Start](before-you-start.md#what-is-cicd)) automatically validates your pipeline
-4. **Merge to main** - CI automatically deploys to staging, runs smoke tests, and generates an impact report
-5. **Review the impact report** - check the premium changes make sense
-6. **Approve** - CI deploys to production
+4. **Merge to main** - the generated workflow can run a deploy, smoke test, and impact analysis in that order
+5. **Review the result** - check logs and any impact report; choose a provider-level approval process appropriate for your team
+6. **Promote deliberately** - run the production workflow or deployment process your team has configured
 
 You never need to run `haute deploy`, install Docker, or manage cloud credentials on your machine. The CI runner handles all of that.
 
 ### What happens behind the scenes?
 
-When CI runs the deploy, Haute automatically:
+When a CI runner invokes `haute deploy`, Haute:
 
 1. **Parses your pipeline** - reads your Python file and builds a graph of all the steps
 2. **Prunes to the scoring path** - removes training steps, data exports, and anything not needed for live scoring
 3. **Collects artifacts** - finds all the model files (e.g. `.cbm`, `.pkl`) your pipeline references and bundles them
 4. **Validates** - runs your test quotes through the pruned pipeline to make sure it works
-5. **Packages and uploads** - wraps everything into the format your target expects and pushes it
-6. **Creates the endpoint** - sets up (or updates) the live API so it's ready to receive requests
+5. **Packages and uploads** - wraps everything into the format the selected target expects and uploads it where supported
+6. **Dispatches by target** - Databricks creates or updates Model Serving; `container` returns the image for a separate hosting step; the Azure, ECS, and GCP adapters fail after building/pushing because their service-update integrations are not implemented
 
 ---
 
@@ -46,8 +46,10 @@ A **target** is where your pipeline will run in production. Haute supports sever
 |---|---|---|
 | [**Databricks**](targets/databricks.md) | Teams already using Databricks | A Databricks workspace - the simplest option, no containers involved |
 | [**Docker**](targets/docker.md) | Companies without Databricks | IT takes the package and deploys it on their infrastructure |
-| [**AWS ECS**](targets/aws.md) | Teams on AWS (with IT support) | An AWS account - IT sets up the infrastructure, you just merge |
-| [**Azure Container Apps**](targets/azure.md) | Teams on Azure (with IT support) | An Azure subscription - IT sets up the infrastructure, you just merge |
+| [**AWS ECS**](targets/aws.md) | Teams on AWS (with IT support) | An AWS account and a manual ECS service-update handoff; the built image is pushed before Haute exits with an unimplemented-adapter failure |
+| [**Azure Container Apps**](targets/azure.md) | Teams on Azure (with IT support) | An Azure subscription and a manual Container Apps revision handoff; the built image is pushed before Haute exits with an unimplemented-adapter failure |
+| GCP Cloud Run | Teams on GCP (with IT support) | Config target is recognised, but its service update is not implemented; use the image tag in the failure message for a manual update |
+| SageMaker / Azure ML | Planned targets | Recognised by scaffolding/configuration but rejected before deployment with `NotImplementedError` |
 
 You pick your target once when you set up the project. The command is:
 
@@ -158,20 +160,20 @@ This catches problems early: schema mismatches, missing model files, runtime err
 
 ---
 
-## Safety gates
+## Validation and release controls
 
-In insurance, a pricing mistake can misprice millions of pounds of premium before anyone notices. Haute builds safety into every deployment:
+Haute validates a deployment graph and scores configured test quotes before a non-dry-run target dispatch. It also provides `haute smoke` and `haute impact` commands for an already-running endpoint. These are useful release building blocks, not a managed safety system:
 
 | Safety check | What it does |
 |---|---|
 | **Dry-run validation** | Parses the pipeline, checks all model files exist, scores test quotes |
-| **Staging deployment** | Deploys to a separate staging endpoint first, never straight to production |
-| **Smoke testing** | Scores test quotes against the live staging endpoint |
-| **Impact analysis** | Compares new premiums vs current production premiums across a portfolio sample |
-| **Approval gate** | Requires a team member to review the impact report and approve before production |
-| **Rollback** | If something goes wrong, revert to the previous version in minutes |
+| **Staging deployment** | `--endpoint-suffix` chooses a different name; the target and your infrastructure must provide that endpoint |
+| **Smoke testing** | `haute smoke` scores configured test quotes against an existing Databricks or HTTP endpoint |
+| **Impact analysis** | `haute impact` compares existing staging and production endpoints using a configured portfolio sample |
+| **Approval gate** | Configure this in GitHub, GitLab, Azure DevOps, or your own release process; `min_approvers` is configuration metadata, not an enforced gate |
+| **Rollback** | Use your target platform's model/image revision and rollback procedure |
 
-These are all configured in `haute.toml` and enforced automatically by the [CI/CD pipeline](before-you-start.md#what-is-cicd) - an automated process that runs every time you propose a change. See the CI/CD setup guides ([GitHub Actions](ci/github-actions.md), [GitLab](ci/gitlab.md), [Azure DevOps](ci/azure-devops.md)) for details.
+The CI files generated by `haute init` sequence the available commands. Whether they run, whether production requires approval, and how a failed stage is handled are CI-provider and repository-policy decisions. See the CI setup guides ([GitHub Actions](ci/github-actions.md), [GitLab](ci/gitlab.md), [Azure DevOps](ci/azure-devops.md)) for the generated-job behaviour and required platform configuration.
 
 ---
 

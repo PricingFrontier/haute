@@ -1,0 +1,95 @@
+# Files intentionally named by more than one component Module map.  The
+# primary component owns the file's specification; consumers document only
+# their direct interaction with it.
+
+version = 1
+
+[[shared_file]]
+path = "frontend/package.json"
+primary = "build-and-distribution"
+consumers = ["engineering-quality"]
+reason = "Build metadata is also the frontend quality-command entry point."
+
+[[shared_file]]
+path = "frontend/src/App.tsx"
+primary = "frontend-graph-canvas"
+consumers = ["frontend-assistant-ui"]
+reason = "The application shell hosts the canvas and wires in the assistant panel."
+
+[[shared_file]]
+path = "frontend/src/components/Toolbar.tsx"
+primary = "frontend-shared"
+consumers = ["frontend-assistant-ui"]
+reason = "The common toolbar is extended by the assistant entry point."
+
+[[shared_file]]
+path = "frontend/src/components/form/CommittedTextField.tsx"
+primary = "frontend-shared"
+consumers = ["frontend-node-editors"]
+reason = "Shared UI owns the reusable committed-input contract used by node editors."
+
+[[shared_file]]
+path = "frontend/src/components/form/ConfigCheckbox.tsx"
+primary = "frontend-shared"
+consumers = ["frontend-node-editors"]
+reason = "Shared UI owns the reusable configuration checkbox used by node editors."
+
+[[shared_file]]
+path = "frontend/src/components/form/EditorLabel.tsx"
+primary = "frontend-shared"
+consumers = ["frontend-node-editors"]
+reason = "Shared UI owns the accessible editor-label primitive used by node editors."
+
+[[shared_file]]
+path = "frontend/src/components/form/index.ts"
+primary = "frontend-shared"
+consumers = ["frontend-node-editors"]
+reason = "Shared UI owns the public form-primitive barrel used by node editors."
+
+[[shared_file]]
+path = "frontend/src/stores/useUIStore.ts"
+primary = "frontend-shared"
+consumers = ["frontend-assistant-ui"]
+reason = "Global UI state is shared infrastructure consumed by the assistant panel."
+
+[[shared_file]]
+path = "frontend/src/types/node.ts"
+primary = "frontend-shared"
+consumers = ["frontend-graph-canvas"]
+reason = "Shared UI owns canonical node-data types consumed at the canvas boundary."
+
+[[shared_file]]
+path = "pyproject.toml"
+primary = "build-and-distribution"
+consumers = ["assistant", "engineering-quality"]
+reason = "Package metadata also configures quality tools and declares the assistant dependency."
+
+[[shared_file]]
+path = "src/haute/_gitignore_guard.py"
+primary = "sandbox-security"
+consumers = ["git-integration"]
+reason = "The security guard owns the deny-list; git seeding consumes its shared writer."
+
+[[shared_file]]
+path = "src/haute/_local_security.py"
+primary = "sandbox-security"
+consumers = ["server-api"]
+reason = "Local security policy protects the server's file-facing routes."
+
+[[shared_file]]
+path = "src/haute/routes/_save_pipeline.py"
+primary = "server-api"
+consumers = ["assistant"]
+reason = "The core save route is invoked by assistant graph-authoring tools."
+
+[[shared_file]]
+path = "src/haute/schemas.py"
+primary = "server-api"
+consumers = ["assistant", "explore-eda", "mlflow-model-registry", "modelling", "optimiser"]
+reason = "Shared HTTP contracts are defined centrally and consumed by feature routes."
+
+[[shared_file]]
+path = "src/haute/server.py"
+primary = "server-api"
+consumers = ["assistant"]
+reason = "The application shell mounts the assistant router and streaming endpoint."

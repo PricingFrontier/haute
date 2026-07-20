@@ -41,18 +41,56 @@ The system has three tiers:
   [server-api](server-api/high-level.md), [execution-engine](execution-engine/high-level.md),
   [modelling](modelling/high-level.md), [optimiser](optimiser/high-level.md),
   [deploy](deploy/high-level.md), and [git-integration](git-integration/high-level.md).
-- **Deploy target** — a live scoring endpoint: a Docker container running the same FastAPI
-  scoring path, or a Databricks Model Serving endpoint fed by an MLflow pyfunc model. See
-  [deploy](deploy/high-level.md).
+- **Deploy target** — a live scoring endpoint using the same validated scoring contract as the
+  editor. Databricks Model Serving is implemented end to end through an MLflow pyfunc model. The
+  generic `container` target builds and pushes a FastAPI scoring image but deliberately does not
+  choose a hosting platform. Azure Container Apps, AWS ECS, and GCP Cloud Run currently validate,
+  build, and push that image, then fail loudly before service update because their SDK adapters are
+  not implemented. SageMaker and Azure ML remain scaffold-visible planned targets and are rejected
+  by deploy. See [deploy](deploy/high-level.md).
 
-**One pipeline, two scoring shapes.** The same pipeline code and node graph handle both live and
-batch scoring — only the input shape differs: a live API request is parsed into a 1-row Polars
-DataFrame and run through the graph; a batch job runs the identical graph over an N-row
-DataFrame read from Parquet/CSV/a Databricks table. Nothing about the pipeline definition
-changes between the two.
+**One authored pipeline, one derived deploy graph.** Authors maintain one pipeline. Deployment
+derives a scoring-only graph from it by retaining the selected output's ancestors and collapsing
+each `liveSwitch` to its live branch. The same deploy scorer then handles request batches of one
+or many records; the request batch size changes, but the authored pipeline is not duplicated into
+separate live and batch implementations.
 
 Backend and frontend module-by-module layouts are not duplicated here — each component's
 `low-level.md` has an accurate, current module map; see the component tables below.
+
+## Repository coverage contract
+
+The component specs cover maintained behaviour, not just the importable runtime:
+
+- Every behavioural source under `src/haute/` is named in a backend component's low-level module
+  map. Generated `src/haute/static/` assets are covered as a build output rather than one component
+  per hashed file; `src/haute/py.typed` is a distribution marker.
+- Every production `.ts`, `.tsx`, and `.css` source under `frontend/src/` is named in a frontend
+  component's low-level module map. Test-only directories and `setupTests.ts` belong to the
+  verification system rather than the shipped application.
+- Packaging, dependency locks, frontend compilation, static-asset bundling, and documentation-site
+  publication are owned by [build-and-distribution](build-and-distribution/high-level.md).
+- CI workflows, lint/type/coverage gates, repository scripts, mutation testing, browser E2E, and
+  the role of the large test/audit corpora are owned by
+  [engineering-quality](engineering-quality/high-level.md). Tests that verify a product component
+  are also named in that component's `## Testing` section.
+- The checked-in `rating/` project is a non-runnable layout/example snapshot, documented by
+  [reference-pipeline](reference-pipeline/high-level.md). Missing input data and a referenced
+  sidecar remain loud, and no dedicated test suite maintains it as an end-to-end compatibility
+  fixture.
+- A file may be named in several module maps only when one component is its **primary owner** and
+  the others are consumers documenting their direct interaction. The complete, machine-checked
+  set is [ownership.toml](ownership.toml); new shared files must be added there rather than
+  silently acquiring multiple owners.
+
+Current delivery intent lives in `docs/roadmap/`; those roadmaps are non-normative and do not
+replace code, tests, or behaviour specifications. Review findings and reproducers under
+`docs/review/`, `docs/fable-Review/`, and `repro/` are point-in-time evidence. Generated caches,
+coverage data, untracked local MLflow state, `site/`, and built static assets are outputs, not
+additional source components. Tracked root policy, legal, tooling, and snapshot artifacts are
+listed explicitly in the appropriate repository-level module map even when they are non-runtime
+or non-normative; in particular, the tracked `mlflow.db` is classified as a historical local
+MLflow SQLite snapshot rather than silently grouped with untracked generated state.
 
 ## Where is each node type specced?
 
@@ -64,14 +102,14 @@ every node type: its generated-code template (`_gen_*`) is specced in
 
 | Node type | Core behaviour specced in |
 |---|---|
-| `apiInput` | [server-api](server-api/high-level.md) (v2 input codec), [json-shredding](json-shredding/high-level.md) (JSON→frames shredding) |
+| `apiInput` | [json-shredding](json-shredding/high-level.md) (v2 input codec and JSON→frames shredding); [caching](caching/high-level.md) owns the JSON-cache HTTP route |
 | `dataSource` | [io-layer](io-layer/high-level.md); [databricks-io](databricks-io/high-level.md) when fed from a Databricks fetch |
 | `dataInput` / `dataOutput` | [io-layer](io-layer/high-level.md) (Polars IO registry) |
 | `polars` | [execution-engine](execution-engine/high-level.md) (execution), [sandbox-security](sandbox-security/high-level.md) (user-code validation), [expression-parsing](expression-parsing/high-level.md) (trace formulae) |
 | `edgeJoin` | [json-shredding](json-shredding/high-level.md) (`_edge_join.py` join core) |
 | `modelScore` | [mlflow-model-registry](mlflow-model-registry/high-level.md) (loading/scoring/explainability) |
 | `banding` / `ratingStep` | [rating](rating/high-level.md) |
-| `output` | [server-api](server-api/high-level.md) (output assembly), [deploy](deploy/high-level.md) (served response) |
+| `output` | [json-shredding](json-shredding/high-level.md) (output mapping and assembly), [server-api](server-api/high-level.md) (editor dry-run route), [deploy](deploy/high-level.md) (served response) |
 | `dataSink` | [execution-engine](execution-engine/high-level.md) (lazy sink execution), [io-layer](io-layer/high-level.md) (writers) |
 | `explore` | [explore-eda](explore-eda/high-level.md) (backend), [frontend-preview-explore](frontend-preview-explore/high-level.md) (UI) |
 | `externalFile` | [pipeline-config](pipeline-config/high-level.md) (config/builders), [io-layer](io-layer/high-level.md) (reading), [deploy](deploy/high-level.md) (bundling) |
@@ -94,7 +132,7 @@ every node type: its generated-code template (`_gen_*`) is specced in
 | [expression-parsing](expression-parsing/high-level.md) | Parsing user expressions and pipeline code into structured form |
 | [io-layer](io-layer/high-level.md) | Polars IO registry/schema, file ops, path resolution, dataset discovery |
 | [databricks-io](databricks-io/high-level.md) | Databricks connectivity and data access routes |
-| [json-shredding](json-shredding/high-level.md) | JSON shredding/flattening, JSONPath, projections, edge joins |
+| [json-shredding](json-shredding/high-level.md) | API-input schema, JSON shredding/flattening, JSONPath, output assembly, edge joins |
 | [sandbox-security](sandbox-security/high-level.md) | Sandboxed execution of user code, local security, environment guards |
 | [git-integration](git-integration/high-level.md) | Git operations backing pipeline versioning and the git API routes |
 | [tracing](tracing/high-level.md) | Execution traces: correlation, enrichment, export, waterfall |
@@ -122,3 +160,11 @@ every node type: its generated-code template (`_gen_*`) is specced in
 | [frontend-trace-ui](frontend-trace-ui/high-level.md) | Trace panel and trace visualisation |
 | [frontend-assistant-ui](frontend-assistant-ui/high-level.md) | Assistant chat panel: transcript, streaming consumption, send gates |
 | [frontend-shared](frontend-shared/high-level.md) | API client, global stores, hooks, theme, shared widgets |
+
+## Repository, delivery, and reference components
+
+| Component | Covers |
+|---|---|
+| [build-and-distribution](build-and-distribution/high-level.md) | Python package metadata and Hatch hook, frontend production build, bundled static assets, dependency locks, typed-package marker, and MkDocs publication |
+| [engineering-quality](engineering-quality/high-level.md) | CI workflows, pre-commit/lint/type/test gates, critical coverage, mutation/performance suites, browser E2E, developer scripts, and non-normative engineering evidence |
+| [reference-pipeline](reference-pipeline/high-level.md) | The checked-in non-runnable `rating/` layout/example snapshot: generated graph code, available sidecars, utilities, and model artefacts, with missing referenced data/sidecar and no dedicated end-to-end tests |

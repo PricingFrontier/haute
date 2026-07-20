@@ -3,20 +3,15 @@
 ## Purpose
 
 This component turns nested, tree- or graph-shaped inputs into the flat, minimal
-representations the rest of the pipeline actually consumes. Three unrelated-looking
-problems share the same shape and are grouped here:
+representations the rest of the pipeline actually consumes. Two related problems
+are grouped here:
 
 1. **JSON API-input shredding** — a JSON/JSONL document (arbitrarily nested objects
    and arrays) is "shredded" into one or more flat, typed tables (Polars frames),
    cached on disk as parquet so the pipeline never re-parses raw JSON at run time.
-2. **Graph flattening** — a pipeline graph that contains submodel nodes (a saved
-   sub-pipeline referenced as a single opaque node) is dissolved ("flattened") into
-   one concrete graph the executor can run, with submodel boundary edges rewired to
-   the real child nodes.
-3. **Column-need flattening (projection)** — the minimal set of columns each node in
-   a graph actually needs is computed by sweeping demand backward from terminal
-   outputs to sources, so scans and intermediate frames can be narrowed instead of
-   carrying every column through every node.
+2. **JSON output assembly** — flat frames plus output-path mappings can be
+   structurally validated and are re-nested into one deterministic array-outer
+   response document without cross-multiplying independent sibling arrays.
 
 Two smaller shared utilities back these: a single path-grammar core used to address
 locations inside a JSON document from both the input and output sides, and a
@@ -28,10 +23,12 @@ In scope:
 
 - Shredding a JSON/JSONL API input into per-table parquet caches, schema inference
   from sample data, and the dual-layer (working/committed) cache lifecycle around it.
-- Dissolving submodel nodes into a flat, executable graph.
-- Computing a graph-wide column projection plan (which columns each node and each
-  edge needs) and the node-type-specific rules that drive it, including the
-  mechanical column-routing rule for join nodes.
+- The v2 apiInput schema codec: shape recognition, shared table/column path
+  parsing, canonical path writing, structural validation, and filesystem-safe
+  table labels.
+- The v2 OUTPUT mapping contract and document assembler, including same-level
+  cyclic-table cut planning, bag-natural joins, array-prefix nesting, and the
+  final response-document shape.
 - Validating and executing `edgeJoin` node configuration (Polars join construction).
 - The shared array-outer JSON path grammar (acceptance, canonical form, parsing).
 - Converting arbitrary Python/pipeline values into JSON-safe payloads for API
@@ -39,20 +36,14 @@ In scope:
 
 Out of scope (owned elsewhere):
 
-- The v2 apiInput schema's own type system, path-segment parsing, and validation
-  rules (`_api_input_schema.py`) — this component consumes that schema but does not
-  define it; see [io-layer](../io-layer/high-level.md).
-- The v2 OUTPUT mapping schema and assembler that uses the OUTPUT side of the shared
-  path grammar (`_output_assembler.py`) — see [io-layer](../io-layer/high-level.md).
-- The executor's own backward column-demand analysis inside lazy execution
-  (`_execute_lazy.py`'s `_compute_needed_columns` / `_compute_projection_plan`),
-  which is a related but separately-tested implementation used during actual graph
-  execution — see [execution-engine](../execution-engine/high-level.md).
-- Parsing pipeline source files into a graph, including the submodel-merging code
-  that calls into this component's flattener (`_parser_submodels.py`) — see
-  [pipeline-config](../pipeline-config/high-level.md).
-- The HTTP routes that drive JSON-cache build/status/delete
-  (`routes/json_cache.py`) — see [server-api](../server-api/high-level.md).
+- Graph-wide column projection planning (`projection.py`) and the executor's
+  backward column-demand analysis belong to
+  [execution-engine](../execution-engine/high-level.md). This component supplies
+  the shared edge-join demand-narrowing helper that planner consumes.
+- Submodel definition, boundary rewiring, and expansion into an executable graph —
+  see [submodels](../submodels/high-level.md).
+- The HTTP routes that drive JSON-cache build/status/delete/cancel
+  (`routes/json_cache.py`) — see [caching](../caching/high-level.md).
 
 ## Behaviour
 
@@ -77,26 +68,21 @@ table, or is counted as a skip against that table (its shape didn't match — an
 object where a scalar was expected, or vice versa), or — for a non-object top-level
 record — is counted as a skipped record. No element silently disappears.
 
-**Graph flattening.** A pipeline graph that references submodels carries submodel
-placeholder nodes plus the submodels' own internal node/edge lists. Flattening
-removes the placeholder(s) for the targeted submodel(s) (or all of them), inlines
-their internal nodes and edges into the parent graph, and rewires any edge that
-crossed the submodel boundary to point at the real internal node the boundary handle
-represents — including restoring the base/join role on an edge-join node that sat at
-a submodel boundary.
-
-**Column projection.** Given a graph and (optionally) an execution profile and a set
-of caller-seeded required output columns, the planner computes, for every node, the
-column set it needs to produce (or `None` meaning "all columns, opaque") and, for
-every edge, the column set the child actually demands from that specific parent.
-Demand starts at terminal/output nodes and is swept backward in reverse topological
-order; most node types combine their own declared or inferred column contract with
-their children's demand, but nodes whose contract can't be proven (opaque contracts,
-unprovable user code, ambiguous multi-parent fan-in) either force their parents
-opaque too or are routed through a node-type-specific rule (join key columns, a
-ratebook banding source, single-parent Polars expression backward-analysis, …).
-Some execution profiles require the plan to be provably narrow; for those, an
-unprovable node raises rather than silently falling back to a full-width scan.
+**V2 schema and output document.** A v2 apiInput is recognised only by a
+`tables` list. Each table has a unique non-empty label, a non-empty path,
+unique column names, known column types, and an optional row-ID column that must name one of its own
+columns. Table paths end at an array boundary; columns may live at that boundary
+or at an ancestor boundary so an ancestor value can be distributed into child
+rows. The OUTPUT side consumes only active, complete mapping rows and requires
+the same array-outer path grammar (parseable bracket-name spellings are
+accepted; the writer emits the canonical dotted form). Its explicit structural
+validator rejects same-port duplicate or prefix-comparable destinations.
+Assembly returns a top-level list of objects:
+sibling array branches are nested independently (never cross-multiplied),
+same-level frames use a deterministic cut plan and bag semantics, unmatched
+partials survive, and null-valued/empty-collection object fields are pruned
+from the rendered document (null or empty-list elements already inside arrays
+remain array elements).
 
 ## Design rationale
 
@@ -107,7 +93,7 @@ object never changes cardinality. Treating every nesting level as a new table wo
 produce a table explosion with mostly 1-row joins; folding 1-1 objects into dotted
 columns keeps the shredded schema close to what a user actually wants to query.
 
-**Every dropped element is counted, never silently discarded.** Earlier flattening
+**Every dropped element is counted, never silently discarded.** Earlier JSON-input
 code resolved a shape mismatch (an array where an object was expected, mid-walk)
 by silently taking the first element and dropping the rest — a conservation
 violation that lost data with no trace. The shred now either resolves the shape
@@ -126,15 +112,25 @@ edit on a coarse-resolution filesystem) must not be served as fresh. The one-tim
 cost of hashing on every validity check was judged cheaper than a class of stale-data
 bugs that would be silent and hard to reproduce.
 
-**Cache writes are atomic and serialized per cache directory.** A build stages
-everything (parquets + `meta.json`) in a sibling temporary directory and swaps it
-into place with a rename dance that survives transient Windows file-handle locks
-(retried with backoff) and restores the previous directory if the second rename
-fails. A per-cache-directory lock prevents two concurrent builds of the *same* cache
-from interleaving their write phases; builds of different caches remain independent.
-This is the same swap primitive used both by the shred's own build and by promoting
-`working/` to `committed/` at save time, so there is one atomic-publish
-implementation, not two.
+**Cache writes are fully staged and same-process builds are serialized per cache
+directory.** A build writes everything (parquets + `meta.json`) into a unique sibling
+temporary directory before publishing it. The publish helper renames the existing
+directory aside and then renames the completed staging directory into place; it
+retries transient Windows file-handle locks and attempts to restore the previous
+directory if the second rename raises. A process-local per-cache lock prevents two
+threads building the *same* cache from interleaving their write phases; builds of
+different caches remain independent. The same swap primitive is used both by the
+shred's own build and by promoting `working/` to `committed/` at save time.
+
+> NOTE: Replacing an existing directory is a two-rename swap, not one atomic
+> filesystem operation. Between `live -> backup` and `temp -> live`, a concurrent
+> reader can observe the live path as absent. The lock covers builders and promotion
+> in this process, but not readers or other processes. An abrupt process exit in that
+> window (or a failed restoration) can also leave only the uniquely named backup;
+> the next successful swap only cleans the legacy fixed `.build-old` name, not those
+> UUID backups. Tests cover same-process builder serialization, staged-write failure,
+> transient rename retry, and synchronous restoration attempts, but not concurrent
+> readers, cross-process publishers, or interruption between the two renames.
 
 **Silent numeric/date coercion is rejected even though the underlying columnar
 library would allow it.** Polars will silently coerce a Python `bool` into a numeric
@@ -143,33 +139,23 @@ loaded into a `Date` column as a days-since-epoch offset. Both would produce a
 column that "succeeds" but is wrong. The shred detects these shapes ahead of the
 strict build and raises a specific, column-named error instead.
 
-**Projection prefers a full-width fallback over a wrong narrow one.** Wherever the
-planner cannot mechanically prove which parent produces a demanded column — an
-opaque multi-parent fan-in, a join whose strategy or suffix rules out a mechanical
-mapping, user code with unparseable or unprovable shape — it keeps the boundary
-full-width (`None`, "read everything") rather than guess. Some execution profiles
-escalate this to a hard failure instead of silently falling back, because a silent
-full-width read defeats the point of running a bounded/streaming profile at all.
-
 ## Interactions
 
-- Consumes the v2 apiInput schema type system and path-segment parsing from
-  `_api_input_schema.py` — see [io-layer](../io-layer/high-level.md).
+- Owns the v2 apiInput type/path boundary in `_api_input_schema.py`; the shred,
+  cache route, executor, and editor consume that one validation contract.
 - The runtime entry point (`load_v2_api_source`) is called by both the eager
   executor's source builder and the generated/deploy code path, so both paths read
   identical cached frames — see [execution-engine](../execution-engine/high-level.md)
   and [codegen](../codegen/high-level.md).
-- The projection planner's output (`ProjectionPlan`) is consumed by the lazy
-  execution engine to decide scan/select column sets and by route/deploy callers
-  that need to know a graph's column strategy ahead of running it — see
-  [execution-engine](../execution-engine/high-level.md).
-- Graph flattening is invoked by the pipeline parser's submodel-merge path — see
-  [pipeline-config](../pipeline-config/high-level.md).
-- The JSON-cache build/status/delete HTTP routes drive the build and cache-lifecycle
-  functions in this component — see [server-api](../server-api/high-level.md).
-- The shared path grammar (`_jsonpath.py`) is also used by the OUTPUT-mapping
-  assembler on the io-layer side, so both INPUT and OUTPUT addressing stay
-  single-sourced — see [io-layer](../io-layer/high-level.md).
+- The execution engine's projection planner consumes `_edge_join.py`'s shared
+  demand-narrowing rule so static planning and runtime join construction agree —
+  see [execution-engine](../execution-engine/high-level.md).
+- The JSON-cache build/status/delete HTTP routes owned by
+  [caching](../caching/high-level.md) drive the build and cache-lifecycle functions
+  in this component. Its compatibility cancel route does not stop a shred build.
+- The shared path grammar (`_jsonpath.py`) is used by both the INPUT codec and
+  this component's OUTPUT-mapping assembler, so both addressing directions stay
+  single-sourced.
 - JSON-safe encoding is used wherever preview rows or route payloads carry pipeline
   values (dates, non-finite floats, oversized integers) out over HTTP — see
   [server-api](../server-api/high-level.md).
@@ -178,6 +164,14 @@ full-width read defeats the point of running a bounded/streaming profile at all.
 
 - A malformed v2 schema config (bad table/column shape) is rejected up front by
   schema validation before any shredding happens, not discovered mid-walk.
+- The OUTPUT dry-run route calls the structural validator before execution, so
+  its malformed mappings raise `OutputMappingSchemaError` before data is
+  assembled. The lower-level runtime assembly entry point does not call that
+  validator itself; malformed path syntax is still rejected while parsing, but
+  duplicate/prefix conflicts can instead reach Polars or produce ambiguous
+  assembly if a caller skipped validation. A missing source port/column still
+  surfaces from normal mapping/Polars lookup rather than being replaced with an
+  empty document.
 - A source JSON key that would collide with the reserved scalar-array sentinel, or
   that contains the object-nesting separator character, is rejected loudly at
   inference time — there is no way to address it unambiguously as a column, so
@@ -196,9 +190,5 @@ full-width read defeats the point of running a bounded/streaming profile at all.
   selected columns, or a stale/missing cache in both the working and committed
   layers, raises `RuntimeError` with a message telling the user which UI action
   (ticking `emit`/a column, or clicking "Cache as Parquet") will fix it.
-- Projection rules that cannot prove ownership of a demanded column either widen the
-  boundary to full-width (non-strict profiles) or raise `ContractMismatchError` /
-  `ProjectionImpossibleError` (strict profiles) — never guess a possibly-wrong
-  narrow projection.
 - `edgeJoin` node misconfiguration (ambiguous/missing base or join role, unsupported
   join strategy, mismatched key counts) raises `ConfigError` before any join runs.

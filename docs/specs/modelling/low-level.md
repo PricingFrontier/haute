@@ -4,22 +4,23 @@
 
 | File | Responsibility |
 |---|---|
-| `modelling/__init__.py` | Public API surface: `FitResult`, `MLflowLogResult`, `TrainingJob`, `TrainResult`, `SplitConfig`, `generate_training_script`, `log_experiment`. |
-| `modelling/_algorithms.py` | `BaseAlgorithm` ABC, `CatBoostAlgorithm`, `ALGORITHM_REGISTRY`, memory-checkpoint helpers, CatBoost `Pool` construction, GPU fit-thread lifecycle. |
-| `modelling/_rustystats.py` | `GLMAlgorithm` implementing `BaseAlgorithm` via RustyStats; GLM-only diagnostics (`coefficients_table`, `relativities`, `fit_statistics`, `glm_diagnostics`); `estimate_glm_dispersion()` — profile-likelihood estimation of Negative Binomial `theta` / Tweedie `var_power`; `_resolve_glm_terms()` shared term-resolution helper. |
-| `modelling/_training_job.py` | `TrainingJob` orchestrator — the full pipeline (prepare data → split → train → metrics → save artifacts → MLflow log); `TrainResult` and the intermediate stage types. |
-| `modelling/_train_config.py` | Single source of truth for modelling-node config → `TrainingJob` kwargs (`build_training_job_kwargs`, `build_train_params`, `training_objective_issue`, `default_metrics`); `GLM_CONFIG_KEYS` includes `theta`. |
-| `modelling/_split.py` | `SplitConfig` dataclass, `split_data`/`split_mask` (random/temporal/group strategies), partition constants. |
-| `modelling/_metrics.py` | `compute_metrics` + individual metric functions (Gini, RMSE, MAE, MSE, R², AUC, log loss, Poisson/Tweedie deviance); diagnostics (double lift, AvE per feature, residuals histogram, actual-vs-predicted, Lorenz curve, PDP). |
-| `modelling/_feature_contract.py` | `FeatureContract` dataclass; build/save/load/cache; `assert_contracts_match`; categorical-level normalisation and validation. |
-| `modelling/_signature.py` | `build_signature()` — MLflow `ModelSignature` builder with loud dtype/metadata validation. |
-| `modelling/_charts.py` | Pure-SVG chart renderers (double lift, loss curve, horizontal bars, AvE per feature, Lorenz curve, residuals histogram, actual-vs-predicted scatter, PDP). |
-| `modelling/_model_card.py` | `generate_model_card()` — self-contained HTML document assembling charts and tables. |
-| `modelling/_mlflow_log.py` | Tracking-backend resolution, `log_experiment()`, model+signature logging, model-card artifact logging. |
-| `modelling/_result_types.py` | `ModelDiagnostics` / `ModelCardMetadata` — shared bundling dataclasses. |
-| `modelling/_export.py` | `generate_training_script()` — codegen for standalone Python training scripts. |
-| `routes/modelling.py` | FastAPI router: `/train`, `/train/status/{id}`, `/train/cancel/{id}`, `/estimate`, `/mlflow/check`, `/mlflow/log`, `/export`, `/model-cache`, `/dispersion/estimate`, `/dispersion/status/{id}`, `/dispersion/cancel/{id}`. |
-| `routes/_train_service.py` | `TrainService` — validates config, estimates RAM/VRAM, executes the upstream pipeline to a temp parquet, launches `TrainingJob` in a background thread, manages job lifecycle and cancellation; also owns GLM dispersion-estimation jobs (`start_dispersion_estimate`, `dispersion_job`, `cancel_dispersion`), sharing the same data-materialisation path as training. |
+| `src/haute/modelling/__init__.py` | Public API surface: `FitResult`, `MLflowLogResult`, `TrainingJob`, `TrainResult`, `SplitConfig`, `generate_training_script`, `log_experiment`. |
+| `src/haute/modelling/_algorithms.py` | `BaseAlgorithm` ABC, `CatBoostAlgorithm`, `ALGORITHM_REGISTRY`, memory-checkpoint helpers, CatBoost `Pool` construction, GPU fit-thread lifecycle. |
+| `src/haute/modelling/_rustystats.py` | `GLMAlgorithm` implementing `BaseAlgorithm` via RustyStats; GLM-only diagnostics (`coefficients_table`, `relativities`, `fit_statistics`, `glm_diagnostics`); `estimate_glm_dispersion()` profile-likelihood estimation; `_resolve_glm_terms()` term resolution. |
+| `src/haute/modelling/_training_job.py` | `TrainingJob` orchestrator — prepare data, split, train, compute metrics, save artifacts, and optionally log to MLflow; also defines `TrainResult` and the intermediate stage types. |
+| `src/haute/modelling/_train_config.py` | Single source of truth for modelling-node config → `TrainingJob` kwargs (`build_training_job_kwargs`, `build_train_params`, `training_objective_issue`, `default_metrics`). |
+| `src/haute/modelling/_split.py` | `SplitConfig`, `split_data`/`split_mask` for random/temporal/group strategies, and partition constants. |
+| `src/haute/modelling/_metrics.py` | Primary metric functions and diagnostic data computation (double lift, AvE, residuals, actual-vs-predicted, Lorenz, PDP). |
+| `src/haute/modelling/_feature_contract.py` | `FeatureContract` build/save/load/cache, contract comparison, and categorical-level normalisation/validation. |
+| `src/haute/modelling/_signature.py` | `build_signature()` — MLflow `ModelSignature` construction with loud dtype/metadata validation. |
+| `src/haute/modelling/_charts.py` | Pure-SVG renderers used by model cards. |
+| `src/haute/modelling/_model_card.py` | `generate_model_card()` — self-contained HTML assembled for MLflow artifact logging; ordinary training does not persist it beside the model. |
+| `src/haute/modelling/_mlflow_log.py` | Tracking-backend resolution, `log_experiment()`, flavor-aware model/signature logging, diagnostics artifacts, and best-effort model-card logging. |
+| `src/haute/modelling/_result_types.py` | `ModelDiagnostics` and `ModelCardMetadata` bundles shared by training, MLflow logging, and model-card generation. |
+| `src/haute/modelling/_export.py` | `generate_training_script()` code generation for standalone Python training scripts. |
+| `src/haute/routes/modelling.py` | FastAPI router for training, status/cancel, estimates, MLflow check/log, export, model-cache clear, and dispersion jobs. |
+| `src/haute/routes/_train_service.py` | `TrainService`: validation, RAM/VRAM estimates, pipeline materialisation, background training/dispersion lifecycle, cancellation, and cleanup. |
+| `src/haute/schemas.py` | Shared Pydantic request/response contracts used by `/api/modelling/*` routes. |
 
 ## Key types and data structures
 
@@ -132,8 +133,11 @@
    `contract_error`, everything else → `error` with `_friendly_error(exc)`. The
    `finally` block always republishes `execution_metrics`, releases the cancellation
    registry entry and RAM admission, and deletes the temp parquet.
-4. `GET /train/status/{job_id}` returns progress/loss history/result. On the first
-   read of a completed result, `_assert_json_finite` re-validates it and the outcome
+4. `GET /train/status/{job_id}` first compares a running job's `start_time` with its
+   configured/default timeout; an overdue job is cooperatively cancelled and atomically
+   transitioned to `timed_out` before the response is assembled. It then returns
+   progress/loss history/result. On the first read of a completed result,
+   `_assert_json_finite` re-validates it and the outcome
    is cached on the job (`_result_finite_validated`) via `atomic_update` so later polls
    skip the recursive walk; a validation failure instead flips the job to `"error"`
    with `result: None`.
@@ -239,7 +243,9 @@ decides whether `variance_power` needs to be rendered (CatBoost `Tweedie` loss, 
    and deletes the temp parquet the estimation frame was sunk to.
 8. `GET /dispersion/status/{job_id}` and `POST /dispersion/cancel/{job_id}` mirror the
    training job's status/cancel routes, scoped to `job_type="dispersion_estimate"` via
-   `TrainService.dispersion_job`.
+   `TrainService.dispersion_job`. The status route does not call `TrainService.timeout` and the
+   dispersion worker stores no timeout field, so this job type has no automatic/poll-driven
+   timeout; cancellation is explicit.
 
 ### Shared MLflow tracking/experiment-name resolution
 
@@ -283,11 +289,24 @@ contract is treated as an error condition rather than a reason to guess Float64 
 everything; builds `ModelDiagnostics`/`ModelCardMetadata` (including the GLM fields);
 calls `log_experiment` via `run_in_threadpool` to keep the event loop responsive.
 
+`log_experiment` passes the persisted contract metadata to `_log_model_with_signature`. A `.cbm`
+artifact is loaded and logged through `mlflow.catboost.log_model` at artifact path `model`; a
+`.rsglm` (or other non-CatBoost native file) is represented by an MLflow pyfunc model with the
+same signature and the native file is also logged at the run root for Haute's native-artifact
+discovery path. Thus both families carry a `ModelSignature`, but only CatBoost uses MLflow's
+native CatBoost flavor.
+
 ### Concurrency / ordering guarantees
 
-- Only one training job may be `"running"` process-wide; `_start_lock` serialises the
-  check-then-create so two concurrent `POST /train` calls cannot both pass
-  `_check_no_concurrent_jobs`.
+- Only one job may be `"running"` in the process-wide training namespace; `_start_lock`
+  serialises the check-then-create so concurrent training/dispersion submissions cannot
+  both pass `_check_no_concurrent_jobs`.
+- Training timeouts are poll-driven: no watcher thread changes an overdue job until a
+  status request observes the elapsed time. The timeout transition and late worker
+  progress/completion writes are CAS-guarded, so a timed-out job cannot become completed.
+- Dispersion estimates share the single running slot and cancellation registry with training but
+  not its timeout policy: they record `start_time` only and run until completion, failure, or
+  explicit cancellation.
 - Each job's pipeline runs on a single daemon background thread; progress/iteration
   callbacks and cancellation checks go through the job store's `atomic_update`, so
   status polling from other threads/requests is race-free.

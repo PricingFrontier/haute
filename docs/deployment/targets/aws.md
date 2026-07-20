@@ -1,12 +1,12 @@
 # AWS ECS
 
-This guide covers deploying a Haute pipeline to **AWS Elastic Container Service (ECS)** - Amazon's managed container platform. When you merge to main, CI builds a Docker image from your pipeline, pushes it to a registry, and (once the SDK integration lands) updates your ECS service.
+This guide covers preparing a Haute pipeline for **AWS Elastic Container Service (ECS)**. `haute deploy` validates the pipeline, builds its Docker image, and pushes it to the configured registry. It then exits with an error before changing ECS because the ECS service-update adapter is not implemented.
 
 !!! info "What is AWS ECS?"
     ECS is Amazon's service for running Docker containers in the cloud. You don't manage individual servers - AWS handles that. You tell it which Docker image to run and how much compute to allocate, and it keeps your API available. Think of it as a managed hosting service for your pricing API.
 
 !!! warning "Platform service update is not yet implemented"
-    Haute currently builds and pushes the Docker image for AWS ECS, but the automatic service update step (telling ECS to use the new image) is still in development. After CI pushes the image, your IT team will need to update the ECS service manually until the SDK integration lands.
+    Haute currently builds and pushes the Docker image for AWS ECS, then raises `NotImplementedError` before changing the service. This makes the CI `haute deploy` step fail **after** the image has been pushed. Treat the image tag in that failure as the handoff to your IT team; do not expect a green deploy job or an updated service.
 
 !!! note "This target requires IT support"
     AWS ECS involves cloud infrastructure setup (registries, clusters, IAM policies) that is done by an IT or platform team. The "Infrastructure setup" section below is written **for your IT team**. As an analyst, your role is to configure `haute.toml` and merge to main - CI and IT handle the rest.
@@ -47,7 +47,7 @@ model_name = "motor-pricing"
 [deploy.container]
 registry = "123456789012.dkr.ecr.eu-west-1.amazonaws.com"
 port = 8080
-base_image = "python:3.11-slim"
+base_image = "python:3.11.9-slim"
 
 [deploy.aws-ecs]
 region = "eu-west-1"
@@ -73,7 +73,7 @@ dir = "tests/quotes"
 
 ## Step 2: Add credentials to CI
 
-CI needs AWS credentials to push images to ECR and update the ECS service. Add these as encrypted secrets in your CI provider (your IT team will have the values from the infrastructure setup):
+CI needs registry credentials to push images to ECR. Credentials for a manual ECS service update belong to the tool and process your platform team uses, not to Haute's current adapter.
 
 | Secret name | Value |
 |---|---|
@@ -95,18 +95,18 @@ You don't run any deploy command. When you merge to main, CI automatically:
 2. Generates a FastAPI app and Dockerfile
 3. Builds the Docker image
 4. Pushes the image to your ECR repository
-5. *(Coming soon)* Updates the ECS service to use the new image
+5. Exits with a clear `NotImplementedError` before it updates the ECS service
 
-!!! success "What does success look like?"
-    After a successful merge to main, you should see:
+!!! warning "Expected CI result until the adapter exists"
+    The deploy job is expected to fail after image push with a message such as `Service update for 'aws-ecs' is not yet implemented`.
 
-    1. **In your CI provider** - all pipeline steps show green ✓ (validation, build, push)
+    1. **In your CI provider** - the deploy job is red after the successful image build and push
     2. **In the CI logs** - a message like `Pushed motor-pricing:a1b2c3d to 123456789012.dkr.ecr.eu-west-1.amazonaws.com`
-    3. **In the AWS Console** - your ECS service shows a new task running with the latest image
+    3. **In the CI logs** - the explicit failure records the pushed image tag for the manual ECS update
 
-    If CI is green and the ECS service is healthy, your pipeline is live.
+    A green validation/build is not an ECS deployment. Your platform team must update the task definition or service, then verify its health.
 
-Until the automatic service update lands, CI will output the image tag. Your IT team can then update the service manually:
+Use the pushed image tag when your IT team updates the ECS task definition manually, then deploy that new task-definition revision to the service. The command below only starts new tasks from the service's **current** task definition; it does not replace its image by itself.
 
 ```bash
 aws ecs update-service \
@@ -139,9 +139,9 @@ print(response.json())
 
 Your AWS credentials don't have permission to push images. Check the IAM policy includes the ECR actions listed in the infrastructure setup section.
 
-### ECS service not updating
+### ECS service was not updated by Haute
 
-If the service doesn't pick up the new image, force a new deployment:
+If the service does not pick up the new image, first register a task-definition revision whose image is the tag printed by CI, then force the service to use that revision:
 
 ```bash
 aws ecs update-service \

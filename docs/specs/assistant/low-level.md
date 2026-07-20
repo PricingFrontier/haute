@@ -4,21 +4,24 @@
 
 | File | Responsibility |
 |---|---|
-| `src/haute/assistant/__init__.py` | Package marker; re-exports the public seam (`assistant_readiness`, the router factory nothing else needs). |
-| `src/haute/assistant/_config.py` | Resolves assistant configuration: the `[assistant]` table from `haute.toml` (tomllib, same parsing discipline as `routes/_helpers.pipeline_dir()` — malformed TOML raises `ConfigError`, an absent table is a legitimate not-configured state), API keys from `os.getenv` (populated from the project `.env` at server startup), and an SDK-import probe. Produces `AssistantConfig` (ready) or `AssistantReadiness` with a reason (not ready). Mirrors `_databricks_io._get_credentials`'s fail-loud credential pattern. |
-| `src/haute/assistant/_catalog.py` | The node-type catalog the model reads: mechanical facts derived from `haute._types` (`NodeType`, `DECORATOR_TO_NODE_TYPE`, the per-type config-key tuples) and `haute._config_io` (sidecar folder conventions, config-key allowlists), plus hand-authored per-type usage notes owned here. `validate_catalog_complete()` runs at import time and raises if any `NodeType` lacks an entry — the `validate_registry_complete()` pattern applied to the catalog. |
-| `src/haute/assistant/_assets.py` | Loader for the assistant's packaged knowledge assets (read via `importlib.resources`, cached with `functools.cache`): `authoring_guide()` returns the guide text and raises loudly if the asset is missing or empty; `example_index()` returns `(name, summary)` pairs — the summary is the first line of each exemplar's module docstring; `load_example(name)` returns the exemplar's narrative notes (full module docstring) plus its graph rendering, produced by parsing the exemplar source through `routes/_helpers.parse_pipeline_to_graph` and rendering with the same formatter `get_pipeline` uses; an unknown name is a structured tool error listing the valid names. |
-| `src/haute/assistant/assets/` | The assets themselves (package data — hatchling ships non-`.py` package files by default, and the `importlib.resources` loader keeps that honest): `authoring_guide.md` (hand-authored Haute idiom — canonical pipeline shapes, naming conventions, stage-chaining conventions, do/don't guidance) and `examples/*.py` — each a complete, parseable Haute pipeline whose module docstring is its narrative (first line = the index summary). Exemplars are data parsed by the loader, never imported as modules. |
+| `src/haute/assistant/__init__.py` | Public package seam; re-exports only `assistant_readiness`. The FastAPI router remains in `haute.routes.assistant` and is not re-exported here. |
+| `src/haute/assistant/_config.py` | Resolves assistant configuration: the `[assistant]` table from `haute.toml` (tomllib, same parsing discipline as `routes/_helpers.pipeline_dir()` — malformed TOML raises `ConfigError`, an absent table is a legitimate not-configured state), API keys from `os.getenv` (the server process must inherit them; `haute serve` does not load project `.env`), and an SDK-import probe. Produces `AssistantConfig` (ready) or `AssistantReadiness` with a reason (not ready). Mirrors `_databricks_io._get_credentials`'s fail-loud credential pattern. |
+| `src/haute/assistant/_catalog.py` | The node-type catalog the model reads: mechanical facts derived from `haute._types` (`NodeType`, `NODE_TYPE_TO_DECORATOR`), `haute._config_validation` (`VALID_KEYS`, config `TypedDict` shapes), `haute._config_io` (sidecar folders), and the save service (singleton policy), plus hand-authored per-type usage notes. `validate_catalog_complete()` runs at import time and raises if any canonical fact or node entry drifts. |
+| `src/haute/assistant/_assets.py` | Loader for the assistant's packaged knowledge assets (read via `importlib.resources`): resource enumeration, `authoring_guide()`, and `example_index()` are cached; `load_example(name)` reparses and renders the exemplar on demand through `routes/_helpers.parse_pipeline_to_graph` and the same formatter `get_pipeline` uses. The guide fails loudly if missing/empty, index summaries come from the first module-docstring line, and an unknown name is a structured tool error listing the valid names. |
+| `src/haute/assistant/assets/authoring_guide.md` | Packaged, hand-authored Haute idiom: canonical pipeline shapes, naming and stage-chaining conventions, and do/don't guidance injected into every system prompt. |
+| `src/haute/assistant/assets/examples/branched_features.py` | Packaged exemplar with parallel feature branches joined before the output stage; its module docstring supplies narrative notes and the index summary. |
+| `src/haute/assistant/assets/examples/joined_reference.py` | Packaged exemplar showing a reference-data join; parsed as data by `_assets.py`, never imported as a module. |
+| `src/haute/assistant/assets/examples/linear_pricing.py` | Packaged minimal linear-pricing exemplar; parsed through the real pipeline parser and rendered in the same compact graph shape as `get_pipeline`. |
 | `src/haute/assistant/_ops.py` | The graph-edit operation model and its pure application engine: op types (`add_node`, `update_node`, `rename_node`, `delete_node`, `add_edge`, `delete_edge`, `update_preamble`), validation (unknown targets, unknown config keys, submodel-internal targets, ambiguous edge matches), ordered application over a `PipelineGraph` copy, and deterministic position assignment for new nodes. No I/O — unit-testable graph→graph functions. |
-| `src/haute/assistant/_tools.py` | The tool registry: JSON-schema tool definitions handed to the provider and the executor for each tool. Read tools wrap `routes/_helpers.parse_pipeline_to_graph`, the same io-layer readers `routes/files.py` uses (`haute.graph_utils.read_source`-backed schema/preview, directory browse), `_assets.load_example`, and — for `get_node_schema` — the engine facade invoked exactly as production execution callers invoke it (the `_explore_service._materialise_and_summarise` pattern): flatten, compile the preamble, execute to the target with the graph's active source, read the schema (full sequence in Control flow step 5), rendered as `{name, dtype}` pairs (the `ColumnInfo` shape `schemas.py` already defines) — per port when the node emits multiple frames; `apply_graph_edits` composes `_ops` with the save/publish flow in `_loop`'s charge. Every tool returns a structured result-or-error payload, never raises into the loop. |
+| `src/haute/assistant/_tools.py` | The tool registry: JSON-schema definitions and dispatch for every read and mutation tool. Dataset schema wraps the files-route reader; dataset listing directly uses the shared safe-path validator and its own extension allowlist. Other read tools wrap saved-graph parsing, `_assets.load_example`, and production lazy execution for `get_node_schema`. `apply_graph_edits` itself owns mutation readiness, parse → ordered ops → transactional save under `save_lock` → re-parse → `graph.update` publish. Every tool returns a structured result-or-error payload instead of raising into the loop. |
 | `src/haute/assistant/_session.py` | Session store: `AssistantSession` records (id, bound pipeline `source_file`, provider-neutral message history, per-session `asyncio.Lock`, timestamps), create/lookup, the provider-request history window, and the bounded-retention rules — an LRU cap on live sessions and a per-session stored-history cap (constants below). Memory is the runtime authority; when a `storage_dir` factory is supplied (the route wires `.haute/assistant/sessions/` under the project cwd), sessions write through to one JSON file per session (atomic tmp+`os.replace`) on create and on every committed turn, and `lookup` revives an unknown id from its file (fresh lock; history revalidated through the same JSON-boundary validators). Unreadable/corrupt/invalid files: warn (`assistant_session_unreadable`) and treat as absent, mirroring `_git_state`'s posture for `.haute/` files. Persist failures: warn (`assistant_session_persist_failed`) without failing the committed turn — the in-memory session stays intact and the reply was already delivered. |
 | `src/haute/assistant/_providers.py` | The `AssistantProvider` protocol and its two adapters: `AnthropicProvider` (`anthropic` SDK, Messages streaming API) and `OpenAIProvider` (`openai` SDK, Chat Completions streaming — the OpenAI-compatible protocol Databricks serving endpoints implement — honouring `base_url`). SDKs are core dependencies but imported lazily inside the adapters (importing Haute never triggers provider-side behaviour; a broken install surfaces as a readiness reason); each adapter normalises its SDK's stream into the internal `ProviderEvent`s (see Control flow § Provider adapters for the exact call and event mappings) and maps SDK failures to `AssistantProviderError`. |
-| `src/haute/assistant/_loop.py` | The agent loop as an async generator of typed stream events: assembles the provider request (system prompt: static role instructions + the `_catalog` rendering + the `_assets` authoring guide + the exemplar index + project facts; plus windowed history + tool schemas), forwards text deltas, dispatches tool calls, applies the mutation flow (parse → ops → `save_graph_transactionally` under `save_lock` → re-parse → `default_bus.publish("graph.update", ...)`), enforces the tool-call cap and wall-clock timeout, and guarantees exactly one terminal event. |
+| `src/haute/assistant/_loop.py` | Provider-neutral agent loop as an async generator of typed stream events: assembles prompt/history/tool inputs, forwards text deltas, invokes the injected tool executor, feeds structured results into later provider rounds, shields an in-flight tool from cancellation, enforces tool/time limits, commits turn history, and closes every provider stream. It does not implement graph edits itself. |
 | `src/haute/routes/assistant.py` | The FastAPI router: `GET /api/assistant/status`, `POST /api/assistant/session`, `POST /api/assistant/message` (an SSE `StreamingResponse` wrapping `_loop`'s generator). Route-level exception translation follows the product conventions (typed `HauteError`s surfaced, everything else sanitized). Swept by the existing `tests/test_routes_hygiene.py` contracts like every `routes/` module. |
-| `src/haute/schemas.py` *(modified)* | New `Assistant*` models: `AssistantStatusResponse`, `AssistantSessionRequest`/`AssistantSessionResponse`, `AssistantMessageRequest`, and the `AssistantStreamEvent` discriminated union (`text_delta`, `tool_started`, `tool_finished`, `graph_updated`, `completed`, `failed`, `cancelled`) — the wire contract `frontend/src/api/assistant.ts` mirrors. |
-| `src/haute/server.py` *(modified)* | Includes the assistant router with the other feature routers (ahead of the API/WS 404 catch-alls). |
-| `src/haute/routes/_save_pipeline.py` *(modified)* | `save_graph_transactionally` gains explicit `preserved_blocks` forwarding when rebuilding `SavePipelineRequest`. Verified during implementation: no live marker loss existed — codegen's documented fallback (`preserved_blocks if preserved_blocks is not None else graph.preserved_blocks`, reached because the route passes `body.preserved_blocks or None`) already round-trips the blocks of the embedded parsed graph. The forward makes the wrapper's request self-contained rather than reliant on that distant fallback; the round-trip itself is pinned by a save-service regression test either way. |
-| `pyproject.toml` *(modified)* | `anthropic>=…` and `openai>=…` join the core dependencies — the assistant ships in every install, no optional extra (user decision 2026-07-19; the extra `assistant = [...]` packaging was the original design and was removed pre-release). Coverage config gains an omit for `src/haute/assistant/assets/*` — the exemplar `.py` files are data parsed by `_assets`, never imported, so without the omit they would sit at 0% and distort the 90%-branch gate (this is scoping the gate to importable code, not lowering it; ruff still lints the exemplars, which must be lint-clean). |
+| `src/haute/schemas.py` | The assistant slice of the server-api-owned shared HTTP/SSE contracts: status, session request/response and transcript entries, message request, usage, and the event union (`text_delta`, `tool_started`, `tool_finished`, `graph_updated`, `completed`, `failed`, `cancelled`) mirrored by `frontend/src/api/assistant.ts`. |
+| `src/haute/server.py` | Includes the assistant router with the other feature routers ahead of the API/WebSocket 404 catch-alls and supplies graph-update fingerprint/wire-path helpers used by mutation publishing. |
+| `src/haute/routes/_save_pipeline.py` | Transactional save service used by assistant mutations; its `save_graph_transactionally` wrapper explicitly forwards `preserved_blocks` into `SavePipelineRequest` and owns rollback, self-write marking, and ledger-capture warnings. |
+| `pyproject.toml` | Declares `anthropic>=0.40` and `openai>=1.55` as core dependencies and omits `src/haute/assistant/assets/*` from import-coverage measurement because exemplar `.py` files are parsed package data, while ruff and parser tests still check them. |
 
 Environment knobs: `HAUTE_ASSISTANT_TURN_TIMEOUT` (seconds, default 300) and
 `HAUTE_ASSISTANT_MAX_TOOL_CALLS` (default 20) read lazily via `haute._env`, matching the
@@ -33,7 +36,7 @@ messages by evicting whole oldest turns; live-session LRU cap 32 (least-recently
 *idle* session evicted on create beyond the cap — dropping only the in-memory record, the
 persisted file revives it on next lookup; a session with a running turn is never
 evicted); persisted session files cap at 100 (`MAX_PERSISTED_SESSIONS`), pruning the
-oldest by last use at session creation. Pruning always cuts at turn boundaries — an
+oldest by session-file modification time at session creation. Pruning always cuts at turn boundaries — an
 assistant tool call and its result are never separated (both provider APIs reject
 orphaned halves).
 
@@ -68,8 +71,9 @@ orphaned halves).
   are emitted in stream order — and `TurnStop(reason: "end" | "tool_use", usage)`.
   Adapters translate SDK streams into exactly these; the loop never sees SDK types.
 - **`AssistantProviderError(HauteError)`** (`_providers.py`): hand-authored message carrying
-  provider name and failure class (auth, rate-limit, connection, malformed stream) — never
-  the raw provider response body.
+  provider name and a classified failure such as `authentication`, `rate_limit`,
+  `connection`, `status`, `stream`, `dependency`, `malformed_stream`, `truncated`, or
+  `filtered` — never the raw provider response body.
 - **`GraphEditOp`** (discriminated union, `_ops.py`), addressing nodes by id (the function
   name shown by `get_pipeline`) or — within one batch — by `$<ref>`, the batch-local handle
   a preceding `add_node` declared. Refs are resolved server-side to the real sanitised node
@@ -114,10 +118,15 @@ returns a fresh session with empty `history`; resume is an offer, never an error
 
 **Message turn** (`POST /api/assistant/message` → SSE stream from `_loop.run_turn`):
 
-1. Look up the session (404) and `.lock.acquire` without waiting — held → 409. Everything
-   after runs in a `try/finally` that releases the lock and appends the turn to history.
-2. Readiness re-checked (400 before the stream opens if unconfigured).
-3. Build the provider request: system prompt (static role instructions + the `_catalog`
+1. Readiness is checked before session lookup (400 before the stream opens if
+   unconfigured). This ordering means an unconfigured request reports the configuration
+   problem even when its session id is also unknown.
+2. Look up the session (404) and atomically acquire its lock without waiting — held →
+   409. The reservation happens before provider construction or pipeline parsing; either
+   pre-stream failure releases it immediately, while a started turn releases it from the
+   loop/response lifecycle and appends the turn to history.
+3. Resolve the provider configuration, construct the adapter, parse the session's saved
+   pipeline, and build the provider request: system prompt (static role instructions + the `_catalog`
    rendering + the `_assets` authoring guide + the exemplar index (name and one-line
    summary per packaged exemplar) + project facts: pipeline name, source file,
    node-count/type summary) + windowed history + the new user message + `_tools` JSON
@@ -190,8 +199,8 @@ returns a fresh session with empty `history`; resume is an offer, never an error
    complete as a pair — and, critically, on cancellation the loop **awaits the shielded
    task to completion while still holding `save_lock`** before re-raising (a bare
    `await shield(...)` re-raises immediately, which would release the lock mid-save and let
-   another writer interleave; the spec requires the await-then-reraise form, with a test
-   proving a second writer stays blocked through publish). The `finally` then releases the
+   another writer interleave; the implementation therefore uses the await-then-reraise
+   form). The `finally` then releases the
    session lock. A `cancelled` terminal event
    is emitted if the transport is still writable, otherwise the turn simply ends (the
    invariant "exactly one terminal event" holds for every stream the client can still read).
@@ -231,9 +240,9 @@ returns a fresh session with empty `history`; resume is an offer, never an error
   `TurnStop`; usage from the final chunk.
 - Usage is **summed across the provider round-trips within one turn**; the `completed`
   event reports the aggregate.
-- SDK floors in the `assistant` extra: `anthropic>=0.40`, `openai>=1.55` — the earliest
-  versions believed to carry stable streaming tool-use on these APIs; verified against the
-  SDK changelogs and raised if needed when the pin lands at the TRIP-2 gate.
+- SDK floors are core project dependencies, not an optional extra:
+  `anthropic>=0.40` and `openai>=1.55`. The adapters still import the SDKs lazily and
+  readiness reports a missing SDK as a broken installation.
 
 ## Edge cases and invariants
 
@@ -253,6 +262,10 @@ returns a fresh session with empty `history`; resume is an offer, never an error
   warn-and-drop exists to tolerate stale keys already on disk; an authoring-time unknown key
   is an LLM mistake that must bounce back as a tool error so the model corrects it. Same
   allowlist source, different strictness, both deliberate.
+- **The `[assistant]` table itself is not allowlist-validated.** `provider`, `model`, and
+  `base_url` are read; additional keys are currently ignored. A non-string `base_url`
+  raises `ConfigError`, any `base_url` on Anthropic is a not-ready reason, and OpenAI
+  accepts a string (including an empty string) without URL syntax validation.
 - **Submodel boundaries**: ops may only target top-level nodes; `add_node` of
   `submodel`/`submodelPort` types and any op addressing a node inside a submodel graph
   return named tool errors (v1 limitation, stated in the error text).
@@ -299,7 +312,7 @@ returns a fresh session with empty `history`; resume is an offer, never an error
   persist to `.haute/assistant/sessions/` and survive restarts, while a truly lost id
   (pruned, corrupt file, cleaned `.haute/`) still 404s and the frontend renders that
   explicitly by starting a fresh session.
-- **No `print`, structlog only** — the new package and router are swept by the existing
+- **No `print`, structlog only** — the assistant package and router are swept by the existing
   decoupling and routes-hygiene contract tests.
 
 ## Error handling
@@ -307,12 +320,13 @@ returns a fresh session with empty `history`; resume is an offer, never an error
 | Failure | Where raised | Surfaced as |
 |---|---|---|
 | Malformed `haute.toml` `[assistant]` | `_config` | `ConfigError` → 400 (existing convention) |
-| Not configured / extra missing | `_config` via route pre-check | 400 with the readiness reason verbatim |
+| Not configured / provider SDK missing | `_config` via route pre-check | 400 with the readiness reason verbatim |
 | Unknown session | route | 404 |
 | Turn already running on session | route (lock try-acquire) | 409 |
 | Working branch not `"ready"` (`working_branch_status`) | `_tools` mutation pre-check | Structured tool error carrying the mapped per-state reason; status reports `mutations_enabled: false` with the same reason |
 | Ledger capture fails after a committed save | save service (degrade-to-warning path) | Warning propagated into the tool result and activity row; next successful capture sweeps the delta |
-| Provider auth/rate-limit/connection/stream errors | `_providers` | `AssistantProviderError` → terminal `failed` event mid-stream; HTTP 502 if before the stream opened |
+| Provider adapter construction/dependency failure | route provider factory | HTTP 502 before the stream opens |
+| Provider request/stream failures (authentication, rate limit, connection, malformed/truncated/filtered output) | `_providers` | `AssistantProviderError` → terminal `failed` SSE event after the response has started |
 | Op validation, save validation, missing dataset, unknown node, unknown example name, unresolvable node schema (unfetched Databricks cache, missing artifact, invalid node code) | `_tools`/`_ops`/`_assets`/engine/save service | Structured tool error returned to the model (visible as a failed activity row); never terminates the turn |
 | Turn timeout / tool-call cap | `_loop` | Terminal `failed` event naming the limit |
 | Any unexpected exception in the loop | `_loop` outermost handler | Logged server-side with `exc_info=True`; terminal `failed` event carrying the sanitized `_INTERNAL_ERROR_DETAIL` text only |
@@ -330,7 +344,7 @@ the concurrent-send 409 a pre-stream decision).
 ## Testing
 
 Flat files under `tests/` per repo convention (`asyncio_mode = "auto"`; shared `client`
-fixture for route tests). Scenarios for the TRIP-2 gate (named, not written):
+fixture for route tests). The implemented coverage is:
 
 - **`tests/test_assistant_ops.py`** — every op's happy path and rejection paths; op ordering
   within a batch (add then connect via `$ref`); ref resolution (unknown ref, duplicate ref,
@@ -340,19 +354,12 @@ fixture for route tests). Scenarios for the TRIP-2 gate (named, not written):
   post-batch (property: same batch, same graph → same positions).
 - **`tests/test_assistant_catalog.py`** — completeness against `NodeType` (mirror of the
   registry-completeness test); folder/decorator facts agree with `_types`/`_config_io`.
-- **`tests/test_assistant_tools.py`** — `get_node_schema` against a real tmp project: a
-  source node's schema matches the file; a downstream node's schema reflects its transforms
-  (derived/renamed/dropped columns); a preamble-dependent transform resolves (proving
-  `_compile_preamble` is wired); a pipeline whose saved `active_source` is not `"live"`
-  resolves through that source (proving the facade default is overridden); a node
-  downstream of a submodel resolves through the flattened internals, the submodel
-  placeholder id itself → structured v1-boundary error, and a submodel-*internal* child id
-  → the same boundary error, never resolved (pre-flatten validation — the id exists in the
-  flattened executable graph, so this asserts the ordering); a multi-frame `apiInput` returns
-  per-port schemas (regression for the dict-shaped `lazy_outputs` entry); unknown node
-  id → structured error; unfetched Databricks cache surfaces `CacheNotFoundError`'s
-  message as a structured error; the collect-poisoning invariant (`LazyFrame.collect`
-  monkeypatched to raise — schema resolution must not trip it).
+- **`tests/test_assistant_tools.py`** — real tmp-project coverage for source/downstream
+  schemas, preamble-dependent transforms, and the collect-poisoning invariant
+  (`LazyFrame.collect` must not run). Contract tests assert that the saved `active_source`
+  is passed to the engine; crafted/mocked execution results cover submodel-boundary
+  rejection, multi-frame per-port shaping, unknown-node errors, and propagation of an
+  unfetched-Databricks `CacheNotFoundError` message as a structured tool error.
 - **`tests/test_assistant_assets.py`** — the authoring guide loads non-empty via
   `importlib.resources` (missing/empty asset raises loudly); every packaged exemplar parses
   cleanly through `parse_pipeline_to_graph` (the drift guard — a stale exemplar fails CI);
@@ -360,7 +367,7 @@ fixture for route tests). Scenarios for the TRIP-2 gate (named, not written):
   first line; `load_example` renders the same shape `get_pipeline` renders; unknown example
   name → structured error listing valid names.
 - **`tests/test_assistant_config.py`** — readiness matrix (absent table, unknown provider,
-  missing model, missing key, missing extra, fully configured); malformed TOML raises;
+  missing model, missing key, missing SDK, fully configured); malformed TOML raises;
   `base_url` rejected for anthropic; `max_output_tokens` unset-defaults-to-8192 and
   malformed/non-positive-fails-readiness behaviour (named reason, no silent default); `mutations_enabled`/`mutations_reason` across all four
   `working_branch_status` states (ready, unset, divergent, invalid — asserting each state's
@@ -372,14 +379,17 @@ fixture for route tests). Scenarios for the TRIP-2 gate (named, not written):
   parts stream, `reasoning` parts stay unsurfaced, and unknown part types or non-text
   shapes raise `malformed_stream`).
 - **`tests/test_assistant_loop.py`** — against a scripted fake provider: text-only turn;
-  tool round-trip; tool error fed back; cap and timeout terminal events; exactly-one-
-  terminal-event invariant; cancellation mid-stream (provider stream closed, no tool
-  dispatched after cancel, and the shielded save/publish awaited to completion **while
-  `save_lock` is still held** — a second writer stays blocked through publish — before the
-  lock releases); turn-atomic history windowing, including a tool-heavy turn crossing both
-  caps without splitting a call/result group.
+  tool round-trip; tool error fed back; cap and timeout terminal events; completed/failed
+  exactly-one-terminal checks; cancellation drains an in-flight tool, closes the provider
+  stream, and releases the session lock; turn-atomic history windowing, including a
+  tool-heavy turn crossing both caps without splitting a call/result group.
 - **`tests/test_assistant_routes.py`** — status/session/message endpoints: SSE framing,
-  400/404/409 mapping, sanitized unexpected-error path, readiness reasons on status.
+  400/404/409 mapping, sanitized unexpected-error paths, readiness reasons on status,
+  transcript rehydration, adapter construction, atomic concurrent-send reservation, and
+  lock release on pre-stream failure, disconnect, and mid-stream send failure.
+- **`tests/test_assistant_session_persistence.py`** — atomic write-through persistence,
+  restart revival, invisible LRU eviction, corrupt/invalid-file logged misses, session-id
+  path hardening, oldest-first persisted-file pruning, and non-fatal persist failures.
 - **`tests/test_assistant_integration.py`** — fake-provider end-to-end on a tmp project:
   instruction → ops → real transactional save (files on disk assert codegen/sidecars) →
   `graph.update` published with the post-save fingerprint (asserted via a test subscriber)
@@ -387,15 +397,14 @@ fixture for route tests). Scenarios for the TRIP-2 gate (named, not written):
   a assistant edit byte-identically outside the edited region; the mutation precondition
   (non-ready working-branch state → tool error carrying the git reason, nothing written);
   `save_lock` exclusivity — a concurrent GUI-style save cannot interleave inside a assistant
-  mutation's critical section, including while a cancelled turn's shielded save completes;
+  mutation's critical section; cancellation during a slow save leaves the lock held until
+  the shielded save has landed and then releases it;
   a degraded ledger capture surfaces its warning in the tool result.
-- **Existing save-service suites** (`tests/test_save_pipeline_integrity.py`) gain a
-  regression pinning the preserve-marker round-trip through
+- **`tests/test_save_pipeline_integrity.py`** includes a regression pinning the
+  preserve-marker round-trip through
   `save_graph_transactionally` (parse a marker-bearing pipeline → transactional save →
   markers and content survive on disk), independent of which layer supplies the blocks.
-- **Session retention** (in `tests/test_assistant_loop.py` or a dedicated block): stored-history
-  cap pruning is deterministic; LRU session eviction never evicts a session with a running
-  turn; an evicted id 404s.
-
-Coverage: the new package falls under the global 90%-branch gate automatically; per-file
-critical gates may be added at release for `_ops.py`/`_loop.py`.
+No test calls a live Anthropic, OpenAI, or Databricks-compatible endpoint; provider wire
+behaviour is exercised with scripted SDK streams. The package is covered by the repository's
+global branch gate, while exemplar `.py` assets are omitted from coverage because they are
+parsed package data rather than importable modules (they remain parser- and lint-checked).

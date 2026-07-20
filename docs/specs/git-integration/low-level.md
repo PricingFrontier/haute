@@ -6,6 +6,7 @@
 |---|---|
 | `src/haute/_git.py` | All git CLI interaction. Subprocess wrappers, guardrails, the working/ledger branch-pair engine, content-addressed caches, remote fetch/push/fast-forward, branch manager operations (archive/delete/undelete/restore), read paths (status, graph, milestones, ledger expansion, commit context). ~3,280 lines, no HTTP or filesystem-state concerns beyond git itself. |
 | `src/haute/_git_state.py` | Per-clone, untracked JSON state under `<project_root>/.haute/`: working-branch association (`state.json`), UI preferences (`prefs.json`), fork-point back-links (`forks.json`), last-pushed SHAs (`pushed.json`), delete tombstones (`trash.json`). Pure read/write helpers with fail-soft parsing — no git subprocess calls. |
+| `src/haute/_gitignore_guard.py` | Shared `.gitignore` deny-list and append-only `ensure_gitignore_guards()` used both by project initialization and unborn-repository seeding; preserves tracked `*.haute.json` sidecars while excluding per-clone/cache/data/venv state. |
 | `src/haute/routes/git.py` | FastAPI router at `/api/git`. One `def` (sync) handler per endpoint, each a thin `try/except` around a single `_git` call; converts `_git`'s typed exceptions to HTTP responses via `_handle_git_error`. |
 
 ## Key types and data structures
@@ -34,8 +35,9 @@ pattern; anything else is a working-branch candidate. `is_eligible_working_branc
 (`_merge_base_cached`, `_is_ancestor_cached`, `_first_parent_spine_cached`,
 `_commit_parents_cached`, `_graph_log_cached`, `_tree_of_cached`, `_get_default_branch_cached`)
 takes `cwd_key: str` as its final argument — `str(cwd) if cwd else ""` — because a bare
-`Path` is unhashable and because two repos/worktrees sharing one process must never share
-cache entries. `_FULL_SHA_RE` / `_is_full_sha()` gates which callers may take the cached
+path string is the explicit cache discriminator and two repos/worktrees sharing one
+process must never share cache entries. (`Path` itself is hashable; string conversion is
+not a hashability workaround.) `_FULL_SHA_RE` / `_is_full_sha()` gates the cached
 path: only a full 40-hex SHA is guaranteed immutable; a ref name (branch, `HEAD`, a tag)
 falls through to an uncached live subprocess on every call.
 
@@ -46,10 +48,49 @@ falls through to an uncached live subprocess on every call.
 forked_from, was_archived, deleted_at}}`, capped at `_TRASH_MAX_ENTRIES = 20`, insertion
 order = recency).
 
+**Gitignore guards** (`_gitignore_guard.py`): `GITIGNORE_GUARD_ENTRIES` is exactly
+`.env`, `.haute/`, `impact_report.md`, `.haute_cache/`, `mlruns/`, `data/`, and `.venv/`.
+`ensure_gitignore_guards(project_dir)` creates `.gitignore` with those lines when absent or
+appends only missing exact lines under a `# Haute` block. Existing non-UTF-8 bytes are decoded
+with replacement for membership testing. It deliberately does not ignore `*.haute.json`,
+because pipeline position sidecars belong on the save ledger.
+
 **`GitWorkingBranchResponse.state`** (computed by `working_branch_status`) is one of four
 literal values: `"unset"` (no working branch recorded), `"invalid"` (recorded branch
 missing / ineligible / invariants violated), `"divergent"` (HEAD is on neither the recorded
 branch nor its ledger — moved outside haute), `"ready"`.
+
+**HTTP contracts.** Every handler is synchronous `def`, so FastAPI runs git subprocess work
+in its thread pool. Request bodies are the named Pydantic models; omitted fields take the
+defaults shown. Query bounds are enforced by FastAPI and invalid input uses its standard 422
+validation envelope.
+
+| Method and path | Input | Success response |
+|---|---|---|
+| `GET /api/git/status` | None | `GitStatusResponse {branch,is_main,is_read_only,changed_files=[],main_ahead=false,main_ahead_by=0,main_last_updated=null}` |
+| `GET /api/git/working-branch` | None | `GitWorkingBranchResponse` (`state` is `ready`, `unset`, `invalid`, or `divergent`) |
+| `POST /api/git/working-branch` | `GitSetWorkingBranchRequest {branch,create=false}` | `GitSetWorkingBranchResponse {working_branch,state,last_save_sha?}` |
+| `POST /api/git/move` | `GitMoveRequest {sha}` | `GitMoveResponse {sha,short_sha,prior_branch,is_detached=true}` |
+| `POST /api/git/identity` | `GitSetIdentityRequest {user_name,user_email,set_global=false}` | `GitSetIdentityResponse {user_name,user_email,scope}` |
+| `POST /api/git/commit` | `GitCommitRequest {message,version_label=null,allow_fork=false}` | `GitCommitResponse {sha,short_sha,working_branch,version_label?}`; would-fork is 409 |
+| `GET /api/git/milestones` | Query `limit=20` (1..500), `branch=null` | `GitMilestonesResponse {working_branch?,entries:[GitMilestoneEntry...]}` |
+| `GET /api/git/graph` | Query `limit=50` (1..500) | `GitGraphResponse {working_branch?,order:[],branches:[GitGraphBranch...]}` |
+| `GET /api/git/milestones/{sha}/saves` | Commit SHA path | `GitLedgerSavesResponse {saves:[GitLedgerSave...]}` |
+| `GET /api/git/pending-saves` | Query `branch=null` | `GitLedgerSavesResponse` |
+| `POST /api/git/archive` | `GitArchiveRequest {branch}` | `GitArchiveResponse {archived_as}` |
+| `DELETE /api/git/branches` | `GitDeleteBranchRequest {branch,confirm=false}` | `GitDeleteBranchResponse {status="deleted",branch}` |
+| `POST /api/git/undelete` | `GitUndeleteRequest {branch}` | `GitUndeleteResponse {status="restored",branch}` |
+| `GET /api/git/working-branches` | None | `GitWorkingBranchesResponse {current?,branches:[GitManagedBranch...]}` |
+| `POST /api/git/restore` | `GitRestoreRequest {branch}` | `GitRestoreResponse {restored_as}` |
+| `POST /api/git/working-branches` | `GitCreateWorkingBranchRequest {name,at=null,move=false}` | `GitCreateWorkingBranchResponse {working_branch,moved,switched,last_save_sha?}` |
+| `GET /api/git/prefs` | None | `GitPrefs {skip_switch_confirm=false}` |
+| `POST /api/git/prefs` | `GitPrefs {skip_switch_confirm=false}` | The persisted `GitPrefs` |
+| `GET /api/git/remotes` | None | `GitRemotesResponse {remotes:[GitRemote...],working_branch?}`; URL userinfo is redacted |
+| `GET /api/git/show/{sha}` | Commit SHA path | Read-only `PipelineGraph` |
+| `GET /api/git/commit-context/{sha}` | Commit SHA path; query `base=null` | `GitCommitContext`, with `delta_from_base` only when `base` is supplied |
+| `POST /api/git/push` | `GitPushRequest {remote}` | `GitPushResponse {remote,working_branch,ledger_branch,pushed_refs=[]}`; non-fast-forward is 409 |
+| `POST /api/git/fast-forward` | `GitFastForwardRequest {remote}` | `GitFastForwardResponse {remote,working_branch,fast_forwarded=[]}` |
+| `POST /api/git/branch-away` | `GitBranchAwayRequest {remote}` | `GitBranchAwayResponse {working_branch,set_aside_as}` |
 
 ## Control flow
 
@@ -125,9 +166,15 @@ prefixes so a filename containing glob characters can't re-expand the pathspec. 
 result still commits (`--allow-empty`) to establish the root. A `git commit` failure whose
 stderr mentions missing author identity is translated to a `GitDomainError` steering the
 user to set identity first; anything else re-raises as a plain `GitError`. The whole
-create path (branch checkout, ledger spawn, state write) is wrapped so any exception
-restores the pre-creation HEAD (symbolic ref if it existed, else detached-SHA) and deletes
-the half-created branch and ledger.
+*post-seed pair-creation* path (branch checkout, ledger spawn, state write) is wrapped so any
+exception restores the post-seed HEAD (symbolic ref if it existed, else detached-SHA) and
+deletes the half-created branch and ledger.
+
+The seed phase runs before that rollback snapshot. A failure while seeding can therefore
+leave an unborn branch renamed to `main`, newly appended `.gitignore` guards, and index
+staging changes; a root commit that succeeded is deliberately permanent. These operations
+leave working-tree file contents in place. Once seeding has completed, branch/ledger refs,
+HEAD, and recorded working-branch state are the state the pair-creation rollback protects.
 
 **Graph topology (`graph_topology`).** Reads every working pair's tip via one
 `for-each-ref` call (`_list_branches_with_tips`), then for each branch reads its full
@@ -201,6 +248,13 @@ refs + tombstone. The restored pair is NOT auto-adopted as the working branch.
   starve another's; the actual `git fetch` subprocess is still serialized process-wide via
   `_fetch_exec_lock` because worktrees share one object store and git itself races on
   concurrent fetches into it.
+- **Concurrent git mutations are not globally serialised** — `_fetch_time_lock` protects
+  cooldown bookkeeping and `_fetch_exec_lock` serialises fetch subprocesses, but there is no
+  module-wide lock around archive/delete/fork/move/milestone/push operations. FastAPI can run
+  their synchronous handlers on different worker threads. Individual operations rely on git
+  ref checks, CAS `update-ref` where implemented, dirty-tree/git-op guardrails, and their
+  documented best-effort rollback paths; callers must not infer whole-engine transaction
+  isolation across concurrent mutation requests.
 - **A slow / credential-walled remote** — every fetch (`_fetch_refs`, `_ls_remote_version_tags`)
   disables terminal/SSH prompts (`GIT_TERMINAL_PROMPT=0`, SSH `BatchMode=yes`) and is
   wrapped in `subprocess.run(..., timeout=_FETCH_TIMEOUT_SECONDS)`; timeout or any `OSError`
@@ -230,10 +284,12 @@ refs + tombstone. The restored pair is NOT auto-adopted as the working branch.
 `_run_git` is the single subprocess chokepoint for anything expected to succeed; on a
 non-zero exit it logs `git_command_failed` (full stderr) and raises plain `GitError`
 (sanitize-by-default). `_run_git_ok` (returns `(bool, str)`) and `_run_git_rc` (returns
-`(int, str)`) never raise — used wherever a non-zero exit is an expected, meaningful
+`(int, str)`) do not raise merely for a non-zero git exit — used wherever that exit is an expected, meaningful
 outcome (e.g. `merge-base --is-ancestor` exiting 1 for "not an ancestor" vs. >1 for a
 genuinely unreadable object, which `_is_ancestor_cached` still raises on, to avoid
-memoizing a bad answer).
+memoizing a bad answer). None of these three general wrappers catches a subprocess-launch
+`OSError`; that propagates to the route's generic 500 handler. Only the hardened remote
+polling helpers explicitly catch timeout/OS failures and degrade to stale local refs.
 
 `routes/git.py`'s `_handle_git_error(e: GitError) -> NoReturn` is the sole error-to-HTTP
 mapping point, dispatched by `isinstance` in most-specific-first order:
@@ -241,7 +297,8 @@ mapping point, dispatched by `isinstance` in most-specific-first order:
 with the sanitized `_INTERNAL_ERROR_DETAIL` constant (full detail logged server-side only).
 `GitPushRejectedError` and `GitMilestoneForkError` are caught BEFORE the generic `GitError`
 handler in the two routes that can raise them (`git_push`, `git_commit`) and mapped to 409
-with their structured payload's `model_dump()`. Every route additionally has a catch-all
+with their structured payload's `model_dump()` as `HTTPException.detail`; the wire envelope
+is `{"detail": <GitPushRejection|GitMilestoneFork object>}`. Every route additionally has a catch-all
 `except Exception` that logs with `exc_info=True` and returns a plain 500 with the sanitized
 detail — this is the backstop for anything that isn't a `GitError` at all (e.g. a bug in
 this layer itself).
@@ -277,6 +334,9 @@ directories (no git mocking) via the shared helpers in `tests/_git_helpers.py`
 - **`tests/test_git_state_coverage.py`** — malformed-input fallback behaviour for every
   `_git_state.py` reader: corrupt JSON, wrong top-level type, missing file — each must
   degrade to the documented empty/default value rather than raising.
+- **`tests/test_gitignore_guard.py`** — exact deny-list membership (including the positive
+  assertion that `*.haute.json` remains tracked), file creation, idempotent byte preservation,
+  append-only missing-entry repair, and non-UTF-8 input handling.
 - **`tests/test_git_routes.py`** — the HTTP layer: every route's happy path, that all
   handlers are genuinely sync `def` (not `async def`, to avoid event-loop blocking),
   general-exception-to-500 handling, `_handle_git_error`'s logging and status-code mapping

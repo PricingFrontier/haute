@@ -10,8 +10,9 @@ without leaving the terminal, and so that CI/CD workflows (GitHub Actions, GitLa
 have a stable, scriptable surface to call into.
 
 Every command follows the same shape: a thin `@click.command` entry point parses arguments into a
-typed dataclass, then hands off to a `handle_*(config)` pure function that does the actual work and
-can be called directly from tests or other Python code without going through Click.
+typed dataclass, then hands off to a `handle_*(config)` orchestration function that does the actual
+filesystem, process, network, or execution work and can be called directly from tests or other
+Python code without going through Click.
 
 ## Scope
 
@@ -40,7 +41,8 @@ Out of scope, owned elsewhere:
 - `haute lint [pipeline_file]` parses a pipeline and reports structural problems (edges pointing at
   missing nodes, per-node parse errors, orphan nodes) without executing anything.
 - `haute train <training_script>` runs a training script that must define a module-level `job`
-  object (a `TrainingJob`), streaming a live progress bar and printing final metrics.
+  object with a callable `run(progress=...)` method (normally a `TrainingJob`), streaming a
+  live progress bar and printing the returned result's model path, feature counts, and metrics.
 - `haute serve [--host] [--port] [--no-browser]` starts the Haute UI: dev mode (Vite + FastAPI with
   autoreload) when a `frontend/` checkout with `node_modules` is discoverable, otherwise production
   mode serving a pre-built static bundle. Binds to `127.0.0.1` by default.
@@ -48,7 +50,8 @@ Out of scope, owned elsewhere:
   scores its test quotes, and deploys it to the configured target. Non-dry-run deploys are blocked
   outside a recognised CI environment.
 - `haute smoke [--endpoint-suffix]` sends every test-quote JSON file in `tests/quotes/` to a live
-  serving endpoint and checks that predictions come back.
+  serving endpoint and checks that each request completes. The current backends do not
+  consistently require a non-empty prediction list, and HTTP health accepts any decodable 2xx JSON.
 - `haute status [model_name] [--version-only]` looks up a model's latest version/stage in the MLflow
   Model Registry.
 - `haute impact [--sample] [--batch-size] [--endpoint-suffix]` scores a configured safety dataset
@@ -56,12 +59,18 @@ Out of scope, owned elsewhere:
   markdown report and, on GitHub Actions, appending to the job step summary.
 
 Invariants that hold across every command:
-- Resolving a model name always follows the precedence **CLI flag > `[deploy].model_name` in
-  `haute.toml` > loud error** (`haute.cli._helpers.resolve_model_name`).
-- Resolving a pipeline file is delegated to a single shared helper
-  (`haute._project.resolve_pipeline_file`) rather than being reimplemented per command.
-- Every command that fails writes a human-readable message to stderr and exits with
-  `SystemExit(1)`; none of them return a non-zero-looking success.
+- Where `resolve_model_name` is used (`status`), precedence is **CLI value >
+  `[deploy].model_name` in `haute.toml` > loud error**. `deploy` loads the TOML config then
+  applies its `--model-name` override; without TOML it derives the default from the resolved
+  pipeline stem when the option is absent.
+- `run`, `lint`, and no-`haute.toml` `deploy` delegate CLI/default pipeline discovery to
+  `haute._project.resolve_pipeline_file`; TOML-backed deploy instead carries its configured
+  path through `DeployConfig` and `resolve_config`.
+- Command handlers use exit code 1 for their handled operational failures; Click uses exit
+  code 2 for argument/choice/range parsing errors. Two informational outcomes intentionally
+  succeed: ordinary `status` reports a missing registered model and exits 0, and `impact`
+  warns and exits 0 for a target whose transport is not implemented. `status --version-only`
+  makes the same missing-model case an exit-1 `ClickException` for scripts.
 
 ## Design rationale
 
@@ -81,11 +90,11 @@ Invariants that hold across every command:
   accident. A non-loopback bind still works, but always logs a structured `server_bind_non_loopback`
   warning so the exposure is auditable — see the module docstring in
   `src/haute/cli/_serve.py` for the full rationale.
-- **Fail loud, no silent fallbacks.** Missing Node/npm, a missing frontend build, a missing
-  `haute.toml`, an unresolvable model name, a malformed `haute.toml` — all of these raise a clear,
-  actionable error rather than guessing (e.g. no hardcoded Windows install path fallback for `node`
-  or `npm`; see `haute.cli._helpers._node_env` / `_npm`). This matches the project-wide "loud failure
-  over silent fallback" convention.
+- **Command-scoped failure rules.** Missing Node/npm and a missing production frontend build
+  fail rather than guessing; malformed TOML fails. `smoke`/`impact` require `haute.toml`, while
+  deploy and explicit-model status have non-TOML paths. `serve` deliberately treats a missing
+  file as no override and an unreadable file as a warning plus the loopback default; it still
+  rejects malformed TOML. No hardcoded Windows Node/npm path is guessed.
 - **`impact`/`smoke` share a transport abstraction.** Both commands need to dispatch to either
   Databricks Model Serving or a plain HTTP endpoint depending on `DeployConfig.target`. That
   dispatch logic lives once in `haute.cli._helpers.resolve_transport` / `TransportInfo` rather than
@@ -119,11 +128,15 @@ Invariants that hold across every command:
 
 ## Failure model
 
-Every command exits non-zero on failure via `raise SystemExit(1)` (or, for `status --version-only`,
-`click.ClickException`) after writing an explanatory message to stderr. There is no command that
-degrades to a default/fallback value on error — a missing `haute.toml`, an unresolvable model name,
-a missing frontend build, a missing training `job` variable, a failed validation, or a deploy
-exception are all terminal for that invocation.
+Expected operational failures explicitly caught by a handler normally raise `SystemExit(1)`
+after explanatory stderr; Click's own invocation errors exit 2, and `status --version-only`
+uses `ClickException` (exit 1). Some configuration, SDK, filesystem, scoring, and programming
+errors deliberately propagate instead, producing exit 1 with the original exception/traceback.
+A missing `haute.toml` where the command requires one (`smoke`/`impact`), an unresolvable
+required model name, a missing frontend build, a missing training `job` variable, a failed
+validation, or a deploy exception is terminal. Ordinary
+`status`-not-found and unsupported-target `impact` are the two deliberate informational success
+paths described above, not deploy or scoring successes.
 
 Exceptions are handled with narrow, explicit catches rather than blanket `except Exception` used as
 a fallback mechanism: transport-classification helpers (`_is_databricks_not_found`,

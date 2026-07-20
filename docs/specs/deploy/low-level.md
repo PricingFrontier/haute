@@ -4,19 +4,19 @@
 
 | File | Responsibility |
 |---|---|
-| `__init__.py` | Public API surface (`deploy`, `deploy_resolved`, config/result re-exports); target validation (`_validate_target`) and dispatch (`_dispatch_resolved`) by `config.target`. |
-| `_config.py` | `DeployConfig` (user input), target sub-configs (`DatabricksConfig`, `ContainerConfig`, `AzureContainerAppsConfig`, `AwsEcsConfig`, `GcpRunConfig`, `SafetyConfig`, `CIConfig`), `haute.toml` loading + schema validation, base-image pinning validation, `.env` loading, `resolve_config()` producing `ResolvedDeploy`. |
-| `_pruner.py` | Graph pruning to the output node's ancestors; `liveSwitch` live-branch collapsing; output/input/source node discovery. |
-| `_bundler.py` | Artefact discovery and collection (`collect_artifacts`): external files, optimiser artefacts, MLflow-sourced models + feature contracts, static data sources; path resolution and static-source schema drift checks. |
-| `_schema.py` | Input schema inference (read source file schema) and output schema inference (dry-run scoring with the bundled artefacts), with a fingerprint-keyed on-disk cache. |
-| `_scorer.py` | Runtime scoring engine (`score_graph`, `score_graph_lazy`) shared by every deploy target; `NodeBuildHooks` interception for live-input injection and artefact-path remapping; stat-gated model/contract caches; execution admission. |
-| `_validators.py` | Pre-deploy validation (`validate_deploy`): structural checks + test-quote scoring; golden test-quote parsing and expected-output tolerance comparison; `score_test_quotes`. |
-| `_utils.py` | Shared helpers: `get_user`, `get_haute_version`, `build_manifest` (the canonical deploy-manifest schema). |
-| `_mlflow.py` | Databricks target: `deploy_to_mlflow`, `get_deploy_status`, MLflow signature/conda-env building, Databricks Model Serving endpoint create/update, connectivity pre-check. |
-| `_model_code.py` | MLflow models-from-code entry point: `HauteModel` (`mlflow.pyfunc.PythonModel` subclass) wrapping `score_graph`. |
-| `_container.py` | Container target(s): `build_and_push_image` (shared by all container-based targets), FastAPI app source generation, Dockerfile generation, Docker build/push subprocess calls, `deploy_to_container`, `deploy_to_platform_container` (+ its `NotImplementedError` service-update stub). |
-| `_impact.py` | Impact analysis: batched endpoint scoring (Databricks SDK or HTTP `/quote`), percent-change statistics, categorical segment breakdown, terminal/Markdown report formatting. |
-| `_request_limits.py` | Deployed-container request-body size limiting: `deploy_quote_request_body_limit_bytes`, `read_limited_json_body`, structured error types (`RequestBodyLimitError`, `RequestBodyHeaderError`, `RequestBodyParseError`). |
+| `src/haute/deploy/__init__.py` | Public API surface (`deploy`, `deploy_resolved`, config/result re-exports); target validation (`_validate_target`) and dispatch (`_dispatch_resolved`) by `config.target`. |
+| `src/haute/deploy/_config.py` | `DeployConfig` (user input), target sub-configs (`DatabricksConfig`, `ContainerConfig`, `AzureContainerAppsConfig`, `AwsEcsConfig`, `GcpRunConfig`, `SafetyConfig`, `CIConfig`), `haute.toml` loading + schema validation, base-image pinning validation, `.env` loading, `resolve_config()` producing `ResolvedDeploy`. |
+| `src/haute/deploy/_pruner.py` | Graph pruning to the output node's ancestors; `liveSwitch` live-branch collapsing; output/input/source node discovery. |
+| `src/haute/deploy/_bundler.py` | Artefact discovery and collection (`collect_artifacts`): external files, file-backed optimiser artefacts, supported MLflow-sourced local models + feature contracts, and static data sources; path resolution and static-source schema drift checks. MLflow-sourced optimiser applies are deliberately not bundled. |
+| `src/haute/deploy/_schema.py` | Input schema inference (read source file schema) and output schema inference (dry-run scoring with the bundled artefacts), with a graph-and-artefact-fingerprint-keyed on-disk cache. |
+| `src/haute/deploy/_scorer.py` | Runtime scoring engine (`score_graph`, `score_graph_lazy`) shared by every deploy target; `NodeBuildHooks` interception for live-input injection and artefact-path remapping; stat-gated model/contract caches; execution admission. |
+| `src/haute/deploy/_validators.py` | Pre-deploy validation (`validate_deploy`): structural checks + test-quote scoring; golden test-quote parsing and expected-output tolerance comparison; `score_test_quotes`. |
+| `src/haute/deploy/_utils.py` | Shared helpers: `get_user`, `get_haute_version`, `build_manifest` (the canonical deploy-manifest schema). |
+| `src/haute/deploy/_mlflow.py` | Databricks target: `deploy_to_mlflow`, `get_deploy_status`, MLflow signature/conda-env building, Databricks Model Serving endpoint create/update, connectivity pre-check. |
+| `src/haute/deploy/_model_code.py` | MLflow models-from-code entry point: `HauteModel` (`mlflow.pyfunc.PythonModel` subclass) wrapping `score_graph`. |
+| `src/haute/deploy/_container.py` | Container build/push orchestration, generated FastAPI `/health` and `/quote` runtime, stable JSON/NDJSON response handling, pinned Dockerfile generation, Docker subprocess calls, and the platform service-update stub. |
+| `src/haute/deploy/_impact.py` | Impact analysis: batched endpoint scoring (Databricks SDK or HTTP `/quote`), quote-envelope normalisation, percent-change statistics, categorical segment breakdown, terminal/Markdown report formatting. |
+| `src/haute/deploy/_request_limits.py` | Deployed-container request-body size limiting: environment resolution, `Content-Length` and streamed-byte enforcement before JSON materialisation, and structured limit/header/parse errors. |
 
 ## Key types and data structures
 
@@ -81,27 +81,37 @@
    fall back to the single source node in the pruned graph (`ValueError` if zero or
    multiple non-apiInput sources exist).
 7. `collect_artifacts(pruned_graph, deploy_inputs, pipeline_dir)` → `artifacts` dict.
-8. `infer_input_schema()` (read the first input node's source file schema, 0-row) and
-   `infer_output_schema()` (dry-run score one sample row through the pruned graph using
+8. `infer_input_schema()` (call `collect_schema()` on the first input node's source;
+   lazy readers avoid row collection, while the existing plain-JSON reader may parse
+   eagerly) and
+   `infer_output_schema()` (dry-run score up to one sample row through the pruned graph using
    the just-collected artefact paths, cached by graph+artefact-identity fingerprint).
 9. Assemble and return `ResolvedDeploy`.
 
+`output_fields` is not passed into either schema inference or quote validation. It is
+applied only by the deployed runtime, so those pre-deploy checks describe the unprojected
+output and do not catch missing selected columns.
+
 **Validation (`_validators.py::validate_deploy`)** — called by `deploy()` after
-`resolve_config()`, before dispatch. Runs eight structural checks (§ Edge cases below),
-then — if `config.test_quotes_dir` is a directory — pre-checks every `*.json` file's rows
+`resolve_config()`, before dispatch. Runs seven structural checks (output, inputs,
+source-ness, artefact existence, unresolved Databricks sources, and non-empty input/output
+schemas), then — if `config.test_quotes_dir` is a directory — pre-checks every `*.json` file's rows
 against the required input-schema columns (catching a missing column before scoring even
 starts, since a passthrough graph wouldn't otherwise surface it), then calls
 `score_test_quotes()` to actually score every file and collect per-file errors. All
 structural + test-quote errors are combined into one `DeployError` if any exist.
+A missing/non-directory quote path and a directory containing no `*.json` files both
+produce an empty quote result rather than a validation error.
 
 **Dispatch (`__init__.py`)**
 1. `deploy(config)`: `_validate_target(config.target)` (checked before resolution, so a
    bad target fails fast rather than surfacing as an unrelated "no output node" error) →
    `resolve_config()` → `validate_deploy()` → `_dispatch_resolved()`.
-2. `deploy_resolved(resolved)`: the CLI's actual path — resolution, validation, and
-   test-quote scoring already happened once in the CLI flow; this re-validates only the
-   target and dispatches the *same* resolved object, so the backend receives exactly what
-   was validated.
+2. `deploy_resolved(resolved)`: the CLI's actual path — resolution and validation already
+   happened, including validation's quote-scoring gate; the CLI then ran a second
+   `score_test_quotes()` pass to print per-file timings. This function re-validates only
+   the target and dispatches the *same* resolved object, so the backend receives exactly
+   what was validated.
 3. `_dispatch_resolved()`: `"databricks"` → `deploy_to_mlflow`; `"container"` →
    `deploy_to_container`; any other `_CONTAINER_BASED_TARGETS` member (`azure-container-apps`,
    `aws-ecs`, `gcp-run`) → `deploy_to_platform_container`.
@@ -117,14 +127,34 @@ an image tag (`<registry>/<model_name>:<git_sha>` or `<model_name>:<git_sha>`, f
 back to `"local"` if not in a git repo), `docker build`, then `docker push` only if a
 registry is configured.
 
+**Generated container HTTP runtime (`_container.py::_generate_app_source`)**
+1. Startup loads `deploy_manifest.json`, reconstructs `PipelineGraph`, and resolves the
+   request-body limit. `GET /health` returns status, model/version, deployed-node count,
+   and the manifest input/output schemas.
+2. `POST /quote` reads JSON through `_request_limits.read_limited_json_body` before
+   constructing a `DataFrame`. A JSON object becomes a one-row request; a JSON array is
+   used as the batch; any other JSON top-level value returns HTTP 400. Array element
+   shapes are not pre-validated, and invalid UTF-8 is not converted to the structured
+   parse-error envelope.
+3. Admission occurs before Polars materialisation. Normal JSON requests call
+   `score_graph()` and return an object containing rendered `rows`, the full
+   `row_count`, `returned_rows`, `truncated`, `limit`, and execution metrics. At most
+   1,000 rows are returned in that envelope even though `row_count` records the full
+   result.
+4. An `Accept` header containing `application/x-ndjson` or `application/ndjson` selects
+   `score_graph_lazy()` and ordered, bounded collection in 50,000-row chunks. This path
+   streams every result row as NDJSON rather than applying the 1,000-row JSON-envelope
+   response cap; plan cleanup runs in the generator's `finally`.
+
 **Databricks deploy (`_mlflow.py::deploy_to_mlflow`)** — checks Databricks connectivity
 (HTTP GET with a short timeout, distinguishing 403 from unreachable), sets MLflow tracking
 + registry URI to Databricks/Unity-Catalog, builds the manifest, writes it under
 `<pipeline_dir>/.haute_build/`, builds an MLflow `ModelSignature` from the resolved
 schemas, sets/creates the experiment (suffix-isolated for staging), and inside one
 `mlflow.start_run()` logs `HauteModel` as a `pyfunc` model-from-code with the manifest +
-every bundled artefact attached, a pinned `conda_env` (Python 3.11.11 for
-Databricks-conda-channel availability), and `registered_model_name` set to the UC
+every bundled artefact attached, a `conda_env` with Python 3.11.11 and Haute exactly
+pinned but `polars>=1.39.2` and optional `catboost>=1.2.8` as lower bounds, and
+`registered_model_name` set to the UC
 three-level name. Fetches the newly registered version, then creates or updates the
 Databricks Model Serving endpoint (`_create_or_update_serving_endpoint`) if
 `effective_endpoint_name` is set. Any exception during this whole block removes the build
@@ -140,7 +170,7 @@ directory before re-raising.
    situations: apiInput source in the live input set (inject the live `DataFrame`
    directly); `externalFile` with a remapped bundled path (run its user code against the
    loaded object, or passthrough if no code); `optimiserApply` either file-based-remapped
-   or MLflow-sourced (`run`/`registered`); `modelScore` in three sub-cases (remapped
+   or MLflow-sourced (`run`/`registered`, downloaded at request time); `modelScore` in three sub-cases (remapped
    model artefact present → score; contract bundled but no model artefact → validate
    contract then raise `RuntimeError`; neither present and no usable model source
    configured → raise `DeployError` immediately, never a silent passthrough); static
@@ -169,6 +199,14 @@ computes per-numeric-column `ColumnStats`, and — for the first numeric column 
 a `_segment_breakdown` over every categorical (`Utf8`, 2–50 unique values) input column
 with at least 10 rows per segment value, keeping the top 10 by absolute mean change.
 
+**Wire-size limits (`_request_limits.py`)** — the default `/quote` JSON body limit is
+8 MiB. `HAUTE_DEPLOY_QUOTE_REQUEST_BODY_LIMIT_BYTES` has first precedence;
+`HAUTE_DEPLOY_QUOTE_REQUEST_BODY_LIMIT_MB` is used only when the bytes variable is absent.
+Configured values must be positive base-10 integers. A declared `Content-Length` above
+the limit is rejected before the body stream is consumed; absent or in-range headers do
+not bypass the cumulative streamed-byte check. Malformed/negative headers and invalid
+JSON have separate structured payloads. A body exactly at the configured limit is valid.
+
 ## Edge cases and invariants
 
 - **Pipeline-relative path resolution wins over CWD** (`_bundler.py::_resolve_path`):
@@ -186,7 +224,9 @@ with at least 10 rows per segment value, keeping the top 10 by absolute mean cha
   `input_scenario_map`'s `"live"`-valued key against a connected edge's source label; if
   no `input_scenario_map` exists, fallback matches `config["inputs"][0]` (positional) the
   same way. If an explicit `input_scenario_map` names a live input that doesn't match any
-  connected edge, `ValueError` — this is a config error, not silently ignored.
+  connected edge, `ValueError`. If the legacy `inputs[0]` fallback matches nothing, the
+  current implementation records no live source and silently drops all incoming switch
+  edges.
 - **Feature-contract bundling filename convention**: the bundler only looks for a bare
   `feature_contract.json` sitting next to a downloaded model (the MLflow-download-cache
   convention); training itself writes per-model `{name}.feature_contract.json` and never
@@ -200,10 +240,10 @@ with at least 10 rows per segment value, keeping the top 10 by absolute mean cha
   or `tolerance_pct` present ⇒ golden; row must then be `{"input": {...}, "expected":
   {...}?, "tolerance_pct": ...?}` with only those keys plus `_`-prefixed metadata keys).
   A `tolerance_pct` without `expected` is an error (nothing to compare against tolerance).
-- **Zero-baseline percent-change is defined, not undefined**: `_impact.py` treats a
-  production value of (near-)zero as a 0% change only when the staging value differs from
-  it by no more than `_CHANGE_EPSILON`; any actual non-zero staging deviation against a
-  zero baseline raises `ValueError` rather than silently reporting `∞%` or `0%`.
+- **Zero-baseline percent-change is defined, not undefined**: per-row zero production
+  values are accepted only when staging equals production exactly; otherwise the change
+  raises `ValueError`. `_CHANGE_EPSILON` applies to changed-row counting and the aggregate
+  total-zero comparison, not this row-level equality test.
 - **Prediction/input length mismatch in impact reports** is truncated (not padded or
   errored): `scored = min(len(staging_preds), len(prod_preds))`, with the shortfall
   recorded as `failed_rows`, before DataFrames are built — avoiding materialising rows
@@ -221,6 +261,18 @@ with at least 10 rows per segment value, keeping the top 10 by absolute mean cha
 - **Container `output_fields` type check**: `score_graph_lazy` explicitly rejects
   `output_fields` passed as a bare `str`/`bytes` (which would otherwise silently iterate
   per-character) with `ValueError`.
+- **Static sources must support bounded batch reads.** Schema-declared static plain JSON
+  is rejected during bundle verification under `DEPLOY_BATCH`; undeclared JSON can pass an
+  at-most-one-row `DEPLOY_LIVE` schema dry-run but fail when a multi-row request selects
+  `DEPLOY_BATCH`. Parquet/NDJSON and bounded-compatible declared CSV are the supported path.
+- **Local model format boundary.** Registry resolution can discover an MLflow pyfunc
+  directory, but deploy's download/bundle path requires a file and local scoring supports
+  `.cbm` and `.rsglm`; such pyfunc directories are not deployable through this path.
+- **Project-local preamble imports are not bundled.** The preamble embedded in graph JSON
+  still executes, but the bundler does not walk/copy imported Python modules.
+- **Request and response bounds are independent.** The request byte limit controls JSON
+  materialisation and defaults to 8 MiB; the ordinary JSON response envelope independently
+  returns at most 1,000 rows. NDJSON is the explicit all-rows streaming response.
 
 > NOTE: `_pruner.py::find_deploy_input_nodes` only returns `apiInput` nodes even though
 > `find_source_nodes` also recognises `dataSource` and `constant` node types as sources;
@@ -232,14 +284,14 @@ with at least 10 rows per segment value, keeping the top 10 by absolute mean cha
 | Exception | Raised where | Propagates to |
 |---|---|---|
 | `haute.errors.DeployError` | `_config.py` (unpinned base image), `_bundler.py` (static-source schema drift), `_scorer.py` (unscoreable `modelScore`), `_validators.py` (aggregated validation failure) | `deploy()` / `resolve_config()` callers; carries structured `context` kwargs (e.g. `node_id`, `expected_columns`) rendered into `str()`. |
-| `ValueError` | `_pruner.py` (missing/multiple output nodes, ambiguous source nodes, bad `liveSwitch` config), `__init__.py` (unknown target), `_config.py` (unknown TOML keys, missing `from_cli_args` required fields), `_scorer.py` (bad `output_fields` type, negative `row_count`), `_impact.py` (non-finite predictions, zero-baseline change) | Caller of `resolve_config`/`deploy`/scoring functions; container `/quote` endpoint catches the `BoundedMemoryUnsupportedError` subclass specially (422) but a bare `ValueError` from scoring falls into the generic 500 handler. |
+| `ValueError` | `_pruner.py` (missing/multiple output nodes, bad explicit `liveSwitch` config), `_config.py` (zero/ambiguous fallback source nodes, unknown TOML keys, missing `from_cli_args` required fields), `__init__.py` (unknown target), `_scorer.py` (bad `output_fields` type, negative `row_count`), `_impact.py` (non-finite predictions, zero-baseline change) | Caller of `resolve_config`/`deploy`/scoring functions; container `/quote` endpoint catches the `BoundedMemoryUnsupportedError` subclass specially (422) but a bare `ValueError` from scoring falls into the generic 500 handler. |
 | `FileNotFoundError` | `_bundler.py::_check_exists` (missing artefact on disk), `_bundler.py::_download_model_artifact` (MLflow download landed but file missing) | Propagates uncaught through `resolve_config()`. |
 | `RuntimeError` | `_container.py` (Docker unavailable/build/push failure, unpinned Dockerfile dependency), `_scorer.py` (`modelScore` contract matched but no model artefact — deliberately after the contract check), `_mlflow.py` (Databricks host/token unset, unreachable, `run_id`-less registered model version) | Uncaught to caller; `_check_docker_available`'s message specifically redirects the operator to CI. |
 | `FeatureMismatchError` | `_scorer.py::_assert_runtime_contract_matches` (live schema disagrees with bundled training contract on feature set, dtype, or categorical levels) | Uncaught through scoring; surfaces in the container's generic 500 handler or the MLflow `pyfunc` boundary. |
 | `RequestBodyLimitError` / `RequestBodyHeaderError` / `RequestBodyParseError` | `_request_limits.py::read_limited_json_body` | Caught explicitly in the generated container `app.py`'s `/quote` handler → HTTP 413 / 400 / 422 with a structured `to_payload()` body. |
 | `ExecutionAdmissionError` / `ExecutionMemoryLimitExceededError` | Raised by the execution-engine's admission layer, invoked via `admit_deploy_execution` | Caught in `/quote` → HTTP 507. |
 | `ExecutionCancelledError` | Execution engine | Caught in `/quote` → HTTP 499 with `job_id`/`operation` context. |
-| `NotImplementedError` | `__init__.py::_validate_target` (planned targets: `sagemaker`, `azure-ml`), `_container.py::_update_service` (platform-container service update not yet built) | Uncaught to caller; the `_update_service` message names the already-pushed image tag. |
+| `NotImplementedError` | `__init__.py::_validate_target` (planned targets: `sagemaker`, `azure-ml`), `_container.py::_update_service` (platform-container service update not yet built) | Uncaught to caller; the `_update_service` message names the built image tag (which is pushed only when a registry was configured). |
 | Any other `Exception` | Runtime scoring inside `/quote` | Caught by the container's catch-all, logged via `logger.exception("deploy_quote_failed")`, returned as HTTP 500 with `error_code: "deploy_internal_error"`. The MLflow `pyfunc` predict path has no equivalent catch-all. |
 
 `build_and_push_image` and `deploy_to_mlflow` both wrap their build-directory-writing
@@ -253,14 +305,13 @@ Tests live in `tests/`, one or more files per concern, all using `pytest` with p
 function/class-based tests (no property-based testing in this component). Key files and
 what they cover:
 
-- **`test_deploy.py`** (~4700 lines, the largest single file) — broad unit coverage
+- **`test_deploy.py`** — broad unit coverage
   across nearly every module: `TestPruner` (ancestor walking, `liveSwitch` collapsing),
   `TestBundler` (artefact discovery per node type, path resolution precedence),
   `TestResolveRegisteredModel`, `TestScorer`, `TestSchema`, `TestValidators`,
   `TestConfig`, MLflow helpers (`TestBuildUcModelName`, `TestBuildExperimentName`,
   `TestDatabricksTracking`, `TestServingEndpoint`, `TestModelsFromCode`,
-  `TestHauteModel`), plus regression-tagged classes for specific historical bugs
-  (`TestBugB4PrunerUsesOriginalEdges`, `TestBugB10LexicographicVersionComparison`).
+  `TestHauteModel`).
 - **`test_deploy_config.py`** — `DeployConfig.from_toml` behaviour, `effective_endpoint_name`,
   env-var override precedence, TOML-schema-vs-dataclass-field sync (guards against a
   dataclass field silently missing from the TOML allowlist or vice versa), unknown-key
@@ -270,6 +321,11 @@ what they cover:
   path resolution invariant — the test this behaviour's docstring explicitly names).
 - **`test_deploy_container.py`** — Docker availability check, `docker build`/`push`
   subprocess handling, git-SHA detection, platform-container service-update stub.
+- **`test_container.py`** — base-image/model-name hardening; generation and import of the
+  actual generated `app.py`; `/health` and `/quote` requests through FastAPI `TestClient`;
+  admission, cancellation, memory and bounded-streaming error mappings; body-limit env
+  precedence and streamed-byte enforcement; JSON response truncation/envelope boundaries;
+  NDJSON streaming; Dockerfile dependency pins and build-directory cleanup.
 - **`test_deploy_contract_integrity.py`** — static-data-source schema drift detection,
   `validate_deploy` failing on bad test quotes, feature-contract bundling end-to-end.
 - **`test_deploy_dispatch.py`** — `_dispatch_resolved` routing for every target family
@@ -291,7 +347,9 @@ what they cover:
   error paths, temp-file cleanup, `.env` loading, `resolve_config` edge cases,
   `get_deploy_status`, MLflow signature/conda-env building, Databricks connectivity
   checks, and (also in this file) the full `_impact.py` surface — batched scoring,
-  `ColumnStats`/`SegmentRow`/report building, terminal/Markdown formatting.
+  `ColumnStats`/`SegmentRow`/report building, terminal/Markdown formatting — plus the
+  `TestBugB4PrunerUsesOriginalEdges` and `TestBugB10LexicographicVersionComparison`
+  regression classes.
 - **`test_deploy_mlflow_gaps.py`**, **`test_deploy_validators_gaps.py`** — targeted
   gap-filling for branches not hit by the main suites (progress callbacks, artefact copy,
   version selection, build-dir cleanup-on-error for MLflow; unparseable test-quote files,
@@ -315,18 +373,14 @@ what they cover:
 real (small, synthetic) `PipelineGraph` objects and temp-directory artefacts rather than
 mocked graph structures — `_scorer.py`'s tests in particular build real pruned graphs and
 assert on actual scored output, since the scoring correctness is the component's core
-risk surface. Docker and Databricks SDK calls are mocked/subprocessed against fakes
-(`subprocess.run` patched or a fake `docker` binary) rather than requiring a live daemon
-or workspace. No dedicated integration test spins up a real container or a real
+risk surface. Docker subprocess/helpers and Databricks SDK calls are patched or faked
+rather than requiring a live daemon or workspace. No dedicated integration test spins up a real container or a real
 Databricks endpoint — the seam between "manifest + artefacts are correct" and "the
 generated container actually serves them correctly" is not exercised end-to-end in this
 suite.
 
 **Known gaps**: no test exercises the platform-container (`azure-container-apps`,
 `aws-ecs`, `gcp-run`) service-update path beyond confirming it raises
-`NotImplementedError`, since the implementations don't exist yet. The generated `app.py`
-FastAPI source (an f-string template in `_container.py::_generate_app_source`) is
-asserted on structurally/by substring in places but not run as an actual live server in
-this suite — the `/quote` and `/health` handlers' runtime behaviour is exercised
-indirectly via `score_graph`/`score_graph_lazy` unit tests, not via an HTTP client against
-a booted app instance.
+`NotImplementedError`, since the implementations don't exist yet. Generated `app.py` is
+imported and exercised in-process through `TestClient`, but no test boots a built Docker
+image, contacts a real registry/Databricks workspace, or verifies a cloud service update.

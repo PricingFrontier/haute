@@ -33,7 +33,8 @@ Out of scope (owned elsewhere):
 - The on-disk/parquet dataframe cache and its key/fingerprint logic — see
   [caching](../caching/high-level.md).
 - Generic job-store, job-lifecycle, and cancellation-registry mechanics shared with other
-  long-running routes (modelling, optimiser) — see [server-api](../server-api/high-level.md).
+  long-running routes (modelling, optimiser) — see
+  [background-jobs](../background-jobs/high-level.md).
 - Parsing and code-generation of the `@pipeline.explore()` decorator and its `overview=` kwarg
   into/out of pipeline source files — see [codegen](../codegen/high-level.md) and
   [expression-parsing](../expression-parsing/high-level.md) (the parser/codegen call sites live
@@ -53,7 +54,7 @@ Out of scope (owned elsewhere):
   created.
 - Otherwise a job is created and runs in a background thread. The client polls
   `GET /api/explore/status/{job_id}` until the job reaches a terminal status
-  (`completed`, `error`, `cancelled`, `superseded`, `timed_out`, `memory_limited`,
+  (`completed`, `error`, `cancelled`, `superseded`, `memory_limited`,
   `contract_error`).
 - Starting a new run for the same Explore node/source while a previous run is still in flight
   supersedes the older job; the older job's status transitions to `superseded`.
@@ -134,10 +135,11 @@ Out of scope (owned elsewhere):
 - [caching](../caching/high-level.md): supplies `DataFrameExecutionCache`,
   `build_dataframe_execution_cache_request`, `dataframe_graph_input_fingerprint`, and the
   `LRUCache` used for the in-process report cache.
-- [server-api](../server-api/high-level.md): supplies the generic `JobStore`, `JobLifecycle`,
-  `CancellableJobRegistry`, and shared route helpers (`find_typed_node`, `_ensure_source_file`,
-  `_validate_runtime_input_paths`, `flatten_graph`) that `routes/explore.py` and
-  `_explore_service.py` build on.
+- [background-jobs](../background-jobs/high-level.md): supplies `JobStore`, `JobLifecycle`, and
+  `CancellableJobRegistry`, including the latest-wins cancellation semantics this component uses.
+- [server-api](../server-api/high-level.md): supplies shared route helpers (`find_typed_node`,
+  `_ensure_source_file`, `_validate_runtime_input_paths`, `flatten_graph`) and mounts the Explore
+  router in the application shell.
 - [codegen](../codegen/high-level.md) / [expression-parsing](../expression-parsing/high-level.md):
   call `validate_explore_overview` when emitting or parsing the `overview=` kwarg on
   `@pipeline.explore()`.

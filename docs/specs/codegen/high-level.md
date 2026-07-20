@@ -4,8 +4,8 @@
 
 Haute pipelines are authored visually as a React Flow graph (nodes + edges) but
 executed as plain Python. Codegen is the one-way bridge from the visual
-representation to a standalone, human-readable, re-runnable `.py` file (or a
-small tree of files, for graphs with submodels). Given a validated
+representation to human-readable Python: a standalone, re-runnable `.py` file
+for a flat graph, or a small parseable file tree for a graph with submodels. Given a validated
 `PipelineGraph`, it produces source that:
 
 - Imports `polars` and `haute`, constructs a `haute.Pipeline`/`haute.Submodel`
@@ -17,13 +17,15 @@ small tree of files, for graphs with submodels). Given a validated
   column contracts, preserved free-form blocks) that the file can later be
   parsed back into an equivalent graph — see
   [pipeline-config](../pipeline-config/high-level.md) for the sidecar format
-  and the parsing counterpart in `haute/parser.py`.
+  and the parsing counterpart in `src/haute/parser.py`.
 
-The generated file is the artifact that gets saved to disk, deployed, and
-directly executed by `haute.Pipeline.run()` — it is not an intermediate
-representation. Codegen is therefore the point where "the graph is valid" has
-to become "the file is valid, importable Python that behaves the same as the
-canvas preview."
+The generated file tree is the artifact saved to disk and later parsed for preview,
+execution, tracing, and deployment; it is not an intermediate serialization hidden from the
+user. A single-file/flat generated pipeline is also directly executable through
+`haute.Pipeline.run()`. A hierarchical main file is different: its live
+`pipeline.submodel(path)` calls only record paths, so the live `Pipeline` API does not import the
+child registrations and the main file is not a standalone execution surface for that hierarchy.
+The static parser resolves and flattens the child files before the full executor runs them.
 
 ## Scope
 
@@ -36,7 +38,7 @@ In scope:
   `haute._codegen_builders`), covering every `NodeType` registered in
   `haute._registry.NODE_REGISTRY`.
 - Injecting column-contract decorator kwargs (`_format_contract_kwarg` /
-  `_inject_contract_kwarg` in `haute/codegen.py`) via a token-aware source
+  `_inject_contract_kwarg` in `src/haute/codegen.py`) via a token-aware source
   rewrite.
 - Extracting the user-authored portion of a node's code editor content back
   out of generated boilerplate (`haute._code_extraction`), so the same text
@@ -48,17 +50,20 @@ In scope:
 
 Out of scope (owned by neighbouring components):
 
-- Turning the emitted `.py` file back into a `PipelineGraph` — that is
-  `haute/parser.py`, `_graph_builders.py`, `_parser_helpers.py`,
-  `_parser_regex.py`, `_parser_submodels.py`. Codegen and the parser share
-  `_ast_helpers.py` and `_code_extraction.py` because generation and
-  extraction are two directions of the same contract (see Interactions).
+- Orchestrating emitted `.py` files back into a `PipelineGraph` —
+  `src/haute/parser.py`, `src/haute/_parser_regex.py`, and
+  `src/haute/_parser_submodels.py` are owned by
+  [expression-parsing](../expression-parsing/high-level.md). Parsed node/config conversion in
+  `src/haute/_graph_builders.py` is owned by
+  [pipeline-config](../pipeline-config/high-level.md). Codegen shares
+  `src/haute/_ast_helpers.py` and `src/haute/_code_extraction.py` with those read paths because
+  generation and extraction are two directions of the same contract (see Interactions).
 - Declarative per-node JSON sidecar read/write and folder conventions —
   [pipeline-config](../pipeline-config/high-level.md) (`haute._config_io`).
 - Evaluating user-authored Polars expressions / rating formulas at runtime —
   [expression-parsing](../expression-parsing/high-level.md).
 - Packaging and shipping the generated file tree to a deployment target —
-  [deploy](../deploy/high-level.md) (`haute/deploy/`), which itself imports
+  [deploy](../deploy/high-level.md) (`src/haute/deploy/`), which itself imports
   `_strip_generated_boilerplate_from_code` for its own scoring code path.
 - Executing the generated functions at graph-preview time — the executor
   (`haute._builders`) has its own per-type builders that produce runtime
@@ -71,9 +76,10 @@ Out of scope (owned by neighbouring components):
 ## Behaviour
 
 - **Deterministic given the same graph.** Node order follows a topological
-  sort (`haute._topo.topo_sort_ids`); contract dicts, kwargs, and connect
-  calls are emitted with sorted keys/columns so two saves of an unchanged
-  graph produce byte-identical output.
+  sort (`haute._topo.topo_sort_ids`); contract dicts and column sets are sorted, while connect
+  calls preserve the graph's edge order (apart from edge-join role ordering and root-boundary
+  deduplication). The same ordered graph therefore produces byte-identical output; codegen does
+  not canonicalise arbitrary input edge ordering.
 - **One function per node**, named by sanitizing the node's label
   (`haute._graph_utils._sanitize_func_name`). Two distinct node labels that
   sanitize to the same identifier are a hard error at codegen time
@@ -93,11 +99,12 @@ Out of scope (owned by neighbouring components):
   replaced with a single `config="config/<type>/<name>.json"` reference after
   the type-specific body is generated. The config content itself is written
   separately by the config-io save path.
-- **Contract kwarg injection.** Every non-instance node gets a
-  `contract=...` decorator kwarg documenting its column-level input/output
-  contract (or the string sentinel `"opaque"` when it can't be determined
-  statically). This is injected by rewriting already-generated source text
-  in place (see Design rationale), not by templating it in from the start.
+- **Contract kwarg injection.** Every ordinary node gets a `contract=...` decorator kwarg
+  documenting its column-level input/output contract (or the string sentinel `"opaque"` when it
+  cannot be determined statically). An instance node with no explicit declared contract omits the
+  kwarg because it inherits the original node's contract; an instance carrying a declaration has
+  that declaration emitted. Injection rewrites already-generated source text in place (see Design
+  rationale), rather than templating the kwarg in from the start.
 - **User code round-trips.** Text typed into a node's code editor is
   embedded into the generated function body, wrapped with generated
   boilerplate (imports, config-driven loads, a trailing `return df`). On the
@@ -106,8 +113,10 @@ Out of scope (owned by neighbouring components):
   duplicate scaffolding or lose the user's formatting/comments.
 - **Preserved blocks.** Free-form text wrapped in
   `# haute:preserve-start` / `# haute:preserve-end` markers anywhere in a
-  previously-saved file survives regeneration verbatim, re-emitted near the
-  top of the file.
+  previously-saved file survives regeneration and is re-emitted after the
+  `Pipeline(...)` construction and before generated node functions. The inner lines keep their
+  order and indentation, but leading/trailing blank lines inside each block are stripped and the
+  whole block is relocated; unmatched start markers are ignored.
 - **Fails loudly, never emits a corrupt file.** Every code path that could
   produce invalid Python — a missing codegen builder, an untokenizable
   decorator, an unparseable emitted file — raises rather than degrading to a
@@ -121,8 +130,8 @@ Out of scope (owned by neighbouring components):
   human reviewer. The trade-off is that string-safety (quoting, escaping,
   paren-matching) has to be handled explicitly at every interpolation point
   — see `_safe_str`, `_safe_path`, `_sanitize_description`,
-  `_matching_close_paren` in `haute._codegen_builders` /
-  `haute/codegen.py`.
+  `_matching_close_paren` in `src/haute/_codegen_builders.py` /
+  `src/haute/codegen.py`.
 - **Contract injection is a post-hoc source rewrite, not part of the
   template.** Each `_gen_*` builder produces its decorator without knowing
   about contracts; `_inject_contract_kwarg` locates the decorator's
@@ -176,9 +185,10 @@ Out of scope (owned by neighbouring components):
 - **Depends on** `haute._graph_shape`, `haute._edge_join`, and
   `haute._topo` for graph-shape validation, edge-join role resolution, and
   topological ordering before any source is emitted.
-- **Shares** `_ast_helpers.py` and `_code_extraction.py` with the parser
-  (`haute/parser.py`, `_graph_builders.py`, `_parser_helpers.py`,
-  `_parser_regex.py`, `_parser_submodels.py`) — generation and extraction
+- **Shares** `src/haute/_ast_helpers.py` and `src/haute/_code_extraction.py` with the parser
+  (`src/haute/parser.py`, `src/haute/_graph_builders.py`,
+  `src/haute/_parser_helpers.py`, `src/haute/_parser_regex.py`,
+  `src/haute/_parser_submodels.py`) — generation and extraction
   are two halves of one round-trip contract; a change to how codegen wraps
   user code generally requires a matching change to how extraction unwraps
   it.
@@ -190,9 +200,9 @@ Out of scope (owned by neighbouring components):
   user code from an already-generated model-score body.
 - **Depended on by** `haute.projection`, which also reuses
   `_strip_generated_boilerplate_from_code` for a non-save code path.
-- Contract computation calls into `haute._contracts` (`get_column_contract`,
-  `Contract`) — see [expression-parsing](../expression-parsing/high-level.md)
-  if that component owns runtime column-shape inference.
+- Contract computation calls into `src/haute/_contracts.py`
+  (`get_column_contract`, `Contract`), whose callbacks are registered by the execution builders;
+  this is shared registry/contract infrastructure, not expression evaluation.
 
 ## Failure model
 

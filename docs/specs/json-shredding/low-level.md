@@ -4,15 +4,36 @@
 
 | File | Responsibility |
 |---|---|
+| `src/haute/_api_input_schema.py` | V2 apiInput schema codec: `TypedDict` shapes, shape/extension recognition, canonical table and column path semantics, filesystem label sanitisation, and fail-loud validation. |
 | `src/haute/_json_shred.py` | v2 per-frame JSON shred: single-pass record walk, buffer→parquet build, cache validity/load, schema inference from data. |
 | `src/haute/_json_flatten.py` | Dual-layer (`working/`/`committed/`) cache-directory infrastructure for JSON apiInput sources: path resolution, delete, save-time promotion, preview-cache fingerprint contribution. The v1 flattening codec that used to live here has been removed. |
-| `src/haute/_flatten.py` | Dissolves submodel placeholder nodes into a flat, executable `PipelineGraph`. |
 | `src/haute/_json_safe.py` | Recursively converts Python/pipeline values into JSON-safe representations for API responses and preview rows. |
-| `src/haute/_jsonpath.py` | The shared array-outer JSON path grammar: acceptance parsing, canonicality predicate, canonical writer. Used by both INPUT (this component) and OUTPUT (io-layer) path addressing. |
-| `src/haute/projection.py` | Shared column-projection planning facade: the `ProjectionPlan` data model, the reverse-topological demand sweep, and the per-node-type rule registry. |
+| `src/haute/_jsonpath.py` | The shared array-outer JSON path grammar: acceptance parsing, canonicality predicate, canonical writer. Used by both INPUT and OUTPUT path addressing. |
+| `src/haute/_output_assembler.py` | V2 OUTPUT mapping validation and document assembly: GYO residue/cut planning, bag-natural joins, array-prefix nesting, pruning, and collected-frame rendering. |
 | `src/haute/_edge_join.py` | `edgeJoin` node config validation, Polars join-kwargs construction/execution, and the shared join column-demand-narrowing function used by both static projection and runtime narrowing. |
 
+Submodel graph expansion and boundary rewiring are owned by
+[submodels](../submodels/low-level.md), not this component.
+
 ## Key types and data structures
+
+**`_api_input_schema.py`**
+
+- `ColumnV2`, `TableV2`, `ApiInputV2Config` are total-false `TypedDict`s for
+  the wire/sidecar shape. `ColumnType` is exactly `int|float|str|bool|date`;
+  `PathSeg` is `(key, is_array)` and only array segments increase relational
+  depth.
+- `ApiInputSchemaError(HauteError)` is the single typed schema/path failure
+  consumed by the cache route's structured 422 response.
+
+**`_output_assembler.py`**
+
+- `OutputMappingSchemaError(HauteError)` is the OUTPUT grammar/structural
+  mapping error. `_Core` and `_CutPlan` record the deterministic feedback-edge
+  cut and the residual per-frame fields used for same-level assembly.
+- An active mapping row is enabled and has non-blank `source_column` and
+  `output_path` fields; incomplete editor rows are ignored consistently by
+  validation, contracts, and assembly.
 
 **`_json_shred.py`**
 
@@ -30,40 +51,6 @@
   all route through it so they can never disagree about which parquets exist.
 - `_POLARS_TYPE_MAP` — the five v2 `ColumnType` tokens (`int`, `float`, `str`,
   `bool`, `date`) mapped to Polars `DataType` classes.
-
-**`projection.py`**
-
-- `ProjectionRequest` — frozen dataclass: `graph`, `target_node_id`, `profile`,
-  `required_columns_by_node`, `source`. The public input to `plan()`.
-- `ProjectionReason` — `(rule, message, details)`, attached to every node/edge
-  decision for diagnostics.
-- `ProjectionDiagnostics` — `opaque_reasons` / `node_reasons` / `edge_reasons` maps.
-- `ProjectionPlan` — frozen: `needed_by_node: Mapping[str, frozenset[str] | None]`,
-  `edge_demands: Mapping[tuple[str, str], frozenset[str] | None]`,
-  `materialisation_boundaries`, `opaque_boundaries`, `diagnostics`. `None` for a
-  column set means "opaque — read everything". `strategy_summary_payload()` and
-  `diagnostics_payload()` render bounded, route-safe summaries.
-- `SourceScanProjection` — `columns: frozenset[str] | None`,
-  `validate_columns: frozenset[str]` — the physical scan projection for a source
-  node plus columns to validate-but-not-read.
-- `AllExcept` / `AllExceptColumns` (alias) — `required_columns`, `excluded_columns`;
-  a schema-derived "train on everything except X, but always keep Y" demand that is
-  resolved against the *materialised* schema rather than converted to a concrete
-  column set during static planning.
-- `ProjectionRuleCoverage` — registry entry: `node_type`, `rules: frozenset[str]`,
-  `opaque: bool`, `note`.
-- `ParentDemandResult` — `default: set[str] | None`, `by_parent: dict[str, set[str]
-  | None]`, `rule_name`. `.for_parent(id)` falls back to `default`.
-- `PreparedGraph` (`NamedTuple`) — `node_map`, `order` (topo), `parents_of`,
-  `id_to_name`, `relevant_edges` (post live-switch-pruning, ancestor-filtered).
-- Rule dataclasses, each owning one node-type-specific corner of demand routing:
-  `OptimiserParentDemandRule`, `SingleParentPolarsExpressionRule`,
-  `OpaqueContractRule`, `PolarsFanInRule`, `EdgeJoinFanInRule`. Each is a frozen
-  dataclass with a `name` and a `parent_demands(...)` method returning
-  `ParentDemandResult | None` (`None` = "this rule doesn't apply, try the next one").
-- `_JoinCallInfo` (`NamedTuple`) — `left_parent`, `right_parent`, `how`, `suffix`,
-  `key_pairs` — a Polars `.join()` call inferred from a node's Python source by
-  AST analysis (`_join_calls_for_parent_inputs`).
 
 **`_jsonpath.py`**
 
@@ -96,6 +83,39 @@
 
 ## Control flow
 
+**V2 codec** — `validate_v2_schema(config)` first requires the `tables` list,
+then validates each table's label/path/columns, unique raw and sanitised
+labels, unique column names, supported column type/levels shapes, ancestor-or-own
+column paths, and `row_id_column`. `parse_table_path`/`parse_column_path_full`/
+`parse_column_path` delegate grammar acceptance to `_jsonpath.py`; `make_table_path`
+delegates canonical rendering to the same writer.
+
+Bracket-name selectors such as `$[:]['drivers'][:]` are accepted and normalised
+by the parser; `make_table_path`/`make_output_path` emit the canonical dotted
+spelling, while validation does not require the input spelling itself to be
+canonical.
+
+> NOTE: `validate_v2_schema` does not runtime-check the declared `emit`,
+> `selected`, or `status` value types. `emit`/`selected` are consumed by
+> truthiness and `status` is UI metadata, despite their narrower `TypedDict`
+> annotations.
+
+**OUTPUT mapping** — `assemble_output_from_mapping(frames, mapping)` groups active
+rows by source port, selects/aliases source columns to output paths, and passes the
+field frames to `_assemble_document`. Frames emitting at the same array prefix are
+planned by `_plan_cut` and `_execute_plan`; residual shared fields are full bag-
+joined (fan-out is retained), cut/disconnected groups are diagonal-concatenated as
+partials, and the prefix-tree builder nests child arrays by ancestor values without
+joining siblings. `_prune` removes null-valued object fields and empty collection
+values from objects, and removes empty-object elements from arrays; null or
+empty-list elements already present inside arrays are retained.
+`render_output_document` applies that same pruning to the collected Polars shape.
+
+`assemble_output_from_mapping` does not call `validate_v2_output_mapping`.
+Callers that need the injectivity/prefix-incomparability gate must invoke it
+explicitly; the dry-run route does, while the shared runtime/generated-code
+assembly path currently does not.
+
 **Build a JSON cache** — `build_per_port_cache(data_path, v2_config, cache_dir)`:
 1. `validate_v2_schema(v2_config)` up front.
 2. Acquire the per-cache-directory lock (`_build_lock_for`).
@@ -111,7 +131,8 @@
 8. Stage output in a unique sibling temp dir: `_buffer_to_frame` per table →
    `to_arrow()` → attach per-frame schema metadata (`_per_frame_metadata`) →
    `pq.write_table(..., compression="zstd")`; write `meta.json`.
-9. `_swap_dir_into_place(tmp_dir, cache_dir)` — atomic publish (below).
+9. `_swap_dir_into_place(tmp_dir, cache_dir)` — recoverable two-rename publish
+   (below).
 
 **Shred core** — `shred_to_buffers(records, v2_config, stats=None)`:
 1. Validate schema; collect emit-true tables' `(label, segments, col_specs)`, where
@@ -150,15 +171,27 @@
    `working/meta.json` and `committed/meta.json` already agree on schema
    fingerprint, schema mode, and data-file signature; else `copytree` into a `.tmp`
    sibling and `_swap_dir_into_place` it into `committed/` (shared with the build's
-   own atomic-publish helper).
+   own publish helper).
 
-**Atomic publish** — `_swap_dir_into_place(tmp_dir, live_dir)`:
+**Staged publish** — `_swap_dir_into_place(tmp_dir, live_dir)`:
 renames the current `live_dir` aside to a unique `.build-old-<uuid>` name, renames
 `tmp_dir` into `live_dir`, then best-effort removes the old backup; if the second
-rename fails, the backup is renamed back into place before re-raising, so the live
-directory is never left missing. `_rename_dir_with_retry` retries a `PermissionError`
-with increasing backoff (`0.01s..0.1s`) before giving up — a Windows-specific
-transient-handle-lock accommodation.
+rename raises, it attempts to rename the backup back before re-raising.
+`_rename_dir_with_retry` retries a `PermissionError` with increasing backoff
+(`0.01s..0.1s`) before giving up — a Windows-specific transient-handle-lock
+accommodation.
+
+> NOTE: The replacement of an existing directory is not atomic to readers: the
+> live path is absent between the two renames. `_build_lock_for` is a process-local
+> thread lock that serializes same-process builders (and a promotion against a build
+> of its working directory), but it does not lock readers or other processes. A hard
+> interruption after `live_dir` is renamed aside, or a failed restoration, can leave
+> `live_dir` absent with a UUID `.build-old-<uuid>` backup. The pre-swap cleanup only
+> removes the legacy fixed `<live>.build-old` directory, not UUID backups. Existing
+> tests exercise same-process build serialization, different-cache parallelism,
+> staging-write cleanup, transient rename retry, and synchronous restoration after a
+> failed second rename; there is no concurrent-reader, cross-process-publisher, or
+> mid-swap process-death test.
 
 **Schema inference** — `infer_v2_schema_from_data(data_path, sample_size=None)`:
 1. `_iter_records_for_inference` — full scan, or (for JSONL/root-array files) a
@@ -178,63 +211,6 @@ transient-handle-lock accommodation.
    `_assign_column_names` (bare leaf where unique, else the underscore-joined full
    path, with a final numeric-suffix dedup pass) and typed via the widened
    `levels` map. Only the root level defaults `emit=True`.
-
-**Graph flatten** — `flatten_graph(graph, target_name=None)`:
-1. If `graph.submodels` is empty, or the requested `target_name` isn't in it,
-   return the input `graph` object unchanged (identity, not a copy).
-2. `build_edge_join_boundary_target_roles` precomputes, for every submodel being
-   flattened, a `(submodel_node_id, edge_join_node_id, connected_source_id) →
-   "base"|"join"` map from each internal edge-join node's `baseInput`/`joinInput`
-   config.
-3. Remove the targeted submodel placeholder node(s); inline each targeted
-   submodel's internal `nodes`/`edges` (validating dicts through
-   `GraphNode.model_validate`/`GraphEdge.model_validate` as needed).
-4. Rewire: an edge whose `source` was a submodel placeholder is rewritten to the
-   real node named by stripping the `out__` prefix off its `sourceHandle`; an edge
-   whose `target` was a placeholder is rewritten similarly via `in__` and,
-   for the target side, its `targetHandle` is replaced by the precomputed
-   base/join role (or `None` if the target isn't an edge-join boundary). Any edge
-   still referencing a placeholder afterwards is dropped (should not happen).
-5. Deduplicate by `(source, target, sourceHandle, targetHandle)`.
-6. Return `graph.model_copy(update={...})` with the remaining (non-flattened)
-   submodels preserved.
-
-**Projection planning** — `plan(request) = compute_prepared_plan(prepare_graph(...))`:
-1. `prepare_graph`: resolve `node_map`; prune live-switch edges inactive for the
-   requested `source` (`prune_live_switch_edges`); restrict to the ancestor set of
-   `target_node_id` if given, else the whole graph; topo-sort; build `parents_of`.
-2. `compute_prepared_plan` walks `order` in **reverse** (children before parents):
-   - A childless node's demand is its `outputMapping`'s enabled source columns
-     (`OUTPUT` node type) or `None` (opaque terminal) otherwise.
-   - A node with children accumulates the union of each child's
-     per-parent contribution (`contribution[child].for_parent(node_id)`); any
-     opaque child collapses the whole accumulation to `None`.
-   - A caller-seeded `required_columns_by_node` entry is merged in (`AllExcept`
-     merges its `keep` set; a plain set replaces `None` demand for single-child
-     nodes, or is unioned into existing concrete demand; replacing opaque demand
-     from *multiple* children raises `ProjectionImpossibleError` under strict
-     profiles).
-   - Strict profiles force certain source-type nodes with unprovable post-load code
-     to `None` demand (`_must_run_source_user_code_unprojected`) — the physical
-     scan runs full-width, and downstream edges narrow again afterward.
-   - Node-specific routing (`parent_demands_for_node` → optimiser/ratebook rule,
-     then single-parent Polars AST rule) is tried first; if it doesn't apply, and
-     the node's own `Contract` is concrete (`produced`/`referenced` both non-`None`),
-     `base_contribution = (needed - produced) | referenced` is computed and, for a
-     multi-parent Polars fan-in, routed through `PolarsFanInRule` (declared
-     `inputs_by_parent`, inferred simple joins, or an unambiguous passthrough
-     parent); otherwise the node is opaque and routed through
-     `EdgeJoinFanInRule` (concrete-schema, mechanical join-key routing) or
-     `OpaqueContractRule` (forces parents opaque, or an explicit bounded
-     full-width boundary under strict profiles for a multi-parent Polars node or
-     unprovable user code).
-3. Every node/edge decision is frozen into `ProjectionReason`s for `explain()`.
-4. `validate_projection_rule_coverage()` runs once at **module import time** — every
-   `NodeType` must appear exactly once in `_PROJECTION_RULE_COVERAGE_BY_NODE_TYPE`,
-   an opaque entry must include the opaque-contract rule name, and a
-   non-opaque entry must not be *implicitly* opaque (rules == just
-   `{"opaque_contract"}`) — so registry drift crashes on import, not on first
-   planner call.
 
 **Edge-join execution** — `execute_edge_join(base, join, config,
 collect_eager=False)`: normalises both frames to `LazyFrame`, calls
@@ -291,10 +267,6 @@ if both original inputs were eager *and* `collect_eager` is set.
   post-rename/derived name to the parent demand (over-demand a nonexistent parent
   column) or under-demand a `select`'s unused-downstream inputs (the `select`
   still executes every output expression regardless of what's needed downstream).
-- **`flatten_graph` returns the identity object**, not a copy, when there is
-  nothing to flatten — callers relying on `is` for a no-op check are honoring an
-  explicit contract (see `TestNoSubmodels.test_no_submodels_returns_same_graph`).
-
 ## Error handling
 
 - `haute._api_input_schema.ApiInputSchemaError` — raised by `_json_shred.py` for
@@ -315,23 +287,23 @@ if both original inputs were eager *and* `collect_eager` is set.
   `edgeJoin` config: wrong connected-input count/distinctness, unresolved or
   ambiguous base/join role, unsupported `how`, missing/conflicting join keys,
   mismatched key counts, non-string suffix, malformed `on`/`leftOn`/`rightOn`.
-- `haute.errors.ContractMismatchError` — raised by `projection.py` when a declared
-  fan-in contract references unknown/missing parents, is malformed, or (for
-  `PolarsFanInRule`) still leaves demanded columns uncovered after join-key and
-  passthrough-parent inference.
-- `haute.errors.ProjectionImpossibleError` (subclass of `ContractMismatchError`
-  and `BoundedMemoryUnsupportedError`) — raised under strict profiles when a
-  projection seed can't replace opaque multi-child demand, or when fan-in join
-  code can't be parsed / uses a non-literal `how`/`suffix`.
 - `ValueError` — used internally and locally by `_jsonpath.is_canonical`'s
   ephemeral error-adapter (never escapes the function) and by the small config
-  validators in `projection.py`/`_edge_join.py` (`_strict_string_list`,
-  `_strict_renames`, `ratebook_factor_required_columns`) for malformed
-  non-graph-sourced inputs.
+  validators in `_edge_join.py` for malformed non-graph-sourced inputs.
 - Grammar rejections in `_jsonpath.parse_path` / `parse_data_path` raise whatever
   the caller injected as `error` — `ApiInputSchemaError` from the INPUT side,
   `OutputMappingSchemaError` from the OUTPUT side — carrying the offending
   `output_path`.
+- `OutputMappingSchemaError` also covers a non-array root, two different columns
+  from one port targeting the same path, and leaf/container prefix collisions.
+  Missing `frames[port]` or `pl.col(source_column)` failures are deliberately not
+  caught or converted into an empty output.
+  > NOTE: the duplicate/prefix cases are guarantees of
+  > `validate_v2_output_mapping`, not of `assemble_output_from_mapping` itself.
+  > The latter parses active output paths during assembly but does not run the
+  > structural validator, so runtime callers that bypass the dry-run validation
+  > boundary can receive a Polars error or ambiguous output instead of this typed
+  > exception.
 
 ## Testing
 
@@ -368,28 +340,40 @@ Shred / inference / cache lifecycle (`_json_shred.py`, `_json_flatten.py`):
   `tests/test_apiinput_nested_relative_path.py` — broader integration coverage
   (multi-frame ports, relative data paths, nested apiInput contexts).
 
-Graph flattening (`_flatten.py`):
-
-- `tests/test_flatten.py` — direct unit tests: no-submodels/empty/target-not-found
-  identity returns, single- and all-submodel flattening, boundary edge rewiring.
-- `tests/test_flattening_dedup.py` — regression gate ensuring the pipeline parser's
-  submodel-merge path routes through this shared flattener rather than
-  re-implementing its own inlining loop.
-
 Path grammar (`_jsonpath.py`):
 
 - `tests/test_jsonpath_canonical.py` — direct grammar unit coverage: the canonical
   writer, the canonicality predicate, and the INPUT-mode `parse_data_path`
   (`allow_root`, the `$value` reserved leaf). The OUTPUT-mode `parse_path` is
   additionally exercised heavily and indirectly through the assembler's own test
-  suite (io-layer).
+  suite.
 
-Projection (`projection.py`) and edge join (`_edge_join.py`):
+V2 schema codec and OUTPUT shape:
 
-- `tests/test_projection_planner.py` — the public planner API: rule-coverage
-  registry completeness/immutability, `plan()`/`explain()`, `source_scan_projection`,
-  `model_score_required_output_columns`, and dispatch through the various
-  node-type-specific rules.
+- `tests/test_v2_codec_and_shred.py`, `tests/test_v1_removal_contract.py`,
+  `tests/test_v2_object_nesting_inference.py`, and the JSON-cache integrity/
+  error suites own v2 recognition, canonical parse/write behaviour, label/
+  column/type/row-ID invariants, structured schema errors, and ancestor-column
+  rules.
+- `tests/test_output_assembler.py` owns mapping validation, deterministic cyclic
+  cuts, bag fan-out, unmatched partials, sibling-array non-explosion, pruning,
+  rendering, and exact assembled shapes; `tests/test_output_nest_example_contract.py`
+  pins the fixture-level nested-document contract, while
+  `tests/test_executor_builders.py` and `tests/test_codegen_builders.py` own the
+  executor/generated-code integration boundary.
+- `frontend/src/__tests__/editors/OutputEditor.test.tsx`,
+  `frontend/src/__tests__/editors/OutputEditorPathTools.test.tsx`, and
+  `frontend/src/__tests__/editors/jsonpath.test.ts` own the UI-adjacent mapping,
+  migration, conflict-display, CSV import/export, and canonical-path contracts;
+  their production modules remain owned by the frontend editor spec.
+
+Known coverage gap: the direct/runtime assembler is not tested to enforce the
+structural validator's duplicate-path and prefix-collision rules, because it does
+not call that validator. Validation and assembly are tested separately, and only
+the dry-run route wires them together before execution.
+
+Edge join (`_edge_join.py`):
+
 - `tests/test_edge_join.py` — backend contracts for `edgeJoin` node config
   validation and codegen decorator round-tripping.
 - `tests/test_trace_edge_join.py` — lineage/trace correlation specifically for
@@ -397,12 +381,5 @@ Projection (`projection.py`) and edge join (`_edge_join.py`):
 - `tests/test_preview_json_serialization.py` — regression coverage for
   `to_json_safe`/preview payload shaping (dates, non-finite floats, etc.).
 
-> NOTE: `tests/test_compute_needed_columns.py` and `tests/test_checkpoint_projection.py`
-> exercise `_execute_lazy._compute_needed_columns` / `_compute_projection_plan`, a
-> related but separately-implemented backward column-analysis inside the lazy
-> execution engine, not the `projection.py` functions documented here. See
-> [execution-engine](../execution-engine/low-level.md) for that analysis; this spec
-> does not assert whether or how the two implementations' results are expected to
-> agree.
-
-No coverage gaps were identified beyond the execution-engine boundary noted above.
+Projection planning and its `tests/test_projection_planner.py` coverage are owned
+by [execution-engine](../execution-engine/low-level.md).

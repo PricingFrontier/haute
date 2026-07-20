@@ -142,14 +142,15 @@ Out of scope (owned by neighbouring components, linked where they exist):
   actions (`setNodes`, `setEdges`, `setNodesAndEdges`, `setPreamble`) that
   push one undo snapshot per call, or raw actions (`setNodesRaw`,
   `setEdgesRaw`, `setPreambleRaw`) that skip history — used for mid-drag
-  position churn, WebSocket sync, and pipeline load.
+  position churn, WebSocket sync, pipeline load, and the continuously edited
+  imports preamble.
 - **Undo/redo** operates over a single stack that can hold either a graph
   snapshot or a version-control history entry, so a branch switch and a
   graph edit interleave and reverse in the order they actually happened.
 - **Dirty state** is derived, not imperatively toggled: it's a fingerprint
   comparison against the last-saved snapshot, recomputed on every mutation.
   Undoing back to exactly the saved state always reports clean.
-- **Graph context.** `GraphProvider`/`useGraph()` exposes a read-only
+- **Graph context.** `GraphProvider`/`useGraph()` exposes a render-stable
   `{allNodes, edges, submodels, preamble}` snapshot to the node inspector's
   subtree. Calling `useGraph()` outside a provider throws immediately.
 - **`App.tsx`'s `FlowEditor`** is the orchestrator: it wires ReactFlow's

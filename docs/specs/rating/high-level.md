@@ -59,6 +59,10 @@ Out of scope (owned by neighbouring components):
   (`op1`/`val1`, `op2`/`val2` — one of `< <= > >= = ==`); rules are evaluated
   in order and the first matching rule wins (`when/then` chain semantics), the
   rest fall to an explicit `default`.
+  > NOTE: an unrecognised operator is currently ignored rather than rejected.
+  > A rule with no remaining valid operator/value pair contributes no branch;
+  > if every rule is skipped, the factor is a pass-through and does not create
+  > its configured output column.
 - `categorical` rules are an exact-match remap from input value to assignment.
 - `breakpoints` rules are converted internally into `continuous` rules: an
   ordered list of numeric boundaries with labels, closed on the right by default
@@ -78,7 +82,9 @@ Out of scope (owned by neighbouring components):
 - A **miss** — an input row whose factor combination has no matching entry —
   is resolved by, in order of precedence: (1) a usable numeric `defaultValue`
   fills every miss silently; (2) `onMissing: "neutral"` leaves the output
-  null (the combine step's neutral element) and logs every miss at WARNING;
+  null and logs each materialised batch containing misses at WARNING
+  (`multiply`/`add` replace that null with their neutral element during a
+  multi-column combine; `min`/`max` skip it when another value exists);
   (3) the default policy, `onMissing: "error"`, raises
   `RatingTableMissError` naming the table, the missing key(s), and the
   affected row count.
@@ -117,8 +123,11 @@ Out of scope (owned by neighbouring components):
   corrupting downstream pricing arithmetic; more than one open-ended
   breakpoint raises rather than silently keeping only the last; duplicate
   breakpoint boundaries raise rather than producing an empty interval.
-  `onMissing: "neutral"` is the sole, explicit opt-out, and even it logs
-  every miss instead of staying silent.
+  `onMissing: "neutral"` is the explicit rating-miss opt-out, and it logs
+  each materialised batch containing misses. Banding has two separate
+  fail-soft behaviours documented above/below: unknown operators are ignored,
+  and a malformed non-list top-level `factors` value normalises to an empty
+  no-op list.
 - **One canonical key form, shared everywhere.** `normalise_rating_key` (the
   Python mirror) and `_rating_key_expr` (its Polars-expression twin, applied
   to both join sides) are the single source of truth for "does this input
@@ -190,9 +199,9 @@ Out of scope (owned by neighbouring components):
   raises `RatingTableMissError` at frame materialisation (not at config-build
   time — it is wired into the lazy plan via `map_batches` so it fires exactly
   when the plan runs, batch by batch under streaming). The message names the
-  table, up to 10 distinct missing keys, and the total row/miss counts.
-- **Rating-table miss, `onMissing: "neutral"`:** no exception; every miss is
-  logged at WARNING with table, output column, miss count, and missing keys.
+  table, up to 10 distinct missing keys, and that batch's row/miss counts.
+- **Rating-table miss, `onMissing: "neutral"`:** no exception; each batch with
+  misses is logged at WARNING with table, output column, miss count, and missing keys.
   The output stays null for those rows (multiply/add fold it to the operation's
   neutral element downstream).
 - **Malformed table entries** (non-finite banding rule value/boundary, NaN/Infinity
@@ -209,6 +218,9 @@ Out of scope (owned by neighbouring components):
   `outputColumn` configured but is otherwise incomplete, the skip is logged at
   WARNING (`rating_table_skipped_incomplete`) so the gap is observable instead
   of a silently-missing column reaching a combined output.
-  > NOTE: this pass-through-on-incomplete behaviour means a typo'd factor
-  > column name in a table's `entries` (present in no row) silently drops the
-  > table rather than raising; only the WARNING log makes it visible.
+  > NOTE: the public config-driven path rejects a populated entry row that
+  > lacks any declared factor during `_rating_step_config` normalisation.
+  > The lower-level `_apply_rating_table` primitive still returns unchanged
+  > when a factor is absent from every already-normalised entry; when reached
+  > through `_apply_rating_step_outputs`, that skip is visible only through the
+  > WARNING log.

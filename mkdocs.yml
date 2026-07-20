@@ -147,3 +147,11 @@ nav:
         - Submodel: building-models/nodes/submodel.md
         - Instances: building-models/nodes/instances.md
     - Filesystem Portability: building-models/filesystem-portability.md
+  - Roadmap:
+    - Overview: roadmap/index.md
+    - Test-suite Hardening: roadmap/test-suite-hardening.md
+    - Frontend UI Quality: roadmap/frontend-ui-quality.md
+    - Edge Join Completion: roadmap/edge-join-completion.md
+    - Worker Isolation: roadmap/worker-isolation.md
+    - Polars Execution Strategy: roadmap/polars-execution-strategy.md
+    - Backend Execution Hardening: roadmap/backend-execution-hardening.md

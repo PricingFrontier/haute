@@ -212,7 +212,7 @@ If you're the only person on the project, you can still use branches and pull re
 
 ## What is an API?
 
-An **API** (Application Programming Interface) is a way for computer systems to talk to each other. When Haute deploys your pipeline, it creates an API - specifically a **REST API** - which is just a web address that other systems can send data to and get results back.
+An **API** (Application Programming Interface) is a way for computer systems to talk to each other. A deployed Haute pipeline can be served as an API: Databricks deployment creates or updates a Model Serving endpoint, while the generic container target produces the image that your hosting platform must run.
 
 **Example:** Your policy admin system needs a premium for a new quote. It sends the quote data to your API's web address, and the API runs your pipeline and sends back the premium. No human involved - it happens automatically in milliseconds.
 
@@ -248,14 +248,14 @@ print(response.json())
 
 ## What are "staging" and "production"?
 
-In Haute, there are **two copies** of your API:
+Many release processes use **two copies** of an API:
 
-- **Staging** is a **private test copy** that only your team can see. It's where Haute deploys first so you can check everything works, review the impact report, and make sure the premium changes make sense - all without affecting real quotes.
+- **Staging** is a **private test copy** that only your team can see. It is an infrastructure and release-process choice: you configure a separate endpoint name (often with `--endpoint-suffix "-staging"`) and arrange for it to be deployed and protected by your target platform.
 - **Production** is the **real one** that your policy admin system calls. It serves actual quotes to customers.
 
-Haute **always deploys to staging first**. Only after you've reviewed the impact report and approved does it promote to production. This means you can never accidentally push a broken model (or unexpected rate change) straight to the live system.
+Haute does **not** automatically create a staging environment, wait for an asynchronously provisioned endpoint, require an approval, or promote a deployment. Its generated CI examples run staging deploy, smoke, and impact commands in sequence, but your CI-provider configuration controls approvals and production access. For a newly created Databricks endpoint, add a readiness wait before smoke testing; for container targets, arrange the hosting handoff before those commands. Set branch protection and environment rules before treating that sequence as a release gate.
 
-When you see "deploys to staging" in these docs, it means: "deploys to the test copy for you to check." When you see "promotes to production," it means: "makes it live for real."
+When you see "deploys to staging" in these docs, it means: "runs the selected target's staging deployment step." That creates or updates a test endpoint only when the target supports it and the endpoint is ready. When you see "promotes to production," it means: "runs the production deployment step configured by your release process."
 
 ---
 
@@ -264,22 +264,22 @@ When you see "deploys to staging" in these docs, it means: "deploys to the test 
 **CI/CD** stands for **Continuous Integration / Continuous Deployment**. In plain English:
 
 - **CI** = your code is automatically tested every time you propose a change
-- **CD** = your code is automatically deployed when those tests pass
+- **CD** = your CI workflow can run the deployment step after those tests pass; whether that creates or updates a live endpoint depends on the selected target and your hosting process
 
-Think of it as an automated checklist that runs every time you make a change:
+The generated CI files are an example command sequence. Once you enable and adapt them, they can run a checklist such as:
 
 1. ✓ Code style is correct
 2. ✓ Tests pass
 3. ✓ Pipeline parses correctly
 4. ✓ Test quotes score successfully
-5. ✓ Deploy to a staging (test) endpoint
-6. ✓ Smoke test the staging endpoint
-7. ✓ Generate an impact report comparing new vs old premiums
-8. → A human reviews the impact report and approves
+5. → Deploy to a staging (test) endpoint if your target supports it
+6. → Smoke test an already-running staging endpoint
+7. → Generate an impact report from existing staging and production endpoints
+8. → A human follows the approval process configured by the CI provider
 
-CI/CD replaces manual deployment with an automated safety process that catches problems before they reach production.
+CI/CD can make those checks repeatable, but only the policies and controls you configure in the CI provider make them a release gate.
 
-The CI/CD system runs on a service like **GitHub Actions**, **GitLab CI/CD**, or **Azure DevOps Pipelines** - you don't need to install anything on your machine. Haute generates all the configuration files for you.
+The CI/CD system runs on a service like **GitHub Actions**, **GitLab CI/CD**, or **Azure DevOps Pipelines** - you don't need to install anything on your machine. `haute init` generates starter configuration files; review and tailor them before use.
 
 ---
 
@@ -298,7 +298,7 @@ The CI/CD system runs on a service like **GitHub Actions**, **GitLab CI/CD**, or
 | **Merge** | Accepting reviewed changes into the main version |
 | **API / endpoint** | A web address that other systems call to get premiums |
 | **REST API** | A specific type of API that uses standard web addresses and JSON data |
-| **Staging** | A private test copy of your API that only your team can see - Haute deploys here first |
+| **Staging** | A private test copy of your API that only your team can see - your target and release process must provide it before Haute can test it |
 | **Production** | The real, live API that your policy admin system calls |
 | **CI/CD** | Automated testing and deployment that runs every time you make a change |
 | **`.env` file** | A file on your machine that stores passwords and tokens (never shared) |

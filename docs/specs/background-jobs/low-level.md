@@ -16,9 +16,9 @@
 - **`JobStore`** — wraps `_jobs: dict[str, dict[str, Any]]` plus `_running_activity_at:
   dict[str, float]` (per-job last-active timestamp, used only while `status ==
   "running"`), guarded by a single `_write_lock: threading.RLock`. Invariant: every
-  mutation replaces the job's dict object wholesale (`_store_merged_job_locked`) —
-  never mutates an existing dict in place — so a reader's previous reference is never
-  torn.
+  store mutation method replaces the job's dict object wholesale
+  (`_store_merged_job_locked`) — never mutates an existing dict in place — so a reader's
+  previous reference is never torn by those methods.
 - **`ArtifactCleaner`** — `Callable[[dict[str, Any]], None]` registered per artifact
   `kind` in the module-level `_ARTIFACT_CLEANERS` dict via `register_artifact_cleaner`.
   Registering two *distinct* callables for the same `kind` raises `RuntimeError`;
@@ -68,9 +68,11 @@
 - **`JobCancellation`** (slotted dataclass) — one active coordination record: `job_id`,
   `key: Hashable`, `event: threading.Event`, `execution_token:
   ExecutionCancellationToken`, `terminal_reason: TerminalReason | None`. `cancel(reason)`
-  sets `terminal_reason`, sets the event, and cancels the execution token together —
-  the three are always updated atomically from the caller's perspective (single method,
-  no partial-cancel state observable).
+  writes `terminal_reason`, then sets the event, then cancels the execution token. Registry
+  calls and registry reads are serialised by `CancellableJobRegistry._lock`, but the three
+  field writes are not themselves an atomic machine operation; a holder that bypasses the
+  registry and inspects the returned `JobCancellation` directly can observe an intermediate
+  state.
 - **`CancellableJobRegistry`** — `_latest_by_key: dict[Hashable, str]` (key → current
   job id) and `_tokens_by_job_id: dict[str, JobCancellation]`, both guarded by one
   `RLock`. Deliberately owns *only* runtime coordination state — job status/result
@@ -136,8 +138,11 @@ this function ignores).
 
 ### `JobStore` mutation paths
 
-All public mutators funnel through `_store_merged_job_locked(job_id, old, fields,
-now)` while holding `_write_lock`:
+`update_job`, `atomic_update`, `atomic_update_if_heavy_present`, and lifecycle transitions
+funnel through `_store_merged_job_locked(job_id, old, fields, now)` while holding
+`_write_lock`. `create_job` applies the same heavy-object/activity policy directly because
+there is no old record to merge; `delete_job` and `clear_result_data` have dedicated locked
+paths.
 
 1. `merged = {**old, **fields}` (shallow merge — a plain dict "swap in a new object",
    not a deep merge; nested dict/list values in `fields` fully replace the
@@ -283,8 +288,9 @@ completed_message="Completed", **kwargs)`
    `shield` is what lets a timeout (or outer cancellation) *not* cancel the
    underlying task; only the `wait_for` wrapper is abandoned.
 3. **On `TimeoutError`**: attaches `_drain_background_future_result` as a
-   done-callback on the still-running task (so its eventual outcome is logged, not
-   lost), logs a warning, and raises `BlockingWorkTimeoutError(operation, timeout,
+   done-callback on the still-running task (a successful value is consumed and discarded;
+   an ordinary exception is logged), logs a warning, and raises
+   `BlockingWorkTimeoutError(operation, timeout,
    blocking_task)` — chained with `from None` to suppress the wrapped `TimeoutError`'s
    own traceback noise.
 4. **On `asyncio.CancelledError`** (the calling coroutine itself was cancelled, e.g.
@@ -295,13 +301,20 @@ completed_message="Completed", **kwargs)`
    drains the result (same helper as the timeout path) and re-raises the
    `CancelledError` to the caller.
 5. `_drain_background_future_result(future)` calls `future.result()` inside a
-   `try/except Exception` — logs `error` type/message and re-raises nothing for
-   ordinary exceptions (`exc_info=True` on the log). A `BaseException` (e.g.
+   `try/except Exception` — returns silently for success and therefore does not retain the
+   value; logs `error` type/message and re-raises nothing for ordinary exceptions
+   (`exc_info=True` on the log). A `BaseException` (e.g.
    `SystemExit`, `KeyboardInterrupt`) is *not* caught by the `except Exception` clause
    and propagates out of the callback/point of use instead of being logged.
 
 ## Edge cases and invariants
 
+- **Reads expose live mutable records, not snapshots.** `get_job` / `require_job` return the
+  stored dict object and the `jobs` property exposes the backing mapping directly. A caller
+  that mutates either bypasses `_write_lock`, read-merge-swap, running-activity bookkeeping,
+  and heavy-object timer policy. Production consumers treat returned records as read-only
+  (apart from `JobLifecycle`'s explicitly locked privileged access), so the concurrency
+  guarantees assume all writes use the store/lifecycle mutation APIs.
 - **Zero-second TTLs are valid.** `JobStore(ttl_seconds=0)` and
   `heavy_object_ttl_seconds=0` are accepted (only negative values raise); a
   zero heavy-object TTL makes heavy state due for stripping immediately on the next

@@ -7,7 +7,7 @@
 | `src/haute/trace.py` | Public facade and orchestrator. `execute_trace()` entry point, `PreviewReader` protocol, `TraceStep`/`TraceResult` dataclasses, the trace execution cache (`_cache`, `TRACE_CACHE_MAX_BYTES`), row/step assembly (`_assemble_steps`), column-relevance pruning, and JSON serialisation (`trace_result_to_dict`). Re-imports and re-exports expression-parser and node-type enricher names so `monkeypatch.setattr("haute.trace.<name>", ...)` in tests reaches the dispatch code in `_trace_enrichment.py`. |
 | `src/haute/_trace_correlation.py` | Post-hoc row correlation and schema diff. Value predicates/coercion (`_trace_values_match`, `_jsonify_row`), `SchemaDiff` computation, dtype-robust Polars match-expression construction, exact/relaxed row matching with ambiguity diagnostics, edge-join provenance-aware parent-row projection, per-frame row matching (`_match_parent_row`, shared by the single-frame and multi-frame paths), multi-frame per-edge parent resolution (`_resolve_multi_frame_parent`), and the backward-walk driver `_correlate_rows_posthoc`. |
 | `src/haute/_trace_enrichment.py` | Node-type enrichers (`enrich_rating_step`, `enrich_banding`, `enrich_model_score`, `enrich_scenario_expansion`, `enrich_live_switch`, `enrich_optimiser_apply`), row-lineage-type detection (`detect_row_lineage_type`, backed by `_node_output_row_count` for multi-frame-safe row counting), and the per-step dispatch walk (`enrich_steps`) that drives expression parsing/evaluation (with a pre-assignment-value guard for self-referential columns), intra-node chain analysis, recursive upstream input-source derivation, rename detection, and node-type dispatch for every `TraceStep`. |
-| `src/haute/_trace_export.py` | `export_trace()` — converts a `TraceResult` into a report-shape dict (`header`, `formula`, `sources`, `data_flow`, `metadata`) for markdown/PDF report generation. |
+| `src/haute/_trace_export.py` | `export_trace()` — converts a `TraceResult` into a report-shape dict (`header`, `formula`, `sources`, `data_flow`, `metadata`) suitable for markdown/PDF report generation. It currently has test/direct-library callers only; no production API or CLI path invokes it. |
 | `src/haute/_trace_waterfall.py` | Waterfall assembly for sequential multiplicative/additive rating chains. `WaterfallEntry`/`WaterfallResult` dataclasses, the generic `build_waterfall()` API (hand-authored factor lists), the value-derived `build_waterfall_from_steps()` (traced-path driver), and the C8 arithmetic-reconciliation guards. |
 
 ## Key types and data structures
@@ -50,8 +50,11 @@
   `FingerprintCache` with slots `("eager_outputs", "order", "parents_of",
   "node_map", "source_ids")`. `TRACE_CACHE_MAX_BYTES` defaults to
   `PREVIEW_CACHE_MAX_BYTES` (see [caching](../caching/high-level.md)), overridable
-  via `HAUTE_TRACE_CACHE_MAX_BYTES`. Bounded by both entry count and retained
-  bytes; sizing reuses `_estimate_preview_cache_entry_bytes` from
+  via `HAUTE_TRACE_CACHE_MAX_BYTES`. Both values are parsed into module constants
+  at import time by `executor._positive_int_from_env`; a malformed, zero, or
+  negative value raises `RuntimeError` during import rather than using `_env.py`'s
+  fail-soft request-knob policy. The cache is bounded by both entry count and
+  retained bytes; sizing reuses `_estimate_preview_cache_entry_bytes` from
   `haute.executor`, and only the `eager_outputs` slot is treated as
   byte-size-sensitive. `eager_outputs` values are `pl.DataFrame | dict[str,
   pl.DataFrame]` — a multi-frame source (e.g. a ≥2-table `apiInput`) stores its
@@ -312,8 +315,8 @@ one step's unforeseen failure cannot abort the whole enrichment pass) and:
    vanish as a `"passed"` schema-diff entry), contributes an entry via
    `_classify_contribution()`.
 5. `_classify_contribution()` computes `delta = value_after - value_before` and,
-   when `value_before != 0` and the implied factor is finite and non-negative
-   (no sign flip), the implied factor `value_after / value_before` for
+   when `value_before` is positive, `value_after` is non-negative, and the implied
+   factor is finite, uses `value_after / value_before` for
    multiplicative display; otherwise it falls back to additive (delta-only)
    display and logs a WARNING (`waterfall_implied_factor_undefined` /
    `waterfall_sign_change`). `_operation_hint()` (AST-based, not substring
@@ -325,8 +328,8 @@ one step's unforeseen failure cannot abort the whole enrichment pass) and:
    (never re-applying `value` arithmetically) and runs
    `_check_display_consistency()` per step, which raises
    `WaterfallReconciliationError` if a display number cannot be reconciled with
-   the observed chain (e.g. a ×1.0 requirement from a zero prior cumulative, or a
-   reapplied value outside float tolerance of the observation).
+   the observed chain (e.g. a non-identity multiply factor from a zero prior
+   cumulative, or a reapplied value outside float tolerance of the observation).
 7. The final `wf_result.final_value` must match the coerced `final_value` within
    `_RECONCILE_REL_TOL`; a mismatch raises `WaterfallReconciliationError`.
 8. All three failure modes (`WaterfallReconciliationError`,
@@ -435,9 +438,10 @@ produces an ordered `data_flow` summary plus `metadata` counts.
 
 | Exception | Raised by | Propagates to |
 | --- | --- | --- |
-| `ValueError` | `execute_trace` — empty graph, unknown `target_node_id`, `row_index` out of range (also raised inside `_correlate_rows_posthoc`), unresolved row-value mismatch after relocation attempt, `target_node_id` resolving to a multi-frame source's `dict` output | HTTP route (`routes/pipeline.py`), pattern-matched on message prefix to 404 / 400 / 409 |
+| `ValueError` | `execute_trace` — empty graph, unknown `target_node_id`, `row_index` out of range (also raised inside `_correlate_rows_posthoc`), unresolved row-value mismatch after relocation attempt, `target_node_id` resolving to a multi-frame source's `dict` output | The HTTP route rejects an empty graph itself with 400; recognised remaining message shapes map to 404 / 400 / 409, while an unrecognised `ValueError` is sanitised to 500 |
 | `ValueError` (ambiguous duplicate match) | `_find_target_row_index` (`trace.py`) — the clicked `row_values` match more than one row on the shared columns during target-row relocation | Propagates unchanged out of `execute_trace`; HTTP route maps to 409 |
 | `TypeError` | `_resolve_preview_snapshot` — `preview` is not `None`/reader/dict, or a reader's `try_get` returns a non-`dict` non-`None` value | Caller of `execute_trace` |
+| `RuntimeError` | Module import — malformed/non-positive `HAUTE_PREVIEW_CACHE_MAX_BYTES` or `HAUTE_TRACE_CACHE_MAX_BYTES` | Importing caller; cache construction does not start |
 | `ContractMismatchError` | Propagated unchanged from `_execute_eager_core` (execution-engine) on a cold-execution contract violation | HTTP route, mapped to 422 |
 | Any exception from cold execution (`_execute_eager_core`, `swallow_errors=False`) | Propagated unchanged — no regex-based masking/retry | HTTP route, mapped to 500 (or a specific status if it happens to be one of the recognised `ValueError` shapes) |
 | `WaterfallReconciliationError` (`ValueError` subclass) | `_check_display_consistency`, the final-cumulative reconciliation check in `build_waterfall_from_steps` | Caught inside `build_waterfall_from_steps`; converted to `{"error": ..., "error_type": "WaterfallReconciliationError"}` in `TraceResult.waterfall` |
@@ -463,7 +467,7 @@ integration/regression suites:
   error-status mapping. Explicitly deferred to `test_trace_integration.py` for
   core trace-logic correctness. Includes the end-to-end 409 case for a
   duplicate-row relocation conflict.
-- **`tests/test_trace_integration.py`** — the largest suite (71 tests):
+- **`tests/test_trace_integration.py`** — the broad end-to-end suite:
   end-to-end cell-click → backend computation → enriched result flow across every
   pipeline topology, node type, data shape, caching behaviour, and error path;
   described in its own docstring as "the complete specification for the trace
@@ -472,13 +476,13 @@ integration/regression suites:
   target-node values exactly match `preview[row_index]` for the same graph and
   `row_limit`, including the shared-cache-fingerprint requirement between preview
   and trace calls.
-- **`tests/test_trace_enrichment.py`** — the largest single file (184 tests):
+- **`tests/test_trace_enrichment.py`** — focused enrichment coverage:
   node-type-specific enrichment (rating step, banding, model score, scenario
   expansion, live switch, data-source metadata) and row-lineage-type detection,
   exercised both via TDD stubs and through `execute_trace` on real data-flow
   patterns.
-- **`tests/test_trace_calculation_hero.py`** (76 tests) and
-  **`tests/test_trace_hero_tdd.py`** (36 tests) — the expression/calculation
+- **`tests/test_trace_calculation_hero.py`** and
+  **`tests/test_trace_hero_tdd.py`** — the expression/calculation
   ("Calculation Hero") feature: conditional-branch indication, waterfall data
   generation, preamble constant resolution, window-function fallback, intra-node
   dependency chains, column-rename tracking, null explanation, copy/export
@@ -487,11 +491,11 @@ integration/regression suites:
   (`premium = premium * factor`), both as a single expression and as an
   intra-node chain that feeds a self-referential intermediate forward into a
   dependent entry.
-- **`tests/test_trace_waterfall.py`** (25 tests) — the C8 arithmetic-contract
+- **`tests/test_trace_waterfall.py`** — the C8 arithmetic-contract
   regression suite, driving flagship multiplicative/additive scenarios through
   `execute_trace` end-to-end (not hand-fed factors) so a regression in
   value-derivation cannot hide behind a synthetic unit test.
-- **`tests/test_trace_edge_join.py`** (12 tests) — the W1.7 edge-join provenance
+- **`tests/test_trace_edge_join.py`** — the W1.7 edge-join provenance
   remediation: correlation path and per-step row values for both the base and
   JOIN-role parents of an `edgeJoin` node, including suffix collision cases.
 - **`tests/test_trace_multi_frame.py`** — multi-frame (≥2-table `apiInput`) row
@@ -508,31 +512,31 @@ integration/regression suites:
   across frames) rather than its frame count; and a banding node fed by one
   frame of a multi-frame source resolves factor dtypes from that frame alone,
   not a dict-iteration-order merge across every frame the source emits.
-- **`tests/test_trace_banding_lineage.py`** (6 tests) — lineage tests specific to
+- **`tests/test_trace_banding_lineage.py`** — lineage tests specific to
   banding-created fields.
-- **`tests/test_optimiser_apply_trace_enrichment.py`** (20 tests) — optimiser-apply
+- **`tests/test_optimiser_apply_trace_enrichment.py`** — optimiser-apply
   explainability enrichment.
-- **`tests/test_trace_w4_fixes.py`** (29 tests) — W4-audit correlation-soundness
+- **`tests/test_trace_w4_fixes.py`** — W4-audit correlation-soundness
   regressions: fail-loud/unresolved behaviour over wrong-row attribution, and
   numeric-comparison agreement with actual engine behaviour.
-- **`tests/test_trace_fail_loudly.py`** (10 tests) — the fail-loud enrichment
+- **`tests/test_trace_fail_loudly.py`** — the fail-loud enrichment
   sweep: pins that specific `except Exception` sites inside `_enrich_steps` and
   its helpers surface a visible `error` field (or raise) rather than silently
   returning `None`.
-- **`tests/test_trace_display_edge_cases.py`** (66 tests) — unusual value types
+- **`tests/test_trace_display_edge_cases.py`** — unusual value types
   (None/NaN/Inf/bool/date), column-identity edge cases (alias/overwrite/join
   suffix/special names), pipeline-structure edge cases (single node, long chains,
   diamonds, fan-out), row-correlation edge cases (filter/sort/join/positional
   fallback), expression-parser integration, calculation accuracy, serialisation,
   and cache/concurrency edge cases.
-- **`tests/test_trace_coverage.py`** (80 tests) — coverage-directed tests
+- **`tests/test_trace_coverage.py`** — coverage-directed tests
   targeting paths in `trace.py`, `_trace_waterfall.py`, and `_trace_export.py`
   identified by coverage analysis rather than by feature.
-- **`tests/test_trace_cache_byte_awareness.py`** (14 tests) — the byte-aware
+- **`tests/test_trace_cache_byte_awareness.py`** — the byte-aware
   trace-cache eviction remediation: bounded by bytes AND entry count, LRU
   eviction, deterministic reject-at-store for an oversized single entry. Twin
   module to `tests/test_preview_cache_byte_awareness.py`.
-- **`tests/test_trace_golden.py`** (2 tests) — golden-snapshot serialisation
+- **`tests/test_trace_golden.py`** — golden-snapshot serialisation
   tests against `tests/fixtures/ui_contracts/trace_response.json`, validated
   through `haute.schemas.TraceResponse` — guards the wire shape the frontend
   depends on against accidental drift.

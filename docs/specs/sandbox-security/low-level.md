@@ -8,7 +8,7 @@
 | `src/haute/_user_exec.py` | The single `exec()` call site for pipeline node code (`_exec_user_code`): namespace assembly, validation call, execution, and traceback line annotation. |
 | `src/haute/_local_security.py` | Local-session protection for the FastAPI/WebSocket server: session-token generation/comparison, trusted-Host middleware, trusted-Origin checks, HTTP middleware and WebSocket pre-accept rejection helper. |
 | `src/haute/_gitignore_guard.py` | The shared `.gitignore` guard-entry tuple and the idempotent append-if-missing writer (`ensure_gitignore_guards`) used by both `haute init` and the unborn-repo commit seed. |
-| `src/haute/_env.py` | Lazy, fail-soft environment-variable parsing helpers (`float_env`, `int_env`, `optional_int_env`) used for every numeric tuning knob that bounds sandboxed execution across the codebase. |
+| `src/haute/_env.py` | Lazy, fail-soft environment-variable parsing helpers (`float_env`, `int_env`, `optional_int_env`) used by selected request-timeout, optimiser chunk/partition, solver-timeout, training-history, and assistant-loop accessors. Other numeric environment settings use component-owned parsers. |
 
 ## Key types and data structures
 
@@ -89,8 +89,19 @@
 4. On any exception, walk `exc.__traceback__` in reverse for the last frame whose
    `filename == "<string>"` and stash its `lineno` on `exc._user_code_line` before
    re-raising unchanged.
-5. Read `local_ns.get("df", ...)` as the result; coerce an eager `pl.DataFrame`
-   back to `.lazy()` so the return type is always a `_Frame`/`LazyFrame`.
+5. Read `local_ns.get("df", ...)` as the result and coerce an eager
+   `pl.DataFrame` to `.lazy()`. Other values are returned unchanged despite the
+   `_Frame` annotation (`# type: ignore` at the return); the execution engine's
+   node-output check then raises `TypeError` if user code assigned `df` to a
+   non-Polars value.
+
+**Preamble and training-script distinction.** `executor._compile_preamble` calls
+`validate_user_code(..., allow_imports=True)` and then `exec()`s the preamble with
+`safe_globals(allow_imports=True)`, so its own AST is still checked but imports are
+allowed. `cli/_train.py` also validates with `allow_imports=True`, then executes the
+file through `importlib`'s ordinary `exec_module()` path rather than `safe_globals`.
+In both cases, imported module source is outside the recursive scope of
+`validate_user_code`; a `utility` module executes with normal module builtins.
 
 **AST validation (`_sandbox.validate_user_code` → `_validate_user_code_cached`)**
 1. Look up `(code, allow_imports)` in `_validation_cache`; return immediately on a
@@ -159,7 +170,7 @@ of `_FORMAT_METHOD_NAMES`. Receiver shapes:
    middlewares — Starlette applies middleware in reverse registration order, and
    `add_middleware(LocalTrustedHostMiddleware, ...)` is registered *after*
    `LocalSessionMiddleware`, so it wraps/executes before it). If
-   `allow_any` (no `HAUTE_TRUSTED_HOSTS` configured beyond `*`) or the scope type
+   `allow_any` (`*` appears in the startup-time allowed-host list) or the scope type
    isn't `http`/`websocket`, passes through unconditionally. Otherwise normalizes
    the `Host` header and checks it against the normalized allowlist (supporting
    `*.suffix` wildcard patterns); a mismatch returns a plain-text `400` before the
@@ -356,7 +367,7 @@ of `_FORMAT_METHOD_NAMES`. Receiver shapes:
   directly.
 
 > NOTE: `test_env_lazy_accessors.py`'s `_ACCESSOR_CASES` table is a manually
-> maintained parallel list of every lazy-knob call site; a new knob added
+> maintained parallel list of migrated lazy-knob call sites; a new knob added
 > elsewhere in the codebase that forgets to use `haute._env`'s helpers (or
 > forgets a corresponding entry here) would not be caught by this test file
 > itself — the regression protection is only as complete as the table's upkeep.

@@ -1,12 +1,12 @@
 # Azure Container Apps
 
-This guide covers deploying a Haute pipeline to **Azure Container Apps** - Microsoft's managed container platform. When you merge to main, CI builds a Docker image from your pipeline, pushes it to a registry, and (once the SDK integration lands) creates a new revision of your app.
+This guide covers preparing a Haute pipeline for **Azure Container Apps**. `haute deploy` validates the pipeline, builds its Docker image, and pushes it to the configured registry. It then exits with an error before creating a Container Apps revision because that service-update adapter is not implemented.
 
 !!! info "What is Azure Container Apps?"
     Azure Container Apps is Microsoft's serverless container service. You give it a Docker image and it runs it for you - handling scaling, load balancing, and HTTPS certificates automatically. It can even scale to zero when there's no traffic, so you only pay when the API is being used.
 
 !!! warning "Platform service update is not yet implemented"
-    Haute currently builds and pushes the Docker image for Azure Container Apps, but the automatic service update step (creating a new revision) is still in development. After CI pushes the image, your IT team will need to update the app manually until the SDK integration lands.
+    Haute currently builds and pushes the Docker image for Azure Container Apps, then raises `NotImplementedError` before creating a new revision. This makes the CI `haute deploy` step fail **after** the image has been pushed. Treat the image tag in that failure as the handoff to your IT team; do not expect a green deploy job or an updated app.
 
 !!! note "This target requires IT support"
     Azure Container Apps involves cloud infrastructure setup (registries, environments, service principals) that is done by an IT or platform team. The "Infrastructure setup" section below is written **for your IT team**. As an analyst, your role is to configure `haute.toml` and merge to main - CI and IT handle the rest.
@@ -47,7 +47,7 @@ model_name = "motor-pricing"
 [deploy.container]
 registry = "pricingregistry.azurecr.io"
 port = 8080
-base_image = "python:3.11-slim"
+base_image = "python:3.11.9-slim"
 
 [deploy.azure-container-apps]
 resource_group = "rg-pricing"
@@ -73,7 +73,7 @@ dir = "tests/quotes"
 
 ## Step 2: Add credentials to CI
 
-CI needs Azure credentials to push images to ACR and update the container app. Add these as encrypted secrets in your CI provider (your IT team will have the values from the infrastructure setup):
+CI needs registry credentials to push images to ACR. Credentials for a manual Container Apps revision update belong to the tool and process your platform team uses, not to Haute's current adapter.
 
 | Secret name | Value |
 |---|---|
@@ -96,18 +96,18 @@ You don't run any deploy command. When you merge to main, CI automatically:
 2. Generates a FastAPI app and Dockerfile
 3. Builds the Docker image
 4. Pushes the image to your ACR
-5. *(Coming soon)* Creates a new revision of the container app with the new image
+5. Exits with a clear `NotImplementedError` before it creates a Container Apps revision
 
-!!! success "What does success look like?"
-    After a successful merge to main, you should see:
+!!! warning "Expected CI result until the adapter exists"
+    The deploy job is expected to fail after image push with a message such as `Service update for 'azure-container-apps' is not yet implemented`.
 
-    1. **In your CI provider** - all pipeline steps show green ✓ (validation, build, push)
+    1. **In your CI provider** - the deploy job is red after the successful image build and push
     2. **In the CI logs** - a message like `Pushed motor-pricing:a1b2c3d to pricingregistry.azurecr.io`
-    3. **In the Azure Portal** - your Container App shows a new revision running with the latest image
+    3. **In the CI logs** - the explicit failure records the pushed image tag for the manual Container Apps update
 
-    If CI is green and the container app is healthy, your pipeline is live.
+    A green validation/build is not a Container Apps deployment. Your platform team must create or update a revision, then verify its health.
 
-Until the automatic service update lands, CI will output the image tag. Your IT team can then update the container app manually in the Azure Portal:
+Use the pushed image tag when your IT team updates the container app manually in the Azure Portal:
 
 1. Go to your **Container App** → **Revisions**
 2. Click **Create new revision**
@@ -206,7 +206,7 @@ As an analyst, **you can skip this section entirely** - send this page to whoeve
     3. Under **Container**:
         - **Image source:** Azure Container Registry
         - **Registry:** select your ACR
-        - **Image:** you can use a placeholder for now - Haute will update it on deploy
+        - **Image:** you can use a placeholder for now; your platform team replaces it with the image tag printed by CI after each Haute build
     4. Under **Ingress**:
         - **Ingress:** Enabled
         - **Ingress traffic:** Accepting traffic from anywhere (or limited, depending on your security needs)

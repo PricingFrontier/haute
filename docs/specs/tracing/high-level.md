@@ -34,8 +34,8 @@ the targeted cell trace.
 > aggregation provenance, a `branches` dict on `TraceResult`, the
 > `/api/pipeline/trace/column` and `/api/pipeline/trace/compare` endpoints,
 > and a `haute trace export` regulatory-report CLI command (`export_trace()`
-> exists, but only as a Python function producing a report-shape dict for the
-> API layer, not a CLI entry point). The current `TraceResult` is a flat,
+> exists only as a Python report-shaping helper; no production API or CLI call
+> site invokes it). The current `TraceResult` is a flat,
 > linear list of `TraceStep`s plus a `waterfall` summary and a
 > `correlation_diagnostics` list.
 
@@ -63,7 +63,9 @@ In scope:
 - Waterfall assembly for sequential multiplicative/additive rating chains, with an
   arithmetic-reconciliation invariant against the traced output value.
 - Serialising a trace to a JSON-safe API response shape (`trace_result_to_dict`)
-  and to a report-shape dict (`export_trace`) for markdown/PDF generation.
+  and to a report-shape dict (`export_trace`) suitable for markdown/PDF generation.
+  The report helper currently has test/direct-library callers only; it is not wired
+  to a production route or CLI command.
 - A fingerprint-keyed, byte-bounded cache of materialized per-node DataFrames so
   repeated trace clicks against the same graph structure reuse execution.
 
@@ -113,7 +115,7 @@ Out of scope (owned elsewhere, linked where relevant):
   — silently anchoring to the first match could correlate the whole trace
   upstream from the wrong row — so this also raises `ValueError` rather than
   guessing.
-- **Row correlation never guesses.** Each parent row is matched to its resolved
+- **Row correlation never guesses silently.** Each parent row is matched to its resolved
   child row either by a verified positional alignment (only trusted when the
   child transform provably preserves order, or the shared key uniquely pins one
   row) or by explicit value matching on shared columns. An ambiguous match

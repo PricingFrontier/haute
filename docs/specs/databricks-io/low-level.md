@@ -174,6 +174,11 @@ read until the caller collects/executes it).
   On Windows, two concurrent replaces of the same destination may cause
   one fetch to fail with an `OSError` (loud, not silent); on POSIX both
   succeed and the file is simply overwritten.
+- **Concurrent progress is not reference-counted.** `_fetch_progress` has one
+  value per raw table string. Two concurrent fetches under the same spelling
+  overwrite one another's counters, and the first `finally` block to run pops
+  the shared entry even if the other fetch is still active. Different literal
+  spellings track independently (while still sharing a canonical cache file).
 - **`Path.resolve()` is called exactly once per `_cache_path_for` call**
   for the cache *directory*, not the child file — resolving the child
   again would be unsafe under concurrency, because on Windows a path's
@@ -299,6 +304,15 @@ connection is exercised.
   neighbouring `/api/schema/databricks` endpoint's not-cached (`404`) and
   cached-with-preview (`200`) paths, even though that route itself lives
   in `routes/files.py`.
+- `frontend/src/panels/editors/__tests__/_DatabricksSelector.test.tsx` owns
+  the UI-adjacent contract: cascading picker loading/error states, cache
+  status and clear flows, fetch payload construction, polling lifecycle,
+  stale-request suppression, unmount cleanup, and surfaced API errors.
+- `frontend/src/api/__tests__/client.test.ts` and
+  `frontend/src/api/__tests__/client.contract.test.ts` own endpoint URL/
+  encoding and response-decoder enforcement. Those frontend production
+  modules remain owned by the frontend API/editor specs, not by this module
+  map.
 
 Known coverage gaps: `test_databricks_io.py` has several "gap probe" tests
 written in a `try: <call>; pytest.xfail(...) except ValueError: pass`
@@ -312,6 +326,11 @@ cover them) — see the `> NOTE:` callout below. `TestAtomicRenameOnWindows`
 similarly xfails only on `win32` if the underlying `Path.replace()`
 behaviour regresses to something `FileExistsError`-prone; on other
 platforms an unexpected `FileExistsError` fails the test outright.
+
+The concurrent same-table test asserts cache-file coherence only; no test
+currently pins the progress-slot behaviour when two active fetches use the
+same literal table spelling. As implemented, one fetch can clear or overwrite
+the other's visible progress as described under Edge cases.
 
 > NOTE: `_DANGEROUS_SQL_RE` lists `EXEC|EXECUTE` and `LATERAL` as separate,
 > explicit alternatives (not just `EXEC` alone), so — despite their
