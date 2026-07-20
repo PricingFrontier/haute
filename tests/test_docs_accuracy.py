@@ -124,13 +124,10 @@ def _low_level_spec_references() -> set[str]:
 def _component_module_map_file_references() -> dict[str, set[str]]:
     """Return exact, tracked files by their low-level spec's component name."""
     tracked_references = {
-        path.relative_to(ROOT).as_posix()
-        for path in _tracked_repo_files()
-        if path.is_file()
+        path.relative_to(ROOT).as_posix() for path in _tracked_repo_files() if path.is_file()
     }
     return {
-        spec.parent.name: _module_map_file_references(_module_map_text(spec))
-        & tracked_references
+        spec.parent.name: _module_map_file_references(_module_map_text(spec)) & tracked_references
         for spec in LOW_LEVEL_SPECS
     }
 
@@ -174,17 +171,12 @@ def _tracked_repo_files() -> frozenset[Path]:
 def _explicit_documented_repo_paths() -> set[str]:
     references = _low_level_spec_references()
     root_files = {
-        path.relative_to(ROOT).as_posix()
-        for path in _tracked_repo_files()
-        if path.parent == ROOT
+        path.relative_to(ROOT).as_posix() for path in _tracked_repo_files() if path.parent == ROOT
     }
     return {
         reference.rstrip("/")
         for reference in references
-        if (
-            reference in root_files
-            or reference.startswith(_REPOSITORY_PATH_PREFIXES)
-        )
+        if (reference in root_files or reference.startswith(_REPOSITORY_PATH_PREFIXES))
         and not any(marker in reference for marker in ("*", "<", ">", "{"))
         and not re.search(r"\s", reference)
     }
@@ -260,8 +252,8 @@ def _repository_operational_sources() -> list[Path]:
     )
 
     missing = [path.relative_to(ROOT).as_posix() for path in paths if not path.is_file()]
-    assert not missing, (
-        "Operational coverage inventory names missing files:\n- " + "\n- ".join(missing)
+    assert not missing, "Operational coverage inventory names missing files:\n- " + "\n- ".join(
+        missing
     )
     untracked = [path.relative_to(ROOT).as_posix() for path in paths if path not in tracked]
     assert not untracked, (
@@ -343,8 +335,7 @@ def test_low_level_specs_reference_every_repository_operational_source() -> None
     assert not uncovered, (
         "Every maintained build, CI, tooling, browser-E2E, mutation, and reference-pipeline "
         "artifact must be explicitly named by its exact repo path in a docs/specs low-level.md "
-        "Module map entry. Uncovered sources:\n- "
-        + "\n- ".join(uncovered)
+        "Module map entry. Uncovered sources:\n- " + "\n- ".join(uncovered)
     )
 
 
@@ -417,9 +408,7 @@ def test_shared_module_map_files_have_one_primary_owner_and_complete_ledger() ->
 def test_every_spec_component_has_required_documents_and_readme_entry() -> None:
     readme = SPECS_README.read_text(encoding="utf-8")
     components = sorted(
-        path
-        for path in SPECS_ROOT.iterdir()
-        if path.is_dir() and not path.name.startswith(".")
+        path for path in SPECS_ROOT.iterdir() if path.is_dir() and not path.name.startswith(".")
     )
     assert components, "docs/specs contains no component directories"
 
@@ -454,9 +443,7 @@ def test_every_explicit_module_map_repo_path_exists() -> None:
 def test_every_spec_document_follows_the_required_structure() -> None:
     failures: list[str] = []
     for component in sorted(
-        path
-        for path in SPECS_ROOT.iterdir()
-        if path.is_dir() and not path.name.startswith(".")
+        path for path in SPECS_ROOT.iterdir() if path.is_dir() and not path.name.startswith(".")
     ):
         for name, headings in (
             ("high-level.md", _REQUIRED_HIGH_LEVEL_HEADINGS),
@@ -466,9 +453,7 @@ def test_every_spec_document_follows_the_required_structure() -> None:
             text = document.read_text(encoding="utf-8")
             missing = [heading for heading in headings if heading not in text]
             if missing:
-                failures.append(
-                    f"{document.relative_to(ROOT).as_posix()}: {', '.join(missing)}"
-                )
+                failures.append(f"{document.relative_to(ROOT).as_posix()}: {', '.join(missing)}")
 
     assert not failures, "Spec documents missing required sections:\n- " + "\n- ".join(failures)
 
