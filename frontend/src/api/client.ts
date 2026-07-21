@@ -1472,7 +1472,7 @@ export function getGitRemotes(
   return request<unknown>("/api/git/remotes", options).then(parseGitRemotesResponse)
 }
 
-/** Deliberately push the working branch + its ledger to a remote (S16/S33). */
+/** Deliberately publish branch history to a remote, bootstrapping its default branch when needed (S16/S33). */
 export function gitPush(
   remote: string,
   options?: { signal?: AbortSignal },

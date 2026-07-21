@@ -9,7 +9,44 @@ would poison descendant checks.
 
 from __future__ import annotations
 
+import json
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Barrier, Event, Lock, RLock, get_ident
+
+
+class _TrackingRLock:
+    """RLock wrapper that lets concurrency tests verify lock ownership."""
+
+    def __init__(self) -> None:
+        self._lock = RLock()
+        self._state_lock = Lock()
+        self._owner: int | None = None
+        self._depth = 0
+        self.enter_count = 0
+
+    def __enter__(self) -> _TrackingRLock:
+        self._lock.acquire()
+        ident = get_ident()
+        with self._state_lock:
+            if self._owner == ident:
+                self._depth += 1
+            else:
+                self._owner = ident
+                self._depth = 1
+            self.enter_count += 1
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        with self._state_lock:
+            self._depth -= 1
+            if self._depth == 0:
+                self._owner = None
+        self._lock.release()
+
+    def held_by_current_thread(self) -> bool:
+        with self._state_lock:
+            return self._owner == get_ident()
 
 
 def _write(path: Path, text: str) -> None:
@@ -120,6 +157,119 @@ class TestRecordPushedShasEmpty:
         record_pushed_shas(tmp_path, {"origin/main": "abc123"})
         record_pushed_shas(tmp_path, {})  # no-op, leaves prior state intact
         assert read_pushed_shas(tmp_path) == {"origin/main": "abc123"}
+
+
+class TestRecordPushedShasConcurrency:
+    def test_public_reader_uses_the_shared_pushed_state_lock(
+        self,
+        tmp_path: Path,
+        monkeypatch,
+    ) -> None:
+        import haute._git_state as git_state
+
+        git_state.record_pushed_shas(tmp_path, {"origin/main": "sha-main"})
+        tracking_lock = _TrackingRLock()
+        monkeypatch.setattr(git_state, "_pushed_state_lock", tracking_lock, raising=False)
+
+        assert git_state.read_pushed_shas(tmp_path) == {"origin/main": "sha-main"}
+        assert tracking_lock.enter_count == 1
+
+    def test_concurrent_merges_preserve_both_remote_ref_entries(
+        self,
+        tmp_path: Path,
+        monkeypatch,
+    ) -> None:
+        import haute._git_state as git_state
+
+        tracking_lock = _TrackingRLock()
+        monkeypatch.setattr(git_state, "_pushed_state_lock", tracking_lock, raising=False)
+        real_read = git_state._read_pushed_shas_unlocked
+        real_atomic_write = git_state.atomic_write_text
+        unlocked_read_barrier = Barrier(2)
+
+        def coordinated_read(project_root: Path) -> dict[str, str]:
+            snapshot = real_read(project_root)
+            if not tracking_lock.held_by_current_thread():
+                # If the transaction lock regresses, force both writers to
+                # take the same snapshot so the lost update is deterministic.
+                unlocked_read_barrier.wait(timeout=5)
+            return snapshot
+
+        def guarded_atomic_write(path: Path, data: str, encoding: str = "utf-8") -> None:
+            assert tracking_lock.held_by_current_thread(), (
+                "the pushed-state lock must cover the write, not only the read"
+            )
+            real_atomic_write(path, data, encoding)
+
+        monkeypatch.setattr(git_state, "_read_pushed_shas_unlocked", coordinated_read)
+        monkeypatch.setattr(git_state, "atomic_write_text", guarded_atomic_write)
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            first = pool.submit(
+                git_state.record_pushed_shas,
+                tmp_path,
+                {"origin/feature": "sha-feature"},
+            )
+            second = pool.submit(
+                git_state.record_pushed_shas,
+                tmp_path,
+                {"upstream/review": "sha-review"},
+            )
+            first.result(timeout=5)
+            second.result(timeout=5)
+
+        assert real_read(tmp_path) == {
+            "origin/feature": "sha-feature",
+            "upstream/review": "sha-review",
+        }
+
+    def test_atomic_replace_exposes_only_complete_old_or_new_documents(
+        self,
+        tmp_path: Path,
+        monkeypatch,
+    ) -> None:
+        import haute._git_state as git_state
+
+        git_state.record_pushed_shas(tmp_path, {"origin/main": "sha-main"})
+        target = tmp_path / ".haute" / "pushed.json"
+        real_replace = Path.replace
+        before_replace = Event()
+        finish_replace = Event()
+        replacement_sources: list[Path] = []
+
+        def pause_before_replace(source: Path, destination: Path | str) -> Path:
+            if Path(destination) == target:
+                replacement_sources.append(source)
+                before_replace.set()
+                assert finish_replace.wait(timeout=5)
+            return real_replace(source, destination)
+
+        monkeypatch.setattr(Path, "replace", pause_before_replace)
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            write = pool.submit(
+                git_state.record_pushed_shas,
+                tmp_path,
+                {"origin/feature": "sha-feature"},
+            )
+            try:
+                assert before_replace.wait(timeout=5)
+                assert json.loads(target.read_text(encoding="utf-8")) == {
+                    "origin/main": "sha-main"
+                }
+                assert len(replacement_sources) == 1
+                staged = replacement_sources[0]
+                assert staged.parent == target.parent
+                assert json.loads(staged.read_text(encoding="utf-8")) == {
+                    "origin/main": "sha-main",
+                    "origin/feature": "sha-feature",
+                }
+            finally:
+                finish_replace.set()
+            write.result(timeout=5)
+
+        assert git_state.read_pushed_shas(tmp_path) == {
+            "origin/main": "sha-main",
+            "origin/feature": "sha-feature",
+        }
 
 
 class TestReadTrashFallbacks:

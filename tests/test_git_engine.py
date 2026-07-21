@@ -2021,6 +2021,20 @@ class TestFetchThrottleAndHardening:
         cmd = captured["cmd"]
         assert isinstance(cmd, list) and cmd[:2] == ["git", "fetch"]
 
+    def test_best_effort_remote_readers_degrade_on_unicode_output(
+        self, repo: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import haute._git as git_mod
+
+        monkeypatch.setattr(
+            git_mod.subprocess,
+            "run",
+            lambda *args, **kwargs: (_ for _ in ()).throw(UnicodeError("bad output")),
+        )
+
+        assert git_mod._fetch_refs("origin", "main", cwd=repo) is False
+        assert git_mod._ls_remote_version_tags("origin", cwd=repo) == {}
+
 
 class TestCanonicalRemote:
     """X5: the read-side divergence baseline resolves a single canonical remote
@@ -2385,10 +2399,57 @@ class TestRemotesAndPush:
         _write_and_save(repo, WORKING, {"rating.py": "# v2\n"})  # ledger advances
         self._add_bare_remote(repo, tmp_path)
         res = push_working_pair("origin", repo, cwd=repo)
-        assert set(res.pushed_refs) == {WORKING, LEDGER}
+        assert set(res.pushed_refs) == {"main", WORKING, LEDGER}
         remote_refs = _git(repo, "ls-remote", "origin")
         assert f"refs/heads/{WORKING}" in remote_refs
         assert f"refs/heads/{LEDGER}" in remote_refs
+
+    def test_first_use_unborn_repo_publishes_default_working_and_ledger(
+        self, unborn_repo: Path, tmp_path: Path
+    ) -> None:
+        """The first branch chosen in a fresh project has a publishable shared ancestry."""
+        set_working_branch(WORKING, unborn_repo, create=True, cwd=unborn_repo)
+        self._add_bare_remote(unborn_repo, tmp_path)
+
+        result = push_working_pair("origin", unborn_repo, cwd=unborn_repo)
+
+        assert result.pushed_refs == ["main", WORKING, LEDGER]
+        assert _git(unborn_repo, "merge-base", "--is-ancestor", "main", WORKING) == ""
+        assert _git(unborn_repo, "merge-base", "--is-ancestor", "main", LEDGER) == ""
+        remote_refs = _git(unborn_repo, "ls-remote", "origin")
+        assert {f"refs/heads/{name}" for name in ("main", WORKING, LEDGER)} <= set(
+            line.split()[1] for line in remote_refs.splitlines()
+        )
+
+    def test_empty_bootstrap_without_ledger_publishes_only_default_and_working(
+        self, repo: Path, tmp_path: Path
+    ) -> None:
+        """Pre-save branches retain their ledger name without inventing its ref."""
+        from haute._git_state import write_working_branch
+
+        write_working_branch(repo, WORKING)
+        self._add_bare_remote(repo, tmp_path)
+
+        result = push_working_pair("origin", repo, cwd=repo)
+
+        assert result.ledger_branch == LEDGER
+        assert result.pushed_refs == ["main", WORKING]
+        assert f"refs/heads/{LEDGER}" not in _git(repo, "ls-remote", "origin")
+
+    def test_empty_bootstrap_resolves_main_when_a_tag_has_the_same_name(
+        self, repo: Path, tmp_path: Path
+    ) -> None:
+        """Branch enumeration stays unambiguous when a tag is also named ``main``."""
+        self._setup_pair(repo)
+        _git(repo, "tag", "main", "refs/heads/main")
+        self._add_bare_remote(repo, tmp_path)
+
+        result = push_working_pair("origin", repo, cwd=repo)
+
+        assert result.default_branch == "main"
+        assert result.bootstrapped_default is True
+        assert result.pushed_refs == ["main", WORKING, LEDGER]
+        assert "refs/heads/main" in _git(repo, "ls-remote", "origin")
 
     def test_ahead_after_a_local_milestone_following_a_push(
         self, repo: Path, tmp_path: Path
@@ -2512,10 +2573,615 @@ class TestRemotesAndPush:
         with pytest.raises(GitDomainError, match="No remote named"):
             push_working_pair("does-not-exist", repo, cwd=repo)
 
+    def test_first_push_bootstraps_default_and_reports_it(
+        self, repo: Path, tmp_path: Path
+    ) -> None:
+        """An advertised-empty remote receives the local merge target atomically.
+
+        This is the analyst's first-push journey: the working pair alone is not a
+        useful shared history unless its local default branch is published too.
+        """
+        from haute._git_state import read_pushed_shas
+
+        self._setup_pair(repo)
+        self._add_bare_remote(repo, tmp_path)
+
+        result = push_working_pair("origin", repo, cwd=repo)
+
+        assert result.default_branch == "main"
+        assert result.bootstrapped_default is True
+        assert result.pushed_refs == ["main", WORKING, LEDGER]
+        advertised = _git(repo, "ls-remote", "origin")
+        assert "refs/heads/main" in advertised
+        assert "refs/heads/" + WORKING in advertised
+        # The default is a one-time bootstrap ref, not rewrite-detection state.
+        assert "origin/main" not in read_pushed_shas(repo)
+
+    def test_second_push_does_not_resubmit_established_default(
+        self, repo: Path, tmp_path: Path
+    ) -> None:
+        self._setup_pair(repo)
+        self._add_bare_remote(repo, tmp_path)
+        push_working_pair("origin", repo, cwd=repo)
+
+        result = push_working_pair("origin", repo, cwd=repo)
+
+        assert result.default_branch == "main"
+        assert result.bootstrapped_default is False
+        assert result.pushed_refs == [WORKING, LEDGER]
+
+    def test_selected_remote_does_not_use_another_remotes_tracking_evidence(
+        self, repo: Path, tmp_path: Path
+    ) -> None:
+        """No-HEAD default resolution is isolated to the selected remote."""
+        self._setup_pair(repo)
+        self._add_bare_remote(repo, tmp_path, "origin")
+        self._add_bare_remote(repo, tmp_path, "upstream")
+        base = _git(repo, "rev-parse", "main")
+        _git(repo, "branch", "trunk", base)
+        _git(repo, "push", "origin", "trunk")
+        _git(repo, "branch", "-D", "trunk")
+        _git(repo, "branch", "-D", "main")
+        _git(repo, "update-ref", "-d", "refs/remotes/origin/trunk")
+        _git(repo, "update-ref", "refs/remotes/upstream/trunk", base)
+
+        with pytest.raises(GitDomainError, match="determine the remote default"):
+            push_working_pair("origin", repo, cwd=repo)
+
+    def test_related_remote_main_is_never_advanced_when_publishing_pair(
+        self, repo: Path, tmp_path: Path
+    ) -> None:
+        self._setup_pair(repo)
+        bare = self._add_bare_remote(repo, tmp_path)
+        _git(repo, "push", "origin", "main")
+        _git(bare, "symbolic-ref", "HEAD", "refs/heads/main")
+        main_before = _git(repo, "ls-remote", "origin", "refs/heads/main")
+
+        result = push_working_pair("origin", repo, cwd=repo)
+
+        assert result.bootstrapped_default is False
+        assert result.pushed_refs == [WORKING, LEDGER]
+        assert _git(repo, "ls-remote", "origin", "refs/heads/main") == main_before
+
+    def test_established_push_pins_validated_tips_and_records_that_snapshot(
+        self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A ref move at the push boundary cannot change what gets published or recorded."""
+        import haute._git as git_mod
+        from haute._git_state import read_pushed_shas
+
+        self._setup_pair(repo)
+        self._add_bare_remote(repo, tmp_path)
+        push_working_pair("origin", repo, cwd=repo)
+
+        base = _git(repo, "rev-parse", "main")
+        tree = _git(repo, "rev-parse", f"{base}^{{tree}}")
+        working_tip = _git(repo, "commit-tree", tree, "-p", base, "-m", "validated working")
+        ledger_tip = _git(repo, "commit-tree", tree, "-p", base, "-m", "validated ledger")
+        moved_working = _git(
+            repo, "commit-tree", tree, "-p", working_tip, "-m", "raced working"
+        )
+        moved_ledger = _git(
+            repo, "commit-tree", tree, "-p", ledger_tip, "-m", "raced ledger"
+        )
+        _git(repo, "update-ref", f"refs/heads/{WORKING}", working_tip)
+        _git(repo, "update-ref", f"refs/heads/{LEDGER}", ledger_tip)
+
+        real_run = subprocess.run
+        push_command: list[str] = []
+
+        def move_refs_at_push(
+            args: list[str], **kwargs: object
+        ) -> subprocess.CompletedProcess[str]:
+            if args[:2] == ["git", "push"]:
+                assert kwargs.get("errors") == "replace"
+                push_command.extend(args)
+                real_run(
+                    ["git", "update-ref", f"refs/heads/{WORKING}", moved_working],
+                    cwd=repo,
+                    check=True,
+                )
+                real_run(
+                    ["git", "update-ref", f"refs/heads/{LEDGER}", moved_ledger],
+                    cwd=repo,
+                    check=True,
+                )
+            return real_run(args, **kwargs)
+
+        monkeypatch.setattr(git_mod.subprocess, "run", move_refs_at_push)
+
+        result = push_working_pair("origin", repo, cwd=repo)
+
+        assert f"{working_tip}:refs/heads/{WORKING}" in push_command
+        assert f"{ledger_tip}:refs/heads/{LEDGER}" in push_command
+        assert _git(repo, "ls-remote", "origin", f"refs/heads/{WORKING}").split()[0] == working_tip
+        assert _git(repo, "ls-remote", "origin", f"refs/heads/{LEDGER}").split()[0] == ledger_tip
+        assert _git(repo, "rev-parse", WORKING) == moved_working
+        assert _git(repo, "rev-parse", LEDGER) == moved_ledger
+        recorded = read_pushed_shas(repo)
+        assert recorded[f"origin/{WORKING}"] == working_tip
+        assert recorded[f"origin/{LEDGER}"] == ledger_tip
+        assert result.pushed_refs == [WORKING, LEDGER]
+
+    def test_empty_bootstrap_pins_default_tip_to_validated_snapshot(
+        self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Bootstrap's create-only default push uses the preflight commit, not a live ref."""
+        import haute._git as git_mod
+
+        self._setup_pair(repo)
+        self._add_bare_remote(repo, tmp_path)
+        default_tip = _git(repo, "rev-parse", "main")
+        tree = _git(repo, "rev-parse", f"{default_tip}^{{tree}}")
+        moved_default = _git(
+            repo, "commit-tree", tree, "-p", default_tip, "-m", "raced default"
+        )
+
+        real_run = subprocess.run
+        push_command: list[str] = []
+
+        def move_default_at_push(
+            args: list[str], **kwargs: object
+        ) -> subprocess.CompletedProcess[str]:
+            if args[:2] == ["git", "push"]:
+                push_command.extend(args)
+                real_run(
+                    ["git", "update-ref", "refs/heads/main", moved_default],
+                    cwd=repo,
+                    check=True,
+                )
+            return real_run(args, **kwargs)
+
+        monkeypatch.setattr(git_mod.subprocess, "run", move_default_at_push)
+
+        result = push_working_pair("origin", repo, cwd=repo)
+
+        assert f"{default_tip}:refs/heads/main" in push_command
+        assert _git(repo, "ls-remote", "origin", "refs/heads/main").split()[0] == default_tip
+        assert _git(repo, "rev-parse", "main") == moved_default
+        assert result.pushed_refs == ["main", WORKING, LEDGER]
+
+    def test_default_validation_does_not_import_remote_tags(
+        self, repo: Path, tmp_path: Path
+    ) -> None:
+        """The authoritative default fetch cannot mutate local tag state."""
+        self._setup_pair(repo)
+        bare = self._add_bare_remote(repo, tmp_path)
+        other = tmp_path / "tagged-unrelated"
+        _git(tmp_path, "init", "-b", "main", str(other))
+        _git(other, "config", "user.name", "Other")
+        _git(other, "config", "user.email", "other@example.com")
+        (other / "other.txt").write_text("unrelated\n")
+        _git(other, "add", "other.txt")
+        _git(other, "commit", "-m", "unrelated tagged default")
+        _git(other, "tag", "remote-only-validation-tag")
+        _git(other, "remote", "add", "origin", str(bare))
+        _git(other, "push", "origin", "main", "refs/tags/remote-only-validation-tag")
+        _git(bare, "symbolic-ref", "HEAD", "refs/heads/main")
+
+        with pytest.raises(GitDomainError, match="unrelated"):
+            push_working_pair("origin", repo, cwd=repo)
+
+        assert _git(repo, "tag", "--list", "remote-only-validation-tag") == ""
+
+    def test_established_remote_missing_local_main_refuses_before_pair_publish(
+        self, repo: Path, tmp_path: Path
+    ) -> None:
+        self._setup_pair(repo)
+        bare = self._add_bare_remote(repo, tmp_path)
+        _git(repo, "branch", "trunk", "main")
+        _git(repo, "push", "origin", "trunk")
+
+        with pytest.raises(GitDomainError, match="expected local default branch 'main' is missing"):
+            push_working_pair("origin", repo, cwd=repo)
+
+        advertised = _git(repo, "ls-remote", str(bare))
+        assert f"refs/heads/{WORKING}" not in advertised
+        assert f"refs/heads/{LEDGER}" not in advertised
+
+    @pytest.mark.parametrize(
+        ("returncode", "stdout", "stderr", "expected"),
+        [
+            (
+                0,
+                "ref: refs/heads/main\tHEAD\n"
+                + "a" * 40
+                + "\tHEAD\n"
+                + "a" * 40
+                + "\trefs/heads/main\n",
+                "",
+                None,
+            ),
+            (0, "ref: refs/heads/main\tHEAD\nnot-a-sha\trefs/heads/main\n", "", "malformed"),
+            (2, "", "network unavailable", "network unavailable"),
+        ],
+    )
+    def test_inspect_remote_strictly_parses_advertisement(
+        self,
+        repo: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        returncode: int,
+        stdout: str,
+        stderr: str,
+        expected: str | None,
+    ) -> None:
+        import haute._git as git_mod
+
+        monkeypatch.setattr(
+            git_mod.subprocess,
+            "run",
+            lambda *args, **kwargs: subprocess.CompletedProcess(
+                args[0], returncode, stdout, stderr
+            ),
+        )
+
+        if expected is None:
+            assert git_mod._inspect_remote("origin", cwd=repo) == ({"main"}, "main", True)
+        else:
+            with pytest.raises(git_mod.GitError, match=expected):
+                git_mod._inspect_remote("origin", cwd=repo)
+
+    @pytest.mark.parametrize(
+        "failure",
+        [subprocess.TimeoutExpired(["git"], 1), OSError("no git"), UnicodeError("bad output")],
+    )
+    def test_inspect_remote_translates_process_failures(
+        self, repo: Path, monkeypatch: pytest.MonkeyPatch, failure: BaseException
+    ) -> None:
+        import haute._git as git_mod
+
+        def failing_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+            raise failure
+
+        monkeypatch.setattr(git_mod.subprocess, "run", failing_run)
+        with pytest.raises(git_mod.GitError):
+            git_mod._inspect_remote("origin", cwd=repo)
+
+    @pytest.mark.parametrize(
+        "failure",
+        [subprocess.TimeoutExpired(["git"], 1), OSError("no git"), UnicodeError("bad output")],
+    )
+    def test_fetch_expected_default_translates_process_failures(
+        self, repo: Path, monkeypatch: pytest.MonkeyPatch, failure: BaseException
+    ) -> None:
+        import haute._git as git_mod
+
+        def failing_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+            raise failure
+
+        monkeypatch.setattr(git_mod.subprocess, "run", failing_run)
+        with pytest.raises(git_mod.GitError):
+            git_mod._fetch_expected_default("origin", "main", cwd=repo)
+
+    @pytest.mark.parametrize(
+        "advertised_ref",
+        [
+            "refs/heads/foo..bar",
+            "refs/heads/x.lock",
+            "refs/tags/foo..bar",
+            "refs/",
+            "refs/heads/main^{}",
+        ],
+    )
+    def test_inspect_remote_rejects_git_invalid_object_refs(
+        self,
+        repo: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        advertised_ref: str,
+    ) -> None:
+        import haute._git as git_mod
+
+        monkeypatch.setattr(
+            git_mod.subprocess,
+            "run",
+            lambda *args, **kwargs: subprocess.CompletedProcess(
+                args[0], 0, f"{'a' * 40}\t{advertised_ref}\n", ""
+            ),
+        )
+
+        with pytest.raises(git_mod.GitError, match="malformed"):
+            git_mod._inspect_remote("origin", cwd=repo)
+
+    def test_inspect_remote_accepts_valid_peeled_tag_advertisement(
+        self, repo: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import haute._git as git_mod
+
+        sha = "a" * 40
+        peeled = "b" * 40
+        stdout = (
+            "ref: refs/heads/main\tHEAD\n"
+            f"{sha}\tHEAD\n"
+            f"{sha}\trefs/heads/main\n"
+            f"{sha}\trefs/heads/feature]x\n"
+            f"{sha}\trefs/tags/version/1.0\n"
+            f"{peeled}\trefs/tags/version/1.0^{{}}\n"
+        )
+        monkeypatch.setattr(
+            git_mod.subprocess,
+            "run",
+            lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0, stdout, ""),
+        )
+
+        assert git_mod._inspect_remote("origin", cwd=repo) == (
+            {"main", "feature]x"},
+            "main",
+            True,
+        )
+
+    def test_inspect_remote_treats_unborn_symbolic_head_as_empty(
+        self, repo: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import haute._git as git_mod
+
+        monkeypatch.setattr(
+            git_mod.subprocess,
+            "run",
+            lambda *args, **kwargs: subprocess.CompletedProcess(
+                args[0], 0, "ref: refs/heads/main\tHEAD\n", ""
+            ),
+        )
+
+        assert git_mod._inspect_remote("origin", cwd=repo) == (set(), "main", False)
+
+    @pytest.mark.parametrize("zero_oid", ["0" * 40, "0" * 64])
+    def test_inspect_remote_rejects_zero_object_ids(
+        self, repo: Path, monkeypatch: pytest.MonkeyPatch, zero_oid: str
+    ) -> None:
+        import haute._git as git_mod
+
+        monkeypatch.setattr(
+            git_mod.subprocess,
+            "run",
+            lambda *args, **kwargs: subprocess.CompletedProcess(
+                args[0], 0, f"{zero_oid}\trefs/heads/main\n", ""
+            ),
+        )
+
+        with pytest.raises(git_mod.GitError, match="malformed"):
+            git_mod._inspect_remote("origin", cwd=repo)
+
+    def test_inspect_remote_rejects_mixed_object_id_widths(
+        self, repo: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import haute._git as git_mod
+
+        stdout = f"{'a' * 40}\trefs/heads/main\n{'b' * 64}\trefs/tags/version/1.0\n"
+        monkeypatch.setattr(
+            git_mod.subprocess,
+            "run",
+            lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0, stdout, ""),
+        )
+
+        with pytest.raises(git_mod.GitError, match="malformed"):
+            git_mod._inspect_remote("origin", cwd=repo)
+
+    def test_inspect_remote_rejects_contradictory_duplicate_object_ref(
+        self, repo: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import haute._git as git_mod
+
+        stdout = f"{'a' * 40}\trefs/heads/main\n{'b' * 40}\trefs/heads/main\n"
+        monkeypatch.setattr(
+            git_mod.subprocess,
+            "run",
+            lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0, stdout, ""),
+        )
+
+        with pytest.raises(git_mod.GitError, match="malformed"):
+            git_mod._inspect_remote("origin", cwd=repo)
+
+    def test_inspect_remote_rejects_head_object_mismatching_its_target(
+        self, repo: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import haute._git as git_mod
+
+        stdout = (
+            "ref: refs/heads/main\tHEAD\n"
+            f"{'a' * 40}\tHEAD\n"
+            f"{'b' * 40}\trefs/heads/main\n"
+        )
+        monkeypatch.setattr(
+            git_mod.subprocess,
+            "run",
+            lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0, stdout, ""),
+        )
+
+        with pytest.raises(git_mod.GitError, match="malformed"):
+            git_mod._inspect_remote("origin", cwd=repo)
+
+    def test_bootstrap_race_fails_create_only_lease_without_publishing_pair(
+        self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The create-only lease rejects even a concurrent fast-forwardable main."""
+        import haute._git as git_mod
+
+        self._setup_pair(repo)
+        bare = self._add_bare_remote(repo, tmp_path)
+        remote_tip = _git(repo, "rev-parse", "main")
+        _git(repo, "push", "origin", "main")
+        tree = _git(repo, "rev-parse", f"{remote_tip}^{{tree}}")
+        local_default = _git(
+            repo, "commit-tree", tree, "-p", remote_tip, "-m", "local default advance"
+        )
+        _git(repo, "update-ref", "refs/heads/main", local_default)
+        monkeypatch.setattr(
+            git_mod, "_inspect_remote", lambda remote, cwd=None: (set(), None, False)
+        )
+
+        with pytest.raises(git_mod.GitError) as exc:
+            push_working_pair("origin", repo, cwd=repo)
+
+        assert not isinstance(exc.value, GitPushRejectedError)
+        advertised = _git(repo, "ls-remote", str(bare))
+        assert _git(repo, "ls-remote", str(bare), "refs/heads/main").split()[0] == remote_tip
+        assert f"refs/heads/{WORKING}" not in advertised
+        assert f"refs/heads/{LEDGER}" not in advertised
+
+    def test_bootstrap_race_with_same_default_tip_publishes_pair(
+        self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An idempotent concurrent creation at the snapshot SHA remains safe."""
+        import haute._git as git_mod
+
+        self._setup_pair(repo)
+        self._add_bare_remote(repo, tmp_path)
+        default_tip = _git(repo, "rev-parse", "main")
+        _git(repo, "push", "origin", "main")
+        monkeypatch.setattr(
+            git_mod, "_inspect_remote", lambda remote, cwd=None: (set(), None, False)
+        )
+
+        result = push_working_pair("origin", repo, cwd=repo)
+
+        assert result.default_branch == "main"
+        assert result.bootstrapped_default is True
+        assert result.pushed_refs == ["main", WORKING, LEDGER]
+        assert _git(repo, "ls-remote", "origin", "refs/heads/main").split()[0] == default_tip
+        advertised = _git(repo, "ls-remote", "origin")
+        assert f"refs/heads/{WORKING}" in advertised
+        assert f"refs/heads/{LEDGER}" in advertised
+
+    def test_tags_only_remote_is_not_mistaken_for_empty(self, repo: Path, tmp_path: Path) -> None:
+        """A tag is an object ref, so it cannot authorize default bootstrap."""
+        self._setup_pair(repo)
+        bare = self._add_bare_remote(repo, tmp_path)
+        _git(repo, "tag", "outside")
+        _git(repo, "push", "origin", "refs/tags/outside")
+
+        with pytest.raises(GitDomainError, match="default branch"):
+            push_working_pair("origin", repo, cwd=repo)
+
+        assert "refs/heads/" + WORKING not in _git(repo, "ls-remote", str(bare))
+
+    def test_unrelated_established_default_refuses_before_pair_publish(
+        self, repo: Path, tmp_path: Path
+    ) -> None:
+        self._setup_pair(repo)
+        bare = self._add_bare_remote(repo, tmp_path)
+        other = tmp_path / "unrelated"
+        _git(tmp_path, "init", str(other))
+        _git(other, "config", "user.name", "Other")
+        _git(other, "config", "user.email", "other@example.com")
+        (other / "other.txt").write_text("unrelated\n")
+        _git(other, "add", "other.txt")
+        _git(other, "commit", "-m", "unrelated")
+        _git(other, "branch", "-M", "main")
+        _git(other, "remote", "add", "origin", str(bare))
+        _git(other, "push", "origin", "main")
+
+        with pytest.raises(GitDomainError, match="unrelated"):
+            push_working_pair("origin", repo, cwd=repo)
+
+        assert "refs/heads/" + WORKING not in _git(repo, "ls-remote", str(bare))
+
+    def test_empty_remote_refuses_unrelated_local_default_and_pair(
+        self, repo: Path, tmp_path: Path
+    ) -> None:
+        """Bootstrap cannot publish an orphan working history beside the merge target."""
+        from haute._git_state import write_working_branch
+
+        orphan = "orphan-work"
+        _git(repo, "checkout", "--orphan", orphan)
+        _git(repo, "rm", "-rf", ".")
+        (repo / "orphan.txt").write_text("unrelated\n")
+        _git(repo, "add", "orphan.txt")
+        _git(repo, "commit", "-m", "orphan root")
+        write_working_branch(repo, orphan)
+        bare = self._add_bare_remote(repo, tmp_path)
+
+        with pytest.raises(GitDomainError, match="unrelated"):
+            push_working_pair("origin", repo, cwd=repo)
+
+        assert _git(repo, "ls-remote", str(bare)) == ""
+
+    def test_empty_remote_bootstraps_a_unique_custom_default(
+        self, repo: Path, tmp_path: Path
+    ) -> None:
+        # The managed pair must not make custom ``trunk`` resolution ambiguous.
+        self._setup_pair(repo)
+        _git(repo, "branch", "trunk", "main")
+        _git(repo, "branch", "-D", "main")
+        self._add_bare_remote(repo, tmp_path)
+
+        result = push_working_pair("origin", repo, cwd=repo)
+
+        assert result.default_branch == "trunk"
+        assert result.pushed_refs == ["trunk", WORKING, LEDGER]
+
     def test_push_without_a_working_branch_is_refused(self, repo: Path, tmp_path: Path) -> None:
         self._add_bare_remote(repo, tmp_path)  # no working-branch state recorded
         with pytest.raises(GitDomainError, match="No working branch"):
             push_working_pair("origin", repo, cwd=repo)
+
+    @pytest.mark.parametrize("corrupted_working", ["HEAD", "@"])
+    def test_push_rejects_pseudoref_as_corrupted_working_branch_state(
+        self,
+        repo: Path,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        corrupted_working: str,
+    ) -> None:
+        import haute._git as git_mod
+        from haute._git_state import write_working_branch
+
+        write_working_branch(repo, corrupted_working)
+        self._add_bare_remote(repo, tmp_path)
+        monkeypatch.setattr(
+            git_mod,
+            "_inspect_remote",
+            lambda *args, **kwargs: pytest.fail("invalid clone state reached remote inspection"),
+        )
+
+        with pytest.raises(GitDomainError, match="Invalid working branch"):
+            push_working_pair("origin", repo, cwd=repo)
+
+    def test_option_like_working_state_is_rejected_before_git_subprocess(
+        self, repo: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import haute._git as git_mod
+
+        monkeypatch.setattr(
+            git_mod,
+            "_run_git_ok",
+            lambda *args, **kwargs: pytest.fail("invalid state reached a Git subprocess"),
+        )
+
+        with pytest.raises(GitDomainError, match="Invalid working branch"):
+            git_mod._validate_managed_working_branch("--upload-pack=attacker", cwd=repo)
+
+    def test_tag_named_like_working_branch_does_not_satisfy_branch_state(
+        self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import haute._git as git_mod
+        from haute._git_state import write_working_branch
+
+        working = "tag-only-working"
+        _git(repo, "tag", working, "main")
+        write_working_branch(repo, working)
+        self._add_bare_remote(repo, tmp_path)
+        monkeypatch.setattr(
+            git_mod,
+            "_inspect_remote",
+            lambda *args, **kwargs: pytest.fail("missing branch reached remote inspection"),
+        )
+
+        with pytest.raises(GitDomainError, match="does not exist"):
+            push_working_pair("origin", repo, cwd=repo)
+
+    def test_tag_named_like_missing_ledger_is_not_published_as_a_branch(
+        self, repo: Path, tmp_path: Path
+    ) -> None:
+        from haute._git_state import write_working_branch
+
+        write_working_branch(repo, WORKING)
+        _git(repo, "tag", LEDGER, "main")
+        self._add_bare_remote(repo, tmp_path)
+
+        result = push_working_pair("origin", repo, cwd=repo)
+
+        assert result.pushed_refs == ["main", WORKING]
+        assert _git(repo, "ls-remote", "origin", f"refs/heads/{LEDGER}") == ""
 
     def test_push_never_force_overwrites_a_diverged_remote(
         self, repo: Path, tmp_path: Path

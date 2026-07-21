@@ -25,12 +25,14 @@ interface RemotePushControlProps {
 }
 
 /**
- * Deliberate push of the working/ledger pair to an existing remote (S16/S33):
- * a remote dropdown defaulting to no selection, the working branch's ahead/behind
- * vs the selected remote, and a push button. Nothing leaves the machine except
- * through this button — there is no auto-push and no add-remote here. When the
- * ledger holds out-of-version saves, pushing first asks for confirmation (the
- * push still proceeds if the user says so — it is a warning, not a block).
+ * Deliberate publication of branch history to an existing remote (S16/S33): a
+ * remote dropdown defaulting to no selection, the working branch's ahead/behind
+ * vs the selected remote, and a push button. For an empty remote, that explicit
+ * action also publishes its default branch as the merge target. Nothing is
+ * published except through this button — there is no auto-push and no
+ * add-remote here. When the ledger holds out-of-version saves, pushing first
+ * asks for confirmation (the push still proceeds if the user says so — it is a
+ * warning, not a block).
  */
 /** A leg with local work the remote lacks (ahead/diverged) blocks a clean
  *  fast-forward — the user must spin off a copy instead of catching up. */
@@ -96,8 +98,15 @@ export default function RemotePushControl({
     setPushing(true)
     try {
       const res = await gitPush(selected)
-      const n = res.pushed_refs.length
-      addToast("success", `Pushed ${n} branch${n === 1 ? "" : "es"} to ${res.remote}`)
+      if (res.bootstrapped_default) {
+        addToast(
+          "success",
+          `Published ${res.default_branch} and your branch history to ${res.remote}`,
+        )
+      } else {
+        const n = res.pushed_refs.length
+        addToast("success", `Pushed ${n} branch${n === 1 ? "" : "es"} to ${res.remote}`)
+      }
       await load() // ahead/behind now reflect the synced state
     } catch (err) {
       // A non-fast-forward rejection (409) carries the per-leg fork data — show
@@ -227,11 +236,7 @@ export default function RemotePushControl({
       )}
 
       <Tooltip
-        label={
-          pendingSaveCount > 0
-            ? "Push the working + ledger branches (you have out-of-version saves)"
-            : "Push the working + ledger branches to the remote"
-        }
+        label="Push your branch and save history. If the remote is empty, Haute also publishes the default branch as your merge target."
         side="bottom"
       >
         <button

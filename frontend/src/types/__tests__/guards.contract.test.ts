@@ -13,6 +13,7 @@ import {
   parseGitArchiveResponse,
   parseGitDeleteBranchResponse,
   parseGitMoveResponse,
+  parseGitPushResponse,
   parseGitStatusResponse,
   parseGitRemotesResponse,
   parseGitFastForwardResponse,
@@ -1255,6 +1256,31 @@ describe("API response guards", () => {
 
     expect(parsed.remote).toBe("origin")
     expect(parsed.fast_forwarded).toEqual(["dev", "dev-save"])
+  })
+
+  it("parses required bootstrap metadata for either bootstrap outcome", () => {
+    const base = loadUiContractFixture<Record<string, unknown>>("git_push_response")
+
+    expect(parseGitPushResponse({ ...base, bootstrapped_default: true })).toMatchObject({
+      default_branch: base.default_branch,
+      bootstrapped_default: true,
+    })
+    expect(
+      parseGitPushResponse({ ...base, bootstrapped_default: false }).bootstrapped_default,
+    ).toBe(false)
+  })
+
+  it("rejects missing or malformed bootstrap metadata instead of inventing it", () => {
+    const base = loadUiContractFixture<Record<string, unknown>>("git_push_response")
+
+    expect(() => parseGitPushResponse({ ...base, default_branch: undefined })).toThrow(
+      /default_branch/i,
+    )
+    expect(() => parseGitPushResponse({ ...base, bootstrapped_default: undefined })).toThrow(
+      /bootstrapped_default/i,
+    )
+    expect(() => parseGitPushResponse({ ...base, default_branch: 42 })).toThrow(/default_branch/i)
+    expect(() => parseGitPushResponse({ ...base, bootstrapped_default: "false" })).toThrow(/bootstrapped_default/i)
   })
 
   it("rejects a fast-forward response missing working_branch", () => {
