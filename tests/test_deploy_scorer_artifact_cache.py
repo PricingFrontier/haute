@@ -98,7 +98,12 @@ def _model_score_graph() -> Any:
                 },
             ],
             "edges": [
-                {"id": "e1", "source": "src", "target": "ms"},
+                {
+                    "id": "e1",
+                    "source": "src",
+                    "target": "ms",
+                    "sourceHandle": "src",
+                },
                 {"id": "e2", "source": "ms", "target": "out"},
             ],
         }
@@ -353,7 +358,14 @@ class TestDeployArtifactPathFingerprints:
                         },
                     },
                 ],
-                "edges": [{"id": "e1", "source": "src", "target": "out"}],
+                "edges": [
+                    {
+                        "id": "e1",
+                        "source": "src",
+                        "target": "out",
+                        "sourceHandle": "src",
+                    }
+                ],
             }
         )
         real_content_hash = execution_mod.content_hash

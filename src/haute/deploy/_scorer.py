@@ -24,7 +24,7 @@ from haute._cache import canonical_json
 from haute._code_extraction import _strip_generated_boilerplate_from_code
 from haute._execution_admission import create_admitted_execution_context
 from haute._execution_context import ExecutionContext, ExecutionProfile
-from haute._graph_utils import upstream_node_ids
+from haute._graph_utils import edge_input_name, upstream_node_ids
 from haute._hashing import content_hash_bytes
 from haute._io import load_external_object, read_data_source
 from haute._logging import get_logger
@@ -167,6 +167,29 @@ def _deploy_model_score_source(execution_context: ExecutionContext) -> str:
     if execution_context.profile == ExecutionProfile.DEPLOY_BATCH:
         return ExecutionProfile.DEPLOY_BATCH.value
     return "live"
+
+
+def _validate_deploy_input_edges(graph: PipelineGraph) -> None:
+    """Reject apiInput edges that do not identify a frame at deploy time.
+
+    A post-convergence graph always stores an apiInput frame label on every
+    outgoing edge.  Validate that invariant before the shared builder gets a
+    chance to bind positional inputs: a legacy bare-frame source would
+    otherwise let the builder omit the input name and fail later in user code
+    with an unrelated ``NameError``.
+    """
+    node_by_id = {node.id: node for node in graph.nodes}
+    for edge in graph.edges:
+        source_node = node_by_id.get(edge.source)
+        if source_node is None or source_node.data.nodeType != NodeType.API_INPUT:
+            continue
+        try:
+            edge_input_name(edge, source_node)
+        except ValueError as exc:
+            raise ValueError(
+                f"Malformed deploy graph: apiInput edge {edge.id!r} from source "
+                f"node {edge.source!r} has no sourceHandle/frame label."
+            ) from exc
 
 
 def _model_score_has_configured_source(config: dict[str, Any]) -> bool:
@@ -497,6 +520,7 @@ def score_graph_lazy(
         _resolve_runtime_graph_paths(graph),
         remap,
     )
+    _validate_deploy_input_edges(graph)
     node_by_id = {node.id: node for node in graph.nodes}
     parents_of = graph.parents_of
     input_set = set(input_node_ids)

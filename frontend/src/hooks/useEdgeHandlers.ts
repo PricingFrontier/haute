@@ -21,6 +21,7 @@ import { insertEdgeJoinNode, insertEdgeJoinNodeFromSources, type EdgeJoinFailure
 import { appEdge, appNode, selectOnlyNode } from "../utils/flowElements"
 import { edgeJoinCanonicalTargetHandle, edgeJoinRoleConfigKey } from "../utils/edgeJoinRoles"
 import { normalizeDefaultTargetHandle } from "../utils/flowHandles"
+import type { ConnectionValidationResult } from "../utils/connectionValidation"
 import useToastStore from "../stores/useToastStore"
 import type { FetchPreviewOptions } from "./usePipelineAPI"
 import type { PreviewData } from "../panels/DataPreview"
@@ -87,6 +88,7 @@ type UseEdgeHandlersParams = {
   setEdgesRaw: (updater: Edge[] | ((eds: Edge[]) => Edge[])) => void
   pushSnapshot: () => void
   setSelectedNode: (updater: React.SetStateAction<Node | null>) => void
+  setLastSelectedId?: (id: string | null) => void
   setPreviewData: (updater: React.SetStateAction<PreviewData | null>) => void
   setContextMenu: (data: ContextMenuData | null) => void
   fetchPreview: (node: Node, options?: FetchPreviewOptions) => void
@@ -96,6 +98,7 @@ type UseEdgeHandlersParams = {
   screenToFlowPosition: (pos: { x: number; y: number }) => { x: number; y: number }
   graphRefreshingRef: MutableRefObject<number>
   findEdgeIdAtPoint?: (point: { x: number; y: number }) => string | null
+  validateConnection?: (connection: Connection) => ConnectionValidationResult
 }
 
 const edgeJoinFailureMessages: Record<EdgeJoinFailureReason, string> = {
@@ -117,6 +120,7 @@ export default function useEdgeHandlers({
   setEdgesRaw,
   pushSnapshot,
   setSelectedNode,
+  setLastSelectedId,
   setPreviewData,
   setContextMenu,
   fetchPreview,
@@ -126,8 +130,14 @@ export default function useEdgeHandlers({
   screenToFlowPosition,
   graphRefreshingRef,
   findEdgeIdAtPoint = () => null,
+  validateConnection,
 }: UseEdgeHandlersParams) {
   const addToast = useToastStore((s) => s.addToast)
+
+  const reportConnectionValidationFailure = useCallback((result: ConnectionValidationResult) => {
+    if (result.ok || result.reason.kind !== "duplicate-input-name") return
+    addToast("error", `Connection rejected: input name "${result.reason.inputName}" is already connected`)
+  }, [addToast])
 
   const commitConnection = useCallback(
     (params: Connection) => {
@@ -234,6 +244,7 @@ export default function useEdgeHandlers({
         setNodesRaw(result.nodes)
         setEdgesRaw(result.edges)
         setSelectedNode(selected)
+        setLastSelectedId?.(selected?.id ?? null)
         lastSelectedNodeRef.current = selected
         clearTrace()
         cancelPreview()
@@ -245,8 +256,6 @@ export default function useEdgeHandlers({
         targetNodeId
       ) {
         const point = screenToFlowPosition(connectionEndPoint(event))
-        if (connectionState.isValid === false) return
-
         commitEdgeJoinResult(insertEdgeJoinNodeFromSources({
           nodes: graphRef.current.nodes,
           edges: graphRef.current.edges,
@@ -265,23 +274,36 @@ export default function useEdgeHandlers({
       }
 
       if (targetNodeId) {
-        if (!connectionState.isValid) return
         if (fromHandle?.type === "source" && toHandle?.type === "target") {
-          commitConnection({
+          const connection = {
             source: sourceNodeId,
             sourceHandle: fromHandle.id ?? null,
             target: targetNodeId,
             targetHandle: normalizeDefaultTargetHandle(toHandle.id),
-          })
+          }
+          const validation = validateConnection?.(connection)
+          if (validation) {
+            reportConnectionValidationFailure(validation)
+            if (!validation.ok) return
+          }
+          if (!connectionState.isValid) return
+          commitConnection(connection)
           return
         }
         if (fromHandle?.type === "target" && toHandle?.type === "source") {
-          commitConnection({
+          const connection = {
             source: targetNodeId,
             sourceHandle: toHandle.id ?? null,
             target: sourceNodeId,
             targetHandle: normalizeDefaultTargetHandle(fromHandle.id),
-          })
+          }
+          const validation = validateConnection?.(connection)
+          if (validation) {
+            reportConnectionValidationFailure(validation)
+            if (!validation.ok) return
+          }
+          if (!connectionState.isValid) return
+          commitConnection(connection)
         }
         return
       }
@@ -313,10 +335,13 @@ export default function useEdgeHandlers({
       lastSelectedNodeRef,
       nodeIdCounterRef,
       pushSnapshot,
+      reportConnectionValidationFailure,
       screenToFlowPosition,
       setEdgesRaw,
+      setLastSelectedId,
       setNodesRaw,
       setSelectedNode,
+      validateConnection,
     ],
   )
 
@@ -337,6 +362,7 @@ export default function useEdgeHandlers({
     const previousNodeId = selectedNode?.id ?? lastSelectedNodeRef.current?.id
     const shouldRefreshPreview = previousNodeId !== node.id
     setSelectedNode(node)
+    setLastSelectedId?.(node.id)
     lastSelectedNodeRef.current = node
     if (!shouldRefreshPreview) return
 
@@ -358,6 +384,7 @@ export default function useEdgeHandlers({
     clearTrace,
     setPreviewData,
     lastSelectedNodeRef,
+    setLastSelectedId,
   ])
 
   const handleDeleteEdge = useCallback((edgeId: string) => {
@@ -421,8 +448,9 @@ export default function useEdgeHandlers({
       const selectedNewNode = { ...newNode, selected: true }
       setNodes((nds) => selectOnlyNode([...nds, newNode], newNode.id))
       setSelectedNode(selectedNewNode)
+      setLastSelectedId?.(selectedNewNode.id)
     },
-    [screenToFlowPosition, nodeIdCounterRef, setNodes, setSelectedNode, addToast],
+    [screenToFlowPosition, nodeIdCounterRef, setNodes, setSelectedNode, setLastSelectedId, addToast],
   )
 
   return {

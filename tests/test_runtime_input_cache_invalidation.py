@@ -13,9 +13,9 @@ These tests pin:
   optimiserApply artifact — the cheapest real model fixture);
 * a vanished dataSource file surfaces the execution error instead of a
   stale ok frame;
-* trace recomputes after a dataSource edit and after a JSON-cache
-  rebuild (the trace key previously omitted the JSON-cache state
-  signature entirely);
+* trace recomputes after a dataSource edit, a raw JSON apiInput edit before
+  any cache rebuild, and a JSON-cache rebuild (the trace key previously
+  omitted the JSON-cache state signature entirely);
 * the stat-gated memo: unchanged files are content-hashed exactly once
   across previews (call-count pin, not timing), edited files re-hash;
 * the deliberate stat-gate semantics: an mtime bump with identical
@@ -36,6 +36,7 @@ import polars as pl
 import pytest
 
 from haute._json_flatten import _json_cache_dir, cache_state_signature_for_graph
+from haute._types import GraphEdge
 from haute.executor import _preview_cache, execute_graph
 from haute.trace import _cache as _trace_cache
 from haute.trace import execute_trace
@@ -161,9 +162,16 @@ def _json_api_input_graph(data: Path):
                         },
                     }
                 ),
-                _transform_node("t", "df = df.with_columns(y=pl.col('amount') * 2)"),
+                _transform_node("t", "df = root.with_columns(y=pl.col('amount') * 2)"),
             ],
-            "edges": [_edge("api", "t")],
+            "edges": [
+                GraphEdge(
+                    id="e_api_t",
+                    source="api",
+                    target="t",
+                    sourceHandle="root",
+                )
+            ],
         }
     )
 
@@ -322,8 +330,12 @@ class TestPreviewRuntimeFileInvalidation:
         results2 = execute_graph(graph)
         assert [row["x"] for row in results2["api"].preview] == [5, 6]
 
-    def test_json_api_input_raw_edit_errors_until_cache_rebuild(self, tmp_path, monkeypatch):
-        """Editing raw JSON invalidates preview before stale cache execution."""
+    def test_json_api_input_raw_edit_shreds_directly_before_cache_rebuild(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        """Editing raw JSON invalidates preview and bypasses the stale cache."""
         monkeypatch.chdir(tmp_path)
         data = tmp_path / "data.json"
         _export_and_cache_amount(data, 10)
@@ -337,10 +349,11 @@ class TestPreviewRuntimeFileInvalidation:
         _bump_mtime(data)
 
         results2 = execute_graph(graph, target_node_id="t")
-        assert results2["api"].status == "error"
-        assert "stale" in (results2["api"].error or "").lower()
-        assert results2["t"].status == "error"
+        assert results2["api"].status == "ok", results2["api"].error
+        assert results2["t"].status == "ok", results2["t"].error
+        assert results2["t"].preview == [{"amount": 50, "y": 100}]
 
+        # Rebuilding remains an optional prewarm and preserves the same result.
         _export_and_cache_amount(data, 50)
         _bump_mtime(data)
 
@@ -412,9 +425,16 @@ class TestTraceRuntimeInputInvalidation:
             {
                 "nodes": [
                     _flat_api_input_node("api", p),
-                    _transform_node("t", "df = df.with_columns(y=pl.col('x') * 2)"),
+                    _transform_node("t", "df = api.with_columns(y=pl.col('x') * 2)"),
                 ],
-                "edges": [_edge("api", "t")],
+                "edges": [
+                    GraphEdge(
+                        id="e_api_t",
+                        source="api",
+                        target="t",
+                        sourceHandle="api",
+                    )
+                ],
             }
         )
 
@@ -423,6 +443,26 @@ class TestTraceRuntimeInputInvalidation:
 
         _write_csv(p, [50])
         _bump_mtime(p)
+
+        result2 = execute_trace(graph, row_index=0, target_node_id="t", column="y")
+        assert result2.output_value == 100
+
+    def test_trace_recomputes_from_raw_json_before_cache_rebuild(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        """A stale parquet must not block a fresh trace from direct JSON."""
+        monkeypatch.chdir(tmp_path)
+        data = tmp_path / "data.json"
+        _export_and_cache_amount(data, 10)
+        graph = _json_api_input_graph(data)
+
+        result1 = execute_trace(graph, row_index=0, target_node_id="t", column="y")
+        assert result1.output_value == 20
+
+        data.write_text(json.dumps([{"amount": 50}]), encoding="utf-8")
+        _bump_mtime(data)
 
         result2 = execute_trace(graph, row_index=0, target_node_id="t", column="y")
         assert result2.output_value == 100

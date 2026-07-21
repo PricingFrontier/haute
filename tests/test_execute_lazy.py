@@ -15,6 +15,7 @@ from __future__ import annotations
 import polars as pl
 import pytest
 
+import haute.projection as projection_planner
 from haute._execute_lazy import (
     EagerResult,
     _apply_selected_columns,
@@ -42,10 +43,26 @@ def _e(src: str, tgt: str) -> GraphEdge:
     return GraphEdge(id=f"e_{src}_{tgt}", source=src, target=tgt)
 
 
+def _port_edge(src: str, tgt: str, port: str) -> GraphEdge:
+    return GraphEdge(
+        id=f"e_{src}_{tgt}_{port}",
+        source=src,
+        target=tgt,
+        sourceHandle=port,
+    )
+
+
 def _source_node(nid: str, label: str | None = None) -> GraphNode:
     return GraphNode(
         id=nid,
         data=NodeData(label=label or nid, nodeType=NodeType.DATA_SOURCE),
+    )
+
+
+def _api_input_node(nid: str, label: str | None = None) -> GraphNode:
+    return GraphNode(
+        id=nid,
+        data=NodeData(label=label or nid, nodeType=NodeType.API_INPUT),
     )
 
 
@@ -102,6 +119,47 @@ class TestPruneLiveSwitchEdges:
         sources = [e.source for e in result]
         assert "live_input" in sources
         assert "batch_input" not in sources
+
+    @pytest.mark.parametrize(
+        ("scenario", "expected_edge_id"),
+        [
+            ("live", "e_api_sw_quotes"),
+            ("batch", "e_api_sw_drivers"),
+        ],
+    )
+    def test_routes_api_input_frames_individually_by_edge_name(
+        self,
+        scenario: str,
+        expected_edge_id: str,
+    ) -> None:
+        """Two ports from one source remain independently selectable."""
+        edges = [
+            _port_edge("api", "sw", "quotes"),
+            _port_edge("api", "sw", "drivers"),
+        ]
+        node_map = {
+            "api": _api_input_node("api", "API Input"),
+            "sw": _live_switch_node("sw", {"quotes": "live", "drivers": "batch"}),
+        }
+
+        result = _prune_live_switch_edges(edges, node_map, scenario)
+
+        assert [edge.id for edge in result] == [expected_edge_id]
+
+    def test_ordinary_parent_mapping_still_uses_sanitised_source_labels(self) -> None:
+        edges = [_e("live_src", "sw"), _e("batch_src", "sw")]
+        node_map = {
+            "live_src": _source_node("live_src", "Live Source"),
+            "batch_src": _source_node("batch_src", "Batch-Source"),
+            "sw": _live_switch_node(
+                "sw",
+                {"Live_Source": "live", "Batch_Source": "batch"},
+            ),
+        }
+
+        result = _prune_live_switch_edges(edges, node_map, "live")
+
+        assert [edge.id for edge in result] == ["e_live_src_sw"]
 
     def test_keeps_both_when_scenario_not_in_map(self):
         """If active scenario is not in any ISM value, keep all edges (fallback)."""
@@ -178,6 +236,34 @@ class TestPrepareGraph:
         _, order, parents, _ = _prepare_graph(g, source="live")
         # "batch" should not be a parent of "sw" in live scenario
         assert "batch" not in parents.get("sw", [])
+
+    @pytest.mark.parametrize(
+        ("scenario", "expected_edge_id"),
+        [
+            ("live", "e_api_sw_quotes"),
+            ("batch", "e_api_sw_drivers"),
+        ],
+    )
+    def test_projection_preparation_retains_only_the_selected_api_frame_edge(
+        self,
+        scenario: str,
+        expected_edge_id: str,
+    ) -> None:
+        """Projection preparation must preserve the per-edge liveSwitch choice."""
+        graph = PipelineGraph(
+            nodes=[
+                _api_input_node("api", "API Input"),
+                _live_switch_node("sw", {"quotes": "live", "drivers": "batch"}),
+            ],
+            edges=[
+                _port_edge("api", "sw", "quotes"),
+                _port_edge("api", "sw", "drivers"),
+            ],
+        )
+
+        prepared = projection_planner.prepare_graph(graph, target_node_id="sw", source=scenario)
+
+        assert [edge.id for edge in prepared.relevant_edges] == [expected_edge_id]
 
     def test_id_to_name_sanitizes_labels(self):
         g = PipelineGraph(

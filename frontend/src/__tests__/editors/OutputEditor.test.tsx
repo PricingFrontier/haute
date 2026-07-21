@@ -17,7 +17,7 @@
  * multi-step interactions accumulate.
  */
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest"
-import { render as rtlRender, screen, fireEvent, cleanup, waitFor } from "@testing-library/react"
+import { render as rtlRender, screen, fireEvent, cleanup, waitFor, within } from "@testing-library/react"
 import { useState } from "react"
 import OutputEditor from "../../panels/editors/OutputEditor"
 import { GraphProvider } from "../../panels/GraphContext"
@@ -111,7 +111,7 @@ const MULTI_FRAME_EDGES: SimpleEdge[] = [
   { id: "e-drv", source: "api", target: "output_1", sourceHandle: "drivers" },
 ]
 
-// A SINGLE-frame apiInput: ONE emit table, a null-handle edge, and NO `_columns`
+// A SINGLE-frame apiInput: ONE emit table, an explicitly labelled edge, and NO `_columns`
 // (not previewed yet). Its columns must come STRAIGHT from config.tables —
 // otherwise Infer finds nothing, the user is forced to add a "" source_column
 // row, and the backend crashes with missing=[''] (the bug Nick hit). Only
@@ -141,7 +141,41 @@ const SINGLE_FRAME_API_NODES: SimpleNode[] = [
   },
 ]
 const SINGLE_FRAME_API_EDGES: SimpleEdge[] = [
-  { id: "e-api", source: "api", target: "output_1" }, // null sourceHandle
+  { id: "e-api", source: "api", target: "output_1", sourceHandle: "quotes" },
+]
+
+// A dangling, explicitly labelled apiInput edge whose configured table is not
+// runtime-eligible. The stale handle remains the input name but is warned as
+// unresolved until a matching eligible frame exists.
+const ZERO_ELIGIBLE_API_NODES: SimpleNode[] = [
+  {
+    id: "api",
+    data: {
+      label: "API Input",
+      description: "",
+      nodeType: "apiInput",
+      config: {
+        tables: [
+          {
+            path: "$[:]",
+            label: "quotes",
+            emit: true,
+            columns: [
+              { name: "quote_id", path: "$[:].quote_id", type: "int", status: "Inferred", selected: false },
+            ],
+          },
+        ],
+      },
+    },
+  },
+]
+const ZERO_ELIGIBLE_API_EDGES: SimpleEdge[] = [
+  {
+    id: "e-api-empty",
+    source: "api",
+    target: "output_1",
+    sourceHandle: "stale_quotes",
+  },
 ]
 
 // Two DISTINCT single-port sources (null sourceHandle each), with distinct
@@ -248,6 +282,7 @@ function StatefulHarness({
               ? { ...prev, [keyOrUpdates]: value }
               : { ...prev, ...keyOrUpdates },
           )
+          return { ok: true as const }
         }}
       />
     </GraphProvider>
@@ -298,12 +333,41 @@ describe("OutputEditor — frame blocks", () => {
     expect(screen.getByText("drivers")).toBeTruthy()
   })
 
-  it("falls back to the source node label for a single-port (null handle) frame", () => {
+  it("uses the sanitised edge-derived name for an ordinary single-port frame", () => {
     render(<OutputEditor {...DEFAULT_PROPS} />, {
       allNodes: SINGLE_PORT_NODES,
       edges: SINGLE_PORT_EDGES,
     })
-    expect(screen.getByText("Upstream Node")).toBeTruthy()
+    const block = screen.getByTestId("output-frame-0")
+    expect(within(block).getByText("Upstream_Node")).toBeTruthy()
+    expect(within(block).queryByText("Upstream Node")).toBeNull()
+  })
+
+  it("labels a sole-frame apiInput block with its edge-derived input name", () => {
+    render(<OutputEditor {...DEFAULT_PROPS} />, {
+      allNodes: SINGLE_FRAME_API_NODES,
+      edges: SINGLE_FRAME_API_EDGES,
+    })
+
+    const block = screen.getByTestId("output-frame-0")
+    expect(within(block).getByText("quotes")).toBeInTheDocument()
+    expect(within(block).queryByText("API Input")).not.toBeInTheDocument()
+  })
+
+  it("renders a visible unresolved header warning for a dangling apiInput frame", () => {
+    render(<OutputEditor {...DEFAULT_PROPS} />, {
+      allNodes: ZERO_ELIGIBLE_API_NODES,
+      edges: ZERO_ELIGIBLE_API_EDGES,
+    })
+
+    const block = screen.getByTestId("output-frame-0")
+    expect(within(block).getByText("API Input")).toBeInTheDocument()
+    const warning = within(block).getByLabelText(/unresolved.*frame|frame.*unresolved/i)
+    expect(warning).toBeVisible()
+    expect(warning).toHaveAttribute(
+      "title",
+      expect.stringMatching(/eligible|emitted|resolv/i),
+    )
   })
 
   it("surfaces the per-frame column set from the apiInput table matching the handle", () => {
@@ -491,7 +555,7 @@ describe("OutputEditor — v1 migration", () => {
         edges={SINGLE_PORT_EDGES}
       />,
     )
-    // The single-port frame migrates fields with source_port "".
+    // The single-port frame migrates fields under its edge-derived input name.
     expandFrame("output-frame-0")
     // Adding a row triggers a writeBack of the (migrated) working copy plus
     // the new row — the migration is applied on the first save.
@@ -857,6 +921,34 @@ describe("OutputEditor — non-canonical highlight (§4)", () => {
 })
 
 describe("OutputEditor — source_port derivation (blocker)", () => {
+  it.each([
+    ["a resolved singleton frame", SINGLE_FRAME_API_NODES, SINGLE_FRAME_API_EDGES, "quotes"],
+    [
+      "an unresolved dangling frame",
+      ZERO_ELIGIBLE_API_NODES,
+      ZERO_ELIGIBLE_API_EDGES,
+      "stale_quotes",
+    ],
+  ])("persists source_port equal to the input name for %s", (_case, allNodes, edges, name) => {
+    const onUpdateSpy = vi.fn()
+    render(
+      <StatefulHarness
+        initialConfig={{ outputMapping: [], outputFormat: "json" }}
+        onUpdateSpy={onUpdateSpy}
+        allNodes={allNodes}
+        edges={edges}
+      />,
+    )
+
+    expandFrame("output-frame-0")
+    fireEvent.click(screen.getByTestId("output-frame-0-add-row"))
+
+    const persisted = onUpdateSpy.mock.calls.at(-1)?.[0] as {
+      outputMapping: { source_port: string }[]
+    }
+    expect(persisted.outputMapping.at(-1)?.source_port).toBe(name)
+  })
+
   it("two NULL-handle sources persist DISTINCT, non-empty source_ports = sanitised labels", () => {
     const onUpdateSpy = vi.fn()
     render(
@@ -1066,7 +1158,7 @@ describe("OutputEditor — frames-table input schema", () => {
     })
     fireEvent.click(screen.getByTestId("output-frames-toggle"))
     const frame = screen.getByTestId("output-frames-schema-0")
-    expect(frame.textContent).toContain("Upstream Node")
+    expect(frame.textContent).toContain("Upstream_Node")
     expect(frame.textContent).toContain("premium")
     expect(frame.textContent).toContain("Float64")
     expect(frame.textContent).toContain("area")

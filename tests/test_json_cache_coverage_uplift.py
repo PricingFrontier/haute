@@ -44,6 +44,7 @@ from haute._json_flatten import (
     clear_json_cache,
     mirror_cache_to_committed,
 )
+from haute._json_shred import build_per_port_cache
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -67,10 +68,57 @@ def client(isolated_cwd: Path) -> TestClient:
     return TestClient(app)
 
 
-def _write_meta(cache_dir: Path, payload: dict[str, Any]) -> None:
-    """Helper: create cache_dir + write meta.json with the given payload."""
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    _json_cache_meta_path(cache_dir).write_bytes(orjson.dumps(payload))
+def _mirror_config(*, type_: str = "int") -> dict[str, Any]:
+    """Return a small valid v2 schema for save-time mirror tests."""
+    return {
+        "tables": [
+            {
+                "path": "$[:]",
+                "label": "data",
+                "emit": True,
+                "row_id_column": None,
+                "columns": [
+                    {
+                        "name": "value",
+                        "path": "$[:].value",
+                        "type": type_,
+                        "status": "Confirmed",
+                        "selected": True,
+                        "levels": None,
+                    }
+                ],
+            }
+        ]
+    }
+
+
+@pytest.fixture()
+def mirror_case(isolated_cwd: Path) -> tuple[Path, dict[str, Any]]:
+    """Create the source file and editor schema authoritative for a mirror."""
+    data_path = isolated_cwd / "data" / "x.json"
+    data_path.parent.mkdir(parents=True)
+    data_path.write_bytes(orjson.dumps([{"value": 1}]))
+    return data_path, _mirror_config()
+
+
+def _write_signed_cache(
+    cache_dir: Path,
+    *,
+    data_path: Path,
+    v2_config: dict[str, Any],
+) -> dict[str, Any]:
+    """Create a fully valid cache using the production cache builder."""
+    build_per_port_cache(data_path, v2_config, cache_dir)
+    payload = _read_cache_meta(cache_dir)
+    assert payload is not None
+    return payload
+
+
+def _current_parquet(cache_dir: Path) -> Path:
+    meta = _read_cache_meta(cache_dir)
+    assert meta is not None
+    entry = next(table for table in meta["tables"] if table["label"] == "data")
+    return cache_dir / entry["parquet"]
 
 
 # ---------------------------------------------------------------------------
@@ -290,79 +338,135 @@ class TestClearJsonCache:
 
 
 class TestMirrorCacheToCommitted:
-    def test_no_session_consultation_returns_false(self, isolated_cwd: Path) -> None:
+    def test_no_session_consultation_returns_false(
+        self,
+        mirror_case: tuple[Path, dict[str, Any]],
+    ) -> None:
         """Trapdoor: if this session never consulted the cache for this
         data_path, the mirror is a no-op. Avoids promoting stale on-disk
         working/ from a previous session."""
-        working_dir = _json_cache_dir("data/x.json", _LAYER_WORKING)
+        data_path, v2_config = mirror_case
+        working_dir = _json_cache_dir(data_path, _LAYER_WORKING)
         working_dir.mkdir(parents=True, exist_ok=True)
         (working_dir / "data.parquet").write_bytes(b"data")
         # NOT calling _mark_working_consulted → trapdoor closes
-        assert mirror_cache_to_committed("data/x.json") is False
+        assert mirror_cache_to_committed(data_path, v2_config) is False
 
-    def test_consulted_but_no_working_no_committed_returns_false(self, isolated_cwd: Path) -> None:
+    def test_consulted_but_no_working_no_committed_returns_false(
+        self,
+        mirror_case: tuple[Path, dict[str, Any]],
+    ) -> None:
         """Session consulted but nothing on disk to mirror or wipe → False."""
-        _mark_working_consulted("data/x.json")
-        assert mirror_cache_to_committed("data/x.json") is False
+        data_path, v2_config = mirror_case
+        _mark_working_consulted(data_path)
+        assert mirror_cache_to_committed(data_path, v2_config) is False
 
-    def test_consulted_no_working_with_committed_wipes_committed(self, isolated_cwd: Path) -> None:
+    def test_consulted_no_working_with_committed_wipes_committed(
+        self,
+        mirror_case: tuple[Path, dict[str, Any]],
+    ) -> None:
         """Delete-then-save flow: working was cleared by user, committed
         from previous save should be wiped. Returns True."""
-        _mark_working_consulted("data/x.json")
-        committed_dir = _json_cache_dir("data/x.json", _LAYER_COMMITTED)
+        data_path, v2_config = mirror_case
+        _mark_working_consulted(data_path)
+        committed_dir = _json_cache_dir(data_path, _LAYER_COMMITTED)
         committed_dir.mkdir(parents=True, exist_ok=True)
         (committed_dir / "data.parquet").write_bytes(b"stale")
-        assert mirror_cache_to_committed("data/x.json") is True
+        assert mirror_cache_to_committed(data_path, v2_config) is True
         assert not committed_dir.exists()
 
-    def test_matching_fingerprints_is_noop(self, isolated_cwd: Path) -> None:
+    def test_matching_fingerprints_is_noop(
+        self,
+        mirror_case: tuple[Path, dict[str, Any]],
+    ) -> None:
         """Working + committed exist with same fingerprint → no-op, False."""
-        _mark_working_consulted("data/x.json")
-        working_dir = _json_cache_dir("data/x.json", _LAYER_WORKING)
-        committed_dir = _json_cache_dir("data/x.json", _LAYER_COMMITTED)
-        same = {"schema_fingerprint": "abc123", "schema_mode": "v2"}
-        _write_meta(working_dir, same)
-        _write_meta(committed_dir, same)
-        (working_dir / "data.parquet").write_bytes(b"working")
-        (committed_dir / "data.parquet").write_bytes(b"committed")
+        data_path, v2_config = mirror_case
+        _mark_working_consulted(data_path)
+        working_dir = _json_cache_dir(data_path, _LAYER_WORKING)
+        committed_dir = _json_cache_dir(data_path, _LAYER_COMMITTED)
+        _write_signed_cache(
+            working_dir,
+            data_path=data_path,
+            v2_config=v2_config,
+        )
+        _write_signed_cache(
+            committed_dir,
+            data_path=data_path,
+            v2_config=v2_config,
+        )
 
-        assert mirror_cache_to_committed("data/x.json") is False
+        assert mirror_cache_to_committed(data_path, v2_config) is False
         # committed/ untouched
-        assert (committed_dir / "data.parquet").read_bytes() == b"committed"
+        assert (
+            _current_parquet(committed_dir).read_bytes()
+            == _current_parquet(
+                working_dir,
+            ).read_bytes()
+        )
 
-    def test_different_fingerprints_promotes_atomically(self, isolated_cwd: Path) -> None:
+    def test_different_fingerprints_promotes_atomically(
+        self,
+        mirror_case: tuple[Path, dict[str, Any]],
+    ) -> None:
         """Fingerprints differ → atomic swap, working/ contents land in
         committed/. Returns True."""
-        _mark_working_consulted("data/x.json")
-        working_dir = _json_cache_dir("data/x.json", _LAYER_WORKING)
-        committed_dir = _json_cache_dir("data/x.json", _LAYER_COMMITTED)
-        _write_meta(working_dir, {"schema_fingerprint": "new", "schema_mode": "v2"})
-        _write_meta(committed_dir, {"schema_fingerprint": "old", "schema_mode": "v2"})
-        (working_dir / "data.parquet").write_bytes(b"new-content")
-        (committed_dir / "data.parquet").write_bytes(b"old-content")
-
-        assert mirror_cache_to_committed("data/x.json") is True
+        data_path, v2_config = mirror_case
+        _mark_working_consulted(data_path)
+        working_dir = _json_cache_dir(data_path, _LAYER_WORKING)
+        committed_dir = _json_cache_dir(data_path, _LAYER_COMMITTED)
+        _write_signed_cache(
+            working_dir,
+            data_path=data_path,
+            v2_config=v2_config,
+        )
+        old_config = _mirror_config()
+        old_config["tables"][0]["row_id_column"] = "value"
+        _write_signed_cache(
+            committed_dir,
+            data_path=data_path,
+            v2_config=old_config,
+        )
+        assert mirror_cache_to_committed(data_path, v2_config) is True
         # committed/ now has working/'s content
-        assert (committed_dir / "data.parquet").read_bytes() == b"new-content"
+        assert (
+            _current_parquet(committed_dir).read_bytes()
+            == _current_parquet(
+                working_dir,
+            ).read_bytes()
+        )
         # And working/ is still there (mirror doesn't move, it copies)
-        assert (working_dir / "data.parquet").read_bytes() == b"new-content"
+        assert _current_parquet(working_dir).exists()
 
-    def test_no_committed_yet_creates_it(self, isolated_cwd: Path) -> None:
+    def test_no_committed_yet_creates_it(
+        self,
+        mirror_case: tuple[Path, dict[str, Any]],
+    ) -> None:
         """First save: no committed/ exists; working/ gets copied over."""
-        _mark_working_consulted("data/x.json")
-        working_dir = _json_cache_dir("data/x.json", _LAYER_WORKING)
-        _write_meta(working_dir, {"schema_fingerprint": "new", "schema_mode": "v2"})
-        (working_dir / "data.parquet").write_bytes(b"new")
+        data_path, v2_config = mirror_case
+        _mark_working_consulted(data_path)
+        working_dir = _json_cache_dir(data_path, _LAYER_WORKING)
+        _write_signed_cache(
+            working_dir,
+            data_path=data_path,
+            v2_config=v2_config,
+        )
 
-        committed_dir = _json_cache_dir("data/x.json", _LAYER_COMMITTED)
+        committed_dir = _json_cache_dir(data_path, _LAYER_COMMITTED)
         assert not committed_dir.exists()
 
-        assert mirror_cache_to_committed("data/x.json") is True
+        assert mirror_cache_to_committed(data_path, v2_config) is True
         assert committed_dir.exists()
-        assert (committed_dir / "data.parquet").read_bytes() == b"new"
+        assert (
+            _current_parquet(committed_dir).read_bytes()
+            == _current_parquet(
+                working_dir,
+            ).read_bytes()
+        )
 
     def test_holds_build_lock_during_copy(
-        self, isolated_cwd: Path, monkeypatch: pytest.MonkeyPatch
+        self,
+        mirror_case: tuple[Path, dict[str, Any]],
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """F010: the mirror must serialize against a concurrent build of the
         SAME working dir by holding ``_build_lock_for(working_dir)`` across
@@ -372,10 +476,14 @@ class TestMirrorCacheToCommitted:
 
         from haute._json_shred import _build_lock_for
 
-        _mark_working_consulted("data/x.json")
-        working_dir = _json_cache_dir("data/x.json", _LAYER_WORKING)
-        _write_meta(working_dir, {"schema_fingerprint": "new", "schema_mode": "v2"})
-        (working_dir / "data.parquet").write_bytes(b"new")
+        data_path, v2_config = mirror_case
+        _mark_working_consulted(data_path)
+        working_dir = _json_cache_dir(data_path, _LAYER_WORKING)
+        _write_signed_cache(
+            working_dir,
+            data_path=data_path,
+            v2_config=v2_config,
+        )
 
         lock = _build_lock_for(working_dir)
         held: dict[str, bool] = {}
@@ -386,24 +494,30 @@ class TestMirrorCacheToCommitted:
             return real_copytree(src, dst, *a, **k)
 
         monkeypatch.setattr("haute._json_flatten.shutil.copytree", _spy_copytree)
-        assert mirror_cache_to_committed("data/x.json") is True
+        assert mirror_cache_to_committed(data_path, v2_config) is True
         assert held["locked"] is True
         # Lock released after the mirror returns.
         assert lock.locked() is False
 
     def test_survives_transient_rename_permission_error(
-        self, isolated_cwd: Path, monkeypatch: pytest.MonkeyPatch
+        self,
+        mirror_case: tuple[Path, dict[str, Any]],
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """F010: a bare ``Path.rename`` can raise ``PermissionError`` on
         Windows when a scanner briefly holds a handle. The mirror must reuse
         the sibling Windows-safe rename-with-retry (via ``_swap_dir_into_place``)
         so a transient lock doesn't abort the promotion."""
-        _mark_working_consulted("data/x.json")
-        working_dir = _json_cache_dir("data/x.json", _LAYER_WORKING)
-        _write_meta(working_dir, {"schema_fingerprint": "new", "schema_mode": "v2"})
-        (working_dir / "data.parquet").write_bytes(b"new")
+        data_path, v2_config = mirror_case
+        _mark_working_consulted(data_path)
+        working_dir = _json_cache_dir(data_path, _LAYER_WORKING)
+        _write_signed_cache(
+            working_dir,
+            data_path=data_path,
+            v2_config=v2_config,
+        )
 
-        committed_dir = _json_cache_dir("data/x.json", _LAYER_COMMITTED)
+        committed_dir = _json_cache_dir(data_path, _LAYER_COMMITTED)
         assert not committed_dir.exists()
 
         real_rename = Path.rename
@@ -418,50 +532,76 @@ class TestMirrorCacheToCommitted:
         monkeypatch.setattr(Path, "rename", _flaky_rename)
         # Bare rename would propagate the PermissionError; the retry helper
         # swallows the first failure and succeeds on retry.
-        assert mirror_cache_to_committed("data/x.json") is True
+        assert mirror_cache_to_committed(data_path, v2_config) is True
         assert calls["n"] >= 2
-        assert (committed_dir / "data.parquet").read_bytes() == b"new"
+        assert (
+            _current_parquet(committed_dir).read_bytes()
+            == _current_parquet(
+                working_dir,
+            ).read_bytes()
+        )
 
-    def test_corrupt_committed_meta_proceeds_to_copy(self, isolated_cwd: Path) -> None:
+    def test_corrupt_committed_meta_proceeds_to_copy(
+        self,
+        mirror_case: tuple[Path, dict[str, Any]],
+    ) -> None:
         """F307: a corrupt ``committed/meta.json`` must be treated as a
         mismatch (degrade-to-stale, like ``is_per_port_cache_valid``) so the
         mirror overwrites it with the fresh working/ copy — NOT abort before
         the copytree that would have repaired it."""
-        _mark_working_consulted("data/x.json")
-        working_dir = _json_cache_dir("data/x.json", _LAYER_WORKING)
-        committed_dir = _json_cache_dir("data/x.json", _LAYER_COMMITTED)
-        _write_meta(working_dir, {"schema_fingerprint": "new", "schema_mode": "v2"})
-        (working_dir / "data.parquet").write_bytes(b"fresh")
+        data_path, v2_config = mirror_case
+        _mark_working_consulted(data_path)
+        working_dir = _json_cache_dir(data_path, _LAYER_WORKING)
+        committed_dir = _json_cache_dir(data_path, _LAYER_COMMITTED)
+        working_meta = _write_signed_cache(
+            working_dir,
+            data_path=data_path,
+            v2_config=v2_config,
+        )
 
         # Corrupt committed meta — orjson.loads would raise mid-mirror.
         committed_dir.mkdir(parents=True, exist_ok=True)
         _json_cache_meta_path(committed_dir).write_bytes(b"{ not json")
         (committed_dir / "data.parquet").write_bytes(b"stale")
 
-        assert mirror_cache_to_committed("data/x.json") is True
-        assert (committed_dir / "data.parquet").read_bytes() == b"fresh"
+        assert mirror_cache_to_committed(data_path, v2_config) is True
+        assert (
+            _current_parquet(committed_dir).read_bytes()
+            == _current_parquet(
+                working_dir,
+            ).read_bytes()
+        )
         # The corrupt meta got replaced by the working/ meta.
-        assert _read_cache_meta(committed_dir) == {
-            "schema_fingerprint": "new",
-            "schema_mode": "v2",
-        }
+        assert _read_cache_meta(committed_dir) == working_meta
 
-    def test_stale_tmp_dir_gets_wiped_before_copy(self, isolated_cwd: Path) -> None:
+    def test_stale_tmp_dir_gets_wiped_before_copy(
+        self,
+        mirror_case: tuple[Path, dict[str, Any]],
+    ) -> None:
         """If a previous mirror attempt left a `.tmp` sibling, the new
         attempt cleans it before reusing the slot."""
-        _mark_working_consulted("data/x.json")
-        working_dir = _json_cache_dir("data/x.json", _LAYER_WORKING)
-        committed_dir = _json_cache_dir("data/x.json", _LAYER_COMMITTED)
-        _write_meta(working_dir, {"schema_fingerprint": "new", "schema_mode": "v2"})
-        (working_dir / "data.parquet").write_bytes(b"new")
+        data_path, v2_config = mirror_case
+        _mark_working_consulted(data_path)
+        working_dir = _json_cache_dir(data_path, _LAYER_WORKING)
+        committed_dir = _json_cache_dir(data_path, _LAYER_COMMITTED)
+        _write_signed_cache(
+            working_dir,
+            data_path=data_path,
+            v2_config=v2_config,
+        )
 
         tmp_dir = committed_dir.with_name(committed_dir.name + ".tmp")
         tmp_dir.mkdir(parents=True)
         (tmp_dir / "leftover").write_bytes(b"stale-tmp")
 
-        assert mirror_cache_to_committed("data/x.json") is True
+        assert mirror_cache_to_committed(data_path, v2_config) is True
         assert not tmp_dir.exists()
-        assert (committed_dir / "data.parquet").read_bytes() == b"new"
+        assert (
+            _current_parquet(committed_dir).read_bytes()
+            == _current_parquet(
+                working_dir,
+            ).read_bytes()
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -524,7 +664,7 @@ class TestBuildJsonCacheExceptions:
             json={
                 "path": "data/missing.json",
                 "volatile_schema": {
-                    "tables": [{"path": "$[:]", "label": "$[:]", "emit": True, "columns": []}]
+                    "tables": [{"path": "$[:]", "label": "root", "emit": True, "columns": []}]
                 },
             },
         )
@@ -544,7 +684,7 @@ class TestBuildJsonCacheExceptions:
                     "tables": [
                         {
                             "path": "$[:]",
-                            "label": "$[:]",
+                            "label": "root",
                             "emit": True,
                             "columns": [
                                 {
@@ -583,7 +723,7 @@ class TestBuildJsonCacheExceptions:
                         "tables": [
                             {
                                 "path": "$[:]",
-                                "label": "$[:]",
+                                "label": "root",
                                 "emit": True,
                                 "columns": [
                                     {
@@ -627,7 +767,7 @@ class TestStatusBranches:
                     "tables": [
                         {
                             "path": "$[:]",
-                            "label": "$[:]",
+                            "label": "root",
                             "emit": True,
                             "columns": [
                                 {
@@ -723,7 +863,7 @@ class TestStatusAndDispatchBranches:
                     "tables": [
                         {
                             "path": "$[:]",
-                            "label": "$[:]",
+                            "label": "root",
                             "emit": True,
                             "columns": [
                                 {
@@ -762,7 +902,7 @@ class TestStatusAndDispatchBranches:
                     "tables": [
                         {
                             "path": "$[:]",
-                            "label": "$[:]",
+                            "label": "root",
                             "emit": True,
                             "columns": [
                                 # On-disk says column is named "wrong"
@@ -789,7 +929,7 @@ class TestStatusAndDispatchBranches:
                     "tables": [
                         {
                             "path": "$[:]",
-                            "label": "$[:]",
+                            "label": "root",
                             "emit": True,
                             "columns": [
                                 {

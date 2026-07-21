@@ -65,10 +65,12 @@ What v2 deliberately doesn't have (per the plan):
 
 from __future__ import annotations
 
+import keyword
 import re
 from collections.abc import Sequence
 from typing import Any, Literal, TypedDict
 
+from haute._graph_utils import _sanitize_identifier_characters
 from haute._jsonpath import _Seg, make_output_path, parse_data_path
 from haute.errors import HauteError
 
@@ -101,6 +103,24 @@ def sanitise_label_for_filesystem(label: str) -> str:
     if not label:
         return "_unnamed"
     return _FILESYSTEM_SAFE_RE.sub("_", label)
+
+
+def derive_identifier_label(raw: str) -> str:
+    """Mint an ASCII Python identifier from an inferred source label.
+
+    The character mapping is shared with ``_sanitize_func_name``. Inference
+    uses frame-label repairs instead of function-name repairs: empty values
+    become ``table``, digit-leading values receive a leading underscore, and
+    hard keywords receive a trailing underscore. Soft keywords remain valid.
+    """
+    name = _sanitize_identifier_characters(raw)
+    if not name:
+        return "table"
+    if name[0].isdigit():
+        name = f"_{name}"
+    if keyword.iskeyword(name):
+        name = f"{name}_"
+    return name
 
 
 class ApiInputSchemaError(HauteError):
@@ -189,8 +209,9 @@ def is_json_api_input_path(path: str) -> bool:
     the preview/trace cache-key signature
     (``haute.execution._runtime_file_signature_paths``) so the two can
     never disagree about which file an apiInput actually reads: JSON /
-    JSONL paths are served from the built per-port parquet cache, every
-    other extension is read directly as a flat file.
+    JSONL paths use a valid per-port parquet cache when available and shred
+    the source directly otherwise; every other extension is read directly as
+    a flat file.
     """
     return path.lower().endswith(_JSON_API_INPUT_SUFFIXES)
 
@@ -411,7 +432,7 @@ def validate_v2_schema(config: dict[str, Any]) -> None:
       (subclass of :class:`HauteError`). The JSON cache route catches
       specifically and returns a structured 422.
     """
-    if not is_v2_shape(config):
+    if _V2_TABLES_KEY not in config:
         raise ApiInputSchemaError("config is not in v2 shape (no `tables` key)")
 
     tables = config[_V2_TABLES_KEY]
@@ -437,6 +458,12 @@ def validate_v2_schema(config: dict[str, Any]) -> None:
             raise ApiInputSchemaError(
                 f"v2 tables[{ti}].label is missing or not a non-empty string "
                 "(must be unique within the apiInput)",
+            )
+        if not label.isascii() or not label.isidentifier() or keyword.iskeyword(label):
+            raise ApiInputSchemaError(
+                f"v2 table label {label!r} must be an ASCII Python identifier "
+                "and must not be a hard Python keyword",
+                label=label,
             )
         if label in seen_labels:
             raise ApiInputSchemaError(

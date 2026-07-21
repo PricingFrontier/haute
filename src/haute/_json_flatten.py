@@ -25,7 +25,8 @@ The on-disk layout is:
   is ``working`` (volatile, in-session) or ``committed`` (durable, the
   source of truth post-restart). Each ``<hash>/`` directory contains
   per-frame parquets and a ``meta.json`` with ``{schema_mode,
-  schema_fingerprint, tables}`` — written by
+  schema_fingerprint, tables}``; every table entry carries its parquet's
+  size/SHA-256 content signature — written by
   :func:`haute._json_shred.build_per_port_cache`.
 """
 
@@ -60,10 +61,10 @@ logger = get_logger(component="json_cache")
 #
 # Each layer's `<hash>/` directory contains per-frame parquets (one per
 # emit-true table in the v2 schema) and a `meta.json` sidecar carrying
-# `{schema_mode, schema_fingerprint, tables}`. The fingerprint backs the
-# no-op trapdoors (cache: skip rebuild when in-memory schema fingerprint
-# == working/meta.json fingerprint; save: skip mirror when
-# working/meta.json fingerprint == committed/meta.json fingerprint).
+# `{schema_mode, schema_fingerprint, tables}`. Each table entry includes a
+# size/SHA-256 signature for its derived parquet path. Fingerprint, source-file
+# identity, signed table manifest, and actual artifact bytes back the no-op
+# trapdoors.
 
 _CACHE_DIR = ".haute_cache"
 _LAYER_WORKING = "working"
@@ -125,7 +126,8 @@ def _wipe_legacy_flat_cache(data_path: str | Path) -> bool:
     `.haute_cache/json_<hash>.parquet` with a sidecar `.meta.json`. The
     dual-cache migration policy is wipe-on-first-run: on the first
     dual-cache operation for a given data file, legacy artifacts get
-    unlinked and the user must rebuild via the Cache button.
+    unlinked. Runtime execution continues directly from JSON; the optional
+    Cache button can prewarm the new layout afterward.
 
     Returns True if anything was deleted (so callers can log).
     """
@@ -159,20 +161,20 @@ def _read_cache_meta(cache_dir: Path) -> dict[str, object] | None:
     return cast(dict[str, object], payload)
 
 
-def _read_committed_meta_lenient(committed_dir: Path) -> dict[str, object] | None:
-    """Read ``committed/meta.json`` for the mirror's no-op trapdoor, treating
+def _read_cache_meta_lenient(cache_dir: Path) -> dict[str, object] | None:
+    """Read a layer's ``meta.json`` for mirroring, treating
     a corrupt or non-dict payload as ``None`` (mismatch) rather than raising.
 
     ``_read_cache_meta`` fails loud on garbled metadata — correct for a cache
-    we intend to *serve*. But the committed layer is what the mirror is about
-    to *overwrite*: a corrupt committed/meta.json must not abort the promotion
-    before the copytree that would repair it. This degrades-to-stale exactly
-    like :func:`haute._json_shred.is_per_port_cache_valid` (F307).
+    we intend to *serve*. Mirroring instead needs to preserve a healthy
+    committed layer when working metadata is bad, and repair a corrupt
+    committed layer from healthy working state. Both cases degrade to stale
+    exactly like :func:`haute._json_shred.is_per_port_cache_valid` (F307).
     """
-    if not committed_dir.exists():
+    if not cache_dir.exists():
         return None
     try:
-        return _read_cache_meta(committed_dir)
+        return _read_cache_meta(cache_dir)
     except (OSError, ValueError):
         return None
 
@@ -262,7 +264,10 @@ def clear_json_cache(
     return True
 
 
-def mirror_cache_to_committed(data_path: str | Path) -> bool:
+def mirror_cache_to_committed(
+    data_path: str | Path,
+    v2_config: dict[str, Any],
+) -> bool:
     """Promote `working/<hash>/` → `committed/<hash>/` on Save (DUAL_CACHE.md §4).
 
     Behaviour (the user's test plan governs):
@@ -270,12 +275,13 @@ def mirror_cache_to_committed(data_path: str | Path) -> bool:
         ``_session_consulted_hashes``), this is a no-op. This guards against
         save inadvertently promoting a stale on-disk working/ from a
         previous session (cross-restart vulnerability mitigation).
-      - If working/ exists: mirror it byte-for-byte into committed/. No-op
-        trapdoor: if working/meta.json and committed/meta.json agree on
-        schema fingerprint, schema mode AND data-file signature, skip the
-        copy. (The data-file signature term matters: a data-only rebuild
-        keeps the schema fingerprint, and skipping the copy then would
-        leave committed/ serving the stale rows forever — W2 item 2.4.)
+      - If working/ exists: mirror it byte-for-byte into committed/ only when
+        its top-level v2 identity is well formed, its recorded source signature
+        still matches *data_path*, and every signed table artifact is intact.
+        No-op trapdoor: skip the copy only when both manifests agree on schema,
+        source-file identity, and signed table entries, and both layers' actual
+        parquet bytes match those signatures. This also upgrades an old unsigned
+        committed manifest and repairs externally damaged bytes.
       - If working/ does not exist: ensure committed/ also does not exist.
 
     Returns True if the on-disk committed/ state changed.
@@ -285,7 +291,18 @@ def mirror_cache_to_committed(data_path: str | Path) -> bool:
     # working dir and (b) survives transient rename handle-locks on win32,
     # exactly like the shred's own publish path (F010). Imported lazily to
     # avoid an import cycle (`_json_shred` imports `_json_cache_dir` from here).
-    from haute._json_shred import _build_lock_for, _swap_dir_into_place
+    import polars as pl
+
+    from haute._api_input_schema import ApiInputSchemaError
+    from haute._json_shred import (
+        _build_lock_for,
+        _cache_manifest_files_match,
+        _cache_meta_matches_config_and_source,
+        _emitting_table_specs,
+        _probe_cache_bundle,
+        _swap_dir_into_place,
+        _unique_build_tmp_dir,
+    )
 
     _wipe_legacy_flat_cache(data_path)
     if not _is_working_consulted(data_path):
@@ -309,14 +326,49 @@ def mirror_cache_to_committed(data_path: str | Path) -> bool:
                 return True
             return False
 
-        working_meta = _read_cache_meta(working_dir)
-        committed_meta = _read_committed_meta_lenient(committed_dir)
+        working_meta = _read_cache_meta_lenient(working_dir)
+        committed_meta = _read_cache_meta_lenient(committed_dir)
+        working_valid = False
+        try:
+            table_specs = _emitting_table_specs(v2_config)
+            if (
+                working_meta is not None
+                and table_specs
+                and _cache_meta_matches_config_and_source(
+                    cast(dict[str, Any], working_meta),
+                    v2_config,
+                    data_path=data_path,
+                )
+            ):
+                _working_bundle, probe_failure = _probe_cache_bundle(
+                    working_dir,
+                    table_specs,
+                    cast(dict[str, Any], working_meta),
+                )
+                working_valid = probe_failure is None
+        except (ApiInputSchemaError, OSError, pl.exceptions.PolarsError):
+            working_valid = False
+
+        if not working_valid:
+            logger.warning(
+                "json_cache_working_invalid_not_mirrored",
+                data_path=str(data_path),
+                working_dir=str(working_dir),
+                committed_dir=str(committed_dir),
+            )
+            return False
+        valid_working_meta = cast(dict[str, Any], working_meta)
         if (
-            working_meta is not None
-            and committed_meta is not None
-            and working_meta.get("schema_fingerprint") == committed_meta.get("schema_fingerprint")
-            and working_meta.get("schema_mode") == committed_meta.get("schema_mode")
-            and working_meta.get("data_file") == committed_meta.get("data_file")
+            committed_meta is not None
+            and valid_working_meta.get("schema_fingerprint")
+            == committed_meta.get("schema_fingerprint")
+            and valid_working_meta.get("schema_mode") == committed_meta.get("schema_mode")
+            and valid_working_meta.get("data_file") == committed_meta.get("data_file")
+            and valid_working_meta.get("tables") == committed_meta.get("tables")
+            and _cache_manifest_files_match(
+                committed_dir,
+                cast(dict[str, Any], committed_meta),
+            )
         ):
             logger.info(
                 "json_cache_save_noop",
@@ -325,13 +377,49 @@ def mirror_cache_to_committed(data_path: str | Path) -> bool:
             )
             return False
 
-        # Atomic replacement: copytree into a `.tmp` sibling then swap it into
-        # place via the shared Windows-safe helper.
+        # Atomic replacement: copytree into a `.tmp` sibling, then revalidate
+        # that staged copy against the exact manifest captured above before
+        # swapping. The source can be edited by another process despite our
+        # process-local build lock; a mixed/partial copy must never replace a
+        # healthy committed generation.
         committed_dir.parent.mkdir(parents=True, exist_ok=True)
-        tmp_dir = committed_dir.with_name(committed_dir.name + ".tmp")
-        if tmp_dir.exists():
-            shutil.rmtree(tmp_dir)
-        shutil.copytree(working_dir, tmp_dir)
+        legacy_tmp_dir = committed_dir.with_name(committed_dir.name + ".tmp")
+        if legacy_tmp_dir.exists():
+            shutil.rmtree(legacy_tmp_dir)
+        tmp_dir = _unique_build_tmp_dir(committed_dir)
+        try:
+            shutil.copytree(working_dir, tmp_dir)
+        except BaseException:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+            raise
+        staged_meta = _read_cache_meta_lenient(tmp_dir)
+        staged_valid = False
+        try:
+            if staged_meta == working_meta:
+                _staged_bundle, probe_failure = _probe_cache_bundle(
+                    tmp_dir,
+                    table_specs,
+                    cast(dict[str, Any], working_meta),
+                )
+                # Recheck source identity after the copy and full staged probe,
+                # immediately before publish. A source edit during either step
+                # makes this generation stale and must preserve committed.
+                staged_valid = probe_failure is None and _cache_meta_matches_config_and_source(
+                    cast(dict[str, Any], working_meta),
+                    v2_config,
+                    data_path=data_path,
+                )
+        except (OSError, pl.exceptions.PolarsError):
+            staged_valid = False
+        if not staged_valid:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+            logger.warning(
+                "json_cache_staged_mirror_invalid_not_published",
+                data_path=str(data_path),
+                working_dir=str(working_dir),
+                committed_dir=str(committed_dir),
+            )
+            return False
         _swap_dir_into_place(tmp_dir, committed_dir)
         logger.info(
             "json_cache_committed_mirrored",

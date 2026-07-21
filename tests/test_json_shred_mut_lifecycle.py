@@ -9,8 +9,6 @@ the exact operator.
 Survivors covered:
 - 847  ``if existing_meta is not None:``  (Eq_GtE) — no-op trapdoor idempotency
 - 940  ``if skip_stats.total:``           (AddNot) — skip-warning gate
-- 1089 ``if len(emit_labels) == 1:``      — single vs multi frame return shape
-- 1090 ``return bundle[emit_labels[0]]``  — single-frame index
 - 1123 ``if meta.get("schema_mode") != "v2":`` (NotEq) — schema_mode gate
 - 1128 ``return False`` (FalseWithTrue)   — non-str label invalidates
 - 1131 ``continue`` (ContinueWithBreak)   — missing-parquet skips non-emit
@@ -150,32 +148,25 @@ def test_skip_warning_fires_only_when_records_skipped(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 1089 / 1090 — single emitting label returns a bare LazyFrame; 2+ returns a
-# dict keyed by label.
+# Runtime shape — every positive emitting-label count returns a dict keyed by
+# label; the former bare-frame single-table shorthand is removed.
 # ---------------------------------------------------------------------------
 
 
-def test_single_emitting_table_returns_bare_lazyframe(tmp_path: Path) -> None:
-    """One emitting label → bare LazyFrame (count boundary `== 1` + index 0).
-
-    Kills 1089 (`== 1` boundary): if it were `>= 1`, two-table configs would
-    wrongly return a frame too. Kills 1090's index: the single frame returned
-    must be the one keyed by the only emitting label."""
+def test_single_emitting_table_returns_dict_keyed_by_label(tmp_path: Path) -> None:
+    """One emitting label uses the same per-port bundle shape as many labels."""
     data = _write(tmp_path, [{"id": 10}, {"id": 20}])
     cfg = {"tables": [_table("$[:]", "root", [_col("id", "$[:].id")])]}
     build_per_port_cache(str(data), cfg, _working_cache(data))
     out = load_v2_api_source(str(data), cfg)
-    assert isinstance(out, pl.LazyFrame)
-    assert out.collect()["id"].to_list() == [10, 20]
+    assert isinstance(out, dict)
+    assert list(out) == ["root"]
+    assert isinstance(out["root"], pl.LazyFrame)
+    assert out["root"].collect()["id"].to_list() == [10, 20]
 
 
 def test_two_emitting_tables_return_dict_keyed_by_label(tmp_path: Path) -> None:
-    """Two emitting labels → dict keyed by label, NOT a bare frame.
-
-    Kills the 1089 count boundary: with `== 1` two tables fall through to the
-    dict branch; a mutation to `>= 1` / `> 1` / `<= 1` would change the shape
-    for one of the two arities. Pairing this with the single-table test pins
-    the boundary at exactly 1."""
+    """Two emitting labels preserve schema order and both labelled payloads."""
     data = _write(
         tmp_path,
         [{"id": 1, "drivers": [{"age": 30}, {"age": 40}]}],
@@ -194,6 +185,7 @@ def test_two_emitting_tables_return_dict_keyed_by_label(tmp_path: Path) -> None:
     out = load_v2_api_source(str(data), cfg)
     assert isinstance(out, dict)
     assert list(out) == ["root", "drivers"]
+    assert all(isinstance(frame, pl.LazyFrame) for frame in out.values())
     assert out["root"].collect()["id"].to_list() == [1]
     assert out["drivers"].collect()["age"].to_list() == [30, 40]
 
@@ -269,13 +261,12 @@ def test_non_string_label_on_emitting_table_invalidates(tmp_path: Path) -> None:
 def test_non_emitting_table_is_skipped_then_later_table_checked(
     tmp_path: Path,
 ) -> None:
-    """A non-emitting table must be `continue`d over (not `break`), so a LATER
-    emitting table with a missing parquet still drives validity to False.
+    """A non-emitting table must be skipped so a later emitting table is probed.
 
-    Kills 1131 (ContinueWithBreak): order the tables as [non-emitting,
-    emitting-with-missing-parquet]. With `break` the loop stops at the
-    non-emitting table and never checks the emitting one → wrongly valid.
-    With `continue` it proceeds and the missing parquet → invalid."""
+    The tables are ordered [non-emitting, emitting-with-missing-parquet]. If
+    table-spec construction stopped at the first entry, the missing emitting
+    frame would be overlooked and the cache would be reported as valid.
+    """
     data = _write(tmp_path, [{"id": 1, "x": 2}])
     # Build a cache for ONLY the emitting "root" table so its parquet exists,
     # then validate against a config whose first table is non-emitting and
@@ -296,15 +287,12 @@ def test_non_emitting_table_is_skipped_then_later_table_checked(
     meta["schema_fingerprint"] = _v2_fingerprint(check_cfg)
     meta_path.write_bytes(orjson.dumps(meta))
 
-    # "extra" parquet does not exist → the emitting-table loop must reach it
-    # (continue past "skipme") and return False.
+    # "extra" parquet does not exist → the candidate probe must reach it after
+    # filtering out "skipme" and return False.
     assert not (cache_dir / "extra.parquet").exists()
     assert is_per_port_cache_valid(cache_dir, check_cfg, data_path=data) is False
 
-    # Sanity: if instead the second emitting table's parquet DID exist, the
-    # same config would be valid — confirming "extra"'s absence is the cause
-    # (and that the loop genuinely reaches the second table).
-    import shutil
-
-    shutil.copyfile(cache_dir / "root.parquet", cache_dir / "extra.parquet")
+    # Sanity: rebuilding writes the later emitting frame plus its signed
+    # manifest entry, making the same schema valid.
+    build_per_port_cache(str(data), check_cfg, cache_dir)
     assert is_per_port_cache_valid(cache_dir, check_cfg, data_path=data) is True

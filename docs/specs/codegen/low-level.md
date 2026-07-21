@@ -5,14 +5,14 @@
 | File | Responsibility |
 |---|---|
 | `src/haute/codegen.py` | Public orchestration API (`graph_to_code`, `graph_to_code_multi`); single-node dispatch (`_node_to_code`, `_generate_node_code`); instance-node handling; contract kwarg formatting/injection (`_format_contract_kwarg`, `_format_contract_source`, `_inject_contract_kwarg`, `_matching_close_paren`); pipeline/submodel file assembly (`_generate_pipeline_lines`); the final parse gate (`_assert_emitted_files_parse`). |
-| `src/haute/_codegen_builders.py` | One `_gen_*` builder per `NodeType`, registered into `haute._registry.NODE_REGISTRY` via `@_register_codegen`. String-safety helpers (`_safe_str`, `_safe_path`, `_portable_path_expr`), shared field extraction (`_common_node_fields`, `_build_params`, `_dedup_param_names`), docstring sanitization (`_sanitize_description`), and per-type template strings (`_MODEL_SCORE`, `_BANDING_SINGLE`, `_SINK_PARQUET`, etc.). |
+| `src/haute/_codegen_builders.py` | One `_gen_*` builder per `NodeType`, registered into `haute._registry.NODE_REGISTRY` via `@_register_codegen`. String-safety helpers (`_safe_str`, `_safe_path`, `_portable_path_expr`), shared field extraction (`_common_node_fields`, `_build_params` — parameters are the per-edge input names supplied by the orchestrator via `edge_input_name`, with a loud duplicate-name guard replacing the former `_dedup_param_names` suffixing), docstring sanitization (`_sanitize_description`), and per-type template strings (`_MODEL_SCORE`, `_BANDING_SINGLE`, `_SINK_PARQUET`, etc.). |
 | `src/haute/_code_extraction.py` | Reverse direction of `_codegen_builders`' body wrapping: strips generated boilerplate back out of a persisted function body so the user-facing code editor shows only what the user actually typed. Consolidated engine (`extract_user_code`) dispatches through `BOILERPLATE_MATCHERS`/`_FINALISERS` registries keyed by node "kind." |
 | `src/haute/_ast_helpers.py` | Stateless AST/source utilities with no node/graph knowledge: literal evaluation (`_eval_ast_literal`), decorator introspection (`_get_decorator_kwargs`, `_is_pipeline_node_decorator`, `_get_decorator_node_type`), docstring/whitespace handling (`_strip_docstring`, `_dedent`), and whole-file extraction helpers (`_extract_function_bodies`, `_extract_connect_calls`, `_extract_meta`, `_extract_preamble`, `_extract_preserved_blocks`) shared with the parser. |
 
 ## Key types and data structures
 
-- **`_NodeCodeFn`** (`codegen.py`) — `Callable[[GraphNode, list[str] | None, list[str] | None], str]`; the injected per-node code generator (`_node_to_code` for pipelines, `_submodel_node_to_code` for submodel files), parameterizing `_generate_pipeline_lines` so both file kinds share one assembly routine.
-- **`_ConnectPair`** (`codegen.py`) — `tuple[str, str, str | None, str | None]`: `(src_func, tgt_func, source_port, target_port)`. `source_port`/`target_port` are `None` for the single-frame bare `connect("a", "b")` form, or the frame name for the multi-frame `connect("a", "b", source_port=..., target_port=...)` form.
+- **`_NodeCodeFn`** (`codegen.py`) — `Callable[[GraphNode, list[str] | None, list[str] | None, list[str] | None], str]`; the injected per-node code generator (`_node_to_code` for pipelines, `_submodel_node_to_code` for submodel files), parameterizing `_generate_pipeline_lines` so both file kinds share one assembly routine. The fourth argument carries the per-edge source *function* names, kept alongside the edge-derived input names so edge-join role kwargs (`base_input`/`join_input`) can reference the connected source functions for parser reconstruction while the signature uses the input names.
+- **`_ConnectPair`** (`codegen.py`) — `tuple[str, str, str | None, str | None]`: `(src_func, tgt_func, source_port, target_port)`. `source_port`/`target_port` are `None` for the bare `connect("a", "b")` form used by ordinary single-output sources. Every `apiInput` edge — including one from a sole-frame source — carries its frame label as `source_port`, so the generated file always names the frame each connection delivers; a bare connect from an `apiInput` is not emitted.
 - **`CodegenBuilder`** (`_codegen_builders.py`) — `Callable[[GraphNode, list[str]], str]`; the signature every `_gen_*` function implements. Registered per `NodeType` into `NODE_REGISTRY[node_type].codegen` (see `haute._registry`); `NODE_REGISTRY` pairs each type's codegen builder with its exec-side runtime builder from `haute._builders`, and `validate_registry_complete` enforces both are present for every type.
 - **`MatcherResult`** (`_code_extraction.py`) — `NamedTuple(start_idx: int, return_vars: tuple[str, ...], generated_scaffold: bool = False)`. Output of a `BoilerplateMatcher`: `start_idx` is the first line of `cleaned_lines` considered user code; `return_vars` are variable names whose trailing `return <var>` should be stripped; `generated_scaffold=True` means a generated `df = <helper>(...)` line already produced `df`, so the polars finaliser must not treat the node's first parameter as a strippable alias.
 - **`BoilerplateMatcher`** (`_code_extraction.py`) — `Callable[[list[str], tuple[str, ...]], MatcherResult]`. One matcher per "kind" (`polars`, `source`, `scenario_expander`, `model_score`, `rating_step`, `external`), registered in `BOILERPLATE_MATCHERS` with aliases for both NodeType-style and Python-snake-style kind spellings.
@@ -33,9 +33,14 @@
 4. **No-submodel path:** order edges (`_order_edge_join_incoming_edges` puts
    each edge-join's two incoming edges in base-then-join order), topo-sort
    nodes (`_topo_sort` via `haute._topo.topo_sort_ids`), build
-   id→func-name / node→sources / node→source-ids maps, build `connect_pairs`
-   directly from edges, call `_generate_pipeline_lines(kind="pipeline", ...)`,
-   then `_assert_emitted_files_parse` on the single resulting file.
+   id→func-name maps and each node's per-edge input-name list
+   (`edge_input_name(edge, source_node)` in edge order — the same list the
+   executor derives, so signature and binding can never disagree), raising
+   `ParseError` on a duplicate input name within one node (via the shared
+   `duplicate_input_names` detector in `_graph_utils.py`), build
+   `connect_pairs` directly from edges, call
+   `_generate_pipeline_lines(kind="pipeline", ...)`, then
+   `_assert_emitted_files_parse` on the single resulting file.
 5. **Submodel path:** for each submodel, rehydrate its stored
    `GraphNode`/`GraphEdge` list (submodels may be stored as dicts or already-
    validated models — `GraphNode.model_validate` is applied conditionally),
@@ -144,11 +149,13 @@ unchanged, avoiding a full re-parse on every save for the common case.
 
 ## Edge cases and invariants
 
-- **Multi-edge into one node** (the same upstream function feeding a node
-  through two distinct edges) — `_dedup_param_names` suffixes the second
-  occurrence (`name_2`, `name_3`, ...); binding is positional so the exact
-  names are cosmetic. Zero sources yields the single default parameter
-  name `"df"`.
+- **Multi-edge into one node** (the same upstream `apiInput` feeding a node
+  through two frame edges) — each edge contributes its own frame label as the
+  parameter name, so the parameters are distinct by the api-input schema's
+  label-uniqueness rule; no suffixing exists. A derived duplicate across
+  *different* sources (frame label colliding with another input's name) is a
+  `ParseError`, never a rename. Zero sources still yields the single default
+  parameter name `"df"`.
 - **User-controlled text inside decorator arg lists** (a column literally
   named `"price (gbp)"`, or containing `":)"`) — `_matching_close_paren`
   tokenizes rather than character-scans, so parens inside string literals
@@ -229,6 +236,8 @@ unchanged, avoiding a full re-parse on every save for the common case.
 | Contract computation hits a non-infra exception (`TypeError`, `KeyError`, `HauteError` incl. `ContractMismatchError`) | propagated unchanged | `codegen._format_contract_kwarg` |
 | `inputs_by_parent` ambiguous key collision | `ParseError` | `codegen._format_contract_source` |
 | Duplicate sanitized function names across root graph + submodels | `ParseError` (all colliding buckets listed) | `codegen._error_on_name_collisions` |
+| Duplicate derived input names among one node's incoming edges | `ParseError` (target node + colliding input name) | `codegen.graph_to_code_multi` (per-edge input-name assembly) |
+| An `apiInput` edge carrying no `source_port`/`sourceHandle` (only reachable via a hand-edited file — the editor cannot create one) | `ParseError` naming the edge and source node | `codegen.graph_to_code_multi` (per-edge input-name assembly) |
 | `edgeJoin` codegen source names/ids desynced | `ParseError` | `codegen._role_order_node_sources` |
 | Submodel cross-boundary edge with missing/malformed `in__`/`out__` handle, or referencing an unknown child id | `ParseError` | `codegen.graph_to_code_multi`, `codegen._resolve_submodel_endpoint` |
 | `graph_to_code` called on a graph that actually produces >1 file | `ConfigError` | `codegen.graph_to_code` |
@@ -258,6 +267,14 @@ than one file per module:
   ambiguous/missing-target error cases), submodel pipeline replacement,
   special-character labels, connect-call deduplication, contract-source
   collision handling, and an explicit single-file guard for `graph_to_code`.
+  The input-identity scenarios live here: frame-labelled parameters for
+  multi- and sole-frame `apiInput` edges (signature names equal the frame
+  labels, in edge order), the explicit `source_port` on every `apiInput`
+  connect call including sole-frame, the duplicate-input-name `ParseError`
+  (frame vs frame is unreachable by schema validation; frame vs
+  sanitised-node-label is the reachable case), and the round-trip fixpoint
+  (`test_codegen_roundtrip_property.py`) regenerated under frame-named
+  parameters.
 - **`test_codegen_builders.py`** — per-builder unit tests (`_gen_api_input`,
   `_gen_banding`, `_gen_scenario_expander`, `_gen_optimiser`, `_gen_explore`,
   `_gen_data_sink`) plus `TestCodegenExecValidation`, which executes

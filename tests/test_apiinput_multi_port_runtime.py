@@ -3,11 +3,11 @@
 Exercises the v2 apiInput at runtime end-to-end through execute_graph:
 
 - 0 emit-true tables → preview fails loud with a configuration message.
-- 1 emit-true table → single-port shorthand; source emits a bare
-  LazyFrame; downstream edges with null ``sourceHandle`` bind correctly.
+- 1 emit-true table → source emits a one-key dict just like a multi-frame
+  source; downstream edges select it by its required ``sourceHandle``.
 - 2+ emit-true tables → source emits a dict[port_label, LazyFrame]; the
   executor's edge-resolution picks per edge via ``sourceHandle``.
-- Cache absent → fail with the "click Cache as Parquet" hint.
+- Cache absent → shred JSON directly and execute successfully.
 - Multi-port edge with null ``sourceHandle`` → executor raises a clear
   diagnostic naming the available ports.
 
@@ -17,10 +17,12 @@ the surface focused on routing, not transform semantics.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from typing import Any
 
+import polars as pl
 import pytest
 
 from haute._json_flatten import _json_cache_dir
@@ -153,10 +155,10 @@ def test_zero_emit_true_fails_loud(isolated_root) -> None:
     assert "tick" in error_msg or "configure" in error_msg or "configuration" in error_msg
 
 
-# ─── 2. single-port: bare frame, null-sourceHandle edge works ─────
+# ─── 2. single-port: one-key dict, labelled edge routing ──────────
 
 
-def test_single_port_emits_bare_frame_through_passthrough_consumer(isolated_root) -> None:
+def test_single_port_dict_routes_through_labelled_edge(isolated_root) -> None:
     data_path = isolated_root / "data.json"
     data_path.write_text(json.dumps(_rating_records()))
     config = _single_port_config(data_path)
@@ -175,10 +177,7 @@ def test_single_port_emits_bare_frame_through_passthrough_consumer(isolated_root
                 ),
             ),
         ],
-        edges=[
-            # Single-port: null sourceHandle (the shorthand).
-            GraphEdge(id="e", source="api", target="downstream", sourceHandle=None),
-        ],
+        edges=[GraphEdge(id="e", source="api", target="downstream", sourceHandle="policies")],
     )
     results = execute_graph(graph, target_node_id="downstream")
     assert results["api"].status == "ok"
@@ -187,6 +186,29 @@ def test_single_port_emits_bare_frame_through_passthrough_consumer(isolated_root
     assert results["api"].row_count == 2
     # Downstream passed it through unchanged.
     assert results["downstream"].row_count == 2
+
+
+def test_single_port_dict_with_null_source_handle_fails_loud(isolated_root) -> None:
+    data_path = isolated_root / "data.json"
+    data_path.write_text(json.dumps(_rating_records()))
+    config = _single_port_config(data_path)
+    _build_cache_for(isolated_root, data_path, config)
+    graph = PipelineGraph(
+        nodes=[
+            _api_input_node("api", config),
+            GraphNode(
+                id="downstream",
+                data=NodeData(label="downstream", nodeType=NodeType.POLARS, config={}),
+            ),
+        ],
+        edges=[GraphEdge(id="e", source="api", target="downstream")],
+    )
+
+    results = execute_graph(graph, target_node_id="downstream")
+
+    assert results["downstream"].status == "error"
+    error_msg = results["downstream"].error or ""
+    assert "sourceHandle" in error_msg
 
 
 # ─── 3. multi-port: dict emit, sourceHandle picks per edge ────────
@@ -265,10 +287,10 @@ def test_multi_port_row_limit_caps_each_port(isolated_root) -> None:
     assert results["d_drivers"].row_count == 1  # capped from 3
 
 
-# ─── 4. cache absent: clear error message ─────────────────────────
+# ─── 4. cache absent: direct runtime shred ─────────────────────────
 
 
-def test_runtime_fails_when_cache_missing(isolated_root) -> None:
+def test_runtime_shreds_directly_when_cache_missing(isolated_root) -> None:
     data_path = isolated_root / "data.json"
     data_path.write_text(json.dumps(_rating_records()))
     config = _single_port_config(data_path)
@@ -276,9 +298,8 @@ def test_runtime_fails_when_cache_missing(isolated_root) -> None:
 
     graph = PipelineGraph(nodes=[_api_input_node("api", config)], edges=[])
     results = execute_graph(graph, target_node_id="api")
-    assert results["api"].status == "error"
-    error_msg = (results["api"].error or "").lower()
-    assert "cache" in error_msg and "parquet" in error_msg
+    assert results["api"].status == "ok", results["api"].error
+    assert results["api"].row_count == 2
 
 
 # ─── 5. multi-port edge with null sourceHandle: loud error ────────
@@ -786,30 +807,41 @@ def test_multi_port_ancestor_row_limit_caps_collected_target(isolated_root) -> N
     assert results["d_drivers"].row_count == 1  # capped from 3 through a lazy ancestor
 
 
-def test_apiinput_preview_invalidates_when_cache_rebuilt(isolated_root) -> None:
-    """Bug-class regression for the commit 1 invalidation: a v2 apiInput
-    whose cache gets rebuilt mid-session must show fresh data on the next
-    preview, not the stale failure cached from a previous attempt.
-    """
+def test_apiinput_preview_invalidates_when_optional_cache_is_built(isolated_root) -> None:
+    """A direct preview must rerun against a newly built optional cache."""
     data_path = isolated_root / "data.json"
     data_path.write_text(json.dumps(_rating_records()))
     config = _single_port_config(data_path)
 
     graph = PipelineGraph(nodes=[_api_input_node("api", config)], edges=[])
 
-    # 1. Preview before any cache build: expect error.
+    # 1. Preview before any cache build succeeds by shredding JSON directly.
     first = execute_graph(graph, target_node_id="api")
-    assert first["api"].status == "error"
+    assert first["api"].status == "ok", first["api"].error
+    assert first["api"].row_count == 2
 
-    # 2. Build the cache out-of-band.
+    # 2. Build the cache out-of-band, then give its frame a distinct row count
+    # while preserving the exact declared schema. This makes a stale preview
+    # cache hit observable rather than merely asserting the same values twice.
     _build_cache_for(isolated_root, data_path, config)
+    cache_dir = _json_cache_dir(data_path, "working")
+    pl.DataFrame({"policy_id": [999]}, schema={"policy_id": pl.Int64}).write_parquet(
+        cache_dir / "policies.parquet"
+    )
+    parquet_payload = (cache_dir / "policies.parquet").read_bytes()
+    meta_path = cache_dir / "meta.json"
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    meta["tables"][0]["content_signature"] = {
+        "size": len(parquet_payload),
+        "sha256": hashlib.sha256(parquet_payload).hexdigest(),
+    }
+    meta_path.write_text(json.dumps(meta), encoding="utf-8")
 
-    # 3. Preview again — should now succeed (commit 1's per-data-file
-    # mtime in the preview fingerprint forces a cache miss after the
-    # meta.json appears).
+    # 3. meta.json appearing changes the preview key, so the next preview uses
+    # the cache fast path instead of reusing the earlier direct result.
     second = execute_graph(graph, target_node_id="api")
     assert second["api"].status == "ok", second["api"].error
-    assert second["api"].row_count == 2
+    assert second["api"].row_count == 1
 
 
 # ─── 9. per-frame preview select (commit 6: port_label) ───────────

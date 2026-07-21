@@ -1,7 +1,7 @@
 /**
  * Tests for the apiInput emit-port helpers.
  *
- * `apiInputEmitPortLabels` is the single source of truth for the
+ * `apiInputFrameLabels` is the single source of truth for the
  * right-edge port labels an apiInput node exposes (shared by
  * `PipelineNode`'s `_SourceHandles`, its body-label column, and the
  * edge reconciler). Port identity is the RAW table label — exactly the
@@ -22,17 +22,23 @@
 import { readFileSync } from "node:fs"
 import { fileURLToPath } from "node:url"
 import { describe, expect, it } from "vitest"
+import * as apiInputPorts from "../apiInputPorts"
 import {
-  apiInputEmitPortLabels,
+  apiInputFrameLabels,
+  apiInputHasEmittingTable,
+  edgeInputName,
+} from "../apiInputPorts"
+import { buildGraph } from "../buildGraph"
+import type { SimpleEdge, SimpleNode } from "../../panels/editors/_shared"
+
+const {
   apiInputLabelIssue,
   apiInputLabelIssueMessage,
   applyApiInputConfigChange,
   migrateApiInputEdges,
   reconcileApiInputEdges,
   sanitiseLabelForFilesystem,
-} from "../apiInputPorts"
-import { buildGraph } from "../buildGraph"
-import type { SimpleEdge, SimpleNode } from "../../panels/editors/_shared"
+} = apiInputPorts
 
 // A table is a runtime port only if it is emit:true AND has >=1 selected
 // column (matches the backend `load_v2_api_source`), so the helper gives a
@@ -48,8 +54,36 @@ const table = (
   columns,
 })
 
+describe("apiInputHasEmittingTable", () => {
+  it("requires emit and a selected column on the same table", () => {
+    expect(apiInputHasEmittingTable({ tables: [table("policies", true)] })).toBe(true)
+    expect(apiInputHasEmittingTable({
+      tables: [
+        table("policies", true, [{ selected: false }]),
+        table("drivers", false, [{ selected: true }]),
+      ],
+    })).toBe(false)
+    expect(apiInputHasEmittingTable({ tables: [null, "invalid"] })).toBe(false)
+  })
+})
+
 /** Same table, new label — the path stays put, exactly like a label commit. */
 const renamed = (t: Record<string, unknown>, label: string) => ({ ...t, label })
+const sourceNode = (
+  nodeType: string,
+  config: Record<string, unknown> = {},
+): SimpleNode => ({
+  id: "source_1",
+  type: nodeType,
+  data: { label: "Source node", description: "", nodeType, config },
+})
+const sourceEdge = (sourceHandle: string | null): SimpleEdge => ({
+  id: "edge_1",
+  source: "source_1",
+  target: "target_1",
+  sourceHandle,
+  targetHandle: null,
+})
 const THIS_TEST_FILE = fileURLToPath(import.meta.url)
 const OLD_SELF_REFERENTIAL_ASSERTION = [
   "expect(result.edges)",
@@ -64,13 +98,18 @@ it("does not regress to the old self-referential edge assertion", () => {
   )
 })
 
-describe("apiInputEmitPortLabels", () => {
+describe("apiInputFrameLabels", () => {
+  it("retires the split emit-port and visible-frame exports", () => {
+    expect(apiInputPorts).not.toHaveProperty("apiInputEmitPortLabels")
+    expect(apiInputPorts).not.toHaveProperty("apiInputVisibleFrameLabels")
+  })
+
   it("returns [] for a config without a tables key", () => {
-    expect(apiInputEmitPortLabels({ path: "x.json" })).toEqual([])
+    expect(apiInputFrameLabels({ path: "x.json" })).toEqual([])
   })
 
   it("returns only emit:true table labels, in order", () => {
-    const labels = apiInputEmitPortLabels({
+    const labels = apiInputFrameLabels({
       tables: [table("policies", true), table("drivers", false), table("vehicles", true)],
     })
     expect(labels).toEqual(["policies", "vehicles"])
@@ -81,7 +120,7 @@ describe("apiInputEmitPortLabels", () => {
   // therefore never resolve at runtime (executor KeyError). Blank-label
   // tables get NO handle; the editor shows the validation error instead.
   it("renders no port for a missing / blank label — never synthesizes port_<idx>", () => {
-    const labels = apiInputEmitPortLabels({
+    const labels = apiInputFrameLabels({
       tables: [
         { path: "$[:]", emit: true, columns: [{ name: "c", selected: true }] },
         { path: "$[:].b", label: "   ", emit: true, columns: [{ name: "c", selected: true }] },
@@ -92,13 +131,12 @@ describe("apiInputEmitPortLabels", () => {
     expect(labels.some((l) => l.startsWith("port_"))).toBe(false)
   })
 
-  it("falls back to the single default handle when every emit label is blank (nothing bindable is synthesized)", () => {
+  it("returns no frame labels when every emitted label is blank", () => {
     // This config is backend-invalid (validate_v2_schema rejects blank
     // labels) and unreachable through the editor, which blocks blank
-    // commits; it can only arrive from a legacy disk file. We render the
-    // legacy default handle rather than invent port ids the executor
-    // could never resolve.
-    const labels = apiInputEmitPortLabels({
+    // commits; it can only arrive from a legacy disk file. No bindable id
+    // is invented for it.
+    const labels = apiInputFrameLabels({
       tables: [
         { path: "$[:]", emit: true, columns: [{ name: "c", selected: true }] },
         { path: "$[:].b", label: "", emit: true, columns: [{ name: "c", selected: true }] },
@@ -108,7 +146,7 @@ describe("apiInputEmitPortLabels", () => {
   })
 
   it("excludes an emit:true table with no selected columns (matches backend runtime)", () => {
-    const labels = apiInputEmitPortLabels({
+    const labels = apiInputFrameLabels({
       tables: [
         table("policies", true),
         table("drivers", true, [{ name: "x", selected: false }]),
@@ -118,23 +156,125 @@ describe("apiInputEmitPortLabels", () => {
     expect(labels).toEqual(["policies", "vehicles"])
   })
 
-  it("falls back to single-port when only one emit:true table has selected columns", () => {
-    // The backend emits a bare frame (length-1 emit set) here, so the canvas
-    // must render the single default handle — not a labelled multi-port one.
-    const labels = apiInputEmitPortLabels({
+  it("returns the sole eligible label when another table has no selected columns", () => {
+    const labels = apiInputFrameLabels({
       tables: [table("policies", true), table("drivers", true, [{ selected: false }])],
     })
-    expect(labels).toEqual([])
+    expect(labels).toEqual(["policies"])
   })
 
   // W1.4 — duplicate labels are rejected by the backend on save, and the
   // runtime keys ports by raw label, so a synthesized `dup__1` handle
   // could never exist server-side. Only the first occurrence is a port.
   it("gives duplicate labels a single port (first occurrence) — never synthesizes __<idx>", () => {
-    const labels = apiInputEmitPortLabels({
+    const labels = apiInputFrameLabels({
       tables: [table("dup", true), table("dup", true)],
     })
     expect(labels).toEqual(["dup"])
+  })
+})
+
+describe("apiInputFrameLabels eligibility", () => {
+  it("returns [] when no table is runtime-eligible with a valid identifier label", () => {
+    const config = {
+      tables: [
+        table("disabled", false),
+        table("unselected", true, [{ name: "c", selected: false }]),
+        { label: "missing-columns", emit: true },
+        { label: "   ", emit: true, columns: [{ name: "c", selected: true }] },
+        { emit: true, columns: [{ name: "c", selected: true }] },
+        { label: 42, emit: true, columns: [{ name: "c", selected: true }] },
+      ],
+    }
+
+    expect(apiInputFrameLabels(config)).toEqual([])
+  })
+
+  it("returns the sole eligible label explicitly", () => {
+    const rawLabel = "quotes"
+    const config = { tables: [table(rawLabel, true)] }
+
+    expect(apiInputFrameLabels(config)).toEqual([rawLabel])
+  })
+
+  it("returns many eligible labels in order and excludes invalid and case-duplicate labels", () => {
+    const firstRawLabel = "policies"
+    const config = {
+      tables: [
+        table(firstRawLabel, true),
+        // An ineligible earlier use of a raw label does not reserve it.
+        table("eligible_later", false),
+        table("disabled", false),
+        table("unselected", true, [{ name: "c", selected: false }]),
+        { emit: true, columns: [{ name: "c", selected: true }] },
+        { label: "\t ", emit: true, columns: [{ name: "c", selected: true }] },
+        table("drivers", true),
+        table(firstRawLabel, true),
+        table("eligible_later", true),
+        table("quote id", true),
+        table("café", true),
+        table("class", true),
+        table("Policies", true),
+        table("vehicles", true),
+      ],
+    }
+
+    expect(apiInputFrameLabels(config)).toEqual([
+      firstRawLabel,
+      "drivers",
+      "eligible_later",
+      "vehicles",
+    ])
+  })
+})
+
+describe("edgeInputName", () => {
+  it("returns an apiInput frame handle verbatim", () => {
+    expect(
+      edgeInputName(sourceEdge("quotes"), sourceNode("apiInput"), {}),
+    ).toBe("quotes")
+  })
+
+  it("sanitises an ordinary source label and ignores its source handle", () => {
+    const ordinarySource: SimpleNode = {
+      ...sourceNode("polars"),
+      data: {
+        ...sourceNode("polars").data,
+        label: "Driver claims-feed",
+      },
+    }
+
+    expect(
+      edgeInputName(sourceEdge("unused-port"), ordinarySource, {}),
+    ).toBe("Driver_claims_feed")
+  })
+
+  it("resolves a flattened submodel out__ handle to the child node's sanitised label", () => {
+    const child: SimpleNode = {
+      ...sourceNode("polars"),
+      id: "child_output",
+      data: {
+        ...sourceNode("polars").data,
+        label: "Child output frame",
+      },
+    }
+
+    const submodelSource: SimpleNode = {
+      ...sourceNode("submodel"),
+      id: "submodel__pricing",
+    }
+    const edge = {
+      ...sourceEdge("out__child_output"),
+      source: submodelSource.id,
+    }
+
+    expect(
+      edgeInputName(
+        edge,
+        submodelSource,
+        { pricing: { graph: { nodes: [child], edges: [] } } },
+      ),
+    ).toBe("Child_output_frame")
   })
 })
 
@@ -156,19 +296,23 @@ describe("sanitiseLabelForFilesystem", () => {
     // `u` flag, JS would see two UTF-16 surrogate units → "x__", and the
     // editor's collision verdicts would diverge from the backend's B2.
     expect(sanitiseLabelForFilesystem("x😀")).toBe("x_")
-    // Consequence: "x😀" and "x🎉" DO collide (both sanitise to "x_"),
-    // exactly as the backend reports.
-    expect(apiInputLabelIssue("x😀", ["x🎉"])).toEqual({
-      kind: "sanitised-collision",
-      other: "x🎉",
-      sanitised: "x_",
-    })
   })
 })
 
 describe("apiInputLabelIssue", () => {
-  it("accepts a unique non-blank label", () => {
-    expect(apiInputLabelIssue("vehicles", ["policies", "drivers"])).toBeNull()
+  it("accepts ASCII identifiers and Python soft keywords", () => {
+    for (const label of [
+      "vehicles",
+      "driver_claims",
+      "_private",
+      "MixedCase9",
+      "match",
+      "case",
+      "type",
+      "_",
+    ]) {
+      expect(apiInputLabelIssue(label, ["policies", "drivers"])).toBeNull()
+    }
   })
 
   it("rejects blank and whitespace-only labels", () => {
@@ -183,28 +327,45 @@ describe("apiInputLabelIssue", () => {
     })
   })
 
-  it("rejects a label whose sanitised form collides with another table's (backend B2)", () => {
-    // "driver.stats" and "driver_stats" both sanitise to "driver_stats":
-    // the backend rejects this pair at save (both would write the same
-    // parquet file), so the editor must surface it before commit.
-    expect(apiInputLabelIssue("driver.stats", ["driver_stats"])).toEqual({
-      kind: "sanitised-collision",
-      other: "driver_stats",
-      sanitised: "driver_stats",
-    })
+  it.each(["quote id", "1st_frame", "with-hyphen", "white\tspace", "café", "用户"])(
+    "rejects non-ASCII or non-identifier label %j with the ASCII rule",
+    (label) => {
+      const issue = apiInputLabelIssue(label, [])
+      expect(issue).not.toBeNull()
+      if (issue === null) throw new Error("expected an ASCII-identifier issue")
+      expect(apiInputLabelIssueMessage(issue)).toMatch(/ascii.*identifier/i)
+    },
+  )
+
+  it("rejects every Python hard keyword while retaining soft keywords", () => {
+    const hardKeywords = [
+      "False", "None", "True", "and", "as", "assert", "async", "await",
+      "break", "class", "continue", "def", "del", "elif", "else", "except",
+      "finally", "for", "from", "global", "if", "import", "in", "is",
+      "lambda", "nonlocal", "not", "or", "pass", "raise", "return", "try",
+      "while", "with", "yield",
+    ]
+
+    for (const keyword of hardKeywords) {
+      const issue = apiInputLabelIssue(keyword, [])
+      expect(issue).not.toBeNull()
+      if (issue === null) throw new Error("expected a hard-keyword issue")
+      expect(apiInputLabelIssueMessage(issue)).toMatch(/keyword/i)
+    }
   })
 
   it("rejects labels differing only in case (one parquet file on macOS/Windows)", () => {
     // "Drivers.parquet" and "drivers.parquet" are the SAME file on the
     // case-insensitive filesystems macOS and Windows default to — the
     // shred write would silently clobber one table's data. Mirrors the
-    // backend B2 casefolded comparison; exact duplicates still report
-    // as "duplicate", so this pair reports the sanitised collision.
-    expect(apiInputLabelIssue("Drivers", ["drivers"])).toEqual({
-      kind: "sanitised-collision",
-      other: "drivers",
-      sanitised: "Drivers",
-    })
+    // backend B2 casefolded comparison. Keep the verdict and user-facing
+    // conflict detail pinned without coupling the test to an issue tag.
+    const issue = apiInputLabelIssue("Drivers", ["drivers"])
+    expect(issue).not.toBeNull()
+    if (issue === null) throw new Error("expected a case-only collision")
+    const message = apiInputLabelIssueMessage(issue)
+    expect(message).toMatch(/drivers/i)
+    expect(message).toMatch(/case-insensitive/i)
     // Genuinely distinct labels still pass.
     expect(apiInputLabelIssue("Drivers", ["policies"])).toBeNull()
   })
@@ -213,13 +374,6 @@ describe("apiInputLabelIssue", () => {
     expect(apiInputLabelIssueMessage(null)).toBeNull()
     expect(apiInputLabelIssueMessage({ kind: "blank" })).toMatch(/required/i)
     expect(apiInputLabelIssueMessage({ kind: "duplicate", other: "drivers" })).toMatch(/drivers/)
-    expect(
-      apiInputLabelIssueMessage({
-        kind: "sanitised-collision",
-        other: "driver_stats",
-        sanitised: "driver_stats",
-      }),
-    ).toMatch(/driver_stats/)
   })
 })
 
@@ -232,21 +386,37 @@ describe("reconcileApiInputEdges", () => {
     targetHandle: null,
   })
 
-  it("keeps everything when the node has < 2 emit tables and edges use the null default handle", () => {
-    const edges = [outgoing(null)]
+  it.each([
+    ["zero", { tables: [] }],
+    ["one", { tables: [table("policies", true)] }],
+  ])("removes a null-handle edge with %s eligible frames", (_count, config) => {
+    const legacyEdge = outgoing(null)
+    const result = reconcileApiInputEdges({
+      nodeId: "api_1",
+      config,
+      edges: [legacyEdge],
+    })
+    expect(result.edges).toEqual([])
+    expect(result.removed).toEqual([{ edge: legacyEdge, sourceHandle: null }])
+  })
+
+  it("keeps a sole frame's labelled handle and preserves edge-array identity", () => {
+    const labelledEdge = outgoing("policies")
+    const edges = [labelledEdge]
     const result = reconcileApiInputEdges({
       nodeId: "api_1",
       config: { tables: [table("policies", true)] },
       edges,
     })
+
     expect(result.removed).toEqual([])
     expect(result.edges).toBe(edges)
+    expect(result.edges[0]).toBe(labelledEdge)
   })
 
-  it("removes a multi-port edge when its table's emit is toggled off (now single-port)", () => {
-    // Was 2 emit tables (multi-port). User unticks 'drivers' → only
-    // 'policies' emits → single default (null) handle. The edge bound
-    // to 'drivers' is orphaned.
+  it("removes an edge when its table's emit is toggled off", () => {
+    // User unticks 'drivers'; the still-labelled policies frame remains,
+    // while only the drivers edge becomes orphaned.
     const driversEdge = outgoing("drivers")
     const result = reconcileApiInputEdges({
       nodeId: "api_1",
@@ -270,10 +440,7 @@ describe("reconcileApiInputEdges", () => {
     expect(result.removed.map((r) => r.edge)).toEqual([goneEdge])
   })
 
-  it("removes a null-handle edge once the node becomes multi-port (single→multi)", () => {
-    // Edge was created while the node had a single default (null)
-    // handle. A 2nd emit table now makes the node multi-port, so the
-    // null handle no longer renders and the edge is orphaned.
+  it("removes a null-handle edge with multiple frames too", () => {
     const legacyEdge = outgoing(null, "e_legacy")
     const result = reconcileApiInputEdges({
       nodeId: "api_1",
@@ -428,21 +595,20 @@ describe("migrateApiInputEdges", () => {
     expect(rebound).toEqual([])
   })
 
-  it("ignores single-port nodes (edges are bound to the null default handle, not labels)", () => {
+  it("migrates a sole labelled frame exactly like a multi-frame input", () => {
     const singlePrev = { tables: [table("policies", true)] }
     const singleNext = { tables: [renamed(table("policies", true), "quotes")] }
-    const nullEdge = edgeFrom("api_1", null)
-    const inputEdges = [nullEdge]
+    const policiesEdge = edgeFrom("api_1", "policies")
     const result = migrateApiInputEdges({
       nodeId: "api_1",
       prevConfig: singlePrev,
       nextConfig: singleNext,
-      edges: inputEdges,
+      edges: [policiesEdge],
     })
-    expect(result.rebound).toEqual([])
-    // The INPUT array reference comes back untouched — no copy, no churn.
-    expect(result.edges).toBe(inputEdges)
-    expect(result.edges[0]).toBe(nullEdge)
+    expect(result.rebound).toEqual([
+      { edge: policiesEdge, from: "policies", to: "quotes" },
+    ])
+    expect(result.edges[0].sourceHandle).toBe("quotes")
   })
 
   // ── Duplicate-label ownership guards ──────────────────────────────
@@ -549,9 +715,8 @@ describe("applyApiInputConfigChange", () => {
       edges: [driversEdge, keptNull],
     })
     expect(result.rebound).toEqual([])
-    expect(result.removed.map((r) => r.edge)).toEqual([driversEdge])
-    // Back to single-port: the null default edge is the only valid one.
-    expect(result.edges).toEqual([keptNull])
+    expect(result.removed.map((r) => r.edge)).toEqual([driversEdge, keptNull])
+    expect(result.edges).toEqual([])
   })
 
   it("returns the input edges reference untouched when nothing changed", () => {
@@ -574,7 +739,7 @@ describe("applyApiInputConfigChange", () => {
     // reloaded graph carries edges whose sourceHandle is the raw table
     // label — and the frontend must render handles in EXACTLY that space.
     const config = { tables: [table("policies", true), table("drivers", true)] }
-    const labels = apiInputEmitPortLabels(config)
+    const labels = apiInputFrameLabels(config)
     // Raw labels, no transformation of any kind.
     expect(labels).toEqual(["policies", "drivers"])
 

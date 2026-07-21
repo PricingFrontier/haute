@@ -15,12 +15,23 @@ const { transformEditorProps, edgeJoinEditorProps, exploreCodeEditorProps, bandi
 }))
 
 // Mock all editor components — we only care that the right one renders
-vi.mock("../LazyNodeEditors", () => ({
+vi.mock("../LazyNodeEditors", async () => {
+  const { InputSourcesBar } = await vi.importActual<typeof import("../editors/_shared")>(
+    "../editors/_shared",
+  )
+  return {
   LazyEditorBoundary: ({ children }: { children: React.ReactNode }) => <>{children}</>,
   DataSourceEditor: () => <div data-testid="DataSourceEditor" />,
   TransformEditor: (props: Record<string, unknown>) => {
     transformEditorProps.push(props)
-    return <div data-testid="TransformEditor" />
+    return (
+      <div data-testid="TransformEditor">
+        <InputSourcesBar
+          inputSources={props.inputSources as Parameters<typeof InputSourcesBar>[0]["inputSources"]}
+          onDeleteInput={props.onDeleteInput as ((edgeId: string) => void) | undefined}
+        />
+      </div>
+    )
   },
   EdgeJoinEditor: (props: Record<string, unknown>) => {
     edgeJoinEditorProps.push(props)
@@ -49,6 +60,8 @@ vi.mock("../LazyNodeEditors", () => ({
   ApiInputEditor: () => <div data-testid="ApiInputEditor" />,
   LiveSwitchEditor: () => <div data-testid="LiveSwitchEditor" />,
   SinkEditor: () => <div data-testid="SinkEditor" />,
+  DataInputEditor: () => <div data-testid="DataInputEditor" />,
+  DataOutputEditor: () => <div data-testid="DataOutputEditor" />,
   ScenarioExpanderEditor: () => <div data-testid="ScenarioExpanderEditor" />,
   OptimiserApplyEditor: () => <div data-testid="OptimiserApplyEditor" />,
   ConstantEditor: () => <div data-testid="ConstantEditor" />,
@@ -63,7 +76,8 @@ vi.mock("../LazyNodeEditors", () => ({
     optimiserConfigProps.push(props)
     return <div data-testid="OptimiserConfig" />
   },
-}))
+  }
+})
 
 function makeNode(overrides: Partial<SimpleNode> = {}): SimpleNode {
   return {
@@ -108,6 +122,26 @@ function renderPanel(overrides: RenderPanelOverrides = {}) {
     </GraphProvider>,
   )
   return { ...result, props }
+}
+
+type Phase3InputSource = {
+  sourceNodeId: string
+  name: string
+  sourceLabel: string
+  edgeId: string
+  frameUnresolved?: boolean
+}
+
+function latestTransformInputSources(): Phase3InputSource[] {
+  return transformEditorProps.at(-1)?.inputSources as Phase3InputSource[]
+}
+
+function eligibleApiInputTable(label: string) {
+  return {
+    label,
+    emit: true,
+    columns: [{ name: "value", selected: true }],
+  }
 }
 
 describe("NodePanel", () => {
@@ -248,6 +282,16 @@ describe("NodePanel", () => {
     expect(screen.getByTestId("SinkEditor")).toBeInTheDocument()
   })
 
+  it("renders DataInputEditor for dataInput nodes", () => {
+    renderPanel({ node: makeNode({ data: { label: "In", description: "", nodeType: "dataInput", config: {} } }) })
+    expect(screen.getByTestId("DataInputEditor")).toBeInTheDocument()
+  })
+
+  it("renders DataOutputEditor for dataOutput nodes", () => {
+    renderPanel({ node: makeNode({ data: { label: "Out", description: "", nodeType: "dataOutput", config: {} } }) })
+    expect(screen.getByTestId("DataOutputEditor")).toBeInTheDocument()
+  })
+
   it("renders OutputEditor for output nodes", () => {
     renderPanel({ node: makeNode({ data: { label: "Out", description: "", nodeType: "output", config: {} } }) })
     expect(screen.getByTestId("OutputEditor")).toBeInTheDocument()
@@ -378,7 +422,7 @@ describe("NodePanel", () => {
       inputSources: [
         {
           sourceNodeId: "source_1",
-          varName: "Claims_Source",
+          name: "Claims_Source",
           sourceLabel: "Claims Source",
           edgeId: "e_source_explore",
         },
@@ -473,6 +517,369 @@ describe("NodePanel", () => {
   it("renders ScenarioExpanderEditor for scenarioExpander nodes", () => {
     renderPanel({ node: makeNode({ data: { label: "SE", description: "", nodeType: "scenarioExpander", config: {} } }) })
     expect(screen.getByTestId("ScenarioExpanderEditor")).toBeInTheDocument()
+  })
+
+  describe("frame-aware input source identity", () => {
+    it("derives the executable input name for multi-frame, sole-frame, and ordinary edges", () => {
+      const target = makeNode({
+        id: "target",
+        data: { label: "Target", description: "", nodeType: "polars", config: {} },
+      })
+      const multiApi = makeNode({
+        id: "multi_api",
+        data: {
+          label: "Quote API",
+          description: "",
+          nodeType: "apiInput",
+          config: {
+            tables: [
+              eligibleApiInputTable("policies"),
+              eligibleApiInputTable("DriversRaw"),
+            ],
+          },
+        },
+      })
+      const singleApi = makeNode({
+        id: "single_api",
+        data: {
+          label: "Vehicle API",
+          description: "",
+          nodeType: "apiInput",
+          config: { tables: [eligibleApiInputTable("vehicles")] },
+        },
+      })
+      const ordinary = makeNode({
+        id: "ordinary",
+        data: { label: "Claims Source", description: "", nodeType: "dataSource", config: {} },
+      })
+      const edges: SimpleEdge[] = [
+        {
+          id: "edge_multi",
+          source: multiApi.id,
+          target: target.id,
+          sourceHandle: "DriversRaw",
+        },
+        {
+          id: "edge_single",
+          source: singleApi.id,
+          target: target.id,
+          sourceHandle: "vehicles",
+        },
+        {
+          id: "edge_ordinary",
+          source: ordinary.id,
+          target: target.id,
+          sourceHandle: "out__claims",
+        },
+      ]
+
+      renderPanel({ node: target, allNodes: [multiApi, singleApi, ordinary, target], edges })
+
+      const sources = latestTransformInputSources()
+      expect(sources).toHaveLength(3)
+      expect(sources[0]).toMatchObject({
+        edgeId: "edge_multi",
+        name: "DriversRaw",
+        sourceLabel: "Quote API",
+      })
+      expect(sources[0].frameUnresolved).not.toBe(true)
+      expect(sources[1]).toMatchObject({
+        edgeId: "edge_single",
+        name: "vehicles",
+        sourceLabel: "Vehicle API",
+      })
+      expect(sources[1].frameUnresolved).not.toBe(true)
+      expect(sources[2]).toMatchObject({
+        edgeId: "edge_ordinary",
+        name: "Claims_Source",
+        sourceLabel: "Claims Source",
+      })
+      expect(sources[2].frameUnresolved).not.toBe(true)
+    })
+
+    it("keeps a dangling apiInput handle verbatim and marks it unresolved", () => {
+      const target = makeNode({
+        id: "target",
+        data: { label: "Target", description: "", nodeType: "polars", config: {} },
+      })
+      const apiInput = makeNode({
+        id: "api",
+        data: {
+          label: "Quote API",
+          description: "",
+          nodeType: "apiInput",
+          config: {
+            tables: [{ label: "quotes", emit: true, columns: [{ name: "id", selected: false }] }],
+          },
+        },
+      })
+
+      renderPanel({
+        node: target,
+        allNodes: [apiInput, target],
+        edges: [
+          {
+            id: "edge_api",
+            source: apiInput.id,
+            target: target.id,
+            sourceHandle: "stale_quotes",
+          },
+        ],
+      })
+
+      expect(latestTransformInputSources()).toEqual([
+        expect.objectContaining({
+          edgeId: "edge_api",
+          name: "stale_quotes",
+          sourceLabel: "Quote API",
+          frameUnresolved: true,
+        }),
+      ])
+      const warning = screen.getByLabelText(/unresolved.*frame|frame.*unresolved/i)
+      expect(warning).toBeVisible()
+      expect(warning).toHaveAttribute(
+        "title",
+        expect.stringMatching(/eligible|emitted|resolv/i),
+      )
+    })
+
+    it("refreshes a named apiInput display label when only sourceHandle changes", () => {
+      const target = makeNode({
+        id: "target",
+        data: { label: "Target", description: "", nodeType: "polars", config: {} },
+      })
+      const apiInput = makeNode({
+        id: "api",
+        data: {
+          label: "Quote API",
+          description: "",
+          nodeType: "apiInput",
+          config: {
+            tables: [eligibleApiInputTable("policies"), eligibleApiInputTable("drivers")],
+          },
+        },
+      })
+      const firstEdge: SimpleEdge = {
+        id: "edge_api",
+        source: apiInput.id,
+        target: target.id,
+        sourceHandle: "policies",
+      }
+      const { rerender, props } = renderPanel({
+        node: target,
+        allNodes: [apiInput, target],
+        edges: [firstEdge],
+      })
+      const firstSources = latestTransformInputSources()
+      expect(firstSources[0].name).toBe("policies")
+
+      rerender(
+        <GraphProvider
+          allNodes={[apiInput, target]}
+          edges={[{ ...firstEdge, sourceHandle: "drivers" }]}
+        >
+          <NodePanel {...props} />
+        </GraphProvider>,
+      )
+
+      const reboundSources = latestTransformInputSources()
+      expect(reboundSources[0].name).toBe("drivers")
+    })
+
+    it("refreshes the derived name when a sole-frame edge is rebound after rename", () => {
+      const target = makeNode({
+        id: "target",
+        data: { label: "Target", description: "", nodeType: "polars", config: {} },
+      })
+      const apiInput = makeNode({
+        id: "api",
+        data: {
+          label: "Quote API",
+          description: "",
+          nodeType: "apiInput",
+          config: { tables: [eligibleApiInputTable("quotes")] },
+        },
+      })
+      const edge: SimpleEdge = {
+        id: "edge_api",
+        source: apiInput.id,
+        target: target.id,
+        sourceHandle: "quotes",
+      }
+      const { rerender, props } = renderPanel({
+        node: target,
+        allNodes: [apiInput, target],
+        edges: [edge],
+      })
+      const firstSources = latestTransformInputSources()
+      expect(firstSources[0].name).toBe("quotes")
+
+      const renamedApiInput = makeNode({
+        ...apiInput,
+        data: {
+          ...apiInput.data,
+          config: { tables: [eligibleApiInputTable("policies")] },
+        },
+      })
+      rerender(
+        <GraphProvider
+          allNodes={[renamedApiInput, target]}
+          edges={[{ ...edge, sourceHandle: "policies" }]}
+        >
+          <NodePanel {...props} />
+        </GraphProvider>,
+      )
+
+      const renamedSources = latestTransformInputSources()
+      expect(renamedSources[0].name).toBe("policies")
+    })
+
+    it("clears unresolved state when resolution changes under an unchanged derived name", () => {
+      const target = makeNode({
+        id: "target",
+        data: { label: "Target", description: "", nodeType: "polars", config: {} },
+      })
+      const unresolvedApi = makeNode({
+        id: "api",
+        data: {
+          label: "Quote API",
+          description: "",
+          nodeType: "apiInput",
+          config: {
+            tables: [{ label: "Quote_API", emit: true, columns: [{ name: "id", selected: false }] }],
+          },
+        },
+      })
+      const edge: SimpleEdge = {
+        id: "edge_api",
+        source: unresolvedApi.id,
+        target: target.id,
+        sourceHandle: "Quote_API",
+      }
+      const { rerender, props } = renderPanel({
+        node: target,
+        allNodes: [unresolvedApi, target],
+        edges: [edge],
+      })
+      const unresolvedSources = latestTransformInputSources()
+      expect(unresolvedSources[0]).toMatchObject({
+        name: "Quote_API",
+        frameUnresolved: true,
+      })
+
+      const resolvedApi = makeNode({
+        ...unresolvedApi,
+        data: {
+          ...unresolvedApi.data,
+          config: { tables: [eligibleApiInputTable("Quote_API")] },
+        },
+      })
+      rerender(
+        <GraphProvider allNodes={[resolvedApi, target]} edges={[edge]}>
+          <NodePanel {...props} />
+        </GraphProvider>,
+      )
+
+      const resolvedSources = latestTransformInputSources()
+      expect(resolvedSources[0].name).toBe("Quote_API")
+      expect(resolvedSources[0].frameUnresolved).not.toBe(true)
+      expect(screen.queryByLabelText(/unresolved.*frame|frame.*unresolved/i)).not.toBeInTheDocument()
+    })
+
+    it("keeps duplicate-parent frame inputs distinct and routes removals by edge id", () => {
+      const target = makeNode({
+        id: "target",
+        data: { label: "Target", description: "", nodeType: "polars", config: {} },
+      })
+      const apiInput = makeNode({
+        id: "api",
+        data: {
+          label: "Quote API",
+          description: "",
+          nodeType: "apiInput",
+          config: {
+            tables: [eligibleApiInputTable("quotes"), eligibleApiInputTable("drivers")],
+          },
+        },
+      })
+      const { props } = renderPanel({
+        node: target,
+        allNodes: [apiInput, target],
+        edges: [
+          { id: "edge_quotes", source: apiInput.id, target: target.id, sourceHandle: "quotes" },
+          { id: "edge_drivers", source: apiInput.id, target: target.id, sourceHandle: "drivers" },
+        ],
+      })
+
+      expect(latestTransformInputSources()).toEqual([
+        expect.objectContaining({
+          edgeId: "edge_quotes",
+          name: "quotes",
+        }),
+        expect.objectContaining({
+          edgeId: "edge_drivers",
+          name: "drivers",
+        }),
+      ])
+
+      expect(screen.getByText("quotes")).toBeInTheDocument()
+      expect(screen.getByText("drivers")).toBeInTheDocument()
+      const removeButtons = screen.getAllByRole("button", {
+        name: /remove connection from Quote API/i,
+      })
+      expect(removeButtons).toHaveLength(2)
+      fireEvent.click(removeButtons[0])
+      fireEvent.click(removeButtons[1])
+      expect(props.onDeleteEdge).toHaveBeenNthCalledWith(1, "edge_quotes")
+      expect(props.onDeleteEdge).toHaveBeenNthCalledWith(2, "edge_drivers")
+    })
+
+    it("derives a flattened submodel output name from the referenced child label", () => {
+      const target = makeNode({
+        id: "target",
+        data: { label: "Target", description: "", nodeType: "polars", config: {} },
+      })
+      const placeholder = makeNode({
+        id: "submodel__pricing",
+        data: {
+          label: "Pricing Module",
+          description: "",
+          nodeType: "submodel",
+          config: { childNodeIds: ["child_output"], outputPorts: ["child_output"] },
+        },
+      })
+      const child = makeNode({
+        id: "child_output",
+        data: {
+          label: "Child Output",
+          description: "",
+          nodeType: "polars",
+          config: {},
+        },
+      })
+
+      renderPanel({
+        node: target,
+        allNodes: [placeholder, target],
+        edges: [
+          {
+            id: "edge_child",
+            source: placeholder.id,
+            target: target.id,
+            sourceHandle: "out__child_output",
+          },
+        ],
+        submodels: { pricing: { graph: { nodes: [child], edges: [] } } },
+      })
+
+      expect(latestTransformInputSources()).toEqual([
+        expect.objectContaining({
+          edgeId: "edge_child",
+          name: "Child_Output",
+          sourceLabel: "Pricing Module",
+        }),
+      ])
+    })
   })
 
   it("renders ConstantEditor for constant nodes", () => {

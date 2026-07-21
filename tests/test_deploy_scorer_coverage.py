@@ -215,7 +215,12 @@ class TestScoreGraphModelScoreContractOnly:
                     },
                 ],
                 "edges": [
-                    {"id": "e1", "source": "src", "target": "ms"},
+                    {
+                        "id": "e1",
+                        "source": "src",
+                        "target": "ms",
+                        "sourceHandle": "src",
+                    },
                     {"id": "e2", "source": "ms", "target": "out"},
                 ],
             }
@@ -379,7 +384,12 @@ class TestScoreGraphStaticDataSourceRemap:
                     },
                 ],
                 "edges": [
-                    {"id": "e1", "source": "src", "target": "static_ds"},
+                    {
+                        "id": "e1",
+                        "source": "src",
+                        "target": "static_ds",
+                        "sourceHandle": "src",
+                    },
                     {"id": "e2", "source": "static_ds", "target": "out"},
                 ],
             }

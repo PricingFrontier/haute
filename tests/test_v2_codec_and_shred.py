@@ -23,6 +23,8 @@ Layered:
 from __future__ import annotations
 
 import json
+import keyword
+import unicodedata
 from pathlib import Path
 from typing import Any
 
@@ -189,6 +191,92 @@ def _minimal_v2() -> dict[str, Any]:
 
 def test_validate_v2_schema_accepts_minimal() -> None:
     validate_v2_schema(_minimal_v2())  # raises on failure
+
+
+@pytest.mark.parametrize(
+    "label",
+    [
+        pytest.param("quote id", id="embedded-space"),
+        pytest.param("1st_frame", id="leading-digit"),
+        pytest.param("with-hyphen", id="hyphen"),
+        pytest.param("driver\tclaims", id="embedded-tab"),
+    ],
+)
+def test_validate_v2_schema_rejects_labels_that_are_not_python_parameter_names(
+    label: str,
+) -> None:
+    cfg = _minimal_v2()
+    cfg["tables"][0]["label"] = label
+
+    with pytest.raises(ApiInputSchemaError) as exc_info:
+        validate_v2_schema(cfg)
+
+    detail = str(exc_info.value)
+    assert label in detail or repr(label) in detail
+
+
+@pytest.mark.parametrize(
+    "label",
+    keyword.kwlist,
+)
+def test_validate_v2_schema_rejects_every_hard_python_keyword(label: str) -> None:
+    cfg = _minimal_v2()
+    cfg["tables"][0]["label"] = label
+
+    with pytest.raises(ApiInputSchemaError) as exc_info:
+        validate_v2_schema(cfg)
+
+    detail = str(exc_info.value)
+    assert repr(label) in detail or exc_info.value.context.get("label") == label
+
+
+@pytest.mark.parametrize(
+    "label",
+    [
+        pytest.param("caf\u00e9", id="latin-accent"),
+        pytest.param("\u53d8\u91cf", id="cjk"),
+    ],
+)
+def test_validate_v2_schema_rejects_valid_unicode_identifiers_with_ascii_rule(
+    label: str,
+) -> None:
+    assert label.isidentifier()
+    assert not label.isascii()
+    cfg = _minimal_v2()
+    cfg["tables"][0]["label"] = label
+
+    with pytest.raises(ApiInputSchemaError) as exc_info:
+        validate_v2_schema(cfg)
+
+    detail = str(exc_info.value)
+    assert label in detail
+    assert "ascii" in detail.casefold()
+
+
+def test_validate_v2_schema_rejects_non_nfkc_unicode_identifier_with_ascii_rule() -> None:
+    label = "\N{KELVIN SIGN}elvin"
+    assert label.isidentifier()
+    assert unicodedata.normalize("NFKC", label) == "Kelvin"
+    cfg = _minimal_v2()
+    cfg["tables"][0]["label"] = label
+
+    with pytest.raises(ApiInputSchemaError) as exc_info:
+        validate_v2_schema(cfg)
+
+    detail = str(exc_info.value)
+    assert label in detail
+    assert "ascii" in detail.casefold()
+
+
+@pytest.mark.parametrize(
+    "label",
+    ["quotes", "driver_claims", "_private", "MixedCase", "match", "case", "type", "_"],
+)
+def test_validate_v2_schema_accepts_ascii_identifiers_and_soft_keywords(label: str) -> None:
+    cfg = _minimal_v2()
+    cfg["tables"][0]["label"] = label
+
+    validate_v2_schema(cfg)
 
 
 def test_validate_rejects_missing_label() -> None:

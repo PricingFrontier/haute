@@ -101,6 +101,22 @@ def _sanitize_func_name(label: str) -> str:
     """
     import keyword
 
+    name = _sanitize_identifier_characters(label)
+
+    if name and name[0].isdigit():
+        name = f"node_{name}"
+    if keyword.iskeyword(name):
+        name = f"node_{name}"
+    return name or "unnamed_node"
+
+
+def _sanitize_identifier_characters(label: str) -> str:
+    """Apply the shared label-to-ASCII identifier character pipeline.
+
+    This deliberately does not apply the function-name-specific empty,
+    digit-leading, or keyword repairs.  Schema inference uses the same
+    reversible character mapping with frame-label repairs of its own.
+    """
     name = label.strip()
     name = name.replace(" ", "_").replace("-", "_")
 
@@ -109,20 +125,43 @@ def _sanitize_func_name(label: str) -> str:
         if c.isascii():
             if c.isalnum() or c == "_":
                 out_chars.append(c)
-            # else: drop ASCII punctuation / control chars
+            # Drop ASCII punctuation and control characters.
         else:
-            # Reversibly encode non-ASCII codepoints so distinct glyphs
-            # produce distinct identifiers.  The ``_x`` + hex + ``_`` shape
-            # is itself ASCII alnum/underscore, so the encoded form is
-            # idempotent under a second pass through this function.
+            # Reversibly encode non-ASCII codepoints. The encoded form is
+            # itself ASCII alphanumeric/underscore and therefore stable.
             out_chars.append(f"_x{ord(c):x}_")
-    name = "".join(out_chars)
+    return "".join(out_chars)
 
-    if name and name[0].isdigit():
-        name = f"node_{name}"
-    if keyword.iskeyword(name):
-        name = f"node_{name}"
-    return name or "unnamed_node"
+
+def edge_input_name(edge: GraphEdge, source_node: GraphNode) -> str:
+    """Return the one input name contributed by an incoming edge.
+
+    API-input edges use their persisted frame handle verbatim. Every other
+    edge uses the sanitised source-node label; source handles on ordinary
+    nodes identify an output port and are not input names.
+    """
+    if source_node.data.nodeType == "apiInput":
+        if edge.sourceHandle is None:
+            raise ValueError(
+                f"apiInput edge {edge.id!r} has no sourceHandle/frame label",
+            )
+        return edge.sourceHandle
+    return _sanitize_func_name(source_node.data.label)
+
+
+def duplicate_input_names(names: list[str]) -> list[str]:
+    """Return repeated names once, ordered by their first duplicate occurrence."""
+    seen: set[str] = set()
+    reported: set[str] = set()
+    duplicates: list[str] = []
+    for name in names:
+        if name in seen:
+            if name not in reported:
+                reported.add(name)
+                duplicates.append(name)
+        else:
+            seen.add(name)
+    return duplicates
 
 
 def build_instance_mapping(
@@ -234,12 +273,20 @@ def resolve_orig_source_names(
     node_map: dict[str, GraphNode],
     all_parents: dict[str, list[str]],
     id_to_name: dict[str, str],
+    incoming_edges_by_target: Mapping[str, list[GraphEdge]] | None = None,
 ) -> list[str] | None:
-    """For an instance node, return the sanitized names of the original's upstream inputs.
+    """For an instance node, return the names of the original's input edges.
 
     Uses *all_parents* (built from the full edge list, not filtered by
     ``target_node_id``) so this works even when the original node isn't
     in the current execution subgraph.
+
+    When *incoming_edges_by_target* is supplied, each name is derived from
+    the original's incoming edge with :func:`edge_input_name`, preserving the
+    same frame-label semantics as the executable original node.  The parent
+    lookup remains as a compatibility path for direct callers that only have
+    the historical adjacency map; production execution always supplies edge
+    metadata.
 
     Returns ``None`` for non-instance nodes.
     """
@@ -247,6 +294,21 @@ def resolve_orig_source_names(
     if not ref or ref not in node_map:
         return None
     result: list[str] = []
+    if incoming_edges_by_target is not None:
+        for edge in incoming_edges_by_target.get(ref, []):
+            source_node = node_map.get(edge.source)
+            if source_node is None:
+                # A target-only execution may omit the original's upstream
+                # node from its prepared map.  The edge-derived name is still
+                # recoverable for ordinary sources from the full node label
+                # when available; an absent source node is malformed graph
+                # input and retains the historical raw-id diagnostic.
+                source_name = id_to_name.get(edge.source, edge.source)
+                result.append(source_name)
+            else:
+                result.append(edge_input_name(edge, source_node))
+        return result
+
     for pid in all_parents.get(ref, []):
         if pid in id_to_name:
             result.append(id_to_name[pid])

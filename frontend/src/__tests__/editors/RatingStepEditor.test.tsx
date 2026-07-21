@@ -1436,7 +1436,7 @@ describe("RatingStepEditor", () => {
       <RatingStepEditor
         config={{}}
         onUpdate={vi.fn()}
-        inputSources={[{ sourceNodeId: "test-source", varName: "source_data", sourceLabel: "Source Data", edgeId: "e1" }]}
+        inputSources={[{ sourceNodeId: "test-source", name: "source_data", sourceLabel: "Source Data", edgeId: "e1" }]}
 
         accentColor="#14b8a6"
       />,

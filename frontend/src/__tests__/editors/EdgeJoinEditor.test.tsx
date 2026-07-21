@@ -52,7 +52,7 @@ const edges = [
 
 function renderEditor(
   config: Record<string, unknown>,
-  onUpdate: OnUpdateConfig = vi.fn(),
+  onUpdate: OnUpdateConfig = vi.fn(() => ({ ok: true as const })),
   overrides: {
     edges?: SimpleEdge[]
     onDeleteInput?: (edgeId: string) => void

@@ -24,6 +24,7 @@ from haute.codegen import (
     graph_to_code,
     graph_to_code_multi,
 )
+from haute.errors import ParseError
 from tests.conftest import (
     compile_node_code as _compile_node_code,
 )
@@ -1922,7 +1923,7 @@ class TestApiInputCodegen:
         _compile_node_code(code)
 
     def test_uppercase_json_api_input(self):
-        """Case-insensitive: .JSON should use v2 shred cache, not scan_parquet."""
+        """Case-insensitive: .JSON uses v2 cached-or-direct shred, not a flat scan."""
         code = _node_to_code(self._make_api_node("input.JSON", "UpperIn"))
         assert "load_v2_api_source" in code
         assert "scan_parquet" not in code
@@ -2528,14 +2529,11 @@ class TestBuildExtraKwargsEdgeCases:
 
 
 class TestConnectDeduplication:
-    """Catch: in multi-submodel mode, cross-boundary edges can produce
-    duplicate connect() calls. ``dedup_connects=True`` must eliminate them.
-    Without dedup, the pipeline would wire the same pair twice, potentially
-    causing double-execution or confusing the executor."""
+    """Separate invalid graph duplicates from boundary-resolution duplicates."""
 
-    def test_duplicate_connects_deduplicated(self):
-        """Two edges between the same pair in submodel mode should produce one connect."""
-        graph = _g(
+    @staticmethod
+    def _submodel_graph(edges: list[dict]):
+        return _g(
             {
                 "nodes": [
                     {
@@ -2551,20 +2549,7 @@ class TestConnectDeduplication:
                         "data": {"label": "ChildA", "nodeType": "polars", "config": {}},
                     },
                 ],
-                "edges": [
-                    {
-                        "id": "e1",
-                        "source": "src",
-                        "target": "submodel__sm1",
-                        "targetHandle": "in__child_a",
-                    },
-                    {
-                        "id": "e2",
-                        "source": "src",
-                        "target": "submodel__sm1",
-                        "targetHandle": "in__child_a",
-                    },
-                ],
+                "edges": edges,
                 "submodels": {
                     "sm1": {
                         "file": "modules/sm1.py",
@@ -2582,11 +2567,54 @@ class TestConnectDeduplication:
                 },
             }
         )
+
+    def test_duplicate_graph_edges_raise_duplicate_input_name(self):
+        graph = self._submodel_graph(
+            [
+                {
+                    "id": "e1",
+                    "source": "src",
+                    "target": "submodel__sm1",
+                    "targetHandle": "in__child_a",
+                },
+                {
+                    "id": "e2",
+                    "source": "src",
+                    "target": "submodel__sm1",
+                    "targetHandle": "in__child_a",
+                },
+            ]
+        )
+
+        with pytest.raises(ParseError) as exc_info:
+            graph_to_code_multi(graph, pipeline_name="main")
+
+        message = str(exc_info.value)
+        assert "child_a" in message
+        assert "Source" in message
+
+    def test_boundary_resolution_connect_pair_is_deduplicated(self):
+        """A direct child edge and its boundary form resolve to one connect."""
+        graph = self._submodel_graph(
+            [
+                {
+                    "id": "direct-child-edge",
+                    "source": "src",
+                    "target": "child_a",
+                },
+                {
+                    "id": "boundary-edge",
+                    "source": "src",
+                    "target": "submodel__sm1",
+                    "targetHandle": "in__child_a",
+                },
+            ]
+        )
+
         files = graph_to_code_multi(graph, pipeline_name="main")
         main_code = files["main.py"]
-        # Count connect calls for the same pair
-        connect_count = main_code.count('pipeline.connect("Source", "ChildA")')
-        assert connect_count == 1, f"Expected 1 connect call after dedup, got {connect_count}"
+
+        assert main_code.count('pipeline.connect("Source", "ChildA")') == 1
         compile(main_code, "<test>", "exec")
 
 

@@ -25,6 +25,14 @@ roadmap item is implemented and verified.
 The Price Contour ratebook factor-context work is implemented and retired. It
 has no active roadmap because it no longer has remaining delivery work.
 
+## Working issue notes
+
+- [API Input UI issue notes](api-input-ui-issues.md) — the four captured issues
+  were designed and implemented as v0.4.1 (frame-row node body, frame-named
+  downstream inputs); see
+  `docs/trip/plans/F_0.4.1_api-input-frame-identity.plan.md`. The note stays as
+  the collection point for any further API Input observations.
+
 ## Sequencing and ownership
 
 Test-suite hardening and Frontend UI quality are cross-cutting evidence tracks;

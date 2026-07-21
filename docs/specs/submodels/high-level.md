@@ -181,6 +181,12 @@ Out of scope (owned elsewhere, linked where relevant):
   submodel navigation UI itself — the `useSubmodelNavigation` hook (drill-in/out, create,
   dissolve) and the `SubmodelDialog` create/rename component — lives in the
   [frontend-graph-canvas](../frontend-graph-canvas/high-level.md) component, not here.
+- A downstream node fed across a submodel boundary lists that input by the referenced
+  child node's sanitised label — the name the flattened code actually binds as the
+  argument (see [frontend-node-editors](../frontend-node-editors/high-level.md) for the
+  chip derivation and [codegen](../codegen/high-level.md)/`edge_input_name` for the
+  backend rule) — never by the submodel placeholder's own label, which names the
+  container, not the frame delivered.
 
 ## Failure model
 

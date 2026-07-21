@@ -70,6 +70,7 @@ function StatefulHarness({
             ? { ...prev, [keyOrUpdates]: value }
             : { ...prev, ...keyOrUpdates },
         )
+        return { ok: true as const }
       }}
       accentColor="#10b981"
     />

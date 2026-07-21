@@ -9,7 +9,7 @@ import { STATUS_COLORS } from "../theme/colors"
 import type { PipelineFlowNode } from "../types/node"
 import { EDGE_JOIN_BASE_HANDLE, EDGE_JOIN_JOIN_BOTTOM_HANDLE, EDGE_JOIN_JOIN_HANDLE } from "../utils/edgeJoinRoles"
 import { DEFAULT_TARGET_HANDLE } from "../utils/flowHandles"
-import { apiInputEmitPortLabels } from "../utils/apiInputPorts"
+import { apiInputFrameLabels } from "../utils/apiInputPorts"
 
 const statusColors: Record<string, string> = {
   ok: "var(--success)",
@@ -80,9 +80,11 @@ function _isDraggingFromEdgeJoinOutput(state: ReactFlowState): boolean {
 
 /** Source-Handle setup for the right edge of the node.
  *
- * Commit-6 multi-frame: when an apiInput has 2+ `emit: true` tables, we
+ * At medium/compact zoom, when an apiInput has 2+ `emit: true` tables, we
  * render one labelled Handle per table (id = table label). Otherwise the
- * legacy single Handle covers the default single-frame use.
+ * legacy single Handle covers the default single-frame use. Full-detail
+ * apiInput frame rows mount their own Handles so the row name and output dot
+ * share one layout coordinate system.
  *
  * Returning a JSX list rather than mutating render order keeps the call
  * sites at the three zoom levels each a one-line switch.
@@ -98,13 +100,13 @@ function _isDraggingFromEdgeJoinOutput(state: ReactFlowState): boolean {
  */
 function _SourceHandles({
   isApiInput,
-  config,
+  frameLabels,
   accent,
   isConnectableEnd,
   nodeLabel,
 }: {
   isApiInput: boolean
-  config: Record<string, unknown> | undefined
+  frameLabels: string[]
   accent: string
   isConnectableEnd: boolean
   nodeLabel: string
@@ -125,32 +127,33 @@ function _SourceHandles({
   // exist (see `utils/apiInputPorts`). Handle ids are the RAW table
   // labels (the id space the backend round-trips); blank/duplicate
   // labels yield NO handle — never a synthesized `port_<idx>`/`__<idx>`
-  // id the executor could not resolve (W1.4). Returns `[]` for the
-  // 0/1-emit case.
-  const labels = apiInputEmitPortLabels(config)
-  if (labels.length === 0) {
-    // Single-frame fallback (one or zero emit:true tables, or no tables key):
-    // preserve the legacy default Handle so existing single-frame pipelines
-    // continue to work unchanged.
+  // id the executor could not resolve (W1.4). A sole eligible frame is
+  // labelled exactly like every other eligible frame.
+  if (frameLabels.length === 0) {
+    // The null-id handle is only the zero-frame diagnostic surface. It must
+    // remain visible so the node explains why no frame can be wired, but it
+    // cannot participate in either direction of a Loose connection.
     return (
       <Handle
         type="source"
         position={Position.Right}
-        isConnectableEnd={isConnectableEnd}
+        isConnectable={false}
+        isConnectableStart={false}
+        isConnectableEnd={false}
         data-testid={`output-connector[0]:${nodeLabel}`}
       />
     )
   }
-  // Multi-frame: stack labelled Handles down the right edge. Each
+  // One or more eligible frames: stack labelled Handles down the right edge. Each
   // Handle's `id` is the table's label — React Flow propagates this to
   // `onConnect.params.sourceHandle` when a user drags from it.
   return (
     <>
-      {labels.map((label, idx) => {
+      {frameLabels.map((label, idx) => {
         // Stack the dots vertically; `top` is a percentage so the
         // Handles space evenly down the right edge regardless of node
         // height.
-        const topPct = ((idx + 1) / (labels.length + 1)) * 100
+        const topPct = ((idx + 1) / (frameLabels.length + 1)) * 100
         return (
           <Handle
             key={label}
@@ -164,6 +167,57 @@ function _SourceHandles({
         )
       })}
     </>
+  )
+}
+
+/**
+ * Full-detail apiInput frame rows.
+ *
+ * Each row owns both its visible raw frame label and its source Handle. The
+ * row is the positioning context for the Handle, so its `top: 50%` is the
+ * row's vertical midpoint and React Flow's right-side transform centres the
+ * dot on the row's right edge. The negative right margin carries that edge
+ * out through the body's padding to the node border.
+ */
+function _ApiInputFrameRows({
+  frameLabels,
+  accent,
+  isConnectableEnd,
+  nodeLabel,
+}: {
+  frameLabels: string[]
+  accent: string
+  isConnectableEnd: boolean
+  nodeLabel: string
+}) {
+  return (
+    <div className="flex flex-col gap-0.5">
+      {frameLabels.map((label, idx) => (
+        <div
+          key={label}
+          data-testid={`api-input-frame-row-${label}`}
+          className="relative flex min-w-0 items-center justify-end py-0.5 pr-3"
+          style={{ marginRight: "-12px" }}
+        >
+          <span
+            data-testid={`api-input-body-label-${label}`}
+            className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-pre text-right font-mono text-[11px] leading-tight"
+            style={{ color: "var(--text-muted)", whiteSpace: "pre" }}
+            title={label}
+          >
+            {label}
+          </span>
+          <Handle
+            id={label}
+            type="source"
+            position={Position.Right}
+            isConnectableEnd={isConnectableEnd}
+            style={{ top: "50%", background: accent }}
+            data-testid={`output-connector[${idx}]:${nodeLabel}`}
+          />
+        </div>
+      ))}
+    </div>
   )
 }
 
@@ -238,36 +292,39 @@ function PipelineNode({ id, data: nodeData, selected }: NodeProps<PipelineFlowNo
   const isCompactNode = NODE_TYPE_META[nodeType as NodeTypeValue]?.size === "compact"
   const sourceHandlesCanEnd = !useStore(_isDraggingFromEdgeJoinOutput)
 
-  // Bundle 3c — emit-table labels for the right-edge handles.  Source
-  // of truth shared between (a) `_SourceHandles` which renders the
-  // Handles, (b) the body label list, and (c) the
-  // `useUpdateNodeInternals` effect that nudges React Flow to re-measure
-  // when the topology changes.  Logic mirrors `_SourceHandles`: only
-  // emit:true tables with a valid (non-blank, non-duplicate) label
-  // count — handle ids are raw labels, never synthesized (W1.4).
-  const emitTableLabels = useMemo<string[]>(
-    () => (isDeployInput ? apiInputEmitPortLabels(nodeData.config) : []),
+  // Bundle 3c — one ordered frame-label list is the source of truth for
+  // source Handles, full-detail body rows, and the re-measure signature.
+  const frameLabels = useMemo<string[]>(
+    () => (isDeployInput ? apiInputFrameLabels(nodeData.config) : []),
     [isDeployInput, nodeData.config],
   )
 
-  // Pipe-joined signature is a stable value-equality proxy for the
-  // labels array; useEffect's value-equality on strings means it
-  // refires only when the labels actually change, not on every parent
-  // re-render that produces a fresh `nodeData.config` reference with
-  // unchanged emit topology (e.g. a column edit inside a table).
-  const emitTablesSig = emitTableLabels.join("|")
+  // JSON serialization is a collision-safe value-equality proxy for the
+  // labels arrays; raw labels are unrestricted strings, so delimiter joins
+  // could alias distinct label sets (for example, ["a|b", "c"] and
+  // ["a", "b|c"]) and skip a required re-measure. The effect still
+  // refires only when labels actually change, not on a fresh config object
+  // whose topology is unchanged (e.g. a column edit inside a table).
+  const frameLabelsSig = JSON.stringify(frameLabels)
+  const zoomLevel = useStore(zoomSelector)
   const edgeJoinJoinHandlePosition = useStore((s) =>
     _edgeJoinJoinHandlePosition(s, id, nodeType),
   )
   const updateNodeInternals = useUpdateNodeInternals()
   useEffect(() => {
     updateNodeInternals(id)
-  }, [id, emitTablesSig, edgeJoinJoinHandlePosition, updateNodeInternals])
+  }, [
+    id,
+    frameLabelsSig,
+    zoomLevel,
+    edgeJoinJoinHandlePosition,
+    updateNodeInternals,
+  ])
 
   const sourceHandles = !isSinkOnly ? (
     <_SourceHandles
       isApiInput={isDeployInput}
-      config={nodeData.config as Record<string, unknown> | undefined}
+      frameLabels={frameLabels}
       accent={accent}
       isConnectableEnd={sourceHandlesCanEnd}
       nodeLabel={nodeData.label}
@@ -281,18 +338,17 @@ function PipelineNode({ id, data: nodeData, selected }: NodeProps<PipelineFlowNo
       nodeLabel={nodeData.label}
     />
   ) : null
-  // 2+ emit tables = multi-frame; render the visual frame-to-label
-  // mapping on the body.  0/1 emit = single-frame fallback (Handle is
-  // unambiguous; no labels needed).
-  const showBodyLabels = isDeployInput && emitTableLabels.length >= 2
+  // At full detail, visible frame rows own the API-input source Handles. At
+  // medium/compact detail, or with no visible frame, `_SourceHandles` remains
+  // mounted on the node container as the zoomed-out/default fallback.
+  const showApiInputFrameRows =
+    isDeployInput && zoomLevel === "full" && frameLabels.length > 0
   const traceActive = !!nodeData._traceActive
   const traceDimmed = !!nodeData._traceDimmed
   const hoverDimmed = !!nodeData._hoverDimmed
   const traceValue = nodeData._traceValue
   const traceMotionDisabled = !!nodeData._traceMotionDisabled
   const hasWarnings = (nodeData._schemaWarnings?.length ?? 0) > 0
-  const zoomLevel = useStore(zoomSelector)
-
   const dimmed = traceDimmed || hoverDimmed
 
   // Comparison-view diff highlight (S11): a ring on the CARD — the same element as
@@ -539,18 +595,45 @@ function PipelineNode({ id, data: nodeData, selected }: NodeProps<PipelineFlowNo
       </div>
 
       {/* Body — Bundle 3c: when this is a multi-frame apiInput, the
-          right-aligned label column visually maps each emit table to
-          its handle on the right edge, in the same top-to-bottom order
-          the Handles are stacked.  Hidden for 0/1 emit (single-frame
-          fallback is unambiguous) and for all non-apiInput types.
+          full-detail frame rows own the right-edge Handle and display each
+          visible frame in top-to-bottom order.  Medium/compact modes and
+          zero-frame apiInputs retain the `_SourceHandles` fallback; all
+          non-apiInput types retain their existing body.
           `bodyStyle` keeps the opaque-face surface consistent with
           medium mode (VC S38 opaque-face redesign). */}
       <div className="px-3 py-2" style={bodyStyle}>
-        <div className="flex items-start gap-2">
-          <div className="flex-1 min-w-0">
+        {showApiInputFrameRows ? (
+          <>
+            {traceActive && traceValue !== undefined && (
+              <div
+                className="mb-1 px-1.5 py-0.5 rounded text-[11px] font-mono truncate"
+                style={{
+                  background: `${accent}18`,
+                  color: accent,
+                  border: `1px solid ${accent}30`,
+                  maxWidth: "100%",
+                }}
+              >
+                {formatValueCompact(traceValue)}
+              </div>
+            )}
+            <_ApiInputFrameRows
+              frameLabels={frameLabels}
+              accent={accent}
+              isConnectableEnd={sourceHandlesCanEnd}
+              nodeLabel={nodeData.label}
+            />
+          </>
+        ) : (
+          <>
             <div className="font-semibold text-[13px] leading-tight truncate" style={{ color: "var(--text-primary)" }}>
               {nodeData.label}
             </div>
+            {isDeployInput && (
+              <div className="mt-1 text-[11px] leading-tight truncate" style={{ color: "var(--text-muted)" }}>
+                No emitted frames
+              </div>
+            )}
             {traceActive && traceValue !== undefined && (
               <div
                 className="mt-1 px-1.5 py-0.5 rounded text-[11px] font-mono truncate"
@@ -564,26 +647,11 @@ function PipelineNode({ id, data: nodeData, selected }: NodeProps<PipelineFlowNo
                 {formatValueCompact(traceValue)}
               </div>
             )}
-          </div>
-          {showBodyLabels && (
-            <div className="flex flex-col gap-0.5 shrink-0 text-right">
-              {emitTableLabels.map((label) => (
-                <span
-                  key={label}
-                  data-testid={`api-input-body-label-${label}`}
-                  className="text-[10px] font-mono leading-tight truncate max-w-[100px]"
-                  style={{ color: "var(--text-muted)" }}
-                  title={label}
-                >
-                  {label}
-                </span>
-              ))}
-            </div>
-          )}
-        </div>
+          </>
+        )}
       </div>
 
-      {sourceHandles}
+      {!showApiInputFrameRows && sourceHandles}
     </div>
   )
 }

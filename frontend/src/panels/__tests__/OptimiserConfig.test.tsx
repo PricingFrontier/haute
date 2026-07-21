@@ -148,6 +148,7 @@ function renderStatefulConfig(
         onUpdateSpy(keyOrUpdates)
         setConfig(prev => ({ ...prev, ...keyOrUpdates }))
       }
+      return { ok: true as const }
     }
 
     return (

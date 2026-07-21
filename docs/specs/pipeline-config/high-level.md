@@ -88,7 +88,18 @@ outgoing edge is used; anything more ambiguous than that raises, naming every ca
 `score(df)` additionally seeds a live input DataFrame into whichever source is marked as the
 deploy input (`@pipeline.api_input`, or `api_input=True`) — or, when nothing is marked and
 there is exactly one source, into that source — leaving every other source to run its own
-load logic.
+load logic. Seeding is port-aware, with a complete seed-shape × port-count matrix: a **bare
+DataFrame** is accepted for zero connected ports (a source-only pipeline, where the seeded
+source is itself the output) and for exactly one distinct connected port (routed to that
+port), and raises for two or more. A **`{frame_label: DataFrame}` dict** is accepted only
+when the seeded source has one or more connected ports and the dict's keys match the
+distinct connected ports *exactly* — a missing key, an unknown extra key, a dict against a
+zero-port source (there are no ports for `{}` or anything else to match; source-only
+pipelines take a bare frame), or a bare frame against a multi-port source all raise
+`ExecutionError` naming the ports concerned. A frame is never silently fanned out to
+multiple ports. Both `run()` and `score()` resolve each edge's frame through the same
+port-aware selection the full executor uses (`_pick_source_frame` on
+`RegisteredEdge.source_port`), keeping the single-execution-engine invariant.
 
 **Project & discovery.** A Haute project is a directory containing `haute.toml` that also
 sits inside a git repository. Every CLI command resolves "which pipeline file" through the

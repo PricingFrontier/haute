@@ -409,6 +409,206 @@ class TestPipeline:
 
 
 # ---------------------------------------------------------------------------
+# Standalone port-aware execution
+# ---------------------------------------------------------------------------
+
+
+class TestPipelinePortAwareExecution:
+    @staticmethod
+    def _one_port_score_pipeline() -> Pipeline:
+        p = Pipeline("one_port_score")
+
+        @p.api_input
+        def api_source() -> dict[str, pl.DataFrame]:
+            raise AssertionError("score() must seed the apiInput source")
+
+        @p.polars
+        def consume(quotes: pl.DataFrame) -> pl.DataFrame:
+            return quotes
+
+        p.connect("api_source", "consume", source_port="quotes")
+        return p
+
+    @staticmethod
+    def _two_port_score_pipeline() -> Pipeline:
+        p = Pipeline("two_port_score")
+
+        @p.api_input
+        def api_source() -> dict[str, pl.DataFrame]:
+            raise AssertionError("score() must seed the apiInput source")
+
+        @p.polars
+        def combine(quotes: pl.DataFrame, drivers: pl.DataFrame) -> pl.DataFrame:
+            if not isinstance(quotes, pl.DataFrame) or not isinstance(drivers, pl.DataFrame):
+                return pl.DataFrame({"quote_id": [-1], "driver_id": [-1]})
+            return pl.DataFrame(
+                {
+                    "quote_id": quotes["quote_id"],
+                    "driver_id": drivers["driver_id"],
+                }
+            )
+
+        p.connect("api_source", "combine", source_port="quotes")
+        p.connect("api_source", "combine", source_port="drivers")
+        return p
+
+    def test_run_selects_the_frame_from_a_one_frame_api_input_dict(self):
+        p = Pipeline("one_frame_run")
+        expected = pl.DataFrame({"quote_id": [17]})
+
+        @p.api_input
+        def api_source() -> dict[str, pl.DataFrame]:
+            return {"quotes": expected}
+
+        @p.polars
+        def consume(quotes: pl.DataFrame) -> pl.DataFrame:
+            return quotes
+
+        p.connect("api_source", "consume", source_port="quotes")
+
+        result = p.run()
+        assert isinstance(result, pl.DataFrame)
+        assert result.to_dict(as_series=False) == {"quote_id": [17]}
+
+    def test_run_selects_each_named_frame_from_a_many_frame_api_input_dict(self):
+        p = Pipeline("many_frame_run")
+
+        @p.api_input
+        def api_source() -> dict[str, pl.DataFrame]:
+            return {
+                "quotes": pl.DataFrame({"quote_id": [17]}),
+                "drivers": pl.DataFrame({"driver_id": [31]}),
+            }
+
+        @p.polars
+        def combine(quotes: pl.DataFrame, drivers: pl.DataFrame) -> pl.DataFrame:
+            if not isinstance(quotes, pl.DataFrame) or not isinstance(drivers, pl.DataFrame):
+                return pl.DataFrame({"quote_id": [-1], "driver_id": [-1]})
+            return pl.DataFrame(
+                {
+                    "quote_id": quotes["quote_id"],
+                    "driver_id": drivers["driver_id"],
+                }
+            )
+
+        p.connect("api_source", "combine", source_port="quotes")
+        p.connect("api_source", "combine", source_port="drivers")
+
+        assert p.run().to_dict(as_series=False) == {
+            "quote_id": [17],
+            "driver_id": [31],
+        }
+
+    def test_score_accepts_a_bare_frame_for_a_source_only_pipeline(self):
+        p = Pipeline("source_only_score")
+
+        @p.api_input
+        def api_source() -> pl.DataFrame:
+            raise AssertionError("score() must seed the apiInput source")
+
+        seed = pl.DataFrame({"quote_id": [17]})
+        assert p.score(seed).to_dict(as_series=False) == {"quote_id": [17]}
+
+    def test_score_accepts_a_bare_frame_for_exactly_one_connected_port(self):
+        p = self._one_port_score_pipeline()
+        seed = pl.DataFrame({"quote_id": [17]})
+
+        assert p.score(seed).to_dict(as_series=False) == {"quote_id": [17]}
+
+    def test_score_rejects_a_bare_frame_for_multiple_connected_ports(self):
+        p = self._two_port_score_pipeline()
+
+        with pytest.raises(ExecutionError) as exc_info:
+            p.score(pl.DataFrame({"quote_id": [17], "driver_id": [31]}))
+
+        message = str(exc_info.value)
+        assert "quotes" in message
+        assert "drivers" in message
+
+    def test_score_accepts_an_exact_one_key_dict_for_one_connected_port(self):
+        p = self._one_port_score_pipeline()
+
+        result = p.score({"quotes": pl.DataFrame({"quote_id": [17]})})
+
+        assert isinstance(result, pl.DataFrame)
+        assert result.to_dict(as_series=False) == {"quote_id": [17]}
+
+    def test_score_accepts_an_exact_dict_for_multiple_connected_ports(self):
+        p = self._two_port_score_pipeline()
+
+        result = p.score(
+            {
+                "quotes": pl.DataFrame({"quote_id": [17]}),
+                "drivers": pl.DataFrame({"driver_id": [31]}),
+            }
+        )
+
+        assert result.to_dict(as_series=False) == {
+            "quote_id": [17],
+            "driver_id": [31],
+        }
+
+    def test_score_reports_missing_and_unknown_ports_from_the_same_dict(self):
+        p = self._two_port_score_pipeline()
+
+        with pytest.raises(ExecutionError) as exc_info:
+            p.score(
+                {
+                    "quotes": pl.DataFrame({"quote_id": [17]}),
+                    "rogue": pl.DataFrame({"other_id": [99]}),
+                }
+            )
+
+        message = str(exc_info.value)
+        assert "missing" in message.lower()
+        assert "drivers" in message
+        assert "unknown" in message.lower()
+        assert "rogue" in message
+
+    def test_score_rejects_a_dict_with_an_unknown_extra_port(self):
+        p = self._one_port_score_pipeline()
+
+        with pytest.raises(ExecutionError) as exc_info:
+            p.score(
+                {
+                    "quotes": pl.DataFrame({"quote_id": [17]}),
+                    "drivers": pl.DataFrame({"driver_id": [31]}),
+                }
+            )
+
+        message = str(exc_info.value)
+        assert "unknown" in message.lower()
+        assert "drivers" in message
+
+    @pytest.mark.parametrize(
+        "seed, unknown_port",
+        [
+            ({}, None),
+            ({"quotes": pl.DataFrame({"quote_id": [17]})}, "quotes"),
+        ],
+        ids=["empty-dict", "non-empty-dict"],
+    )
+    def test_score_rejects_any_dict_for_a_source_with_zero_connected_ports(
+        self,
+        seed: dict[str, pl.DataFrame],
+        unknown_port: str | None,
+    ):
+        p = Pipeline("source_only_dict_score")
+
+        @p.api_input
+        def api_source() -> pl.DataFrame:
+            raise AssertionError("score() must seed the apiInput source")
+
+        with pytest.raises(ExecutionError) as exc_info:
+            p.score(seed)
+
+        message = str(exc_info.value)
+        assert "port" in message.lower()
+        if unknown_port is not None:
+            assert unknown_port in message
+
+
+# ---------------------------------------------------------------------------
 # Node edge cases
 # ---------------------------------------------------------------------------
 

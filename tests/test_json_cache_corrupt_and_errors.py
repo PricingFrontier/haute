@@ -248,8 +248,11 @@ def test_infer_then_build_scalar_array_end_to_end(client: TestClient, tmp_path: 
     infer = client.post("/api/json-cache/infer", json={"path": "data.json"})
     assert infer.status_code == 200, infer.text
     tables = infer.json()["tables"]
-    labels = {t["label"] for t in tables}
-    assert "$[:].coverages[:]" in labels  # scalar array became a child table
+    labels_by_path = {t["path"]: t["label"] for t in tables}
+    assert labels_by_path == {
+        "$[:]": "root",
+        "$[:].coverages[:]": "coverages",
+    }
     for t in tables:
         t["emit"] = True  # user opts the child table in
 

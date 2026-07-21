@@ -25,7 +25,7 @@ from haute._execution_context import ExecutionProfile
 from haute._io import read_data_source
 from haute._logging import get_logger
 from haute._polars_utils import DEFAULT_STREAMING_CHUNK_SIZE, streaming_collect
-from haute._types import GraphNode, NodeType, PipelineGraph
+from haute._types import GraphEdge, GraphNode, NodeType, PipelineGraph
 from haute.errors import ChunkPlanUnsupportedError, ContractMismatchError
 from haute.execution import plan_prepared_execution_strategy
 from haute.projection import _children_of, prepare_graph
@@ -1075,6 +1075,12 @@ def iter_chunked_frames(request: ChunkRunnerRequest) -> Iterator[ChunkBatch]:
         for node_id, capability in plan.capabilities.items()
         if capability.model_reuse_lifetime == "batch"
     }
+    incoming_edges_by_target: dict[str, list[GraphEdge]] = {}
+    for edge in prepared.relevant_edges:
+        incoming_edges_by_target.setdefault(edge.target, []).append(edge)
+    all_incoming_edges_by_target: dict[str, list[GraphEdge]] = {}
+    for edge in graph.edges:
+        all_incoming_edges_by_target.setdefault(edge.target, []).append(edge)
     funcs = _build_funcs(
         list(plan.node_ids),
         node_map,
@@ -1082,6 +1088,9 @@ def iter_chunked_frames(request: ChunkRunnerRequest) -> Iterator[ChunkBatch]:
         prepared.id_to_name,
         graph.parents_of,
         request.build_node_fn,
+        incoming_edges_by_target=incoming_edges_by_target,
+        all_incoming_edges_by_target=all_incoming_edges_by_target,
+        all_node_map=graph.node_map,
         preamble_ns=request.preamble_ns,
         source="live",
         required_output_columns_by_node=builder_required,

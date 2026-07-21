@@ -1,11 +1,11 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
+import { describe, it, expect, expectTypeOf, vi, beforeEach, afterEach } from "vitest"
 import { readFileSync } from "node:fs"
 import path from "node:path"
 import { StrictMode } from "react"
 import { render, screen, fireEvent, cleanup, waitFor, act } from "@testing-library/react"
 import type { EditorView } from "@codemirror/view"
-import { FileBrowser, MlflowStatusBadge, SchemaPreview } from "../_shared"
-import type { SchemaInfo } from "../_shared"
+import { FileBrowser, InputSourcesBar, MlflowStatusBadge, SchemaPreview } from "../_shared"
+import type { OnUpdateConfig, SchemaInfo } from "../_shared"
 import CodeEditor from "../CodeMirrorEditor"
 
 // ---------------------------------------------------------------------------
@@ -70,6 +70,159 @@ describe("_shared import surface", () => {
 
     expect(source).not.toContain("@codemirror/")
     expect(source).not.toMatch(/\bCodeEditor\b/)
+  })
+})
+
+describe("OnUpdateConfig", () => {
+  it("returns the exact graph commit result channel", () => {
+    expectTypeOf<ReturnType<OnUpdateConfig>>().toEqualTypeOf<
+      { ok: true } | { ok: false; error: string }
+    >()
+  })
+})
+
+describe("InputSourcesBar", () => {
+  afterEach(cleanup)
+
+  it("renders duplicate-parent frame labels with source tooltips and removes each edge independently", () => {
+    const onDeleteInput = vi.fn()
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined)
+    try {
+      render(
+        <InputSourcesBar
+          inputSources={[
+            {
+              sourceNodeId: "api",
+              name: "quotes",
+              sourceLabel: "Quote API",
+              edgeId: "edge_quotes",
+            },
+            {
+              sourceNodeId: "api",
+              name: "drivers",
+              sourceLabel: "Quote API",
+              edgeId: "edge_drivers",
+            },
+          ]}
+          onDeleteInput={onDeleteInput}
+        />,
+      )
+
+      const quotes = screen.getByText("quotes")
+      const drivers = screen.getByText("drivers")
+      expect(quotes).toBeInTheDocument()
+      expect(drivers).toBeInTheDocument()
+      expect(screen.queryByText("Quote_API")).not.toBeInTheDocument()
+      expect(
+        screen.queryByLabelText(/unresolved.*frame|frame.*unresolved/i),
+      ).not.toBeInTheDocument()
+      expect(quotes.closest("[title]")).toHaveAttribute(
+        "title",
+        expect.stringMatching(/Quote API/),
+      )
+      expect(drivers.closest("[title]")).toHaveAttribute(
+        "title",
+        expect.stringMatching(/Quote API/),
+      )
+
+      const removeButtons = screen.getAllByRole("button", {
+        name: /remove connection from Quote API/i,
+      })
+      expect(removeButtons).toHaveLength(2)
+      fireEvent.click(removeButtons[0])
+      fireEvent.click(removeButtons[1])
+      expect(onDeleteInput).toHaveBeenNthCalledWith(1, "edge_quotes")
+      expect(onDeleteInput).toHaveBeenNthCalledWith(2, "edge_drivers")
+      expect(consoleError.mock.calls.flat().join(" ")).not.toMatch(
+        /same key|unique ["']key["']/i,
+      )
+    } finally {
+      consoleError.mockRestore()
+    }
+  })
+
+  it("shows an accessible warning marker and explanatory tooltip for an unresolved apiInput frame", () => {
+    render(
+      <InputSourcesBar
+        inputSources={[
+          {
+            sourceNodeId: "api",
+            name: "Quote_API",
+            sourceLabel: "Quote API",
+            edgeId: "edge_api",
+            frameUnresolved: true,
+          },
+        ]}
+      />,
+    )
+
+    expect(screen.getByText("Quote_API")).toBeInTheDocument()
+    const warning = screen.getByLabelText(/unresolved.*frame|frame.*unresolved/i)
+    expect(warning).toBeVisible()
+    expect(warning).toHaveAttribute(
+      "title",
+      expect.stringMatching(/eligible|emitted|resolv/i),
+    )
+  })
+
+  it("keys two distinct input names by edge id even when their source labels match", () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined)
+    try {
+      render(
+        <InputSourcesBar
+          inputSources={[
+            {
+              sourceNodeId: "source_a",
+              name: "shared_a",
+              sourceLabel: "Shared Source",
+              edgeId: "edge_a",
+            },
+            {
+              sourceNodeId: "source_b",
+              name: "shared_b",
+              sourceLabel: "Shared Source",
+              edgeId: "edge_b",
+            },
+          ]}
+        />,
+      )
+
+      expect(screen.getByText("shared_a")).toBeInTheDocument()
+      expect(screen.getByText("shared_b")).toBeInTheDocument()
+      expect(consoleError.mock.calls.flat().join(" ")).not.toMatch(
+        /same key|unique ["']key["']/i,
+      )
+    } finally {
+      consoleError.mockRestore()
+    }
+  })
+
+  it("renders the required name verbatim, including case and leading underscores", () => {
+    const frameLabels = ["MixedCase", "_private"]
+    render(
+      <InputSourcesBar
+        inputSources={frameLabels.map((name, index) => ({
+          sourceNodeId: "api",
+          name,
+          sourceLabel: "Quote API",
+          edgeId: `edge_${index}`,
+        }))}
+      />,
+    )
+
+    const renderedLabels = frameLabels.map((frameLabel, index) => {
+      const chip = screen.getByTestId(`input-source-edge_${index}`)
+      const label = chip.querySelector("code")
+      expect(label).not.toBeNull()
+      expect(label?.textContent).toBe(frameLabel)
+      return label as HTMLElement
+    })
+
+    renderedLabels.forEach((label) => {
+      expect(window.getComputedStyle(label).whiteSpace).toMatch(
+        /^(pre|pre-wrap|break-spaces)$/,
+      )
+    })
   })
 })
 

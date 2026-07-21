@@ -110,6 +110,7 @@ class TestGenApiInput:
         assert 'config="config/quote_input/CSVInput.json"' in code
         assert "def CSVInput()" in code
         assert "read_data_source" in code
+        assert "def CSVInput() -> pl.LazyFrame:" in code
         assert 'Path(__file__).parent / "data/input.csv"' in code
         _compile_node_code(code)
 
@@ -139,6 +140,7 @@ class TestGenApiInput:
         assert 'config="config/quote_input/JSONInput.json"' in code
         assert "def JSONInput()" in code
         assert "load_v2_api_source" in code
+        assert "def JSONInput() -> dict[str, pl.LazyFrame]:" in code
         assert 'Path(__file__).parent / "config/quote_input/JSONInput.json"' in code
         _compile_node_code(code)
 
@@ -916,7 +918,27 @@ class TestGraphToCodeWithBuilders:
                         "data": {
                             "label": "API",
                             "nodeType": "apiInput",
-                            "config": {"path": "data/input.parquet"},
+                            "config": {
+                                "path": "data/input.json",
+                                "tables": [
+                                    {
+                                        "path": "$[:]",
+                                        "label": "quotes",
+                                        "emit": True,
+                                        "row_id_column": None,
+                                        "columns": [
+                                            {
+                                                "name": "id",
+                                                "path": "$[:].id",
+                                                "type": "int",
+                                                "status": "Confirmed",
+                                                "selected": True,
+                                                "levels": None,
+                                            }
+                                        ],
+                                    }
+                                ],
+                            },
                         },
                     },
                     {
@@ -928,13 +950,20 @@ class TestGraphToCodeWithBuilders:
                         },
                     },
                 ],
-                "edges": [{"id": "e1", "source": "api", "target": "t"}],
+                "edges": [
+                    {
+                        "id": "e1",
+                        "source": "api",
+                        "target": "t",
+                        "sourceHandle": "quotes",
+                    }
+                ],
             }
         )
         code = graph_to_code(graph)
         assert "def API()" in code
-        assert "def Process(API: pl.LazyFrame)" in code
-        assert 'pipeline.connect("API", "Process")' in code
+        assert "def Process(quotes: pl.LazyFrame)" in code
+        assert 'pipeline.connect("API", "Process", source_port="quotes")' in code
         compile(code, "<test>", "exec")
 
     def test_pipeline_with_constant_compiles(self) -> None:
@@ -1140,9 +1169,9 @@ class TestCodegenExecValidation:
     def test_api_input_exec_produces_lazyframe(self) -> None:
         """apiInput code for a JSON file compiles and contains v2 shred markers.
 
-        v2 generated code requires a live config file and pre-built per-port
-        cache, so we verify compilation and v2 structural markers rather than
-        executing the generated function directly.
+        This fixture lacks a matching sidecar config, so we verify compilation
+        and v2 structural markers here; standalone direct-vs-cached execution is
+        covered by ``test_codegen_execution_equivalence.py``.
         """
         node = _make_codegen_node(
             "apiInput",
@@ -1184,14 +1213,15 @@ class TestCodegenExecValidation:
             ns,
         )
 
-        with pytest.raises(RuntimeError, match="no v2 schema"):
+        with pytest.raises(RuntimeError, match="no v2 schema") as exc_info:
             ns["quotes"]()
+        assert "Cache as Parquet" not in str(exc_info.value)
 
     def test_json_api_input_exec_fails_loudly_without_selected_columns(
         self,
         tmp_path: Path,
     ) -> None:
-        """Generated JSON apiInput separates emit-without-columns from cache misses."""
+        """Generated JSON apiInput reports the config action, not a cache action."""
         config_dir = tmp_path / "config" / "quote_input"
         config_dir.mkdir(parents=True)
         (config_dir / "quotes.json").write_text(
@@ -1235,8 +1265,9 @@ class TestCodegenExecValidation:
 
         with pytest.raises(
             RuntimeError, match="emit-true tables but none has any selected columns"
-        ):
+        ) as exc_info:
             ns["quotes"]()
+        assert "Cache as Parquet" not in str(exc_info.value)
 
     def test_output_exec_assembles_document(self, tmp_path: Path) -> None:
         """The generated OUTPUT body assembles the response document.
@@ -1299,12 +1330,8 @@ class TestCodegenExecValidation:
         assert set(collected.columns) == {"premium", "Area"}
         assert collected.to_dicts() == [{"premium": 1.0, "Area": "A"}]
 
-    def test_multi_frame_output_dedupes_duplicate_params(self) -> None:
-        """A multi-frame OUTPUT (one apiInput feeding several edges) must codegen
-        VALID Python. Duplicate parameter names are a compile-time SyntaxError —
-        ast.parse tolerates them (so the canvas works) but the file can't be
-        imported/deployed — so the params must be de-duplicated and the result
-        must compile()."""
+    def test_multi_frame_output_uses_supplied_frame_params(self) -> None:
+        """OUTPUT receives the distinct frame names already derived per edge."""
         node = _make_codegen_node(
             "output",
             {
@@ -1320,15 +1347,13 @@ class TestCodegenExecValidation:
             },
             label="Quote_Response",
         )
-        # Four edges, all from the same multi-frame source node `quotes`.
-        code = _node_to_code(node, source_names=["quotes", "quotes", "quotes", "quotes"])
-        # Distinct, valid params — not four bare `quotes`.
-        assert "quotes: pl.LazyFrame, quotes_2: pl.LazyFrame" in code
-        assert "quotes_3: pl.LazyFrame, quotes_4: pl.LazyFrame" in code
-        # The body forwards ALL frames (deduped names) to the shared assembler.
+        frame_names = ["quotes", "drivers", "licences", "vehicles"]
+        code = _node_to_code(node, source_names=frame_names)
+        assert "quotes: pl.LazyFrame, drivers: pl.LazyFrame" in code
+        assert "licences: pl.LazyFrame, vehicles: pl.LazyFrame" in code
+        # The body forwards every supplied frame name to the shared assembler.
         assert "assemble_output_from_config(" in code
-        assert "source_names=['quotes', 'quotes_2', 'quotes_3', 'quotes_4']" in code
-        # compile() (unlike ast.parse) rejects duplicate arg names — must pass.
+        assert "source_names=['quotes', 'drivers', 'licences', 'vehicles']" in code
         _compile_node_code(code)
 
     def test_banding_exec_applies_sidecar_config(self, tmp_path: Path) -> None:

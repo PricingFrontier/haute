@@ -62,6 +62,46 @@ function stripNodeDataMetadataFields(value: unknown): unknown {
   return out
 }
 
+function stripGraphMetadataTransientFields(value: unknown): unknown {
+  if (value === null || typeof value !== "object") return value
+  if (Array.isArray(value)) return value.map(stripGraphMetadataTransientFields)
+
+  const record = value as Record<string, unknown>
+  if (typeof record.id === "string" && "data" in record) {
+    return stripNodeUiFields(record as unknown as Node)
+  }
+  if (typeof record.source === "string" && typeof record.target === "string") {
+    return stripEdgeUiFields(record as unknown as Edge)
+  }
+
+  const stripped: Record<string, unknown> = {}
+  for (const [key, child] of Object.entries(record)) {
+    stripped[key] = stripGraphMetadataTransientFields(child)
+  }
+  return stripped
+}
+
+function cloneGraphValue<T>(value: T, seen = new WeakMap<object, unknown>()): T {
+  if (value === null || typeof value !== "object") return value
+  const objectValue = value as object
+  const existing = seen.get(objectValue)
+  if (existing !== undefined) return existing as T
+
+  if (Array.isArray(value)) {
+    const clone: unknown[] = []
+    seen.set(objectValue, clone)
+    for (const item of value) clone.push(cloneGraphValue(item, seen))
+    return clone as T
+  }
+
+  const clone: Record<string, unknown> = {}
+  seen.set(objectValue, clone)
+  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+    clone[key] = cloneGraphValue(child, seen)
+  }
+  return clone as T
+}
+
 // ---------------------------------------------------------------------------
 // Canonicalisation
 //
@@ -115,6 +155,27 @@ export function serializeSnapshot(input: {
       preamble: input.preamble,
     }),
   )
+}
+
+/**
+ * Clone a history snapshot using the same persisted-graph boundary as
+ * `serializeSnapshot`. React Flow presentation fields and transient node
+ * metadata must not leak into undo/redo state.
+ */
+export function cloneGraphSnapshot(input: {
+  nodes: readonly Node[]
+  edges: readonly Edge[]
+  preamble: string
+  submodels?: Record<string, unknown>
+}): { nodes: Node[]; edges: Edge[]; preamble: string; submodels: Record<string, unknown> } {
+  return {
+    nodes: input.nodes.map((node) => cloneGraphValue(stripNodeUiFields(node)) as Node),
+    edges: input.edges.map((edge) => cloneGraphValue(stripEdgeUiFields(edge)) as Edge),
+    preamble: input.preamble,
+    submodels: cloneGraphValue(
+      stripGraphMetadataTransientFields(input.submodels ?? {}),
+    ) as Record<string, unknown>,
+  }
 }
 
 /** Pre-computed empty-workspace sentinel (fast path for fresh sessions). */

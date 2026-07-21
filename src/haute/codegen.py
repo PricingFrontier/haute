@@ -31,7 +31,12 @@ from haute._edge_join import (
     resolve_edge_join_role_indices,
 )
 from haute._graph_shape import validate_pipeline_graph_shape_contracts
-from haute._graph_utils import _sanitize_func_name, build_instance_mapping
+from haute._graph_utils import (
+    _sanitize_func_name,
+    build_instance_mapping,
+    duplicate_input_names,
+    edge_input_name,
+)
 from haute._logging import get_logger
 from haute._registry import NODE_REGISTRY
 from haute._topo import topo_sort_ids
@@ -334,6 +339,7 @@ def _node_to_code(
     node: GraphNode,
     source_names: list[str] | None = None,
     source_ids: list[str] | None = None,
+    source_func_names: list[str] | None = None,
 ) -> str:
     """Generate code for a single node.
 
@@ -348,9 +354,40 @@ def _node_to_code(
     if source_ids is None:
         source_ids = []
 
+    original_source_ids = source_ids
     source_names, source_ids = _role_order_node_sources(node, source_names, source_ids)
+    if source_func_names is not None:
+        source_func_names, _ = _role_order_node_sources(
+            node,
+            source_func_names,
+            original_source_ids,
+        )
 
     code = _generate_node_code(node, source_names)
+
+    # Edge-join role metadata identifies the connected source functions so
+    # the parser can reconstruct the graph.  The function parameters above
+    # are intentionally the edge-derived input names (an apiInput frame is a
+    # frame label), so keep those names in the signature/body while emitting
+    # source-function names in the role kwargs.
+    if node.data.nodeType == NodeType.EDGE_JOIN and source_func_names is not None:
+        if len(source_func_names) != 2 or len(source_names) != 2:
+            raise ParseError(
+                "edgeJoin codegen source function names and input names are out of sync.",
+                node_id=node.id,
+                node_label=node.data.label,
+                source_names=source_names,
+                source_func_names=source_func_names,
+            )
+        code = code.replace(
+            f"base_input={_safe_str(source_names[0])}",
+            f"base_input={_safe_str(source_func_names[0])}",
+            1,
+        ).replace(
+            f"join_input={_safe_str(source_names[1])}",
+            f"join_input={_safe_str(source_func_names[1])}",
+            1,
+        )
 
     node_type = node.data.nodeType
     if has_config_folder(node_type):
@@ -564,24 +601,57 @@ def _error_on_name_collisions(labels: list[str]) -> None:
     )
 
 
-def _build_node_sources(
+def _edge_input_name_for_codegen(edge: GraphEdge, source_node: GraphNode) -> str:
+    """Derive one emitted parameter name from an incoming graph edge.
+
+    ``edge_input_name`` is the single source of truth shared with execution.
+    Codegen adds the parser-facing error context for the one malformed graph
+    state that the editor cannot create: an apiInput edge without a frame
+    handle.
+    """
+    if source_node.data.nodeType == NodeType.API_INPUT and not edge.sourceHandle:
+        raise ParseError(
+            "apiInput edge has no source_port/sourceHandle.",
+            edge_id=edge.id,
+            source_node=source_node.id,
+            source_node_label=source_node.data.label,
+        )
+    return edge_input_name(edge, source_node)
+
+
+def _build_node_input_metadata(
     edges: list[GraphEdge],
-    id_to_func: dict[str, str],
-) -> dict[str, list[str]]:
-    """Map target node ID -> list of source function names."""
-    sources: dict[str, list[str]] = {}
+    source_nodes: dict[str, GraphNode],
+) -> tuple[dict[str, list[str]], dict[str, list[str]]]:
+    """Build per-target input names and source IDs in edge declaration order."""
+    names_by_target: dict[str, list[str]] = {}
+    ids_by_target: dict[str, list[str]] = {}
     for edge in edges:
-        src_name = id_to_func.get(edge.source, edge.source)
-        sources.setdefault(edge.target, []).append(src_name)
-    return sources
+        source_node = source_nodes[edge.source]
+        names_by_target.setdefault(edge.target, []).append(
+            _edge_input_name_for_codegen(edge, source_node)
+        )
+        ids_by_target.setdefault(edge.target, []).append(edge.source)
+    return names_by_target, ids_by_target
 
 
-def _build_node_source_ids(edges: list[GraphEdge]) -> dict[str, list[str]]:
-    """Map target node ID -> list of source node IDs in edge order."""
-    sources: dict[str, list[str]] = {}
-    for edge in edges:
-        sources.setdefault(edge.target, []).append(edge.source)
-    return sources
+def _validate_duplicate_node_inputs(
+    node_sources: dict[str, list[str]],
+    target_nodes: dict[str, GraphNode],
+) -> None:
+    """Reject ambiguous per-edge parameters before any builder is called."""
+    for target_id, names in node_sources.items():
+        duplicates = duplicate_input_names(names)
+        if not duplicates:
+            continue
+        target_node = target_nodes[target_id]
+        raise ParseError(
+            "Duplicate derived input name for one node.",
+            node_id=target_node.id,
+            node_label=target_node.data.label,
+            input_name=duplicates[0],
+            duplicate_names=duplicates,
+        )
 
 
 def _order_edge_join_incoming_edges(
@@ -630,7 +700,10 @@ def _build_instance_of_map(sorted_nodes: list[GraphNode]) -> dict[str, str]:
 
 
 #: Type alias for a function that generates code for a single node.
-_NodeCodeFn = Callable[[GraphNode, list[str] | None, list[str] | None], str]
+_NodeCodeFn = Callable[
+    [GraphNode, list[str] | None, list[str] | None, list[str] | None],
+    str,
+]
 _ConnectPair = tuple[str, str, str | None, str | None]
 
 
@@ -644,6 +717,7 @@ def _generate_pipeline_lines(
     id_to_func: dict[str, str],
     node_sources: dict[str, list[str]],
     connect_pairs: list[_ConnectPair],
+    node_source_func_names: dict[str, list[str]] | None = None,
     node_source_ids: dict[str, list[str]] | None = None,
     preserved_blocks: list[str] | None = None,
     submodel_imports: list[str] | None = None,
@@ -707,7 +781,8 @@ def _generate_pipeline_lines(
     for node in originals:
         srcs = node_sources.get(node.id, [])
         src_ids = (node_source_ids or {}).get(node.id, [])
-        lines.append(node_to_code_fn(node, srcs, src_ids))
+        src_func_names = (node_source_func_names or {}).get(node.id, [])
+        lines.append(node_to_code_fn(node, srcs, src_ids, src_func_names))
         lines.append("")
 
     for node in instances:
@@ -851,13 +926,19 @@ def _submodel_node_to_code(
     node: GraphNode,
     source_names: list[str] | None = None,
     source_ids: list[str] | None = None,
+    source_func_names: list[str] | None = None,
 ) -> str:
     """Generate code for a single node inside a submodel file.
 
     Identical to ``_node_to_code`` but uses ``@submodel.<type>`` instead of
     ``@pipeline.<type>``.
     """
-    code = _node_to_code(node, source_names=source_names, source_ids=source_ids)
+    code = _node_to_code(
+        node,
+        source_names=source_names,
+        source_ids=source_ids,
+        source_func_names=source_func_names,
+    )
     code = code.replace("@pipeline.", "@submodel.", 1)
     if node.data.nodeType == NodeType.EDGE_JOIN:
         code = code.replace("pipeline._apply_edge_join(", "submodel._apply_edge_join(")
@@ -907,8 +988,12 @@ def graph_to_code_multi(
         sorted_nodes = _topo_sort(nodes, edges)
 
         id_to_func = _build_id_to_func(sorted_nodes)
-        node_sources = _build_node_sources(edges, id_to_func)
-        node_source_ids = _build_node_source_ids(edges)
+        node_sources, node_source_ids = _build_node_input_metadata(edges, node_map)
+        _validate_duplicate_node_inputs(node_sources, node_map)
+        node_source_func_names = {
+            target_id: [id_to_func[source_id] for source_id in source_ids]
+            for target_id, source_ids in node_source_ids.items()
+        }
 
         all_preserved = preserved_blocks if preserved_blocks is not None else graph.preserved_blocks
 
@@ -934,6 +1019,7 @@ def graph_to_code_multi(
             id_to_func=id_to_func,
             node_sources=node_sources,
             connect_pairs=connect_pairs,
+            node_source_func_names=node_source_func_names,
             node_source_ids=node_source_ids,
             preserved_blocks=all_preserved or None,
             node_to_code_fn=_node_to_code,
@@ -981,8 +1067,11 @@ def graph_to_code_multi(
 
         sorted_sm_nodes = _topo_sort(sm_nodes, sm_edges)
         sm_id_to_func = _build_id_to_func(sorted_sm_nodes)
-        sm_node_sources = _build_node_sources(sm_edges, sm_id_to_func)
-        sm_node_source_ids = _build_node_source_ids(sm_edges)
+        sm_node_sources, sm_node_source_ids = _build_node_input_metadata(sm_edges, sm_node_map)
+        sm_node_source_func_names = {
+            target_id: [sm_id_to_func[source_id] for source_id in source_ids]
+            for target_id, source_ids in sm_node_source_ids.items()
+        }
 
         # Also include cross-boundary inputs from parent graph edges.
         # Every edge targeting the submodel placeholder must carry a valid
@@ -1016,12 +1105,15 @@ def graph_to_code_multi(
                     submodel=sm_name,
                     known_children=sorted(sm_child_ids),
                 )
-            src_name = root_id_to_func.get(edge.source, _sanitize_func_name(edge.source))
+            src_name = _edge_input_name_for_codegen(edge, node_map[edge.source])
             existing = sm_node_sources.setdefault(child_id, [])
             existing_ids = sm_node_source_ids.setdefault(child_id, [])
-            if src_name not in existing:
-                existing.append(src_name)
-                existing_ids.append(edge.source)
+            existing.append(src_name)
+            existing_ids.append(edge.source)
+            sm_node_source_func_names.setdefault(child_id, []).append(
+                root_id_to_func.get(edge.source, _sanitize_func_name(edge.source))
+            )
+        _validate_duplicate_node_inputs(sm_node_sources, sm_node_map)
         # Validate out__ cross-boundary edges early, during submodel-file
         # generation, so a malformed source handle fails with a clear
         # ParseError here rather than a confusing downstream error when the
@@ -1074,6 +1166,7 @@ def graph_to_code_multi(
             id_to_func=sm_id_to_func,
             node_sources=sm_node_sources,
             connect_pairs=sm_connect_pairs,
+            node_source_func_names=sm_node_source_func_names,
             node_source_ids=sm_node_source_ids,
             node_to_code_fn=_submodel_node_to_code,
             obj_name="submodel",
@@ -1136,8 +1229,17 @@ def graph_to_code_multi(
 
     # Build source names per root node from root-level edges AND
     # cross-boundary edges (resolving submodel handles to child node names).
+    submodel_node_maps: dict[str, dict[str, GraphNode]] = {}
+    for sm_name, sm_meta in submodels.items():
+        sm_nodes = [
+            GraphNode.model_validate(raw) if isinstance(raw, dict) else raw
+            for raw in sm_meta.get("graph", {}).get("nodes", [])
+        ]
+        submodel_node_maps[f"submodel__{sm_name}"] = {node.id: node for node in sm_nodes}
+
     root_node_sources: dict[str, list[str]] = {}
     root_node_source_ids: dict[str, list[str]] = {}
+    root_node_source_func_names: dict[str, list[str]] = {}
     for edge in edges:
         src = edge.source
         tgt = edge.target
@@ -1163,12 +1265,21 @@ def graph_to_code_multi(
         # Only care about edges feeding into root nodes
         if actual_tgt not in root_node_ids:
             continue
-        src_name = root_id_to_func.get(actual_src, _sanitize_func_name(actual_src))
+        if src in submodel_node_ids:
+            source_node = submodel_node_maps[src][actual_src]
+        else:
+            source_node = node_map[src]
+        src_name = _edge_input_name_for_codegen(edge, source_node)
         root_node_sources.setdefault(actual_tgt, []).append(src_name)
         # Use the RESOLVED source id (child node id for a cross-boundary edge),
         # not the raw submodel placeholder id, so ids and names stay aligned
         # and _parent_name_by_id builds a correct id->func map.
         root_node_source_ids.setdefault(actual_tgt, []).append(actual_src)
+        root_node_source_func_names.setdefault(actual_tgt, []).append(
+            root_id_to_func.get(actual_src, _sanitize_func_name(actual_src))
+        )
+
+    _validate_duplicate_node_inputs(root_node_sources, node_map)
 
     # Build connect pairs for ALL edges (cross-boundary use real node names).
     # Triple shape: (src_func, tgt_func, source_port).
@@ -1239,6 +1350,7 @@ def graph_to_code_multi(
         id_to_func=root_id_to_func,
         node_sources=root_node_sources,
         connect_pairs=root_connect_pairs,
+        node_source_func_names=root_node_source_func_names,
         node_source_ids=root_node_source_ids,
         preserved_blocks=all_preserved or None,
         submodel_imports=sm_imports,

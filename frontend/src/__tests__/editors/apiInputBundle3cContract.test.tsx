@@ -1,33 +1,18 @@
 /**
- * Contract tests for Bundle 3c — edge attachment + node body
- * table-label list.
+ * Contract tests for Bundle 3c — React Flow handle remeasurement and
+ * the full-detail apiInput frame-row body.
  *
- * 1. **Edge attachment via `useUpdateNodeInternals`**. When an apiInput
- *    node's emit-table set changes (a table is added, removed, or its
- *    `emit` flag toggled), the handle topology on the right edge
- *    changes too: 0/1 emit → single unlabelled Handle; 2+ emit → one
- *    labelled Handle per table (see `_SourceHandles` in
- *    `PipelineNode.tsx`). React Flow caches each node's handle
- *    measurements when the node first mounts; without an explicit
- *    `updateNodeInternals(id)` call, edges connected to the old
- *    handles can render at stale screen coordinates after the topology
- *    changes — the visible symptom is edges "floating" off the node or
- *    snapping to (0,0). The hook re-measures the handles for the given
- *    node id; calling it from a `useEffect` keyed on the emit-label
- *    signature is the idiomatic React Flow pattern for this.
+ * 1. **Edge attachment via `useUpdateNodeInternals`**. React Flow caches
+ *    handle measurements, so PipelineNode must request remeasurement when
+ *    the ordered `apiInputFrameLabels` signature changes. The collision-safe
+ *    JSON signature deliberately ignores edits that preserve that list,
+ *    avoiding unnecessary handle churn.
  *
- * 2. **Compact right-aligned table-label list on the node body**. For
- *    apiInput nodes with 2+ emit tables (the multi-port case), render
- *    each emit table's label as a small right-aligned text item on the
- *    node body, vertically stacked top-to-bottom in the same order as
- *    the handles on the right edge. Gives the user a visual mapping
- *    from each port to its source table without having to open the
- *    panel.
- *
- *    Not rendered when:
- *      - The node is not an apiInput.
- *      - The apiInput has fewer than 2 emit tables (single-port
- *        fallback — the unlabelled Handle is unambiguous).
+ * 2. **Full-detail frame-row body**. Every runtime-eligible emitted frame,
+ *    including the sole frame of a single-table config, is shown as a named
+ *    row. No frame-name rows render for a zero-eligible config or a non-apiInput
+ *    node. Runtime eligibility requires `emit: true`, at least one selected
+ *    column, and a valid raw label.
  */
 import { describe, it, expect, vi, afterEach } from "vitest"
 import { render, screen, cleanup } from "@testing-library/react"
@@ -93,10 +78,10 @@ afterEach(() => {
 })
 
 // ---------------------------------------------------------------------------
-// 1. useUpdateNodeInternals — handle topology re-anchor
+// 1. useUpdateNodeInternals — handle topology/placement re-anchor
 // ---------------------------------------------------------------------------
 
-describe("Bundle 3c — useUpdateNodeInternals fires when emit-table set changes", () => {
+describe("Bundle 3c — useUpdateNodeInternals tracks apiInput frame labels", () => {
   it("calls updateNodeInternals with the node id on first render", () => {
     renderNode(
       {
@@ -116,7 +101,7 @@ describe("Bundle 3c — useUpdateNodeInternals fires when emit-table set changes
     expect(mockUpdateNodeInternals).toHaveBeenCalledWith("api_1")
   })
 
-  it("re-fires updateNodeInternals when the emit-table signature changes", () => {
+  it("re-fires updateNodeInternals when the ordered frame-label list changes", () => {
     const { rerender } = renderNode(
       {
         label: "Quote Input",
@@ -184,17 +169,28 @@ describe("Bundle 3c — useUpdateNodeInternals fires when emit-table set changes
     expect(mockUpdateNodeInternals).toHaveBeenLastCalledWith("api_1")
   })
 
-  it("does NOT re-fire when a non-handle-affecting field changes (label edit on existing table)", () => {
-    // A column or non-emit attribute change doesn't change the handle
-    // set; the effect's signature dependency should NOT trigger again.
+  it("does NOT re-fire when an edit preserves the frame-label list", () => {
+    // Adding a second selected column to an already-eligible table changes
+    // neither its visible frame nor its handle id. The effect signature
+    // remains stable, so React Flow must not be asked to remeasure.
     const initialData: PipelineNodeData = {
       label: "Quote Input",
       description: "",
       nodeType: NODE_TYPES.API_INPUT,
       config: {
         tables: [
-          { label: "row", emit: true, path: "$[:]", columns: [] },
-          { label: "ext", emit: true, path: "$[:].ext[:]", columns: [] },
+          {
+            label: "row",
+            emit: true,
+            path: "$[:]",
+            columns: [{ name: "existing", path: "$[:].existing", type: "int", selected: true }],
+          },
+          {
+            label: "ext",
+            emit: true,
+            path: "$[:].ext[:]",
+            columns: [{ name: "c", selected: true }],
+          },
         ],
       },
     }
@@ -219,9 +215,7 @@ describe("Bundle 3c — useUpdateNodeInternals fires when emit-table set changes
     )
     const callCountAfterMount = mockUpdateNodeInternals.mock.calls.length
 
-    // Edit a column inside an existing table — does NOT change emit
-    // labels.  Effect signature stays the same; hook should not fire
-    // again.
+    // Add another selected column without changing table eligibility.
     const editedData: PipelineNodeData = {
       ...initialData,
       config: {
@@ -230,9 +224,17 @@ describe("Bundle 3c — useUpdateNodeInternals fires when emit-table set changes
             label: "row",
             emit: true,
             path: "$[:]",
-            columns: [{ name: "added_column", path: "$[:].x", type: "int", selected: true }],
+            columns: [
+              { name: "existing", path: "$[:].existing", type: "int", selected: true },
+              { name: "added_column", path: "$[:].x", type: "int", selected: true },
+            ],
           },
-          { label: "ext", emit: true, path: "$[:].ext[:]", columns: [] },
+          {
+            label: "ext",
+            emit: true,
+            path: "$[:].ext[:]",
+            columns: [{ name: "c", selected: true }],
+          },
         ],
       },
     }
@@ -257,14 +259,144 @@ describe("Bundle 3c — useUpdateNodeInternals fires when emit-table set changes
     )
     expect(mockUpdateNodeInternals.mock.calls.length).toBe(callCountAfterMount)
   })
+
+  it("re-fires when valid identifier labels are reordered", () => {
+    const eligibleTables = (labels: string[]) =>
+      labels.map((label) => ({
+        label,
+        emit: true,
+        path: `$['${label}']`,
+        columns: [{ name: "value", selected: true }],
+      }))
+    const initialData: PipelineNodeData = {
+      label: "Quote Input",
+      description: "",
+      nodeType: NODE_TYPES.API_INPUT,
+      config: { tables: eligibleTables(["alpha", "beta"]) },
+    }
+    const { rerender } = render(
+      <ReactFlowProvider>
+        <PipelineNode
+          {...({
+            id: "api_1",
+            type: "custom",
+            data: initialData,
+            selected: false,
+            isConnectable: true,
+            positionAbsoluteX: 0,
+            positionAbsoluteY: 0,
+            zIndex: 0,
+            dragging: false,
+            deletable: true,
+            selectable: true,
+          } as unknown as NodeProps<PipelineFlowNode>)}
+        />
+      </ReactFlowProvider>,
+    )
+    const callCountAfterMount = mockUpdateNodeInternals.mock.calls.length
+
+    rerender(
+      <ReactFlowProvider>
+        <PipelineNode
+          {...({
+            id: "api_1",
+            type: "custom",
+            data: {
+              ...initialData,
+              config: { tables: eligibleTables(["beta", "alpha"]) },
+            },
+            selected: false,
+            isConnectable: true,
+            positionAbsoluteX: 0,
+            positionAbsoluteY: 0,
+            zIndex: 0,
+            dragging: false,
+            deletable: true,
+            selectable: true,
+          } as unknown as NodeProps<PipelineFlowNode>)}
+        />
+      </ReactFlowProvider>,
+    )
+
+    expect(mockUpdateNodeInternals.mock.calls.length).toBe(callCountAfterMount + 1)
+    expect(mockUpdateNodeInternals).toHaveBeenLastCalledWith("api_1")
+  })
+
+  it("re-fires when a table becomes the sole visible frame without changing the emit-table set", () => {
+    const initialData: PipelineNodeData = {
+      label: "Quote Input",
+      description: "",
+      nodeType: NODE_TYPES.API_INPUT,
+      config: {
+        tables: [
+          { label: "row", emit: true, path: "$[:]", columns: [] },
+        ],
+      },
+    }
+    const { rerender } = render(
+      <ReactFlowProvider>
+        <PipelineNode
+          {...({
+            id: "api_1",
+            type: "custom",
+            data: initialData,
+            selected: false,
+            isConnectable: true,
+            positionAbsoluteX: 0,
+            positionAbsoluteY: 0,
+            zIndex: 0,
+            dragging: false,
+            deletable: true,
+            selectable: true,
+          } as unknown as NodeProps<PipelineFlowNode>)}
+        />
+      </ReactFlowProvider>,
+    )
+    const callCountAfterMount = mockUpdateNodeInternals.mock.calls.length
+
+    const eligibleData: PipelineNodeData = {
+      ...initialData,
+      config: {
+        tables: [
+          {
+            label: "row",
+            emit: true,
+            path: "$[:]",
+            columns: [{ name: "first_selected", selected: true }],
+          },
+        ],
+      },
+    }
+    rerender(
+      <ReactFlowProvider>
+        <PipelineNode
+          {...({
+            id: "api_1",
+            type: "custom",
+            data: eligibleData,
+            selected: false,
+            isConnectable: true,
+            positionAbsoluteX: 0,
+            positionAbsoluteY: 0,
+            zIndex: 0,
+            dragging: false,
+            deletable: true,
+            selectable: true,
+          } as unknown as NodeProps<PipelineFlowNode>)}
+        />
+      </ReactFlowProvider>,
+    )
+    expect(mockUpdateNodeInternals.mock.calls.length).toBeGreaterThan(callCountAfterMount)
+    expect(mockUpdateNodeInternals).toHaveBeenLastCalledWith("api_1")
+  })
 })
 
 // ---------------------------------------------------------------------------
-// 2. Compact right-aligned table-label list on the node body
+// 2. Full-detail apiInput frame-row body
 // ---------------------------------------------------------------------------
 
-describe("Bundle 3c — node body shows compact table-label list", () => {
-  it("renders emit table labels on the body for apiInput with 2+ emit tables", () => {
+describe("Bundle 3c — full-detail node body shows eligible emitted frames", () => {
+  it("renders one named frame row per eligible emitted frame", () => {
     renderNode({
       label: "Quote Input",
       nodeType: NODE_TYPES.API_INPUT,
@@ -280,6 +412,10 @@ describe("Bundle 3c — node body shows compact table-label list", () => {
         ],
       },
     })
+    expect(screen.getAllByTestId(/^api-input-frame-row-/).map((row) => row.dataset.testid)).toEqual([
+      "api-input-frame-row-row",
+      "api-input-frame-row-ext",
+    ])
     expect(screen.getByTestId("api-input-body-label-row")).toBeInTheDocument()
     expect(screen.getByTestId("api-input-body-label-ext")).toBeInTheDocument()
     // Visual content matches the label text.
@@ -287,44 +423,47 @@ describe("Bundle 3c — node body shows compact table-label list", () => {
     expect(screen.getByTestId("api-input-body-label-ext")).toHaveTextContent("ext")
   })
 
-  it("does NOT render the label list for an apiInput with a single emit table", () => {
+  it("renders the name row for the sole eligible frame in a single-table config", () => {
     renderNode({
       label: "Quote Input",
       nodeType: NODE_TYPES.API_INPUT,
       config: {
         tables: [
-          { label: "row", emit: true, path: "$[:]", columns: [] },
+          { label: "row", emit: true, path: "$[:]", columns: [{ name: "c", selected: true }] },
         ],
       },
     })
-    expect(screen.queryByTestId(/^api-input-body-label-/)).not.toBeInTheDocument()
+    expect(screen.getByTestId("api-input-frame-row-row")).toBeInTheDocument()
+    expect(screen.getByTestId("api-input-body-label-row")).toHaveTextContent("row")
   })
 
-  it("does NOT render the label list for an apiInput with zero emit tables", () => {
+  it("does NOT render frame-name rows for an apiInput with zero eligible frames", () => {
     renderNode({
       label: "Quote Input",
       nodeType: NODE_TYPES.API_INPUT,
       config: {
         tables: [
-          { label: "row", emit: false, path: "$[:]", columns: [] },
+          { label: "row", emit: false, path: "$[:]", columns: [{ name: "c", selected: true }] },
         ],
       },
     })
+    expect(screen.queryByTestId(/^api-input-frame-row-/)).not.toBeInTheDocument()
     expect(screen.queryByTestId(/^api-input-body-label-/)).not.toBeInTheDocument()
   })
 
-  it("does NOT render the label list for non-apiInput nodes (e.g. polars)", () => {
+  it("does NOT render frame-name rows for non-apiInput nodes (e.g. polars)", () => {
     renderNode({
       label: "Clean Data",
       nodeType: NODE_TYPES.POLARS,
       config: {
         // even with a tables-shaped config, the labels are apiInput-only
         tables: [
-          { label: "row", emit: true, path: "$[:]", columns: [] },
-          { label: "ext", emit: true, path: "$[:].ext[:]", columns: [] },
+          { label: "row", emit: true, path: "$[:]", columns: [{ name: "c", selected: true }] },
+          { label: "ext", emit: true, path: "$[:].ext[:]", columns: [{ name: "c", selected: true }] },
         ],
       },
     })
+    expect(screen.queryByTestId(/^api-input-frame-row-/)).not.toBeInTheDocument()
     expect(screen.queryByTestId(/^api-input-body-label-/)).not.toBeInTheDocument()
   })
 })

@@ -34,7 +34,11 @@ from haute._code_extraction import _strip_generated_boilerplate_from_code
 from haute._config_io import config_path_for_node
 from haute._edge_join import build_edge_join_kwargs, edge_join_config_to_decorator_kwargs
 from haute._explore_overview import validate_explore_overview
-from haute._graph_utils import _resolve_sink_path, _sanitize_func_name
+from haute._graph_utils import (
+    _resolve_sink_path,
+    _sanitize_func_name,
+    duplicate_input_names,
+)
 from haute._rating_step_config import normalise_rating_tables
 from haute._registry import (
     CodegenFn,
@@ -121,36 +125,18 @@ def _build_extra_kwargs(config: dict, keys: tuple[str, ...]) -> list[str]:
     return parts
 
 
-def _dedup_param_names(source_names: list[str]) -> list[str]:
-    """Return de-duplicated parameter identifiers for *source_names*.
-
-    Duplicate names — a multi-frame source feeding one node through several
-    edges — get a numeric suffix so the emitted ``def`` is not a compile-time
-    SyntaxError.  The FIRST occurrence keeps its name; binding is positional,
-    so the chosen names are cosmetic.  Empty input yields ``["df"]``.
-    """
-    if not source_names:
-        return ["df"]
-    used: set[str] = set()
-    names: list[str] = []
-    for name in source_names:
-        unique = name
-        suffix = 2
-        while unique in used:
-            unique = f"{name}_{suffix}"
-            suffix += 1
-        used.add(unique)
-        names.append(unique)
-    return names
-
-
 def _build_params(source_names: list[str]) -> str:
-    """Build the function parameter string from upstream node names.
+    """Build the function parameter string from supplied per-edge names.
 
-    De-duplicates via :func:`_dedup_param_names` (see there for the multi-edge
-    rationale) and annotates each parameter as ``pl.LazyFrame``.
+    The graph orchestrator validates duplicate names before reaching a
+    builder.  This helper also asserts that upstream invariant defensively;
+    inventing suffixes here would make generated signatures disagree with the
+    executor's edge-derived bindings.
     """
-    return ", ".join(f"{name}: pl.LazyFrame" for name in _dedup_param_names(source_names))
+    names = source_names or ["df"]
+    duplicates = duplicate_input_names(names)
+    assert not duplicates, f"duplicate codegen input name(s): {duplicates!r}"
+    return ", ".join(f"{name}: pl.LazyFrame" for name in names)
 
 
 def _sanitize_description(desc: str) -> str:
@@ -251,8 +237,10 @@ def _api_input_template(path: str, config: dict) -> str:
     """
     lower = path.lower()
     if lower.endswith((".json", ".jsonl")):
-        # Emit-state checks, cache resolution and single/multi-frame return all
-        # live in the shared `haute._json_shred.load_v2_api_source` so this
+        return_annotation = "dict[str, pl.LazyFrame]"
+        # Emit-state checks, optional cache resolution, direct-shred fallback,
+        # and the uniform frame-bundle return all live in the shared
+        # `haute._json_shred.load_v2_api_source` so this
         # generated/deploy path can't drift from the runtime builder
         # (`_builders._make_api_source_v2`). The only codegen-specific work is
         # reading the v2 config from its on-disk sidecar and validating it.
@@ -268,12 +256,13 @@ def _api_input_template(path: str, config: dict) -> str:
             "        raise RuntimeError(\n"
             '            "API Input has no v2 schema (tables[]). Open the node "\n'
             "            \"and click 'Infer Tables' to populate the schema mapping, \"\n"
-            "            \"then click 'Cache as Parquet'.\"\n"
+            '            "then preview again."\n'
             "        )\n"
             "    validate_v2_schema(_v2_config)\n"
             "    return load_v2_api_source(str(_data_path), _v2_config)"
         )
     else:
+        return_annotation = "pl.LazyFrame"
         runtime_config = {"sourceType": "flat_file", **config}
         runtime_expr = _data_source_runtime_config_expr(runtime_config)
         runtime_expr = runtime_expr.replace("{", "{{").replace("}", "}}")
@@ -285,7 +274,7 @@ def _api_input_template(path: str, config: dict) -> str:
 
     return (
         "@pipeline.api_input(path={path_repr}{row_id_kw})\n"
-        "def {func_name}() -> pl.LazyFrame:\n"
+        f"def {{func_name}}() -> {return_annotation}:\n"
         '    """{description}"""\n' + body + "\n"
     )
 
@@ -906,7 +895,7 @@ def _gen_modelling(node: GraphNode, source_names: list[str]) -> str:
 def _gen_optimiser_apply(node: GraphNode, source_names: list[str]) -> str:
     func_name, description, config = _common_node_fields(node)
     dec_kwargs = _passthrough_decorator_kwargs(config, OPTIMISER_APPLY_CONFIG_KEYS)
-    param_names = _dedup_param_names(source_names)
+    param_names = source_names or ["df"]
     # Frames are passed positionally; source_names/source_ids let the shared
     # helper resolve the configured ratebook_input.  In the sidecar,
     # ratebook_input is remapped to the source function name (see
@@ -1077,7 +1066,7 @@ def _gen_data_output(node: GraphNode, source_names: list[str]) -> str:
 @_register_codegen(NodeType.OUTPUT)
 def _gen_output(node: GraphNode, source_names: list[str]) -> str:
     func_name, description, _config = _common_node_fields(node)
-    param_names = _dedup_param_names(source_names)
+    param_names = source_names or ["df"]
     params = _build_params(source_names)
     # v2: the outputMapping lives in a JSON schema mapping (like every other
     # config-folder node — apiInput, dataSource, …), referenced by

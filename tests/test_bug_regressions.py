@@ -430,11 +430,11 @@ class TestBugB5PrunerLiveBranchSelection:
         from haute._types import PipelineGraph
         from haute.deploy._pruner import _live_only_edges
 
-        def _node(nid, ntype="polars", config=None):
+        def _node(nid, ntype="polars", config=None, *, label=None):
             return {
                 "id": nid,
                 "position": {"x": 0, "y": 0},
-                "data": {"label": nid, "nodeType": ntype, "config": config or {}},
+                "data": {"label": label or nid, "nodeType": ntype, "config": config or {}},
             }
 
         def _edge(src, tgt):
@@ -444,28 +444,31 @@ class TestBugB5PrunerLiveBranchSelection:
         graph = PipelineGraph.model_validate(
             {
                 "nodes": [
-                    _node("batch_src"),
-                    _node("live_src"),
+                    _node("batch_parent", label="Batch-Source"),
+                    _node("live_parent", label="Live Source"),
                     _node(
                         "sw",
                         "liveSwitch",
                         {
-                            "inputs": ["batch_src", "live_src"],
-                            "input_scenario_map": {"live_src": "live", "batch_src": "batch"},
+                            "inputs": ["Batch_Source", "Live_Source"],
+                            "input_scenario_map": {
+                                "Live_Source": "live",
+                                "Batch_Source": "batch",
+                            },
                         },
                     ),
                 ],
                 "edges": [
-                    _edge("batch_src", "sw"),
-                    _edge("live_src", "sw"),
+                    _edge("batch_parent", "sw"),
+                    _edge("live_parent", "sw"),
                 ],
             }
         )
         result = _live_only_edges(graph.nodes, graph.edges)
         result_pairs = {(e.source, e.target) for e in result}
-        # Should keep the live edge (live_src->sw), not batch (batch_src->sw)
-        assert ("live_src", "sw") in result_pairs
-        assert ("batch_src", "sw") not in result_pairs
+        # Matching is by sanitised display label, not the unrelated node ids.
+        assert ("live_parent", "sw") in result_pairs
+        assert ("batch_parent", "sw") not in result_pairs
 
 
 # ---------------------------------------------------------------------------

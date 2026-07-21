@@ -138,7 +138,7 @@ def test_validity_rejects_when_data_file_changed(tmp_path: Path) -> None:
     assert is_per_port_cache_valid(cache_dir, cfg, data_path=data) is False
 
 
-# ─── 1019 / 1022 — load_per_port_cache skip branches use continue ────
+# ─── 1019 — load_per_port_cache non-emitting skip uses continue ──────
 
 
 def test_load_skips_non_emitting_table_then_loads_later_one(tmp_path: Path) -> None:
@@ -146,38 +146,16 @@ def test_load_skips_non_emitting_table_then_loads_later_one(tmp_path: Path) -> N
     # ordered BEFORE the emitting one must be skipped, not break the loop —
     # otherwise the real frame after it is never loaded.
     data = _write(tmp_path, [{"id": 1}, {"id": 2}])
-    cache_dir = tmp_path / "cache"
-    build_per_port_cache(
-        str(data), {"tables": [_table("$[:]", "root", [_col("id", "$[:].id")])]}, cache_dir
-    )
     load_cfg = {
         "tables": [
             _table("$[:]", "skipme", [_col("id", "$[:].id")], emit=False),
             _table("$[:]", "root", [_col("id", "$[:].id")]),
         ]
     }
+    cache_dir = tmp_path / "cache"
+    build_per_port_cache(str(data), load_cfg, cache_dir)
     out = load_per_port_cache(cache_dir, load_cfg)
     assert "root" in out  # continue past skipme; break would drop root
-    assert out["root"].collect()["id"].to_list() == [1, 2]
-
-
-def test_load_skips_non_str_label_then_loads_later_one(tmp_path: Path) -> None:
-    # L1022 ``if not isinstance(label, str): continue``. An emitting table whose
-    # label is non-str must be skipped, with a valid emitting table after it
-    # still loaded. break would drop the valid frame.
-    data = _write(tmp_path, [{"id": 1}, {"id": 2}])
-    cache_dir = tmp_path / "cache"
-    build_per_port_cache(
-        str(data), {"tables": [_table("$[:]", "root", [_col("id", "$[:].id")])]}, cache_dir
-    )
-    load_cfg = {
-        "tables": [
-            _table("$[:]", 123, [_col("id", "$[:].id")]),  # emitting, non-str label
-            _table("$[:]", "root", [_col("id", "$[:].id")]),
-        ]
-    }
-    out = load_per_port_cache(cache_dir, load_cfg)
-    assert "root" in out
     assert out["root"].collect()["id"].to_list() == [1, 2]
 
 

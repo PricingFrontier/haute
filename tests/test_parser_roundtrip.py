@@ -385,7 +385,16 @@ def _pipeline_graph(draw: st.DrawFn) -> PipelineGraph:
     for i in range(len(nodes) - 1):
         src_id = nodes[i].id
         tgt_id = nodes[i + 1].id
-        edges.append(GraphEdge(id=f"e_{src_id}_{tgt_id}", source=src_id, target=tgt_id))
+        edges.append(
+            GraphEdge(
+                id=f"e_{src_id}_{tgt_id}",
+                source=src_id,
+                target=tgt_id,
+                sourceHandle=(
+                    "api_frame" if nodes[i].data.nodeType == NodeType.API_INPUT else None
+                ),
+            )
+        )
 
     return PipelineGraph(
         nodes=nodes,
@@ -936,7 +945,14 @@ class TestEdgeCases:
                     ),
                 ),
             ],
-            edges=[GraphEdge(id="e1", source="api", target="process")],
+            edges=[
+                GraphEdge(
+                    id="e1",
+                    source="api",
+                    target="process",
+                    sourceHandle="api_frame",
+                )
+            ],
             pipeline_name="roundtrip_test",
         )
         parsed = _parse_roundtrip(graph, tmp_path)

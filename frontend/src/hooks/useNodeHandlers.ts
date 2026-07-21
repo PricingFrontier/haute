@@ -25,6 +25,7 @@ type UseNodeHandlersParams = {
     edges: (eds: Edge[]) => Edge[],
   ) => void
   setSelectedNode: (updater: React.SetStateAction<Node | null>) => void
+  setLastSelectedId?: (id: string | null) => void
   setPreviewData: (updater: React.SetStateAction<PreviewData | null>) => void
   fitView: (opts?: { padding?: number }) => void
 }
@@ -36,6 +37,7 @@ export default function useNodeHandlers({
   setNodes,
   setNodesAndEdges,
   setSelectedNode,
+  setLastSelectedId,
   setPreviewData,
   fitView,
 }: UseNodeHandlersParams) {
@@ -63,14 +65,17 @@ export default function useNodeHandlers({
     // state where the node still exists in the graph but its cached result
     // has already been wiped — producing a flicker-crash.
     setTimeout(() => { clearNode(id) }, 0)
-    if (lastSelectedNodeRef.current?.id === id) lastSelectedNodeRef.current = null
+    if (lastSelectedNodeRef.current?.id === id) {
+      lastSelectedNodeRef.current = null
+      setLastSelectedId?.(null)
+    }
 
     // Clear UI dialogs that reference the deleted node (Issues #8, #14)
     const uiState = useUIStore.getState()
     if (uiState.renameDialog?.nodeId === id) setRenameDialog(null)
     const subDlg = uiState.submodelDialog
     if (subDlg && subDlg.nodeIds.includes(id)) setSubmodelDialog(null)
-  }, [setNodesAndEdges, lastSelectedNodeRef, setSelectedNode, setPreviewData, clearNode, setRenameDialog, setSubmodelDialog])
+  }, [setNodesAndEdges, lastSelectedNodeRef, setSelectedNode, setLastSelectedId, setPreviewData, clearNode, setRenameDialog, setSubmodelDialog])
 
   const handleDuplicateNode = useCallback((id: string) => {
     const { nodes: n } = graphRef.current
@@ -88,7 +93,8 @@ export default function useNodeHandlers({
     }
     setNodes((nds) => [...nds.map((nd) => ({ ...nd, selected: false })), newNode])
     setSelectedNode(newNode)
-  }, [graphRef, nodeIdCounterRef, setNodes, setSelectedNode])
+    setLastSelectedId?.(newNode.id)
+  }, [graphRef, nodeIdCounterRef, setNodes, setSelectedNode, setLastSelectedId])
 
   const handleCreateInstance = useCallback((id: string) => {
     const { nodes: n } = graphRef.current
@@ -112,8 +118,9 @@ export default function useNodeHandlers({
     }
     setNodes((nds) => [...nds.map((nd) => ({ ...nd, selected: false })), newNode])
     setSelectedNode(newNode)
+    setLastSelectedId?.(newNode.id)
     addToast("info", `Created instance of "${origData.label}"`)
-  }, [graphRef, nodeIdCounterRef, setNodes, setSelectedNode, addToast])
+  }, [graphRef, nodeIdCounterRef, setNodes, setSelectedNode, setLastSelectedId, addToast])
 
   const handleRenameNode = useCallback((id: string) => {
     const { nodes: n } = graphRef.current

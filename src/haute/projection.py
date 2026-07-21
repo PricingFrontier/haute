@@ -22,7 +22,7 @@ from haute._edge_join import (
     resolve_edge_join_role_indices,
 )
 from haute._execution_context import ExecutionProfile
-from haute._graph_utils import _sanitize_func_name, build_parents_of
+from haute._graph_utils import _sanitize_func_name, build_parents_of, edge_input_name
 from haute._topo import ancestors, topo_sort_ids
 from haute._types import GraphEdge, GraphNode, NodeType, PipelineGraph
 from haute.errors import ContractMismatchError, ProjectionImpossibleError
@@ -2102,7 +2102,7 @@ def prune_live_switch_edges(
     if not switch_nodes:
         return edges
 
-    exclude: set[tuple[str, str]] = set()
+    exclude_edge_ids: set[str] = set()
     for nid, node in switch_nodes.items():
         input_scenario_map = node.data.config.get("input_scenario_map", {})
         if not input_scenario_map:
@@ -2115,14 +2115,14 @@ def prune_live_switch_edges(
             parent = node_map.get(edge.source)
             if parent is None:
                 continue
-            parent_name = _sanitize_func_name(parent.data.label)
-            mapped = input_scenario_map.get(parent_name)
+            input_name = edge_input_name(edge, parent)
+            mapped = input_scenario_map.get(input_name)
             if mapped is not None and mapped != source:
-                exclude.add((edge.source, nid))
+                exclude_edge_ids.add(edge.id)
 
-    if not exclude:
+    if not exclude_edge_ids:
         return edges
-    return [edge for edge in edges if (edge.source, edge.target) not in exclude]
+    return [edge for edge in edges if edge.id not in exclude_edge_ids]
 
 
 def prepare_graph(

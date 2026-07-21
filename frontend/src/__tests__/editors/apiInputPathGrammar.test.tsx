@@ -46,13 +46,14 @@ function Harness({ initialConfig }: { initialConfig: Record<string, unknown> }) 
   return (
     <ApiInputEditor
       config={config}
-      onUpdate={(keyOrUpdates: string | Record<string, unknown>, value?: unknown) =>
+      onUpdate={(keyOrUpdates: string | Record<string, unknown>, value?: unknown) => {
         setConfig((prev) =>
           typeof keyOrUpdates === "string"
             ? { ...prev, [keyOrUpdates]: value }
             : { ...prev, ...keyOrUpdates },
         )
-      }
+        return { ok: true as const }
+      }}
       accentColor="#10b981"
     />
   )

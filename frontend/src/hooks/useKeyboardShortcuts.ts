@@ -21,6 +21,7 @@ interface KeyboardShortcutsParams {
   clipboard: React.MutableRefObject<{ nodes: Node[]; edges: Edge[] }>
   nodeIdCounter: React.MutableRefObject<number>
   setSelectedNode: (node: Node | null) => void
+  setLastSelectedId?: (id: string | null) => void
   setPreviewData: (data: null) => void
   clearTrace: () => void
   closePanel: () => void
@@ -30,7 +31,7 @@ interface KeyboardShortcutsParams {
 export default function useKeyboardShortcuts({
   handleSave, setNodes, setEdges, setNodesAndEdges, undo, redo, fitView,
   graphRef, clipboard, nodeIdCounter,
-  setSelectedNode, setPreviewData, clearTrace, closePanel,
+  setSelectedNode, setLastSelectedId, setPreviewData, clearTrace, closePanel,
   isInsideSubmodel,
 }: KeyboardShortcutsParams) {
   const addToast = useToastStore((s) => s.addToast)
@@ -194,6 +195,7 @@ export default function useKeyboardShortcuts({
             currentEdges.filter((ed) => !selectedNodeIds.has(ed.source) && !selectedNodeIds.has(ed.target)),
           )
           setSelectedNode(null)
+          setLastSelectedId?.(null)
           setPreviewData(null)
           // Clean up store state for deleted nodes
           for (const nid of selectedNodeIds) {
@@ -211,7 +213,7 @@ export default function useKeyboardShortcuts({
   }, [
     handleSave, setNodes, setEdges, setNodesAndEdges, undo, redo, fitView,
     graphRef, clipboard, nodeIdCounter,
-    setSelectedNode, setPreviewData, clearTrace, closePanel,
+    setSelectedNode, setLastSelectedId, setPreviewData, clearTrace, closePanel,
     addToast, setShortcutsOpen, setSubmodelDialog, setNodeSearchOpen, isInsideSubmodel,
   ])
 }

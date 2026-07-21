@@ -16,9 +16,14 @@ that no table cares about.
 
 On-disk layout in a cache directory (working/<hash>/ or committed/<hash>/):
 
-- one ``<sanitised_label>.parquet`` per emit-true table.
+- one ``<sanitised_label>.parquet`` artifact per current emit-true table.
 - one ``meta.json`` carrying ``{schema_mode: "v2", schema_fingerprint,
-  tables: [{label, parquet, row_count, column_count}, ...]}``.
+  tables: [{label, parquet, row_count, column_count, content_signature}, ...]}``.
+
+At runtime each compressed parquet is read exactly once, its signature is
+verified over those exact bytes, and Polars scans an in-memory compressed
+snapshot. LazyFrames and their clones therefore keep the selected generation
+even if the single on-disk generation is later rebuilt, mirrored, or cleared.
 
 The per-frame schema for each parquet is also embedded in the parquet's
 footer key-value metadata (DUAL_CACHE.md §3) so each file is
@@ -29,6 +34,7 @@ schema-wrote-but-data-failed race.
 from __future__ import annotations
 
 import hashlib
+import io
 import os
 import shutil
 import threading
@@ -51,8 +57,8 @@ from haute._api_input_schema import (
     ColumnType,
     PathSeg,
     array_depth,
+    derive_identifier_label,
     make_table_path,
-    parse_column_path,
     parse_column_path_full,
     parse_table_path,
     validate_v2_schema,
@@ -66,10 +72,6 @@ logger = get_logger(component="json_shred")
 
 
 _META_FILENAME = "meta.json"
-_STALE_CACHE_MESSAGE = (
-    "API Input data hasn't been cached for the current schema, or the cache is stale. "
-    "Click 'Cache as Parquet' on the API Input node to (re)build."
-)
 
 # A JSON *scalar* array (e.g. ``coverages: ["TPFT", "comprehensive"]``)
 # becomes its own child table with a single ``value`` column — exactly how
@@ -132,6 +134,8 @@ def _v2_fingerprint(config: dict[str, Any]) -> str:
     affect the shred output (the apiInput's ``path``, ``contract``).
     """
     tables = config.get("tables", [])
+    if not isinstance(tables, list):
+        raise ApiInputSchemaError("v2 tables must be a list")
     canonical: list[dict[str, Any]] = []
     for ti, table in enumerate(tables):
         if not isinstance(table, dict):
@@ -141,8 +145,11 @@ def _v2_fingerprint(config: dict[str, Any]) -> str:
             # from one broken shape to another would not invalidate a stale
             # cache. Distinct configs must hash distinctly (W1).
             raise ApiInputSchemaError(f"v2 tables[{ti}] is not a dict")
+        columns = table.get("columns", [])
+        if not isinstance(columns, list):
+            raise ApiInputSchemaError(f"v2 tables[{ti}].columns must be a list")
         cols_canon: list[dict[str, Any]] = []
-        for ci, col in enumerate(table.get("columns", []) or []):
+        for ci, col in enumerate(columns):
             if not isinstance(col, dict):
                 raise ApiInputSchemaError(
                     f"v2 tables[{ti}].columns[{ci}] is not a dict",
@@ -276,6 +283,56 @@ def _hash_file(path: Path) -> str:
     return h.hexdigest()
 
 
+def _file_content_signature(path: Path) -> dict[str, Any]:
+    """Return the size/SHA-256 identity recorded for a cache artifact."""
+    st = path.stat()
+    digest = _hash_file(path)
+    final_st = path.stat()
+    if (st.st_size, st.st_mtime_ns) != (final_st.st_size, final_st.st_mtime_ns):
+        raise OSError(f"file changed while its content signature was computed: {path}")
+    return {"size": final_st.st_size, "sha256": digest}
+
+
+def _content_signature_parts(recorded: Any) -> tuple[int, str] | None:
+    """Parse a strict size/SHA-256 record, rejecting bool sizes and bad hex."""
+    if not isinstance(recorded, dict):
+        return None
+    size = recorded.get("size")
+    digest = recorded.get("sha256")
+    if type(size) is not int or size < 0:  # bool is not a valid byte count
+        return None
+    if (
+        not isinstance(digest, str)
+        or len(digest) != 64
+        or any(ch not in "0123456789abcdef" for ch in digest)
+    ):
+        return None
+    return size, digest
+
+
+def _file_content_matches(recorded: Any, path: Path) -> bool:
+    """Return whether *path* exactly matches a strict size/SHA-256 record."""
+    parts = _content_signature_parts(recorded)
+    if parts is None:
+        return False
+    size, digest = parts
+    try:
+        if path.stat().st_size != size:
+            return False
+        return _hash_file(path) == digest
+    except OSError:
+        return False
+
+
+def _payload_content_matches(recorded: Any, payload: bytes) -> bool:
+    """Return whether exact in-memory bytes match a strict signature."""
+    parts = _content_signature_parts(recorded)
+    if parts is None:
+        return False
+    size, digest = parts
+    return len(payload) == size and hashlib.sha256(payload).hexdigest() == digest
+
+
 def _data_file_matches(recorded: Any, data_path: Path) -> bool:
     """True iff the data file on disk still matches the recorded signature.
 
@@ -294,15 +351,7 @@ def _data_file_matches(recorded: Any, data_path: Path) -> bool:
     validity path; the deploy-copy case (mtime moved, content identical)
     still validates because the hash matches.
     """
-    if not isinstance(recorded, dict):
-        return False
-    try:
-        st = data_path.stat()
-    except OSError:
-        return False
-    if st.st_size != recorded.get("size"):
-        return False
-    return _hash_file(data_path) == recorded.get("sha256")
+    return _file_content_matches(recorded, data_path)
 
 
 # ---------------------------------------------------------------------------
@@ -546,6 +595,25 @@ _LeafSpec = tuple[str, str, str]  # (column_name, leaf_path_dotted, type_token)
 _WalkSpec = tuple[str, str, str, int]
 
 
+@dataclass(frozen=True)
+class _EmittingTableSpec:
+    """One validated emitting table, parsed once for every shred consumer.
+
+    ``columns`` carries the full walk-time form (including source array depth)
+    needed for ancestor broadcasts. Cache writes and in-memory runtime loads
+    derive their leaf-only frame schema from the same objects, so the two paths
+    cannot disagree about selected columns, names, types, or paths.
+    """
+
+    label: str
+    segments: tuple[PathSeg, ...]
+    columns: tuple[_WalkSpec, ...]
+
+    @property
+    def leaf_specs(self) -> list[_LeafSpec]:
+        return [(name, leaf, type_token) for name, leaf, type_token, _depth in self.columns]
+
+
 def _resolve_leaf(value: Any, leaf: str) -> Any:
     """Resolve a dotted leaf path within a single dict.
 
@@ -629,11 +697,45 @@ def _reject_reserved_leaf_collision(label: str, own_depth: int, col_specs: list[
         )
 
 
+def _emitting_table_specs(v2_config: dict[str, Any]) -> tuple[_EmittingTableSpec, ...]:
+    """Validate *v2_config* and parse every emitting table exactly one way."""
+    validate_v2_schema(v2_config)
+
+    table_specs: list[_EmittingTableSpec] = []
+    for table in v2_config["tables"]:
+        if not table_is_emitting(table):
+            continue
+        segments = parse_table_path(table["path"])
+        columns: list[_WalkSpec] = []
+        for col in table.get("columns", []) or []:
+            if not col.get("selected"):
+                continue
+            locating, leaf = parse_column_path_full(col["path"])
+            columns.append(
+                (
+                    col["name"],
+                    leaf,
+                    col["type"],
+                    array_depth(locating),
+                ),
+            )
+        _reject_reserved_leaf_collision(table["label"], array_depth(segments), columns)
+        table_specs.append(
+            _EmittingTableSpec(
+                label=table["label"],
+                segments=segments,
+                columns=tuple(columns),
+            ),
+        )
+    return tuple(table_specs)
+
+
 def shred_to_buffers(
     records: Iterable[dict[str, Any]],
     v2_config: dict[str, Any],
     *,  # pragma: no mutate
     stats: ShredSkipStats | None = None,  # pragma: no mutate
+    _table_specs: tuple[_EmittingTableSpec, ...] | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
     """Shred *records* according to *v2_config*, returning per-frame row buffers.
 
@@ -648,19 +750,11 @@ def shred_to_buffers(
     selected column) get a buffer, matching exactly the set of parquets
     the build writes and validity demands. *stats*, when provided, counts
     every array element dropped at an emitting table's depth because its
-    shape mismatched that table (W2 item 2.7); the production build always
-    passes one.
+    shape mismatched that table (W2 item 2.7); cache builds and direct runtime
+    materialisation both pass one through :func:`_shred_data_file`.
     """
-    validate_v2_schema(v2_config)
+    table_specs = _emitting_table_specs(v2_config) if _table_specs is None else _table_specs
 
-    # Tables we'll actually emit — the shared predicate (W2 item 2.5). Each
-    # column spec is (name, leaf, type_token, source_depth); source_depth is
-    # the array-iteration depth at which the column's value lives. It equals
-    # the table's own depth for a normal column, or a SHALLOWER depth for an
-    # ancestor column (W1) — whose value is filled into every descendant row
-    # at emission (walk-time distribution, never a post-shred join).
-    # validate_v2_schema (above) has already guaranteed source_depth is the
-    # table's depth or a proper-ancestor prefix of it.
     # Each table's POSITION is its full ``(key, is_array)`` segment tuple: the
     # array hops set its relational depth, the object hops only LOCATE it. A
     # column spec is (name, leaf, type_token, source_depth); source_depth is the
@@ -669,19 +763,7 @@ def shred_to_buffers(
     # column (W1), filled into every descendant row at emission (walk-time
     # distribution, never a post-shred join). validate_v2_schema (above) has
     # guaranteed source_depth is the table's depth or a proper-ancestor prefix.
-    emit_tables: list[tuple[str, tuple[PathSeg, ...], list[_WalkSpec]]] = []
-    for table in v2_config["tables"]:
-        if not table_is_emitting(table):
-            continue
-        segments = parse_table_path(table["path"])
-        col_specs: list[_WalkSpec] = []
-        for col in table.get("columns", []) or []:
-            if not col.get("selected"):
-                continue
-            locating, leaf = parse_column_path_full(col["path"])
-            col_specs.append((col["name"], leaf, col.get("type", "str"), array_depth(locating)))
-        _reject_reserved_leaf_collision(table["label"], array_depth(segments), col_specs)
-        emit_tables.append((table["label"], segments, col_specs))
+    emit_tables = [(spec.label, spec.segments, list(spec.columns)) for spec in table_specs]
 
     # Group tables by their full-segment position — the place the walk emits.
     tables_by_pos: dict[tuple[PathSeg, ...], list[tuple[str, list[_WalkSpec]]]] = {}
@@ -794,6 +876,47 @@ def shred_to_buffers(
     return buffers
 
 
+def _shred_data_file(
+    data_path: Path,
+    v2_config: dict[str, Any],
+    table_specs: tuple[_EmittingTableSpec, ...],
+) -> tuple[dict[str, list[dict[str, Any]]], ShredSkipStats]:
+    """Shred one source file with shared skip accounting and conservation."""
+    skip_stats = ShredSkipStats()
+    record_count = 0
+
+    def _counted_records() -> Iterator[dict[str, Any]]:
+        nonlocal record_count
+        for record in _iter_records(data_path, stats=skip_stats):
+            record_count += 1
+            yield record
+
+    buffers = shred_to_buffers(
+        _counted_records(),
+        v2_config,
+        stats=skip_stats,
+        _table_specs=table_specs,
+    )
+
+    # Every object record contributes exactly one row to each emitting root
+    # table, or is explicitly counted as a shape mismatch. Keep this invariant
+    # on both cache builds and direct runtime materialisation.
+    for table_spec in table_specs:
+        if table_spec.segments:
+            continue
+        emitted = len(buffers.get(table_spec.label, []))
+        skipped = skip_stats.skipped_rows_by_table.get(table_spec.label, 0)
+        if emitted + skipped != record_count:
+            raise RuntimeError(
+                "json shred conservation violation for root table "
+                f"{table_spec.label!r}: {emitted} emitted + {skipped} skipped "
+                f"!= {record_count} records read â€” a row was lost or "
+                "duplicated without accounting",
+            )
+
+    return buffers, skip_stats
+
+
 # ---------------------------------------------------------------------------
 # Frame construction and write
 # ---------------------------------------------------------------------------
@@ -809,6 +932,169 @@ _POLARS_TYPE_MAP: dict[ColumnType, type[pl.DataType]] = {
     "bool": pl.Boolean,
     "date": pl.Date,
 }
+
+
+def _declared_frame_schema(table_spec: _EmittingTableSpec) -> pl.Schema:
+    """Return the exact selected-column schema a cache frame must expose."""
+    return pl.Schema(
+        {
+            name: _POLARS_TYPE_MAP[cast(ColumnType, type_token)]
+            for name, _leaf, type_token, _depth in table_spec.columns
+        },
+    )
+
+
+@dataclass(frozen=True)
+class _CacheProbeFailure:
+    reason: str
+    label: str | None = None
+    expected_schema: pl.Schema | None = None
+    actual_schema: pl.Schema | None = None
+
+
+def _cache_manifest_structure_failure(
+    meta: dict[str, Any],
+    *,
+    expected_labels: tuple[str, ...] | None = None,
+) -> _CacheProbeFailure | None:
+    """Validate signed table entries and their derived parquet names.
+
+    Manifest ``parquet`` values are checked for consistency but never trusted
+    as paths: every artifact name is derived from its validated table label.
+    Missing, extra, duplicate, or legacy-unsigned entries make the candidate
+    unusable. Artifact bytes are deliberately checked by the caller: runtime
+    probes must verify the exact payload they subsequently hand to Polars.
+    """
+    raw_tables = meta.get("tables")
+    if not isinstance(raw_tables, list):
+        return _CacheProbeFailure("malformed_manifest")
+
+    entries_by_label: dict[str, dict[str, Any]] = {}
+    seen_casefolded: set[str] = set()
+    for raw_entry in raw_tables:
+        if not isinstance(raw_entry, dict):
+            return _CacheProbeFailure("malformed_manifest")
+        label = raw_entry.get("label")
+        if not isinstance(label, str) or not label:
+            return _CacheProbeFailure("malformed_manifest")
+        folded = label.casefold()
+        if folded in seen_casefolded:
+            return _CacheProbeFailure("duplicate_manifest_table", label=label)
+        seen_casefolded.add(folded)
+        entries_by_label[label] = raw_entry
+
+    if expected_labels is not None:
+        expected_set = set(expected_labels)
+        actual_set = set(entries_by_label)
+        if actual_set != expected_set:
+            missing = next((label for label in expected_labels if label not in actual_set), None)
+            extra = next((label for label in entries_by_label if label not in expected_set), None)
+            return _CacheProbeFailure("manifest_table_mismatch", label=missing or extra)
+
+    for label, entry in entries_by_label.items():
+        signature = entry.get("content_signature")
+        signature_parts = _content_signature_parts(signature)
+        if signature_parts is None:
+            return _CacheProbeFailure("missing_content_signature", label=label)
+        filename = f"{_sanitise_label(label)}.parquet"
+        if entry.get("parquet") != filename:
+            return _CacheProbeFailure("manifest_parquet_name_mismatch", label=label)
+    return None
+
+
+def _cache_manifest_failure(
+    cache_dir: Path,
+    meta: dict[str, Any],
+    *,
+    expected_labels: tuple[str, ...] | None = None,
+) -> _CacheProbeFailure | None:
+    """Validate one manifest and every path-backed artifact it signs."""
+    structure_failure = _cache_manifest_structure_failure(
+        meta,
+        expected_labels=expected_labels,
+    )
+    if structure_failure is not None:
+        return structure_failure
+
+    for entry in meta["tables"]:
+        label = entry["label"]
+        signature = entry["content_signature"]
+        signature_parts = _content_signature_parts(signature)
+        assert signature_parts is not None
+        parquet_path = cache_dir / f"{_sanitise_label(label)}.parquet"
+        if not parquet_path.exists():
+            return _CacheProbeFailure("missing_frame", label=label)
+        if not _file_content_matches(signature, parquet_path):
+            return _CacheProbeFailure("content_signature_mismatch", label=label)
+    return None
+
+
+def _cache_manifest_files_match(cache_dir: Path, meta: dict[str, Any]) -> bool:
+    """Return whether a self-contained cache manifest matches its artifacts."""
+    return _cache_manifest_failure(cache_dir, meta) is None
+
+
+def _probe_cache_bundle(
+    cache_dir: Path,
+    table_specs: tuple[_EmittingTableSpec, ...],
+    meta: dict[str, Any],
+) -> tuple[dict[str, pl.LazyFrame], _CacheProbeFailure | None]:
+    """Load cache frames whose name→dtype mappings match current specs.
+
+    Physical parquet column order is deliberately irrelevant to the schema
+    fingerprint. Each accepted lazy frame is projected into the current editor
+    order, preserving that invariant without allowing missing/extra/renamed or
+    differently typed columns through the fast path.
+
+    Each parquet is physically read exactly once. Its signature is verified
+    over that exact compressed payload and the same bytes are handed to Polars
+    via :class:`io.BytesIO`. This closes the hash-then-reopen race while keeping
+    parquet decoding and projection lazy. Polars retains the compressed source
+    in the logical plan, so the frame and its clones are independent of later
+    rebuilds, mirrors, or explicit cache deletion. Memory usage is bounded by
+    compressed sources belonging to live LazyFrames rather than an ever-growing
+    set of on-disk generations.
+    """
+    manifest_failure = _cache_manifest_structure_failure(
+        meta,
+        expected_labels=tuple(spec.label for spec in table_specs),
+    )
+    if manifest_failure is not None:
+        return {}, manifest_failure
+
+    bundle: dict[str, pl.LazyFrame] = {}
+    manifest_entries = {entry["label"]: entry for entry in meta["tables"]}
+    for table_spec in table_specs:
+        expected_schema = _declared_frame_schema(table_spec)
+        entry = manifest_entries[table_spec.label]
+        signature_parts = _content_signature_parts(entry["content_signature"])
+        assert signature_parts is not None
+        parquet_path = cache_dir / f"{_sanitise_label(table_spec.label)}.parquet"
+        try:
+            payload = parquet_path.read_bytes()
+        except FileNotFoundError:
+            return bundle, _CacheProbeFailure(
+                "missing_frame",
+                label=table_spec.label,
+                expected_schema=expected_schema,
+            )
+        if not _payload_content_matches(entry["content_signature"], payload):
+            return bundle, _CacheProbeFailure(
+                "content_signature_mismatch",
+                label=table_spec.label,
+                expected_schema=expected_schema,
+            )
+        frame = pl.scan_parquet(io.BytesIO(payload))
+        actual_schema = frame.collect_schema()
+        if dict(actual_schema.items()) != dict(expected_schema.items()):
+            return bundle, _CacheProbeFailure(
+                "schema_mismatch",
+                label=table_spec.label,
+                expected_schema=expected_schema,
+                actual_schema=actual_schema,
+            )
+        bundle[table_spec.label] = frame.select(expected_schema.names())
+    return bundle, None
 
 
 def _buffer_to_frame(
@@ -899,7 +1185,8 @@ def build_per_port_cache(
     layer to target.
 
     Returns a summary dict with ``schema_mode``, ``schema_fingerprint``,
-    ``tables`` (per-port row/column counts + on-disk parquet paths),
+    ``tables`` (per-port row/column counts, derived parquet names, and
+    size/SHA-256 content signatures),
     ``data_file`` (the data-file signature validity checks against — W2
     item 2.4), and ``skipped`` (counts of shape-mismatched inputs dropped
     during the shred — W2 item 2.7). Also writes ``meta.json`` into
@@ -907,22 +1194,23 @@ def build_per_port_cache(
     need to re-shred to know what's there.
 
     The build is **serialized** per cache directory (a concurrent build of
-    the same cache waits) and **atomic**: everything is written into a
-    sibling temp directory which is swapped into place only once complete,
-    so a failed or interrupted build can never corrupt a previously valid
-    cache or leave a half-written one (W2 item 2.6).
+    the same cache waits) and **atomic**: one complete generation is written
+    into a sibling staging directory and swapped into place only after every
+    parquet and ``meta.json`` is materialised. Runtime LazyFrames snapshot the
+    verified compressed bytes, so replacing this sole on-disk generation does
+    not change already-returned plans (W2 item 2.6).
     """
     dp = Path(data_path)
     cd = Path(cache_dir)
 
-    validate_v2_schema(v2_config)
+    table_specs = _emitting_table_specs(v2_config)
 
     with _build_lock_for(cd):
         # No-op trapdoor: if the existing meta.json's fingerprint matches the
-        # current v2 schema, the recorded data-file signature still matches
-        # the file on disk, AND all expected per-port parquets exist, skip
-        # the rebuild entirely. Repeated cache-button clicks then don't churn
-        # the preview cache via commit 1's mtime-in-fingerprint invalidation.
+        # current v2 schema, the recorded source signature still matches, and
+        # every expected parquet matches its signed manifest entry and footer
+        # schema, skip the rebuild entirely. Repeated cache-button clicks then
+        # don't churn the preview cache.
         if is_per_port_cache_valid(cd, v2_config, data_path=dp):
             existing_meta = read_per_port_cache_meta(cd)
             if existing_meta is not None:
@@ -948,63 +1236,22 @@ def build_per_port_cache(
         # rather than being masked.
         data_file_sig = _data_file_signature(dp)
 
-        # Re-parse table-paths + columns so we can stream-write per-port
-        # parquets immediately after the shred. Same emitting predicate as
-        # the shred, validity and load (W2 item 2.5).
-        emit_tables: list[tuple[str, list[_LeafSpec]]] = []
-        for table in v2_config["tables"]:
-            if not table_is_emitting(table):
-                continue
-            col_specs: list[_LeafSpec] = []
-            for col in table.get("columns", []) or []:
-                if not col.get("selected"):
-                    continue
-                leaf = parse_column_path(col["path"], table["path"])
-                col_specs.append((col["name"], leaf, col.get("type", "str")))
-            emit_tables.append((table["label"], col_specs))
+        # The shared parsed specs drive both walking and frame construction;
+        # cache builds and direct runtime loads therefore have one selected-
+        # column/name/type/path contract.
+        emit_tables = [(spec.label, spec.leaf_specs) for spec in table_specs]
 
         # Shred — single pass, with skip accounting (W2 item 2.7). The record
         # iterator is consumed directly (not materialised into a list) so the
         # build doesn't hold a full extra Python-object copy of the file
-        # alongside the row buffers (W1). A tiny wrapper counts the object
-        # records as they flow through so the conservation assertion below can
-        # cross-check that no row silently vanished.
-        skip_stats = ShredSkipStats()
-        record_count = 0
+        # alongside the row buffers (W1). The shared file-shred helper counts
+        # object records and asserts root conservation for cache and direct
+        # materialisation alike.
+        buffers, skip_stats = _shred_data_file(dp, v2_config, table_specs)
 
-        def _counted_records() -> Iterator[dict[str, Any]]:
-            nonlocal record_count
-            for rec in _iter_records(dp, stats=skip_stats):
-                record_count += 1
-                yield rec
-
-        buffers = shred_to_buffers(_counted_records(), v2_config, stats=skip_stats)
-
-        # Conservation assertion (W1): at the ROOT array level, every object
-        # record contributes EXACTLY one row to each emitting root table, or is
-        # counted as a shape-mismatch skip for it — never both, never neither.
-        # A violation means a row vanished (or duplicated) without accounting,
-        # i.e. a shred bug; fail loud rather than write a cache that silently
-        # lost data. (Non-object top-level inputs are counted separately in
-        # ``skipped_records`` and are not yielded, so they don't enter this sum.)
-        for table in v2_config["tables"]:  # pragma: no mutate
-            if not table_is_emitting(table) or parse_table_path(table["path"]) != ():
-                continue  # pragma: no mutate
-            root_label = table["label"]
-            emitted = len(buffers.get(root_label, []))
-            skipped_here = skip_stats.skipped_rows_by_table.get(root_label, 0)
-            if emitted + skipped_here != record_count:
-                raise RuntimeError(
-                    "json shred conservation violation for root table "
-                    f"{root_label!r}: {emitted} emitted + {skipped_here} skipped "
-                    f"!= {record_count} records read — a row was lost or "
-                    "duplicated without accounting",
-                )
-
-        # Write per-port parquets + meta into a sibling temp dir, then swap
-        # it into place. Unique temp names prevent staging-dir collisions
-        # across xdist/CLI processes; the live-dir swap itself remains the
-        # atomic publish boundary.
+        # Fully materialise one generation in a sibling staging directory,
+        # then atomically swap the directory into place. Unique temp names
+        # prevent collisions across xdist/CLI processes.
         import pyarrow.parquet as pq  # local — keeps top-of-module import surface small
 
         fingerprint = _v2_fingerprint(v2_config)
@@ -1029,12 +1276,14 @@ def build_per_port_cache(
                     _per_frame_metadata(label, col_specs),
                 )
                 pq.write_table(arrow_tbl, parquet_path, compression="zstd")
+                content_signature = _file_content_signature(parquet_path)
                 table_summaries.append(
                     {
                         "label": label,
                         "parquet": parquet_path.name,
                         "row_count": frame.height,
                         "column_count": frame.width,
+                        "content_signature": content_signature,
                     },
                 )
 
@@ -1118,52 +1367,108 @@ def load_per_port_cache(
     cache_dir: str | Path,  # pragma: no mutate
     v2_config: dict[str, Any],
 ) -> dict[str, pl.LazyFrame]:
-    """Scan the per-port parquets in *cache_dir* for each emitting table.
+    """Return the complete signed snapshot bundle selected by ``meta.json``.
 
-    "Emitting" is the shared :func:`table_is_emitting` predicate (emit AND
-    ≥1 selected column) — exactly the set of parquets the build writes.
-    Returns ``{table_label: LazyFrame}``. A missing parquet (e.g. a table
-    that was emitting at build time but is now disabled) is skipped — the
-    caller is expected to validate cache freshness via
-    :func:`is_per_port_cache_valid` before this.
+    "Emitting" uses the shared :func:`table_is_emitting` predicate (emit and
+    at least one selected column), exactly the set the build writes. Every
+    label-derived artifact must exist, match its signature, and expose the
+    declared schema. The exact verified compressed bytes seed the returned
+    in-memory LazyFrames; a missing or mismatched member rejects the whole
+    bundle and returns ``{}`` rather than serving a partial generation.
+
+    Callers needing source-file freshness must additionally use
+    :func:`is_per_port_cache_valid` or :func:`load_v2_api_source`.
     """
     cd = Path(cache_dir)
-    out: dict[str, pl.LazyFrame] = {}
-    for table in v2_config.get("tables", []) or []:
-        if not table_is_emitting(table):
-            continue
-        label = table.get("label")
-        if not isinstance(label, str):
-            continue
-        parquet_path = cd / f"{_sanitise_label(label)}.parquet"
-        if parquet_path.exists():
-            out[label] = pl.scan_parquet(parquet_path)
-    return out
+    table_specs = _emitting_table_specs(v2_config)
+    meta = read_per_port_cache_meta(cd)
+    if (
+        meta is None
+        or meta.get("schema_mode") != "v2"
+        or meta.get("schema_fingerprint") != _v2_fingerprint(v2_config)
+    ):
+        return {}
+    try:
+        bundle, failure = _probe_cache_bundle(
+            cd,
+            table_specs,
+            meta,
+        )
+    except (OSError, pl.exceptions.PolarsError):
+        return {}
+    return bundle if failure is None else {}
+
+
+def _cache_meta_matches_config_and_source(
+    meta: dict[str, Any],
+    v2_config: dict[str, Any],
+    *,
+    data_path: str | Path,
+) -> bool:
+    """Return whether captured metadata identifies this schema and source."""
+    if meta.get("schema_mode") != "v2":
+        return False
+    try:
+        expected_fingerprint = _v2_fingerprint(v2_config)
+    except ApiInputSchemaError:
+        # Preserve the bool contract for status/save callers that probe a
+        # malformed in-memory config. Build and load boundaries validate loud.
+        return False
+    return meta.get("schema_fingerprint") == expected_fingerprint and _data_file_matches(
+        meta.get("data_file"), Path(data_path)
+    )
+
+
+def _read_matching_cache_meta(
+    cache_dir: str | Path,
+    v2_config: dict[str, Any],
+    *,
+    data_path: str | Path,
+) -> dict[str, Any] | None:
+    """Read metadata once and return it when schema/source identity matches.
+
+    This deliberately does not touch parquet files. Runtime and public
+    validity pass the returned object into the same signed-artifact/footer
+    probe, avoiding a second ``meta.json`` read and validation drift.
+    """
+    cd = Path(cache_dir)
+    meta_path = cd / _META_FILENAME
+    try:
+        meta = orjson.loads(meta_path.read_bytes())
+    except (OSError, ValueError):
+        return None
+    if not isinstance(meta, dict):
+        return None
+    if not _cache_meta_matches_config_and_source(
+        meta,
+        v2_config,
+        data_path=data_path,
+    ):
+        return None
+    return meta
 
 
 def load_v2_api_source(
     data_path: str,
     config: dict[str, Any],
-) -> pl.LazyFrame | dict[str, pl.LazyFrame]:  # pragma: no mutate
-    """Resolve a v2 apiInput's per-port cache and return its frame(s).
+) -> dict[str, pl.LazyFrame]:  # pragma: no mutate
+    """Load a v2 apiInput as an emit-gated per-port frame bundle.
 
     The single runtime entry point shared by the executor's source builder
     (:func:`haute._builders._make_api_source_v2`) and the generated/deploy
     code (:func:`haute._codegen_builders._api_input_template`), so the two
-    can't drift. Assumes *config* has already passed :func:`validate_v2_schema`
-    (both callers validate first — at build time and at module import
-    respectively).
+    can't drift. Validates *config* itself so direct callers receive the same
+    typed schema errors as the executor and generated module boundaries.
 
     Behaviour:
 
     - 0 emit-true tables → ``RuntimeError`` (tick an ``emit`` toggle).
     - emit-true tables but none with a selected column → ``RuntimeError``.
-    - resolves the dual-cache ``working/`` layer, falling back to
-      ``committed/`` (the deploy / fresh-server case); a missing/stale cache
-      (schema fingerprint OR data-file signature mismatch) raises the
-      "click Cache as Parquet" message.
-    - 1 emitting label → a bare ``LazyFrame`` (single-frame shorthand); 2+ →
-      a ``dict[port_label, LazyFrame]`` in schema order.
+    - prefers a valid, readable, schema-matching ``working/`` parquet cache,
+      then ``committed/`` (the deploy / fresh-server case).
+    - when neither cache can serve the current schema and source signature,
+      shreds JSON/JSONL directly for this run without writing cache state.
+    - 1+ emitting labels → a ``dict[port_label, LazyFrame]`` in schema order.
 
     Frame resolution uses the shared :func:`table_is_emitting` predicate, so
     an emit-true table with zero selected columns contributes no frame and —
@@ -1171,40 +1476,97 @@ def load_v2_api_source(
     """
     from haute._json_flatten import _json_cache_dir
 
-    tables = config.get("tables", []) or []
+    table_specs = _emitting_table_specs(config)
+    tables = config["tables"]
     emit_true_tables = [t for t in tables if t.get("emit")]
     if not emit_true_tables:
         raise RuntimeError(
             "API Input has no emitting tables. Open the node, tick the 'emit' "
-            "toggle on at least one table, then click 'Cache as Parquet' before "
-            "previewing.",
+            "toggle on at least one table, then preview again.",
         )
-    emit_labels = [t["label"] for t in emit_true_tables if table_is_emitting(t)]
+    emit_labels = [spec.label for spec in table_specs]
     if not emit_labels:
         labels = [t["label"] for t in emit_true_tables]
         raise RuntimeError(
             "API Input has emit-true tables but none has any selected columns. "
             f"Open the node and tick at least one column on the emitting "
-            f"table(s): {labels}. Then click 'Cache as Parquet' before previewing.",
+            f"table(s): {labels}, then preview again.",
         )
-    cache_dir = _json_cache_dir(data_path, "working")
-    if not is_per_port_cache_valid(cache_dir, config, data_path=data_path):
-        # Fall back to the committed layer (deploy / fresh-server case).
-        cache_dir = _json_cache_dir(data_path, "committed")
-        if not is_per_port_cache_valid(cache_dir, config, data_path=data_path):
-            raise RuntimeError(_STALE_CACHE_MESSAGE)
-    bundle = load_per_port_cache(cache_dir, config)
-    missing_labels = [label for label in emit_labels if label not in bundle]
-    if missing_labels:
-        raise RuntimeError(
-            "API Input cache changed while it was being loaded; missing parquet "
-            f"frame(s): {missing_labels}. {_STALE_CACHE_MESSAGE}",
+    # A valid parquet cache is an optimization, not a runtime prerequisite.
+    # Prefer the user's current working cache, then the saved/deployable
+    # committed cache. If either disappears between validation and scanning,
+    # continue to the next candidate rather than restoring the old hard cache
+    # dependency.
+    for layer in ("working", "committed"):
+        cache_dir = _json_cache_dir(data_path, layer)
+        cache_meta = _read_matching_cache_meta(
+            cache_dir,
+            config,
+            data_path=data_path,
         )
-    # Single-frame shorthand: bare LazyFrame instead of a one-entry dict.
-    if len(emit_labels) == 1:
-        return bundle[emit_labels[0]]
-    # Multi-frame: preserve schema order so executor logs/errors are deterministic.
-    return {label: bundle[label] for label in emit_labels}
+        if cache_meta is None:
+            continue
+        try:
+            bundle, probe_failure = _probe_cache_bundle(
+                cache_dir,
+                table_specs,
+                cache_meta,
+            )
+        except (OSError, pl.exceptions.PolarsError) as exc:
+            logger.warning(
+                "json_shred_cache_candidate_rejected",
+                data_path=data_path,
+                cache_dir=str(cache_dir),
+                layer=layer,
+                reason="unreadable_parquet",
+                error_type=type(exc).__name__,
+            )
+            continue
+        if probe_failure is not None:
+            logger.warning(
+                "json_shred_cache_candidate_rejected",
+                data_path=data_path,
+                cache_dir=str(cache_dir),
+                layer=layer,
+                reason=probe_failure.reason,
+                label=probe_failure.label,
+                expected_schema=(
+                    str(probe_failure.expected_schema)
+                    if probe_failure.expected_schema is not None
+                    else None
+                ),
+                actual_schema=(
+                    str(probe_failure.actual_schema)
+                    if probe_failure.actual_schema is not None
+                    else None
+                ),
+            )
+            continue
+        return {label: bundle[label] for label in emit_labels}
+
+    # Neither cache can serve the current post-schema shape. Shred the source
+    # for this execution only; do not write, refresh, or promote cache state.
+    buffers, skip_stats = _shred_data_file(Path(data_path), config, table_specs)
+    direct_bundle = {
+        table_spec.label: _buffer_to_frame(
+            buffers.get(table_spec.label, []),
+            table_spec.leaf_specs,
+        ).lazy()
+        for table_spec in table_specs
+    }
+    if skip_stats.total:
+        logger.warning(
+            "json_shred_direct_records_skipped",
+            data_path=data_path,
+            skipped_records=skip_stats.skipped_records,
+            skipped_rows_by_table=skip_stats.skipped_rows_by_table,
+        )
+    logger.info(
+        "json_shred_loaded_direct",
+        data_path=data_path,
+        table_count=len(table_specs),
+    )
+    return direct_bundle
 
 
 def is_per_port_cache_valid(
@@ -1213,11 +1575,14 @@ def is_per_port_cache_valid(
     *,  # pragma: no mutate
     data_path: str | Path,  # pragma: no mutate
 ) -> bool:
-    """Cheap validity check: meta.json's fingerprint matches the v2 schema,
-    the recorded data-file signature still matches *data_path* on disk
-    (W2 item 2.4 — an edited data file means the cached rows are stale),
-    AND a parquet exists for every emitting table (shared
-    :func:`table_is_emitting` predicate — W2 item 2.5).
+    """Return whether a complete, readable cache can serve the current input.
+
+    ``meta.json`` must match the v2 schema fingerprint and recorded source-file
+    signature (W2 item 2.4). Every emitting table must have exactly one signed
+    manifest entry whose derived parquet matches its size/SHA-256, then expose
+    the exact declared name-to-Polars-dtype mapping. Physical parquet column
+    order does not affect validity; accepted frames are projected into current
+    editor order by :func:`_probe_cache_bundle` at load time.
 
     The data-file check ALWAYS verifies the recorded content hash: ``size``
     is only a cheap pre-reject (a size mismatch is stale without hashing),
@@ -1225,46 +1590,23 @@ def is_per_port_cache_valid(
     same-mtime byte-changing rewrite as fresh (matching
     :func:`_data_file_matches`). The committed-layer deploy fallback still
     survives file copies because the hash matches when only the mtime moved.
-    A meta without a recorded signature (pre-W2 cache) is stale by
+    A meta without a recorded source or per-parquet signature is stale by
     construction — one-time invalidation on upgrade.
     """
+    cache_meta = _read_matching_cache_meta(
+        cache_dir,
+        v2_config,
+        data_path=data_path,
+    )
+    if cache_meta is None:
+        return False
     cd = Path(cache_dir)
-    meta_path = cd / _META_FILENAME
-    if not meta_path.exists():
-        return False
     try:
-        meta = orjson.loads(meta_path.read_bytes())
-    except (OSError, ValueError):
+        table_specs = _emitting_table_specs(v2_config)
+        _bundle, probe_failure = _probe_cache_bundle(cd, table_specs, cache_meta)
+    except (ApiInputSchemaError, OSError, pl.exceptions.PolarsError):
         return False
-    if not isinstance(meta, dict):
-        return False
-    if meta.get("schema_mode") != "v2":
-        return False
-    try:
-        expected_fingerprint = _v2_fingerprint(v2_config)
-    except ApiInputSchemaError:
-        # A config so malformed it can't even be fingerprinted (a non-dict
-        # table/column) cannot match a validly-built cache — treat it as
-        # stale/invalid, never fresh. This keeps the predicate's bool contract
-        # for direct validity probes on unvalidated on-disk configs (e.g.
-        # GET /status), while _v2_fingerprint itself still fails loud so no two
-        # distinct malformed configs silently collapse to one fingerprint. The
-        # build path validates the schema before it ever reaches here.
-        return False
-    if meta.get("schema_fingerprint") != expected_fingerprint:
-        return False
-    if not _data_file_matches(meta.get("data_file"), Path(data_path)):
-        return False
-    for table in v2_config.get("tables", []) or []:
-        if not table_is_emitting(table):
-            continue
-        label = table.get("label")
-        if not isinstance(label, str):
-            return False
-        parquet_path = cd / f"{_sanitise_label(label)}.parquet"
-        if not parquet_path.exists():
-            return False
-    return True
+    return probe_failure is None
 
 
 def _infer_type(value: Any) -> str:
@@ -1463,7 +1805,7 @@ def infer_v2_schema_from_data(
     for record in records:
         _walk(record, (), ())
 
-    tables: list[dict[str, Any]] = []
+    table_entries: list[tuple[tuple[PathSeg, ...], dict[str, Any], str]] = []
     all_levels = set(levels) | set(scalar_levels)
     for level in sorted(all_levels, key=lambda s: (array_depth(s), len(s), tuple(s))):
         table_path = make_table_path(level)
@@ -1496,16 +1838,46 @@ def infer_v2_schema_from_data(
                 }
                 for opath in col_paths
             ]
-        tables.append(
-            {
-                "path": table_path,
-                "label": table_path,
-                "displayPath": None,
-                "emit": array_depth(level) == 0,  # pragma: no mutate  # root level only
-                "row_id_column": None,
-                "columns": columns,
-            },
+        base_label = "root" if not level else derive_identifier_label(level[-1][0])
+        table_entries.append(
+            (
+                level,
+                {
+                    "path": table_path,
+                    "label": base_label,
+                    "displayPath": table_path,
+                    "emit": array_depth(level) == 0,  # pragma: no mutate  # root level only
+                    "row_id_column": None,
+                    "columns": columns,
+                },
+                base_label,
+            ),
         )
+
+    base_label_counts: dict[str, int] = {}
+    for _level, _table, base_label in table_entries:
+        folded = base_label.casefold()
+        base_label_counts[folded] = base_label_counts.get(folded, 0) + 1
+
+    assigned_labels: list[tuple[dict[str, Any], str]] = []
+    for level, table, base_label in table_entries:
+        if base_label_counts[base_label.casefold()] > 1 and level:
+            label = "_".join(derive_identifier_label(key) for key, _is_array in level)
+        else:
+            label = base_label
+        assigned_labels.append((table, label))
+
+    used_labels: set[str] = set()
+    for table, label in assigned_labels:
+        candidate = label
+        suffix = 2
+        while candidate.casefold() in used_labels:
+            candidate = f"{label}_{suffix}"
+            suffix += 1
+        table["label"] = candidate
+        used_labels.add(candidate.casefold())
+
+    tables = [table for _level, table, _base_label in table_entries]
     return {"tables": tables}
 
 
@@ -1517,8 +1889,6 @@ def read_per_port_cache_meta(cache_dir: str | Path) -> dict[str, Any] | None:  #
     """
     cd = Path(cache_dir)
     meta_path = cd / _META_FILENAME
-    if not meta_path.exists():
-        return None
     try:
         meta = orjson.loads(meta_path.read_bytes())
     except (OSError, ValueError):

@@ -43,6 +43,7 @@ export default function useGraphCanvasState(
     useGraphStore.setState({
       nodes: initialNodes,
       edges: initialEdges,
+      submodels: {},
       undoStack: [],
       redoStack: [],
       structuralVersion: 0,
@@ -53,6 +54,12 @@ export default function useGraphCanvasState(
     // initialNodes/initialEdges are constructor-style seeds, not reactive.
     // eslint-disable-next-line react-hooks/exhaustive-deps -- seed-once semantics
   }, [])
+
+  // React Flow's `dragging` flag is presentation state and is intentionally
+  // omitted from history snapshots. Keep the active gesture state separately
+  // so undo/redo during a drag cannot make the next move look like a second
+  // drag start.
+  const draggingNodeIdsRef = useRef<Set<string>>(new Set())
 
   // React Flow emits delta arrays. We apply them against the current store
   // state and push history only for structural edits or the start of a drag.
@@ -66,11 +73,17 @@ export default function useGraphCanvasState(
     const hasDragStart = changes.some((c) => {
       if (c.type !== "position" || c.dragging !== true) return false
       const node = state.nodes.find((n) => n.id === c.id)
-      return !node?.dragging
+      return !node?.dragging && !draggingNodeIdsRef.current.has(c.id)
     })
 
     if (hasStructural || hasDragStart) {
       state.pushSnapshot()
+    }
+
+    for (const change of changes) {
+      if (change.type !== "position") continue
+      if (change.dragging === true) draggingNodeIdsRef.current.add(change.id)
+      else if (change.dragging === false) draggingNodeIdsRef.current.delete(change.id)
     }
 
     const nextNodes = applyNodeChanges(changes, state.nodes)
@@ -118,6 +131,21 @@ export default function useGraphCanvasState(
     [],
   )
 
+  const setNodesAndEdgesAndSubmodels = useCallback(
+    (
+      nodesUpdater: Node[] | ((nds: Node[]) => Node[]),
+      edgesUpdater: Edge[] | ((eds: Edge[]) => Edge[]),
+      submodels: Record<string, unknown>,
+    ) => {
+      useGraphStore.getState().setNodesAndEdgesAndSubmodels(nodesUpdater, edgesUpdater, submodels)
+    },
+    [],
+  )
+
+  const setSubmodelsRaw = useCallback((submodels: Record<string, unknown>) => {
+    useGraphStore.getState().setSubmodelsRaw(submodels)
+  }, [])
+
   const setNodesRaw = useCallback((updater: Node[] | ((nds: Node[]) => Node[])) => {
     useGraphStore.getState().setNodesRaw(updater)
   }, [])
@@ -146,8 +174,10 @@ export default function useGraphCanvasState(
     setNodes,
     setEdges,
     setNodesAndEdges,
+    setNodesAndEdgesAndSubmodels,
     setNodesRaw,
     setEdgesRaw,
+    setSubmodelsRaw,
     onNodesChange,
     onEdgesChange,
     undo,

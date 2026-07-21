@@ -1,4 +1,5 @@
-import { ToggleLeft } from "lucide-react"
+import { AlertTriangle, ToggleLeft } from "lucide-react"
+import { unresolvedFrameTitle } from "./_shared"
 import type { InputSource, OnUpdateConfig } from "./_shared"
 import { configField } from "../../utils/configField"
 import { withAlpha } from "../../utils/color"
@@ -53,11 +54,12 @@ export default function LiveSwitchEditor({
         </label>
         <div className="space-y-1.5">
           {inputSources.map((src) => {
-            const mappedSource = inputScenarioMap[src.varName] || ""
+            const mappedSource = inputScenarioMap[src.name] || ""
             const isActive = mappedSource === activeSource
             return (
               <div
-                key={src.varName}
+                key={src.edgeId}
+                data-testid={`live-switch-input-${src.edgeId}`}
                 className="flex items-center gap-2 px-2 py-1.5 rounded-md text-xs"
                 style={{
                   background: isActive ? withAlpha(accentColor, 0.1) : 'var(--bg-surface)',
@@ -68,12 +70,27 @@ export default function LiveSwitchEditor({
                   className="w-1.5 h-1.5 rounded-full shrink-0"
                   style={{ background: isActive ? accentColor : 'var(--text-muted)' }}
                 />
-                <span className="font-mono truncate min-w-0 flex-1" style={{ color: 'var(--text-primary)' }}>
-                  {src.sourceLabel}
+                <span
+                  className="font-mono min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-pre"
+                  data-unresolved={src.frameUnresolved ? "true" : undefined}
+                  aria-label={src.frameUnresolved ? "Unresolved frame" : undefined}
+                  title={src.frameUnresolved
+                    ? unresolvedFrameTitle(src.sourceLabel)
+                    : `from ${src.sourceLabel}`}
+                  style={{ color: src.frameUnresolved ? 'var(--warning)' : 'var(--text-primary)', whiteSpace: "pre" }}
+                >
+                  {src.frameUnresolved && (
+                    <AlertTriangle
+                      size={11}
+                      aria-hidden="true"
+                      className="inline mr-1"
+                    />
+                  )}
+                  {src.name}
                 </span>
                 <select
                   value={mappedSource}
-                  onChange={(e) => setMapping(src.varName, e.target.value)}
+                  onChange={(e) => setMapping(src.name, e.target.value)}
                   className="px-1.5 py-0.5 text-[11px] font-mono rounded focus:outline-none"
                   style={{
                     background: 'var(--bg-input)',

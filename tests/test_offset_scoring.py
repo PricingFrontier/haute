@@ -719,7 +719,12 @@ class TestDeployScorerOffset:
                     },
                 ],
                 "edges": [
-                    {"id": "e1", "source": "api_in", "target": "ms"},
+                    {
+                        "id": "e1",
+                        "source": "api_in",
+                        "target": "ms",
+                        "sourceHandle": "api_in",
+                    },
                     {"id": "e2", "source": "ms", "target": "output"},
                 ],
             }

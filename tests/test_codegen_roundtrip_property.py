@@ -35,6 +35,7 @@ Known W5 tensions intentionally scoped here:
 
 from __future__ import annotations
 
+import ast
 import json
 import tempfile
 from pathlib import Path
@@ -203,10 +204,22 @@ def _capstone_root_graph(
                     "path": "inputs/request (v2).json",
                     "tables": [
                         {
-                            "name": "quotes/table {v2}",
+                            "path": "$[:]",
+                            "label": "quotes",
+                            "emit": True,
                             "columns": [
-                                {"name": "quote_id", "dtype": "Utf8"},
-                                {"name": "premium (gross)", "dtype": "Float64"},
+                                {
+                                    "name": "quote_id",
+                                    "path": "$[:].quote_id",
+                                    "type": "str",
+                                    "selected": True,
+                                },
+                                {
+                                    "name": "premium (gross)",
+                                    "path": "$[:]['premium (gross)']",
+                                    "type": "float",
+                                    "selected": True,
+                                },
                             ],
                         }
                     ],
@@ -479,11 +492,11 @@ def _capstone_root_graph(
                 {
                     "input_scenario_map": {
                         _sanitize_func_name('Left Source "{cafe}"'): "live",
-                        _sanitize_func_name("API Input \u6771\u4eac"): "test_batch",
+                        "quotes": "test_batch",
                     },
                     "inputs": [
                         _sanitize_func_name('Left Source "{cafe}"'),
-                        _sanitize_func_name("API Input \u6771\u4eac"),
+                        "quotes",
                     ],
                 }
             ),
@@ -493,7 +506,7 @@ def _capstone_root_graph(
 
     edges = [
         _edge(left, join, source_handle=f"left output {handle_text}", target_handle="base"),
-        _edge(api, join, source_handle=f"quotes/table {handle_text}", target_handle="join"),
+        _edge(api, join, source_handle="quotes", target_handle="join"),
         _edge(const, transform, source_handle="constant {port}"),
         _edge(join, transform),
         _edge(transform, score),
@@ -509,7 +522,7 @@ def _capstone_root_graph(
         _edge(transform, explore),
         _edge(transform, external),
         _edge(left, switch, source_handle="live (left)"),
-        _edge(api, switch, source_handle="batch {api}"),
+        _edge(api, switch, source_handle="quotes"),
     ]
 
     return PipelineGraph(
@@ -738,6 +751,80 @@ def test_corpus_graphs_cover_all_supported_node_types() -> None:
 def test_corpus_roundtrip_semantics_and_source_bytes() -> None:
     for graph in _corpus_graphs():
         _assert_roundtrip_invariants(graph)
+
+
+def test_frame_named_api_parameters_are_a_byte_identical_roundtrip_fixpoint() -> None:
+    api = _node(
+        "api-source",
+        "Request Bundle",
+        NodeType.API_INPUT,
+        _opaque(
+            {
+                "path": "inputs/request.json",
+                "tables": [
+                    {
+                        "path": "$[:]",
+                        "label": "quotes",
+                        "emit": True,
+                        "columns": [
+                            {
+                                "name": "quote_id",
+                                "path": "$[:].quote_id",
+                                "type": "int",
+                                "selected": True,
+                            }
+                        ],
+                    },
+                    {
+                        "path": "$[:].drivers[:]",
+                        "label": "drivers",
+                        "emit": True,
+                        "columns": [
+                            {
+                                "name": "quote_id",
+                                "path": "$[:].quote_id",
+                                "type": "int",
+                                "selected": True,
+                            },
+                            {
+                                "name": "driver_id",
+                                "path": "$[:].drivers[:].driver_id",
+                                "type": "int",
+                                "selected": True,
+                            },
+                        ],
+                    },
+                ],
+            }
+        ),
+    )
+    merge = _node(
+        "merge",
+        "Merge Frames",
+        NodeType.POLARS,
+        _opaque({"code": "df = quotes.join(drivers, on='quote_id', how='left')"}),
+    )
+    graph = PipelineGraph(
+        nodes=[api, merge],
+        edges=[
+            _edge("api-source", "merge", source_handle="quotes"),
+            _edge("api-source", "merge", source_handle="drivers"),
+        ],
+        pipeline_name="frame_named_roundtrip",
+        pipeline_description="",
+    )
+
+    first, parsed, second = _roundtrip(graph)
+
+    _assert_semantically_equal(graph, parsed)
+    assert second == first
+    generated = ast.parse(first["main.py"])
+    merge_fn = next(
+        node
+        for node in generated.body
+        if isinstance(node, ast.FunctionDef) and node.name == "Merge_Frames"
+    )
+    assert [arg.arg for arg in merge_fn.args.args] == ["quotes", "drivers"]
 
 
 def test_submodel_container_types_are_explicitly_budgeted() -> None:

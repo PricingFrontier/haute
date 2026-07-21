@@ -74,7 +74,7 @@ import ModelScoreEditor from "../ModelScoreEditor"
 const defaultProps = () => ({
   config: {} as Record<string, unknown>,
   onUpdate: vi.fn(),
-  inputSources: [] as { sourceNodeId: string; varName: string; sourceLabel: string; edgeId: string }[],
+  inputSources: [] as { sourceNodeId: string; name: string; sourceLabel: string; edgeId: string }[],
   accentColor: "#8b5cf6",
 })
 
@@ -341,8 +341,8 @@ describe("ModelScoreEditor", () => {
   it("renders InputSourcesBar with input sources", () => {
     const props = defaultProps()
     props.inputSources = [
-      { sourceNodeId: "test-source", varName: "df", sourceLabel: "data_source", edgeId: "e1" },
-      { sourceNodeId: "test-source", varName: "df2", sourceLabel: "other_source", edgeId: "e2" },
+      { sourceNodeId: "test-source", name: "df", sourceLabel: "data_source", edgeId: "e1" },
+      { sourceNodeId: "test-source", name: "df2", sourceLabel: "other_source", edgeId: "e2" },
     ]
     render(<ModelScoreEditor {...props} />)
     const bar = screen.getByTestId("input-sources")

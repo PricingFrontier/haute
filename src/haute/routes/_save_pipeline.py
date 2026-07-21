@@ -822,7 +822,7 @@ class SavePipelineService:
             if not data_path.is_relative_to(self._root):
                 continue
             try:
-                mirror_cache_to_committed(str(data_path))
+                mirror_cache_to_committed(str(data_path), cfg)
             except Exception as exc:  # pragma: no cover - logged for operator
                 logger.error(
                     "json_cache_mirror_failed",

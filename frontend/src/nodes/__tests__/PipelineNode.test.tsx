@@ -1,6 +1,6 @@
 import { useLayoutEffect } from "react"
 import { describe, it, expect, afterEach } from "vitest"
-import { act, render, screen, cleanup } from "@testing-library/react"
+import { act, render, screen, cleanup, within } from "@testing-library/react"
 import { ReactFlowProvider, useStoreApi, type Edge, type InternalNode, type NodeProps } from "@xyflow/react"
 import PipelineNode from "../PipelineNode"
 import type { PipelineFlowNode, PipelineNodeData } from "../../types/node"
@@ -40,6 +40,7 @@ function renderNode(
     connection?: unknown
     storeRef?: { current: ReturnType<typeof useStoreApi> | null }
   },
+  zoom = 1,
 ) {
   const fullData: PipelineNodeData = {
     description: "",
@@ -66,7 +67,15 @@ function renderNode(
   }
   return render(
     <ReactFlowProvider>
-      {geometry && <FlowGeometrySeed {...geometry} />}
+      {(geometry || zoom !== 1) && (
+        <FlowGeometrySeed
+          internalNodes={geometry?.internalNodes ?? []}
+          edges={geometry?.edges ?? []}
+          connection={geometry?.connection}
+          storeRef={geometry?.storeRef}
+          zoom={zoom}
+        />
+      )}
       <PipelineNode {...(props as unknown as NodeProps<PipelineFlowNode>)} />
     </ReactFlowProvider>,
   )
@@ -77,11 +86,13 @@ function FlowGeometrySeed({
   edges,
   connection,
   storeRef,
+  zoom = 1,
 }: {
   internalNodes: InternalNode<PipelineFlowNode>[]
   edges: Edge[]
   connection?: unknown
   storeRef?: { current: ReturnType<typeof useStoreApi> | null }
+  zoom?: number
 }) {
   const store = useStoreApi()
   useLayoutEffect(() => {
@@ -90,9 +101,10 @@ function FlowGeometrySeed({
       edges,
       nodeLookup: new Map(internalNodes.map((node) => [node.id, node])),
       nodes: internalNodes.map((node) => node.internals.userNode),
+      transform: [0, 0, zoom],
       ...(connection ? { connection: connection as never } : {}),
     })
-  }, [connection, edges, internalNodes, store, storeRef])
+  }, [connection, edges, internalNodes, store, storeRef, zoom])
   return null
 }
 
@@ -166,6 +178,26 @@ function sourceDragConnection(fromNode: InternalNode<PipelineFlowNode>) {
   }
 }
 
+function apiInputTable(
+  label: string,
+  { emit = true, selected = true }: { emit?: boolean; selected?: boolean } = {},
+) {
+  return {
+    path: `$['${label}']`,
+    label,
+    emit,
+    columns: [{ name: "value", selected }],
+  }
+}
+
+function sourceHandles(container: HTMLElement): HTMLElement[] {
+  return Array.from(
+    container.querySelectorAll<HTMLElement>(
+      '.react-flow__handle[data-handlepos="right"]',
+    ),
+  )
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -201,6 +233,223 @@ describe("PipelineNode", () => {
     renderNode({ label: "Quote Input", nodeType: NODE_TYPES.API_INPUT, config: { row_id_column: "id" } })
     expect(screen.getByText("Quote Input")).toBeInTheDocument()
     expect(screen.getByText("API")).toBeInTheDocument()
+  })
+
+  describe("full-detail apiInput frame rows", () => {
+    it("suppresses the instance name in the body while preserving ordered row/name/handle identity and node accessibility", () => {
+      const nodeLabel = "Quote Input 1"
+      const frameLabels = [
+        "policies",
+        "driver_claim_history_by_accident_year_and_region",
+        "vehicles",
+      ]
+      const { container } = renderNode({
+        label: nodeLabel,
+        nodeType: NODE_TYPES.API_INPUT,
+        config: {
+          tables: [
+            apiInputTable(frameLabels[0]),
+            apiInputTable("   "),
+            apiInputTable(frameLabels[1]),
+            apiInputTable(frameLabels[2]),
+            apiInputTable(frameLabels[0]),
+            apiInputTable("unselected", { selected: false }),
+            apiInputTable("not-emitted", { emit: false }),
+          ],
+        },
+        _status: "running",
+        _schemaWarnings: [{ column: "policy_id", status: "missing" }],
+      })
+
+      const node = screen.getByTestId(`node-${nodeLabel}`)
+      expect(node).toHaveAttribute("aria-label", expect.stringContaining(nodeLabel))
+      expect(within(node).queryByText(nodeLabel)).not.toBeInTheDocument()
+
+      const rows = within(node).getAllByTestId(/^api-input-frame-row-/)
+      expect(rows.map((row) => row.getAttribute("data-testid"))).toEqual(
+        frameLabels.map((label) => `api-input-frame-row-${label}`),
+      )
+
+      frameLabels.forEach((label, index) => {
+        const row = within(node).getByTestId(`api-input-frame-row-${label}`)
+        const name = within(row).getByTestId(`api-input-body-label-${label}`)
+        const handle = within(node).getByTestId(
+          `output-connector[${index}]:${nodeLabel}`,
+        )
+
+        expect(name).toHaveTextContent(label)
+        expect(name).toHaveAttribute("title", label)
+        expect(handle).toHaveAttribute("data-handleid", label)
+        expect(row).toContainElement(handle)
+      })
+
+      expect(sourceHandles(container).map((handle) => handle.dataset.testid)).toEqual(
+        frameLabels.map((_label, index) => `output-connector[${index}]:${nodeLabel}`),
+      )
+      expect(screen.getByLabelText("Node running")).toBeInTheDocument()
+      expect(screen.getByLabelText("Node has schema warnings")).toBeInTheDocument()
+    })
+
+    it("mounts a labelled handle inside the sole visible frame row", () => {
+      const nodeLabel = "Single Quote Input"
+      const frameLabel = "policies"
+      const { container } = renderNode({
+        label: nodeLabel,
+        nodeType: NODE_TYPES.API_INPUT,
+        config: {
+          tables: [
+            apiInputTable(frameLabel),
+            apiInputTable("unselected", { selected: false }),
+          ],
+        },
+      })
+
+      const node = screen.getByTestId(`node-${nodeLabel}`)
+      expect(within(node).queryByText(nodeLabel)).not.toBeInTheDocument()
+
+      const row = within(node).getByTestId(`api-input-frame-row-${frameLabel}`)
+      expect(within(row).getByTestId(`api-input-body-label-${frameLabel}`)).toHaveTextContent(
+        frameLabel,
+      )
+      const handle = within(node).getByTestId(`output-connector[0]:${nodeLabel}`)
+      expect(handle).toHaveAttribute("data-handleid", frameLabel)
+      expect(row).toContainElement(handle)
+      expect(sourceHandles(container)).toEqual([handle])
+    })
+
+    it("keeps a sole valid frame labelled when a second emit-eligible table has an invalid label", () => {
+      const nodeLabel = "Partially Valid Input"
+      const frameLabel = "policies"
+      renderNode({
+        label: nodeLabel,
+        nodeType: NODE_TYPES.API_INPUT,
+        config: {
+          tables: [apiInputTable(frameLabel), apiInputTable("\t ")],
+        },
+      })
+
+      const node = screen.getByTestId(`node-${nodeLabel}`)
+      const row = within(node).getByTestId(`api-input-frame-row-${frameLabel}`)
+      const handle = within(node).getByTestId(`output-connector[0]:${nodeLabel}`)
+      expect(handle).toHaveAttribute("data-handleid", frameLabel)
+      expect(row).toContainElement(handle)
+      expect(screen.getAllByTestId(/^api-input-frame-row-/)).toHaveLength(1)
+    })
+
+    it("keeps distinct valid identifier names visually and structurally distinct", () => {
+      const nodeLabel = "Identifier Quote Input"
+      const frameLabels = ["frame_a", "frame__a"]
+      renderNode({
+        label: nodeLabel,
+        nodeType: NODE_TYPES.API_INPUT,
+        config: { tables: frameLabels.map((label) => apiInputTable(label)) },
+      })
+
+      const node = screen.getByTestId(`node-${nodeLabel}`)
+      const renderedLabels = within(node).getAllByTestId(/^api-input-body-label-/)
+
+      expect(renderedLabels.map((label) => label.dataset.testid)).toEqual(
+        frameLabels.map((label) => `api-input-body-label-${label}`),
+      )
+      expect(renderedLabels.map((label) => label.textContent)).toEqual(frameLabels)
+      expect(renderedLabels.map((label) => label.getAttribute("title"))).toEqual(
+        frameLabels,
+      )
+      renderedLabels.forEach((label) => {
+        expect(window.getComputedStyle(label).whiteSpace).toMatch(
+          /^(pre|pre-wrap|break-spaces)$/,
+        )
+      })
+    })
+
+    it("keeps the instance name, explicit empty-state hint, and default right-side handle when no frame is visible", () => {
+      const nodeLabel = "Unconfigured Input"
+      const { container } = renderNode({
+        label: nodeLabel,
+        nodeType: NODE_TYPES.API_INPUT,
+        config: {
+          tables: [apiInputTable("not-runtime-eligible", { selected: false })],
+        },
+      })
+
+      const node = screen.getByTestId(`node-${nodeLabel}`)
+      expect(within(node).getByText(nodeLabel)).toBeInTheDocument()
+      const emptyHint = within(node).getByText("No emitted frames")
+      expect(emptyHint).toBeInTheDocument()
+      expect(emptyHint).toHaveStyle({ color: "var(--text-muted)" })
+      expect(within(node).queryAllByTestId(/^api-input-frame-row-/)).toHaveLength(0)
+
+      const handle = within(node).getByTestId(`output-connector[0]:${nodeLabel}`)
+      expect(handle).not.toHaveAttribute("data-handleid")
+      expect(handle).toHaveClass("react-flow__handle-right")
+      expect(handle).not.toHaveClass("connectablestart")
+      expect(handle).not.toHaveClass("connectableend")
+      // JSDOM cannot measure the rendered centre. The default right-side
+      // Handle is centred by React Flow when `top` is implicit; an explicit
+      // 50% is equivalent, while any per-frame offset would violate the
+      // zero-frame fallback contract.
+      expect(["", "50%"]).toContain(handle.style.top)
+      expect(sourceHandles(container)).toEqual([handle])
+    })
+
+    it("renders an active trace value before the frame rows without displacing them", () => {
+      const nodeLabel = "Traced API Input"
+      renderNode({
+        label: nodeLabel,
+        nodeType: NODE_TYPES.API_INPUT,
+        config: {
+          tables: [apiInputTable("policies"), apiInputTable("drivers")],
+        },
+        _traceActive: true,
+        _traceValue: "trace-output",
+      })
+
+      const node = screen.getByTestId(`node-${nodeLabel}`)
+      const traceValue = within(node).getByText("trace-output")
+      const rows = within(node).getAllByTestId(/^api-input-frame-row-/)
+      expect(rows).toHaveLength(2)
+      rows.forEach((row, index) => {
+        const handle = within(node).getByTestId(
+          `output-connector[${index}]:${nodeLabel}`,
+        )
+        expect(row).toContainElement(handle)
+      })
+      expect(
+        traceValue.compareDocumentPosition(rows[0]) & Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBe(Node.DOCUMENT_POSITION_FOLLOWING)
+    })
+  })
+
+  describe.each([
+    ["medium", 0.5],
+    ["compact", 0.2],
+  ] as const)("%s-detail apiInput body", (_lod, zoom) => {
+    it("keeps the instance-name body and container-mounted fallback handles without frame rows", () => {
+      const nodeLabel = `Zoomed API Input ${zoom}`
+      const frameLabels = ["policies", "drivers"]
+      const { container } = renderNode(
+        {
+          label: nodeLabel,
+          nodeType: NODE_TYPES.API_INPUT,
+          config: { tables: frameLabels.map((label) => apiInputTable(label)) },
+        },
+        false,
+        undefined,
+        zoom,
+      )
+
+      const node = screen.getByTestId(`node-${nodeLabel}`)
+      expect(within(node).getByText(nodeLabel)).toBeInTheDocument()
+      expect(within(node).queryAllByTestId(/^api-input-frame-row-/)).toHaveLength(0)
+      expect(within(node).queryAllByTestId(/^api-input-body-label-/)).toHaveLength(0)
+      expect(sourceHandles(container).map((handle) => handle.getAttribute("data-handleid"))).toEqual(
+        frameLabels,
+      )
+      expect(sourceHandles(container).map((handle) => handle.dataset.testid)).toEqual([
+        `output-connector[0]:${nodeLabel}`,
+        `output-connector[1]:${nodeLabel}`,
+      ])
+    })
   })
 
   it("renders an output node", () => {

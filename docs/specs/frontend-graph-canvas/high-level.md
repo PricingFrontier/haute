@@ -7,8 +7,9 @@ DAG surface where a pipeline (data sources, transforms, sinks, submodels, and
 special nodes like edge-joins and live switches) is built by placing nodes and
 wiring edges between them. This component owns three things: (1) how a node
 renders on the canvas across zoom levels and states, (2) the single
-in-memory source of truth for the graph (nodes, edges, preamble text) with
-undo/redo history and derived dirty tracking, and (3) a read-only context
+in-memory source of truth for the graph (nodes, edges, preamble text, and
+the nested submodel metadata) with undo/redo history and derived dirty
+tracking, and (3) a read-only context
 bridge that hands a graph snapshot to the node-inspector panel without prop
 drilling. Every other panel, preview pane, and editor in the app reads the
 graph through one of these two channels (the ReactFlow canvas or
@@ -29,8 +30,9 @@ In scope:
   handlers, selection, connect/drag/drop entry points, context menu and
   keyboard-shortcut wiring, active-node/preview-pane selection, and the
   save/commit gate — [`App.tsx`](../../../frontend/src/App.tsx).
-- The graph-shaped Zustand store: nodes, edges, preamble, undo/redo history
-  (including interleaved version-control entries), and derived dirty state —
+- The graph-shaped Zustand store: nodes, edges, preamble, submodel
+  metadata, undo/redo history (including interleaved version-control
+  entries), and derived dirty state —
   [`stores/useGraphStore.ts`](../../../frontend/src/stores/useGraphStore.ts).
 - The read-only graph context exposed to the node inspector —
   [`panels/GraphContext.tsx`](../../../frontend/src/panels/GraphContext.tsx) and
@@ -119,9 +121,40 @@ Out of scope (owned by neighbouring components, linked where they exist):
   they don't have. Edge-join nodes render a base target handle, a join
   target handle that repositions (top/bottom/both) based on the live
   geometry of whatever is connected to it, and one output handle. API-input
-  nodes can render *multiple* labelled source handles — one per table marked
-  `emit: true` in their config — so a single node can feed multiple
-  downstream frames; the handle id is always the table's own label.
+  nodes render one labelled source handle per eligible frame — every table
+  marked `emit: true` with at least one selected column and a valid
+  identifier label — **from one frame up**: the handle id is always the
+  frame's raw label, a sole frame included, so every edge an API-input
+  creates names the frame it delivers and there is no null-id single-frame
+  mode. Only a node with zero eligible frames (nothing emitted yet, or a
+  backend-invalid config whose labels are all invalid) renders the legacy
+  default null-id handle alongside the zero-frame body — and that handle is
+  **not connectable in either direction** (`isConnectable` false — start
+  AND end, since `ConnectionMode.Loose` normalises reverse target→source
+  drags into ordinary edges), and the graph-level `isValidConnection`
+  validator independently rejects any API-input connection with a null
+  handle, covering every gesture path: a source that emits nothing cannot
+  be wired, so a persisted API-input edge always names a frame.
+  Reconciliation enforces the same rule from the other side: a null-handle
+  API-input edge (only reachable through a hand-edited file) is pruned with
+  the standard warning toast, never kept. At the full zoom
+  level the labelled handles are mounted on the body's frame rows, so each
+  dot sits at the vertical centre of the row naming its frame; at
+  medium/compact zoom, where no frame rows render, the same handles fall
+  back to even spacing down the right edge. The handle id set is identical
+  at every zoom level, so edges stay bound across zoom changes.
+- **API-input body.** At full detail, an API-input node with at least one
+  eligible emitted frame uses its body as the frame list: each visible
+  frame name is a full-width row paired with its output handle, and the
+  generic instance name is suppressed (presentation only — the persisted
+  label still drives the accessible name, `data-testid`, editor,
+  selection, codegen, and tracing identities). Exactly one visible frame
+  shows that frame's name the same way, on its own labelled handle. Zero
+  eligible frames keeps the
+  instance name and adds a muted "No emitted frames" hint. Visibility
+  mirrors runtime eligibility — `emit: true`, at least one selected
+  column, and a valid (non-blank, non-duplicate) raw label — and a long
+  name truncates with the full name available as a tooltip.
 - **Visual state.** Nodes show: a selection border; a dashed border for
   submodel instances; a "LIVE" badge on live-switch nodes when the active
   data source is live; a status dot for ok/error/running; a warning dot for
@@ -138,12 +171,17 @@ Out of scope (owned by neighbouring components, linked where they exist):
   flows out of it into the submodel body); an output port shows a target
   handle.
 - **Graph state.** `useGraphStore` is the sole owner of `nodes`, `edges`,
-  and `preamble`. All mutation goes through one of two tiers: history-aware
-  actions (`setNodes`, `setEdges`, `setNodesAndEdges`, `setPreamble`) that
-  push one undo snapshot per call, or raw actions (`setNodesRaw`,
-  `setEdgesRaw`, `setPreambleRaw`) that skip history — used for mid-drag
-  position churn, WebSocket sync, pipeline load, and the continuously edited
-  imports preamble.
+  `preamble`, and the `submodels` metadata (nested submodel graphs — store
+  state so a root-frame rename that migrates nested mappings is one
+  coherent, undoable transaction). All mutation goes through one of two
+  tiers: history-aware actions (`setNodes`, `setEdges`, `setNodesAndEdges`,
+  `setNodesAndEdgesAndSubmodels`, `setPreamble`) that push one undo snapshot
+  per call, or raw actions (`setNodesRaw`, `setEdgesRaw`, `setSubmodelsRaw`,
+  `setPreambleRaw`) that skip history — used for mid-drag position churn,
+  WebSocket sync, pipeline load, and the continuously edited imports
+  preamble. History snapshots carry `submodels` alongside nodes/edges/
+  preamble, and undo/redo restores all four together (older snapshots
+  without the field restore an empty metadata map).
 - **Undo/redo** operates over a single stack that can hold either a graph
   snapshot or a version-control history entry, so a branch switch and a
   graph edit interleave and reverse in the order they actually happened.
@@ -268,10 +306,47 @@ Out of scope (owned by neighbouring components, linked where they exist):
 - **API-input handle ids are the raw configured table labels, never
   synthesized ids.** The backend's codegen round-trips through those exact
   labels, so a synthesized `port_<idx>` id would silently fail to resolve at
-  execution time. A blank or duplicate label therefore gets *no* handle at
-  all rather than a fabricated one — consistent with the codebase-wide
-  preference for loud failure over a fallback that's wrong and hard to
-  notice.
+  execution time. A blank, duplicate, or non-identifier label therefore gets
+  *no* handle at all rather than a fabricated one — consistent with the
+  codebase-wide preference for loud failure over a fallback that's wrong and
+  hard to notice. The editor mirrors the backend's identifier rule exactly
+  (ASCII identifier `/^[A-Za-z_][A-Za-z0-9_]*$/`, no Python hard keyword)
+  before commit, because the label is also the downstream code argument
+  name; the backend rule is ASCII-only precisely so this mirror can be
+  exact rather than an approximation of Unicode `str.isidentifier()`.
+- **Connections that would duplicate an input name are rejected at drag
+  time.** Every incoming edge contributes exactly one input name (its frame
+  label for API frames, the sanitised source label otherwise); a connection
+  whose derived name duplicates an existing input on the target is refused
+  with a named toast, mirroring the backend's save-time `ParseError`. The
+  alternative — accepting the edge and letting codegen suffix a parameter —
+  is the hidden-rename behaviour this design exists to eliminate.
+- **API-input frame rows own both the name and the handle.** The earlier
+  layout computed the body's label column and the handle positions in two
+  unrelated coordinate systems — a stacked list inside the body vs.
+  percentages of the full node height including the header — which kept
+  the same order but drifted vertically as status/trace/label content
+  changed the body height, so a user could not tell which line left which
+  frame. Mounting each handle inside the row that names it makes the
+  alignment structural: it holds for one, two, or any number of frames
+  because there are no longer two layouts to keep in sync, and no
+  per-frame-count constants exist to go stale.
+- **One frame-label derivation, one identity.** `apiInputFrameLabels` is
+  the single ordered list of eligible frame labels (no minimum count); the
+  rendered handles, the body rows, downstream input chips, and the
+  generated function parameters all read from it, so none of them can
+  disagree. The earlier design split "visible names" from "multi-port
+  handle mode" (labelled handles only from two frames up, a null-id
+  default handle for one) to avoid touching persisted edge identity in a
+  presentation-only release; the convergence release deliberately retired
+  that split — a sole frame's edge now carries the frame label like any
+  other, because a name that exists on screen but not in the persisted
+  edge or the code argument is exactly the hidden-mapping class this
+  design removes.
+- **The zero-frame body states the absence explicitly** — "No emitted
+  frames" beside the retained instance name — rather than rendering an
+  empty body or keeping the old name-only layout: an unconfigured
+  API-input should say what is missing.
 - **Comparison-view diff, trace, and hover visuals reuse the same
   border/ring element used for selection**, rather than each state owning
   its own overlay shape, so every node type — including pill-shaped
@@ -341,7 +416,10 @@ Out of scope (owned by neighbouring components, linked where they exist):
 - [frontend-node-editors](../frontend-node-editors/high-level.md) — the node
   inspector panel and its per-type editors consume the graph exclusively
   through `useGraph()`/`GraphProvider`, never via props, and call back into
-  `App.tsx`'s `onUpdateNode` to commit config changes.
+  `App.tsx`'s `onUpdateNode` to commit config changes. They also consume
+  this component's frame display resolution (`utils/apiInputPorts.ts`) to
+  label downstream inputs and output frames by the dataframe an edge
+  delivers.
 - [server-api](../server-api/high-level.md) — the backend counterpart to
   `usePipelineAPI` (`/api/pipeline/*` load/save/preview) and
   `useWebSocketSync` (`/ws/sync`); both hooks feed the store via
@@ -389,11 +467,14 @@ Out of scope (owned by neighbouring components, linked where they exist):
   naming `GraphProvider` in its message. `App.tsx` wraps the node panel in
   an `ErrorBoundary` (`name="NodePanel"`), so this surfaces as a caught
   render error, not a silent empty-graph render.
-- API-input handle-id resolution never fabricates an id for a blank or
-  duplicate table label — such a table renders no handle, so no edge can be
-  created against a non-existent id. When a config edit orphans an
-  *existing* edge (a table's `emit` flag is turned off, a table is deleted,
-  or a single/multi-frame transition removes a bound label),
+- API-input handle-id resolution never fabricates an id for a blank,
+  duplicate, or non-identifier table label — such a table renders no handle,
+  so no edge can be created against a non-existent id. The visible frame
+  list obeys the same rule — an invalid label gets no row and no fabricated
+  display name — so the body can never advertise a frame that does not
+  exist. When a config edit orphans an *existing* edge (a table's `emit`
+  flag is turned off, a table is deleted, or the last eligible frame
+  disappears and a labelled edge no longer resolves),
   `App.tsx`'s `onUpdateNode` prunes the edge and raises a named `warning`
   toast rather than persisting a broken edge to disk.
 - A version-control history entry whose async `undo()`/`redo()` leg rejects

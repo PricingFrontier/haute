@@ -31,7 +31,7 @@ EXPECTED_FIXTURE_PREMIUM = 2.75
 
 @pytest.fixture(autouse=True)
 def _isolate_json_cache(tmp_path, monkeypatch, _widen_sandbox_root):
-    """Redirect the JSON parquet cache to a temp dir and pre-populate it.
+    """Redirect the JSON parquet cache to a temp dir and prewarm it.
 
     Without this, a stale .haute_cache/ in the working directory (from a
     previous real-data run) can poison the fixture pipeline's api-input
@@ -40,8 +40,9 @@ def _isolate_json_cache(tmp_path, monkeypatch, _widen_sandbox_root):
     Under v2 (post-commit-5.5) the per-port cache replaces the v1 single
     parquet. We pre-populate the cache via ``build_per_port_cache`` so
     the executor's apiInput consumer (which reads from the per-port
-    cache via ``load_per_port_cache``) finds its data ready — the same
-    step a user performs by clicking "Cache as Parquet" in the GUI.
+    cache via ``load_per_port_cache``) exercises the performance fast path.
+    This mirrors the optional "Cache as Parquet" prewarm action; uncached
+    execution is covered separately and reads the JSON source directly.
     """
     import json
 
@@ -95,6 +96,8 @@ class TestEndToEnd:
         }
         assert node_ids == expected_nodes
         assert len(graph.edges) == 6
+        quotes_edge = next(edge for edge in graph.edges if edge.source == "quotes")
+        assert quotes_edge.sourceHandle == "quotes"
 
     def test_execute_all_nodes(self):
         """All nodes execute and the fixture premium matches the oracle."""
@@ -251,8 +254,13 @@ def _make_node(nid: str, label: str, node_type: NodeType, config: dict | None = 
     )
 
 
-def _make_edge(src: str, tgt: str) -> GraphEdge:
-    return GraphEdge(id=f"e_{src}_{tgt}", source=src, target=tgt)
+def _make_edge(src: str, tgt: str, *, source_port: str | None = None) -> GraphEdge:
+    return GraphEdge(
+        id=f"e_{src}_{tgt}",
+        source=src,
+        target=tgt,
+        sourceHandle=source_port,
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -371,7 +379,35 @@ class TestAllNodeTypesRoundtrip:
         # source_names correctly and the parser can reconstruct edges.
         nodes = [
             _make_node("ds", "ds", NodeType.DATA_SOURCE, {"path": _posix_path(data_path)}),
-            _make_node("api", "api", NodeType.API_INPUT, {"path": _posix_path(json_path)}),
+            _make_node(
+                "api",
+                "api",
+                NodeType.API_INPUT,
+                {
+                    "path": _posix_path(json_path),
+                    "tables": [
+                        {
+                            "path": "$[:]",
+                            "label": "api",
+                            "emit": True,
+                            "columns": [
+                                {
+                                    "name": "x",
+                                    "path": "$[:].x",
+                                    "type": "int",
+                                    "selected": True,
+                                },
+                                {
+                                    "name": "region",
+                                    "path": "$[:].region",
+                                    "type": "str",
+                                    "selected": True,
+                                },
+                            ],
+                        }
+                    ],
+                },
+            ),
             _make_node(
                 "const",
                 "const",
@@ -497,7 +533,7 @@ class TestAllNodeTypesRoundtrip:
         # Chain them linearly so every node has a source_name
         edges = [
             _make_edge("ds", "switch"),
-            _make_edge("api", "switch"),
+            _make_edge("api", "switch", source_port="api"),
             _make_edge("switch", "transform"),
             _make_edge("transform", "band"),
             _make_edge("band", "rating"),

@@ -82,6 +82,21 @@ const DEFAULT_PROPS = {
   accentColor: "#10b981",
 }
 
+const CACHEABLE_TABLE = {
+  path: "$[:]",
+  label: "policies",
+  emit: true,
+  columns: [
+    {
+      name: "policy_id",
+      path: "$[:].policy_id",
+      type: "int",
+      status: "Confirmed",
+      selected: true,
+    },
+  ],
+}
+
 describe("ApiInputEditor", () => {
   it("renders API input banner text", () => {
     render(<ApiInputEditor {...DEFAULT_PROPS} />)
@@ -115,6 +130,56 @@ describe("ApiInputEditor", () => {
     expect(screen.queryByText("Cache as Parquet")).toBeNull()
   })
 
+  it("cache button is disabled when no emitted table has a selected column", () => {
+    render(
+      <ApiInputEditor
+        {...DEFAULT_PROPS}
+        config={{
+          path: "data/input.json",
+          tables: [
+            {
+              path: "$[:]",
+              label: "policies",
+              emit: true,
+              columns: [
+                {
+                  name: "policy_id",
+                  path: "$[:].policy_id",
+                  type: "int",
+                  status: "Confirmed",
+                  selected: false,
+                },
+              ],
+            },
+            {
+              path: "$[:].drivers[:]",
+              label: "drivers",
+              emit: false,
+              columns: [
+                {
+                  name: "driver_id",
+                  path: "$[:].drivers[:].driver_id",
+                  type: "int",
+                  status: "Confirmed",
+                  selected: true,
+                },
+              ],
+            },
+          ],
+        }}
+      />,
+    )
+
+    const button = screen.getByRole("button", { name: "Cache as Parquet" })
+    expect(button).toBeDisabled()
+    expect(button).toHaveAttribute(
+      "title",
+      "Select at least one column in an emitted table before caching.",
+    )
+    fireEvent.click(button)
+    expect(mockBuildJsonCache).not.toHaveBeenCalled()
+  })
+
   it("JsonCacheButton: shows 'Cache as Parquet' initially when not cached", async () => {
     mockGetJsonCacheStatus.mockResolvedValue({ cached: false })
 
@@ -136,16 +201,13 @@ describe("ApiInputEditor", () => {
       cached_at: 0,
     })
 
-    // Need at least one emit:true table — the Cache button is disabled
-    // when there's no schema source or no emit-true table (T9/T10).
+    // Need at least one runtime-emitting table (emit + selected column).
     render(
       <ApiInputEditor
         {...DEFAULT_PROPS}
         config={{
           path: "data/input.json",
-          tables: [
-            { path: "$[:]", label: "policies", emit: true, columns: [] },
-          ],
+          tables: [CACHEABLE_TABLE],
         }}
       />,
     )
@@ -187,9 +249,7 @@ describe("ApiInputEditor", () => {
         {...DEFAULT_PROPS}
         config={{
           path: "data/input.json",
-          tables: [
-            { path: "$[:]", label: "policies", emit: true, columns: [] },
-          ],
+          tables: [CACHEABLE_TABLE],
         }}
         configPath="rating/config/quote_input/api_input.json"
       />,
@@ -224,20 +284,146 @@ describe("ApiInputEditor", () => {
     })
   })
 
-  it("JsonCacheButton: shows error on failure", async () => {
-    mockGetJsonCacheStatus.mockResolvedValue({ cached: false })
-    mockBuildJsonCache.mockRejectedValue(new Error("Failed to build cache"))
+  it("JsonCacheButton: refetches cache status when the live schema changes", async () => {
+    mockGetJsonCacheStatusForSchema
+      .mockResolvedValueOnce({
+        cached: true,
+        data_path: "data/input.json",
+        row_count: 10,
+        column_count: 2,
+        size_bytes: 2048,
+        cached_at: 1,
+      })
+      .mockResolvedValue({ cached: false })
+    mockBuildJsonCache.mockResolvedValue({
+      cached: true,
+      data_path: "data/input.json",
+      row_count: 10,
+      column_count: 2,
+      size_bytes: 2048,
+      cached_at: 2,
+    })
 
-    // Cache button is disabled with no emit:true table; give it one
-    // so the click path fires and the error bubbles up.
-    render(
+    const baseTable = {
+      path: "$[:]",
+      label: "policies",
+      emit: true,
+      columns: [
+        {
+          name: "policy_id",
+          path: "$[:].policy_id",
+          type: "int",
+          status: "Confirmed",
+          selected: true,
+        },
+        {
+          name: "premium",
+          path: "$[:].premium",
+          type: "float",
+          status: "Confirmed",
+          selected: true,
+        },
+      ],
+    }
+    const view = render(
+      <ApiInputEditor
+        {...DEFAULT_PROPS}
+        config={{ path: "data/input.json", tables: [baseTable] }}
+        configPath="rating/config/quote_input/api_input.json"
+      />,
+    )
+
+    await waitFor(() => {
+      expect(screen.getByText("Refresh Cache")).toBeTruthy()
+    })
+    expect(mockGetJsonCacheStatusForSchema).toHaveBeenCalledTimes(1)
+
+    // A fresh object with the same schema value is not a new cache resource.
+    view.rerender(
       <ApiInputEditor
         {...DEFAULT_PROPS}
         config={{
           path: "data/input.json",
           tables: [
-            { path: "$[:]", label: "policies", emit: true, columns: [] },
+            {
+              ...baseTable,
+              columns: baseTable.columns.map((column) => ({ ...column })),
+            },
           ],
+        }}
+        configPath="rating/config/quote_input/api_input.json"
+      />,
+    )
+    await act(async () => {
+      await Promise.resolve()
+    })
+    expect(mockGetJsonCacheStatusForSchema).toHaveBeenCalledTimes(1)
+    expect(screen.getByText("Refresh Cache")).toBeTruthy()
+
+    view.rerender(
+      <ApiInputEditor
+        {...DEFAULT_PROPS}
+        config={{
+          path: "data/input.json",
+          tables: [
+            {
+              ...baseTable,
+              columns: baseTable.columns.map((column, index) => ({
+                ...column,
+                selected: index === 0 ? false : column.selected,
+              })),
+            },
+          ],
+        }}
+        configPath="rating/config/quote_input/api_input.json"
+      />,
+    )
+
+    await waitFor(() => {
+      expect(mockGetJsonCacheStatusForSchema).toHaveBeenCalledTimes(2)
+      expect(screen.getByText("Cache as Parquet")).toBeTruthy()
+      expect(screen.getByText(/Runs directly from JSON.*faster repeat runs/)).toBeTruthy()
+      expect(screen.queryByText("10 rows")).toBeNull()
+    })
+    expect(mockGetJsonCacheStatusForSchema).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        volatile_schema: expect.objectContaining({
+          tables: [
+            expect.objectContaining({
+              columns: [
+                expect.objectContaining({ name: "policy_id", selected: false }),
+                expect.objectContaining({ name: "premium", selected: true }),
+              ],
+            }),
+          ],
+        }),
+      }),
+    )
+
+    await act(async () => {
+      fireEvent.click(screen.getByText("Cache as Parquet").closest("button")!)
+    })
+    const buildPayload = mockBuildJsonCache.mock.calls[0][0] as Record<string, unknown>
+    expect(buildPayload).toEqual(expect.objectContaining({
+      path: "data/input.json",
+      config_path: "rating/config/quote_input/api_input.json",
+      volatile_schema: expect.any(Object),
+    }))
+    expect(buildPayload).not.toHaveProperty("resourceKey")
+    expect(buildPayload.path).not.toContain("volatile_schema")
+  })
+
+  it("JsonCacheButton: shows error on failure", async () => {
+    mockGetJsonCacheStatus.mockResolvedValue({ cached: false })
+    mockBuildJsonCache.mockRejectedValue(new Error("Failed to build cache"))
+
+    // Give the cache action a runtime-emitting table so the error path fires.
+    render(
+      <ApiInputEditor
+        {...DEFAULT_PROPS}
+        config={{
+          path: "data/input.json",
+          tables: [CACHEABLE_TABLE],
         }}
       />,
     )
@@ -251,13 +437,13 @@ describe("ApiInputEditor", () => {
     })
   })
 
-  it("JsonCacheButton: shows 'Not cached yet' message", async () => {
+  it("JsonCacheButton: explains that caching is an optional speed-up", async () => {
     mockGetJsonCacheStatus.mockResolvedValue({ cached: false })
 
     render(<ApiInputEditor {...DEFAULT_PROPS} config={{ path: "data/input.json" }} />)
 
     await waitFor(() => {
-      expect(screen.getByText(/Not cached yet/)).toBeTruthy()
+      expect(screen.getByText(/Runs directly from JSON.*faster repeat runs/)).toBeTruthy()
     })
   })
 
@@ -605,6 +791,7 @@ function StatefulHarness({
             ? { ...prev, [keyOrUpdates]: value }
             : { ...prev, ...keyOrUpdates },
         )
+        return { ok: true as const }
       }}
       accentColor="#10b981"
     />
@@ -946,10 +1133,9 @@ describe("ApiInputEditor — W1.4 label validation (blank / duplicate / sanitise
     expect(error.textContent).toMatch(/drivers/)
   })
 
-  it("a sanitised-form collision (backend B2) is rejected before commit", () => {
-    // "drivers.x" sanitises to "drivers_x"; if another table is labelled
-    // "drivers_x" the backend rejects the save (both would write the
-    // same parquet). Surface that here, not as a 422 later.
+  it("rejects a former sanitised-collision witness under the ASCII identifier rule", () => {
+    // Post-B4, "drivers.x" is rejected before the defensive filesystem-stem
+    // collision check: a frame label must already be an ASCII identifier.
     const config = {
       tables: [
         { path: "$[:]", label: "policies", emit: true, columns: [] },
@@ -965,7 +1151,9 @@ describe("ApiInputEditor — W1.4 label validation (blank / duplicate / sanitise
     fireEvent.blur(input)
 
     expect(onUpdateSpy).not.toHaveBeenCalled()
-    expect(screen.getByTestId("api-input-table-0-label-error").textContent).toMatch(/drivers_x/)
+    expect(screen.getByTestId("api-input-table-0-label-error")).toHaveTextContent(
+      /ASCII identifier/,
+    )
   })
 
   it("fixing an invalid draft to a valid label clears the error and commits once", () => {
@@ -986,6 +1174,40 @@ describe("ApiInputEditor — W1.4 label validation (blank / duplicate / sanitise
     expect(
       (onUpdateSpy.mock.calls[0][0] as { tables: { label: string }[] }).tables[0].label,
     ).toBe("quotes")
+    expect(screen.queryByTestId("api-input-table-0-label-error")).toBeNull()
+  })
+
+  it("surfaces a rename preflight rejection until a later commit succeeds", () => {
+    const collisionError =
+      'Target "Pricing Node" already has an input named "quotes".'
+    const onUpdate = vi.fn()
+      .mockReturnValueOnce({ ok: false, error: collisionError })
+      .mockReturnValueOnce({ ok: true })
+    render(
+      <ApiInputEditor
+        config={TWO_EMIT_TABLES}
+        onUpdate={onUpdate}
+        accentColor="#10b981"
+      />,
+    )
+
+    const input = screen.getByTestId("api-input-table-0-label") as HTMLInputElement
+    fireEvent.change(input, { target: { value: "quotes" } })
+    fireEvent.blur(input)
+
+    expect(onUpdate).toHaveBeenCalledTimes(1)
+    const rejected = screen.getByTestId("api-input-table-0-label-error")
+    expect(rejected).toHaveTextContent("Pricing Node")
+    expect(rejected).toHaveTextContent("quotes")
+    expect(input).toHaveAttribute("aria-invalid", "true")
+
+    fireEvent.change(input, { target: { value: "claims" } })
+    expect(screen.getByTestId("api-input-table-0-label-error")).toHaveTextContent(
+      collisionError,
+    )
+    fireEvent.blur(input)
+
+    expect(onUpdate).toHaveBeenCalledTimes(2)
     expect(screen.queryByTestId("api-input-table-0-label-error")).toBeNull()
   })
 

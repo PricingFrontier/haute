@@ -26,6 +26,7 @@
 | `frontend/e2e/job-progress-render.benchmark.spec.ts` | `@benchmark` Playwright coverage for job-progress rendering. |
 | `frontend/e2e/large-graph-drag.benchmark.spec.ts` | `@benchmark` Playwright coverage for dragging large graphs. |
 | `frontend/e2e/migration/v1-to-v2-node-continuity.spec.ts` | Playwright coverage for node-continuity migration behaviour. |
+| `frontend/e2e/persistence/api-input-frame-alignment.spec.ts` | Playwright geometry coverage for API-input frame-row/handle alignment and downstream frame naming. |
 | `frontend/e2e/persistence/api-input-render-gate.spec.ts` | Playwright persistence/render-gate coverage for API input. |
 | `frontend/e2e/persistence/api-input-v2-native.spec.ts` | Playwright persistence coverage for native v2 API input. |
 | `frontend/e2e/smoke.spec.ts` | Tagged smoke Playwright coverage, including the Firefox smoke project. |

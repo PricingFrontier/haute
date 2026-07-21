@@ -13,7 +13,7 @@ Test ID mapping (T1-T22 per handover):
   - T7: parquet footer kv_metadata carries per-table v2 schema
   - T8: malformed volatile_schema -> 422 with structured ApiInputSchemaError
   - T13: validate_v2_schema rejects unknown col.type
-  - T14: validate_v2_schema rejects sanitised-label collision
+  - T14: validate_v2_schema rejects former Unicode collision witnesses under B4
   - T15: validator + path parsers raise ApiInputSchemaError(HauteError)
   - T16: corrupt-mix (tables + flattenSchema) uses tables, no error
   - T17: save apiInput with empty tables -> SavePipelineResponse.warnings
@@ -455,41 +455,34 @@ def test_t13_validate_v2_schema_rejects_unknown_col_type() -> None:
         validate_v2_schema(cfg_bad_type)
 
 
-# ─── T14 — sanitised-label collision rejected ────────────────────────
+# ─── T14 — former Unicode B2 witnesses rejected by B4 ─────────────────
 
 
-def test_t14_validate_v2_schema_rejects_sanitised_label_collision() -> None:
-    """Two table labels sanitising to the same parquet filename → reject.
+@pytest.mark.parametrize(
+    "label",
+    [
+        pytest.param("my\u00e9table", id="acute"),
+        pytest.param("my\u00e8table", id="grave"),
+        pytest.param("My\u00e9Table", id="case-composed"),
+    ],
+)
+def test_t14_validate_v2_schema_rejects_former_unicode_b2_witnesses_under_b4(
+    label: str,
+) -> None:
+    """Former B2 witnesses fail B4 first because labels must be ASCII.
 
-    Today: `build_per_port_cache` silently overwrites the parquet — the
-    second write clobbers the first, the first table's data is lost
-    after the cache builds. Guardrail B2.
-
-    The sanitisation rule (per `_FILESYSTEM_SAFE` / new
-    `_sanitise_label_for_filesystem`): non-filesystem-safe characters
-    collapse to a single character. Two distinct labels that produce
-    the same sanitised name must be rejected at validate-time.
+    B2 remains as defence in depth, but these Unicode identifiers are no longer
+    valid inputs to `validate_v2_schema`; the B4 error must name the offending
+    label and explain the ASCII-only rule rather than reporting a later collision.
     """
     from haute._api_input_schema import ApiInputSchemaError, validate_v2_schema
 
-    cfg_collision = {
-        "tables": [
-            {
-                "path": "$[:].a",
-                "label": "my$table",  # $ → underscore
-                "emit": True,
-                "columns": [{"name": "x", "path": "$[:].a.x", "type": "str"}],
-            },
-            {
-                "path": "$[:].b",
-                "label": "my%table",  # % → underscore (collision: both → "my_table")
-                "emit": True,
-                "columns": [{"name": "y", "path": "$[:].b.y", "type": "str"}],
-            },
-        ]
-    }
-    with pytest.raises(ApiInputSchemaError):
-        validate_v2_schema(cfg_collision)
+    with pytest.raises(ApiInputSchemaError) as exc_info:
+        validate_v2_schema(_two_table_cfg(label, "safe_label"))
+
+    detail = str(exc_info.value)
+    assert label in detail
+    assert "ascii" in detail.casefold()
 
 
 def _two_table_cfg(label_a: str, label_b: str) -> dict:
@@ -514,7 +507,7 @@ def _two_table_cfg(label_a: str, label_b: str) -> dict:
 def test_t14b_validate_v2_schema_rejects_case_only_label_collision() -> None:
     """Labels differing only in case must be rejected (B2, casefolded).
 
-    ``Foo.parquet`` and ``foo.parquet`` are the SAME file on the
+    ``Items.parquet`` and ``items.parquet`` are the SAME file on the
     case-insensitive filesystems macOS and Windows default to: the
     shred write would silently clobber one table's parquet, and at
     runtime both frame labels would read the one survivor — wrong data
@@ -524,16 +517,35 @@ def test_t14b_validate_v2_schema_rejects_case_only_label_collision() -> None:
     from haute._api_input_schema import ApiInputSchemaError, validate_v2_schema
 
     with pytest.raises(ApiInputSchemaError) as exc_info:
-        validate_v2_schema(_two_table_cfg("Foo", "foo"))
-    assert "case" in str(exc_info.value)
+        validate_v2_schema(_two_table_cfg("Items", "items"))
 
-    # Case difference composed with a sanitised collision: 'My$Table' and
-    # 'my%table' both sanitise (case aside) to my_table.
-    with pytest.raises(ApiInputSchemaError):
-        validate_v2_schema(_two_table_cfg("My$Table", "my%table"))
+    detail = str(exc_info.value)
+    assert "Items" in detail
+    assert "items" in detail
+    assert exc_info.value.context.get("label_a") == "Items"
+    assert exc_info.value.context.get("label_b") == "items"
+    assert exc_info.value.context.get("sanitised") == "items"
 
 
-def test_t14c_validate_v2_schema_accepts_genuinely_distinct_labels() -> None:
+def test_t14c_exact_duplicate_label_reports_duplicate_before_b2_collision() -> None:
+    """An exact duplicate takes the raw-label duplicate error path before B2.
+
+    Exact duplicates also share a casefolded filesystem stem, but reporting
+    that secondary consequence would hide the simpler user mistake. Validation
+    order is therefore part of the fail-loud contract.
+    """
+    from haute._api_input_schema import ApiInputSchemaError, validate_v2_schema
+
+    with pytest.raises(ApiInputSchemaError) as exc_info:
+        validate_v2_schema(_two_table_cfg("Items", "Items"))
+
+    detail = str(exc_info.value)
+    assert "Items" in detail
+    assert "appears more than once" in detail
+    assert {"label_a", "label_b", "sanitised"}.isdisjoint(exc_info.value.context)
+
+
+def test_t14d_validate_v2_schema_accepts_genuinely_distinct_labels() -> None:
     """The casefold guard must not over-trigger on distinct names."""
     from haute._api_input_schema import validate_v2_schema
 

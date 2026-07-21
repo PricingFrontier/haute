@@ -86,7 +86,30 @@ Submodel graph expansion and boundary rewiring are owned by
 **V2 codec** — `validate_v2_schema(config)` first requires the `tables` list,
 then validates each table's label/path/columns, unique raw and sanitised
 labels, unique column names, supported column type/levels shapes, ancestor-or-own
-column paths, and `row_id_column`. `parse_table_path`/`parse_column_path_full`/
+column paths, and `row_id_column`. Labels must additionally be ASCII-only
+Python identifiers and not hard keywords — `label.isascii() and
+label.isidentifier() and not keyword.iskeyword(label)` (invariant B4): the
+label is consumed verbatim as the downstream parameter name by codegen and
+the executor, so an invalid label would only fail later and further from its
+cause. ASCII is part of the invariant, not a convenience: Python
+NFKC-normalises source identifiers (PEP 3131), so a non-NFKC Unicode label
+would silently bind under a *different* parameter name once the generated
+file is parsed — exactly the hidden mapping the label≡argument identity
+forbids — and the ASCII rule is mirrorable exactly in the frontend, where
+Unicode `str.isidentifier()` is not. Soft keywords (`match`, `case`, `type`,
+`_`) are legal parameter names and stay allowed. Under B4 the B2
+sanitised-collision check compares **casefolded** filesystem stems
+(`sanitise_label_for_filesystem(label).casefold()`): parquet caches live on
+case-insensitive filesystems (Windows/macOS), where `Items.parquet` and
+`items.parquet` are one file, so two labels differing only by case would
+silently clobber a frame at build time. ASCII identifier labels are fixed
+points of the sanitiser, so post-B4 a case-only collision is the *only* way
+two distinct valid labels can meet at one stem — B2 rejects the pair loudly,
+naming both labels and the shared stem. Inference's casefold-aware
+uniqueness pass guarantees inferred schemas never trip it. The frontend
+mirrors B4 in `apiInputLabelIssue` (ASCII-identifier regex plus the
+hard-keyword list) and treats duplicates case-insensitively to match B2,
+before commit. `parse_table_path`/`parse_column_path_full`/
 `parse_column_path` delegate grammar acceptance to `_jsonpath.py`; `make_table_path`
 delegates canonical rendering to the same writer.
 
@@ -123,14 +146,17 @@ assembly path currently does not.
    in-memory schema and on-disk data file, return the existing `meta.json` payload
    without rebuilding.
 4. Record the data-file signature (`_data_file_signature`) *before* reading records.
-5. Re-derive `(label, col_specs)` per emitting table (`table_is_emitting`).
+5. Build the shared `_EmittingTableSpec`s once (`table_is_emitting` plus parsed
+   table/column paths); the walk and parquet frame construction consume the same specs.
 6. `shred_to_buffers(_counted_records(), v2_config, stats=skip_stats)` — the shred
    core (below) — consuming `_iter_records` directly (not materialised into a list).
 7. Conservation assertion at the root level: for every emit-true root table,
    `emitted + skipped_rows_by_table[label] == record_count`, else `RuntimeError`.
 8. Stage output in a unique sibling temp dir: `_buffer_to_frame` per table →
    `to_arrow()` → attach per-frame schema metadata (`_per_frame_metadata`) →
-   `pq.write_table(..., compression="zstd")`; write `meta.json`.
+   `pq.write_table(..., compression="zstd")`; after each final write, record its
+   derived filename plus `{size, sha256}` `content_signature` in the table summary;
+   then write `meta.json`.
 9. `_swap_dir_into_place(tmp_dir, cache_dir)` — recoverable two-rename publish
    (below).
 
@@ -152,13 +178,38 @@ assembly path currently does not.
 5. Returns `{table_label: [row_dict, ...]}`.
 
 **Runtime load** — `load_v2_api_source(data_path, config)`:
-1. Validate at least one emit-true table exists, and at least one has a selected
-   column (both raise `RuntimeError` with an actionable message otherwise).
-2. Resolve `working/` cache dir; if `is_per_port_cache_valid` fails, fall back to
-   `committed/`; if that also fails, raise with `_STALE_CACHE_MESSAGE`.
-3. `load_per_port_cache` — `pl.scan_parquet` per emitting table's parquet.
-4. Return a bare `LazyFrame` if exactly one emitting label, else a
-   `{label: LazyFrame}` dict in schema order.
+1. Validate the v2 schema at this public boundary, then require at least one
+   emit-true table and at least one selected column (the latter two raise
+   `RuntimeError` with an actionable configuration message otherwise).
+2. Construct `_EmittingTableSpec`s once: parsed table position plus every selected
+   column's name, leaf, declared type, and source array depth. Cache build, direct
+   shred, strict frame construction, and ancestor broadcast all consume these specs.
+3. Try `working/`, then `committed/`. Read each candidate manifest once. It must
+   pass fingerprint/source validity; contain exactly one entry per emitting label;
+   derive the expected filename from that label; and carry a strict size/SHA-256
+   signature. Missing, duplicate, malformed, or legacy unsigned entries invalidate
+   the candidate. Each compressed parquet is then read exactly once; size and
+   SHA-256 are verified over that exact payload, and the same bytes seed
+   `scan_parquet(BytesIO(payload))`. `LazyFrame.collect_schema()` must expose the
+   exact declared name-to-Polars-dtype mapping. Physical parquet column order is
+   irrelevant: an accepted lazy frame is projected into the current declared order.
+   An unusable candidate is logged and the next candidate is tried.
+
+   The in-memory compressed source pins the returned frame and derived lazy plans to
+   this generation across a later rebuild, mirror, or explicit clear. Decode and
+   projection remain lazy, but the full compressed file is read/copied up front and
+   retained while those plans live. The directory swap keeps disk bounded to one
+   generation; active-plan memory scales with their compressed source payloads.
+4. If no cache can serve, `_shred_data_file` streams `_iter_records` into
+   `shred_to_buffers`, preserving skip accounting and root conservation, then
+   `_buffer_to_frame(...).lazy()` creates each in-memory frame. This path does not
+   write, refresh, delete, or promote either cache layer.
+5. Return a `{label: LazyFrame}` dict in schema order for every eligible-frame
+   count from one up — there is no bare-frame single-table special case, so a
+   sole frame routes through the same per-edge `source_port` resolution as
+   eight frames (see [execution-engine](../execution-engine/low-level.md)
+   `_pick_source_frame`), and adding or removing a sibling frame never changes
+   the shape a consumer receives.
 
 **Save-time cache promotion** — `mirror_cache_to_committed(data_path)`
 (`_json_flatten.py`):
@@ -167,11 +218,19 @@ assembly path currently does not.
    (`_session_consulted_hashes`, populated only by a successful build-route call) —
    guards against promoting a stale on-disk `working/` left from a previous process.
 3. Under the shred's own build lock for `working/`: if `working/` is absent, ensure
-   `committed/` is also absent (propagate deletion); else no-op if
-   `working/meta.json` and `committed/meta.json` already agree on schema
-   fingerprint, schema mode, and data-file signature; else `copytree` into a `.tmp`
-   sibling and `_swap_dir_into_place` it into `committed/` (shared with the build's
-   own publish helper).
+   `committed/` is also absent (propagate deletion). If working metadata has a
+   non-v2 mode, malformed fingerprint/source identity, or source signature that no
+   longer matches `data_path`, or if its artifacts are unsigned, malformed, missing,
+   or hash-mismatched, preserve committed state and return without promotion.
+   Otherwise no-op only when both manifests agree on
+   schema fingerprint, schema mode, source signature, and signed table summaries,
+   and both layers' actual parquet bytes match those signatures. A legacy unsigned
+   or damaged committed layer is therefore replaced from healthy working state via
+   `copytree` into a `.tmp` sibling. Before publish, the staged `meta.json` must equal
+   the captured working manifest and every staged parquet must still match that
+   manifest's signature; a concurrently changed/mixed copy is removed and committed
+   remains untouched. A valid stage is published with `_swap_dir_into_place` (shared
+   with build).
 
 **Staged publish** — `_swap_dir_into_place(tmp_dir, live_dir)`:
 renames the current `live_dir` aside to a unique `.build-old-<uuid>` name, renames
@@ -189,9 +248,11 @@ accommodation.
 > `live_dir` absent with a UUID `.build-old-<uuid>` backup. The pre-swap cleanup only
 > removes the legacy fixed `<live>.build-old` directory, not UUID backups. Existing
 > tests exercise same-process build serialization, different-cache parallelism,
-> staging-write cleanup, transient rename retry, and synchronous restoration after a
-> failed second rename; there is no concurrent-reader, cross-process-publisher, or
-> mid-swap process-death test.
+> staging-write cleanup, transient rename retry, synchronous restoration after a
+> failed second rename, staged mirror mutation rejection, and already-returned
+> LazyFrames surviving rebuild, mirror, and clear. A brand-new concurrent reader can
+> still observe an absent live path and reject that candidate; cross-process
+> publishers and mid-swap process death are not covered.
 
 **Schema inference** — `infer_v2_schema_from_data(data_path, sample_size=None)`:
 1. `_iter_records_for_inference` — full scan, or (for JSONL/root-array files) a
@@ -211,6 +272,25 @@ accommodation.
    `_assign_column_names` (bare leaf where unique, else the underscore-joined full
    path, with a final numeric-suffix dedup pass) and typed via the widened
    `levels` map. Only the root level defaults `emit=True`.
+4. Label assignment — inferred `label`s are B4-valid identifiers, never raw
+   table paths (`path`/`displayPath` still carry the path). The root level is
+   labelled `root`; every other level is labelled by its innermost array key
+   through `derive_identifier_label(raw)` (`_api_input_schema.py`): the
+   `_sanitize_func_name` character pipeline (strip; spaces/hyphens → `_`;
+   ASCII alnum/underscore kept; other ASCII dropped; non-ASCII reversibly
+   encoded `_x<hex>_`) with frame-flavoured repairs — empty → `table`,
+   digit-leading → `_`-prefixed, hard keyword → trailing `_` (`class` →
+   `class_`). A uniqueness pass in the sorted table order then resolves
+   collisions symmetrically: every table whose label is shared with another
+   is re-labelled with the underscore-join of ALL its level keys (object
+   hops and array keys, each through `derive_identifier_label`) — so
+   `$[:].a.items[:]` and `$[:].b.items[:]` become `a_items`/`b_items`, not
+   `items`/`items_2`; the root's join is empty so it keeps `root`. Any
+   labels still colliding after qualification take deterministic numeric
+   suffixes (`_2`, `_3`, …) in the sorted order, first occurrence keeping
+   its label. The closure property — inference output passes
+   `validate_v2_schema` unchanged (B4 + unique labels) — is a contract, not
+   a coincidence.
 
 **Edge-join execution** — `execute_edge_join(base, join, config,
 collect_eager=False)`: normalises both frames to `LazyFrame`, calls
@@ -248,7 +328,8 @@ if both original inputs were eager *and* `collect_eager` is set.
   explicitly in `_buffer_to_frame` before the Polars build.
 - **Cache validity always re-hashes** the data file's content; there is no
   `mtime_ns`-only short-circuit, so a same-size/same-mtime content rewrite is never
-  served as fresh.
+  served as fresh. It also re-hashes every manifest-declared parquet before the
+  footer schema probe, so a footer-readable data-page corruption is rejected.
 - **The build lock is process-local**, keyed by the normcased resolved cache-dir
   path; concurrent builds of *different* caches never block each other.
 - **`mirror_cache_to_committed`'s consulted-hash gate is intentionally never
@@ -276,11 +357,11 @@ if both original inputs were eager *and* `collect_eager` is set.
   column collision, a column value that doesn't match its declared type (including
   the silent-coercion guards), and inference's unexpressible-key rejections. Always
   carries `column=`/`table=` context.
-- `RuntimeError` — raised by `build_per_port_cache` on a conservation-assertion
-  failure, and by `load_v2_api_source` for "no emitting tables", "no selected
-  columns on any emitting table", "cache changed mid-load" (a parquet vanished
-  between validity check and load), and the generic stale-cache message
-  (`_STALE_CACHE_MESSAGE`).
+- `RuntimeError` — raised by the shared file-shred path on a root conservation-
+  assertion failure, and by `load_v2_api_source` for "no emitting tables" or "no
+  selected columns on any emitting table". Missing/stale/corrupt/mismatched cache
+  artifacts are rejected as optional fast paths and do not mask the direct raw-file
+  result or its native missing/decode/type error.
 - `PermissionError` — allowed to propagate from `_rename_dir_with_retry` once all
   retry delays are exhausted (a persistent, not transient, Windows lock).
 - `haute.errors.ConfigError` — raised by `_edge_join.py` for any malformed
@@ -328,8 +409,23 @@ Shred / inference / cache lifecycle (`_json_shred.py`, `_json_flatten.py`):
   suites; each pins one specific branch/condition so a mutation-testing run can't
   silently survive a change to it.
 - `tests/test_load_v2_api_source.py` — direct coverage of the shared runtime entry
-  point: emit checks, working→committed fallback, single- vs multi-port return
-  shape.
+  point: emit checks, working→committed→direct resolution, cache corruption and
+  exact-schema rejection, stale post-schema changes, scalar/empty arrays, typed
+  raw-data failures, no-write direct fallback, and the uniform
+  `{label: LazyFrame}` return shape from one eligible frame up (the former
+  bare-frame single-table case is pinned as removed). Label invariant B4
+  (ASCII-identifier-only labels; hard keywords rejected; valid *Unicode*
+  identifiers such as `café` rejected with the ASCII rule named in the error)
+  is pinned alongside the existing blank/duplicate cases in the
+  schema-validation suites; the B2 check now compares casefolded stems — a
+  case-only pair such as `Items`/`items` is rejected naming both labels and
+  the shared stem — and the former Unicode B2 witness labels are pinned as
+  B4 rejections instead. Inference label derivation is pinned in the `infer` suites:
+  `derive_identifier_label` character/repair cases (spaces, punctuation,
+  digit-leading, hard keyword, empty, non-ASCII `_x<hex>_` encoding), root →
+  `root`, innermost-key labelling, symmetric collision qualification
+  (`a_items`/`b_items`), the numeric-suffix backstop, and the closure
+  property that inferred output passes `validate_v2_schema` unchanged.
 - `tests/test_json_cache_routes.py` — API integration tests for the build/status/
   delete HTTP routes (404/422/504 shapes, progress reporting).
 - `tests/test_json_cache_integrity.py` — the Wave-2 build/validity/load rework end

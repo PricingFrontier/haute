@@ -21,7 +21,6 @@ import NodePanel from "./panels/NodePanel"
 import { GraphProvider } from "./panels/GraphContext"
 import DataPreview from "./panels/DataPreview"
 import ExplorePreview from "./panels/ExplorePreview"
-import OptimiserPreview from "./panels/OptimiserPreview"
 import OptimiserDataPreview from "./panels/OptimiserDataPreview"
 import { ModellingPreview } from "./panels/ModellingPreview"
 
@@ -60,8 +59,14 @@ import { HAUTE_SESSION_EXPIRED_EVENT } from "./api/client"
 import { NODE_TYPES } from "./utils/nodeTypes"
 import { previewForActiveNode } from "./utils/activePreview"
 import { swapEdgeJoinInputs, type EdgeJoinSwapInputsFailureReason } from "./utils/edgeJoinGraph"
-import { isPipelineConnectionValid } from "./utils/connectionValidation"
-import { applyApiInputConfigChange } from "./utils/apiInputPorts"
+import { validatePipelineConnection, type ConnectionValidationResult } from "./utils/connectionValidation"
+import {
+  applyApiInputConfigChange,
+  incomingEdgeInputNames,
+  resolveSubmodelBoundaryNode,
+  submodelGraphFromMetadata,
+} from "./utils/apiInputPorts"
+import type { OnUpdateConfigResult, SimpleEdge, SimpleNode } from "./panels/editors/_shared"
 import { shouldUseLiteGraphEffects } from "./utils/graphPerformance"
 import { nodeData } from "./types/node"
 import { PanelLeftOpen } from "lucide-react"
@@ -80,6 +85,9 @@ const GitPanel = lazy(() => import("./panels/GitPanel"))
 const AssistantPanel = lazy(() => import("./panels/assistant/AssistantPanel"))
 const ComparisonView = lazy(() => import("./components/ComparisonView"))
 const ComparisonInspector = lazy(() => import("./components/ComparisonInspector"))
+// Optimiser results are produced only after a user-triggered solve, so keep
+// the comparatively heavy charts out of the initial application bundle.
+const OptimiserPreview = lazy(() => import("./panels/OptimiserPreview"))
 
 // ---------------------------------------------------------------------------
 // Module-level constants (no dynamic values â€” avoids re-creating each render)
@@ -96,6 +104,77 @@ const connectionLineStyle = { stroke: 'var(--accent)', strokeWidth: 2, strokeDas
 const fitViewOptions = { padding: 0.15 }
 
 const proOptions = { hideAttribution: true }
+
+type RenamePair = { from: string; to: string }
+
+type RenameGraphScope = {
+  nodes: Node[]
+  edges: Edge[]
+  submodels: Record<string, unknown>
+}
+
+type AffectedRenameTarget = {
+  scope: RenameGraphScope
+  target: Node
+  incomingScope: RenameGraphScope
+  incomingTargetId: string
+  pairs: RenamePair[]
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+}
+
+function submodelScopeForBoundary(
+  boundaryNode: Node,
+  submodels: Record<string, unknown>,
+): RenameGraphScope {
+  if (!boundaryNode.id.startsWith("submodel__")) {
+    throw new Error(`Node ${boundaryNode.id} is not a submodel boundary`)
+  }
+  const name = boundaryNode.id.slice("submodel__".length)
+  const graph = submodelGraphFromMetadata(submodels[name])
+  if (!graph) throw new Error(`Submodel ${name} has no graph to migrate`)
+  return {
+    nodes: graph.nodes as unknown as Node[],
+    edges: graph.edges as unknown as Edge[],
+    submodels: graph.submodels,
+  }
+}
+
+function remapRecordKeys(
+  value: unknown,
+  renames: readonly RenamePair[],
+): { value: unknown; collision?: string } {
+  if (!isRecord(value) || renames.length === 0) return { value }
+  const renameByFrom = new Map(renames.map(({ from, to }) => [from, to]))
+  const next: Record<string, unknown> = {}
+  for (const [key, entry] of Object.entries(value)) {
+    const nextKey = renameByFrom.get(key) ?? key
+    if (Object.hasOwn(next, nextKey)) return { value, collision: nextKey }
+    next[nextKey] = entry
+  }
+  return { value: next }
+}
+
+function remapRecordValues(
+  value: unknown,
+  renames: readonly RenamePair[],
+): unknown {
+  if (!isRecord(value) || renames.length === 0) return value
+  const renameByFrom = new Map(renames.map(({ from, to }) => [from, to]))
+  let changed = false
+  const next = Object.fromEntries(
+    Object.entries(value).map(([key, entry]) => {
+      if (typeof entry !== "string") return [key, entry]
+      const replacement = renameByFrom.get(entry)
+      if (replacement === undefined) return [key, entry]
+      changed = true
+      return [key, replacement]
+    }),
+  )
+  return changed ? next : value
+}
 
 // One-shot sessionStorage flag set just before the post-move reload, read once on
 // the next startup so it can confirm the move (toast) and skip the auto branch
@@ -127,8 +206,8 @@ function FlowEditor() {
   // Core ReactFlow state with undo/redo
   const {
     nodes, edges,
-    setNodes, setEdges, setNodesAndEdges,
-    setNodesRaw, setEdgesRaw,
+    setNodes, setEdges, setNodesAndEdges, setNodesAndEdgesAndSubmodels,
+    setNodesRaw, setEdgesRaw, setSubmodelsRaw,
     onNodesChange, onEdgesChange,
     undo, redo, canUndo, canRedo, pushSnapshot,
   } = useGraphCanvasState([], [], graphRefreshingRef)
@@ -190,17 +269,21 @@ function FlowEditor() {
   }, [])
 
   // Local UI state (not worth globalizing)
-  const [selectedNode, setSelectedNode] = useState<Node | null>(null)
+  const [selectedNodeState, setSelectedNode] = useState<Node | null>(null)
   // The node under read-only inspection in the comparison view, or null. Cleared
   // whenever the comparison closes or the inspected version changes (S11).
-  const [comparisonInspect, setComparisonInspect] = useState<ComparisonInspect | null>(null)
-  useEffect(() => {
-    setComparisonInspect(null)
-  }, [comparison?.sha])
+  const [comparisonInspectState, setComparisonInspectState] = useState<{
+    comparisonSha: string
+    inspect: ComparisonInspect
+  } | null>(null)
+  const comparisonInspect = comparisonInspectState && comparisonInspectState.comparisonSha === comparison?.sha
+    ? comparisonInspectState.inspect
+    : null
   // Exiting comparison must also clear gitOpen, else the VC panel (which is how
   // compare mode is entered) would pop open unbidden back in the normal editor.
   const exitComparison = useCallback(() => {
     closeComparison()
+    setComparisonInspectState(null)
     setGitOpen(false)
   }, [closeComparison, setGitOpen])
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; nodeId: string; nodeLabel: string; isSubmodel?: boolean; isSingleton?: boolean } | null>(null)
@@ -208,17 +291,15 @@ function FlowEditor() {
   // sibling state slices can change without re-rendering this component.
   // The raw setter avoids adding text edits to the graph undo stack.
   const preamble = useGraphStore((s) => s.preamble)
+  const submodels = useGraphStore((s) => s.submodels)
   const setPreamble = useCallback((value: string) => {
     useGraphStore.getState().setPreambleRaw(value)
   }, [])
   const lastSelectedNodeRef = useRef<Node | null>(null)
   const [lastSelectedId, setLastSelectedId] = useState<string | null>(null)
 
-  // Keep lastSelectedId in sync â€” updates only when a node is actively selected
-  useEffect(() => {
-    if (selectedNode) setLastSelectedId(selectedNode.id)
-  }, [selectedNode])
-
+  // The last selected id is updated at selection event boundaries so the panel
+  // can remain visible while React Flow reports a canvas deselection.
   // Ref for setPreviewData â€” resolved after usePipelineAPI hook below.
   // Needed because closePanel is defined before the hook for hook-ordering rules.
   const setPreviewDataRef = useRef<(d: null) => void>(() => {})
@@ -259,9 +340,17 @@ function FlowEditor() {
     graphRef.current = { nodes, edges }
   }, [nodes, edges])
 
-  const activePanelNodeId = selectedNode?.id ?? lastSelectedId
+  useEffect(() => {
+    submodelsRef.current = submodels
+  }, [submodels])
+
   const panelGraph = usePanelGraphContext()
-  const panelNode = panelGraph.getNode(activePanelNodeId)
+  const selectedNode = selectedNodeState && panelGraph.getNode(selectedNodeState.id)
+    ? selectedNodeState
+    : null
+  const activePanelNodeCandidate = selectedNode?.id ?? lastSelectedId
+  const panelNode = panelGraph.getNode(activePanelNodeCandidate)
+  const activePanelNodeId = panelNode ? activePanelNodeCandidate : null
 
   useEffect(() => {
     setPinnedPreviewNodeId(activePanelNodeId ?? null)
@@ -270,15 +359,6 @@ function FlowEditor() {
     touchOptimiserPreview(activePanelNodeId)
     touchExplorePreview(activePanelNodeId)
   }, [activePanelNodeId, setPinnedPreviewNodeId, touchExplorePreview, touchModellingPreview, touchOptimiserPreview])
-
-  useEffect(() => {
-    if (!activePanelNodeId) return
-    if (panelGraph.getNode(activePanelNodeId)) return
-    setSelectedNode(null)
-    lastSelectedNodeRef.current = null
-    setLastSelectedId(null)
-    setPreviewDataRef.current(null)
-  }, [panelGraph, activePanelNodeId])
 
   // Store-maintained dirty flag.
   // Subscribe to the primitive so frequent React Flow node updates do not
@@ -297,7 +377,7 @@ function FlowEditor() {
   } = usePipelineAPI({
     selectedNode,
     graphRef, parentGraphRef, submodelsRef,
-    setNodesRaw, setEdgesRaw, setPreamble,
+    setNodesRaw, setEdgesRaw, setSubmodelsRaw, setCurrentSourceFile, setPreamble,
     preambleRef, pipelineNameRef, descriptionRef, sourceFileRef,
     nodeIdCounter,
   })
@@ -428,25 +508,19 @@ function FlowEditor() {
     handleCreateSubmodel, handleDissolveSubmodel,
   } = useSubmodelNavigation({
     graphRef, parentGraphRef, submodelsRef,
-    setNodesRaw, setEdgesRaw,
+    setNodesRaw, setEdgesRaw, setSubmodelsRaw,
     setSelectedNode, setPreviewData: (d: null) => setPreviewData(d),
+    setLastSelectedId,
+    setCurrentSourceFile,
     preambleRef, descriptionRef, sourceFileRef, pipelineNameRef,
     fitView,
   })
-
-  useEffect(() => {
-    const sourceFile = sourceFileRef.current || null
-    if (sourceFile !== currentSourceFile) {
-      // The pipeline hook owns the mutable source ref; mirror it into render
-      // state when loading or submodel navigation changes the active file.
-      setCurrentSourceFile(sourceFile)
-    }
-  }, [currentSourceFile, loading, sourceFileRef, viewStack])
 
   useKeyboardShortcuts({
     handleSave: requestSave, setNodes, setEdges, setNodesAndEdges, undo, redo, fitView,
     graphRef, clipboard, nodeIdCounter,
     setSelectedNode, setPreviewData: (d: null) => setPreviewData(d),
+    setLastSelectedId,
     clearTrace,
     closePanel,
     isInsideSubmodel: viewStack.length > 1,
@@ -457,61 +531,246 @@ function FlowEditor() {
   // ---------------------------------------------------------------------------
 
   const onUpdateNode = useCallback(
-    (id: string, data: Record<string, unknown>) => {
+    (id: string, data: Record<string, unknown>): OnUpdateConfigResult => {
       // Capture the pre-update node BEFORE committing, so apiInput edge
       // maintenance below can diff old vs new frame identities.
-      const prevNode = graphRef.current.nodes.find((n) => n.id === id)
-      const nextNodes = graphRef.current.nodes.map((n) => (n.id === id ? { ...n, data } : n))
-      graphRef.current = { ...graphRef.current, nodes: nextNodes }
-      setNodes(nextNodes)
+      const currentGraph = graphRef.current
+      const prevNode = currentGraph.nodes.find((n) => n.id === id)
+      if (!prevNode) {
+        return { ok: false, error: `Cannot update missing node "${id}".` }
+      }
+
+      // Compute the entire candidate graph before touching either the store
+      // or graphRef. A failed preflight therefore cannot leave a config,
+      // edge, mapping, or history entry behind.
+      let tentativeEdges = currentGraph.edges
+      let rebound: Array<{ edge: Edge; from: string; to: string }> = []
+      let removed: Array<{ edge: Edge; sourceHandle: string | null }> = []
+      if (data.nodeType === NODE_TYPES.API_INPUT) {
+        const config = (data.config ?? {}) as Record<string, unknown>
+        const prevConfig = ((prevNode.data as Record<string, unknown>).config ??
+          {}) as Record<string, unknown>
+        const result = applyApiInputConfigChange({
+          nodeId: id,
+          prevConfig,
+          nextConfig: config,
+          edges: currentGraph.edges,
+        })
+        tentativeEdges = result.edges
+        rebound = result.rebound
+        removed = result.removed
+      }
+
+      let tentativeNodes = currentGraph.nodes.map((node) =>
+        node.id === id ? { ...node, data } : node,
+      )
+      const tentativeSubmodels = structuredClone(submodelsRef.current)
+      const rootScope: RenameGraphScope = {
+        nodes: tentativeNodes,
+        edges: tentativeEdges,
+        submodels: tentativeSubmodels,
+      }
+      const nodeById = new Map(tentativeNodes.map((node) => [node.id, node]))
+      const affectedByScope = new Map<
+        RenameGraphScope,
+        Map<string, AffectedRenameTarget>
+      >()
+      const submodelScopes = new Map<string, RenameGraphScope>()
+
+      for (const change of rebound) {
+        const boundaryTarget = nodeById.get(change.edge.target)
+        if (!boundaryTarget) throw new Error(`Cannot derive rename target ${change.edge.target}`)
+        let targetScope = rootScope
+        let target = boundaryTarget
+        if (boundaryTarget.data.nodeType === NODE_TYPES.SUBMODEL) {
+          target = resolveSubmodelBoundaryNode(
+            boundaryTarget as unknown as SimpleNode,
+            change.edge.targetHandle,
+            "in",
+            rootScope.submodels,
+          ) as unknown as Node
+          if (!target) {
+            throw new Error(
+              `Cannot migrate frame rename through submodel ${boundaryTarget.id}: `
+              + `edge ${change.edge.id} has no resolvable target handle`,
+            )
+          }
+          targetScope = submodelScopes.get(boundaryTarget.id) ??
+            submodelScopeForBoundary(boundaryTarget, rootScope.submodels)
+          submodelScopes.set(boundaryTarget.id, targetScope)
+        }
+        const targets = affectedByScope.get(targetScope) ?? new Map<string, AffectedRenameTarget>()
+        const affected = targets.get(target.id) ?? {
+          scope: targetScope,
+          target,
+          incomingScope: rootScope,
+          incomingTargetId: boundaryTarget.id,
+          pairs: [],
+        }
+        if (!affected.pairs.some((pair) => pair.from === change.from && pair.to === change.to)) {
+          affected.pairs.push({ from: change.from, to: change.to })
+        }
+        targets.set(target.id, affected)
+        affectedByScope.set(targetScope, targets)
+      }
+
+      const mappingChanges = new Map<
+        RenameGraphScope,
+        Map<string, Record<string, unknown>>
+      >()
+
+      const applyConfigMapping = (
+        scope: RenameGraphScope,
+        node: Node,
+        field: "input_scenario_map" | "inputMapping",
+        pairs: readonly RenamePair[],
+        keys: boolean,
+      ): OnUpdateConfigResult => {
+        const scopeChanges = mappingChanges.get(scope) ?? new Map<string, Record<string, unknown>>()
+        const config = scopeChanges.get(node.id) ??
+          ((node.data.config ?? {}) as Record<string, unknown>)
+        if (keys) {
+          const mapped = remapRecordKeys(config[field], pairs)
+          if (mapped.collision !== undefined) {
+            return {
+              ok: false,
+              error: `Target "${String(node.data.label ?? node.id)}" already has an input named "${mapped.collision}".`,
+            }
+          }
+          if (mapped.value === config[field]) return { ok: true }
+          scopeChanges.set(node.id, { ...config, [field]: mapped.value })
+          mappingChanges.set(scope, scopeChanges)
+          return { ok: true }
+        }
+        const mappedValue = remapRecordValues(config[field], pairs)
+        if (mappedValue === config[field]) return { ok: true }
+        scopeChanges.set(node.id, { ...config, [field]: mappedValue })
+        mappingChanges.set(scope, scopeChanges)
+        return { ok: true }
+      }
+
+      // Directly affected targets receive the new frame name in the fields
+      // that use an input identity: live-switch keys and instance values.
+      for (const targets of affectedByScope.values()) {
+        for (const affected of targets.values()) {
+          if (affected.target.data.nodeType === NODE_TYPES.LIVE_SWITCH) {
+            const result = applyConfigMapping(
+              affected.scope,
+              affected.target,
+              "input_scenario_map",
+              affected.pairs,
+              true,
+            )
+            if (!result.ok) return result
+          }
+          const valueResult = applyConfigMapping(
+            affected.scope,
+            affected.target,
+            "inputMapping",
+            affected.pairs,
+            false,
+          )
+          if (!valueResult.ok) return valueResult
+        }
+      }
+
+      // The original node's input names are the keys in every instance's
+      // mapping. Rename those keys on all visible instances of each affected
+      // original, including instances that have no direct renamed edge.
+      const instanceScopes = new Set<RenameGraphScope>([rootScope])
+      for (const scope of affectedByScope.keys()) instanceScopes.add(scope)
+      for (const targets of affectedByScope.values()) {
+        for (const affected of targets.values()) {
+          for (const scope of instanceScopes) {
+            for (const node of scope.nodes) {
+              const config = (node.data.config ?? {}) as Record<string, unknown>
+              if (config.instanceOf !== affected.target.id) continue
+              const result = applyConfigMapping(
+                scope,
+                node,
+                "inputMapping",
+                affected.pairs,
+                true,
+              )
+              if (!result.ok) return result
+            }
+          }
+        }
+      }
+
+      // Apply all mapping changes only after every scope has passed its
+      // collision checks. Nested submodel graph arrays are updated in place
+      // so the cloned metadata retains the same graph references.
+      for (const [scope, changes] of mappingChanges) {
+        const mappedNodes = scope.nodes.map((node) => {
+          const config = changes.get(node.id)
+          return config ? { ...node, data: { ...node.data, config } } : node
+        })
+        scope.nodes.splice(0, scope.nodes.length, ...mappedNodes)
+      }
+      tentativeNodes = rootScope.nodes
+      nodeById.clear()
+      for (const node of tentativeNodes) nodeById.set(node.id, node)
+
+      const targetInputCollisionFor = (affected: AffectedRenameTarget): string | null => {
+        const names = incomingEdgeInputNames({
+          targetNodeId: affected.target.id,
+          boundaryNodeId: affected.incomingTargetId,
+          nodes: affected.incomingScope.nodes as unknown as SimpleNode[],
+          edges: affected.incomingScope.edges as unknown as SimpleEdge[],
+          submodels: affected.incomingScope.submodels,
+        })
+        if (affected.scope !== affected.incomingScope) {
+          names.push(...incomingEdgeInputNames({
+            targetNodeId: affected.target.id,
+            nodes: affected.scope.nodes as unknown as SimpleNode[],
+            edges: affected.scope.edges as unknown as SimpleEdge[],
+            submodels: affected.scope.submodels,
+          }))
+        }
+        const seen = new Set<string>()
+        for (const name of names) {
+          if (seen.has(name)) return name
+          seen.add(name)
+        }
+        return null
+      }
+
+      // Only targets whose incoming edge identity changed need duplicate
+      // preflight. Names come from the shared edgeInputName helper, exactly as
+      // the executor and panel surfaces derive them.
+      for (const targets of affectedByScope.values()) {
+        for (const affected of targets.values()) {
+          const collision = targetInputCollisionFor(affected)
+          if (collision !== null) {
+            return {
+              ok: false,
+              error: `Target "${String(affected.target.data.label ?? affected.target.id)}" already has an input named "${collision}".`,
+            }
+          }
+        }
+      }
+
+      // One history-aware store action commits the config, all migrated node
+      // mappings, and all rebound/pruned edges together.
+      graphRef.current = { nodes: tentativeNodes, edges: tentativeEdges }
+      setNodesAndEdgesAndSubmodels(tentativeNodes, tentativeEdges, tentativeSubmodels)
+      submodelsRef.current = tentativeSubmodels
       setSelectedNode((prev) => (prev && prev.id === id ? { ...prev, data } : prev))
 
-      // apiInput edge maintenance (W1.3 / Defect 1) — an apiInput's
-      // handle ids ARE its table labels (the only id space that
-      // round-trips through codegen → save → parse), so a config commit
-      // can change frame identities. Two cases, handled in one pass:
-      //  - RENAME (W1.3): the same commit that renames a frame rebinds
-      //    the edges bound to the old handle — rename is migration,
-      //    never edge loss.
-      //  - genuine orphaning (emit-off / table-delete / single↔multi
-      //    transition): the edge is pruned with a visible, named toast,
-      //    instead of persisting broken to disk and KeyError-ing at run.
-      if (data.nodeType !== NODE_TYPES.API_INPUT) return
-      const config = (data.config ?? {}) as Record<string, unknown>
-      const prevConfig = ((prevNode?.data as Record<string, unknown> | undefined)?.config ??
-        {}) as Record<string, unknown>
-      const { rebound, removed } = applyApiInputConfigChange({
-        nodeId: id,
-        prevConfig,
-        nextConfig: config,
-        edges: graphRef.current.edges,
-      })
-      if (rebound.length === 0 && removed.length === 0) return
-      const reboundTo = new Map(rebound.map((r) => [r.edge.id, r.to]))
-      const removedIds = new Set(removed.map((r) => r.edge.id))
-      // Raw (history-skipping) on purpose: the `setNodes` above already
-      // snapshotted the pre-commit {nodes, edges}, so applying the edge
-      // consequences raw keeps the whole config commit ONE undo entry —
-      // undoing a rename restores the old label AND its old bindings
-      // atomically, with no per-keystroke or per-phase history churn.
-      setEdgesRaw((eds) =>
-        eds
-          .filter((e) => !removedIds.has(e.id))
-          .map((e) =>
-            reboundTo.has(e.id) ? { ...e, sourceHandle: reboundTo.get(e.id)! } : e,
-          ),
-      )
-      if (removed.length === 0) return
-      const ports = removed
-        .map((r) => (r.sourceHandle === null ? "the default frame" : `frame "${r.sourceHandle}"`))
-        .join(", ")
-      const label = String(data.label ?? id)
-      addToast(
-        "warning",
-        `Disconnected ${removed.length} edge${removed.length === 1 ? "" : "s"} from ${label}: ${ports} no longer ${removed.length === 1 ? "exists" : "exist"} after your edit.`,
-      )
+      if (removed.length > 0) {
+        const ports = removed
+          .map((r) => (r.sourceHandle === null ? "the default frame" : `frame "${r.sourceHandle}"`))
+          .join(", ")
+        const label = String(data.label ?? id)
+        addToast(
+          "warning",
+          `Disconnected ${removed.length} edge${removed.length === 1 ? "" : "s"} from ${label}: ${ports} no longer ${removed.length === 1 ? "exists" : "exist"} after your edit.`,
+        )
+      }
+      return { ok: true }
     },
-    [setNodes, setEdgesRaw, graphRef, addToast],
+    [setNodesAndEdgesAndSubmodels, graphRef, addToast, setSelectedNode, submodelsRef],
   )
 
   const {
@@ -520,6 +779,7 @@ function FlowEditor() {
   } = useNodeHandlers({
     graphRef, nodeIdCounter, lastSelectedNodeRef,
     setNodes, setNodesAndEdges, setSelectedNode,
+    setLastSelectedId,
     setPreviewData, fitView,
   })
 
@@ -544,8 +804,21 @@ function FlowEditor() {
   }, [])
 
   const isValidConnection = useCallback((connection: Connection | Edge) => {
-    return isPipelineConnectionValid(connection)
-  }, [])
+    return validatePipelineConnection(
+      connection,
+      panelGraph.allNodes,
+      panelGraph.edges,
+      submodelsRef.current,
+    ).ok
+  }, [panelGraph])
+
+  const validateConnection = useCallback((connection: Connection): ConnectionValidationResult =>
+    validatePipelineConnection(
+      connection,
+      panelGraph.allNodes,
+      panelGraph.edges,
+      submodelsRef.current,
+    ), [panelGraph])
 
   const {
     onConnect, onSelectionChange, onNodeClick, handleDeleteEdge,
@@ -554,6 +827,7 @@ function FlowEditor() {
     selectedNode, graphRef, nodeIdCounter, lastSelectedNodeRef,
     setNodes, setEdges, setNodesRaw, setEdgesRaw, pushSnapshot,
     setSelectedNode, setPreviewData, setContextMenu,
+    setLastSelectedId,
     fetchPreview,
     cancelPreview,
     shouldSkipAutomaticPreview,
@@ -561,6 +835,7 @@ function FlowEditor() {
     screenToFlowPosition,
     graphRefreshingRef,
     findEdgeIdAtPoint,
+    validateConnection,
   })
 
   const handleSwapEdgeJoinInputs = useCallback((nodeId: string) => {
@@ -579,6 +854,7 @@ function FlowEditor() {
     setNodesRaw(result.nodes)
     setEdgesRaw(result.edges)
     setSelectedNode(selected)
+    setLastSelectedId(selected?.id ?? null)
     lastSelectedNodeRef.current = selected
     clearTrace()
     cancelPreview()
@@ -590,6 +866,7 @@ function FlowEditor() {
     lastSelectedNodeRef,
     pushSnapshot,
     setEdgesRaw,
+    setLastSelectedId,
     setNodesRaw,
     setSelectedNode,
   ])
@@ -606,15 +883,13 @@ function FlowEditor() {
     )
   }
 
-  // eslint-disable-next-line react-hooks/refs -- ref is mutated by hooks; reading here is intentional
-  const submodelsSnapshot = submodelsRef.current
+  const submodelsSnapshot = submodels
   const useLiteGraphEffects = shouldUseLiteGraphEffects(nodes.length, edges.length)
 
   // Pick the preview pane for the active node. Computed here (not as an inline
-  // IIFE in the JSX) so the read of `submodelsSnapshot` — an intentional ref
-  // read already covered above — stays in this render scope rather than being
-  // traced by react-hooks/refs into a separate render-time closure.
-  const activeNodeId = selectedNode?.id ?? lastSelectedId
+  // Keep the preview derivation in this render scope so it shares the same
+  // metadata snapshot as the panel graph.
+  const activeNodeId = activePanelNodeId
   const activePreviewData = previewForActiveNode(previewData, activeNodeId)
   const activeNode = panelGraph.getNode(activeNodeId)
   let dataPreviewContent: ReactNode
@@ -638,12 +913,14 @@ function FlowEditor() {
       dataPreviewContent = <ModellingPreview data={modelPreview} nodeId={activeNodeId!} />
     } else if (optPreview) {
       dataPreviewContent = (
-        <OptimiserPreview
-          data={optPreview}
-          nodeId={activeNodeId!}
-          allNodes={panelGraph.allNodes}
-          edges={panelGraph.edges}
-        />
+        <Suspense fallback={null}>
+          <OptimiserPreview
+            data={optPreview}
+            nodeId={activeNodeId!}
+            allNodes={panelGraph.allNodes}
+            edges={panelGraph.edges}
+          />
+        </Suspense>
       )
     } else if (
       // Pre-solve chart view for optimiser nodes
@@ -684,8 +961,8 @@ function FlowEditor() {
         onRedo={redo}
         onZoomIn={() => zoomIn()}
         onZoomOut={() => zoomOut()}
-        onOpenUtility={() => { setUtilityOpen(true); setSelectedNode(null); lastSelectedNodeRef.current = null; setPreviewDataRef.current(null); setContextMenu(null) }}
-        onOpenImports={() => { setImportsOpen(true); setSelectedNode(null); lastSelectedNodeRef.current = null; setPreviewDataRef.current(null); setContextMenu(null) }}
+        onOpenUtility={() => { setUtilityOpen(true); setSelectedNode(null); setLastSelectedId(null); lastSelectedNodeRef.current = null; setPreviewDataRef.current(null); setContextMenu(null) }}
+        onOpenImports={() => { setImportsOpen(true); setSelectedNode(null); setLastSelectedId(null); lastSelectedNodeRef.current = null; setPreviewDataRef.current(null); setContextMenu(null) }}
         onCentre={() => fitView({ padding: 0.15 })}
         onAutoLayout={handleAutoLayout}
         isAutoLayouting={isAutoLayouting}
@@ -707,7 +984,12 @@ function FlowEditor() {
                   currentNodes={nodes}
                   currentEdges={edges}
                   onClose={exitComparison}
-                  onSelectNode={(p) => { setComparisonInspect(p); setGitOpen(false) }}
+                  onSelectNode={(p) => {
+                    setComparisonInspectState(
+                      p ? { comparisonSha: comparison.sha, inspect: p } : null,
+                    )
+                    setGitOpen(false)
+                  }}
                 />
               </Suspense>
             </ErrorBoundary>
@@ -725,7 +1007,7 @@ function FlowEditor() {
                   <ComparisonInspector
                     key={comparisonInspect.id}
                     inspect={comparisonInspect}
-                    onClose={() => setComparisonInspect(null)}
+                    onClose={() => setComparisonInspectState(null)}
                   />
                 ) : (
                   <GitPanel onClose={exitComparison} />
@@ -884,7 +1166,7 @@ function FlowEditor() {
                     const refreshTarget = graphRef.current.nodes.find((n) => n.id === panelNode.id)
                     if (refreshTarget) refreshPreview(refreshTarget)
                   }}
-                  dimmed={!selectedNode && !!lastSelectedId}
+                  dimmed={!selectedNode && !!activePanelNodeId}
                   errorLine={
                     previewData?.nodeId === activePanelNodeId
                       ? previewData?.error_line ?? null
@@ -977,6 +1259,7 @@ function FlowEditor() {
             const node = graphRef.current.nodes.find((n) => n.id === nodeId) ?? null
             if (node) {
               setSelectedNode(node)
+              setLastSelectedId(node.id)
               lastSelectedNodeRef.current = node
               setUtilityOpen(false)
               setImportsOpen(false)
