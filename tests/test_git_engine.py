@@ -2597,9 +2597,7 @@ class TestRemotesAndPush:
         with pytest.raises(GitDomainError, match="No remote named"):
             push_working_pair("does-not-exist", repo, cwd=repo)
 
-    def test_first_push_bootstraps_default_and_reports_it(
-        self, repo: Path, tmp_path: Path
-    ) -> None:
+    def test_first_push_bootstraps_default_and_reports_it(self, repo: Path, tmp_path: Path) -> None:
         """An advertised-empty remote receives the local merge target atomically.
 
         This is the analyst's first-push journey: the working pair alone is not a
@@ -2682,12 +2680,8 @@ class TestRemotesAndPush:
         tree = _git(repo, "rev-parse", f"{base}^{{tree}}")
         working_tip = _git(repo, "commit-tree", tree, "-p", base, "-m", "validated working")
         ledger_tip = _git(repo, "commit-tree", tree, "-p", base, "-m", "validated ledger")
-        moved_working = _git(
-            repo, "commit-tree", tree, "-p", working_tip, "-m", "raced working"
-        )
-        moved_ledger = _git(
-            repo, "commit-tree", tree, "-p", ledger_tip, "-m", "raced ledger"
-        )
+        moved_working = _git(repo, "commit-tree", tree, "-p", working_tip, "-m", "raced working")
+        moved_ledger = _git(repo, "commit-tree", tree, "-p", ledger_tip, "-m", "raced ledger")
         _git(repo, "update-ref", f"refs/heads/{WORKING}", working_tip)
         _git(repo, "update-ref", f"refs/heads/{LEDGER}", ledger_tip)
 
@@ -2737,9 +2731,7 @@ class TestRemotesAndPush:
         self._add_bare_remote(repo, tmp_path)
         default_tip = _git(repo, "rev-parse", "main")
         tree = _git(repo, "rev-parse", f"{default_tip}^{{tree}}")
-        moved_default = _git(
-            repo, "commit-tree", tree, "-p", default_tip, "-m", "raced default"
-        )
+        moved_default = _git(repo, "commit-tree", tree, "-p", default_tip, "-m", "raced default")
 
         real_run = subprocess.run
         push_command: list[str] = []
@@ -3000,11 +2992,7 @@ class TestRemotesAndPush:
     ) -> None:
         import haute._git as git_mod
 
-        stdout = (
-            "ref: refs/heads/main\tHEAD\n"
-            f"{'a' * 40}\tHEAD\n"
-            f"{'b' * 40}\trefs/heads/main\n"
-        )
+        stdout = f"ref: refs/heads/main\tHEAD\n{'a' * 40}\tHEAD\n{'b' * 40}\trefs/heads/main\n"
         monkeypatch.setattr(
             git_mod.subprocess,
             "run",

@@ -252,9 +252,7 @@ class TestRecordPushedShasConcurrency:
             )
             try:
                 assert before_replace.wait(timeout=5)
-                assert json.loads(target.read_text(encoding="utf-8")) == {
-                    "origin/main": "sha-main"
-                }
+                assert json.loads(target.read_text(encoding="utf-8")) == {"origin/main": "sha-main"}
                 assert len(replacement_sources) == 1
                 staged = replacement_sources[0]
                 assert staged.parent == target.parent

@@ -2780,14 +2780,13 @@ def _inspect_remote(remote: str, cwd: Path | None = None) -> tuple[set[str], str
 
 
 def _local_unmanaged_bases(working: str, ledger: str, cwd: Path | None = None) -> set[str]:
-    ok, raw = _run_git_ok(
-        "for-each-ref", "--format=%(refname:lstrip=2)", "refs/heads/", cwd=cwd
-    )
+    ok, raw = _run_git_ok("for-each-ref", "--format=%(refname:lstrip=2)", "refs/heads/", cwd=cwd)
     if not ok:
         raise GitError("could not list local branches")
     names = {name.strip() for name in raw.splitlines() if name.strip()}
     return {
-        name for name in names
+        name
+        for name in names
         if name not in {working, ledger}
         and not name.endswith(LEDGER_SUFFIX)
         and not name.startswith(f"{_ARCHIVE_PREFIX}/")
@@ -2879,8 +2878,12 @@ def _fetch_expected_default(remote: str, branch: str, cwd: Path | None = None) -
                     f"refs/heads/{branch}:{destination}",
                     "--quiet",
                 ],
-                capture_output=True, text=True, encoding="utf-8", cwd=cwd or Path.cwd(),
-                env=_remote_env(), timeout=_FETCH_TIMEOUT_SECONDS,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                cwd=cwd or Path.cwd(),
+                env=_remote_env(),
+                timeout=_FETCH_TIMEOUT_SECONDS,
             )
     except subprocess.TimeoutExpired as exc:
         raise GitError("git fetch timed out") from exc
