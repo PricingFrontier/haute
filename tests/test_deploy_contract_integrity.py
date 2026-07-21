@@ -252,7 +252,7 @@ class TestValidateDeployFailsOnTestQuotes:
 
         inp = _make_node("api_in", node_type=NodeType.API_INPUT)
         out = _make_node("output", node_type=NodeType.OUTPUT, config=make_output_config([]))
-        edge = GraphEdge(id="e1", source="api_in", target="output")
+        edge = GraphEdge(id="e1", source="api_in", target="output", sourceHandle="api_in")
         resolved = _make_resolved(
             nodes=[inp, out],
             edges=[edge],
@@ -280,7 +280,7 @@ class TestValidateDeployFailsOnTestQuotes:
         )
         inp = _make_node("api_in", node_type=NodeType.API_INPUT)
         out = _make_node("output", node_type=NodeType.OUTPUT, config=make_output_config([]))
-        edge = GraphEdge(id="e1", source="api_in", target="output")
+        edge = GraphEdge(id="e1", source="api_in", target="output", sourceHandle="api_in")
         resolved = _make_resolved(
             nodes=[inp, out],
             edges=[edge],
@@ -457,7 +457,12 @@ class TestFeatureContractBundled:
                     },
                 ],
                 "edges": [
-                    {"id": "e1", "source": "api_in", "target": "ms_contract"},
+                    {
+                        "id": "e1",
+                        "source": "api_in",
+                        "target": "ms_contract",
+                        "sourceHandle": "api_in",
+                    },
                     {"id": "e2", "source": "ms_contract", "target": "output"},
                 ],
             }

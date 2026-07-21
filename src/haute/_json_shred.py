@@ -134,6 +134,8 @@ def _v2_fingerprint(config: dict[str, Any]) -> str:
     affect the shred output (the apiInput's ``path``, ``contract``).
     """
     tables = config.get("tables", [])
+    if not isinstance(tables, list):
+        raise ApiInputSchemaError("v2 tables must be a list")
     canonical: list[dict[str, Any]] = []
     for ti, table in enumerate(tables):
         if not isinstance(table, dict):
@@ -143,8 +145,11 @@ def _v2_fingerprint(config: dict[str, Any]) -> str:
             # from one broken shape to another would not invalidate a stale
             # cache. Distinct configs must hash distinctly (W1).
             raise ApiInputSchemaError(f"v2 tables[{ti}] is not a dict")
+        columns = table.get("columns", [])
+        if not isinstance(columns, list):
+            raise ApiInputSchemaError(f"v2 tables[{ti}].columns must be a list")
         cols_canon: list[dict[str, Any]] = []
-        for ci, col in enumerate(table.get("columns", []) or []):
+        for ci, col in enumerate(columns):
             if not isinstance(col, dict):
                 raise ApiInputSchemaError(
                     f"v2 tables[{ti}].columns[{ci}] is not a dict",
@@ -1409,9 +1414,8 @@ def _cache_meta_matches_config_and_source(
         # Preserve the bool contract for status/save callers that probe a
         # malformed in-memory config. Build and load boundaries validate loud.
         return False
-    return (
-        meta.get("schema_fingerprint") == expected_fingerprint
-        and _data_file_matches(meta.get("data_file"), Path(data_path))
+    return meta.get("schema_fingerprint") == expected_fingerprint and _data_file_matches(
+        meta.get("data_file"), Path(data_path)
     )
 
 
@@ -1429,8 +1433,6 @@ def _read_matching_cache_meta(
     """
     cd = Path(cache_dir)
     meta_path = cd / _META_FILENAME
-    if not meta_path.exists():
-        return None
     try:
         meta = orjson.loads(meta_path.read_bytes())
     except (OSError, ValueError):
@@ -1887,8 +1889,6 @@ def read_per_port_cache_meta(cache_dir: str | Path) -> dict[str, Any] | None:  #
     """
     cd = Path(cache_dir)
     meta_path = cd / _META_FILENAME
-    if not meta_path.exists():
-        return None
     try:
         meta = orjson.loads(meta_path.read_bytes())
     except (OSError, ValueError):

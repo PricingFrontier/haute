@@ -21,7 +21,6 @@ import NodePanel from "./panels/NodePanel"
 import { GraphProvider } from "./panels/GraphContext"
 import DataPreview from "./panels/DataPreview"
 import ExplorePreview from "./panels/ExplorePreview"
-import OptimiserPreview from "./panels/OptimiserPreview"
 import OptimiserDataPreview from "./panels/OptimiserDataPreview"
 import { ModellingPreview } from "./panels/ModellingPreview"
 
@@ -86,6 +85,9 @@ const GitPanel = lazy(() => import("./panels/GitPanel"))
 const AssistantPanel = lazy(() => import("./panels/assistant/AssistantPanel"))
 const ComparisonView = lazy(() => import("./components/ComparisonView"))
 const ComparisonInspector = lazy(() => import("./components/ComparisonInspector"))
+// Optimiser results are produced only after a user-triggered solve, so keep
+// the comparatively heavy charts out of the initial application bundle.
+const OptimiserPreview = lazy(() => import("./panels/OptimiserPreview"))
 
 // ---------------------------------------------------------------------------
 // Module-level constants (no dynamic values â€” avoids re-creating each render)
@@ -911,12 +913,14 @@ function FlowEditor() {
       dataPreviewContent = <ModellingPreview data={modelPreview} nodeId={activeNodeId!} />
     } else if (optPreview) {
       dataPreviewContent = (
-        <OptimiserPreview
-          data={optPreview}
-          nodeId={activeNodeId!}
-          allNodes={panelGraph.allNodes}
-          edges={panelGraph.edges}
-        />
+        <Suspense fallback={null}>
+          <OptimiserPreview
+            data={optPreview}
+            nodeId={activeNodeId!}
+            allNodes={panelGraph.allNodes}
+            edges={panelGraph.edges}
+          />
+        </Suspense>
       )
     } else if (
       // Pre-solve chart view for optimiser nodes

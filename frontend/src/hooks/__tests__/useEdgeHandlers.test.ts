@@ -362,6 +362,65 @@ describe("useEdgeHandlers", () => {
     })
   })
 
+  it("onConnectEnd reports validation failures for target-to-source handles", () => {
+    const params = makeParams()
+    params.validateConnection = vi.fn(() => ({
+      ok: false,
+      reason: { kind: "duplicate-input-name" as const, inputName: "quotes" },
+    }))
+    const { result } = renderHook(() => useEdgeHandlers(params))
+
+    act(() => {
+      result.current.onConnectEnd(
+        mouseUpEvent,
+        connectionEndState({
+          from: "target",
+          to: "source",
+          fromHandleId: "in",
+          toHandleId: "out",
+          fromHandleType: "target",
+          toHandleType: "source",
+          isValid: false,
+        }),
+      )
+    })
+
+    expect(params.validateConnection).toHaveBeenCalledWith({
+      source: "source",
+      sourceHandle: "out",
+      target: "target",
+      targetHandle: "in",
+    })
+    expect(useToastStore.getState().toasts).toEqual([
+      expect.objectContaining({ type: "error", text: expect.stringMatching(/quotes.*already connected/i) }),
+    ])
+    expect(params.setEdges).not.toHaveBeenCalled()
+  })
+
+  it("onConnectEnd honours React Flow rejection after reverse-direction validation passes", () => {
+    useToastStore.setState({ toasts: [], _toastCounter: 0 })
+    const params = makeParams()
+    params.validateConnection = vi.fn(() => ({ ok: true }))
+    const { result } = renderHook(() => useEdgeHandlers(params))
+
+    act(() => {
+      result.current.onConnectEnd(
+        mouseUpEvent,
+        connectionEndState({
+          from: "target",
+          to: "source",
+          fromHandleType: "target",
+          toHandleType: "source",
+          isValid: false,
+        }),
+      )
+    })
+
+    expect(params.validateConnection).toHaveBeenCalledOnce()
+    expect(params.setEdges).not.toHaveBeenCalled()
+    expect(useToastStore.getState().toasts).toEqual([])
+  })
+
   it("creates an edgeJoin when an apiInput frame is dropped on an output that already consumes that frame", () => {
     const params = makeParams()
     const apiInput = {

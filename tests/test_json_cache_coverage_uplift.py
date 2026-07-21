@@ -23,14 +23,11 @@ fingerprint format changes) that mock-based tests wouldn't.
 
 from __future__ import annotations
 
-import hashlib
-import io
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
 import orjson
-import polars as pl
 import pytest
 from fastapi.testclient import TestClient
 
@@ -47,7 +44,7 @@ from haute._json_flatten import (
     clear_json_cache,
     mirror_cache_to_committed,
 )
-from haute._json_shred import _data_file_signature, _v2_fingerprint
+from haute._json_shred import build_per_port_cache
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -83,7 +80,7 @@ def _mirror_config(*, type_: str = "int") -> dict[str, Any]:
                 "columns": [
                     {
                         "name": "value",
-                        "path": "$.value",
+                        "path": "$[:].value",
                         "type": type_,
                         "status": "Confirmed",
                         "selected": True,
@@ -109,42 +106,11 @@ def _write_signed_cache(
     *,
     data_path: Path,
     v2_config: dict[str, Any],
-    parquet_bytes: bytes,
 ) -> dict[str, Any]:
-    """Create a signed cache matching a real source and editor schema."""
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    type_token = v2_config["tables"][0]["columns"][0]["type"]
-    marker = parquet_bytes.decode("utf-8")
-    if type_token == "int":
-        value: int | str = int.from_bytes(hashlib.sha256(parquet_bytes).digest()[:4])
-        dtype = pl.Int64
-    elif type_token == "str":
-        value = marker
-        dtype = pl.String
-    else:  # pragma: no cover - helper is deliberately narrow
-        raise AssertionError(f"unsupported mirror fixture type: {type_token}")
-    parquet_buffer = io.BytesIO()
-    pl.DataFrame({"value": [value]}, schema={"value": dtype}).write_parquet(parquet_buffer)
-    artifact_bytes = parquet_buffer.getvalue()
-    digest = hashlib.sha256(artifact_bytes).hexdigest()
-    parquet_name = f"frame_{digest}.parquet"
-    (cache_dir / parquet_name).write_bytes(artifact_bytes)
-    payload = {
-        "schema_fingerprint": _v2_fingerprint(v2_config),
-        "schema_mode": "v2",
-        "data_file": _data_file_signature(data_path),
-        "tables": [
-            {
-                "label": "data",
-                "parquet": parquet_name,
-                "content_signature": {
-                    "size": len(artifact_bytes),
-                    "sha256": digest,
-                },
-            }
-        ],
-    }
-    _json_cache_meta_path(cache_dir).write_bytes(orjson.dumps(payload))
+    """Create a fully valid cache using the production cache builder."""
+    build_per_port_cache(data_path, v2_config, cache_dir)
+    payload = _read_cache_meta(cache_dir)
+    assert payload is not None
     return payload
 
 
@@ -422,18 +388,21 @@ class TestMirrorCacheToCommitted:
             working_dir,
             data_path=data_path,
             v2_config=v2_config,
-            parquet_bytes=b"same-content",
         )
         _write_signed_cache(
             committed_dir,
             data_path=data_path,
             v2_config=v2_config,
-            parquet_bytes=b"same-content",
         )
 
         assert mirror_cache_to_committed(data_path, v2_config) is False
         # committed/ untouched
-        assert _current_parquet(committed_dir).read_bytes() == b"same-content"
+        assert (
+            _current_parquet(committed_dir).read_bytes()
+            == _current_parquet(
+                working_dir,
+            ).read_bytes()
+        )
 
     def test_different_fingerprints_promotes_atomically(
         self,
@@ -449,19 +418,24 @@ class TestMirrorCacheToCommitted:
             working_dir,
             data_path=data_path,
             v2_config=v2_config,
-            parquet_bytes=b"new-content",
         )
+        old_config = _mirror_config()
+        old_config["tables"][0]["row_id_column"] = "value"
         _write_signed_cache(
             committed_dir,
             data_path=data_path,
-            v2_config=_mirror_config(type_="str"),
-            parquet_bytes=b"old-content",
+            v2_config=old_config,
         )
         assert mirror_cache_to_committed(data_path, v2_config) is True
         # committed/ now has working/'s content
-        assert _current_parquet(committed_dir).read_bytes() == b"new-content"
+        assert (
+            _current_parquet(committed_dir).read_bytes()
+            == _current_parquet(
+                working_dir,
+            ).read_bytes()
+        )
         # And working/ is still there (mirror doesn't move, it copies)
-        assert _current_parquet(working_dir).read_bytes() == b"new-content"
+        assert _current_parquet(working_dir).exists()
 
     def test_no_committed_yet_creates_it(
         self,
@@ -475,7 +449,6 @@ class TestMirrorCacheToCommitted:
             working_dir,
             data_path=data_path,
             v2_config=v2_config,
-            parquet_bytes=b"new",
         )
 
         committed_dir = _json_cache_dir(data_path, _LAYER_COMMITTED)
@@ -483,7 +456,12 @@ class TestMirrorCacheToCommitted:
 
         assert mirror_cache_to_committed(data_path, v2_config) is True
         assert committed_dir.exists()
-        assert _current_parquet(committed_dir).read_bytes() == b"new"
+        assert (
+            _current_parquet(committed_dir).read_bytes()
+            == _current_parquet(
+                working_dir,
+            ).read_bytes()
+        )
 
     def test_holds_build_lock_during_copy(
         self,
@@ -505,7 +483,6 @@ class TestMirrorCacheToCommitted:
             working_dir,
             data_path=data_path,
             v2_config=v2_config,
-            parquet_bytes=b"new",
         )
 
         lock = _build_lock_for(working_dir)
@@ -538,7 +515,6 @@ class TestMirrorCacheToCommitted:
             working_dir,
             data_path=data_path,
             v2_config=v2_config,
-            parquet_bytes=b"new",
         )
 
         committed_dir = _json_cache_dir(data_path, _LAYER_COMMITTED)
@@ -558,7 +534,12 @@ class TestMirrorCacheToCommitted:
         # swallows the first failure and succeeds on retry.
         assert mirror_cache_to_committed(data_path, v2_config) is True
         assert calls["n"] >= 2
-        assert _current_parquet(committed_dir).read_bytes() == b"new"
+        assert (
+            _current_parquet(committed_dir).read_bytes()
+            == _current_parquet(
+                working_dir,
+            ).read_bytes()
+        )
 
     def test_corrupt_committed_meta_proceeds_to_copy(
         self,
@@ -576,7 +557,6 @@ class TestMirrorCacheToCommitted:
             working_dir,
             data_path=data_path,
             v2_config=v2_config,
-            parquet_bytes=b"fresh",
         )
 
         # Corrupt committed meta — orjson.loads would raise mid-mirror.
@@ -585,7 +565,12 @@ class TestMirrorCacheToCommitted:
         (committed_dir / "data.parquet").write_bytes(b"stale")
 
         assert mirror_cache_to_committed(data_path, v2_config) is True
-        assert _current_parquet(committed_dir).read_bytes() == b"fresh"
+        assert (
+            _current_parquet(committed_dir).read_bytes()
+            == _current_parquet(
+                working_dir,
+            ).read_bytes()
+        )
         # The corrupt meta got replaced by the working/ meta.
         assert _read_cache_meta(committed_dir) == working_meta
 
@@ -603,7 +588,6 @@ class TestMirrorCacheToCommitted:
             working_dir,
             data_path=data_path,
             v2_config=v2_config,
-            parquet_bytes=b"new",
         )
 
         tmp_dir = committed_dir.with_name(committed_dir.name + ".tmp")
@@ -612,7 +596,12 @@ class TestMirrorCacheToCommitted:
 
         assert mirror_cache_to_committed(data_path, v2_config) is True
         assert not tmp_dir.exists()
-        assert _current_parquet(committed_dir).read_bytes() == b"new"
+        assert (
+            _current_parquet(committed_dir).read_bytes()
+            == _current_parquet(
+                working_dir,
+            ).read_bytes()
+        )
 
 
 # ---------------------------------------------------------------------------

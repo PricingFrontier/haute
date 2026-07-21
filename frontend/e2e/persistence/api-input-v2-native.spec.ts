@@ -144,6 +144,13 @@ test.describe("apiInput v2-native flow (persistence layer)", () => {
     await test.step("6. Preview works before optional Cache as Parquet prewarm", async () => {
       // Runtime must be usable immediately after schema inference: with no
       // parquet yet, the backend shreds the JSON directly for this preview.
+      // Request the preview after the inferred schema has been committed to
+      // graph state; the preview that ran when the node was first selected
+      // intentionally predates inference and cannot represent this schema.
+      const previewResponsePromise = page.waitForResponse("**/api/pipeline/preview")
+      await page.getByTitle("Refresh preview").click()
+      const previewResponse = await previewResponsePromise
+      expect(previewResponse.status(), "uncached preview responds 200").toBe(200)
       await expect(
         page.getByTestId("data-preview-table"),
         "bottom preview renders before any cache build",

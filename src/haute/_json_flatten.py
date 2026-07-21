@@ -296,8 +296,8 @@ def mirror_cache_to_committed(
     from haute._api_input_schema import ApiInputSchemaError
     from haute._json_shred import (
         _build_lock_for,
-        _cache_meta_matches_config_and_source,
         _cache_manifest_files_match,
+        _cache_meta_matches_config_and_source,
         _emitting_table_specs,
         _probe_cache_bundle,
         _swap_dir_into_place,
@@ -328,7 +328,6 @@ def mirror_cache_to_committed(
 
         working_meta = _read_cache_meta_lenient(working_dir)
         committed_meta = _read_cache_meta_lenient(committed_dir)
-        table_specs = ()
         working_valid = False
         try:
             table_specs = _emitting_table_specs(v2_config)
@@ -358,12 +357,14 @@ def mirror_cache_to_committed(
                 committed_dir=str(committed_dir),
             )
             return False
+        valid_working_meta = cast(dict[str, Any], working_meta)
         if (
             committed_meta is not None
-            and working_meta.get("schema_fingerprint") == committed_meta.get("schema_fingerprint")
-            and working_meta.get("schema_mode") == committed_meta.get("schema_mode")
-            and working_meta.get("data_file") == committed_meta.get("data_file")
-            and working_meta.get("tables") == committed_meta.get("tables")
+            and valid_working_meta.get("schema_fingerprint")
+            == committed_meta.get("schema_fingerprint")
+            and valid_working_meta.get("schema_mode") == committed_meta.get("schema_mode")
+            and valid_working_meta.get("data_file") == committed_meta.get("data_file")
+            and valid_working_meta.get("tables") == committed_meta.get("tables")
             and _cache_manifest_files_match(
                 committed_dir,
                 cast(dict[str, Any], committed_meta),
@@ -403,13 +404,10 @@ def mirror_cache_to_committed(
                 # Recheck source identity after the copy and full staged probe,
                 # immediately before publish. A source edit during either step
                 # makes this generation stale and must preserve committed.
-                staged_valid = (
-                    probe_failure is None
-                    and _cache_meta_matches_config_and_source(
-                        cast(dict[str, Any], working_meta),
-                        v2_config,
-                        data_path=data_path,
-                    )
+                staged_valid = probe_failure is None and _cache_meta_matches_config_and_source(
+                    cast(dict[str, Any], working_meta),
+                    v2_config,
+                    data_path=data_path,
                 )
         except (OSError, pl.exceptions.PolarsError):
             staged_valid = False

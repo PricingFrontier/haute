@@ -60,6 +60,8 @@ vi.mock("../LazyNodeEditors", async () => {
   ApiInputEditor: () => <div data-testid="ApiInputEditor" />,
   LiveSwitchEditor: () => <div data-testid="LiveSwitchEditor" />,
   SinkEditor: () => <div data-testid="SinkEditor" />,
+  DataInputEditor: () => <div data-testid="DataInputEditor" />,
+  DataOutputEditor: () => <div data-testid="DataOutputEditor" />,
   ScenarioExpanderEditor: () => <div data-testid="ScenarioExpanderEditor" />,
   OptimiserApplyEditor: () => <div data-testid="OptimiserApplyEditor" />,
   ConstantEditor: () => <div data-testid="ConstantEditor" />,
@@ -278,6 +280,16 @@ describe("NodePanel", () => {
   it("renders SinkEditor for dataSink nodes", () => {
     renderPanel({ node: makeNode({ data: { label: "Sink", description: "", nodeType: "dataSink", config: {} } }) })
     expect(screen.getByTestId("SinkEditor")).toBeInTheDocument()
+  })
+
+  it("renders DataInputEditor for dataInput nodes", () => {
+    renderPanel({ node: makeNode({ data: { label: "In", description: "", nodeType: "dataInput", config: {} } }) })
+    expect(screen.getByTestId("DataInputEditor")).toBeInTheDocument()
+  })
+
+  it("renders DataOutputEditor for dataOutput nodes", () => {
+    renderPanel({ node: makeNode({ data: { label: "Out", description: "", nodeType: "dataOutput", config: {} } }) })
+    expect(screen.getByTestId("DataOutputEditor")).toBeInTheDocument()
   })
 
   it("renders OutputEditor for output nodes", () => {

@@ -1077,7 +1077,14 @@ class TestScorer:
                         },
                     },
                 ],
-                "edges": [{"id": "e1", "source": "src", "target": "ms"}],
+                "edges": [
+                    {
+                        "id": "e1",
+                        "source": "src",
+                        "target": "ms",
+                        "sourceHandle": "src",
+                    }
+                ],
             }
         )
 

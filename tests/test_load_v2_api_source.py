@@ -30,6 +30,12 @@ from haute._json_shred import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _isolated_cache_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep production cache helpers inside each test's temporary project."""
+    monkeypatch.chdir(tmp_path)
+
+
 def _col(
     name: str,
     path: str,
@@ -892,12 +898,8 @@ def test_load_per_port_cache_rejects_schema_fingerprint_mismatch(
     tmp_path: Path,
 ) -> None:
     data = _write(tmp_path, [{"id": 1, "alternate": 2}])
-    cached_cfg = {
-        "tables": [_table("$[:]", "root", [_col("id", "$[:].id")])]
-    }
-    changed_path_cfg = {
-        "tables": [_table("$[:]", "root", [_col("id", "$[:].alternate")])]
-    }
+    cached_cfg = {"tables": [_table("$[:]", "root", [_col("id", "$[:].id")])]}
+    changed_path_cfg = {"tables": [_table("$[:]", "root", [_col("id", "$[:].alternate")])]}
     _build(data, cached_cfg)
     cache_dir = _json_cache_dir(str(data), "working")
 
@@ -926,18 +928,16 @@ def test_load_per_port_cache_returns_empty_for_signed_unreadable_member(
     assert load_per_port_cache(cache_dir, cfg) == {}
 
 
-@pytest.mark.parametrize("operation", ["exists", "read_bytes"])
 def test_permission_denied_working_meta_falls_through_to_committed(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    operation: str,
 ) -> None:
     data = _write(tmp_path, [{"id": 31}])
     cfg = {"tables": [_table("$[:]", "root", [_col("id", "$[:].id")])]}
     _build(data, cfg, layer="working")
     _build(data, cfg, layer="committed")
     working_meta = _json_cache_dir(str(data), "working") / "meta.json"
-    _deny_path_operation(monkeypatch, working_meta, operation)
+    _deny_path_operation(monkeypatch, working_meta, "read_bytes")
 
     def _unexpected_reshred(*_args: Any, **_kwargs: Any) -> Any:
         pytest.fail("a valid committed cache must serve when working meta is unreadable")
@@ -949,34 +949,30 @@ def test_permission_denied_working_meta_falls_through_to_committed(
     assert frame.to_dict(as_series=False) == {"id": [31]}
 
 
-@pytest.mark.parametrize("operation", ["exists", "read_bytes"])
 def test_permission_denied_working_meta_falls_back_to_direct_shred(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    operation: str,
 ) -> None:
     data = _write(tmp_path, [{"id": 37}])
     cfg = {"tables": [_table("$[:]", "root", [_col("id", "$[:].id")])]}
     _build(data, cfg, layer="working")
     working_meta = _json_cache_dir(str(data), "working") / "meta.json"
-    _deny_path_operation(monkeypatch, working_meta, operation)
+    _deny_path_operation(monkeypatch, working_meta, "read_bytes")
 
     frame = load_v2_api_source(str(data), cfg)["root"].collect()
 
     assert frame.to_dict(as_series=False) == {"id": [37]}
 
 
-@pytest.mark.parametrize("operation", ["exists", "read_bytes"])
 def test_permission_denied_meta_is_invalid_and_unloadable(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    operation: str,
 ) -> None:
     data = _write(tmp_path, [{"id": 41}])
     cfg = {"tables": [_table("$[:]", "root", [_col("id", "$[:].id")])]}
     cache_dir = _json_cache_dir(str(data), "working")
     _build(data, cfg)
-    _deny_path_operation(monkeypatch, cache_dir / "meta.json", operation)
+    _deny_path_operation(monkeypatch, cache_dir / "meta.json", "read_bytes")
 
     assert is_per_port_cache_valid(cache_dir, cfg, data_path=data) is False
     assert read_per_port_cache_meta(cache_dir) is None

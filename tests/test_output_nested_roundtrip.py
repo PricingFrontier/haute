@@ -228,7 +228,7 @@ def test_nested_output_renders_through_deploy_scorer() -> None:
                 ),
             ),
         ],
-        edges=[GraphEdge(id="e", source="src", target="out")],
+        edges=[GraphEdge(id="e", source="src", target="out", sourceHandle="src")],
     )
 
     result = score_graph(

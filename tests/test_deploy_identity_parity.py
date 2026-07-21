@@ -66,7 +66,12 @@ def _model_score_graph(config: dict, *, output_column: str = "x"):
                 },
             ],
             "edges": [
-                {"id": "e1", "source": "src", "target": "ms"},
+                {
+                    "id": "e1",
+                    "source": "src",
+                    "target": "ms",
+                    "sourceHandle": "src",
+                },
                 {"id": "e2", "source": "ms", "target": "out"},
             ],
         }
@@ -95,7 +100,14 @@ def _passthrough_schema_graph(parquet_path):
                     },
                 },
             ],
-            "edges": [{"id": "e1", "source": "src", "target": "out"}],
+            "edges": [
+                {
+                    "id": "e1",
+                    "source": "src",
+                    "target": "out",
+                    "sourceHandle": "src",
+                }
+            ],
         }
     )
 

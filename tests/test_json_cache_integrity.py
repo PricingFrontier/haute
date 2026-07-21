@@ -116,7 +116,7 @@ def _current_parquet(cache_dir: Path, label: str = "root") -> Path:
     return cache_dir / entry["parquet"]
 
 
-@pytest.fixture()
+@pytest.fixture(autouse=True)
 def isolated_cwd(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Chdir into a fresh tmp dir and reset the consulted-hashes session set."""
     monkeypatch.chdir(tmp_path)

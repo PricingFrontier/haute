@@ -432,7 +432,7 @@ def validate_v2_schema(config: dict[str, Any]) -> None:
       (subclass of :class:`HauteError`). The JSON cache route catches
       specifically and returns a structured 422.
     """
-    if not is_v2_shape(config):
+    if _V2_TABLES_KEY not in config:
         raise ApiInputSchemaError("config is not in v2 shape (no `tables` key)")
 
     tables = config[_V2_TABLES_KEY]
