@@ -1923,7 +1923,7 @@ class TestApiInputCodegen:
         _compile_node_code(code)
 
     def test_uppercase_json_api_input(self):
-        """Case-insensitive: .JSON should use v2 shred cache, not scan_parquet."""
+        """Case-insensitive: .JSON uses v2 cached-or-direct shred, not a flat scan."""
         code = _node_to_code(self._make_api_node("input.JSON", "UpperIn"))
         assert "load_v2_api_source" in code
         assert "scan_parquet" not in code

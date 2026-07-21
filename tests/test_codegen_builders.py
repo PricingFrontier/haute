@@ -110,6 +110,7 @@ class TestGenApiInput:
         assert 'config="config/quote_input/CSVInput.json"' in code
         assert "def CSVInput()" in code
         assert "read_data_source" in code
+        assert "def CSVInput() -> pl.LazyFrame:" in code
         assert 'Path(__file__).parent / "data/input.csv"' in code
         _compile_node_code(code)
 
@@ -139,6 +140,7 @@ class TestGenApiInput:
         assert 'config="config/quote_input/JSONInput.json"' in code
         assert "def JSONInput()" in code
         assert "load_v2_api_source" in code
+        assert "def JSONInput() -> dict[str, pl.LazyFrame]:" in code
         assert 'Path(__file__).parent / "config/quote_input/JSONInput.json"' in code
         _compile_node_code(code)
 
@@ -1167,9 +1169,9 @@ class TestCodegenExecValidation:
     def test_api_input_exec_produces_lazyframe(self) -> None:
         """apiInput code for a JSON file compiles and contains v2 shred markers.
 
-        v2 generated code requires a live config file and pre-built per-port
-        cache, so we verify compilation and v2 structural markers rather than
-        executing the generated function directly.
+        This fixture lacks a matching sidecar config, so we verify compilation
+        and v2 structural markers here; standalone direct-vs-cached execution is
+        covered by ``test_codegen_execution_equivalence.py``.
         """
         node = _make_codegen_node(
             "apiInput",
@@ -1211,14 +1213,15 @@ class TestCodegenExecValidation:
             ns,
         )
 
-        with pytest.raises(RuntimeError, match="no v2 schema"):
+        with pytest.raises(RuntimeError, match="no v2 schema") as exc_info:
             ns["quotes"]()
+        assert "Cache as Parquet" not in str(exc_info.value)
 
     def test_json_api_input_exec_fails_loudly_without_selected_columns(
         self,
         tmp_path: Path,
     ) -> None:
-        """Generated JSON apiInput separates emit-without-columns from cache misses."""
+        """Generated JSON apiInput reports the config action, not a cache action."""
         config_dir = tmp_path / "config" / "quote_input"
         config_dir.mkdir(parents=True)
         (config_dir / "quotes.json").write_text(
@@ -1262,8 +1265,9 @@ class TestCodegenExecValidation:
 
         with pytest.raises(
             RuntimeError, match="emit-true tables but none has any selected columns"
-        ):
+        ) as exc_info:
             ns["quotes"]()
+        assert "Cache as Parquet" not in str(exc_info.value)
 
     def test_output_exec_assembles_document(self, tmp_path: Path) -> None:
         """The generated OUTPUT body assembles the response document.

@@ -115,39 +115,18 @@ _QUOTES_API_INPUT_BLOCK = """
 
 
 @pipeline.api_input(config="config/quote_input/quotes.json", contract="opaque")
-def quotes() -> pl.LazyFrame:
+def quotes() -> dict[str, pl.LazyFrame]:
     \"\"\"Browser E2E apiInput node for v2-native flow tests.\"\"\"
     from pathlib import Path
 
     import orjson
 
-    from haute._json_flatten import _json_cache_dir
-    from haute._json_shred import (
-        is_per_port_cache_valid,
-        load_per_port_cache,
-    )
+    from haute._json_shred import load_v2_api_source
 
     _data_path = Path(__file__).parent.parent / "data/quotes/sample_quote.json"
     _config_path = Path("config/quote_input/quotes.json")
     _v2_config = orjson.loads(_config_path.read_bytes())
-    _cache_dir = _json_cache_dir(str(_data_path), "working")
-    if not is_per_port_cache_valid(_cache_dir, _v2_config, data_path=str(_data_path)):
-        _cache_dir = _json_cache_dir(str(_data_path), "committed")
-        if not is_per_port_cache_valid(_cache_dir, _v2_config, data_path=str(_data_path)):
-            raise RuntimeError(
-                "API Input data hasn't been cached for the current schema. "
-                "Click 'Cache as Parquet' on the API Input node to build it."
-            )
-    _emit_labels = [
-        t["label"]
-        for t in (_v2_config.get("tables") or [])
-        if t.get("emit")
-        and any(c.get("selected") for c in (t.get("columns") or []))
-    ]
-    _bundle = load_per_port_cache(_cache_dir, _v2_config)
-    if len(_emit_labels) == 1:
-        return _bundle[_emit_labels[0]]
-    return {label: _bundle[label] for label in _emit_labels if label in _bundle}
+    return load_v2_api_source(str(_data_path), _v2_config)
 """
 # V2-native starting state: a data path is set (so the Infer Tables
 # button is visible) but no schema yet — the editor renders the bare v2

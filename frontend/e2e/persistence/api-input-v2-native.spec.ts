@@ -53,7 +53,7 @@ test.describe("apiInput v2-native flow (persistence layer)", () => {
     )
   })
 
-  test("Infer Tables → Cache → Preview round-trips through disk and reload", async ({
+  test("Infer Tables → Preview → optional Cache round-trips through disk and reload", async ({
     page,
   }) => {
     const consoleErrors: string[] = []
@@ -92,7 +92,7 @@ test.describe("apiInput v2-native flow (persistence layer)", () => {
       // Path is already set by the harness fixture (v2-native starting
       // state). File-pick → preview-auto-load gap is covered by a
       // separate test (TODO) so this test stays focused on Infer →
-      // Cache → Preview wiring.
+      // direct Preview → optional Cache wiring.
       //
       // Click Infer Tables.
       const inferBtn = page.locator('[data-testid="api-input-infer-btn"]')
@@ -141,9 +141,16 @@ test.describe("apiInput v2-native flow (persistence layer)", () => {
       ).toEqual([])
     })
 
-    await test.step("6. Cache as Parquet succeeds; bottom preview is not stale", async () => {
+    await test.step("6. Preview works before optional Cache as Parquet prewarm", async () => {
+      // Runtime must be usable immediately after schema inference: with no
+      // parquet yet, the backend shreds the JSON directly for this preview.
+      await expect(
+        page.getByTestId("data-preview-table"),
+        "bottom preview renders before any cache build",
+      ).toBeVisible({ timeout: 10000 })
+
       const cacheBtn = page.getByRole("button", { name: /cache as parquet/i })
-      await expect(cacheBtn, "Cache button is visible").toBeVisible({
+      await expect(cacheBtn, "optional performance-cache button is visible").toBeVisible({
         timeout: 5000,
       })
       const cacheResponsePromise = page.waitForResponse((r) =>
@@ -163,12 +170,12 @@ test.describe("apiInput v2-native flow (persistence layer)", () => {
         `cache build responds 200 (actual body: ${cacheBody.slice(0, 500)})`,
       ).toBe(200)
 
-      // Bottom preview should NOT show the stale-cache error.
+      // Optional prewarming must not disturb the already-working preview.
       await expect(
         page.locator(
           "text=API Input data hasn't been cached for the current schema",
         ),
-        "bottom preview shows data, not stale-cache error",
+        "bottom preview remains usable after optional prewarm",
       ).toHaveCount(0)
     })
 

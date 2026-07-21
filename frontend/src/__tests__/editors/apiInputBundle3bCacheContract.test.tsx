@@ -108,11 +108,8 @@ describe("Bundle 3b — cache button positioned above the Tables editor", () => 
 
     // Tables editor container — pinned by its existing data-testid.
     const tablesEditor = screen.getByTestId("api-input-tables")
-    // Cache button — selected by accessible role + name (the visible
-    // hint text "Not cached yet — click to flatten/shred and cache as
-    // Parquet" ALSO contains "Cache as Parquet", so `getByText` would
-    // match both; `getByRole("button", …)` resolves unambiguously to
-    // the button).
+    // Cache button — selected by accessible role + name because the nearby
+    // optional-speed hint also mentions "cache as Parquet".
     const cacheButton = screen.getByRole("button", { name: /cache as parquet/i })
 
     // The cache button must NOT live inside the Tables editor section.

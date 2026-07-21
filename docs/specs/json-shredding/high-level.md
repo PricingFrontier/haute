@@ -8,7 +8,8 @@ are grouped here:
 
 1. **JSON API-input shredding** — a JSON/JSONL document (arbitrarily nested objects
    and arrays) is "shredded" into one or more flat, typed tables (Polars frames),
-   cached on disk as parquet so the pipeline never re-parses raw JSON at run time.
+   using a valid parquet cache as a fast path when present and otherwise parsing
+   the source directly for that execution.
 2. **JSON output assembly** — flat frames plus output-path mappings can be
    structurally validated and are re-nested into one deterministic array-outer
    response document without cross-multiplying independent sibling arrays.
@@ -57,9 +58,14 @@ dotted columns; only an array (of objects, or of scalars) starts a child table. 
 scalar array produces a one-column child table (`value`) with one row per element.
 Building the cache writes one parquet per emitting table plus a `meta.json`
 manifest; the manifest carries a content fingerprint of the schema and a signature
-of the source data file, so a later request can tell — without re-reading the JSON —
-whether the cache is still valid for the schema currently configured and the data
-file currently on disk. Schema inference can sniff a v2 config from a data file
+of the source data file. Every table entry also records the size and SHA-256 of its
+derived parquet, so payload corruption is rejected before the footer-only schema
+probe can accept it. Old unsigned manifests invalidate once and are repaired by the
+next optional cache build. Caching is an optional performance prewarm: runtime first
+tries signed, readable, exact-schema `working/` then `committed/` parquets; when
+neither can serve, it applies the same parsed table specs, shredding, type checks,
+skip accounting, and conservation guards directly in memory without creating or
+refreshing cache files. Schema inference can sniff a v2 config from a data file
 directly, sampling optionally, widening column types across every record seen and
 naming collision-free bare leaf keys as their own column names. Inferred table
 labels are readable identifiers derived from the source key names — the root
@@ -119,13 +125,28 @@ additionally runs a conservation assertion at the root level — emitted-plus-sk
 must equal records-read — and raises `RuntimeError` if it doesn't, treating an
 unaccounted discrepancy as a shred bug, not something to serve silently.
 
-**Cache freshness is proven by content hash, not by timestamp alone.** A build
-records the data file's size, mtime, and a full SHA-256; validity checks always
-re-verify the hash rather than trusting a matching mtime, because a rewrite that
-happens to preserve size and mtime (a deliberate `os.utime` restore, or a same-length
-edit on a coarse-resolution filesystem) must not be served as fresh. The one-time
-cost of hashing on every validity check was judged cheaper than a class of stale-data
-bugs that would be silent and hard to reproduce.
+**Cache freshness and integrity are proven by content hashes.** A build records the
+data file's size, mtime, and full SHA-256, plus each emitted parquet's size and full
+SHA-256 after writing it. Public validity re-hashes the source and every candidate
+artifact: a readable footer does not prove its data pages are intact. Runtime goes
+further to close the hash-then-reopen race: it reads each compressed parquet exactly
+once, verifies size/SHA-256 over that exact payload, and gives those same bytes to
+Polars as an in-memory lazy scan. A rewrite that preserves size and mtime, or a
+damaged data page beneath an unchanged footer, is therefore never served.
+
+The compressed byte snapshot also pins a returned LazyFrame (including derived
+plans) to the generation it selected, even if the sole on-disk cache generation is
+later rebuilt, mirrored, or explicitly cleared. Parquet decode and projection remain
+lazy, but the full compressed source is read and copied into memory up front and is
+retained while its lazy plans remain live. Disk use stays bounded to one generation;
+memory use scales with the compressed artifacts referenced by active plans.
+
+Save-time promotion first requires a well-formed v2 mode/schema fingerprint, a
+recorded source signature that still matches the data file, and intact signed working
+artifacts. It then validates the staged metadata and artifact bytes again before
+publish. Both signed layers are verified before declaring a no-op, so invalid, stale,
+or concurrently changed working state cannot replace a healthy committed cache and
+damaged committed bytes are repaired from healthy working state.
 
 **Cache writes are fully staged and same-process builds are serialized per cache
 directory.** A build writes everything (parquets + `meta.json`) into a unique sibling
@@ -144,8 +165,10 @@ shred's own build and by promoting `working/` to `committed/` at save time.
 > window (or a failed restoration) can also leave only the uniquely named backup;
 > the next successful swap only cleans the legacy fixed `.build-old` name, not those
 > UUID backups. Tests cover same-process builder serialization, staged-write failure,
-> transient rename retry, and synchronous restoration attempts, but not concurrent
-> readers, cross-process publishers, or interruption between the two renames.
+> transient rename retry, synchronous restoration attempts, staged mirror tampering,
+> and already-returned LazyFrames surviving rebuild, mirror, and clear. A brand-new
+> concurrent reader can still observe the absent live path and reject that candidate;
+> cross-process publishers and interruption between the two renames are not covered.
 
 **Silent numeric/date coercion is rejected even though the underlying columnar
 library would allow it.** Polars will silently coerce a Python `bool` into a numeric
@@ -159,9 +182,10 @@ strict build and raises a specific, column-named error instead.
 - Owns the v2 apiInput type/path boundary in `_api_input_schema.py`; the shred,
   cache route, executor, and editor consume that one validation contract.
 - The runtime entry point (`load_v2_api_source`) is called by both the eager
-  executor's source builder and the generated/deploy code path, so both paths read
-  identical cached frames — see [execution-engine](../execution-engine/high-level.md)
-  and [codegen](../codegen/high-level.md).
+  executor's source builder and the generated/deploy code path, so both paths share
+  identical cache-fast-path and direct-shred behaviour — see
+  [execution-engine](../execution-engine/high-level.md) and
+  [codegen](../codegen/high-level.md).
 - The execution engine's projection planner consumes `_edge_join.py`'s shared
   demand-narrowing rule so static planning and runtime join construction agree —
   see [execution-engine](../execution-engine/high-level.md).
@@ -202,8 +226,10 @@ strict build and raises a specific, column-named error instead.
   aborts the build with `RuntimeError` rather than writing a cache with unaccounted
   data loss.
 - At runtime, a v2 apiInput with no emit-true tables, or emit-true tables with no
-  selected columns, or a stale/missing cache in both the working and committed
-  layers, raises `RuntimeError` with a message telling the user which UI action
-  (ticking `emit`/a column, or clicking "Cache as Parquet") will fix it.
+  selected columns, raises `RuntimeError` with a message telling the user to tick
+  `emit` or select a column. A stale, missing, corrupt, or schema-mismatched cache
+  is not a runtime error: the loader tries the next layer, then shreds the raw
+  source directly. Raw-file decode, missing-file, and declared-type failures stay
+  loud and specific; the direct path never replaces them with a cache prompt.
 - `edgeJoin` node misconfiguration (ambiguous/missing base or join role, unsupported
   join strategy, mismatched key counts) raises `ConfigError` before any join runs.

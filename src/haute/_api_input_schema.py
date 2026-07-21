@@ -209,8 +209,9 @@ def is_json_api_input_path(path: str) -> bool:
     the preview/trace cache-key signature
     (``haute.execution._runtime_file_signature_paths``) so the two can
     never disagree about which file an apiInput actually reads: JSON /
-    JSONL paths are served from the built per-port parquet cache, every
-    other extension is read directly as a flat file.
+    JSONL paths use a valid per-port parquet cache when available and shred
+    the source directly otherwise; every other extension is read directly as
+    a flat file.
     """
     return path.lower().endswith(_JSON_API_INPUT_SUFFIXES)
 

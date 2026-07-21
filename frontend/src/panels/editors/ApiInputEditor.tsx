@@ -6,6 +6,7 @@ import { useSchemaFetch } from "../../hooks/useSchemaFetch"
 import { configField } from "../../utils/configField"
 import { withAlpha } from "../../utils/color"
 import {
+  apiInputHasEmittingTable,
   apiInputLabelIssue,
   apiInputLabelIssueMessage,
 } from "../../utils/apiInputPorts"
@@ -95,9 +96,20 @@ function JsonCacheButton({
   disabled?: boolean
   disabledReason?: string
 }) {
+  // `volatileSchema` comes from the canonical `writeV2` writer, so its JSON
+  // representation is a stable value identity. Array encoding also avoids the
+  // delimiter collisions of a hand-built composite key. CacheFetchButton uses
+  // this key only to reset/refetch status; the API callbacks below intentionally
+  // continue to send the original path/schema payloads.
+  const resourceKey = JSON.stringify([
+    dataPath,
+    configPath ?? null,
+    volatileSchema ?? null,
+  ])
+
   return (
     <CacheFetchButton<JsonCacheStatus>
-      resourceKey={dataPath + "::" + (configPath ?? "")}
+      resourceKey={resourceKey}
       getStatus={(_key) =>
         configPath
           ? getJsonCacheStatusForSchema({
@@ -123,7 +135,7 @@ function JsonCacheButton({
       labels={{
         fetchLabel: "Cache as Parquet",
         refreshLabel: "Refresh Cache",
-        notCachedHint: "Not cached yet — click to flatten/shred and cache as Parquet",
+        notCachedHint: "Runs directly from JSON — cache as Parquet for faster repeat runs",
         pendingLabel: "Processing...",
       }}
       disabled={disabled}
@@ -773,18 +785,18 @@ export default function ApiInputEditor({
             groups it with the data source and leaves the schema editor
             (Tables) as the primary authoring surface below. */}
         {showCacheButton && (() => {
-          // T9/T10: Cache button inactive when EITHER (a) no schema
-          // source (no path AND no tables) OR (b) zero emit:true
-          // tables. The CacheFetchButton renders disabled via
-          // `disabledReason` tooltip + the existing
-          // `disabled:opacity-40` class.
+          // Cache eligibility shares the frontend mirror of backend
+          // `table_is_emitting`: emit=true AND at least one selected column.
           const hasSchemaSource = v2.tables.length > 0
           const hasEmitTrue = v2.tables.some((t) => t.emit)
-          const cacheDisabled = !hasSchemaSource || !hasEmitTrue
+          const hasEmittingTable = apiInputHasEmittingTable({ tables: v2.tables })
+          const cacheDisabled = !hasSchemaSource || !hasEmittingTable
           const cacheReason = !hasSchemaSource
             ? "Add at least one table (Infer Tables / Add Table) before caching."
             : !hasEmitTrue
             ? "Toggle at least one table's emit so it produces a frame."
+            : !hasEmittingTable
+            ? "Select at least one column in an emitted table before caching."
             : undefined
           return (
             <JsonCacheButton

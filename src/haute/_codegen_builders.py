@@ -237,8 +237,10 @@ def _api_input_template(path: str, config: dict) -> str:
     """
     lower = path.lower()
     if lower.endswith((".json", ".jsonl")):
-        # Emit-state checks, cache resolution and single/multi-frame return all
-        # live in the shared `haute._json_shred.load_v2_api_source` so this
+        return_annotation = "dict[str, pl.LazyFrame]"
+        # Emit-state checks, optional cache resolution, direct-shred fallback,
+        # and the uniform frame-bundle return all live in the shared
+        # `haute._json_shred.load_v2_api_source` so this
         # generated/deploy path can't drift from the runtime builder
         # (`_builders._make_api_source_v2`). The only codegen-specific work is
         # reading the v2 config from its on-disk sidecar and validating it.
@@ -254,12 +256,13 @@ def _api_input_template(path: str, config: dict) -> str:
             "        raise RuntimeError(\n"
             '            "API Input has no v2 schema (tables[]). Open the node "\n'
             "            \"and click 'Infer Tables' to populate the schema mapping, \"\n"
-            "            \"then click 'Cache as Parquet'.\"\n"
+            '            "then preview again."\n'
             "        )\n"
             "    validate_v2_schema(_v2_config)\n"
             "    return load_v2_api_source(str(_data_path), _v2_config)"
         )
     else:
+        return_annotation = "pl.LazyFrame"
         runtime_config = {"sourceType": "flat_file", **config}
         runtime_expr = _data_source_runtime_config_expr(runtime_config)
         runtime_expr = runtime_expr.replace("{", "{{").replace("}", "}}")
@@ -271,7 +274,7 @@ def _api_input_template(path: str, config: dict) -> str:
 
     return (
         "@pipeline.api_input(path={path_repr}{row_id_kw})\n"
-        "def {func_name}() -> pl.LazyFrame:\n"
+        f"def {{func_name}}() -> {return_annotation}:\n"
         '    """{description}"""\n' + body + "\n"
     )
 

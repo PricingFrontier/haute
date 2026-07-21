@@ -31,7 +31,7 @@ EXPECTED_FIXTURE_PREMIUM = 2.75
 
 @pytest.fixture(autouse=True)
 def _isolate_json_cache(tmp_path, monkeypatch, _widen_sandbox_root):
-    """Redirect the JSON parquet cache to a temp dir and pre-populate it.
+    """Redirect the JSON parquet cache to a temp dir and prewarm it.
 
     Without this, a stale .haute_cache/ in the working directory (from a
     previous real-data run) can poison the fixture pipeline's api-input
@@ -40,8 +40,9 @@ def _isolate_json_cache(tmp_path, monkeypatch, _widen_sandbox_root):
     Under v2 (post-commit-5.5) the per-port cache replaces the v1 single
     parquet. We pre-populate the cache via ``build_per_port_cache`` so
     the executor's apiInput consumer (which reads from the per-port
-    cache via ``load_per_port_cache``) finds its data ready — the same
-    step a user performs by clicking "Cache as Parquet" in the GUI.
+    cache via ``load_per_port_cache``) exercises the performance fast path.
+    This mirrors the optional "Cache as Parquet" prewarm action; uncached
+    execution is covered separately and reads the JSON source directly.
     """
     import json
 

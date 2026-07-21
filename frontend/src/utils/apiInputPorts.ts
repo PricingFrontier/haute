@@ -67,6 +67,15 @@ function emitTables(config: ConfigLike): Array<Record<string, unknown>> {
   )
 }
 
+/**
+ * Whether an apiInput config contains a table that contributes a runtime
+ * frame. This shares the exact eligibility path used for rendered handles and
+ * mirrors backend `_json_shred.table_is_emitting`.
+ */
+export function apiInputHasEmittingTable(config: ConfigLike): boolean {
+  return emitTables(config).length > 0
+}
+
 /** The exact label string of a table, or null when missing/non-string. */
 function rawLabel(table: Record<string, unknown>): string | null {
   const raw = (table as { label?: unknown }).label

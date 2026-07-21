@@ -516,10 +516,9 @@ def _runtime_file_signature_paths(graph: PipelineGraph, node: GraphNode) -> dict
     gets read, nothing else:
 
     * **apiInput** - signs the configured raw path for both flat files
-      and JSON/JSONL. JSON-shape inputs preview from the built per-frame
-      parquet cache, but the raw file owns cache validity; signing it
-      prevents serving a stale preview before execution can raise the
-      stale-cache error.
+      and JSON/JSONL. JSON-shape inputs prefer a valid per-frame parquet
+      cache and otherwise shred that raw file directly; signing it prevents
+      a stale preview from hiding either fresh direct data or a raw-file error.
     * **databricks dataSource** — preview consumes the LOCAL table-cache
       parquet (``read_cached_table``), which the GUI Fetch Data route
       rewrites in place; the derived cache path is signed (including

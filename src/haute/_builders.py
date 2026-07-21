@@ -344,8 +344,8 @@ def _resolve_runtime_data_path(data_path: str) -> str:
     ``validate_project_path`` inside ``load_external_object`` (EXTERNAL_FILE).
     When the pipeline lived in a subdirectory and the server ran from the
     project root, the resolved location diverged from the pipeline-dir-anchored
-    one the "Cache as Parquet" build wrote / the nested data file actually sits
-    at — producing a spurious "cache is stale" (apiInput) or a
+    one the optional "Cache as Parquet" prewarm wrote / the nested data file
+    actually sits at — producing a wrong cache key or raw-file miss (apiInput), or a
     file-not-found / wrong-file read (DATA_SOURCE, EXTERNAL_FILE) that only
     agreed when cwd == the pipeline dir.
 
@@ -379,8 +379,9 @@ def _resolve_runtime_data_path(data_path: str) -> str:
             # Enforcing against cwd would wrongly reject those valid, cached
             # paths. Route-driven flows are still gated upstream by
             # ``routes.pipeline._validate_runtime_input_paths``; the executor
-            # never enforced here pre-fix and loads cache parquets, not the raw
-            # file — so leaving enforce off is status-quo-ante, not a new hole.
+            # never enforced here pre-fix; cache hits and direct JSON fallback
+            # must both support an explicitly requested pipeline outside cwd,
+            # so leaving enforce off is status-quo-ante, not a new hole.
             # (EXTERNAL_FILE additionally re-checks project-root containment
             # inside ``load_external_object`` via
             # ``_sandbox.validate_project_path``; that independent gate is
@@ -432,26 +433,22 @@ def _make_api_source_v2(
     - 0 emit-true tables → raise a clear RuntimeError (the editor's
       empty-state message; the user has to tick at least one ``emit``
       before previewing).
-    - 1 emit-true table → return a bare LazyFrame (single-frame shorthand;
-      existing edges with null sourceHandle keep binding to this node via
-      MULTI_FRAME_PLAN §4b's source-label fallback).
-    - 2+ emit-true tables → return a ``dict[port_label, LazyFrame]``. The
+    - 1+ emitting tables → return a ``dict[port_label, LazyFrame]``. The
       executor's edge-resolution picks one frame per outgoing edge using
       ``edge.sourceHandle``.
 
-    The cache directory is the dual-cache ``working/<hash>/`` layer (commit
-    3's per-frame shred output). If the cache isn't valid, raise with the
-    "click Cache as Parquet" message — same UX shape as the v1 path. No
-    auto-build in this commit; that's intentional ergonomic discipline
-    (see DUAL_CACHE.md §4 — caching is an explicit user action).
+    A valid ``working/`` or ``committed/`` per-port parquet cache is used as
+    a performance fast path. When neither can serve the current post-schema
+    shape, the source JSON/JSONL is shredded directly for this execution;
+    caching remains an explicit, optional prewarm action.
     """
     from haute._api_input_schema import validate_v2_schema
     from haute._json_shred import load_v2_api_source
 
     # Validate at build time so a malformed config fails before any data is
-    # fetched. The emit-state checks + cache resolution + single/multi-frame
-    # return live in the shared `load_v2_api_source` so the generated/deploy
-    # code path (codegen) and this runtime path can't drift.
+    # fetched. The emit-state checks, optional cache resolution, direct-shred
+    # fallback, and uniform frame-bundle return live in the shared
+    # `load_v2_api_source` so codegen and this runtime path cannot drift.
     validate_v2_schema(config)
 
     def _api_source_v2(
@@ -459,8 +456,8 @@ def _make_api_source_v2(
         _config: dict[str, Any] = config,
     ) -> _Frame | dict[str, _Frame]:
         # Resolve the (possibly pipeline-relative) data path the same way the
-        # cache-build route and codegen do, so the cache lookup in
-        # ``load_v2_api_source`` can't diverge from the cache the build wrote
+        # cache-build route and codegen do, so both optional cache lookup and
+        # direct shredding target the same file the build route would cache
         # when cwd != the pipeline dir.  Deferred to call time (not build
         # time) to mirror codegen's generated body and leave the deploy build
         # path — which creates but never invokes this fn — untouched.
@@ -478,8 +475,8 @@ def _build_api_input(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     if is_json_api_input_path(path):
         # v2 per-frame shred is the only JSON apiInput codec. When the
         # config carries `tables[]` we dispatch into the v2 source
-        # builder (emit-true count decides bare frame vs dict[label,
-        # frame]). Anything else is an editor-state error: the user must
+        # builder (every eligible count returns dict[label, frame]). Anything
+        # else is an editor-state error: the user must
         # populate `tables[]` via the Infer Tables button before the
         # pipeline can run.
         from haute._api_input_schema import is_v2_shape as _is_v2_shape
@@ -493,7 +490,7 @@ def _build_api_input(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
             raise RuntimeError(
                 f"API Input '{_label}' has no v2 schema (tables[]). Open the "
                 "node and click 'Infer Tables' to populate the schema "
-                "mapping, then click 'Cache as Parquet'."
+                "mapping, then preview again."
             )
 
         api_source_fn = _api_source_no_tables

@@ -134,6 +134,7 @@ def _cached_api_graph(
     tables: list[dict],
     code: str,
     ports: list[str],
+    build_cache: bool = True,
 ) -> PipelineGraph:
     data_path = project / "request.json"
     data_path.write_text(json.dumps(records), encoding="utf-8")
@@ -142,7 +143,8 @@ def _cached_api_graph(
         "contract": "opaque",
         "tables": tables,
     }
-    build_per_port_cache(data_path, config, _json_cache_dir(data_path, "working"))
+    if build_cache:
+        build_per_port_cache(data_path, config, _json_cache_dir(data_path, "working"))
 
     api = _node("api", "Quote Input", NodeType.API_INPUT, config)
     transform = _node("transform", "Price Transform", NodeType.POLARS, {"code": code})
@@ -182,6 +184,40 @@ def test_one_frame_api_input_run_matches_executor_by_frame_label(
 
     assert standalone["double_id"].to_list() == [14, 22]
     assert_frame_equal(standalone, reference)
+
+
+def test_uncached_api_input_generated_run_matches_executor_and_cached_fast_path(
+    isolated_project: Path,
+) -> None:
+    graph = _cached_api_graph(
+        isolated_project,
+        records=[{"quote_id": 7}, {"quote_id": 11}],
+        tables=[
+            {
+                "path": "$[:]",
+                "label": "quotes",
+                "emit": True,
+                "columns": [_column("quote_id", "$[:].quote_id")],
+            }
+        ],
+        code="df = quotes.with_columns((pl.col('quote_id') * 2).alias('double_id'))",
+        ports=["quotes"],
+        build_cache=False,
+    )
+    module = _write_and_import(graph, isolated_project)
+
+    standalone_direct = _collect(module.pipeline.run())
+    executor_direct = _executor_frame(graph, "transform", source="batch")
+    assert_frame_equal(standalone_direct, executor_direct)
+
+    api_config = graph.nodes[0].data.config
+    data_path = Path(api_config["path"])
+    build_per_port_cache(data_path, api_config, _json_cache_dir(data_path, "working"))
+
+    standalone_cached = _collect(module.pipeline.run())
+    executor_cached = _executor_frame(graph, "transform", source="batch")
+    assert_frame_equal(standalone_cached, executor_cached)
+    assert_frame_equal(standalone_direct, standalone_cached)
 
 
 def test_multi_frame_api_input_run_matches_executor_by_each_frame_label(

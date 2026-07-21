@@ -12,9 +12,9 @@ One coherent build/validity/load rework, pinned end to end:
 - **2.5** — one shared predicate (``table_is_emitting``: emit AND >=1
   selected column) used by build, validity AND load, killing the permanent
   wedge where build skips a parquet that validity then demands forever.
-- **2.6** — the build is atomic (temp dir + swap) and serialized (per-cache
-  lock), so a failed or concurrent rebuild can never corrupt a previously
-  valid cache or stamp one schema's meta onto another's parquets.
+- **2.6** — the build is atomic (fully staged directory swap) and serialized
+  (per-cache lock), so a failed or concurrent rebuild can never corrupt a
+  previously valid cache or stamp one schema's meta onto another's parquets.
 - **2.7** — records dropped on shape mismatch (non-object JSONL lines, mixed
   arrays) are counted and surfaced in the build summary, meta.json, and the
   route responses. Zero silent loss.
@@ -41,6 +41,7 @@ from haute._json_flatten import (
     _is_working_consulted,
     _json_cache_dir,
     _mark_working_consulted,
+    clear_json_cache,
     mirror_cache_to_committed,
 )
 from haute._json_shred import (
@@ -92,6 +93,29 @@ def _write_json(path: Path, records: list[Any]) -> None:
     path.write_text(json.dumps(records), encoding="utf-8")
 
 
+def _corrupt_parquet_data_page(path: Path) -> None:
+    import pyarrow.parquet as pq
+
+    column = pq.ParquetFile(path).metadata.row_group(0).column(0)
+    offset = column.data_page_offset + 1
+    payload = bytearray(path.read_bytes())
+    payload[offset] ^= 0x01
+    path.write_bytes(payload)
+
+
+def _cache_meta(cache_dir: Path) -> dict[str, Any]:
+    meta = orjson.loads((cache_dir / "meta.json").read_bytes())
+    assert isinstance(meta, dict)
+    return meta
+
+
+def _current_parquet(cache_dir: Path, label: str = "root") -> Path:
+    """Resolve the current table artifact through the signed manifest."""
+    meta = _cache_meta(cache_dir)
+    entry = next(table for table in meta["tables"] if table["label"] == label)
+    return cache_dir / entry["parquet"]
+
+
 @pytest.fixture()
 def isolated_cwd(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Chdir into a fresh tmp dir and reset the consulted-hashes session set."""
@@ -132,7 +156,7 @@ class TestCommittedMirrorOnProductionBuild:
 
         assert _is_working_consulted(str(data.resolve())) is True
         # And the production save-time mirror is therefore live, not dead code:
-        assert mirror_cache_to_committed(str(data.resolve())) is True
+        assert mirror_cache_to_committed(str(data.resolve()), cfg) is True
         assert _json_cache_dir(str(data.resolve()), "committed").exists()
 
     def test_failed_route_build_does_not_mark_consulted(
@@ -374,18 +398,233 @@ class TestDataFileSignatureValidity:
         working_dir = _json_cache_dir(str(data), "working")
         build_per_port_cache(data, cfg, working_dir)
         _mark_working_consulted(str(data))
-        assert mirror_cache_to_committed(str(data)) is True
+        assert mirror_cache_to_committed(str(data), cfg) is True
 
         # Edit data + rebuild working under the SAME schema.
         _write_json(data, [{"id": 1}, {"id": 2}])
         build_per_port_cache(data, cfg, working_dir)
 
-        assert mirror_cache_to_committed(str(data)) is True, (
+        assert mirror_cache_to_committed(str(data), cfg) is True, (
             "mirror no-opped on a data-only rebuild — committed/ kept stale rows"
         )
         committed_dir = _json_cache_dir(str(data), "committed")
         frames = load_per_port_cache(committed_dir, cfg)
         assert frames["root"].collect()["id"].to_list() == [1, 2]
+
+    def test_save_upgrades_legacy_unsigned_committed_manifest(
+        self,
+        isolated_cwd: Path,
+    ) -> None:
+        data = isolated_cwd / "data.json"
+        _write_json(data, [{"id": 1}])
+        cfg = _root_cfg(_col("id", "$[:].id"))
+        working_dir = _json_cache_dir(str(data), "working")
+        committed_dir = _json_cache_dir(str(data), "committed")
+        build_per_port_cache(data, cfg, working_dir)
+        _mark_working_consulted(str(data))
+        assert mirror_cache_to_committed(str(data), cfg) is True
+
+        committed_meta_path = committed_dir / "meta.json"
+        committed_meta = orjson.loads(committed_meta_path.read_bytes())
+        committed_meta["tables"][0].pop("content_signature", None)
+        committed_meta_path.write_bytes(orjson.dumps(committed_meta))
+
+        assert mirror_cache_to_committed(str(data), cfg) is True
+
+        working_meta = orjson.loads((working_dir / "meta.json").read_bytes())
+        repaired_committed_meta = orjson.loads(committed_meta_path.read_bytes())
+        assert repaired_committed_meta["tables"] == working_meta["tables"]
+        assert is_per_port_cache_valid(committed_dir, cfg, data_path=data) is True
+
+    def test_save_repairs_committed_parquet_whose_bytes_no_longer_match_manifest(
+        self,
+        isolated_cwd: Path,
+    ) -> None:
+        data = isolated_cwd / "data.json"
+        _write_json(data, [{"id": 1}])
+        cfg = _root_cfg(_col("id", "$[:].id"))
+        working_dir = _json_cache_dir(str(data), "working")
+        committed_dir = _json_cache_dir(str(data), "committed")
+        build_per_port_cache(data, cfg, working_dir)
+        _mark_working_consulted(str(data))
+        assert mirror_cache_to_committed(str(data), cfg) is True
+        committed_parquet = _current_parquet(committed_dir)
+        working_parquet = _current_parquet(working_dir)
+        _corrupt_parquet_data_page(committed_parquet)
+        assert committed_parquet.read_bytes() != working_parquet.read_bytes()
+
+        assert mirror_cache_to_committed(str(data), cfg) is True
+
+        assert committed_parquet.read_bytes() == working_parquet.read_bytes()
+        assert is_per_port_cache_valid(committed_dir, cfg, data_path=data) is True
+
+    def test_committed_lazy_frame_stays_pinned_across_later_mirror(
+        self,
+        isolated_cwd: Path,
+    ) -> None:
+        import shutil
+
+        data = isolated_cwd / "data.json"
+        _write_json(data, [{"id": 1}])
+        cfg = _root_cfg(_col("id", "$[:].id"))
+        working_dir = _json_cache_dir(str(data), "working")
+        build_per_port_cache(data, cfg, working_dir)
+        _mark_working_consulted(str(data))
+        assert mirror_cache_to_committed(str(data), cfg) is True
+
+        shutil.rmtree(working_dir)
+        generation_a = load_v2_api_source(str(data), cfg)["root"]
+
+        _write_json(data, [{"id": 2}])
+        build_per_port_cache(data, cfg, working_dir)
+        assert mirror_cache_to_committed(str(data), cfg) is True
+        generation_b = load_v2_api_source(str(data), cfg)["root"]
+
+        assert generation_a.collect()["id"].to_list() == [1]
+        assert generation_b.collect()["id"].to_list() == [2]
+
+    @pytest.mark.parametrize(
+        "damage",
+        ["corrupt_bytes", "unsigned_manifest", "malformed_manifest"],
+    )
+    def test_save_never_promotes_invalid_working_over_healthy_committed(
+        self,
+        isolated_cwd: Path,
+        damage: str,
+    ) -> None:
+        data = isolated_cwd / "data.json"
+        _write_json(data, [{"id": 1}])
+        cfg = _root_cfg(_col("id", "$[:].id"))
+        working_dir = _json_cache_dir(str(data), "working")
+        committed_dir = _json_cache_dir(str(data), "committed")
+        build_per_port_cache(data, cfg, working_dir)
+        _mark_working_consulted(str(data))
+        assert mirror_cache_to_committed(str(data), cfg) is True
+        committed_meta = (committed_dir / "meta.json").read_bytes()
+        committed_parquet_path = _current_parquet(committed_dir)
+        committed_parquet = committed_parquet_path.read_bytes()
+
+        if damage == "corrupt_bytes":
+            _corrupt_parquet_data_page(_current_parquet(working_dir))
+        else:
+            working_meta_path = working_dir / "meta.json"
+            if damage == "unsigned_manifest":
+                working_meta = orjson.loads(working_meta_path.read_bytes())
+                working_meta["tables"][0].pop("content_signature")
+                working_meta_path.write_bytes(orjson.dumps(working_meta))
+            else:
+                working_meta_path.write_bytes(b"{")
+
+        assert mirror_cache_to_committed(str(data), cfg) is False
+
+        assert (committed_dir / "meta.json").read_bytes() == committed_meta
+        assert committed_parquet_path.read_bytes() == committed_parquet
+        assert is_per_port_cache_valid(committed_dir, cfg, data_path=data) is True
+
+    @pytest.mark.parametrize(
+        "damage",
+        [
+            "wrong_schema_mode",
+            "malformed_schema_fingerprint",
+            "stale_data_file_signature",
+            "malformed_data_file_signature",
+        ],
+    )
+    def test_save_rejects_invalid_top_level_working_meta_and_preserves_committed(
+        self,
+        isolated_cwd: Path,
+        damage: str,
+    ) -> None:
+        """A parseable manifest is not mirrorable unless its cache identity is valid."""
+        data = isolated_cwd / "data.json"
+        _write_json(data, [{"id": 1}])
+        cfg = _root_cfg(_col("id", "$[:].id"))
+        working_dir = _json_cache_dir(str(data), "working")
+        committed_dir = _json_cache_dir(str(data), "committed")
+        build_per_port_cache(data, cfg, working_dir)
+        _mark_working_consulted(str(data))
+        assert mirror_cache_to_committed(str(data), cfg) is True
+
+        committed_meta = (committed_dir / "meta.json").read_bytes()
+        committed_parquet_path = _current_parquet(committed_dir)
+        committed_parquet = committed_parquet_path.read_bytes()
+
+        working_meta_path = working_dir / "meta.json"
+        working_meta = orjson.loads(working_meta_path.read_bytes())
+        if damage == "wrong_schema_mode":
+            working_meta["schema_mode"] = "broken"
+        elif damage == "malformed_schema_fingerprint":
+            working_meta["schema_fingerprint"] = "not-a-sha256"
+        elif damage == "stale_data_file_signature":
+            working_meta["data_file"]["sha256"] = "0" * 64
+        else:
+            working_meta["data_file"] = {
+                "size": "not-an-integer",
+                "mtime_ns": 0,
+                "sha256": "0" * 64,
+            }
+        working_meta_path.write_bytes(orjson.dumps(working_meta))
+
+        assert mirror_cache_to_committed(str(data), cfg) is False
+
+        assert (committed_dir / "meta.json").read_bytes() == committed_meta
+        assert committed_parquet_path.read_bytes() == committed_parquet
+        assert is_per_port_cache_valid(committed_dir, cfg, data_path=data) is True
+        assert load_per_port_cache(committed_dir, cfg)["root"].collect().to_dict(
+            as_series=False,
+        ) == {"id": [1]}
+        assert list(committed_dir.parent.glob(f"{committed_dir.name}*.tmp*")) == []
+        assert list(committed_dir.glob("*.tmp*")) == []
+
+    @pytest.mark.parametrize("staged_damage", ["parquet", "meta"])
+    def test_save_rejects_staging_tamper_and_preserves_committed(
+        self,
+        isolated_cwd: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        staged_damage: str,
+    ) -> None:
+        """The copied mirror is revalidated before it may replace committed/."""
+        import haute._json_flatten as flatten_mod
+
+        data = isolated_cwd / "data.json"
+        _write_json(data, [{"a": 1, "b": 2}])
+        cfg_a = _root_cfg(_col("a", "$[:].a"))
+        cfg_b = _root_cfg(_col("b", "$[:].b"))
+        working_dir = _json_cache_dir(str(data), "working")
+        committed_dir = _json_cache_dir(str(data), "committed")
+        build_per_port_cache(data, cfg_a, working_dir)
+        _mark_working_consulted(str(data))
+        assert mirror_cache_to_committed(str(data), cfg_a) is True
+
+        committed_meta = (committed_dir / "meta.json").read_bytes()
+        committed_parquet_path = _current_parquet(committed_dir)
+        committed_parquet = committed_parquet_path.read_bytes()
+        build_per_port_cache(data, cfg_b, working_dir)
+
+        real_copytree = flatten_mod.shutil.copytree
+
+        def _tampering_copytree(source: Any, target: Any, *args: Any, **kwargs: Any) -> Any:
+            copied = real_copytree(source, target, *args, **kwargs)
+            staged_dir = Path(target)
+            if staged_damage == "parquet":
+                _corrupt_parquet_data_page(_current_parquet(staged_dir))
+            else:
+                staged_meta_path = staged_dir / "meta.json"
+                staged_meta = orjson.loads(staged_meta_path.read_bytes())
+                staged_meta["schema_fingerprint"] = "tampered-after-copy"
+                staged_meta_path.write_bytes(orjson.dumps(staged_meta))
+            return copied
+
+        monkeypatch.setattr(flatten_mod.shutil, "copytree", _tampering_copytree)
+
+        assert mirror_cache_to_committed(str(data), cfg_b) is False
+
+        assert (committed_dir / "meta.json").read_bytes() == committed_meta
+        assert committed_parquet_path.read_bytes() == committed_parquet
+        assert load_per_port_cache(committed_dir, cfg_a)["root"].collect().to_dict(
+            as_series=False,
+        ) == {"a": [1]}
+        assert not committed_dir.with_name(committed_dir.name + ".tmp").exists()
 
 
 # ---------------------------------------------------------------------------
@@ -445,8 +684,8 @@ class TestSharedEmittingPredicate:
         cache_dir = tmp_path / "cache"
         build_per_port_cache(data, cfg, cache_dir)
 
-        assert (cache_dir / "root.parquet").exists()
-        assert not (cache_dir / "drivers.parquet").exists()
+        assert _current_parquet(cache_dir).exists()
+        assert all(table["label"] != "drivers" for table in _cache_meta(cache_dir)["tables"])
         assert is_per_port_cache_valid(cache_dir, cfg, data_path=data) is True, (
             "validity demands a parquet the build deliberately skipped — permanent wedge"
         )
@@ -667,9 +906,45 @@ class TestAtomicSerializedBuild:
         assert is_per_port_cache_valid(cache_dir, cfg, data_path=data) is True
         assert load_per_port_cache(cache_dir, cfg)["root"].collect()["a"].to_list() == [1]
 
+    def test_lazy_frame_snapshot_survives_later_cache_rebuild(self, tmp_path: Path) -> None:
+        """A cache-backed frame owns its compressed bytes, not a mutable disk path."""
+        data = tmp_path / "data.json"
+        _write_json(data, [{"a": 1, "b": 2}])
+        cfg_a = _root_cfg(_col("a", "$[:].a"))
+        cfg_b = _root_cfg(_col("b", "$[:].b"))
+        cache_dir = tmp_path / "cache"
+        build_per_port_cache(data, cfg_a, cache_dir)
+        generation_a_path = _current_parquet(cache_dir)
+        generation_a = load_per_port_cache(cache_dir, cfg_a)["root"]
+
+        build_per_port_cache(data, cfg_b, cache_dir)
+        generation_b_path = _current_parquet(cache_dir)
+
+        assert generation_b_path == generation_a_path
+        assert generation_b_path.exists()
+        assert generation_a.collect().to_dict(as_series=False) == {"a": [1]}
+        assert load_per_port_cache(cache_dir, cfg_b)["root"].collect().to_dict(
+            as_series=False,
+        ) == {"b": [2]}
+        assert is_per_port_cache_valid(cache_dir, cfg_b, data_path=data) is True
+
+    def test_lazy_frame_snapshot_survives_explicit_cache_clear(
+        self,
+        isolated_cwd: Path,
+    ) -> None:
+        data = isolated_cwd / "data.json"
+        _write_json(data, [{"id": 1}])
+        cfg = _root_cfg(_col("id", "$[:].id"))
+        cache_dir = _json_cache_dir(str(data), "working")
+        build_per_port_cache(data, cfg, cache_dir)
+        cached_frame = load_v2_api_source(str(data), cfg)["root"]
+
+        assert clear_json_cache(str(data)) is True
+        assert not cache_dir.exists()
+        assert cached_frame.collect().to_dict(as_series=False) == {"id": [1]}
+
     def test_leftover_build_old_backup_is_cleaned_on_next_swap(self, tmp_path: Path) -> None:
-        """A `.build-old` backup left by a crash mid-swap is removed when the
-        next rebuild swaps over an existing live cache."""
+        """A `.build-old` backup left by a crash mid-swap is removed on rebuild."""
         data = tmp_path / "data.json"
         _write_json(data, [{"a": 1, "b": 2}])
         cfg_a = _root_cfg(_col("a", "$[:].a"))
@@ -681,15 +956,14 @@ class TestAtomicSerializedBuild:
         stale_backup.mkdir(parents=True)
         (stale_backup / "junk").write_bytes(b"stale")
 
-        build_per_port_cache(data, cfg_b, cache_dir)  # schema change -> real swap
+        build_per_port_cache(data, cfg_b, cache_dir)
         assert not stale_backup.exists()
         assert is_per_port_cache_valid(cache_dir, cfg_b, data_path=data) is True
 
     def test_swap_restores_live_dir_when_final_rename_fails(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """If the tmp→live rename fails mid-swap, the previous live dir is
-        restored before the error propagates — the cache is never left missing."""
+        """If tmp→live fails, the previous cache is restored before re-raising."""
         from haute._json_shred import _swap_dir_into_place
 
         live = tmp_path / "cache"
@@ -709,7 +983,6 @@ class TestAtomicSerializedBuild:
         monkeypatch.setattr(Path, "rename", _failing_rename)
         with pytest.raises(OSError, match="simulated rename failure"):
             _swap_dir_into_place(tmp, live)
-        monkeypatch.setattr(Path, "rename", real_rename)
 
         assert live.exists()
         assert (live / "old.parquet").read_bytes() == b"old"
@@ -718,8 +991,7 @@ class TestAtomicSerializedBuild:
     def test_swap_cleans_tmp_when_live_to_backup_rename_fails(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """If live->backup fails before the swap starts, the UUID tmp dir
-        must still be removed so the failed build leaves no orphan staging dir."""
+        """If live→backup fails, the UUID staging directory is still removed."""
         from haute._json_shred import _swap_dir_into_place
 
         live = tmp_path / "cache"
@@ -739,19 +1011,17 @@ class TestAtomicSerializedBuild:
         monkeypatch.setattr(Path, "rename", _failing_rename)
         with pytest.raises(OSError, match="simulated live-to-backup rename failure"):
             _swap_dir_into_place(tmp, live)
-        monkeypatch.setattr(Path, "rename", real_rename)
 
         assert live.exists()
         assert (live / "old.parquet").read_bytes() == b"old"
-        assert not tmp.exists(), "failed live->backup rename leaked the UUID build temp directory"
+        assert not tmp.exists(), "failed live→backup rename leaked the staging directory"
         assert list(tmp_path.glob("cache.build-old-*")) == []
 
-    def test_load_fails_loud_when_parquet_disappears_after_validity(
+    def test_load_falls_back_to_raw_when_parquet_disappears_after_validity(
         self, isolated_cwd: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """If a cache file disappears between validity and scan, loading must
-        raise the cache-stale action message rather than KeyError or a partial
-        multi-port bundle."""
+        """A cache race must continue to committed/direct, never return a
+        partial bundle or restore a hard dependency on parquet."""
         import haute._json_shred as shred_mod
 
         data = isolated_cwd / "data.json"
@@ -760,26 +1030,39 @@ class TestAtomicSerializedBuild:
         cache_dir = _json_cache_dir(str(data), "working")
         build_per_port_cache(data, cfg, cache_dir)
 
-        real_valid = shred_mod.is_per_port_cache_valid
+        real_read_matching_meta = shred_mod._read_matching_cache_meta
         removed = False
 
-        def _valid_then_remove(
+        def _matching_meta_then_remove(
             checked_cache_dir: str | Path,
             checked_config: dict[str, Any],
             *,
             data_path: str | Path,
-        ) -> bool:
+        ) -> dict[str, Any] | None:
             nonlocal removed
-            valid = real_valid(checked_cache_dir, checked_config, data_path=data_path)
-            if valid and not removed:
+            matching_meta = real_read_matching_meta(
+                checked_cache_dir,
+                checked_config,
+                data_path=data_path,
+            )
+            if matching_meta is not None and not removed:
                 removed = True
-                (Path(checked_cache_dir) / "root.parquet").unlink()
-            return valid
+                entry = next(table for table in matching_meta["tables"] if table["label"] == "root")
+                (Path(checked_cache_dir) / entry["parquet"]).unlink()
+            return matching_meta
 
-        monkeypatch.setattr(shred_mod, "is_per_port_cache_valid", _valid_then_remove)
+        monkeypatch.setattr(
+            shred_mod,
+            "_read_matching_cache_meta",
+            _matching_meta_then_remove,
+        )
 
-        with pytest.raises(RuntimeError, match="cache.*changed|Cache as Parquet"):
-            load_v2_api_source(str(data), cfg)
+        out = load_v2_api_source(str(data), cfg)
+
+        assert removed is True
+        current_name = _cache_meta(cache_dir)["tables"][0]["parquet"]
+        assert not (cache_dir / current_name).exists()
+        assert out["root"].collect()["id"].to_list() == [1]
 
     def test_swap_retries_transient_permission_error_for_empty_live_dir(
         self,

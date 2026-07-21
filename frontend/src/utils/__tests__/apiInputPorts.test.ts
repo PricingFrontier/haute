@@ -25,6 +25,7 @@ import { describe, expect, it } from "vitest"
 import * as apiInputPorts from "../apiInputPorts"
 import {
   apiInputFrameLabels,
+  apiInputHasEmittingTable,
   edgeInputName,
 } from "../apiInputPorts"
 import { buildGraph } from "../buildGraph"
@@ -51,6 +52,19 @@ const table = (
   label,
   emit,
   columns,
+})
+
+describe("apiInputHasEmittingTable", () => {
+  it("requires emit and a selected column on the same table", () => {
+    expect(apiInputHasEmittingTable({ tables: [table("policies", true)] })).toBe(true)
+    expect(apiInputHasEmittingTable({
+      tables: [
+        table("policies", true, [{ selected: false }]),
+        table("drivers", false, [{ selected: true }]),
+      ],
+    })).toBe(false)
+    expect(apiInputHasEmittingTable({ tables: [null, "invalid"] })).toBe(false)
+  })
 })
 
 /** Same table, new label — the path stays put, exactly like a label commit. */
