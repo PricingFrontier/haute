@@ -99,6 +99,7 @@ function Harness({ initial }: { initial: Record<string, unknown> }) {
         ? { ...current, [keyOrUpdates]: value }
         : { ...current, ...keyOrUpdates },
     )
+    return { ok: true }
   }
   return (
     <>

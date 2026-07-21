@@ -124,6 +124,18 @@ running heavy work in a child process the parent can kill on timeout or memory l
   offending node rather than as an opaque Polars error three nodes later. Missing
   columns use `ContractMismatchError`; join-key dtype disagreement uses
   `SchemaMismatchError`, with the eager-preview reporting asymmetry noted above.
+- **Input identity is 1:1 and edge-derived.** Every incoming edge of a node has
+  exactly one *input name*, derived by `edge_input_name` (`_graph_utils.py`): an
+  `apiInput`-frame edge's name is its frame label verbatim (frame labels are
+  validated as ASCII Python identifiers by the api-input schema); every other edge's name
+  is the sanitised source-node label. That name is simultaneously the name listed in
+  the editor, the generated function's parameter, and the key used by
+  name-referencing configs (`input_scenario_map`, instance `inputMapping`,
+  `config["inputs"]`) — there are no hidden names, positional suffixes, or
+  display-vs-executable mappings. Two incoming edges deriving the same input name on
+  one node are a loud validation error, never silently suffixed. Binding remains
+  positional in mechanism, but because each name derives from its own edge, edge
+  reordering can never re-mean a name.
 
 ## Design rationale
 

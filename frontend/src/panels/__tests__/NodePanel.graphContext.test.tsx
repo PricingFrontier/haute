@@ -30,7 +30,7 @@ import path from "node:path"
 import { render, screen, cleanup } from "@testing-library/react"
 import NodePanel from "../NodePanel"
 import { GraphProvider } from "../GraphContext"
-import type { SimpleNode, SimpleEdge } from "../editors"
+import type { OnUpdateConfigResult, SimpleNode, SimpleEdge } from "../editors"
 import useUIStore from "../../stores/useUIStore"
 
 // ─── Editor mocks ─────────────────────────────────────────────────
@@ -105,7 +105,7 @@ function renderWithGraph(opts: {
   submodels?: Record<string, unknown>
   preamble?: string
   onClose?: () => void
-  onUpdateNode?: (id: string, data: Record<string, unknown>) => void
+  onUpdateNode?: (id: string, data: Record<string, unknown>) => OnUpdateConfigResult
   onDeleteEdge?: (id: string) => void
 }) {
   const {
@@ -115,7 +115,7 @@ function renderWithGraph(opts: {
     submodels,
     preamble,
     onClose = vi.fn(),
-    onUpdateNode = vi.fn(),
+    onUpdateNode = vi.fn(() => ({ ok: true as const })),
     onDeleteEdge = vi.fn(),
   } = opts
   return render(

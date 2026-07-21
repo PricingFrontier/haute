@@ -3,6 +3,7 @@ import { X, Link2, AlertTriangle, RefreshCw } from "lucide-react"
 import { NODE_TYPES, NODE_TYPE_META } from "../utils/nodeTypes"
 import type { NodeTypeValue } from "../utils/nodeTypes"
 import { sanitizeName } from "../utils/sanitizeName"
+import { apiInputFrameLabels, edgeInputName } from "../utils/apiInputPorts"
 import {
   DataSourceEditor,
   TransformEditor,
@@ -29,7 +30,7 @@ import {
   OptimiserConfig,
   LazyEditorBoundary,
 } from "./LazyNodeEditors"
-import type { InputSource, SimpleNode, SimpleEdge } from "./editors"
+import type { InputSource, SimpleNode, SimpleEdge, OnUpdateConfig, OnUpdateConfigResult } from "./editors"
 import { effectiveNodeType, type HauteNodeData } from "../types/node"
 import useUIStore, { type ExplorePane } from "../stores/useUIStore"
 import PanelShell from "./PanelShell"
@@ -43,7 +44,7 @@ export type { SimpleNode, SimpleEdge } from "./editors"
 type NodePanelProps = {
   node: SimpleNode | null
   onClose: () => void
-  onUpdateNode?: (id: string, data: Record<string, unknown>) => void
+  onUpdateNode?: (id: string, data: Record<string, unknown>) => OnUpdateConfigResult
   onDeleteEdge?: (edgeId: string) => void
   onSwapEdgeJoinInputs?: (nodeId: string) => void
   onRefreshPreview?: () => void
@@ -232,6 +233,7 @@ function resolveOriginalInputNames({
   visibleEdges,
   visibleNodeMap,
   submodelName,
+  submodels,
 }: {
   originalId: string
   originalEdges: SimpleEdge[]
@@ -239,12 +241,14 @@ function resolveOriginalInputNames({
   visibleEdges: SimpleEdge[]
   visibleNodeMap: Record<string, SimpleNode>
   submodelName?: string
+  submodels?: Record<string, unknown>
 }): string[] {
   const internalInputs = originalEdges
     .filter((e) => e.target === originalId)
     .map((e) => {
       const srcNode = originalNodeMap[e.source]
-      return srcNode ? sanitizeName(srcNode.data.label) : e.source
+      if (!srcNode) throw new Error(`Cannot derive instance input name: source node ${e.source} is missing`)
+      return edgeInputName(e, srcNode, submodels)
     })
 
   if (!submodelName) return uniquePreservingOrder(internalInputs)
@@ -254,7 +258,8 @@ function resolveOriginalInputNames({
     .filter((e) => e.target === submodelNodeId && e.targetHandle === `in__${originalId}`)
     .map((e) => {
       const srcNode = visibleNodeMap[e.source]
-      return srcNode ? sanitizeName(srcNode.data.label) : e.source
+      if (!srcNode) throw new Error(`Cannot derive instance input name: source node ${e.source} is missing`)
+      return edgeInputName(e, srcNode, submodels)
     })
 
   return uniquePreservingOrder([...internalInputs, ...boundaryInputs])
@@ -311,7 +316,7 @@ function InstancePanel({
   node: SimpleNode
   config: Record<string, unknown>
   nodeMap: Record<string, SimpleNode>
-  handleConfigUpdate: (keyOrUpdates: string | Record<string, unknown>, value?: unknown) => void
+  handleConfigUpdate: OnUpdateConfig
 }) {
   const { edges, submodels } = useGraph()
   const originalResolution = resolveInstanceOriginal(config.instanceOf, nodeMap, edges, submodels)
@@ -354,13 +359,16 @@ function InstancePanel({
           visibleEdges: edges,
           visibleNodeMap: nodeMap,
           submodelName,
+          submodels,
         })
         const instInputs = edges
           .filter((e) => e.target === node.id)
           .map((e) => {
             const srcNode = nodeMap[e.source]
             return {
-              varName: srcNode ? sanitizeName(srcNode.data.label) : e.source,
+              name: srcNode ? edgeInputName(e, srcNode, submodels) : (() => {
+                throw new Error(`Cannot derive instance input name: source node ${e.source} is missing`)
+              })(),
               label: srcNode ? srcNode.data.label : e.source,
             }
           })
@@ -380,40 +388,40 @@ function InstancePanel({
         const autoMap: Record<string, string> = {}
         const usedInst = new Set<string>()
         for (const orig of origInputs) {
-          const exact = instInputs.find((i) => i.varName === orig && !usedInst.has(i.varName))
-          if (exact) { autoMap[orig] = exact.varName; usedInst.add(exact.varName) }
+          const exact = instInputs.find((i) => i.name === orig && !usedInst.has(i.name))
+          if (exact) { autoMap[orig] = exact.name; usedInst.add(exact.name) }
         }
         const subOrigs = origInputs.filter((o) => !autoMap[o])
-        const subInsts = instInputs.filter((i) => !usedInst.has(i.varName))
+        const subInsts = instInputs.filter((i) => !usedInst.has(i.name))
         const candByOrig = new Map(
-          subOrigs.map((o) => [o, subInsts.filter((i) => i.varName.includes(o))]),
+          subOrigs.map((o) => [o, subInsts.filter((i) => i.name.includes(o))]),
         )
         const candCountByInst = new Map(
-          subInsts.map((i) => [i.varName, subOrigs.filter((o) => i.varName.includes(o)).length]),
+          subInsts.map((i) => [i.name, subOrigs.filter((o) => i.name.includes(o)).length]),
         )
         const ambiguousOrigs = new Set(
           subOrigs.filter((o) => {
             const cands = candByOrig.get(o) ?? []
-            return cands.length > 0 && !(cands.length === 1 && candCountByInst.get(cands[0].varName) === 1)
+            return cands.length > 0 && !(cands.length === 1 && candCountByInst.get(cands[0].name) === 1)
           }),
         )
         for (const o of subOrigs) {
           const cands = candByOrig.get(o) ?? []
-          if (cands.length === 1 && candCountByInst.get(cands[0].varName) === 1) {
-            autoMap[o] = cands[0].varName
-            usedInst.add(cands[0].varName)
+          if (cands.length === 1 && candCountByInst.get(cands[0].name) === 1) {
+            autoMap[o] = cands[0].name
+            usedInst.add(cands[0].name)
           }
         }
-        const remaining = instInputs.filter((i) => !usedInst.has(i.varName))
+        const remaining = instInputs.filter((i) => !usedInst.has(i.name))
         const unmapped = origInputs.filter((o) => !autoMap[o] && !ambiguousOrigs.has(o))
         unmapped.forEach((orig, idx) => {
-          if (idx < remaining.length) autoMap[orig] = remaining[idx].varName
+          if (idx < remaining.length) autoMap[orig] = remaining[idx].name
         })
 
         const effectiveMap: Record<string, string> = {}
-        const instVarNames = new Set(instInputs.map((i) => i.varName))
+        const instNames = new Set(instInputs.map((i) => i.name))
         for (const orig of origInputs) {
-          if (currentMapping[orig] && instVarNames.has(currentMapping[orig])) {
+          if (currentMapping[orig] && instNames.has(currentMapping[orig])) {
             effectiveMap[orig] = currentMapping[orig]
           } else {
             effectiveMap[orig] = autoMap[orig] || ""
@@ -458,7 +466,7 @@ function InstancePanel({
                   >
                     <option value="">— unmapped —</option>
                     {instInputs.map((i) => (
-                      <option key={i.varName} value={i.varName}>{i.label}</option>
+                      <option key={i.name} value={i.name}>{i.label}</option>
                     ))}
                   </select>
                 </div>
@@ -532,10 +540,50 @@ function upstreamNodeTypeSignature(edges: SimpleEdge[], nodeMap: Record<string, 
     .join("\u0001")
 }
 
-function upstreamLabelSignature(edges: SimpleEdge[], nodeMap: Record<string, SimpleNode>): string {
-  return edges
-    .map((edge) => `${edge.id}\u0002${edge.source}\u0003${nodeMap[edge.source]?.data?.label ?? ""}`)
-    .join("\u0001")
+function inputSourceForEdge(
+  edge: SimpleEdge,
+  nodeMap: Record<string, SimpleNode>,
+  submodels?: Record<string, unknown>,
+): InputSource {
+  const sourceNode = nodeMap[edge.source]
+  if (!sourceNode) {
+    throw new Error(`Cannot derive input name for edge ${edge.id}: source node ${edge.source} is missing`)
+  }
+  const sourceLabel = sourceNode.data.label || edge.source
+  const name = edgeInputName(edge, sourceNode, submodels)
+  const frameUnresolved =
+    sourceNode.data.nodeType === NODE_TYPES.API_INPUT
+    && (edge.sourceHandle === null
+      || edge.sourceHandle === undefined
+      || !apiInputFrameLabels(sourceNode.data.config).includes(edge.sourceHandle))
+
+  return {
+    sourceNodeId: edge.source,
+    name,
+    sourceLabel,
+    edgeId: edge.id,
+    ...(frameUnresolved ? { frameUnresolved: true } : {}),
+  }
+}
+
+function upstreamInputSourceSignature(
+  edges: SimpleEdge[],
+  nodeMap: Record<string, SimpleNode>,
+  submodels?: Record<string, unknown>,
+): string {
+  return JSON.stringify(
+    edges.map((edge) => {
+      const source = inputSourceForEdge(edge, nodeMap, submodels)
+      return [
+        edge.id,
+        edge.source,
+        source.sourceLabel,
+        edge.sourceHandle === undefined ? "<undefined>" : edge.sourceHandle,
+        source.name,
+        source.frameUnresolved === true,
+      ]
+    }),
+  )
 }
 
 function UnknownNodeTypeDiagnostic({
@@ -623,7 +671,7 @@ export default function NodePanel({
   previewRows,
   selectedPreviewLoading = false,
 }: NodePanelProps) {
-  const { allNodes, edges } = useGraph()
+  const { allNodes, edges, submodels } = useGraph()
   const config = useMemo(() => (node?.data.config || {}) as Record<string, unknown>, [node?.data.config])
   const [activeTab, setActiveTab] = useState<"config" | "columns">("config")
   const rememberedExplorePane = useUIStore((s) => node?.id ? s.explorePanes[node.id] : undefined)
@@ -643,14 +691,16 @@ export default function NodePanel({
   const [dismissedStaleWarningSig, setDismissedStaleWarningSig] = useState<string | null>(null)
   useEffect(() => { setDismissedStaleWarningSig(null) }, [node?.id])
 
-  const handleConfigUpdate = useCallback((keyOrUpdates: string | Record<string, unknown>, value?: unknown) => {
+  const handleConfigUpdate = useCallback<OnUpdateConfig>((keyOrUpdates, value) => {
     const currentNode = nodeRef.current
-    if (!currentNode || !onUpdateNode) return
+    if (!currentNode || !onUpdateNode) {
+      return { ok: false, error: "Node update handler is unavailable." }
+    }
     const currentConfig = configRef.current
     const newConfig = typeof keyOrUpdates === "string"
       ? { ...currentConfig, [keyOrUpdates]: value }
       : { ...currentConfig, ...keyOrUpdates }
-    onUpdateNode(currentNode.id, clearCachedResultShape({ ...currentNode.data, config: newConfig }))
+    return onUpdateNode(currentNode.id, clearCachedResultShape({ ...currentNode.data, config: newConfig }))
   }, [onUpdateNode])
 
   const configWithNodeId = useMemo(
@@ -665,20 +715,15 @@ export default function NodePanel({
     () => selectedNodeId ? edges.filter((e) => e.target === selectedNodeId) : [],
     [edges, selectedNodeId],
   )
-  const upstreamSourceLabelSignature = upstreamLabelSignature(upstreamEdges, nodeMap)
+  const upstreamInputSourceSig = upstreamInputSourceSignature(upstreamEdges, nodeMap, submodels)
   const inputSources: InputSource[] = useMemo(() => {
     if (!selectedNodeId) return []
-    return upstreamEdges.map((e) => ({
-      sourceNodeId: e.source,
-      varName: sanitizeName(nodeMap[e.source]?.data.label || e.source),
-      sourceLabel: nodeMap[e.source]?.data.label || e.source,
-      edgeId: e.id,
-    }))
-    // Keyed by selected node + label signature so selected-node edits that
-    // rebuild nodeMap do not churn this array; only upstream label/edge changes
-    // do.
+    return upstreamEdges.map((edge) => inputSourceForEdge(edge, nodeMap, submodels))
+    // Keyed by selected node plus each upstream edge's source/display identity:
+    // source labels, source handles, resolved frame labels, and resolution
+    // state can all change while the edge id stays the same.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedNodeId, upstreamSourceLabelSignature])
+  }, [selectedNodeId, upstreamInputSourceSig, submodels])
   const upstreamSchemaSignature = upstreamColumnsSignature(upstreamEdges, nodeMap)
   const upstreamColumns = useMemo(() => {
     if (!selectedNodeId) return []

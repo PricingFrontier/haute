@@ -916,7 +916,27 @@ class TestGraphToCodeWithBuilders:
                         "data": {
                             "label": "API",
                             "nodeType": "apiInput",
-                            "config": {"path": "data/input.parquet"},
+                            "config": {
+                                "path": "data/input.json",
+                                "tables": [
+                                    {
+                                        "path": "$[:]",
+                                        "label": "quotes",
+                                        "emit": True,
+                                        "row_id_column": None,
+                                        "columns": [
+                                            {
+                                                "name": "id",
+                                                "path": "$[:].id",
+                                                "type": "int",
+                                                "status": "Confirmed",
+                                                "selected": True,
+                                                "levels": None,
+                                            }
+                                        ],
+                                    }
+                                ],
+                            },
                         },
                     },
                     {
@@ -928,13 +948,20 @@ class TestGraphToCodeWithBuilders:
                         },
                     },
                 ],
-                "edges": [{"id": "e1", "source": "api", "target": "t"}],
+                "edges": [
+                    {
+                        "id": "e1",
+                        "source": "api",
+                        "target": "t",
+                        "sourceHandle": "quotes",
+                    }
+                ],
             }
         )
         code = graph_to_code(graph)
         assert "def API()" in code
-        assert "def Process(API: pl.LazyFrame)" in code
-        assert 'pipeline.connect("API", "Process")' in code
+        assert "def Process(quotes: pl.LazyFrame)" in code
+        assert 'pipeline.connect("API", "Process", source_port="quotes")' in code
         compile(code, "<test>", "exec")
 
     def test_pipeline_with_constant_compiles(self) -> None:
@@ -1299,12 +1326,8 @@ class TestCodegenExecValidation:
         assert set(collected.columns) == {"premium", "Area"}
         assert collected.to_dicts() == [{"premium": 1.0, "Area": "A"}]
 
-    def test_multi_frame_output_dedupes_duplicate_params(self) -> None:
-        """A multi-frame OUTPUT (one apiInput feeding several edges) must codegen
-        VALID Python. Duplicate parameter names are a compile-time SyntaxError —
-        ast.parse tolerates them (so the canvas works) but the file can't be
-        imported/deployed — so the params must be de-duplicated and the result
-        must compile()."""
+    def test_multi_frame_output_uses_supplied_frame_params(self) -> None:
+        """OUTPUT receives the distinct frame names already derived per edge."""
         node = _make_codegen_node(
             "output",
             {
@@ -1320,15 +1343,13 @@ class TestCodegenExecValidation:
             },
             label="Quote_Response",
         )
-        # Four edges, all from the same multi-frame source node `quotes`.
-        code = _node_to_code(node, source_names=["quotes", "quotes", "quotes", "quotes"])
-        # Distinct, valid params — not four bare `quotes`.
-        assert "quotes: pl.LazyFrame, quotes_2: pl.LazyFrame" in code
-        assert "quotes_3: pl.LazyFrame, quotes_4: pl.LazyFrame" in code
-        # The body forwards ALL frames (deduped names) to the shared assembler.
+        frame_names = ["quotes", "drivers", "licences", "vehicles"]
+        code = _node_to_code(node, source_names=frame_names)
+        assert "quotes: pl.LazyFrame, drivers: pl.LazyFrame" in code
+        assert "licences: pl.LazyFrame, vehicles: pl.LazyFrame" in code
+        # The body forwards every supplied frame name to the shared assembler.
         assert "assemble_output_from_config(" in code
-        assert "source_names=['quotes', 'quotes_2', 'quotes_3', 'quotes_4']" in code
-        # compile() (unlike ast.parse) rejects duplicate arg names — must pass.
+        assert "source_names=['quotes', 'drivers', 'licences', 'vehicles']" in code
         _compile_node_code(code)
 
     def test_banding_exec_applies_sidecar_config(self, tmp_path: Path) -> None:

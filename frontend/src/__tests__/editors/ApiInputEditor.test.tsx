@@ -605,6 +605,7 @@ function StatefulHarness({
             ? { ...prev, [keyOrUpdates]: value }
             : { ...prev, ...keyOrUpdates },
         )
+        return { ok: true as const }
       }}
       accentColor="#10b981"
     />
@@ -946,10 +947,9 @@ describe("ApiInputEditor — W1.4 label validation (blank / duplicate / sanitise
     expect(error.textContent).toMatch(/drivers/)
   })
 
-  it("a sanitised-form collision (backend B2) is rejected before commit", () => {
-    // "drivers.x" sanitises to "drivers_x"; if another table is labelled
-    // "drivers_x" the backend rejects the save (both would write the
-    // same parquet). Surface that here, not as a 422 later.
+  it("rejects a former sanitised-collision witness under the ASCII identifier rule", () => {
+    // Post-B4, "drivers.x" is rejected before the defensive filesystem-stem
+    // collision check: a frame label must already be an ASCII identifier.
     const config = {
       tables: [
         { path: "$[:]", label: "policies", emit: true, columns: [] },
@@ -965,7 +965,9 @@ describe("ApiInputEditor — W1.4 label validation (blank / duplicate / sanitise
     fireEvent.blur(input)
 
     expect(onUpdateSpy).not.toHaveBeenCalled()
-    expect(screen.getByTestId("api-input-table-0-label-error").textContent).toMatch(/drivers_x/)
+    expect(screen.getByTestId("api-input-table-0-label-error")).toHaveTextContent(
+      /ASCII identifier/,
+    )
   })
 
   it("fixing an invalid draft to a valid label clears the error and commits once", () => {
@@ -986,6 +988,40 @@ describe("ApiInputEditor — W1.4 label validation (blank / duplicate / sanitise
     expect(
       (onUpdateSpy.mock.calls[0][0] as { tables: { label: string }[] }).tables[0].label,
     ).toBe("quotes")
+    expect(screen.queryByTestId("api-input-table-0-label-error")).toBeNull()
+  })
+
+  it("surfaces a rename preflight rejection until a later commit succeeds", () => {
+    const collisionError =
+      'Target "Pricing Node" already has an input named "quotes".'
+    const onUpdate = vi.fn()
+      .mockReturnValueOnce({ ok: false, error: collisionError })
+      .mockReturnValueOnce({ ok: true })
+    render(
+      <ApiInputEditor
+        config={TWO_EMIT_TABLES}
+        onUpdate={onUpdate}
+        accentColor="#10b981"
+      />,
+    )
+
+    const input = screen.getByTestId("api-input-table-0-label") as HTMLInputElement
+    fireEvent.change(input, { target: { value: "quotes" } })
+    fireEvent.blur(input)
+
+    expect(onUpdate).toHaveBeenCalledTimes(1)
+    const rejected = screen.getByTestId("api-input-table-0-label-error")
+    expect(rejected).toHaveTextContent("Pricing Node")
+    expect(rejected).toHaveTextContent("quotes")
+    expect(input).toHaveAttribute("aria-invalid", "true")
+
+    fireEvent.change(input, { target: { value: "claims" } })
+    expect(screen.getByTestId("api-input-table-0-label-error")).toHaveTextContent(
+      collisionError,
+    )
+    fireEvent.blur(input)
+
+    expect(onUpdate).toHaveBeenCalledTimes(2)
     expect(screen.queryByTestId("api-input-table-0-label-error")).toBeNull()
   })
 

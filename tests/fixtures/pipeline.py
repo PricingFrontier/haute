@@ -74,7 +74,7 @@ def results_write(calculate_premium: pl.LazyFrame) -> pl.LazyFrame:
     return calculate_premium
 
 
-pipeline.connect("quotes", "policies")
+pipeline.connect("quotes", "policies", source_port="quotes")
 pipeline.connect("batch_quotes", "policies")
 pipeline.connect("policies", "area_lookup")
 pipeline.connect("area_lookup", "calculate_premium")

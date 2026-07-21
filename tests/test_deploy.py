@@ -184,10 +184,10 @@ class TestPruner:
                             "nodeType": "liveSwitch",
                             "config": {
                                 "input_scenario_map": {
-                                    "live_src": "live",
+                                    "quotes": "live",
                                     "batch_src": "test_batch",
                                 },
-                                "inputs": ["live_src", "batch_src"],
+                                "inputs": ["quotes", "batch_src"],
                             },
                         },
                     },
@@ -202,7 +202,12 @@ class TestPruner:
                     },
                 ],
                 "edges": [
-                    {"id": "e1", "source": "live_src", "target": "switch"},
+                    {
+                        "id": "e1",
+                        "source": "live_src",
+                        "target": "switch",
+                        "sourceHandle": "quotes",
+                    },
                     {"id": "e2", "source": "batch_src", "target": "switch"},
                     {"id": "e3", "source": "switch", "target": "score"},
                     {"id": "e4", "source": "score", "target": "out"},
@@ -216,6 +221,143 @@ class TestPruner:
         assert "score" in kept_set
         assert "out" in kept_set
         assert "batch_src" in set(removed)
+
+    def test_prune_routes_two_frames_from_one_api_input_independently(self) -> None:
+        """One source node can contribute both the live and batch switch branches."""
+        from haute.deploy._pruner import prune_for_deploy
+
+        graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "request",
+                        "data": {
+                            "label": "Quote Request",
+                            "nodeType": "apiInput",
+                            "config": {"path": "quotes.json"},
+                        },
+                    },
+                    {
+                        "id": "switch",
+                        "data": {
+                            "label": "Route Input",
+                            "nodeType": "liveSwitch",
+                            "config": {
+                                "input_scenario_map": {
+                                    "quotes": "live",
+                                    "drivers": "batch",
+                                },
+                                "inputs": ["quotes", "drivers"],
+                            },
+                        },
+                    },
+                    {
+                        "id": "out",
+                        "data": {
+                            "label": "Response",
+                            "nodeType": "output",
+                            "config": make_output_config([]),
+                        },
+                    },
+                ],
+                "edges": [
+                    {
+                        "id": "request__quotes__switch",
+                        "source": "request",
+                        "target": "switch",
+                        "sourceHandle": "quotes",
+                    },
+                    {
+                        "id": "request__drivers__switch",
+                        "source": "request",
+                        "target": "switch",
+                        "sourceHandle": "drivers",
+                    },
+                    {"id": "switch__out", "source": "switch", "target": "out"},
+                ],
+            }
+        )
+
+        pruned, kept, removed = prune_for_deploy(graph, "out")
+
+        assert [edge.id for edge in pruned.edges] == [
+            "request__quotes__switch",
+            "switch__out",
+        ]
+        assert kept == ["out", "request", "switch"]
+        assert removed == []
+
+    @pytest.mark.parametrize(
+        ("fallback_inputs", "unmatched_name"),
+        [
+            pytest.param(None, "<missing>", id="absent-fallback"),
+            pytest.param(["not_connected"], "not_connected", id="unmatched-fallback"),
+        ],
+    )
+    def test_prune_live_switch_without_live_mapping_rejects_invalid_fallback(
+        self,
+        fallback_inputs: list[str] | None,
+        unmatched_name: str,
+    ) -> None:
+        """A missing live branch cannot silently erase every switch input edge."""
+        from haute.deploy._pruner import prune_for_deploy
+
+        switch_config: dict[str, object] = {
+            "input_scenario_map": {"connected_source": "batch"},
+        }
+        if fallback_inputs is not None:
+            switch_config["inputs"] = fallback_inputs
+
+        graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "connected_source",
+                        "data": {
+                            "label": "connected_source",
+                            "nodeType": "dataSource",
+                            "config": {},
+                        },
+                    },
+                    {
+                        "id": "route_switch",
+                        "data": {
+                            "label": "Route Switch",
+                            "nodeType": "liveSwitch",
+                            "config": switch_config,
+                        },
+                    },
+                    {
+                        "id": "out",
+                        "data": {
+                            "label": "out",
+                            "nodeType": "output",
+                            "config": make_output_config([]),
+                        },
+                    },
+                ],
+                "edges": [
+                    {
+                        "id": "connected_source__route_switch",
+                        "source": "connected_source",
+                        "target": "route_switch",
+                    },
+                    {
+                        "id": "route_switch__out",
+                        "source": "route_switch",
+                        "target": "out",
+                    },
+                ],
+            }
+        )
+
+        with pytest.raises(ValueError) as exc_info:
+            prune_for_deploy(graph, "out")
+
+        detail = str(exc_info.value)
+        assert "route_switch" in detail
+        assert "inputs[0]" in detail
+        assert unmatched_name in detail
 
     def test_prune_missing_output_raises(self, full_graph: dict) -> None:
         from haute.deploy._pruner import prune_for_deploy

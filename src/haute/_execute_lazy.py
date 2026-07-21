@@ -25,7 +25,12 @@ from haute._execution_context import (
     ExecutionProfile,
 )
 from haute._graph_shape import validate_pipeline_graph_shape_contracts
-from haute._graph_utils import resolve_orig_source_names, upstream_node_ids
+from haute._graph_utils import (
+    duplicate_input_names,
+    edge_input_name,
+    resolve_orig_source_names,
+    upstream_node_ids,
+)
 from haute._logging import get_logger
 from haute._polars_utils import _malloc_trim, bounded_sink, streaming_collect
 from haute._types import (
@@ -35,7 +40,7 @@ from haute._types import (
     PipelineGraph,
     _Frame,
 )
-from haute.errors import ContractMismatchError, SchemaMismatchError
+from haute.errors import ConfigError, ContractMismatchError, SchemaMismatchError
 
 logger = get_logger(component="execute")
 
@@ -899,6 +904,9 @@ def _execute_lazy(
     incoming_edges_by_target: dict[str, list[GraphEdge]] = {}
     for edge in relevant_edges:
         incoming_edges_by_target.setdefault(edge.target, []).append(edge)
+    all_incoming_edges_by_target: dict[str, list[GraphEdge]] = {}
+    for edge in graph.edges:
+        all_incoming_edges_by_target.setdefault(edge.target, []).append(edge)
 
     # Build executable functions — delegates to _build_funcs with
     # row_limit=None (lazy path never caps source output).
@@ -925,6 +933,8 @@ def _execute_lazy(
             all_parents,
             build_node_fn,
             incoming_edges_by_target=incoming_edges_by_target,
+            all_incoming_edges_by_target=all_incoming_edges_by_target,
+            all_node_map=graph.node_map,
             row_limit=None,
             preamble_ns=preamble_ns,
             source=source,
@@ -1403,6 +1413,8 @@ def _build_funcs(
     build_node_fn: Callable,
     *,
     incoming_edges_by_target: Mapping[str, list[GraphEdge]] | None = None,
+    all_incoming_edges_by_target: Mapping[str, list[GraphEdge]] | None = None,
+    all_node_map: Mapping[str, GraphNode] | None = None,
     row_limit: int | None = None,
     preamble_ns: dict | None = None,
     source: str = "live",
@@ -1425,35 +1437,56 @@ def _build_funcs(
     """
     funcs: dict[str, tuple[Callable, bool]] = {}
     node_source_overrides = source_by_node or {}
+    original_node_map = dict(all_node_map or node_map)
+    original_edges_by_target = all_incoming_edges_by_target or incoming_edges_by_target
     for nid in order:
         incoming_edges = (
             incoming_edges_by_target.get(nid, []) if incoming_edges_by_target is not None else []
         )
         if incoming_edges:
-            src_ids = [edge.source for edge in incoming_edges if edge.source in id_to_name]
-            target_handles = [
-                edge.targetHandle for edge in incoming_edges if edge.source in id_to_name
-            ]
+            connected_edges = [edge for edge in incoming_edges if edge.source in id_to_name]
+            src_ids = [edge.source for edge in connected_edges]
+            target_handles = [edge.targetHandle for edge in connected_edges]
             # Per-edge source *port* name (sourceHandle or source-node-name),
             # aligned with the per-edge frames the executor passes positionally.
             # OUTPUT keys its frames by this to disambiguate a multi-frame source
             # (one apiInput feeding several frames → one node name, distinct
             # sourceHandles). MULTI_FRAME_PLAN §4b.
-            src_ports = [
-                edge.sourceHandle or id_to_name[edge.source]
-                for edge in incoming_edges
-                if edge.source in id_to_name
-            ]
+            src_ports = [edge.sourceHandle or id_to_name[edge.source] for edge in connected_edges]
+            src_names: list[str] = []
+            for edge in connected_edges:
+                source_node = node_map[edge.source]
+                try:
+                    src_names.append(edge_input_name(edge, source_node))
+                except ValueError:
+                    # Leave malformed null-handle apiInput edges buildable so
+                    # eager preview can capture the routing error on the
+                    # consuming node. Fail-fast execution raises the same
+                    # ValueError from _pick_source_frame before node code runs.
+                    if not (
+                        source_node.data.nodeType == NodeType.API_INPUT
+                        and edge.sourceHandle is None
+                    ):
+                        raise
+            duplicates = duplicate_input_names(src_names)
+            if duplicates:
+                raise ConfigError(
+                    f"Node {nid!r} has duplicate input name(s) derived from its "
+                    f"incoming edges: {duplicates!r}.",
+                    node_id=nid,
+                    duplicate_input_names=duplicates,
+                )
         else:
             src_ids = [pid for pid in parents_of.get(nid, []) if pid in id_to_name]
             target_handles = None
             src_ports = None
-        src_names = [id_to_name[pid] for pid in src_ids]
+            src_names = [id_to_name[pid] for pid in src_ids]
         orig_src_names = resolve_orig_source_names(
             node_map[nid],
-            node_map,
+            original_node_map,
             all_parents,
             id_to_name,
+            original_edges_by_target,
         )
         node_source = node_source_overrides.get(nid, source)
         _, fn, is_source = build_node_fn(
@@ -1617,6 +1650,9 @@ def _execute_eager_core(
     incoming_edges_by_target: dict[str, list[GraphEdge]] = {}
     for edge in relevant_edges:
         incoming_edges_by_target.setdefault(edge.target, []).append(edge)
+    all_incoming_edges_by_target: dict[str, list[GraphEdge]] = {}
+    for edge in graph.edges:
+        all_incoming_edges_by_target.setdefault(edge.target, []).append(edge)
 
     # Fan-out count per node — how many direct children consume this
     # node's output.  Used to add a Polars ``.cache()`` hint when the
@@ -1664,6 +1700,8 @@ def _execute_eager_core(
         all_parents,
         build_node_fn,
         incoming_edges_by_target=incoming_edges_by_target,
+        all_incoming_edges_by_target=all_incoming_edges_by_target,
+        all_node_map=graph.node_map,
         row_limit=row_limit,
         preamble_ns=preamble_ns,
         source=source,
@@ -1929,16 +1967,26 @@ def _execute_eager_core(
                     # _pick_source_frame + _to_lazy_if_needed will lazify when
                     # consumers need a LazyFrame.
                     runtime_outputs[nid] = materialised
-                    # Populate column_cache + frame_schema_cache per-frame from
-                    # the COLLECTED frames so consumers' contract checks find
-                    # the right columns under (nid, port_label).
+                    # Populate the per-port contract cache for every bundle,
+                    # but expose frame_schema_cache only for genuinely
+                    # multi-frame producers.  A one-frame API source now has
+                    # the uniform dict runtime shape, while its ordinary
+                    # preview schema remains in ``columns``.
                     for port_label, port_df in materialised.items():
                         column_cache[(nid, port_label)] = frozenset(port_df.columns)
-                        port_schema = port_df.schema
-                        frame_schema_cache[(nid, port_label)] = [
-                            (name, str(port_schema[name])) for name in port_df.columns
-                        ]
+                        if len(materialised) > 1:
+                            port_schema = port_df.schema
+                            frame_schema_cache[(nid, port_label)] = [
+                                (name, str(port_schema[name])) for name in port_df.columns
+                            ]
                     eager_outputs[nid] = materialised
+                    if len(materialised) == 1:
+                        only_frame = next(iter(materialised.values()))
+                        only_schema = [
+                            (name, str(only_frame.schema[name])) for name in only_frame.columns
+                        ]
+                        available_columns[nid] = only_schema
+                        output_columns[nid] = only_schema
                 else:
                     # ANCESTOR: keep the per-frame LazyFrames in
                     # runtime_outputs for routing only; do NOT collect and do
@@ -1951,14 +1999,24 @@ def _execute_eager_core(
                         lazy_ports[port_label] = port_lf
                         port_schema = port_lf.collect_schema()
                         column_cache[(nid, port_label)] = frozenset(port_schema.names())
-                        frame_schema_cache[(nid, port_label)] = [
-                            (name, str(port_schema[name])) for name in port_schema.names()
-                        ]
+                        if len(capped_ports) > 1:
+                            frame_schema_cache[(nid, port_label)] = [
+                                (name, str(port_schema[name])) for name in port_schema.names()
+                            ]
                     runtime_outputs[nid] = lazy_ports
+                    if len(lazy_ports) == 1:
+                        only_lazy_frame = next(iter(lazy_ports.values()))
+                        only_frame_schema = only_lazy_frame.collect_schema()
+                        only_schema = [
+                            (name, str(only_frame_schema[name]))
+                            for name in only_frame_schema.names()
+                        ]
+                        available_columns[nid] = only_schema
+                        output_columns[nid] = only_schema
                 t1 = time.perf_counter()
                 timings[nid] = round(t1 - t0, 6)
-                available_columns[nid] = []
-                output_columns[nid] = []
+                available_columns.setdefault(nid, [])
+                output_columns.setdefault(nid, [])
                 if execution_context is not None:
                     execution_context.checkpoint(label="after_node", node_id=nid)
                 continue

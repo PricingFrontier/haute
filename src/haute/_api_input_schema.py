@@ -65,10 +65,12 @@ What v2 deliberately doesn't have (per the plan):
 
 from __future__ import annotations
 
+import keyword
 import re
 from collections.abc import Sequence
 from typing import Any, Literal, TypedDict
 
+from haute._graph_utils import _sanitize_identifier_characters
 from haute._jsonpath import _Seg, make_output_path, parse_data_path
 from haute.errors import HauteError
 
@@ -101,6 +103,24 @@ def sanitise_label_for_filesystem(label: str) -> str:
     if not label:
         return "_unnamed"
     return _FILESYSTEM_SAFE_RE.sub("_", label)
+
+
+def derive_identifier_label(raw: str) -> str:
+    """Mint an ASCII Python identifier from an inferred source label.
+
+    The character mapping is shared with ``_sanitize_func_name``. Inference
+    uses frame-label repairs instead of function-name repairs: empty values
+    become ``table``, digit-leading values receive a leading underscore, and
+    hard keywords receive a trailing underscore. Soft keywords remain valid.
+    """
+    name = _sanitize_identifier_characters(raw)
+    if not name:
+        return "table"
+    if name[0].isdigit():
+        name = f"_{name}"
+    if keyword.iskeyword(name):
+        name = f"{name}_"
+    return name
 
 
 class ApiInputSchemaError(HauteError):
@@ -437,6 +457,12 @@ def validate_v2_schema(config: dict[str, Any]) -> None:
             raise ApiInputSchemaError(
                 f"v2 tables[{ti}].label is missing or not a non-empty string "
                 "(must be unique within the apiInput)",
+            )
+        if not label.isascii() or not label.isidentifier() or keyword.iskeyword(label):
+            raise ApiInputSchemaError(
+                f"v2 table label {label!r} must be an ASCII Python identifier "
+                "and must not be a hard Python keyword",
+                label=label,
             )
         if label in seen_labels:
             raise ApiInputSchemaError(

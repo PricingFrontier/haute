@@ -742,9 +742,9 @@ def build_linear_execution_chain_functions(
     if not chain_ids:
         return {}
 
-    from haute._execute_lazy import _build_funcs, _prepare_graph
+    from haute._execute_lazy import _build_funcs, _prepare_graph_with_edges
 
-    node_map, _order, _parents_of, id_to_name = _prepare_graph(
+    node_map, _order, _parents_of, id_to_name, relevant_edges = _prepare_graph_with_edges(
         graph,
         target_node_id,
         source=routing_source,
@@ -762,6 +762,13 @@ def build_linear_execution_chain_functions(
         chain_parents[chain_id] = [parent_id]
         parent_id = chain_id
 
+    incoming_edges_by_target: dict[str, list[GraphEdge]] = {}
+    for edge in relevant_edges:
+        incoming_edges_by_target.setdefault(edge.target, []).append(edge)
+    all_incoming_edges_by_target: dict[str, list[GraphEdge]] = {}
+    for edge in graph.edges:
+        all_incoming_edges_by_target.setdefault(edge.target, []).append(edge)
+
     reuse_loaded_model_by_node = (
         {
             chain_id: True
@@ -778,6 +785,9 @@ def build_linear_execution_chain_functions(
         id_to_name,
         graph.parents_of,
         build_node_fn,
+        incoming_edges_by_target=incoming_edges_by_target,
+        all_incoming_edges_by_target=all_incoming_edges_by_target,
+        all_node_map=graph.node_map,
         preamble_ns=preamble_ns,
         source=build_source,
         required_output_columns_by_node=required_output_columns_by_node,

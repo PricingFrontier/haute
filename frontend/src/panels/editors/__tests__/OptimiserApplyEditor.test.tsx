@@ -83,7 +83,7 @@ import OptimiserApplyEditor from "../OptimiserApplyEditor"
 const defaultProps = () => ({
   config: {} as Record<string, unknown>,
   onUpdate: vi.fn(),
-  inputSources: [] as { sourceNodeId: string; varName: string; sourceLabel: string; edgeId: string }[],
+  inputSources: [] as { sourceNodeId: string; name: string; sourceLabel: string; edgeId: string }[],
   accentColor: "var(--warning-strong)",
 })
 
@@ -428,7 +428,7 @@ describe("OptimiserApplyEditor", () => {
   it("renders InputSourcesBar with input sources", () => {
     const props = defaultProps()
     props.inputSources = [
-      { sourceNodeId: "scored-data", varName: "df", sourceLabel: "scored_data", edgeId: "e1" },
+      { sourceNodeId: "scored-data", name: "df", sourceLabel: "scored_data", edgeId: "e1" },
     ]
     render(<OptimiserApplyEditor {...props} />)
     const bar = screen.getByTestId("input-sources")
@@ -453,13 +453,13 @@ describe("OptimiserApplyEditor", () => {
     props.inputSources = [
       {
         sourceNodeId: "optimiser-input-node",
-        varName: "optimiser_input",
+        name: "optimiser_input",
         sourceLabel: "optimiser_input",
         edgeId: "e1",
       },
       {
         sourceNodeId: "age-banding-node",
-        varName: "age_veh_banding",
+        name: "age_veh_banding",
         sourceLabel: "Age banding",
         edgeId: "e2",
       },
@@ -487,13 +487,13 @@ describe("OptimiserApplyEditor", () => {
     props.inputSources = [
       {
         sourceNodeId: "optimiser-input-node",
-        varName: "optimiser_input",
+        name: "optimiser_input",
         sourceLabel: "optimiser_input",
         edgeId: "e1",
       },
       {
         sourceNodeId: "age-banding-node",
-        varName: "age_veh_banding",
+        name: "age_veh_banding",
         sourceLabel: "Age banding",
         edgeId: "e2",
       },
@@ -522,13 +522,13 @@ describe("OptimiserApplyEditor", () => {
     props.inputSources = [
       {
         sourceNodeId: "optimiser-input-node",
-        varName: "optimiser_input",
+        name: "optimiser_input",
         sourceLabel: "optimiser_input",
         edgeId: "e1",
       },
       {
         sourceNodeId: "age-banding-node",
-        varName: "age_veh_banding",
+        name: "age_veh_banding",
         sourceLabel: "Age banding",
         edgeId: "e2",
       },
@@ -569,7 +569,7 @@ describe("OptimiserApplyEditor", () => {
     props.inputSources = [
       {
         sourceNodeId: "optimiser-input-node",
-        varName: "optimiser_input",
+        name: "optimiser_input",
         sourceLabel: "optimiser_input",
         edgeId: "e1",
       },
@@ -599,7 +599,7 @@ describe("OptimiserApplyEditor", () => {
     props.inputSources = [
       {
         sourceNodeId: "optimiser-input-node",
-        varName: "optimiser_input",
+        name: "optimiser_input",
         sourceLabel: "optimiser_input",
         edgeId: "e1",
       },
@@ -642,13 +642,13 @@ describe("OptimiserApplyEditor", () => {
     props.inputSources = [
       {
         sourceNodeId: "optimiser-input-node",
-        varName: "optimiser_input",
+        name: "optimiser_input",
         sourceLabel: "optimiser_input",
         edgeId: "e1",
       },
       {
         sourceNodeId: "age-banding-node",
-        varName: "age_veh_banding",
+        name: "age_veh_banding",
         sourceLabel: "Age banding",
         edgeId: "e2",
       },
@@ -675,13 +675,13 @@ describe("OptimiserApplyEditor", () => {
     props.inputSources = [
       {
         sourceNodeId: "optimiser-input-node",
-        varName: "optimiser_input",
+        name: "optimiser_input",
         sourceLabel: "optimiser_input",
         edgeId: "e1",
       },
       {
         sourceNodeId: "age-banding-node",
-        varName: "age_veh_banding",
+        name: "age_veh_banding",
         sourceLabel: "Age banding",
         edgeId: "e2",
       },
@@ -707,13 +707,13 @@ describe("OptimiserApplyEditor", () => {
     props.inputSources = [
       {
         sourceNodeId: "optimiser-input-node",
-        varName: "optimiser_input",
+        name: "optimiser_input",
         sourceLabel: "optimiser_input",
         edgeId: "e1",
       },
       {
         sourceNodeId: "age-banding-node",
-        varName: "age_veh_banding",
+        name: "age_veh_banding",
         sourceLabel: "Age banding",
         edgeId: "e2",
       },
@@ -768,13 +768,13 @@ describe("OptimiserApplyEditor", () => {
     props.inputSources = [
       {
         sourceNodeId: "optimiser-input-node",
-        varName: "optimiser_input",
+        name: "optimiser_input",
         sourceLabel: "optimiser_input",
         edgeId: "e1",
       },
       {
         sourceNodeId: "age-banding-node",
-        varName: "age_veh_banding",
+        name: "age_veh_banding",
         sourceLabel: "Age banding",
         edgeId: "e2",
       },
@@ -806,13 +806,13 @@ describe("OptimiserApplyEditor", () => {
     props.inputSources = [
       {
         sourceNodeId: "optimiser-input-node",
-        varName: "optimiser_input",
+        name: "optimiser_input",
         sourceLabel: "optimiser_input",
         edgeId: "e1",
       },
       {
         sourceNodeId: "age-banding-node",
-        varName: "age_veh_banding",
+        name: "age_veh_banding",
         sourceLabel: "Age banding",
         edgeId: "e2",
       },
@@ -844,13 +844,13 @@ describe("OptimiserApplyEditor", () => {
     props.inputSources = [
       {
         sourceNodeId: "optimiser-input-node",
-        varName: "optimiser_input",
+        name: "optimiser_input",
         sourceLabel: "optimiser_input",
         edgeId: "e1",
       },
       {
         sourceNodeId: "age-banding-node",
-        varName: "age_veh_banding",
+        name: "age_veh_banding",
         sourceLabel: "Age banding",
         edgeId: "e2",
       },

@@ -5,12 +5,12 @@
 | File | Responsibility |
 | --- | --- |
 | `frontend/src/App.tsx` | `FlowEditor` — the canvas orchestrator: wires `<ReactFlow>` event props to interaction hooks, owns local selection/context-menu/dialog state, picks the active preview pane, handles `onUpdateNode` (including api-input edge reconciliation), and gates Save/Save-&-Commit on git working-branch status. Exports `App`, which mounts `FlowEditor` inside `ReactFlowProvider`. |
-| `frontend/src/nodes/PipelineNode.tsx` | Renders every non-submodel node type across three zoom LODs and the edge-join marker variant; computes source/target `Handle` sets, including multi-frame api-input handles and edge-join geometry-dependent handle placement. |
+| `frontend/src/nodes/PipelineNode.tsx` | Renders every non-submodel node type across three zoom LODs and the edge-join marker variant; computes source/target `Handle` sets, including multi-frame api-input handles (row-mounted on the full-detail frame-row body, evenly spaced at medium/compact) and edge-join geometry-dependent handle placement; owns the api-input frame-row body with instance-name suppression and the zero-frame "No emitted frames" state. |
 | `frontend/src/nodes/SubmodelNode.tsx` | Renders a submodel boundary card: label, child count, file path, and hidden per-port target/source handles mirroring `config.inputPorts`/`config.outputPorts`. |
 | `frontend/src/nodes/SubmodelPortNode.tsx` | Renders the input/output port marker shown when a submodel is drilled into; input ports get a source handle, output ports get a target handle. |
 | `frontend/src/panels/useGraph.ts` | Defines `GraphContext` (`React.Context<GraphContextValue \| undefined>`) and the `useGraph()` consumer hook, which throws when called outside a provider. |
 | `frontend/src/panels/GraphContext.tsx` | `GraphProvider` component; memoises the context value on `{allNodes, edges, submodels, preamble}` identity. |
-| `frontend/src/stores/useGraphStore.ts` | Zustand store owning `nodes`/`edges`/`preamble`, undo/redo history (graph snapshots interleaved with VC entries), and three derived fingerprints (`structuralFingerprint`, `panelContextFingerprint`, `persistedFingerprint`) plus the `dirty` boolean derived from them. |
+| `frontend/src/stores/useGraphStore.ts` | Zustand store owning `nodes`/`edges`/`preamble`/`submodels`, undo/redo history (four-field graph snapshots interleaved with VC entries), and three derived fingerprints (`structuralFingerprint`, `panelContextFingerprint`, `persistedFingerprint`) plus the `dirty` boolean derived from them. |
 | `frontend/src/hooks/useNodeHandlers.ts` | Node CRUD handlers: `handleDeleteNode` (atomic node+edges delete, deferred cache cleanup), `handleDuplicateNode`, `handleCreateInstance`, `handleRenameNode` (opens the rename dialog), `handleAutoLayout` (ELK, in-flight guarded). |
 | `frontend/src/hooks/useEdgeHandlers.ts` | Connection/gesture handlers: `commitConnection`/`onConnectEnd` (interprets React Flow handle-drag endings into a normal edge or an edge-join insertion), `onSelectionChange`/`onNodeClick` (panel + debounced preview), `handleDeleteEdge`, `onNodeContextMenu`, `onDragOver`/`onDrop` (palette node creation). |
 | `frontend/src/hooks/usePipelineAPI.ts` | Pipeline load-on-mount; debounced, cache-first, concurrency-limited-cascade preview fetching (`fetchPreview`/`fetchPreviewImmediate`/`refreshPreview`/`previewNodeFrame`); an active-source-change effect (`invalidateStaleColumnStashes`) that strips any node's column stash tagged with a different (or no) `_columnsSource`; and `handleSave` (config-ref/edge-join pre-save validation, snapshot-scoped save-concurrency guard, `markSaved`). |
@@ -25,7 +25,7 @@
 | `frontend/src/utils/activePreview.ts` | `previewForActiveNode` — filters preview data to the currently active node. |
 | `frontend/src/utils/validateConfigRefs.ts` | `validateConfigRefs`/`formatConfigRefWarnings` — flags `data_input`/`banding_source`/`instanceOf` config fields pointing at non-existent node ids (graph-level or submodel-internal). |
 | `frontend/src/utils/layout.ts` | `getLayoutedElements` — lazily-imported ELK layered layout plus `clusterSnap`/`alignPositions` coordinate snapping. |
-| `frontend/src/utils/connectionValidation.ts` | `isPipelineConnectionValid` — the graph-level `isValidConnection` React Flow validator. |
+| `frontend/src/utils/connectionValidation.ts` | `isPipelineConnectionValid` — the graph-level `isValidConnection` React Flow validator, including the input-name uniqueness rule (a candidate connection whose `edgeInputName` duplicates an existing input name on the target node is invalid, surfaced as a named toast at commit time) and the null-API-handle rejection (an apiInput connection with no source handle is invalid in every gesture direction, the validator-level twin of the zero-frame handle's `isConnectable` false under `ConnectionMode.Loose`). |
 | `frontend/src/utils/flowElements.ts` | `appNode`/`appEdge`/`nodeLabel`/`edgeId`/`deselectNodes`/`selectOnlyNode` — node/edge factories and id/selection helpers. |
 | `frontend/src/utils/flowHandles.ts` | `DEFAULT_TARGET_HANDLE`/`normalizeDefaultTargetHandle` — collapses React Flow's synthetic default-target-handle id to `null`. |
 | `frontend/src/utils/nodeTypes.ts` | `NODE_TYPES`/`NODE_TYPE_META` and derived lookups (`SOURCE_ONLY_TYPES`, `SINK_ONLY_TYPES`, `SINGLETON_TYPES`, `PALETTE_TYPES`, `nodeTypeIcons`/`Colors`/`Labels`, `PILL_TYPES`) — the single source of truth for node-type metadata. |
@@ -59,7 +59,7 @@ is the authoritative module map for their responsibilities:
 | `frontend/src/hooks/useGraphCanvasState.ts` | React Flow adapter over `useGraphStore`: converts `NodeChange[]`/`EdgeChange[]` into raw graph updates, takes one snapshot at a drag's first structural position change, and avoids history churn for per-frame movement and selection-only changes. |
 | `frontend/src/hooks/usePanelGraphContext.ts` | Produces the typed, render-stable `PanelGraphContextSnapshot` (`allNodes`, `edges`, `nodeById`, `getNode`) only when the graph store's panel-context version changes, isolating editor consumers from React Flow UI-only updates. |
 | `frontend/src/hooks/useKeyboardShortcuts.ts` | App-level canvas keyboard bindings for save, undo/redo, copy/paste, delete, search, and panel dismissal; honours editable controls so keystrokes do not leak from a text field into graph mutation. |
-| `frontend/src/utils/apiInputPorts.ts` | Mirrors backend api-input frame identity: derives only runtime-emittable raw-label handles, validates blank/duplicate/filesystem-colliding labels, migrates edges on a conservative in-place table rename, then prunes only genuinely orphaned handles while preserving input array identity on no-op. |
+| `frontend/src/utils/apiInputPorts.ts` | Mirrors backend api-input frame identity: `apiInputFrameLabels` is the single ordered eligible-frame-label list (no minimum count) that drives handles, body rows, and downstream input names alike; `edgeInputName` derives an edge's input/argument name (frame label verbatim for api-input edges, sanitised source label otherwise, submodel `out__` edges resolved to the child's sanitised label) in lockstep with the backend's `edge_input_name`; validates blank/duplicate/non-identifier/keyword labels (`apiInputLabelIssue`, mirroring backend invariant B4 exactly — ASCII identifier `/^[A-Za-z_][A-Za-z0-9_]*$/` plus the Python hard-keyword list — with duplicates compared case-insensitively to match backend B2's casefolded parquet-stem rule); migrates edges on a conservative in-place table rename, then prunes only genuinely orphaned handles while preserving input array identity on no-op. |
 | `frontend/src/utils/edgeJoinRoles.ts` | Defines edge-join base/join handle roles and canonical role resolution, including compatibility handling for legacy/default handle ids. |
 | `frontend/src/utils/edgeJoinGraph.ts` | Pure edge-join insertion/rewrite helpers: split an existing edge or combine source gestures into a correctly configured join node and its role-bound edges. |
 | `frontend/src/utils/edgeJoinValidation.ts` | Save-time edge-join graph validation and readable warnings; rejects incomplete, duplicate, or otherwise inconsistent role/edge representations before the backend receives them. |
@@ -153,19 +153,31 @@ is the authoritative module map for their responsibilities:
    `pushSnapshot()` once, then applies the swap's resulting nodes/edges via
    the *raw* setters — deliberately, so the whole swap is one undo entry
    despite not using `setNodesAndEdges`.
-5. **Config commit (`App.tsx`'s `onUpdateNode`).** Captures `prevNode` from
-   `graphRef.current` *before* mutating (so the diff below compares against
-   the true pre-commit config), calls `setNodes` (history-aware — one
-   snapshot), updates `selectedNode` if it's the edited node, then — only
-   for `NODE_TYPES.API_INPUT` — calls `applyApiInputConfigChange` (owned by
-   `utils/apiInputPorts.ts`) to diff old vs. new frame labels. The
-   resulting rebind/removal is applied via `setEdgesRaw` *on purpose*: the
-   `setNodes` call above already captured the one pre-commit snapshot, so
-   applying the edge consequences raw keeps the entire config commit —
-   rename-and-rebind, or removal-and-prune — to a single undo entry.
+5. **Config commit (`App.tsx`'s `onUpdateNode`) — compute, preflight, then
+   commit.** Captures `prevNode` from `graphRef.current`, then **before any
+   store mutation** computes the complete tentative result: the new config,
+   `applyApiInputConfigChange`'s edge rebind/prune outcome (owned by
+   `utils/apiInputPorts.ts`), and — for a frame rename — the migrated
+   `input_scenario_map` keys and instance `inputMapping` entries on every
+   affected node. The preflight then checks each affected target's
+   post-commit input-name set for duplicates. On a collision the commit
+   returns `{ ok: false, error }` and **nothing mutates** — no snapshot, no
+   config, no edges, no mappings; `NodePanel` passes the result through
+   `OnUpdateConfig` so the ApiInputEditor surfaces `error` inline at the
+   label field (see
+   [frontend-node-editors](../frontend-node-editors/low-level.md)), clearing
+   it on the next successful commit. On success the whole tentative result —
+   the migrated root nodes (config, ISM keys, instance mappings), edges, AND
+   the migrated nested submodel metadata — lands through the single
+   history-aware combined setter (`setNodesAndEdgesAndSubmodels`, one
+   snapshot) plus the `selectedNode` update, as a single undo entry; undo
+   restores root and nested state coherently, never a root-only revert.
 6. **Store internals, history-aware path.** Every history-aware setter calls
-   `pushSnapshotInternal()` (deep-clones the pre-mutation state via
-   `captureGraphSnapshot`/`cloneGraphValue`, evicting the oldest entry once
+   `pushSnapshotInternal()` (deep-clones the pre-mutation state — nodes,
+   edges, preamble, and submodels — via `captureGraphSnapshot`, which
+   delegates to the shared transient-stripping `cloneGraphSnapshot` in
+   `graphSnapshot.ts` so React Flow presentation fields never enter
+   history, evicting the oldest entry once
    `undoStack.length >= MAX_HISTORY`), then always recomputes
    `persistedFingerprint` and `dirty` (via `computeDirty` against
    `lastSavedSnapshot`/`savedPersistedFingerprint`), recomputes
@@ -191,9 +203,11 @@ is the authoritative module map for their responsibilities:
    stack, run its async `undo()`/`redo()` closure, and on rejection restore
    it to its original stack (retry path) before clearing `vcBusy` in
    `.finally`. If it's a `GraphSnapshot`, synchronously swap
-   `nodes`/`edges`/`preamble` to the target snapshot, recompute all three
-   fingerprints and `dirty` from it, and push the *current* (pre-undo) state
-   onto the opposite stack via `captureGraphSnapshot`.
+   `nodes`/`edges`/`preamble`/`submodels` to the target snapshot (a legacy
+   snapshot without the `submodels` field restores an empty metadata map),
+   recompute all three fingerprints and `dirty` from it, and push the
+   *current* (pre-undo) state onto the opposite stack via
+   `captureGraphSnapshot`.
 9. **`markSaved(snapshot?)`.** Captures `lastSavedSnapshot` (defaults to the
    current state) and `savedPersistedFingerprint`, then recomputes `dirty`.
    This is the only place `savedPersistedFingerprint` is updated; it's
@@ -202,20 +216,42 @@ is the authoritative module map for their responsibilities:
 10. **Panel context refresh.** `usePanelGraphContext` rebuilds its snapshot
     only when `panelContextVersion` changes (a `useMemo` keyed on it,
     reading fresh `nodes`/`edges` from `useGraphStore.getState()` at that
-    moment). `App.tsx` passes this snapshot's `allNodes`/`edges`, plus a
-    ref-snapshotted `submodels` and the subscribed `preamble`, into
+    moment). `App.tsx` passes this snapshot's `allNodes`/`edges`, plus the
+    store-subscribed `submodels` and `preamble` values, into
     `<GraphProvider>` wrapping `NodePanel`.
 11. **`PipelineNode` render.** Derives `nodeType`/`accent`/`Icon`/`typeLabel`
     from the shared `NODE_TYPES`/`nodeTypeColors`/`nodeTypeIcons`/
-    `nodeTypeLabels` tables. `emitTableLabels` is computed via
-    `apiInputEmitPortLabels(config)`, memoized on `config` identity, and its
-    join-signature plus the live `edgeJoinJoinHandlePosition` drive a
+    `nodeTypeLabels` tables. One api-input frame list is computed, memoized
+    on `config` identity: `frameLabels` via `apiInputFrameLabels(config)`
+    (eligible frames, no minimum count) — it drives the handles AND the
+    body rows, so they cannot diverge. Its collision-safe serialised
+    signature (`JSON.stringify` — labels are validated identifiers now,
+    but the serialisation stays collision-safe by construction, same
+    rationale as `columnFingerprint`'s length-prefixing), the bucketed
+    `zoomLevel`, and the live `edgeJoinJoinHandlePosition` drive a
     `useUpdateNodeInternals(id)` effect so React Flow re-measures handle
-    positions whenever port topology changes. `zoomLevel` comes from a
-    `useStore` selector on the pane's zoom transform, bucketed into
-    `full`/`medium`/`compact` so a zoom-threshold crossing — not every pixel
-    of zoom — triggers a re-render. Edge-join nodes short-circuit to an
-    entirely separate marker/pill render before the LOD branches run.
+    positions whenever port topology changes or a zoom-threshold crossing
+    relocates the handles between the container and the frame rows.
+    `zoomLevel` comes from a `useStore` selector on the pane's zoom
+    transform, bucketed into `full`/`medium`/`compact` so a zoom-threshold
+    crossing — not every pixel of zoom — triggers a re-render. At full
+    detail an api-input with ≥1 eligible frame renders the frame-row body:
+    one relatively-positioned row per frame carrying a right-aligned
+    truncating mono name (full name as `title` tooltip) and that row's
+    labelled source `Handle` (id = the frame's raw label, a sole frame
+    included), absolutely positioned at the row's vertical midline with
+    its dot centred on the node's right border. The instance name is
+    suppressed in that body; the trace-value pill, when active, renders
+    above the rows. Zero eligible frames keeps the instance name, adds a
+    muted "No emitted frames" line, and renders the legacy default null-id
+    handle vertically centred. At medium/compact zoom no frame rows render
+    and `_SourceHandles` supplies the same handle id set — labelled
+    handles evenly spaced down the right edge, or the zero-frame default
+    handle. Positional `output-connector[<idx>]:<node label>` test
+    ids follow the visual top-to-bottom order in both modes, and the name
+    span keeps its `api-input-body-label-<label>` test id. Edge-join nodes
+    short-circuit to an entirely separate marker/pill render before the
+    LOD branches run.
 12. **Node delete (`useNodeHandlers.handleDeleteNode`).** Calls
     `setNodesAndEdges` once (node filter + edge filter closed over the same
     call, one undo entry), nulls `selectedNode`/`previewData` if they
@@ -249,7 +285,9 @@ is the authoritative module map for their responsibilities:
     with a cold-start retry policy (`INITIAL_PIPELINE_RETRY_POLICY`, 6
     retries at 250ms base delay); the response is validated through
     `parsePipelineResponse` before touching the graph. On success, applies
-    nodes/edges/preamble via the raw setters, seeds `nodeIdCounter` from
+    nodes/edges/preamble/submodels via the raw setters (`setSubmodelsRaw`
+    hydrates the store-owned submodel metadata alongside the legacy
+    `submodelsRef`), seeds `nodeIdCounter` from
     `computeNextNodeId`, and calls `useGraphStore.getState().markSaved()` —
     the just-loaded state IS the on-disk state, so it starts clean. Aborted
     via `AbortController` on unmount.
@@ -351,12 +389,45 @@ is the authoritative module map for their responsibilities:
 
 ## Edge cases and invariants
 
-- **API-input handle ids never synthesize.** Zero or one `emit: true` table
-  → legacy single unlabeled handle at index 0 (backward-compat fallback). A
-  blank-label emit table renders **no handle** (not `port_<idx>`).
+- **API-input handle ids never synthesize.** Zero eligible frames → the
+  legacy single unlabeled handle at index 0; one eligible frame or more →
+  one labelled handle per frame, ids = the raw labels. A blank, duplicate,
+  non-identifier, or keyword label renders **no handle** (not `port_<idx>`).
   Duplicate labels render **one** handle — the first occurrence only, never
   a disambiguated `label__<idx>`. (See `_SourceHandles` in `PipelineNode.tsx`
   and `frontend/src/__tests__/nodes/ApiInputHandles.test.tsx`.)
+- **The api-input handle id set is zoom-invariant.** Full detail mounts the
+  source handles on the body's frame rows; medium/compact space the same
+  handles down the right edge. Only geometry moves across a zoom threshold
+  (node height already changes per LOD today); ids never do, so edges stay
+  bound.
+- **The visible rows and the labelled handles are the same list.** Both
+  read `apiInputFrameLabels`, so a config with two emit tables of which one
+  has an invalid label renders exactly one row and one labelled handle (the
+  valid one); a null-handle edge is orphaned under any config with ≥1
+  eligible frame, exactly as `validSourceHandleKeys` rules. A row can never
+  exist without its handle, nor a labelled handle without its row. The only
+  configs with NO labelled handles are zero-eligible ones (nothing emitted,
+  or every label invalid): the legacy default null-id handle renders and
+  the body shows the zero-frame state — no bindable id is invented for a
+  backend-invalid config.
+- **A sole eligible frame is a labelled frame.** Its row carries a handle
+  whose id is the frame label, its edges persist that label as
+  `sourceHandle`/`source_port`, and its downstream argument is that label —
+  identical to the multi-frame case. Transitions between zero and some
+  eligible frames reconcile edges the same way emit-off/table-delete
+  already do (migrate renames first, then prune with a warning toast).
+- **`validSourceHandleKeys` for an apiInput never contains the empty key.**
+  Null-handle API-input edges are always orphaned by reconciliation
+  regardless of frame count — the zero-frame default handle is rendered
+  non-connectable, so such an edge can only enter via a hand-edited file
+  and is pruned (with the warning toast) on the next config commit; the
+  backend's codegen `ParseError` for a port-less apiInput edge is the
+  authoritative backstop at save.
+- **An emit-true table with no selected column is not a frame**: no row, no
+  handle, no display name — mirroring runtime eligibility
+  (`_json_shred.load_v2_api_source`), so the body can never advertise a
+  frame the executor would not emit.
 - **Edge-join join-handle position is computed live**, not stored: it
   compares the connected join-source node's vertical centre against the
   marker's own centre (`state.nodeLookup`) and flips `Position.Top`/
@@ -527,7 +598,7 @@ is the authoritative module map for their responsibilities:
 
 ## Testing
 
-The pure connection/frame helpers are defended by `frontend/src/utils/__tests__/apiInputPorts.test.ts`, `edgeJoinGraph.test.ts`, and `edgeJoinValidation.test.ts`: they cover raw-label frame eligibility, blank/duplicate/unicode filesystem collisions, rename-before-prune migration, identity-preserving no-ops, edge-join insertion/role normalisation, and invalid saved graph diagnostics. These sit alongside the hook/store suites below because their contracts are exercised again through the editor and save paths.
+The pure connection/frame helpers are defended by `frontend/src/utils/__tests__/apiInputPorts.test.ts`, `edgeJoinGraph.test.ts`, and `edgeJoinValidation.test.ts`: they cover raw-label frame eligibility, blank/duplicate/non-identifier/keyword label rejection (mirroring backend invariant B4's ASCII rule — valid Unicode identifiers like `café` are rejected too), frame-label derivation (`apiInputFrameLabels` across zero/one/many eligible frames, invalid labels, and unselected-column tables), edge input-name derivation (`edgeInputName` for api-input frame edges verbatim, sanitised source labels for ordinary nodes, submodel `out__` edges resolving to the child's sanitised label, and per-target duplicate detection), rename-before-prune migration, identity-preserving no-ops, edge-join insertion/role normalisation, and invalid saved graph diagnostics. These sit alongside the hook/store suites below because their contracts are exercised again through the editor and save paths.
 
 - **Store — `frontend/src/stores/__tests__/`:**
   - `useGraphStore.consolidation.test.ts` — store shape and required
@@ -580,7 +651,12 @@ The pure connection/frame helpers are defended by `frontend/src/utils/__tests__/
     diff ring and moved-outline rendering; instance/LIVE/API badges;
     status dot (ok/error/running-pulse) and warning-dot behaviour
     (including error-suppresses-warning); trace dim/hover-dim/motion-disabled
-    states; aria-label composition (type, label, status, instance, trace).
+    states; aria-label composition (type, label, status, instance, trace);
+    the api-input frame-row body (instance-name suppression with ≥1
+    visible frame, the single-frame name row, the zero-frame name +
+    "No emitted frames" state, row/handle pairing and ordering, status/
+    warning/trace adornments coexisting with rows, and medium/compact
+    bodies unchanged).
   - `frontend/src/__tests__/nodes/SubmodelNode.test.tsx` — label/badge/
     child-count rendering; per-port input and output handle rendering and
     vertical positioning; file-path display and truncation; dashed-vs-solid
@@ -590,11 +666,14 @@ The pure connection/frame helpers are defended by `frontend/src/utils/__tests__/
     output); label fallback to `label` when `portName` is empty; trace
     border/glow/dim/motion states; graceful rendering with a missing
     `portDirection`.
-  - `frontend/src/__tests__/nodes/ApiInputHandles.test.tsx` — one source
-    handle per `emit: true` table with id matching the table's label;
-    single-default-handle fallback for 0/1 emit tables or a missing
-    `tables` key; the W1.4 guarantees that blank labels render no handle
-    and duplicate labels render exactly one (first-occurrence) handle.
+  - `frontend/src/__tests__/nodes/ApiInputHandles.test.tsx` — one labelled
+    source handle per eligible frame from one frame up, ids matching the
+    raw labels (the sole-frame labelled handle explicitly pinned);
+    default-handle fallback only for zero eligible frames (no eligible
+    tables, a missing `tables` key, or an all-invalid label set); the W1.4
+    guarantees that blank/duplicate/non-identifier labels render no
+    handle; row-mounted full-detail handles carrying the same ids as the
+    medium/compact fallback (zoom-invariant id set).
 - **App / integration — `frontend/src/__tests__/`:**
   - `App.integration.test.tsx` — mount and initial load sequencing (no
     WebSocket sync while the initial load is pending); empty-pipeline
@@ -858,6 +937,20 @@ The pure connection/frame helpers are defended by `frontend/src/utils/__tests__/
   a regression isolated to that adapter's push/no-push branching would
   surface only as a broader integration-test failure, not a targeted one.
   `utils/flowHandles.ts` has the same shape of gap — see above.
+- **`frontend/e2e/persistence/api-input-frame-alignment.spec.ts`** — the
+  Playwright geometry evidence for the frame-row body: for one, two,
+  three, and eight emitted frames, each frame row's bounding-box vertical
+  centre coincides with its output handle's centre within ≤3 CSS px —
+  asserted plain, with status and warning dots present, with a
+  trace-active value pill, and with a ≥40-character truncating label in
+  the row set; edges carry
+  the correct labelled `sourceHandle` after render, save/reload, and an
+  in-place frame rename — including a sole-frame source, whose edge
+  persists the frame label and whose generated `main.py` names it in both
+  `source_port` and the downstream signature; and a downstream node's
+  input chips name the connected frames with the exact argument names.
+  The DOM-only component suites above assert handle count/ids/order; only
+  this suite proves the rendered geometry aligns.
 - **`frontend/e2e/large-graph-drag.benchmark.spec.ts`** — a Playwright
   benchmark (tagged `@benchmark`, run via `npm run test:e2e:benchmark`, not
   the default e2e lane) that builds a 1000-node graph and drags a node across

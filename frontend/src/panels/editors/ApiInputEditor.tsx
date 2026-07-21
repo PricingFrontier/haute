@@ -1,7 +1,7 @@
 import { useMemo, useState, type CSSProperties } from "react"
 import { AlertTriangle, Radio, Check, HelpCircle, KeyRound, Plus, X } from "lucide-react"
 import { FileBrowser, SchemaPreview } from "./_shared"
-import type { OnUpdateConfig } from "./_shared"
+import type { OnUpdateConfig, OnUpdateConfigResult } from "./_shared"
 import { useSchemaFetch } from "../../hooks/useSchemaFetch"
 import { configField } from "../../utils/configField"
 import { withAlpha } from "../../utils/color"
@@ -171,6 +171,7 @@ export default function ApiInputEditor({
   // Salted naming (full dotted leaf → `customer_id`) vs bare leaf (`id`) for
   // keys arriving without an inventory name. Salted is the default.
   const [saltNames, setSaltNames] = useState(true)
+  const [labelCommitErrors, setLabelCommitErrors] = useState<Record<number, string>>({})
   // Which key picker is open: cascade works over the whole inventory from the
   // frames table; inherit / add-keys (inherit-attributes) target one frame.
   const [picker, setPicker] = useState<
@@ -211,18 +212,30 @@ export default function ApiInputEditor({
   // Helpers to push state changes back through onUpdate. Each write
   // recomposes the full v2 record-shaped object so we never have to fan
   // out individual onUpdate calls per nested field.
-  const writeBack = (next: ApiInputConfigV2) => {
+  const writeBack = (next: ApiInputConfigV2): OnUpdateConfigResult => {
     const raw = writeV2(next)
     // Use a single batched update so NodePanel only fires one
     // handleConfigUpdate (per the existing OnUpdateConfig contract).
-    onUpdate(raw)
+    const result = onUpdate(raw)
+    // Existing editor-only callers may still use a bare spy while the
+    // production contract is compile-time required to return a result.
+    const commitResult: OnUpdateConfigResult = result ?? { ok: true }
+    if (commitResult.ok) setLabelCommitErrors({})
+    return commitResult
   }
-  const updateTable = (i: number, patch: Partial<ApiInputTableV2>) => {
+  const updateTable = (
+    i: number,
+    patch: Partial<ApiInputTableV2>,
+  ): OnUpdateConfigResult => {
     const next = {
       ...v2,
       tables: v2.tables.map((t, idx) => (idx === i ? { ...t, ...patch } : t)),
     }
-    writeBack(next)
+    const result = writeBack(next)
+    if (Object.hasOwn(patch, "label") && !result.ok) {
+      setLabelCommitErrors((previous) => ({ ...previous, [i]: result.error }))
+    }
+    return result
   }
   // W1.4 — label validation, mirroring the backend's save-time rules
   // (`validate_v2_schema`): blank labels, duplicates, and sanitised-form
@@ -241,7 +254,7 @@ export default function ApiInputEditor({
     tableIdx: number,
     colIdx: number,
     patch: Partial<ApiInputColumnV2>,
-  ) => {
+  ): OnUpdateConfigResult => {
     // Editing a column's name, path, or type IS confirming it — the user has
     // looked at the row and made it theirs.
     const confirming =
@@ -292,7 +305,7 @@ export default function ApiInputEditor({
           : t,
       ),
     }
-    writeBack(next)
+    return writeBack(next)
   }
   const addColumn = (tableIdx: number) => {
     // A hand-added column arrives BLANK (ruled 2026-07-09): no placeholder
@@ -926,6 +939,7 @@ export default function ApiInputEditor({
                   testIdPrefix={`api-input-table-${ti}`}
                   ambiguousNames={ambiguous}
                   validateLabel={validateTableLabel(ti)}
+                  commitError={labelCommitErrors[ti] ?? null}
                   onUpdate={(patch) => updateTable(ti, patch)}
                   onRemove={() => removeTable(ti)}
                   onAddColumn={() => addColumn(ti)}
@@ -1031,6 +1045,7 @@ function TableBlock({
   testIdPrefix,
   ambiguousNames,
   validateLabel,
+  commitError,
   onUpdate,
   onRemove,
   onAddColumn,
@@ -1046,10 +1061,11 @@ function TableBlock({
    * distinct paths carrying each (the warning-shade input for ColumnRow). */
   ambiguousNames: ReadonlyMap<string, string[]>
   validateLabel: (candidate: string) => string | null
-  onUpdate: (patch: Partial<ApiInputTableV2>) => void
+  commitError: string | null
+  onUpdate: (patch: Partial<ApiInputTableV2>) => OnUpdateConfigResult
   onRemove: () => void
   onAddColumn: () => void
-  onUpdateColumn: (colIdx: number, patch: Partial<ApiInputColumnV2>) => void
+  onUpdateColumn: (colIdx: number, patch: Partial<ApiInputColumnV2>) => OnUpdateConfigResult
   onRemoveColumn: (colIdx: number) => void
   /** Replace this table's columns from a pasted tab-separated grid. */
   onPasteColumns: (grid: string[][]) => void
@@ -1132,6 +1148,7 @@ function TableBlock({
           value={table.label}
           onCommit={(label) => onUpdate({ label })}
           validate={validateLabel}
+          commitError={commitError}
           containerClassName="flex-1 min-w-0"
           className="w-full text-xs font-mono px-1.5 py-0.5 rounded"
           style={{
@@ -1265,7 +1282,7 @@ function ColumnRow({
   ambiguousNames: ReadonlyMap<string, string[]>
   testIdPrefix: string
   validateName: (candidate: string) => string | null
-  onUpdate: (patch: Partial<ApiInputColumnV2>) => void
+  onUpdate: (patch: Partial<ApiInputColumnV2>) => OnUpdateConfigResult
   onRemove: () => void
   onToggleKey: () => void
 }) {
@@ -1498,6 +1515,7 @@ function CommittedTextInput({
   value,
   onCommit,
   validate,
+  commitError = null,
   dataTestId,
   containerClassName,
   className,
@@ -1507,7 +1525,7 @@ function CommittedTextInput({
   /** The committed value from config — the source of truth when idle. */
   value: string
   /** Called once per commit boundary (blur / Enter) with the final value. */
-  onCommit: (next: string) => void
+  onCommit: (next: string) => OnUpdateConfigResult
   /** User-facing error for an invalid candidate; null = valid. Invalid
    * candidates are never committed. */
   validate: (candidate: string) => string | null
@@ -1515,6 +1533,8 @@ function CommittedTextInput({
   containerClassName: string
   className: string
   style: CSSProperties
+  /** Graph-level rejection from the commit owner, distinct from local validation. */
+  commitError?: string | null
   /** When set (path inputs only — NOT labels/column-names), a VALID but
    * non-canonical value is persistently highlighted as informational (§4 —
    * assembles identically; never blocks). Off for labels/column-names, which
@@ -1535,7 +1555,8 @@ function CommittedTextInput({
     setDraft(null)
   }
   const shown = draft ?? value
-  const error = validate(shown)
+  const validationError = validate(shown)
+  const error = validationError ?? commitError
   // Persistent §4 highlight for path inputs: a VALID but non-canonical path
   // (typed or introduced by schema inference) is flagged informationally — it is
   // accepted and assembles identically, so this never blocks. Gated on
@@ -1554,8 +1575,8 @@ function CommittedTextInput({
     // the user sees exactly what was rejected and why. Failing loud at
     // the editor beats a backend 422 at save or a KeyError at run.
     if (validate(draft) !== null) return
-    onCommit(draft)
-    setDraft(null)
+    const result = onCommit(draft)
+    if (result.ok) setDraft(null)
   }
   return (
     <div className={containerClassName}>

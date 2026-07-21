@@ -524,7 +524,7 @@ class TestBuildJsonCacheExceptions:
             json={
                 "path": "data/missing.json",
                 "volatile_schema": {
-                    "tables": [{"path": "$[:]", "label": "$[:]", "emit": True, "columns": []}]
+                    "tables": [{"path": "$[:]", "label": "root", "emit": True, "columns": []}]
                 },
             },
         )
@@ -544,7 +544,7 @@ class TestBuildJsonCacheExceptions:
                     "tables": [
                         {
                             "path": "$[:]",
-                            "label": "$[:]",
+                            "label": "root",
                             "emit": True,
                             "columns": [
                                 {
@@ -583,7 +583,7 @@ class TestBuildJsonCacheExceptions:
                         "tables": [
                             {
                                 "path": "$[:]",
-                                "label": "$[:]",
+                                "label": "root",
                                 "emit": True,
                                 "columns": [
                                     {
@@ -627,7 +627,7 @@ class TestStatusBranches:
                     "tables": [
                         {
                             "path": "$[:]",
-                            "label": "$[:]",
+                            "label": "root",
                             "emit": True,
                             "columns": [
                                 {
@@ -723,7 +723,7 @@ class TestStatusAndDispatchBranches:
                     "tables": [
                         {
                             "path": "$[:]",
-                            "label": "$[:]",
+                            "label": "root",
                             "emit": True,
                             "columns": [
                                 {
@@ -762,7 +762,7 @@ class TestStatusAndDispatchBranches:
                     "tables": [
                         {
                             "path": "$[:]",
-                            "label": "$[:]",
+                            "label": "root",
                             "emit": True,
                             "columns": [
                                 # On-disk says column is named "wrong"
@@ -789,7 +789,7 @@ class TestStatusAndDispatchBranches:
                     "tables": [
                         {
                             "path": "$[:]",
-                            "label": "$[:]",
+                            "label": "root",
                             "emit": True,
                             "columns": [
                                 {

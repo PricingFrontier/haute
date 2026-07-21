@@ -2834,7 +2834,7 @@ def test_deploy_batch_graph_routing_stays_live_for_source_switch(tmp_path) -> No
                 {
                     "id": "live_src",
                     "data": {
-                        "label": "live_src",
+                        "label": "Live API Request",
                         "nodeType": NodeType.API_INPUT.value,
                         "config": {"path": ""},
                     },
@@ -2854,7 +2854,7 @@ def test_deploy_batch_graph_routing_stays_live_for_source_switch(tmp_path) -> No
                         "nodeType": NodeType.LIVE_SWITCH.value,
                         "config": {
                             "input_scenario_map": {
-                                "live_src": "live",
+                                "quotes": "live",
                                 "batch_src": ExecutionProfile.DEPLOY_BATCH.value,
                             }
                         },
@@ -2870,7 +2870,9 @@ def test_deploy_batch_graph_routing_stays_live_for_source_switch(tmp_path) -> No
                 },
             ],
             "edges": [
-                make_edge("live_src", "switch").model_dump(),
+                make_edge("live_src", "switch")
+                .model_copy(update={"sourceHandle": "quotes"})
+                .model_dump(),
                 make_edge("batch_src", "switch").model_dump(),
                 make_edge("switch", "output").model_dump(),
             ],

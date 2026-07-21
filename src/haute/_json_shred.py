@@ -51,6 +51,7 @@ from haute._api_input_schema import (
     ColumnType,
     PathSeg,
     array_depth,
+    derive_identifier_label,
     make_table_path,
     parse_column_path,
     parse_column_path_full,
@@ -1144,7 +1145,7 @@ def load_per_port_cache(
 def load_v2_api_source(
     data_path: str,
     config: dict[str, Any],
-) -> pl.LazyFrame | dict[str, pl.LazyFrame]:  # pragma: no mutate
+) -> dict[str, pl.LazyFrame]:  # pragma: no mutate
     """Resolve a v2 apiInput's per-port cache and return its frame(s).
 
     The single runtime entry point shared by the executor's source builder
@@ -1162,8 +1163,7 @@ def load_v2_api_source(
       ``committed/`` (the deploy / fresh-server case); a missing/stale cache
       (schema fingerprint OR data-file signature mismatch) raises the
       "click Cache as Parquet" message.
-    - 1 emitting label → a bare ``LazyFrame`` (single-frame shorthand); 2+ →
-      a ``dict[port_label, LazyFrame]`` in schema order.
+    - 1+ emitting labels → a ``dict[port_label, LazyFrame]`` in schema order.
 
     Frame resolution uses the shared :func:`table_is_emitting` predicate, so
     an emit-true table with zero selected columns contributes no frame and —
@@ -1200,10 +1200,9 @@ def load_v2_api_source(
             "API Input cache changed while it was being loaded; missing parquet "
             f"frame(s): {missing_labels}. {_STALE_CACHE_MESSAGE}",
         )
-    # Single-frame shorthand: bare LazyFrame instead of a one-entry dict.
-    if len(emit_labels) == 1:
-        return bundle[emit_labels[0]]
-    # Multi-frame: preserve schema order so executor logs/errors are deterministic.
+    # Preserve schema order so executor logs/errors are deterministic.  A
+    # one-frame source deliberately has the same bundle shape as a multi-frame
+    # source; downstream routing always selects by the edge's source handle.
     return {label: bundle[label] for label in emit_labels}
 
 
@@ -1463,7 +1462,7 @@ def infer_v2_schema_from_data(
     for record in records:
         _walk(record, (), ())
 
-    tables: list[dict[str, Any]] = []
+    table_entries: list[tuple[tuple[PathSeg, ...], dict[str, Any], str]] = []
     all_levels = set(levels) | set(scalar_levels)
     for level in sorted(all_levels, key=lambda s: (array_depth(s), len(s), tuple(s))):
         table_path = make_table_path(level)
@@ -1496,16 +1495,46 @@ def infer_v2_schema_from_data(
                 }
                 for opath in col_paths
             ]
-        tables.append(
-            {
-                "path": table_path,
-                "label": table_path,
-                "displayPath": None,
-                "emit": array_depth(level) == 0,  # pragma: no mutate  # root level only
-                "row_id_column": None,
-                "columns": columns,
-            },
+        base_label = "root" if not level else derive_identifier_label(level[-1][0])
+        table_entries.append(
+            (
+                level,
+                {
+                    "path": table_path,
+                    "label": base_label,
+                    "displayPath": table_path,
+                    "emit": array_depth(level) == 0,  # pragma: no mutate  # root level only
+                    "row_id_column": None,
+                    "columns": columns,
+                },
+                base_label,
+            ),
         )
+
+    base_label_counts: dict[str, int] = {}
+    for _level, _table, base_label in table_entries:
+        folded = base_label.casefold()
+        base_label_counts[folded] = base_label_counts.get(folded, 0) + 1
+
+    assigned_labels: list[tuple[dict[str, Any], str]] = []
+    for level, table, base_label in table_entries:
+        if base_label_counts[base_label.casefold()] > 1 and level:
+            label = "_".join(derive_identifier_label(key) for key, _is_array in level)
+        else:
+            label = base_label
+        assigned_labels.append((table, label))
+
+    used_labels: set[str] = set()
+    for table, label in assigned_labels:
+        candidate = label
+        suffix = 2
+        while candidate.casefold() in used_labels:
+            candidate = f"{label}_{suffix}"
+            suffix += 1
+        table["label"] = candidate
+        used_labels.add(candidate.casefold())
+
+    tables = [table for _level, table, _base_label in table_entries]
     return {"tables": tables}
 
 

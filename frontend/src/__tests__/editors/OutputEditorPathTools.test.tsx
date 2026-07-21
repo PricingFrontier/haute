@@ -92,6 +92,7 @@ function StatefulHarness({
         onUpdate={(k, v) => {
           onUpdateSpy(k, v)
           setConfig((prev) => (typeof k === "string" ? { ...prev, [k]: v } : { ...prev, ...k }))
+          return { ok: true as const }
         }}
       />
     </GraphProvider>

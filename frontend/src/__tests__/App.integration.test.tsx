@@ -973,6 +973,185 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
     }
   }
 
+  function makeRenameMigrationGraph(options: { collision?: boolean } = {}) {
+    const base = makeApiInputGraph()
+    const liveSwitch = makeNode("live_1", "Scenario Router", "liveSwitch")
+    liveSwitch.data.config = {
+      input_scenario_map: { drivers: "batch", Other_Source: "live" },
+      untouched: "live-switch-config",
+    }
+    const original = makeNode("original_1", "Original Transform", "polars")
+    const otherOriginal = makeNode("original_2", "Other Original", "polars")
+    const downstreamInstance = makeNode("instance_value", "Downstream Instance", "polars")
+    downstreamInstance.data.config = {
+      instanceOf: "original_2",
+      inputMapping: { original_input: "drivers", stable_value: "Other_Source" },
+      untouched: "downstream-instance-config",
+    }
+    const firstOriginalInstance = makeNode("instance_key_1", "First Original Instance", "polars")
+    firstOriginalInstance.data.config = {
+      instanceOf: "original_1",
+      inputMapping: { drivers: "Mapped_First", stable_key: "Stable_First" },
+      untouched: "first-instance-config",
+    }
+    const secondOriginalInstance = makeNode("instance_key_2", "Second Original Instance", "polars")
+    secondOriginalInstance.data.config = {
+      instanceOf: "original_1",
+      inputMapping: { drivers: "Mapped_Second", stable_key: "Stable_Second" },
+      untouched: "second-instance-config",
+    }
+    const ordinarySource = makeNode(
+      "ordinary_source",
+      options.collision ? "collision name" : "Other Source",
+      "polars",
+    )
+
+    return {
+      nodes: [
+        base.nodes[0],
+        ordinarySource,
+        liveSwitch,
+        original,
+        otherOriginal,
+        downstreamInstance,
+        firstOriginalInstance,
+        secondOriginalInstance,
+      ],
+      edges: [
+        {
+          id: "e_api_live",
+          source: "api_0",
+          target: "live_1",
+          sourceHandle: "drivers",
+          targetHandle: null,
+        },
+        {
+          id: "e_ordinary_live",
+          source: "ordinary_source",
+          target: "live_1",
+          sourceHandle: null,
+          targetHandle: null,
+        },
+        {
+          id: "e_api_original",
+          source: "api_0",
+          target: "original_1",
+          sourceHandle: "drivers",
+          targetHandle: null,
+        },
+        {
+          id: "e_api_instance",
+          source: "api_0",
+          target: "instance_value",
+          sourceHandle: "drivers",
+          targetHandle: null,
+        },
+      ],
+      preamble: "",
+    }
+  }
+
+  function makeSubmodelRenameGraph(
+    options: { collision?: boolean; internalCollision?: boolean } = {},
+  ) {
+    const base = makeApiInputGraph()
+    const boundary = makeNode("submodel__pricing", "Pricing", "submodel")
+    const childRouter = makeNode("child_router", "Child Router", "liveSwitch")
+    childRouter.data.config = {
+      input_scenario_map: { drivers: "batch", stable_input: "live" },
+      untouched: "child-router-config",
+    }
+    const childValueInstance = makeNode("child_value_instance", "Child Value Instance", "polars")
+    childValueInstance.data.config = {
+      instanceOf: "unrelated_original",
+      inputMapping: { original_input: "drivers", stable_value: "stable_input" },
+      untouched: "child-value-config",
+    }
+    const childKeyInstance = makeNode("child_key_instance", "Child Key Instance", "polars")
+    childKeyInstance.data.config = {
+      instanceOf: "child_router",
+      inputMapping: { drivers: "Mapped_Driver", stable_key: "Stable_Value" },
+      untouched: "child-key-config",
+    }
+    const ordinary = makeNode(
+      "ordinary_source",
+      options.collision ? "collision name" : "Stable Input",
+      "polars",
+    )
+    const internalCollisionSource = makeNode(
+      "internal_collision_source",
+      "collision name",
+      "polars",
+    )
+
+    return {
+      nodes: [base.nodes[0], ordinary, boundary],
+      edges: [
+        {
+          id: "e_api_router",
+          source: "api_0",
+          target: boundary.id,
+          sourceHandle: "drivers",
+          targetHandle: "in__child_router",
+        },
+        {
+          id: "e_api_value_instance",
+          source: "api_0",
+          target: boundary.id,
+          sourceHandle: "drivers",
+          targetHandle: "in__child_value_instance",
+        },
+        ...(options.collision
+          ? [
+              {
+                id: "e_ordinary_router",
+                source: ordinary.id,
+                target: boundary.id,
+                sourceHandle: null,
+                targetHandle: "in__child_router",
+              },
+            ]
+          : []),
+      ],
+      submodels: {
+        pricing: {
+          graph: {
+            nodes: [
+              childRouter,
+              childValueInstance,
+              childKeyInstance,
+              ...(options.internalCollision ? [internalCollisionSource] : []),
+            ],
+            edges: options.internalCollision
+              ? [
+                  {
+                    id: "e_internal_collision_router",
+                    source: internalCollisionSource.id,
+                    target: childRouter.id,
+                    sourceHandle: null,
+                    targetHandle: null,
+                  },
+                ]
+              : [],
+            submodels: {},
+          },
+        },
+      },
+      preamble: "",
+    }
+  }
+
+  function configFor(nodeId: string): Record<string, unknown> {
+    const node = useGraphStore.getState().nodes.find((candidate) => candidate.id === nodeId)
+    expect(node, `node ${nodeId}`).toBeDefined()
+    return node!.data.config as Record<string, unknown>
+  }
+
+  function graphCommitStateBytes(): string {
+    const { nodes, edges, submodels, undoStack, redoStack } = useGraphStore.getState()
+    return JSON.stringify({ nodes, edges, submodels, undoStack, redoStack })
+  }
+
   it("toggling a bound table's emit off prunes the orphaned edge and warns", async () => {
     vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeApiInputGraph())
     render(<App />)
@@ -981,7 +1160,7 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
     expect(useGraphStore.getState().edges).toHaveLength(1)
 
     // Open the apiInput editor panel.
-    fireEvent.click(await screen.findByText("Quote Source"))
+    fireEvent.click(await screen.findByTestId("node-Quote Source"))
 
     // Untick the 'drivers' table emit (table index 1).
     const driversEmit = await findEditorTestId("api-input-table-1-emit")
@@ -1011,7 +1190,7 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
     render(<App />)
     await waitForAppReady()
 
-    fireEvent.click(await screen.findByText("Quote Source"))
+    fireEvent.click(await screen.findByTestId("node-Quote Source"))
 
     // Rename the bound 'drivers' port (table index 1) by typing several
     // characters. The label is the live handle id, so under the old
@@ -1048,6 +1227,248 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
     expect(useGraphStore.getState().edges[0].sourceHandle).toBe("drivers")
   })
 
+  it("renames a frame, all persisted input identities, and every instance key in one undoable commit", async () => {
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeRenameMigrationGraph())
+    vi.mocked(api.previewNode).mockImplementation(() => new Promise<never>(() => {}))
+    render(<App />)
+    await waitForAppReady()
+
+    const nodesBefore = JSON.stringify(useGraphStore.getState().nodes)
+    const edgesBefore = JSON.stringify(useGraphStore.getState().edges)
+    const undoDepthBefore = useGraphStore.getState().undoStack.length
+    fireEvent.click(await screen.findByTestId("node-Quote Source"))
+
+    const label = (await findEditorTestId("api-input-table-1-label")) as HTMLInputElement
+    fireEvent.change(label, { target: { value: "driver_risk" } })
+    fireEvent.blur(label)
+
+    await waitFor(() => {
+      expect(useGraphStore.getState().edges.filter((edge) => edge.source === "api_0")).toEqual([
+        expect.objectContaining({ id: "e_api_live", sourceHandle: "driver_risk" }),
+        expect.objectContaining({ id: "e_api_original", sourceHandle: "driver_risk" }),
+        expect.objectContaining({ id: "e_api_instance", sourceHandle: "driver_risk" }),
+      ])
+    })
+    expect(configFor("api_0")).toEqual(
+      expect.objectContaining({
+        tables: [
+          expect.objectContaining({ label: "policies" }),
+          expect.objectContaining({ label: "driver_risk" }),
+        ],
+      }),
+    )
+    expect(configFor("live_1")).toEqual({
+      input_scenario_map: { driver_risk: "batch", Other_Source: "live" },
+      untouched: "live-switch-config",
+    })
+    expect(configFor("instance_value")).toEqual({
+      instanceOf: "original_2",
+      inputMapping: { original_input: "driver_risk", stable_value: "Other_Source" },
+      untouched: "downstream-instance-config",
+    })
+    expect(configFor("instance_key_1")).toEqual({
+      instanceOf: "original_1",
+      inputMapping: { driver_risk: "Mapped_First", stable_key: "Stable_First" },
+      untouched: "first-instance-config",
+    })
+    expect(configFor("instance_key_2")).toEqual({
+      instanceOf: "original_1",
+      inputMapping: { driver_risk: "Mapped_Second", stable_key: "Stable_Second" },
+      untouched: "second-instance-config",
+    })
+    expect(useGraphStore.getState().undoStack.length).toBe(undoDepthBefore + 1)
+
+    await useGraphStore.getState().undo()
+    expect(JSON.stringify(useGraphStore.getState().nodes)).toBe(nodesBefore)
+    expect(JSON.stringify(useGraphStore.getState().edges)).toBe(edgesBefore)
+    expect(useGraphStore.getState().undoStack.length).toBe(undoDepthBefore)
+  })
+
+  it("rejects a colliding frame rename before any config, edge, mapping, or history mutation", async () => {
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeRenameMigrationGraph({ collision: true }))
+    vi.mocked(api.previewNode).mockImplementation(() => new Promise<never>(() => {}))
+    render(<App />)
+    await waitForAppReady()
+
+    fireEvent.click(await screen.findByTestId("node-Quote Source"))
+    const stateBefore = graphCommitStateBytes()
+    const label = (await findEditorTestId("api-input-table-1-label")) as HTMLInputElement
+    fireEvent.change(label, { target: { value: "collision_name" } })
+    fireEvent.blur(label)
+
+    const error = await screen.findByTestId("api-input-table-1-label-error")
+    expect(error).toHaveTextContent(/Scenario Router/)
+    expect(error).toHaveTextContent(/collision_name/)
+    expect(graphCommitStateBytes()).toBe(stateBefore)
+  })
+
+  it("migrates nested identities atomically and restores their observable payload on undo and redo", async () => {
+    const graph = makeSubmodelRenameGraph()
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(graph)
+    vi.mocked(api.previewNode).mockImplementation(() => new Promise<never>(() => {}))
+    render(<App />)
+    await waitForAppReady()
+
+    const assertIdentityPayload = (graphValue: unknown, expectedName: "drivers" | "driver_risk") => {
+      const graphState = graphValue as {
+        nodes: Array<{ id: string; data: { config: Record<string, unknown> } }>
+        edges: Array<{ id: string; sourceHandle?: string | null }>
+        submodels: {
+          pricing: {
+            graph: { nodes: Array<{ id: string; data: { config: Record<string, unknown> } }> }
+          }
+        }
+      }
+      const apiConfig = graphState.nodes.find((node) => node.id === "api_0")?.data.config as {
+        tables: Array<{ label: string }>
+      }
+      expect(apiConfig.tables[1].label).toBe(expectedName)
+      expect(
+        graphState.edges
+          .filter((edge) => edge.id === "e_api_router" || edge.id === "e_api_value_instance")
+          .map((edge) => edge.sourceHandle),
+      ).toEqual([expectedName, expectedName])
+
+      const nestedConfig = (id: string) =>
+        graphState.submodels.pricing.graph.nodes.find((node) => node.id === id)?.data.config
+      expect(nestedConfig("child_router")).toEqual({
+        input_scenario_map: { [expectedName]: "batch", stable_input: "live" },
+        untouched: "child-router-config",
+      })
+      expect(nestedConfig("child_value_instance")).toEqual({
+        instanceOf: "unrelated_original",
+        inputMapping: { original_input: expectedName, stable_value: "stable_input" },
+        untouched: "child-value-config",
+      })
+      expect(nestedConfig("child_key_instance")).toEqual({
+        instanceOf: "child_router",
+        inputMapping: { [expectedName]: "Mapped_Driver", stable_key: "Stable_Value" },
+        untouched: "child-key-config",
+      })
+    }
+    const storePayload = () => {
+      const { nodes, edges, submodels } = useGraphStore.getState()
+      return { nodes, edges, submodels }
+    }
+
+    fireEvent.click(await screen.findByTestId("node-Quote Source"))
+    const label = (await findEditorTestId("api-input-table-1-label")) as HTMLInputElement
+    fireEvent.change(label, { target: { value: "driver_risk" } })
+    fireEvent.blur(label)
+
+    await waitFor(() => {
+      expect(useGraphStore.getState().edges.filter((edge) => edge.source === "api_0")).toEqual([
+        expect.objectContaining({ id: "e_api_router", sourceHandle: "driver_risk" }),
+        expect.objectContaining({ id: "e_api_value_instance", sourceHandle: "driver_risk" }),
+      ])
+    })
+    assertIdentityPayload(storePayload(), "driver_risk")
+
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }))
+    await waitFor(() => expect(vi.mocked(api.savePipeline)).toHaveBeenCalledOnce())
+    assertIdentityPayload(vi.mocked(api.savePipeline).mock.calls[0][0].graph, "driver_risk")
+
+    fireEvent.click(screen.getByTestId("toolbar-undo"))
+    await waitFor(() => assertIdentityPayload(storePayload(), "drivers"))
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }))
+    await waitFor(() => expect(vi.mocked(api.savePipeline)).toHaveBeenCalledTimes(2))
+    assertIdentityPayload(vi.mocked(api.savePipeline).mock.calls[1][0].graph, "drivers")
+
+    fireEvent.click(screen.getByTestId("toolbar-redo"))
+    await waitFor(() => assertIdentityPayload(storePayload(), "driver_risk"))
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }))
+    await waitFor(() => expect(vi.mocked(api.savePipeline)).toHaveBeenCalledTimes(3))
+    assertIdentityPayload(vi.mocked(api.savePipeline).mock.calls[2][0].graph, "driver_risk")
+  })
+
+  it("rejects a rename collision inside one submodel child with no root or nested mutation", async () => {
+    const graph = makeSubmodelRenameGraph({ collision: true })
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(graph)
+    vi.mocked(api.previewNode).mockImplementation(() => new Promise<never>(() => {}))
+    render(<App />)
+    await waitForAppReady()
+
+    fireEvent.click(await screen.findByTestId("node-Quote Source"))
+    const stateBefore = graphCommitStateBytes()
+    const submodelsBefore = JSON.stringify(graph.submodels)
+    const label = (await findEditorTestId("api-input-table-1-label")) as HTMLInputElement
+    fireEvent.change(label, { target: { value: "collision_name" } })
+    fireEvent.blur(label)
+
+    const error = await screen.findByTestId("api-input-table-1-label-error")
+    expect(error).toHaveTextContent(/Child Router/)
+    expect(error).toHaveTextContent(/collision_name/)
+    expect(graphCommitStateBytes()).toBe(stateBefore)
+
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }))
+    await waitFor(() => expect(vi.mocked(api.savePipeline)).toHaveBeenCalledOnce())
+    expect(JSON.stringify(vi.mocked(api.savePipeline).mock.calls[0][0].graph.submodels)).toBe(
+      submodelsBefore,
+    )
+  })
+
+  it("rejects a root-frame rename colliding with an internal child edge with zero mutation", async () => {
+    const graph = makeSubmodelRenameGraph({ internalCollision: true })
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(graph)
+    vi.mocked(api.previewNode).mockImplementation(() => new Promise<never>(() => {}))
+    render(<App />)
+    await waitForAppReady()
+
+    fireEvent.click(await screen.findByTestId("node-Quote Source"))
+    const stateBefore = graphCommitStateBytes()
+    const label = (await findEditorTestId("api-input-table-1-label")) as HTMLInputElement
+    fireEvent.change(label, { target: { value: "collision_name" } })
+    fireEvent.blur(label)
+
+    const error = await screen.findByTestId("api-input-table-1-label-error")
+    expect(error).toHaveTextContent(/Child Router/)
+    expect(error).toHaveTextContent(/collision_name/)
+    expect(graphCommitStateBytes()).toBe(stateBefore)
+
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }))
+    await waitFor(() => expect(vi.mocked(api.savePipeline)).toHaveBeenCalledOnce())
+    expect(vi.mocked(api.savePipeline).mock.calls[0][0].graph.submodels).toEqual(graph.submodels)
+  })
+
+  it("preserves a stale named apiInput edge from load through warning render and save", async () => {
+    const graph = makeApiInputGraph()
+    const staleEdge = { ...graph.edges[0], id: "e_stale_frame", sourceHandle: "stale_quotes" }
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce({ ...graph, edges: [staleEdge] })
+    render(<App />)
+    await waitForAppReady()
+
+    expect(useGraphStore.getState().edges).toEqual([
+      expect.objectContaining(staleEdge),
+    ])
+    fireEvent.click(await screen.findByTestId("node-Driver Cleanup"))
+    const chip = await screen.findByTestId("input-source-e_stale_frame")
+    expect(chip).toHaveAttribute("data-unresolved", "true")
+    expect(chip).toHaveTextContent("stale_quotes")
+    expect(chip).toHaveAccessibleName(/unresolved frame/i)
+
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }))
+    await waitFor(() => expect(vi.mocked(api.savePipeline)).toHaveBeenCalledOnce())
+    expect(vi.mocked(api.savePipeline).mock.calls[0][0].graph.edges).toEqual([
+      expect.objectContaining(staleEdge),
+    ])
+  })
+
+  it("prunes a persisted null-handle apiInput edge during initial reconciliation without undo noise", async () => {
+    const graph = makeApiInputGraph()
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce({
+      ...graph,
+      edges: [{ ...graph.edges[0], id: "e_portless", sourceHandle: null }],
+    })
+
+    render(<App />)
+    await waitForAppReady()
+
+    await waitFor(() => {
+      expect(useGraphStore.getState().edges).toEqual([])
+    })
+    expect(useGraphStore.getState().undoStack).toEqual([])
+  })
+
   it("W1.4: blanking a port label in the editor never reaches the graph — no synthesized port, edge intact", async () => {
     vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeApiInputGraph())
     // Same determinism guard as the W1.3 test above: keep previews
@@ -1056,7 +1477,7 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
     render(<App />)
     await waitForAppReady()
 
-    fireEvent.click(await screen.findByText("Quote Source"))
+    fireEvent.click(await screen.findByTestId("node-Quote Source"))
 
     const label = (await findEditorTestId("api-input-table-1-label")) as HTMLInputElement
     label.focus()
@@ -1079,7 +1500,7 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
     render(<App />)
     await waitForAppReady()
 
-    fireEvent.click(await screen.findByText("Quote Source"))
+    fireEvent.click(await screen.findByTestId("node-Quote Source"))
 
     // Add a column to the drivers table (index 1) — the emit-port set is
     // unchanged (the table is already an emit+selected port), so the

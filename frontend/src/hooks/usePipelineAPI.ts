@@ -18,6 +18,7 @@ import { effectiveNodeType, nodeData } from "../types/node"
 import { NODE_TYPES } from "../utils/nodeTypes"
 import { parsePipelineResponse } from "../types/guards"
 import { columnsEqualByFingerprint, type ColumnFingerprintInput } from "../utils/columnFingerprint"
+import { reconcileApiInputEdges } from "../utils/apiInputPorts"
 export { columnFingerprint } from "../utils/columnFingerprint"
 
 interface PipelineAPIParams {
@@ -27,6 +28,8 @@ interface PipelineAPIParams {
   submodelsRef: React.MutableRefObject<Record<string, unknown>>
   setNodesRaw: (updater: Node[] | ((nds: Node[]) => Node[])) => void
   setEdgesRaw: (edges: Edge[]) => void
+  setSubmodelsRaw?: (submodels: Record<string, unknown>) => void
+  setCurrentSourceFile?: (sourceFile: string | null) => void
   setPreamble: (p: string) => void
   preambleRef: React.MutableRefObject<string>
   pipelineNameRef: React.MutableRefObject<string>
@@ -233,7 +236,7 @@ function previewErrorDetail(err: unknown): string {
 export default function usePipelineAPI({
   selectedNode,
   graphRef, parentGraphRef, submodelsRef,
-  setNodesRaw, setEdgesRaw, setPreamble,
+  setNodesRaw, setEdgesRaw, setSubmodelsRaw, setCurrentSourceFile, setPreamble,
   preambleRef, pipelineNameRef, descriptionRef, sourceFileRef,
   nodeIdCounter: nodeIdCounterRef,
 }: PipelineAPIParams): PipelineAPIReturn {
@@ -287,16 +290,32 @@ export default function usePipelineAPI({
         const data = parsePipelineResponse(raw)
         const pipelineNodes = data.nodes
         const pipelineEdges = data.edges
+        let reconciledEdges = normalizeEdges(pipelineEdges)
+        for (const node of pipelineNodes) {
+          if (nodeData(node).nodeType !== NODE_TYPES.API_INPUT) continue
+          reconciledEdges = reconcileApiInputEdges({
+            nodeId: node.id,
+            config: nodeData(node).config,
+            edges: reconciledEdges,
+            pruneNamedStale: false,
+          }).edges
+        }
         setNodesRaw(pipelineNodes)
-        setEdgesRaw(normalizeEdges(pipelineEdges))
+        setEdgesRaw(reconciledEdges)
         if (data.preamble != null) {
           setPreamble(data.preamble)
           preambleRef.current = data.preamble
         }
         if (data.pipeline_name) pipelineNameRef.current = data.pipeline_name
         if (data.pipeline_description != null) descriptionRef.current = data.pipeline_description
-        if (data.source_file) sourceFileRef.current = data.source_file
-        if (data.submodels != null) submodelsRef.current = data.submodels
+        if (data.source_file) {
+          sourceFileRef.current = data.source_file
+          setCurrentSourceFile?.(data.source_file)
+        }
+        if (data.submodels != null) {
+          submodelsRef.current = data.submodels
+          setSubmodelsRaw?.(data.submodels)
+        }
         // Populate source state from backend sidecar
         if (data.sources) {
           useSettingsStore.getState().setSources(data.sources)
@@ -307,9 +326,9 @@ export default function usePipelineAPI({
         nodeIdCounterRef.current = computeNextNodeId(pipelineNodes)
         // The loaded pipeline IS the on-disk state — mark it saved so
         // isDirty returns false until the user edits something.  The
-        // preceding setNodesRaw / setEdgesRaw / setPreamble have already
-        // written into useGraphStore, so markSaved captures the exact
-        // snapshot we just loaded.
+        // preceding setNodesRaw / setEdgesRaw / setPreamble /
+        // setSubmodelsRaw have already written into useGraphStore, so
+        // markSaved captures the exact snapshot we just loaded.
         useGraphStore.getState().markSaved()
         if (data.warning) addToast("warning", data.warning)
         setLoading(false)
@@ -324,7 +343,7 @@ export default function usePipelineAPI({
       disposed = true
       controller.abort()
     }
-  }, [setNodesRaw, setEdgesRaw, setPreamble, preambleRef, pipelineNameRef, descriptionRef, sourceFileRef, submodelsRef, nodeIdCounterRef, addToast])
+  }, [setNodesRaw, setEdgesRaw, setSubmodelsRaw, setCurrentSourceFile, setPreamble, preambleRef, pipelineNameRef, descriptionRef, sourceFileRef, submodelsRef, nodeIdCounterRef, addToast])
 
   const fetchPreviewImmediate = useCallback((node: Node, existingRequestId?: number, options?: { bypassCache?: boolean }) => {
     const requestId = existingRequestId ?? ++previewRequestSeq.current
@@ -878,14 +897,19 @@ export default function usePipelineAPI({
     // if a newer save hasn't already landed (concurrency guard via
     // saveRequestSeq / appliedSaveSeq).
     const savePreamble = preambleRef.current
-    const savedSnapshot = captureGraphSnapshot({ nodes: n, edges: e, preamble: savePreamble })
     const saveSubmodels = structuredClone(submodelsRef.current)
+    const savedSnapshot = captureGraphSnapshot({
+      nodes: n,
+      edges: e,
+      preamble: savePreamble,
+      submodels: saveSubmodels,
+    })
     const saveRequestId = ++saveRequestSeq.current
     try {
       const data = await savePipeline({
         name: pipelineNameRef.current,
         description: descriptionRef.current,
-        graph: { nodes: savedSnapshot.nodes, edges: savedSnapshot.edges, submodels: saveSubmodels },
+        graph: { nodes: savedSnapshot.nodes, edges: savedSnapshot.edges, submodels: savedSnapshot.submodels },
         preamble: savePreamble,
         source_file: sourceFileRef.current,
         sources: sc,

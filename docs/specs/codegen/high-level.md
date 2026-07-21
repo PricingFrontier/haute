@@ -86,6 +86,18 @@ Out of scope (owned by neighbouring components):
   (`_error_on_name_collisions`), checked globally across the root graph and
   every submodel — not per file — because the flattened runtime graph is
   keyed by the sanitized name across module boundaries.
+- **Function parameters are the listed input names, 1:1.** Each parameter of a
+  generated node function is the *input name* of one incoming edge, derived by
+  `haute._graph_utils.edge_input_name` in edge order: an `apiInput`-frame edge
+  contributes its frame label verbatim (labels are validated as ASCII Python
+  identifiers by the api-input schema), every other edge the sanitised
+  source-node label. A frame emitted as `quotes` is therefore callable as
+  `quotes` in every downstream body — the same string the editor lists as the
+  input. Two incoming edges of one node deriving the same parameter name are a
+  hard `ParseError` at codegen time; parameters are never disambiguated with
+  hidden numeric suffixes. Every `apiInput` edge emits an explicit
+  `source_port` in its connect call — including a sole-frame source — so the
+  file itself always names the frame each parameter binds.
 - **Submodel-aware.** A graph with no `graph.submodels` produces exactly one
   file. A graph with submodels produces one file per submodel (default path
   `modules/<name>.py`) plus a main file that imports them via
@@ -168,11 +180,17 @@ Out of scope (owned by neighbouring components):
   comments, string literals containing the word "return," and multi-line
   `return (...)` all defeat a textual scan. `_code_extraction._outermost_returns`
   walks the AST and stops descending at any node that opens a new scope.
-- **De-duplication of function parameters is cosmetic only.** Multiple edges
-  from the same upstream node produce duplicate `source_names`; binding is
-  positional, so `_dedup_param_names` only needs to keep the emitted
-  parameter list syntactically valid (no repeated identifiers), not
-  semantically meaningful.
+- **Parameter names are semantic, never cosmetically deduplicated.** An
+  earlier design derived every parameter from the source-*node* label and
+  suffixed duplicates (`name_2`) because binding is positional and the names
+  were "cosmetic". That made the two frames of one `apiInput`
+  indistinguishable in code (`Quote_Input_1` vs `Quote_Input_1_2`), hid the
+  real frame names the editor displays, and — worse — meant reconnecting
+  edges in a different order silently re-bound an unchanged body to different
+  frames. Deriving each name from its own edge (`edge_input_name`) makes the
+  name travel with the frame: binding is still positional in mechanism, but a
+  reorder reorders the signature rather than re-meaning a name, and a
+  collision is a loud error instead of a hidden rename.
 
 ## Interactions
 
@@ -231,6 +249,13 @@ execution time on a mis-wired pipeline). Concretely:
   Python identifier, anywhere in the root graph or any submodel) →
   `ParseError` enumerating every colliding bucket, from
   `_error_on_name_collisions`.
+- **Input-name collisions on one node** (two incoming edges deriving the same
+  parameter name — e.g. a frame labelled `clean_data` alongside an upstream
+  node whose label sanitises to `clean_data`) → `ParseError` naming the
+  target node and the colliding input name; never a silent `_2` suffix. The
+  frontend rejects creating such a connection at drag time with the same
+  rule, so this backend error is the authoritative backstop, not the first
+  line of defence.
 - **Malformed submodel cross-boundary edge** (missing/wrong-prefixed handle,
   or a handle referencing a child id that doesn't exist in that submodel) →
   `ParseError` from `graph_to_code_multi` / `_resolve_submodel_endpoint`,

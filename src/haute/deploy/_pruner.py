@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
+from haute._graph_utils import edge_input_name
 from haute._logging import get_logger
 from haute.graph_utils import (
     GraphEdge,
     GraphNode,
     NodeType,
     PipelineGraph,
-    _sanitize_func_name,
     ancestors,
 )
 
@@ -19,11 +19,11 @@ def _live_only_edges(
     nodes: list[GraphNode],
     edges: list[GraphEdge],
 ) -> list[GraphEdge]:
-    """Filter edges so liveSwitch nodes only keep their first (live) input.
+    """Filter edges so liveSwitch nodes only keep their live input.
 
-    For deployment we only want the live branch.  The first input edge
-    (by source order matching the function's first parameter) is kept;
-    all other input edges to the liveSwitch are dropped.
+    For deployment we only want the live branch.  Input names are derived
+    from each incoming edge, so multiple frames emitted by one apiInput are
+    routed independently.
     """
     switch_ids: set[str] = set()
     for n in nodes:
@@ -33,45 +33,50 @@ def _live_only_edges(
     if not switch_ids:
         return edges
 
-    # For each switch, identify the first input param name from config
-    switch_live_source: dict[str, str | None] = {}
+    # For each switch, identify the live input name from config and retain
+    # only edges whose shared edge-derived name matches it.
+    switch_live_edge_ids: dict[str, set[str]] = {}
     node_map = {n.id: n for n in nodes}
+
+    def _matching_edge_ids(switch_id: str, input_name: str) -> set[str]:
+        return {
+            edge.id
+            for edge in edges
+            if edge.target == switch_id
+            and edge_input_name(edge, node_map[edge.source]) == input_name
+        }
+
     for sid in switch_ids:
         config = node_map[sid].data.config
         input_scenario_map = config.get("input_scenario_map", {})
-        live_input_name = next(
+        mapped_live_input_name = next(
             (k for k, v in input_scenario_map.items() if v == "live"),
             None,
         )
-        if live_input_name is None:
-            # Fallback: use inputs[0] from config as the live input name,
-            # then match it against edges by label.
+        if mapped_live_input_name is None:
+            # Legacy fallback: use inputs[0] as the live input name and match
+            # it against each connected edge using the same derivation.
             inputs = config.get("inputs", [])
-            live_input_name = inputs[0] if inputs else None
-            if live_input_name:
-                for e in edges:
-                    if e.target == sid:
-                        src_label = node_map[e.source].data.label
-                        if _sanitize_func_name(src_label) == live_input_name:
-                            switch_live_source[sid] = e.source
-                            break
+            live_input_name = inputs[0] if isinstance(inputs, list) and inputs else "<missing>"
         else:
-            for e in edges:
-                if e.target == sid:
-                    src_label = node_map[e.source].data.label
-                    if _sanitize_func_name(src_label) == live_input_name:
-                        switch_live_source[sid] = e.source
-                        break
-            if sid not in switch_live_source:
-                raise ValueError(
-                    f"LiveSwitch node '{sid}': input_scenario_map live input "
-                    f"'{live_input_name}' does not match any connected node"
-                )
+            live_input_name = mapped_live_input_name
+        matching_edges = _matching_edge_ids(sid, live_input_name)
+        if not matching_edges:
+            source = (
+                "input_scenario_map live input"
+                if mapped_live_input_name is not None
+                else "inputs[0]"
+            )
+            raise ValueError(
+                f"LiveSwitch node '{sid}': {source} '{live_input_name}' "
+                "does not match any connected node"
+            )
+        switch_live_edge_ids[sid] = matching_edges
 
     filtered: list[GraphEdge] = []
     for e in edges:
         if e.target in switch_ids:
-            if switch_live_source.get(e.target) == e.source:
+            if e.id in switch_live_edge_ids.get(e.target, set()):
                 filtered.append(e)
         else:
             filtered.append(e)

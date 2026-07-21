@@ -5,7 +5,7 @@ from __future__ import annotations
 import inspect
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Self
+from typing import Any, Self, cast
 
 import polars as pl
 
@@ -462,7 +462,7 @@ class Pipeline(NodeRegistry):
             terminals=[n.name for n in leaves],
         )
 
-    def _execute_transform(self, n: Node, outputs: dict[str, pl.DataFrame]) -> None:
+    def _execute_transform(self, n: Node, outputs: dict[str, Any]) -> None:
         """Resolve *n*'s wired inputs from *outputs* and store its result.
 
         Shared by :meth:`run` and :meth:`score`.  Fails loud when the node
@@ -470,12 +470,12 @@ class Pipeline(NodeRegistry):
         node carries unresolved instance references the standalone executor
         cannot honour.
         """
-        input_names = self._get_inputs(n.name)
-        if not input_names:
+        input_edges = self._get_input_edges(n.name)
+        if not input_edges:
             raise ValueError(
                 f"Node '{n.name}' has no inbound edges. Use pipeline.connect() to wire it up."
             )
-        missing = [name for name in input_names if name not in outputs]
+        missing = [edge.source for edge in input_edges if edge.source not in outputs]
         if missing:
             raise ValueError(
                 f"Node '{n.name}' is missing input(s) from: {missing}. "
@@ -488,7 +488,24 @@ class Pipeline(NodeRegistry):
                 "the graph executor, or inline the referenced logic into this node.",
                 node=n.name,
             )
-        input_dfs = [outputs[name] for name in input_names]
+        from haute._execute_lazy import _pick_source_frame
+
+        input_dfs: list[pl.DataFrame] = [
+            cast(
+                pl.DataFrame,
+                _pick_source_frame(
+                    outputs[edge.source],
+                    GraphEdge(
+                        id=_edge_id(edge.source, edge.target, edge.source_port, edge.target_port),
+                        source=edge.source,
+                        target=edge.target,
+                        sourceHandle=edge.source_port,
+                        targetHandle=edge.target_port,
+                    ),
+                ),
+            )
+            for edge in input_edges
+        ]
         outputs[n.name] = n(*input_dfs)
 
     def run(self) -> pl.DataFrame:
@@ -501,7 +518,7 @@ class Pipeline(NodeRegistry):
         _token = _scenario_ctx.set("batch")
         try:
             order = self._topo_order()
-            outputs: dict[str, pl.DataFrame] = {}
+            outputs: dict[str, Any] = {}
 
             for n in order:
                 if n.is_source:
@@ -509,11 +526,11 @@ class Pipeline(NodeRegistry):
                 else:
                     self._execute_transform(n, outputs)
 
-            return outputs[self._resolve_output_node(order).name]
+            return cast(pl.DataFrame, outputs[self._resolve_output_node(order).name])
         finally:
             _scenario_ctx.reset(_token)
 
-    def score(self, df: pl.DataFrame) -> pl.DataFrame:
+    def score(self, df: pl.DataFrame | dict[str, pl.DataFrame]) -> pl.DataFrame:
         """Run the pipeline on an input DataFrame, seeding the live input.
 
         Sources marked as the live API input — via the ``@pipeline.api_input``
@@ -532,7 +549,7 @@ class Pipeline(NodeRegistry):
         _token = _scenario_ctx.set("live")
         try:
             order = self._topo_order()
-            outputs: dict[str, pl.DataFrame] = {}
+            outputs: dict[str, Any] = {}
 
             sources = [n for n in order if n.is_source]
             deploy_inputs = [n for n in sources if n.is_deploy_input]
@@ -551,10 +568,46 @@ class Pipeline(NodeRegistry):
                     sources=[n.name for n in sources],
                 )
 
-            seed_names = {n.name for n in (deploy_inputs or sources)}
+            seed_nodes = deploy_inputs or sources
+            seed_names = {n.name for n in seed_nodes}
+            connected_ports = list(
+                dict.fromkeys(
+                    edge.source_port
+                    for edge in self._edges
+                    if edge.source in seed_names and edge.source_port is not None
+                )
+            )
+            if isinstance(df, dict):
+                expected_ports = set(connected_ports)
+                supplied_ports = set(df)
+                if not expected_ports:
+                    unknown_ports = sorted(supplied_ports)
+                    raise ExecutionError(
+                        "score() received a frame dictionary for a source with no connected ports.",
+                        source_nodes=sorted(seed_names),
+                        unknown_ports=unknown_ports,
+                    )
+                missing_ports = sorted(expected_ports - supplied_ports)
+                unknown_ports = sorted(supplied_ports - expected_ports)
+                if missing_ports or unknown_ports:
+                    raise ExecutionError(
+                        "score() frame dictionary must match the connected source ports exactly.",
+                        connected_ports=connected_ports,
+                        missing_ports=missing_ports,
+                        unknown_ports=unknown_ports,
+                    )
+                seed_value: Any = df
+            else:
+                if len(connected_ports) > 1:
+                    raise ExecutionError(
+                        "score() cannot seed a bare DataFrame across multiple "
+                        "connected source ports; provide a frame dictionary.",
+                        connected_ports=connected_ports,
+                    )
+                seed_value = df
             for n in sources:
                 if n.name in seed_names:
-                    outputs[n.name] = df
+                    outputs[n.name] = seed_value
                 else:
                     # Not a deploy input - run its own load logic.
                     outputs[n.name] = n()
@@ -564,7 +617,7 @@ class Pipeline(NodeRegistry):
                     continue
                 self._execute_transform(n, outputs)
 
-            return outputs[self._resolve_output_node(order).name]
+            return cast(pl.DataFrame, outputs[self._resolve_output_node(order).name])
         finally:
             _scenario_ctx.reset(_token)
 

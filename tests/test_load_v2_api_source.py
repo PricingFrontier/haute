@@ -2,8 +2,8 @@
 
 ``load_v2_api_source`` is the single function both the executor's source
 builder and the generated/deploy code now call, so its behaviour (emit
-checks, working→committed cache resolution, single/multi-port return) is the
-contract that keeps the two paths from drifting.
+checks, working→committed cache resolution, uniform per-port return shape) is
+the contract that keeps the two paths from drifting.
 """
 
 from __future__ import annotations
@@ -53,13 +53,15 @@ def _build(data_path: Path, config: dict[str, Any], layer: str = "working") -> N
     build_per_port_cache(str(data_path), config, _json_cache_dir(str(data_path), layer))
 
 
-def test_single_port_returns_bare_lazyframe(tmp_path: Path) -> None:
+def test_single_port_returns_one_entry_dict(tmp_path: Path) -> None:
     data = _write(tmp_path, [{"id": 1}, {"id": 2}])
     cfg = {"tables": [_table("$[:]", "root", [_col("id", "$[:].id")])]}
     _build(data, cfg)
     out = load_v2_api_source(str(data), cfg)
-    assert isinstance(out, pl.LazyFrame)
-    assert out.collect()["id"].to_list() == [1, 2]
+    assert isinstance(out, dict)
+    assert list(out) == ["root"]
+    assert isinstance(out["root"], pl.LazyFrame)
+    assert out["root"].collect()["id"].to_list() == [1, 2]
 
 
 def test_multi_port_returns_dict_in_schema_order(tmp_path: Path) -> None:
@@ -74,6 +76,8 @@ def test_multi_port_returns_dict_in_schema_order(tmp_path: Path) -> None:
     out = load_v2_api_source(str(data), cfg)
     assert isinstance(out, dict)
     assert list(out) == ["root", "drivers"]
+    assert all(isinstance(frame, pl.LazyFrame) for frame in out.values())
+    assert out["root"].collect()["id"].to_list() == [1]
     assert out["drivers"].collect()["age"].to_list() == [30, 40]
 
 
@@ -212,5 +216,7 @@ def test_falls_back_to_committed_layer(tmp_path: Path) -> None:
     # Only the committed layer is populated (the deploy / fresh-server case).
     _build(data, cfg, layer="committed")
     out = load_v2_api_source(str(data), cfg)
-    assert isinstance(out, pl.LazyFrame)
-    assert out.collect()["id"].to_list() == [7]
+    assert isinstance(out, dict)
+    assert list(out) == ["root"]
+    assert isinstance(out["root"], pl.LazyFrame)
+    assert out["root"].collect()["id"].to_list() == [7]

@@ -74,9 +74,12 @@
    `config.output=True`, else `ValueError`.
 5. `prune_for_deploy(full_graph, output_node_id)` → `pruned_graph`, kept ids, removed ids.
    Internally: `_live_only_edges()` first drops every non-live input edge into each
-   `liveSwitch` node (matched by `input_scenario_map` or, as a fallback, by matching
-   `inputs[0]` against an edge's source label), then `ancestors()` walks backward from the
-   output node over the filtered edge set.
+   `liveSwitch` node — selection is **per edge**, matching `input_scenario_map`'s
+   `"live"`-valued key against each edge's input name
+   (`haute._graph_utils.edge_input_name`), never per source node, so two frames from
+   one apiInput mapped `quotes=live, drivers=batch` keep exactly the `quotes` edge (the
+   legacy fallback matches `inputs[0]` the same way) — then `ancestors()` walks backward
+   from the output node over the filtered edge set.
 6. `find_deploy_input_nodes(pruned_graph)` — nodes with `nodeType="apiInput"`. If none,
    fall back to the single source node in the pruned graph (`ValueError` if zero or
    multiple non-apiInput sources exist).
@@ -221,12 +224,15 @@ JSON have separate structured payloads. A body exactly at the configured limit i
   mutation via `.override()`, env overrides, or direct attribute writes after
   construction — the actual last chokepoint before a build is committed).
 - **`liveSwitch` live-branch resolution has two paths**: primary is matching
-  `input_scenario_map`'s `"live"`-valued key against a connected edge's source label; if
-  no `input_scenario_map` exists, fallback matches `config["inputs"][0]` (positional) the
-  same way. If an explicit `input_scenario_map` names a live input that doesn't match any
-  connected edge, `ValueError`. If the legacy `inputs[0]` fallback matches nothing, the
-  current implementation records no live source and silently drops all incoming switch
-  edges.
+  `input_scenario_map`'s `"live"`-valued key against a connected edge's **input name**
+  (`haute._graph_utils.edge_input_name` — the frame label for an apiInput-frame edge,
+  the sanitised source label otherwise; the same derivation the executor, projection,
+  and codegen use, so two frames from one apiInput are individually routable); if no
+  `input_scenario_map` exists, fallback matches `config["inputs"][0]` (positional) the
+  same way. Both paths fail loud: if an explicit `input_scenario_map` names a live input
+  that doesn't match any connected edge, or the legacy `inputs[0]` fallback is absent or
+  matches no edge, a `ValueError` names the switch and the unmatched input — the pruner
+  never records an empty live set and silently drops all incoming switch edges.
 - **Feature-contract bundling filename convention**: the bundler only looks for a bare
   `feature_contract.json` sitting next to a downloaded model (the MLflow-download-cache
   convention); training itself writes per-model `{name}.feature_contract.json` and never

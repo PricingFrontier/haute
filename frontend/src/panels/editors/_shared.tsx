@@ -17,7 +17,14 @@ export const SELECT_STYLE = INPUT_STYLE
 
 // ─── Shared Types ─────────────────────────────────────────────────
 
-export type OnUpdateConfig = (keyOrUpdates: string | Record<string, unknown>, value?: unknown) => void
+export type OnUpdateConfigResult =
+  | { ok: true }
+  | { ok: false; error: string }
+
+export type OnUpdateConfig = (
+  keyOrUpdates: string | Record<string, unknown>,
+  value?: unknown,
+) => OnUpdateConfigResult
 
 export type FileItem = {
   name: string
@@ -28,10 +35,18 @@ export type FileItem = {
 
 export type InputSource = {
   sourceNodeId: string
-  varName: string
+  /** The executable input name derived from this edge. */
+  name: string
   sourceLabel: string
   edgeId: string
+  frameUnresolved?: boolean
 }
+
+// Shared by editor components; this intentional non-component export is the
+// single title contract for unresolved API-input frame labels.
+// eslint-disable-next-line react-refresh/only-export-components
+export const unresolvedFrameTitle = (sourceLabel: string): string =>
+  `No emitted frame resolves for this connection (from ${sourceLabel})`
 
 export type SchemaInfo = {
   path: string
@@ -381,20 +396,43 @@ export function InputSourcesBar({
         <span className="text-[11px] font-bold uppercase tracking-[0.08em]" style={{ color: 'var(--text-muted)' }}>
           {inputSources.length > 1 ? "Inputs" : "Input"}
         </span>
-        {inputSources.map((src) => (
-          <span key={src.varName} className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded" style={{ background: 'var(--accent-soft)' }}>
-            <code className="text-[11px] font-semibold" style={{ color: 'var(--accent)' }}>{src.varName}</code>
-            {onDeleteInput && (
-              <button
-                onClick={() => onDeleteInput(src.edgeId)}
-                className="icon-danger-btn p-0 rounded"
-                title={`Remove connection from ${src.sourceLabel}`}
-              >
-                <X size={10} />
-              </button>
-            )}
-          </span>
-        ))}
+        {inputSources.map((src) => {
+          const unresolvedTitle = unresolvedFrameTitle(src.sourceLabel)
+          return (
+            <span
+              key={src.edgeId}
+              data-testid={`input-source-${src.edgeId}`}
+              data-unresolved={src.frameUnresolved ? "true" : undefined}
+              aria-label={src.frameUnresolved ? "Unresolved frame" : undefined}
+              title={src.frameUnresolved ? unresolvedTitle : `from ${src.sourceLabel}`}
+              className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded"
+              style={{
+                background: src.frameUnresolved ? 'var(--warning-soft-subtle)' : 'var(--accent-soft)',
+                border: src.frameUnresolved ? '1px solid var(--warning)' : undefined,
+              }}
+            >
+              {src.frameUnresolved && (
+                <AlertTriangle
+                  size={11}
+                  aria-hidden="true"
+                  style={{ color: 'var(--warning)' }}
+                />
+              )}
+              <code className="min-w-0 overflow-hidden text-ellipsis whitespace-pre text-[11px] font-semibold" style={{ color: src.frameUnresolved ? 'var(--warning)' : 'var(--accent)', whiteSpace: "pre" }}>
+                {src.name}
+              </code>
+              {onDeleteInput && (
+                <button
+                  onClick={() => onDeleteInput(src.edgeId)}
+                  className="icon-danger-btn p-0 rounded"
+                  title={`Remove connection from ${src.sourceLabel}`}
+                >
+                  <X size={10} />
+                </button>
+              )}
+            </span>
+          )
+        })}
       </div>
     </div>
   )

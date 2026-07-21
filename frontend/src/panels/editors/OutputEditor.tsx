@@ -6,11 +6,10 @@ import {
   useRef,
   type CSSProperties,
 } from "react"
-import { ChevronRight, ChevronDown, Plus, X, Wand2, Pencil, Check } from "lucide-react"
+import { ChevronRight, ChevronDown, Plus, X, Wand2, Pencil, Check, AlertTriangle } from "lucide-react"
 import type { OnUpdateConfig, SimpleNode, SimpleEdge } from "./_shared"
 import { EditorLabel } from "../../components/form"
 import { useGraph } from "../useGraph"
-import { sanitizeName } from "../../utils/sanitizeName"
 import { buildGraph } from "../../utils/buildGraph"
 import useSettingsStore from "../../stores/useSettingsStore"
 import { outputAssembleDryRun, previewNode, ApiError } from "../../api/client"
@@ -22,6 +21,8 @@ import {
   dropMappingHeader,
 } from "./outputPathTools"
 import { nonCanonicalHint, nonCanonicalNote } from "./pathCanonicalWarning"
+import { NODE_TYPES } from "../../utils/nodeTypes"
+import { apiInputFrameLabels, edgeInputName } from "../../utils/apiInputPorts"
 
 // ─── Preview chunk size ───────────────────────────────────────────
 //
@@ -65,16 +66,22 @@ import {
  * fallback collapsed them and tripped `OutputMappingSchemaError`). Falls back
  * to the sanitised source-node id when the label is missing.
  */
-function framePortId(edge: SimpleEdge, sourceNode: SimpleNode | undefined): string {
-  if (edge.sourceHandle) return edge.sourceHandle
-  const label = sourceNode?.data.label
-  return sanitizeName(typeof label === "string" && label ? label : edge.source)
+function framePortId(
+  edge: SimpleEdge,
+  sourceNode: SimpleNode | undefined,
+  submodels?: Record<string, unknown>,
+): string {
+  if (!sourceNode) {
+    throw new Error(`Cannot derive output frame name for edge ${edge.id}: source node ${edge.source} is missing`)
+  }
+  return edgeInputName(edge, sourceNode, submodels)
 }
 
-/** The user-facing frame name for an edge: the handle, else the source label. */
-function frameLabel(edge: SimpleEdge, sourceNode: SimpleNode | undefined): string {
-  if (edge.sourceHandle) return edge.sourceHandle
-  return sourceNode?.data.label ?? edge.source
+function frameIsUnresolved(edge: SimpleEdge, sourceNode: SimpleNode | undefined): boolean {
+  return sourceNode?.data.nodeType === NODE_TYPES.API_INPUT
+    && (edge.sourceHandle === null
+      || edge.sourceHandle === undefined
+      || !apiInputFrameLabels(sourceNode.data.config).includes(edge.sourceHandle))
 }
 
 /**
@@ -294,15 +301,18 @@ export default function OutputEditor({
     () =>
       incomingEdges.map((edge) => {
         const sourceNode = nodeById[edge.source]
+        const name = framePortId(edge, sourceNode, submodels)
         return {
           edge,
           sourceNode,
-          port: framePortId(edge, sourceNode),
-          label: frameLabel(edge, sourceNode),
+          parentLabel: sourceNode.data.label,
+          port: name,
+          label: name,
+          frameUnresolved: frameIsUnresolved(edge, sourceNode),
           columns: frameColumns(edge, sourceNode),
         }
       }),
-    [incomingEdges, nodeById],
+    [incomingEdges, nodeById, submodels],
   )
 
   // Per-frame INPUT schema (columns + types) for the expandable "Frames (N)"
@@ -862,7 +872,7 @@ export default function OutputEditor({
           />
 
           <div className="space-y-2">
-            {frames.map(({ edge, sourceNode, port, label, columns }, ei) => {
+            {frames.map(({ edge, sourceNode, parentLabel, port, label, frameUnresolved, columns }, ei) => {
               const rows = rowsForPort(port)
               const isOpen = expanded[edge.id] ?? false
               const anyEnabled = rows.some((r) => r.entry.enabled)
@@ -872,6 +882,8 @@ export default function OutputEditor({
                   key={edge.id}
                   testIdPrefix={`output-frame-${ei}`}
                   label={label}
+                  parentLabel={parentLabel}
+                  frameUnresolved={frameUnresolved}
                   port={port}
                   columns={columns}
                   rows={rows}
@@ -921,6 +933,8 @@ export default function OutputEditor({
 function FrameBlock({
   testIdPrefix,
   label,
+  parentLabel,
+  frameUnresolved,
   port,
   columns,
   rows,
@@ -943,6 +957,8 @@ function FrameBlock({
 }: {
   testIdPrefix: string
   label: string
+  parentLabel: string
+  frameUnresolved: boolean
   port: string
   columns: string[]
   rows: { entry: OutputMappingEntryV2; index: number }[]
@@ -1096,11 +1112,32 @@ function FrameBlock({
             <ChevronRight size={14} style={{ color: "var(--text-muted)" }} className="shrink-0" />
           )}
           <span
-            className="text-xs font-mono font-semibold truncate"
-            style={{ color: "var(--text-primary)" }}
+            className="overflow-hidden text-ellipsis whitespace-pre text-xs font-mono font-semibold"
+            style={{ color: "var(--text-primary)", whiteSpace: "pre" }}
           >
+            {frameUnresolved && (
+              <span
+                data-testid="output-frame-parent-label"
+                className="shrink-0 text-xs font-semibold"
+                style={{ color: "var(--text-primary)" }}
+              >
+                {parentLabel}
+              </span>
+            )}
             {label}
           </span>
+          {frameUnresolved && (
+            <span
+              data-testid="output-frame-unresolved"
+              role="img"
+              aria-label="Unresolved frame"
+              title="No emitted frame resolves for this connection"
+              className="shrink-0"
+              style={{ color: "var(--warning)" }}
+            >
+              <AlertTriangle size={11} />
+            </span>
+          )}
           <span className="text-[10px] shrink-0" style={{ color: "var(--text-muted)" }}>
             {rows.length} {rows.length === 1 ? "field" : "fields"}
           </span>

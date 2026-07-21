@@ -61,7 +61,12 @@ of the source data file, so a later request can tell — without re-reading the 
 whether the cache is still valid for the schema currently configured and the data
 file currently on disk. Schema inference can sniff a v2 config from a data file
 directly, sampling optionally, widening column types across every record seen and
-naming collision-free bare leaf keys as their own column names.
+naming collision-free bare leaf keys as their own column names. Inferred table
+labels are readable identifiers derived from the source key names — the root
+table is `root`, `$[:].proposer.claims[:]` becomes `claims`, and two levels
+sharing a key name qualify symmetrically (`a_items`/`b_items`) — never raw path
+strings, so an inferred schema is immediately valid under the label rule below
+and its labels read as the argument names they will become.
 
 Every array element the shred sees is accounted for: it either becomes a row in some
 table, or is counted as a skip against that table (its shape didn't match — an
@@ -69,7 +74,17 @@ object where a scalar was expected, or vice versa), or — for a non-object top-
 record — is counted as a skipped record. No element silently disappears.
 
 **V2 schema and output document.** A v2 apiInput is recognised only by a
-`tables` list. Each table has a unique non-empty label, a non-empty path,
+`tables` list. Each table has a non-empty label — unique case-insensitively,
+because labels become parquet filename stems and Windows/macOS filesystems
+fold case — that must be an ASCII Python identifier and not a hard keyword — the label is the frame's identity
+end-to-end (canvas handle, downstream input name, and the generated
+function's parameter), so it is constrained to what an argument name can be,
+with zero transformation anywhere. ASCII is deliberate, not incidental:
+Python NFKC-normalises source identifiers, so a non-NFKC Unicode label would
+silently become a *different* parameter name when the generated file is
+parsed — the exact hidden mapping this rule forbids — and ASCII lets the
+frontend mirror the rule exactly instead of approximating Unicode
+`str.isidentifier()`. Each table also carries a non-empty path,
 unique column names, known column types, and an optional row-ID column that must name one of its own
 columns. Table paths end at an array boundary; columns may live at that boundary
 or at an ancestor boundary so an ancestor value can be distributed into child

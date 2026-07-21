@@ -5,7 +5,7 @@
 | File | Responsibility |
 |---|---|
 | `src/haute/pipeline.py` | `Node` / `NodeRegistry` / `Pipeline` / `Submodel`: the decorator API, `connect()`, the standalone `run()`/`score()` executor, `to_graph()` (live-object → React-Flow dict). |
-| `src/haute/_config_builder.py` | Per-node-type config dict construction from decorator kwargs + function body (`_build_node_config`); sidecar resolution and the parse-time `contract=` cross-check (`_resolve_node_config`). |
+| `src/haute/_config_builder.py` | Per-node-type config dict construction from decorator kwargs + function body (`_build_node_config`); sidecar resolution and the parse-time `contract=` cross-check (`_resolve_node_config`). `config["inputs"]` records the function's parameter names verbatim — under input-identity convergence these ARE the per-edge input names (`edge_input_name`: frame labels for apiInput edges, sanitised source labels otherwise), the same strings `input_scenario_map` keys and instance `inputMapping` values reference. |
 | `src/haute/_config_io.py` | Sidecar JSON path conventions (`NODE_TYPE_TO_FOLDER`), read/write helpers, `collect_node_configs` (graph → sidecar files), Windows-reserved-filename guard. |
 | `src/haute/_config_validation.py` | `VALID_KEYS` registry derived from each node type's `TypedDict`, and `warn_unrecognized_config_keys`. |
 | `src/haute/_builders.py` | Cross-component dependency owned by [execution-engine](../execution-engine/low-level.md): registers each per-`NodeType` runtime builder and its column-contract callback in `NODE_REGISTRY`. Pipeline-config consumes those callbacks through `src/haute/_contracts.py`; it does not own the runtime closures. |
@@ -102,8 +102,9 @@ in-memory `_edges`/`_nodes` via `haute.graph_utils.topo_sort_ids` (raising `Cycl
 cycle). With no edges, `_topo_order` returns registration order; it does not create a chain.
 Execution then fails at `_execute_transform` if a non-source node has no inbound edge, rather
 than inferring one from its parameter names. Otherwise it executes each `Node`'s `fn`, threading
-DataFrames along declared edges, and resolves the return value through
-`_resolve_output_node`: an explicit `@pipeline.output` node wins if there is exactly one;
+DataFrames along declared edges — each edge's frame resolved port-aware through the shared
+`_pick_source_frame` selection on `RegisteredEdge.source_port` — and resolves the return value
+through `_resolve_output_node`: an explicit `@pipeline.output` node wins if there is exactly one;
 otherwise the single node with no outgoing edge; otherwise raise, naming every candidate node.
 `Pipeline.to_graph()` independently converts the same live objects into a React-Flow-shaped
 plain `dict`, inferring each node's display type from `config["_node_type"]` if present, else
@@ -254,7 +255,12 @@ artifact paths (from the `_CI_ARTIFACTS` map) and removes the resulting empty
   `topo_sort_ids` through `Pipeline._topo_order` with the participating node names.
 - **`ExecutionError`** (`haute.errors`) — live node arity mismatch; multiple explicit output
   nodes; ambiguous terminal nodes; multiple or ambiguous `score()` seed sources; unresolved
-  `instanceOf`/`inputMapping` references in the standalone executor.
+  `instanceOf`/`inputMapping` references in the standalone executor; a bare-frame `score()`
+  seed against a source with two or more distinct connected `source_port`s; a dict seed whose
+  keys do not exactly match the distinct connected ports (missing and unknown port names are
+  both listed in the message — a one-port source accepts only the exact one-key dict); and a
+  dict seed of any content against a zero-port source (source-only pipelines take a bare
+  frame).
 - **`ValueError`** — empty live pipeline; an unwired non-source node or missing upstream result
   during `Pipeline.run()`/`score()`; unknown source or target node in `connect()`; empty-string
   port name; duplicate key in a sidecar JSON object
@@ -285,7 +291,12 @@ API and real JSON round-trips rather than mocks:
   (`TestDuplicateNodeName`), instance-reference fail-loud behaviour
   (`TestInstanceReferencesFailLoud`), the API-input deploy-seed marker
   (`TestApiInputDecoratorMarksSeed`), and `to_graph()` shape/inference (`TestPipelineEdgeCases`
-  and scattered `to_graph` tests across other classes).
+  and scattered `to_graph` tests across other classes). The input-identity release adds the
+  full `score()` seed matrix here: bare frame accepted at zero ports (source-only) and one
+  port; bare frame rejected at 2+ ports; exact one-key dict accepted at one port; dict
+  rejected with missing keys, with unknown extra keys, and against a zero-port source — every
+  rejection an `ExecutionError` naming the ports — plus `run()` port-aware frame selection
+  for one- and many-frame apiInput sources.
 - **`test_config_io.py`** + **`test_config_io_gaps.py`** (~97 tests) — sidecar save/load
   round-trips, path conventions (`TestConfigPathForNode`), Windows-reserved-filename rejection
   (`TestIsWindowsReservedFilename`), `collect_node_configs` (including load-error protection

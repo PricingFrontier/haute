@@ -86,7 +86,30 @@ Submodel graph expansion and boundary rewiring are owned by
 **V2 codec** — `validate_v2_schema(config)` first requires the `tables` list,
 then validates each table's label/path/columns, unique raw and sanitised
 labels, unique column names, supported column type/levels shapes, ancestor-or-own
-column paths, and `row_id_column`. `parse_table_path`/`parse_column_path_full`/
+column paths, and `row_id_column`. Labels must additionally be ASCII-only
+Python identifiers and not hard keywords — `label.isascii() and
+label.isidentifier() and not keyword.iskeyword(label)` (invariant B4): the
+label is consumed verbatim as the downstream parameter name by codegen and
+the executor, so an invalid label would only fail later and further from its
+cause. ASCII is part of the invariant, not a convenience: Python
+NFKC-normalises source identifiers (PEP 3131), so a non-NFKC Unicode label
+would silently bind under a *different* parameter name once the generated
+file is parsed — exactly the hidden mapping the label≡argument identity
+forbids — and the ASCII rule is mirrorable exactly in the frontend, where
+Unicode `str.isidentifier()` is not. Soft keywords (`match`, `case`, `type`,
+`_`) are legal parameter names and stay allowed. Under B4 the B2
+sanitised-collision check compares **casefolded** filesystem stems
+(`sanitise_label_for_filesystem(label).casefold()`): parquet caches live on
+case-insensitive filesystems (Windows/macOS), where `Items.parquet` and
+`items.parquet` are one file, so two labels differing only by case would
+silently clobber a frame at build time. ASCII identifier labels are fixed
+points of the sanitiser, so post-B4 a case-only collision is the *only* way
+two distinct valid labels can meet at one stem — B2 rejects the pair loudly,
+naming both labels and the shared stem. Inference's casefold-aware
+uniqueness pass guarantees inferred schemas never trip it. The frontend
+mirrors B4 in `apiInputLabelIssue` (ASCII-identifier regex plus the
+hard-keyword list) and treats duplicates case-insensitively to match B2,
+before commit. `parse_table_path`/`parse_column_path_full`/
 `parse_column_path` delegate grammar acceptance to `_jsonpath.py`; `make_table_path`
 delegates canonical rendering to the same writer.
 
@@ -157,8 +180,12 @@ assembly path currently does not.
 2. Resolve `working/` cache dir; if `is_per_port_cache_valid` fails, fall back to
    `committed/`; if that also fails, raise with `_STALE_CACHE_MESSAGE`.
 3. `load_per_port_cache` — `pl.scan_parquet` per emitting table's parquet.
-4. Return a bare `LazyFrame` if exactly one emitting label, else a
-   `{label: LazyFrame}` dict in schema order.
+4. Return a `{label: LazyFrame}` dict in schema order for every eligible-frame
+   count from one up — there is no bare-frame single-table special case, so a
+   sole frame routes through the same per-edge `source_port` resolution as
+   eight frames (see [execution-engine](../execution-engine/low-level.md)
+   `_pick_source_frame`), and adding or removing a sibling frame never changes
+   the shape a consumer receives.
 
 **Save-time cache promotion** — `mirror_cache_to_committed(data_path)`
 (`_json_flatten.py`):
@@ -211,6 +238,25 @@ accommodation.
    `_assign_column_names` (bare leaf where unique, else the underscore-joined full
    path, with a final numeric-suffix dedup pass) and typed via the widened
    `levels` map. Only the root level defaults `emit=True`.
+4. Label assignment — inferred `label`s are B4-valid identifiers, never raw
+   table paths (`path`/`displayPath` still carry the path). The root level is
+   labelled `root`; every other level is labelled by its innermost array key
+   through `derive_identifier_label(raw)` (`_api_input_schema.py`): the
+   `_sanitize_func_name` character pipeline (strip; spaces/hyphens → `_`;
+   ASCII alnum/underscore kept; other ASCII dropped; non-ASCII reversibly
+   encoded `_x<hex>_`) with frame-flavoured repairs — empty → `table`,
+   digit-leading → `_`-prefixed, hard keyword → trailing `_` (`class` →
+   `class_`). A uniqueness pass in the sorted table order then resolves
+   collisions symmetrically: every table whose label is shared with another
+   is re-labelled with the underscore-join of ALL its level keys (object
+   hops and array keys, each through `derive_identifier_label`) — so
+   `$[:].a.items[:]` and `$[:].b.items[:]` become `a_items`/`b_items`, not
+   `items`/`items_2`; the root's join is empty so it keeps `root`. Any
+   labels still colliding after qualification take deterministic numeric
+   suffixes (`_2`, `_3`, …) in the sorted order, first occurrence keeping
+   its label. The closure property — inference output passes
+   `validate_v2_schema` unchanged (B4 + unique labels) — is a contract, not
+   a coincidence.
 
 **Edge-join execution** — `execute_edge_join(base, join, config,
 collect_eager=False)`: normalises both frames to `LazyFrame`, calls
@@ -328,8 +374,21 @@ Shred / inference / cache lifecycle (`_json_shred.py`, `_json_flatten.py`):
   suites; each pins one specific branch/condition so a mutation-testing run can't
   silently survive a change to it.
 - `tests/test_load_v2_api_source.py` — direct coverage of the shared runtime entry
-  point: emit checks, working→committed fallback, single- vs multi-port return
-  shape.
+  point: emit checks, working→committed fallback, and the uniform
+  `{label: LazyFrame}` return shape from one eligible frame up (the former
+  bare-frame single-table case is pinned as removed). Label invariant B4
+  (ASCII-identifier-only labels; hard keywords rejected; valid *Unicode*
+  identifiers such as `café` rejected with the ASCII rule named in the error)
+  is pinned alongside the existing blank/duplicate cases in the
+  schema-validation suites; the B2 check now compares casefolded stems — a
+  case-only pair such as `Items`/`items` is rejected naming both labels and
+  the shared stem — and the former Unicode B2 witness labels are pinned as
+  B4 rejections instead. Inference label derivation is pinned in the `infer` suites:
+  `derive_identifier_label` character/repair cases (spaces, punctuation,
+  digit-leading, hard keyword, empty, non-ASCII `_x<hex>_` encoding), root →
+  `root`, innermost-key labelling, symmetric collision qualification
+  (`a_items`/`b_items`), the numeric-suffix backstop, and the closure
+  property that inferred output passes `validate_v2_schema` unchanged.
 - `tests/test_json_cache_routes.py` — API integration tests for the build/status/
   delete HTTP routes (404/422/504 shapes, progress reporting).
 - `tests/test_json_cache_integrity.py` — the Wave-2 build/validity/load rework end

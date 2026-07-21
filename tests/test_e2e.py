@@ -95,6 +95,8 @@ class TestEndToEnd:
         }
         assert node_ids == expected_nodes
         assert len(graph.edges) == 6
+        quotes_edge = next(edge for edge in graph.edges if edge.source == "quotes")
+        assert quotes_edge.sourceHandle == "quotes"
 
     def test_execute_all_nodes(self):
         """All nodes execute and the fixture premium matches the oracle."""
@@ -251,8 +253,13 @@ def _make_node(nid: str, label: str, node_type: NodeType, config: dict | None = 
     )
 
 
-def _make_edge(src: str, tgt: str) -> GraphEdge:
-    return GraphEdge(id=f"e_{src}_{tgt}", source=src, target=tgt)
+def _make_edge(src: str, tgt: str, *, source_port: str | None = None) -> GraphEdge:
+    return GraphEdge(
+        id=f"e_{src}_{tgt}",
+        source=src,
+        target=tgt,
+        sourceHandle=source_port,
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -371,7 +378,35 @@ class TestAllNodeTypesRoundtrip:
         # source_names correctly and the parser can reconstruct edges.
         nodes = [
             _make_node("ds", "ds", NodeType.DATA_SOURCE, {"path": _posix_path(data_path)}),
-            _make_node("api", "api", NodeType.API_INPUT, {"path": _posix_path(json_path)}),
+            _make_node(
+                "api",
+                "api",
+                NodeType.API_INPUT,
+                {
+                    "path": _posix_path(json_path),
+                    "tables": [
+                        {
+                            "path": "$[:]",
+                            "label": "api",
+                            "emit": True,
+                            "columns": [
+                                {
+                                    "name": "x",
+                                    "path": "$[:].x",
+                                    "type": "int",
+                                    "selected": True,
+                                },
+                                {
+                                    "name": "region",
+                                    "path": "$[:].region",
+                                    "type": "str",
+                                    "selected": True,
+                                },
+                            ],
+                        }
+                    ],
+                },
+            ),
             _make_node(
                 "const",
                 "const",
@@ -497,7 +532,7 @@ class TestAllNodeTypesRoundtrip:
         # Chain them linearly so every node has a source_name
         edges = [
             _make_edge("ds", "switch"),
-            _make_edge("api", "switch"),
+            _make_edge("api", "switch", source_port="api"),
             _make_edge("switch", "transform"),
             _make_edge("transform", "band"),
             _make_edge("band", "rating"),

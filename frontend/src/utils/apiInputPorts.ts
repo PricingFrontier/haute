@@ -35,7 +35,9 @@
  *     (`reconcileApiInputEdges`), with a visible toast at the call
  *     site. `applyApiInputConfigChange` composes the two.
  */
-import type { SimpleEdge } from "../panels/editors/_shared"
+import type { SimpleEdge, SimpleNode } from "../panels/editors/_shared"
+import { NODE_TYPES } from "./nodeTypes"
+import { sanitizeName } from "./sanitizeName"
 
 type ConfigLike = Record<string, unknown> | undefined | null
 
@@ -71,44 +73,182 @@ function rawLabel(table: Record<string, unknown>): string | null {
   return typeof raw === "string" ? raw : null
 }
 
-/** A label can be a frame name iff it is a non-blank string (backend floor). */
-function isPortableLabel(label: string | null): label is string {
-  return typeof label === "string" && label.trim().length > 0
+const ASCII_IDENTIFIER_RE = /^[A-Za-z_][A-Za-z0-9_]*$/
+const PYTHON_HARD_KEYWORDS = new Set([
+  "False", "None", "True", "and", "as", "assert", "async", "await",
+  "break", "class", "continue", "def", "del", "elif", "else", "except",
+  "finally", "for", "from", "global", "if", "import", "in", "is",
+  "lambda", "nonlocal", "not", "or", "pass", "raise", "return", "try",
+  "while", "with", "yield",
+])
+
+function isValidFrameLabel(label: string | null): label is string {
+  return label !== null && ASCII_IDENTIFIER_RE.test(label) && !PYTHON_HARD_KEYWORDS.has(label)
 }
 
 /**
- * Ordered list of frame labels an apiInput exposes.
+ * Derive the ordered, unique raw labels from runtime-eligible tables.
  *
- * Rules mirror `PipelineNode._SourceHandles` AND the backend runtime
- * (`_json_shred.load_v2_api_source`) so the rendered Handle ids, this
- * list, and the executor's emitted frames are always identical:
- *  - a table counts only if `emit: true` AND it has ≥1 selected column;
+ * This is shared by the visible-frame list and the multi-port handle-mode
+ * helper so both consumers agree on which labelled frames are bindable:
+ *  - only tables already eligible at runtime (`emit: true` and at least one
+ *    selected column) are considered;
  *  - the frame id is the table's RAW label — never a synthesized stand-in;
- *  - a missing / non-string / blank label yields NO frame (the backend
- *    rejects such configs on save; the editor shows the error);
- *  - a label duplicating an earlier frame yields NO frame for the later
- *    table (only the first occurrence is bindable).
+ *  - missing / non-string / blank / non-identifier / keyword labels yield no
+ *    frame;
+ *  - duplicate labels are compared case-insensitively and only the first
+ *    occurrence remains bindable.
  *
- * Returns `[]` for configs with zero or one emit:true table — those
- * render the single default Handle (id `null`), which has no label.
- * (A multi-emit config whose labels are ALL invalid also returns `[]`
- * and falls back to the default Handle: it is backend-invalid and
- * unreachable through the editor, and we refuse to invent bindable
- * frame ids for it.)
+ * This list is consumed unchanged by visible rows, source handles, edge
+ * reconciliation, and derived input-name surfaces.
  */
-export function apiInputEmitPortLabels(config: ConfigLike): string[] {
-  const emit = emitTables(config)
-  if (emit.length < 2) return []
+function eligibleFrameLabels(emit: readonly Record<string, unknown>[]): string[] {
   const seen = new Set<string>()
   const labels: string[] = []
   for (const t of emit) {
     const label = rawLabel(t)
-    if (!isPortableLabel(label)) continue
-    if (seen.has(label)) continue
-    seen.add(label)
+    if (!isValidFrameLabel(label)) continue
+    const folded = label.toLowerCase()
+    if (seen.has(folded)) continue
+    seen.add(folded)
     labels.push(label)
   }
   return labels
+}
+
+/**
+ * Ordered list of every runtime-eligible apiInput frame label.
+ *
+ * This is the only frontend frame-label derivation. A single eligible frame
+ * is labelled exactly like a multi-frame apiInput; only zero eligible frames
+ * use the legacy null-id handle.
+ */
+export function apiInputFrameLabels(config: ConfigLike): string[] {
+  return eligibleFrameLabels(emitTables(config))
+}
+
+type SubmodelsLike = Record<string, unknown> | undefined
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+}
+
+export type SubmodelGraphLike = {
+  nodes: SimpleNode[]
+  edges: SimpleEdge[]
+  submodels: Record<string, unknown>
+}
+
+/** Read either supported submodel metadata shape without inventing a graph. */
+export function submodelGraphFromMetadata(value: unknown): SubmodelGraphLike | undefined {
+  const metadata = isRecord(value) ? value : undefined
+  const graph = metadata && isRecord(metadata.graph) ? metadata.graph : metadata
+  if (!graph || !Array.isArray(graph.nodes)) return undefined
+  return {
+    nodes: graph.nodes as SimpleNode[],
+    edges: Array.isArray(graph.edges) ? graph.edges as SimpleEdge[] : [],
+    submodels: isRecord(graph.submodels) ? graph.submodels : {},
+  }
+}
+
+/** Resolve one synthetic submodel boundary handle to its actual child node. */
+export function resolveSubmodelBoundaryNode(
+  boundaryNode: SimpleNode,
+  handle: string | null | undefined,
+  direction: "in" | "out",
+  submodels: SubmodelsLike,
+): SimpleNode | undefined {
+  const prefix = `${direction}__`
+  if (!boundaryNode.id.startsWith("submodel__") || !handle?.startsWith(prefix)) {
+    return undefined
+  }
+
+  const submodelName = boundaryNode.id.slice("submodel__".length)
+  const graph = submodelGraphFromMetadata(submodels?.[submodelName])
+  if (!graph) {
+    throw new Error(
+      `Cannot resolve ${direction}put handle ${handle} for submodel ${submodelName}: graph nodes are missing`,
+    )
+  }
+  const childId = handle.slice(prefix.length)
+  const child = graph.nodes.find((node) => node.id === childId)
+  if (!child) {
+    throw new Error(
+      `Cannot resolve ${direction}put handle ${handle} for submodel ${submodelName}: child ${childId} is missing`,
+    )
+  }
+  return child
+}
+
+function submodelChildNode(
+  edge: SimpleEdge,
+  sourceNode: SimpleNode,
+  submodels: SubmodelsLike,
+): SimpleNode | undefined {
+  return resolveSubmodelBoundaryNode(sourceNode, edge.sourceHandle, "out", submodels)
+}
+
+/**
+ * Derive the executable input name for one edge.
+ *
+ * API-input frame handles are already canonical names and are returned
+ * verbatim, including a stale non-null handle so the UI can identify the
+ * unresolved edge. Ordinary sources use the shared backend-compatible
+ * sanitizer. A flattened submodel output resolves its `out__` child before
+ * sanitizing, matching code generation's boundary resolution.
+ */
+export function edgeInputName(
+  edge: SimpleEdge,
+  sourceNode: SimpleNode,
+  submodels: SubmodelsLike = undefined,
+): string {
+  if (sourceNode.data.nodeType === NODE_TYPES.API_INPUT) {
+    if (edge.sourceHandle === null || edge.sourceHandle === undefined) {
+      throw new Error(`apiInput edge ${edge.id} has no sourceHandle/frame label`)
+    }
+    return edge.sourceHandle
+  }
+  const resolvedChild = submodelChildNode(edge, sourceNode, submodels)
+  return sanitizeName(resolvedChild?.data.label ?? sourceNode.data.label)
+}
+
+/**
+ * Derive every incoming input name for one executable target. `boundaryNodeId`
+ * identifies the visible target when the executable target is a child behind
+ * an `in__<child>` submodel handle. The same helper is used by drag-time and
+ * rename preflight so boundary and ordinary edges cannot drift apart.
+ */
+export function incomingEdgeInputNames({
+  targetNodeId,
+  boundaryNodeId = targetNodeId,
+  nodes,
+  edges,
+  submodels,
+}: {
+  targetNodeId: string
+  boundaryNodeId?: string
+  nodes: readonly SimpleNode[]
+  edges: readonly SimpleEdge[]
+  submodels?: SubmodelsLike
+}): string[] {
+  const nodesById = new Map(nodes.map((node) => [node.id, node]))
+  const boundaryNode = nodesById.get(boundaryNodeId)
+  const names: string[] = []
+  for (const edge of edges) {
+    if (edge.target !== targetNodeId) {
+      if (
+        edge.target !== boundaryNodeId
+        || boundaryNode?.data.nodeType !== NODE_TYPES.SUBMODEL
+        || resolveSubmodelBoundaryNode(boundaryNode, edge.targetHandle, "in", submodels)?.id !== targetNodeId
+      ) continue
+    }
+    const sourceNode = nodesById.get(edge.source)
+    if (!sourceNode) {
+      throw new Error(`Cannot derive input name: source node ${edge.source} is missing`)
+    }
+    names.push(edgeInputName(edge, sourceNode, submodels))
+  }
+  return names
 }
 
 // ─── Label validation (mirrors backend `validate_v2_schema`) ─────────
@@ -134,6 +274,7 @@ export function sanitiseLabelForFilesystem(label: string): string {
 
 export type ApiInputLabelIssue =
   | { kind: "blank" }
+  | { kind: "identifier"; reason: "ascii" | "keyword" }
   | { kind: "duplicate"; other: string }
   | { kind: "sanitised-collision"; other: string; sanitised: string }
 
@@ -153,6 +294,12 @@ export function apiInputLabelIssue(
   otherLabels: readonly string[],
 ): ApiInputLabelIssue | null {
   if (!candidate.trim()) return { kind: "blank" }
+  if (!ASCII_IDENTIFIER_RE.test(candidate)) {
+    return { kind: "identifier", reason: "ascii" }
+  }
+  if (PYTHON_HARD_KEYWORDS.has(candidate)) {
+    return { kind: "identifier", reason: "keyword" }
+  }
   for (const other of otherLabels) {
     if (other === candidate) return { kind: "duplicate", other }
   }
@@ -176,6 +323,10 @@ export function apiInputLabelIssueMessage(issue: ApiInputLabelIssue | null): str
   switch (issue.kind) {
     case "blank":
       return "A label is required — it names this table's frame."
+    case "identifier":
+      return issue.reason === "keyword"
+        ? "A frame label cannot be a Python hard keyword."
+        : "A frame label must be an ASCII identifier (letters, digits, and underscores only)."
     case "duplicate":
       return `Duplicate label: "${issue.other}" is already used by another table.`
     case "sanitised-collision":
@@ -187,21 +338,12 @@ export function apiInputLabelIssueMessage(issue: ApiInputLabelIssue | null): str
 
 /**
  * The set of `sourceHandle` values an apiInput's outgoing edges may
- * legitimately carry, given its config:
- *  - multi-frame (≥2 emit tables): the derived label set;
- *  - single/zero-frame: the single default Handle, whose id is `null`.
- *
- * `null` is encoded as the empty string in the returned set so it can
- * be compared against `edge.sourceHandle ?? ""`.
+ * legitimately carry, given its config. One or more eligible frames expose
+ * their raw labels; zero eligible frames expose no valid source keys because
+ * their legacy default handle is rendered non-connectable.
  */
-function validSourceHandleKeys(config: ConfigLike): Set<string> {
-  const labels = apiInputEmitPortLabels(config)
-  // Multi-frame: the labelled handles are the only valid frames. The
-  // default null handle is NOT rendered in this mode, so a legacy
-  // null-handle edge is orphaned (single→multi transition).
-  if (labels.length > 0) return new Set(labels)
-  // Single/zero-frame: the default Handle (id null → "") is the only frame.
-  return new Set([""])
+export function validSourceHandleKeys(config: ConfigLike): Set<string> {
+  return new Set(apiInputFrameLabels(config))
 }
 
 export type ReconciledApiInputEdge = {
@@ -237,16 +379,23 @@ export function reconcileApiInputEdges<E extends SimpleEdge>({
   nodeId,
   config,
   edges,
+  pruneNamedStale = true,
 }: {
   nodeId: string
   config: ConfigLike
   edges: E[]
+  /** Load reconciliation passes false to preserve named unresolved edges. */
+  pruneNamedStale?: boolean
 }): ReconcileApiInputEdgesResult<E> {
   const validKeys = validSourceHandleKeys(config)
   const removed: ReconciledApiInputEdge[] = []
   const kept: E[] = []
   for (const edge of edges) {
     if (edge.source !== nodeId) {
+      kept.push(edge)
+      continue
+    }
+    if (!pruneNamedStale && edge.sourceHandle !== null && edge.sourceHandle !== undefined) {
       kept.push(edge)
       continue
     }
@@ -279,7 +428,7 @@ function tableAt(tables: unknown[], i: number): Record<string, unknown> | null {
 /**
  * Which table index OWNS each frame label under `config` — the first
  * emit-eligible table carrying that label (later duplicates are not
- * frames, matching `apiInputEmitPortLabels`). Also counts eligible
+ * frames, matching `apiInputFrameLabels`). Also counts eligible
  * tables per label so collisions can be detected.
  */
 function portOwnership(config: ConfigLike): {
@@ -293,7 +442,7 @@ function portOwnership(config: ConfigLike): {
   tables.forEach((t, i) => {
     if (!t || typeof t !== "object" || !eligible.has(t as Record<string, unknown>)) return
     const label = rawLabel(t as Record<string, unknown>)
-    if (!isPortableLabel(label)) return
+    if (!isValidFrameLabel(label)) return
     if (!ownerIndexByLabel.has(label)) ownerIndexByLabel.set(label, i)
     eligibleCountByLabel.set(label, (eligibleCountByLabel.get(label) ?? 0) + 1)
   })
@@ -361,7 +510,7 @@ export function migrateApiInputEdges<E extends SimpleEdge>({
     if (!prevTable || !nextTable) continue
     const prevLabel = rawLabel(prevTable)
     const nextLabel = rawLabel(nextTable)
-    if (!isPortableLabel(prevLabel) || !isPortableLabel(nextLabel)) continue
+    if (!isValidFrameLabel(prevLabel) || !isValidFrameLabel(nextLabel)) continue
     if (prevLabel === nextLabel) continue
     // Same table identity: the iteration path must be unchanged.
     const prevPath = (prevTable as { path?: unknown }).path

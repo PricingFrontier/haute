@@ -212,6 +212,61 @@ def test_chunk_runner_matches_full_lazy_for_chunk_safe_chain(
     assert "unused_payload" not in actual.columns
 
 
+def test_chunk_runner_derives_start_input_name_from_api_frame_edge() -> None:
+    """A supplied intermediate frame must not make chunking forget its edge identity."""
+    graph = make_graph(
+        {
+            "nodes": [
+                _node("api", "apiInput"),
+                _node("chunk_start", "polars"),
+                _node("target", "polars"),
+            ],
+            "edges": [
+                {
+                    "id": "api_chunk_start",
+                    "source": "api",
+                    "target": "chunk_start",
+                    "sourceHandle": "quotes",
+                },
+                make_edge("chunk_start", "target").model_dump(),
+            ],
+        }
+    )
+    plan = chunk_plan(
+        ChunkPlanRequest(
+            graph=graph,
+            target_node_id="target",
+            chunk_start_node_id="chunk_start",
+            chunk_size=2,
+            required_columns_by_node={"target": {"x"}},
+        )
+    )
+    captured_source_names: dict[str, list[str]] = {}
+
+    def recording_builder(
+        node: GraphNode,
+        *,
+        source_names: list[str] | None = None,
+        **_kwargs: Any,
+    ) -> tuple[str, Callable[..., Any], bool]:
+        captured_source_names[node.id] = list(source_names or [])
+        return node.id, lambda *frames: frames[0], node.data.nodeType == "apiInput"
+
+    batches = list(
+        iter_chunked_frames(
+            ChunkRunnerRequest(
+                graph=graph,
+                plan=plan,
+                build_node_fn=recording_builder,
+                start_frame=pl.DataFrame({"x": [1, 2, 3]}),
+            )
+        )
+    )
+
+    assert sum(batch.output_rows for batch in batches) == 3
+    assert captured_source_names["chunk_start"] == ["quotes"]
+
+
 def test_chunk_runner_projects_source_columns_before_first_map_node(tmp_path: Path) -> None:
     output_fields = ["quote_id", "age_band", "scenario_index"]
     required_columns = _required_columns(output_fields)

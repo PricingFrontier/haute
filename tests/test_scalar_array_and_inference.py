@@ -164,11 +164,11 @@ def test_infer_then_build_scalar_array_no_crash(tmp_path: Path) -> None:
 
     summary = build_per_port_cache(p, schema, tmp_path / "cache")
     by_label = {t["label"]: t for t in summary["tables"]}
-    assert "$[:].tags[:]" in by_label
-    assert by_label["$[:].tags[:]"]["row_count"] == 3  # motor, fleet, home
+    assert "tags" in by_label
+    assert by_label["tags"]["row_count"] == 3  # motor, fleet, home
 
     frames = load_per_port_cache(tmp_path / "cache", schema)
-    tags = frames["$[:].tags[:]"].collect()
+    tags = frames["tags"].collect()
     assert tags["value"].to_list() == ["motor", "fleet", "home"]
 
 
@@ -182,7 +182,7 @@ def test_scalar_array_mixed_types_widen_to_str(tmp_path: Path) -> None:
 
     build_per_port_cache(p, _enable_all(schema), tmp_path / "cache")
     frames = load_per_port_cache(tmp_path / "cache", schema)
-    assert frames["$[:].vals[:]"].collect()["value"].to_list() == ["1", "x", "2.5"]
+    assert frames["vals"].collect()["value"].to_list() == ["1", "x", "2.5"]
 
 
 def test_scalar_array_numeric_widens_to_float(tmp_path: Path) -> None:
@@ -195,7 +195,7 @@ def test_scalar_array_numeric_widens_to_float(tmp_path: Path) -> None:
 
     build_per_port_cache(p, _enable_all(schema), tmp_path / "cache")
     frames = load_per_port_cache(tmp_path / "cache", schema)
-    assert frames["$[:].amts[:]"].collect()["value"].to_list() == [1.0, 2.0, 2.5]
+    assert frames["amts"].collect()["value"].to_list() == [1.0, 2.0, 2.5]
 
 
 def test_scalar_array_of_bools(tmp_path: Path) -> None:
@@ -208,7 +208,7 @@ def test_scalar_array_of_bools(tmp_path: Path) -> None:
 
     build_per_port_cache(p, _enable_all(schema), tmp_path / "cache")
     frames = load_per_port_cache(tmp_path / "cache", schema)
-    assert frames["$[:].flags[:]"].collect()["value"].to_list() == [True, False, True]
+    assert frames["flags"].collect()["value"].to_list() == [True, False, True]
 
 
 def test_empty_then_struct_array_is_object_table(tmp_path: Path) -> None:
@@ -408,7 +408,7 @@ def test_empty_array_only_produces_empty_child_table(tmp_path: Path) -> None:
     assert child["columns"][0]["type"] == "str"
     summary = build_per_port_cache(p, _enable_all(schema), tmp_path / "cache")
     by_label = {t["label"]: t for t in summary["tables"]}
-    assert by_label["$[:].tags[:]"]["row_count"] == 0
+    assert by_label["tags"]["row_count"] == 0
 
 
 def test_read_meta_returns_none_on_corrupt_meta(tmp_path: Path) -> None:
@@ -425,9 +425,9 @@ def test_scalar_array_with_nulls_preserves_row_count(tmp_path: Path) -> None:
     schema = _enable_all(infer_v2_schema_from_data(p))
     summary = build_per_port_cache(p, schema, tmp_path / "cache")
     by_label = {t["label"]: t for t in summary["tables"]}
-    assert by_label["$[:].tags[:]"]["row_count"] == 3  # a, null, b — count preserved
+    assert by_label["tags"]["row_count"] == 3  # a, null, b — count preserved
     frames = load_per_port_cache(tmp_path / "cache", schema)
-    assert frames["$[:].tags[:]"].collect()["value"].to_list() == ["a", None, "b"]
+    assert frames["tags"].collect()["value"].to_list() == ["a", None, "b"]
 
 
 def test_build_bool_in_numeric_column_fails_loud(tmp_path: Path) -> None:

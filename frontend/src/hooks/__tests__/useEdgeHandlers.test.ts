@@ -1,10 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { renderHook, cleanup, act } from "@testing-library/react"
-import type { Node, Edge } from "@xyflow/react"
+import type { Node, Edge, Connection } from "@xyflow/react"
 import useEdgeHandlers from "../useEdgeHandlers"
 import useToastStore from "../../stores/useToastStore"
 import { NODE_TYPES } from "../../utils/nodeTypes"
 import { DEFAULT_TARGET_HANDLE } from "../../utils/flowHandles"
+import { validatePipelineConnection } from "../../utils/connectionValidation"
+import type { SimpleNode } from "../../panels/editors/_shared"
 
 function makeParams() {
   return {
@@ -27,6 +29,9 @@ function makeParams() {
     screenToFlowPosition: vi.fn((pos: { x: number; y: number }) => pos),
     graphRefreshingRef: { current: 0 },
     findEdgeIdAtPoint: vi.fn(() => null as string | null),
+    validateConnection: undefined as
+      | undefined
+      | ((connection: Connection) => ReturnType<typeof validatePipelineConnection>),
   }
 }
 
@@ -321,38 +326,6 @@ describe("useEdgeHandlers", () => {
     ])
   })
 
-  it("onConnectEnd does not infer an input connection from a source-to-source ending", () => {
-    const params = makeParams()
-    params.graphRef.current.nodes = [
-      { id: "join1", position: { x: 0, y: 0 }, data: { label: "Edge Join 1", nodeType: NODE_TYPES.EDGE_JOIN, config: {} } } as unknown as Node,
-      {
-        id: "target",
-        position: { x: 300, y: 0 },
-        measured: { width: 240, height: 70 },
-        data: { label: "Target", nodeType: NODE_TYPES.POLARS, config: {} },
-      } as unknown as Node,
-    ]
-    const { result } = renderHook(() => useEdgeHandlers(params))
-
-    act(() => {
-      result.current.onConnectEnd(
-        { clientX: 320, clientY: 35 } as MouseEvent,
-        connectionEndState({
-          from: "join1",
-          to: "target",
-          fromHandleType: "source",
-          toHandleType: "source",
-          isValid: false,
-        }),
-      )
-    })
-
-    expect(params.setEdges).not.toHaveBeenCalled()
-    expect(params.pushSnapshot).not.toHaveBeenCalled()
-    expect(params.setNodesRaw).not.toHaveBeenCalled()
-    expect(params.setEdgesRaw).not.toHaveBeenCalled()
-  })
-
   it("onConnectEnd keeps source-to-source edgeJoin creation when dropped on a Polars output side", () => {
     const params = makeParams()
     params.graphRef.current.nodes = [
@@ -389,31 +362,76 @@ describe("useEdgeHandlers", () => {
     })
   })
 
-  it("onConnectEnd ignores invalid source-to-source drops on a Polars output side", () => {
+  it("creates an edgeJoin when an apiInput frame is dropped on an output that already consumes that frame", () => {
     const params = makeParams()
-    params.graphRef.current.nodes = [
-      { id: "base", position: { x: 300, y: 0 }, measured: { width: 240, height: 70 }, data: { label: "Base", nodeType: NODE_TYPES.POLARS } } as unknown as Node,
-      { id: "join1", position: { x: 0, y: 160 }, data: { label: "Edge Join 1", nodeType: NODE_TYPES.EDGE_JOIN } } as unknown as Node,
-    ]
+    const apiInput = {
+      id: "api",
+      position: { x: 0, y: 160 },
+      data: {
+        label: "API",
+        nodeType: NODE_TYPES.API_INPUT,
+        config: {
+          tables: [
+            {
+              path: "$[:].quotes[:]",
+              label: "quotes",
+              emit: true,
+              columns: [{ name: "id", selected: true }],
+            },
+          ],
+        },
+      },
+    } as unknown as Node
+    const transform = {
+      id: "transform",
+      position: { x: 300, y: 0 },
+      measured: { width: 240, height: 70 },
+      data: { label: "Transform", nodeType: NODE_TYPES.POLARS, config: {} },
+    } as unknown as Node
+    const existing = {
+      id: "e_api_transform",
+      source: "api",
+      target: "transform",
+      sourceHandle: "quotes",
+      targetHandle: null,
+    } as Edge
+    params.graphRef.current = { nodes: [apiInput, transform], edges: [existing] }
     const { result } = renderHook(() => useEdgeHandlers(params))
 
     act(() => {
       result.current.onConnectEnd(
-        { clientX: 520, clientY: 35 } as MouseEvent,
-        {
+        mouseUpEvent,
+        connectionEndState({
+          from: "api",
+          to: "transform",
+          fromHandleId: "quotes",
+          toHandleId: "transform-output",
+          fromHandleType: "source",
+          toHandleType: "source",
+          // React Flow can report false here because ordinary input-name
+          // uniqueness sees the frame already entering this node. The
+          // output-to-output gesture is an edgeJoin request, not another
+          // input edge, so domain handling must still proceed.
           isValid: false,
-          fromNode: { id: "join1" },
-          fromHandle: { id: null, type: "source" },
-          toNode: { id: "base" },
-          toHandle: { id: null, type: "source" },
-        } as never,
+        }),
       )
     })
 
-    expect(params.setEdges).not.toHaveBeenCalled()
-    expect(params.pushSnapshot).not.toHaveBeenCalled()
-    expect(params.setNodesRaw).not.toHaveBeenCalled()
-    expect(params.setEdgesRaw).not.toHaveBeenCalled()
+    expect(params.pushSnapshot).toHaveBeenCalledOnce()
+    const nextNodes = params.setNodesRaw.mock.calls[0][0] as Node[]
+    expect(nextNodes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: "edgeJoin_1", data: expect.objectContaining({ nodeType: NODE_TYPES.EDGE_JOIN }) }),
+      ]),
+    )
+    const nextEdges = params.setEdgesRaw.mock.calls[0][0] as Edge[]
+    expect(nextEdges).toEqual(
+      expect.arrayContaining([
+        existing,
+        expect.objectContaining({ source: "api", sourceHandle: "quotes", target: "edgeJoin_1" }),
+        expect.objectContaining({ source: "transform", target: "edgeJoin_1" }),
+      ]),
+    )
   })
 
   it("onConnectEnd does not reinterpret source-only nodes as input-side targets", () => {
@@ -1256,6 +1274,76 @@ describe("useEdgeHandlers edge-join failures and multi-port handles", () => {
     expect(params.pushSnapshot).not.toHaveBeenCalled()
     expect(params.findEdgeIdAtPoint).not.toHaveBeenCalled()
     expect(useToastStore.getState().toasts).toEqual([])
+  })
+
+  it("toasts the colliding derived input name when a normal drag is rejected", () => {
+    const params = makeParams()
+    params.graphRef.current.nodes = [
+      {
+        id: "api",
+        data: {
+          label: "API",
+          nodeType: NODE_TYPES.API_INPUT,
+          config: {
+            tables: [
+              {
+                path: "$[:].quotes[:]",
+                label: "quotes",
+                emit: true,
+                columns: [{ name: "id", selected: true }],
+              },
+            ],
+          },
+        },
+      } as unknown as Node,
+      {
+        id: "ordinary",
+        data: { label: "quotes", nodeType: NODE_TYPES.POLARS, config: {} },
+      } as unknown as Node,
+      {
+        id: "target",
+        data: { label: "Target", nodeType: NODE_TYPES.POLARS, config: {} },
+      } as unknown as Node,
+    ]
+    params.graphRef.current.edges = [
+      {
+        id: "e_existing",
+        source: "ordinary",
+        target: "target",
+        sourceHandle: null,
+        targetHandle: null,
+      } as Edge,
+    ]
+    params.validateConnection = (candidate) =>
+      validatePipelineConnection(
+        candidate,
+        params.graphRef.current.nodes as unknown as SimpleNode[],
+        params.graphRef.current.edges,
+      )
+    const { result } = renderHook(() => useEdgeHandlers(params))
+
+    act(() => {
+      result.current.onConnectEnd(
+        mouseUpEvent,
+        connectionEndState({
+          from: "api",
+          to: "target",
+          fromHandleId: "quotes",
+          fromHandleType: "source",
+          toHandleType: "target",
+          isValid: false,
+        }),
+      )
+    })
+
+    expect(useToastStore.getState().toasts).toEqual([
+      expect.objectContaining({
+        type: "error",
+        text: expect.stringMatching(/input name.*quotes.*already connected/i),
+      }),
+    ])
+    expect(params.setEdges).not.toHaveBeenCalled()
+    expect(params.pushSnapshot).not.toHaveBeenCalled()
   })
 
   it("onConnectEnd fails loudly when a touch ending carries no pointer coordinates", () => {

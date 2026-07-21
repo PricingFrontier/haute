@@ -34,8 +34,9 @@ import {
 } from "../panels/LazyNodeEditors"
 import { GraphProvider } from "../panels/GraphContext"
 import { NODE_TYPES, nodeTypeColors } from "../utils/nodeTypes"
+import type { OnUpdateConfigResult } from "../panels/editors/_shared"
 
-const noop = () => {}
+const noop = (): OnUpdateConfigResult => ({ ok: true })
 const EMPTY: never[] = []
 
 interface ReadOnlyNodeConfigProps {

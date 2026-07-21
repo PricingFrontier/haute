@@ -41,6 +41,36 @@ if TYPE_CHECKING:
 PIPELINE_FILE = FIXTURE_DIR / "pipeline.py"
 
 
+def _single_frame_api_input_config(
+    column_name: str,
+    column_type: str = "str",
+    *,
+    label: str = "quotes",
+    **overrides: object,
+) -> dict[str, object]:
+    """Minimal converged apiInput config with one labelled emitted frame."""
+    config: dict[str, object] = {
+        "path": "",
+        "tables": [
+            {
+                "path": "$[:]",
+                "label": label,
+                "emit": True,
+                "columns": [
+                    {
+                        "name": column_name,
+                        "path": f"$[:].{column_name}",
+                        "type": column_type,
+                        "selected": True,
+                    }
+                ],
+            }
+        ],
+    }
+    config.update(overrides)
+    return config
+
+
 def _passthrough_input_graph(parquet_path):
     """apiInput ``src`` (reads ``parquet_path``) → output ``out`` (passthrough)."""
     return _g(
@@ -51,7 +81,9 @@ def _passthrough_input_graph(parquet_path):
                     "data": {
                         "label": "src",
                         "nodeType": "apiInput",
-                        "config": {"path": str(parquet_path)},
+                        "config": _single_frame_api_input_config(
+                            "x", "float", label="src", path=str(parquet_path)
+                        ),
                     },
                 },
                 {
@@ -63,7 +95,14 @@ def _passthrough_input_graph(parquet_path):
                     },
                 },
             ],
-            "edges": [{"id": "e1", "source": "src", "target": "out"}],
+            "edges": [
+                {
+                    "id": "e1",
+                    "source": "src",
+                    "target": "out",
+                    "sourceHandle": "src",
+                }
+            ],
         }
     )
 
@@ -520,7 +559,9 @@ class TestInferOutputSchema:
                         "data": {
                             "label": "src",
                             "nodeType": "apiInput",
-                            "config": {"path": "d.parquet"},
+                            "config": _single_frame_api_input_config(
+                                "x", "float", label="src", path="d.parquet"
+                            ),
                         },
                     },
                     {
@@ -532,7 +573,14 @@ class TestInferOutputSchema:
                         },
                     },
                 ],
-                "edges": [{"id": "e1", "source": "src", "target": "out"}],
+                "edges": [
+                    {
+                        "id": "e1",
+                        "source": "src",
+                        "target": "out",
+                        "sourceHandle": "src",
+                    }
+                ],
             }
         )
 
@@ -573,7 +621,9 @@ class TestInferOutputSchema:
                         "data": {
                             "label": "src",
                             "nodeType": "apiInput",
-                            "config": {"path": str(pq_path)},
+                            "config": _single_frame_api_input_config(
+                                "x", "float", label="src", path=str(pq_path)
+                            ),
                         },
                     },
                     {
@@ -585,7 +635,14 @@ class TestInferOutputSchema:
                         },
                     },
                 ],
-                "edges": [{"id": "e1", "source": "src", "target": "out"}],
+                "edges": [
+                    {
+                        "id": "e1",
+                        "source": "src",
+                        "target": "out",
+                        "sourceHandle": "src",
+                    }
+                ],
             }
         )
 
@@ -619,7 +676,9 @@ class TestInferOutputSchema:
                         "data": {
                             "label": "src",
                             "nodeType": "apiInput",
-                            "config": {"path": str(pq_path)},
+                            "config": _single_frame_api_input_config(
+                                "x", "float", label="src", path=str(pq_path)
+                            ),
                         },
                     },
                     {
@@ -631,7 +690,14 @@ class TestInferOutputSchema:
                         },
                     },
                 ],
-                "edges": [{"id": "e1", "source": "src", "target": "out"}],
+                "edges": [
+                    {
+                        "id": "e1",
+                        "source": "src",
+                        "target": "out",
+                        "sourceHandle": "src",
+                    }
+                ],
             }
         )
 
@@ -676,7 +742,9 @@ class TestInferOutputSchema:
                         "data": {
                             "label": "src",
                             "nodeType": "apiInput",
-                            "config": {"path": str(pq_path)},
+                            "config": _single_frame_api_input_config(
+                                "x", "float", label="src", path=str(pq_path)
+                            ),
                         },
                     },
                     {
@@ -688,7 +756,14 @@ class TestInferOutputSchema:
                         },
                     },
                 ],
-                "edges": [{"id": "e1", "source": "src", "target": "out"}],
+                "edges": [
+                    {
+                        "id": "e1",
+                        "source": "src",
+                        "target": "out",
+                        "sourceHandle": "src",
+                    }
+                ],
             }
         )
 
@@ -722,7 +797,9 @@ class TestInferOutputSchema:
                         "data": {
                             "label": "src",
                             "nodeType": "apiInput",
-                            "config": {"path": str(pq_path)},
+                            "config": _single_frame_api_input_config(
+                                "x", "float", label="src", path=str(pq_path)
+                            ),
                         },
                     },
                     {
@@ -734,7 +811,14 @@ class TestInferOutputSchema:
                         },
                     },
                 ],
-                "edges": [{"id": "e1", "source": "src", "target": "out"}],
+                "edges": [
+                    {
+                        "id": "e1",
+                        "source": "src",
+                        "target": "out",
+                        "sourceHandle": "src",
+                    }
+                ],
             }
         )
 
@@ -849,7 +933,7 @@ class TestScoreGraphApiInputInjection:
                         "data": {
                             "label": "src",
                             "nodeType": "apiInput",
-                            "config": {"path": ""},
+                            "config": _single_frame_api_input_config("x", "float", label="src"),
                         },
                     },
                     {
@@ -861,7 +945,14 @@ class TestScoreGraphApiInputInjection:
                         },
                     },
                 ],
-                "edges": [{"id": "e1", "source": "src", "target": "out"}],
+                "edges": [
+                    {
+                        "id": "e1",
+                        "source": "src",
+                        "target": "out",
+                        "sourceHandle": "src",
+                    }
+                ],
             }
         )
 
@@ -878,6 +969,119 @@ class TestScoreGraphApiInputInjection:
         assert "x" in result.columns
         assert "y" in result.columns
 
+    def test_api_input_frame_label_is_the_deploy_parameter_name(self):
+        """Deploy user code binds the edge's frame name, not its source-node label."""
+        from haute.deploy._scorer import score_graph
+
+        graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "request",
+                        "data": {
+                            "label": "Quote Request Node",
+                            "nodeType": "apiInput",
+                            "config": _single_frame_api_input_config("value", "int"),
+                        },
+                    },
+                    {
+                        "id": "tag_quote",
+                        "data": {
+                            "label": "Tag Quote",
+                            "nodeType": "polars",
+                            "config": {
+                                "code": ('df = quotes.with_columns(bound_input=pl.lit("quotes"))'),
+                            },
+                        },
+                    },
+                    {
+                        "id": "out",
+                        "data": {
+                            "label": "Response",
+                            "nodeType": "output",
+                            "config": make_output_config(
+                                ["value", "bound_input"],
+                                source_port="Tag_Quote",
+                            ),
+                        },
+                    },
+                ],
+                "edges": [
+                    {
+                        "id": "request__quotes__tag",
+                        "source": "request",
+                        "target": "tag_quote",
+                        "sourceHandle": "quotes",
+                    },
+                    {"id": "tag__out", "source": "tag_quote", "target": "out"},
+                ],
+            }
+        )
+
+        result = score_graph(
+            graph=graph,
+            input_df=pl.DataFrame({"value": [17]}),
+            input_node_ids=["request"],
+            output_node_id="out",
+        )
+
+        assert result.to_dicts() == [{"value": 17, "bound_input": "quotes"}]
+
+    def test_null_handle_api_input_edge_raises_value_error_naming_edge(self):
+        """A malformed apiInput edge cannot silently drop its source frame."""
+        from haute.deploy._scorer import score_graph
+
+        graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "request",
+                        "data": {
+                            "label": "Request",
+                            "nodeType": "apiInput",
+                            "config": _single_frame_api_input_config("value", "int"),
+                        },
+                    },
+                    {
+                        "id": "build",
+                        "data": {
+                            "label": "build",
+                            "nodeType": "polars",
+                            "config": {
+                                "code": 'df = pl.DataFrame({"ok": [True]}).lazy()',
+                            },
+                        },
+                    },
+                    {
+                        "id": "out",
+                        "data": {
+                            "label": "out",
+                            "nodeType": "output",
+                            "config": make_output_config(["ok"], source_port="build"),
+                        },
+                    },
+                ],
+                "edges": [
+                    {
+                        "id": "request_edge_missing_frame_port",
+                        "source": "request",
+                        "target": "build",
+                    },
+                    {"id": "build__out", "source": "build", "target": "out"},
+                ],
+            }
+        )
+
+        with pytest.raises(ValueError) as exc_info:
+            score_graph(
+                graph=graph,
+                input_df=pl.DataFrame({"value": [17]}),
+                input_node_ids=["request"],
+                output_node_id="out",
+            )
+
+        assert "request_edge_missing_frame_port" in str(exc_info.value)
+
     def test_multiple_api_inputs(self):
         """Multiple apiInput nodes all receive the same input_df."""
         from haute.deploy._scorer import score_graph
@@ -890,7 +1094,7 @@ class TestScoreGraphApiInputInjection:
                         "data": {
                             "label": "src1",
                             "nodeType": "apiInput",
-                            "config": {"path": ""},
+                            "config": _single_frame_api_input_config("val", "int", label="src1"),
                         },
                     },
                     {
@@ -898,7 +1102,7 @@ class TestScoreGraphApiInputInjection:
                         "data": {
                             "label": "src2",
                             "nodeType": "apiInput",
-                            "config": {"path": ""},
+                            "config": _single_frame_api_input_config("val", "int", label="src2"),
                         },
                     },
                     {
@@ -911,8 +1115,18 @@ class TestScoreGraphApiInputInjection:
                     },
                 ],
                 "edges": [
-                    {"id": "e1", "source": "src1", "target": "out"},
-                    {"id": "e2", "source": "src2", "target": "out"},
+                    {
+                        "id": "e1",
+                        "source": "src1",
+                        "target": "out",
+                        "sourceHandle": "src1",
+                    },
+                    {
+                        "id": "e2",
+                        "source": "src2",
+                        "target": "out",
+                        "sourceHandle": "src2",
+                    },
                 ],
             }
         )
@@ -943,7 +1157,7 @@ class TestScoreGraphOutputFields:
                         "data": {
                             "label": "src",
                             "nodeType": "apiInput",
-                            "config": {"path": ""},
+                            "config": _single_frame_api_input_config("x", "float", label="src"),
                         },
                     },
                     {
@@ -955,7 +1169,14 @@ class TestScoreGraphOutputFields:
                         },
                     },
                 ],
-                "edges": [{"id": "e1", "source": "src", "target": "out"}],
+                "edges": [
+                    {
+                        "id": "e1",
+                        "source": "src",
+                        "target": "out",
+                        "sourceHandle": "src",
+                    }
+                ],
             }
         )
 
@@ -983,7 +1204,7 @@ class TestScoreGraphOutputFields:
                         "data": {
                             "label": "src",
                             "nodeType": "apiInput",
-                            "config": {"path": ""},
+                            "config": _single_frame_api_input_config("x", "float", label="src"),
                         },
                     },
                     {
@@ -995,7 +1216,14 @@ class TestScoreGraphOutputFields:
                         },
                     },
                 ],
-                "edges": [{"id": "e1", "source": "src", "target": "out"}],
+                "edges": [
+                    {
+                        "id": "e1",
+                        "source": "src",
+                        "target": "out",
+                        "sourceHandle": "src",
+                    }
+                ],
             }
         )
         output_lf = pl.DataFrame({"x": [1.0], "y": [2.0], "z": [3.0]}).lazy()
@@ -1030,7 +1258,7 @@ class TestScoreGraphOutputFields:
                         "data": {
                             "label": "src",
                             "nodeType": "apiInput",
-                            "config": {"path": ""},
+                            "config": _single_frame_api_input_config("x", "float", label="src"),
                         },
                     },
                     {
@@ -1042,7 +1270,14 @@ class TestScoreGraphOutputFields:
                         },
                     },
                 ],
-                "edges": [{"id": "e1", "source": "src", "target": "out"}],
+                "edges": [
+                    {
+                        "id": "e1",
+                        "source": "src",
+                        "target": "out",
+                        "sourceHandle": "src",
+                    }
+                ],
             }
         )
         output_lf = pl.DataFrame({"x": [1.0], "z": [3.0]}).lazy()
@@ -1085,7 +1320,7 @@ class TestScoreGraphOutputFields:
                         "data": {
                             "label": "src",
                             "nodeType": "apiInput",
-                            "config": {"path": ""},
+                            "config": _single_frame_api_input_config("keep", "float", label="src"),
                         },
                     },
                     {
@@ -1097,7 +1332,14 @@ class TestScoreGraphOutputFields:
                         },
                     },
                 ],
-                "edges": [{"id": "e1", "source": "src", "target": "out"}],
+                "edges": [
+                    {
+                        "id": "e1",
+                        "source": "src",
+                        "target": "out",
+                        "sourceHandle": "src",
+                    }
+                ],
             }
         )
         retained_ref: weakref.ReferenceType[pl.LazyFrame] | None = None
@@ -1143,7 +1385,7 @@ class TestScoreGraphOutputFields:
                         "data": {
                             "label": "src",
                             "nodeType": "apiInput",
-                            "config": {"path": ""},
+                            "config": _single_frame_api_input_config("x", "float", label="src"),
                         },
                     },
                     {
@@ -1155,7 +1397,14 @@ class TestScoreGraphOutputFields:
                         },
                     },
                 ],
-                "edges": [{"id": "e1", "source": "src", "target": "out"}],
+                "edges": [
+                    {
+                        "id": "e1",
+                        "source": "src",
+                        "target": "out",
+                        "sourceHandle": "src",
+                    }
+                ],
             }
         )
         output_lf = pl.DataFrame({"x": [1.0, 2.0]}).lazy()
@@ -1192,7 +1441,7 @@ class TestScoreGraphOutputFields:
                         "data": {
                             "label": "src",
                             "nodeType": "apiInput",
-                            "config": {"path": ""},
+                            "config": _single_frame_api_input_config("x", "float", label="src"),
                         },
                     },
                     {
@@ -1204,7 +1453,14 @@ class TestScoreGraphOutputFields:
                         },
                     },
                 ],
-                "edges": [{"id": "e1", "source": "src", "target": "out"}],
+                "edges": [
+                    {
+                        "id": "e1",
+                        "source": "src",
+                        "target": "out",
+                        "sourceHandle": "src",
+                    }
+                ],
             }
         )
 
@@ -1230,7 +1486,7 @@ class TestScoreGraphOutputFields:
                         "data": {
                             "label": "src",
                             "nodeType": "apiInput",
-                            "config": {"path": ""},
+                            "config": _single_frame_api_input_config("x", "float", label="src"),
                         },
                     },
                     {
@@ -1242,7 +1498,14 @@ class TestScoreGraphOutputFields:
                         },
                     },
                 ],
-                "edges": [{"id": "e1", "source": "src", "target": "out"}],
+                "edges": [
+                    {
+                        "id": "e1",
+                        "source": "src",
+                        "target": "out",
+                        "sourceHandle": "src",
+                    }
+                ],
             }
         )
 
@@ -1401,7 +1664,7 @@ class TestScoreGraphBadInput:
                         "data": {
                             "label": "src",
                             "nodeType": "apiInput",
-                            "config": {"path": ""},
+                            "config": _single_frame_api_input_config("VehPower", "float"),
                         },
                     },
                     {
@@ -1411,7 +1674,7 @@ class TestScoreGraphBadInput:
                             "nodeType": "polars",
                             "config": {
                                 "code": (
-                                    "df = df.with_columns("
+                                    "df = quotes.with_columns("
                                     'result=pl.col("VehPower").cast(pl.Float64) * 2)'
                                 ),
                                 "contract": {
@@ -1431,7 +1694,12 @@ class TestScoreGraphBadInput:
                     },
                 ],
                 "edges": [
-                    {"id": "e1", "source": "src", "target": "calc"},
+                    {
+                        "id": "e1",
+                        "source": "src",
+                        "target": "calc",
+                        "sourceHandle": "quotes",
+                    },
                     {"id": "e2", "source": "calc", "target": "out"},
                 ],
             }
@@ -1480,7 +1748,7 @@ class TestScoreGraphBadInput:
                         "data": {
                             "label": "src",
                             "nodeType": "apiInput",
-                            "config": {"path": ""},
+                            "config": _single_frame_api_input_config("x", "float", label="src"),
                         },
                     },
                     {
@@ -1492,7 +1760,14 @@ class TestScoreGraphBadInput:
                         },
                     },
                 ],
-                "edges": [{"id": "e1", "source": "src", "target": "out"}],
+                "edges": [
+                    {
+                        "id": "e1",
+                        "source": "src",
+                        "target": "out",
+                        "sourceHandle": "src",
+                    }
+                ],
             }
         )
 
@@ -1556,7 +1831,7 @@ class TestScoreGraphExternalFileRemap:
                         "data": {
                             "label": "src",
                             "nodeType": "apiInput",
-                            "config": {"path": ""},
+                            "config": _single_frame_api_input_config("x", "float", label="src"),
                         },
                     },
                     {
@@ -1582,7 +1857,12 @@ class TestScoreGraphExternalFileRemap:
                     },
                 ],
                 "edges": [
-                    {"id": "e1", "source": "src", "target": "ext"},
+                    {
+                        "id": "e1",
+                        "source": "src",
+                        "target": "ext",
+                        "sourceHandle": "src",
+                    },
                     {"id": "e2", "source": "ext", "target": "out"},
                 ],
             }
@@ -1617,7 +1897,7 @@ class TestScoreGraphExternalFileRemap:
                         "data": {
                             "label": "src",
                             "nodeType": "apiInput",
-                            "config": {"path": ""},
+                            "config": _single_frame_api_input_config("x", "float", label="src"),
                         },
                     },
                     {
@@ -1642,7 +1922,12 @@ class TestScoreGraphExternalFileRemap:
                     },
                 ],
                 "edges": [
-                    {"id": "e1", "source": "src", "target": "ext"},
+                    {
+                        "id": "e1",
+                        "source": "src",
+                        "target": "ext",
+                        "sourceHandle": "src",
+                    },
                     {"id": "e2", "source": "ext", "target": "out"},
                 ],
             }
@@ -1682,7 +1967,7 @@ class TestScoreGraphOptimiserApplyRemap:
                         "data": {
                             "label": "src",
                             "nodeType": "apiInput",
-                            "config": {"path": ""},
+                            "config": _single_frame_api_input_config("x", "float", label="src"),
                         },
                     },
                     {
@@ -1708,7 +1993,12 @@ class TestScoreGraphOptimiserApplyRemap:
                     },
                 ],
                 "edges": [
-                    {"id": "e1", "source": "src", "target": "opt"},
+                    {
+                        "id": "e1",
+                        "source": "src",
+                        "target": "opt",
+                        "sourceHandle": "src",
+                    },
                     {"id": "e2", "source": "opt", "target": "out"},
                 ],
             }
@@ -1774,7 +2064,7 @@ class TestScoreGraphOptimiserApplyRemap:
                         "data": {
                             "label": "src",
                             "nodeType": "apiInput",
-                            "config": {"path": ""},
+                            "config": _single_frame_api_input_config("quote_id", label="src"),
                         },
                     },
                     {
@@ -1823,8 +2113,18 @@ class TestScoreGraphOptimiserApplyRemap:
                     },
                 ],
                 "edges": [
-                    {"id": "e1", "source": "src", "target": "opt"},
-                    {"id": "e2", "source": "src", "target": "band"},
+                    {
+                        "id": "e1",
+                        "source": "src",
+                        "target": "opt",
+                        "sourceHandle": "src",
+                    },
+                    {
+                        "id": "e2",
+                        "source": "src",
+                        "target": "band",
+                        "sourceHandle": "src",
+                    },
                     {"id": "e3", "source": "band", "target": "opt"},
                     {"id": "e4", "source": "opt", "target": "out"},
                 ],
@@ -1871,7 +2171,7 @@ class TestScoreGraphOptimiserApplyRemap:
                         "data": {
                             "label": "src",
                             "nodeType": "apiInput",
-                            "config": {"path": ""},
+                            "config": _single_frame_api_input_config("x", "float", label="src"),
                         },
                     },
                     {
@@ -1897,7 +2197,12 @@ class TestScoreGraphOptimiserApplyRemap:
                     },
                 ],
                 "edges": [
-                    {"id": "e1", "source": "src", "target": "opt"},
+                    {
+                        "id": "e1",
+                        "source": "src",
+                        "target": "opt",
+                        "sourceHandle": "src",
+                    },
                     {"id": "e2", "source": "opt", "target": "out"},
                 ],
             }
@@ -1933,6 +2238,7 @@ class TestScoreGraphModelScoreRemap:
 
     def test_model_score_remap_loads_bundled_model(self, tmp_path):
         """modelScore with remap loads from bundled local path."""
+        from haute._mlflow_io import ScoringModel
         from haute.deploy._scorer import score_graph
 
         cbm_path = tmp_path / "model.cbm"
@@ -1941,6 +2247,12 @@ class TestScoreGraphModelScoreRemap:
         mock_model = MagicMock()
         mock_model.feature_names_ = ["x"]
         mock_model.predict.return_value = np.array([42.0])
+        scoring_model = ScoringModel(
+            model=mock_model,
+            feature_names=["x"],
+            cat_feature_names=frozenset(),
+            flavor="catboost",
+        )
 
         graph = _g(
             {
@@ -1950,7 +2262,7 @@ class TestScoreGraphModelScoreRemap:
                         "data": {
                             "label": "src",
                             "nodeType": "apiInput",
-                            "config": {"path": ""},
+                            "config": _single_frame_api_input_config("x", "float", label="src"),
                         },
                     },
                     {
@@ -1977,7 +2289,12 @@ class TestScoreGraphModelScoreRemap:
                     },
                 ],
                 "edges": [
-                    {"id": "e1", "source": "src", "target": "ms"},
+                    {
+                        "id": "e1",
+                        "source": "src",
+                        "target": "ms",
+                        "sourceHandle": "src",
+                    },
                     {"id": "e2", "source": "ms", "target": "out"},
                 ],
             }
@@ -1986,7 +2303,10 @@ class TestScoreGraphModelScoreRemap:
         input_df = pl.DataFrame({"x": [1.0]})
         remap = {"ms__model.cbm": str(cbm_path)}
 
-        with patch("haute._mlflow_io._load_catboost_model", return_value=mock_model):
+        with (
+            patch("haute._mlflow_io._load_catboost_model", return_value=mock_model),
+            patch("haute._mlflow_io.load_mlflow_model", return_value=scoring_model),
+        ):
             result = score_graph(
                 graph=graph,
                 input_df=input_df,
@@ -2036,7 +2356,7 @@ class TestScoreGraphModelScoreRemap:
                         "data": {
                             "label": "src",
                             "nodeType": "apiInput",
-                            "config": {"path": ""},
+                            "config": _single_frame_api_input_config("x", "float", label="src"),
                         },
                     },
                     {
@@ -2064,7 +2384,12 @@ class TestScoreGraphModelScoreRemap:
                     },
                 ],
                 "edges": [
-                    {"id": "e1", "source": "src", "target": "ms"},
+                    {
+                        "id": "e1",
+                        "source": "src",
+                        "target": "ms",
+                        "sourceHandle": "src",
+                    },
                     {"id": "e2", "source": "ms", "target": "out"},
                 ],
             }
@@ -2132,10 +2457,11 @@ class TestScoreGraphModelScoreRemap:
                         "data": {
                             "label": "src",
                             "nodeType": "apiInput",
-                            "config": {
-                                "path": "",
-                                "categorical_levels": {"region": ["north", "south"]},
-                            },
+                            "config": _single_frame_api_input_config(
+                                "region",
+                                label="src",
+                                categorical_levels={"region": ["north", "south"]},
+                            ),
                         },
                     },
                     {
@@ -2162,7 +2488,12 @@ class TestScoreGraphModelScoreRemap:
                     },
                 ],
                 "edges": [
-                    {"id": "e1", "source": "src", "target": "ms"},
+                    {
+                        "id": "e1",
+                        "source": "src",
+                        "target": "ms",
+                        "sourceHandle": "src",
+                    },
                     {"id": "e2", "source": "ms", "target": "out"},
                 ],
             }
@@ -2218,7 +2549,7 @@ class TestScoreGraphModelScoreRemap:
                         "data": {
                             "label": "src",
                             "nodeType": "apiInput",
-                            "config": {"path": ""},
+                            "config": _single_frame_api_input_config("region", label="src"),
                         },
                     },
                     {
@@ -2242,7 +2573,12 @@ class TestScoreGraphModelScoreRemap:
                     },
                 ],
                 "edges": [
-                    {"id": "e1", "source": "src", "target": "ms"},
+                    {
+                        "id": "e1",
+                        "source": "src",
+                        "target": "ms",
+                        "sourceHandle": "src",
+                    },
                     {"id": "e2", "source": "ms", "target": "out"},
                 ],
             }
@@ -2291,12 +2627,11 @@ class TestScoreGraphModelScoreRemap:
                         "data": {
                             "label": "src",
                             "nodeType": "apiInput",
-                            "config": {
-                                "path": "",
-                                "categorical_levels": {
-                                    "region": ["north", "east"],
-                                },
-                            },
+                            "config": _single_frame_api_input_config(
+                                "region",
+                                label="src",
+                                categorical_levels={"region": ["north", "east"]},
+                            ),
                         },
                     },
                     {
@@ -2320,7 +2655,12 @@ class TestScoreGraphModelScoreRemap:
                     },
                 ],
                 "edges": [
-                    {"id": "e1", "source": "src", "target": "ms"},
+                    {
+                        "id": "e1",
+                        "source": "src",
+                        "target": "ms",
+                        "sourceHandle": "src",
+                    },
                     {"id": "e2", "source": "ms", "target": "out"},
                 ],
             }
@@ -2367,12 +2707,11 @@ class TestScoreGraphModelScoreRemap:
                         "data": {
                             "label": "src",
                             "nodeType": "apiInput",
-                            "config": {
-                                "path": "",
-                                "categorical_levels": {
-                                    "region": ["north", "south"],
-                                },
-                            },
+                            "config": _single_frame_api_input_config(
+                                "region",
+                                label="src",
+                                categorical_levels={"region": ["north", "south"]},
+                            ),
                         },
                     },
                     {
@@ -2396,7 +2735,12 @@ class TestScoreGraphModelScoreRemap:
                     },
                 ],
                 "edges": [
-                    {"id": "e1", "source": "src", "target": "ms"},
+                    {
+                        "id": "e1",
+                        "source": "src",
+                        "target": "ms",
+                        "sourceHandle": "src",
+                    },
                     {"id": "e2", "source": "ms", "target": "out"},
                 ],
             }
@@ -2444,12 +2788,11 @@ class TestScoreGraphModelScoreRemap:
                         "data": {
                             "label": "src",
                             "nodeType": "apiInput",
-                            "config": {
-                                "path": "",
-                                "categorical_levels": {
-                                    "region": ["north", "south"],
-                                },
-                            },
+                            "config": _single_frame_api_input_config(
+                                "region",
+                                label="src",
+                                categorical_levels={"region": ["north", "south"]},
+                            ),
                         },
                     },
                     {
@@ -2473,7 +2816,12 @@ class TestScoreGraphModelScoreRemap:
                     },
                 ],
                 "edges": [
-                    {"id": "e1", "source": "src", "target": "ms"},
+                    {
+                        "id": "e1",
+                        "source": "src",
+                        "target": "ms",
+                        "sourceHandle": "src",
+                    },
                     {"id": "e2", "source": "ms", "target": "out"},
                 ],
             }
@@ -2521,7 +2869,7 @@ class TestScoreGraphModelScoreRemap:
                         "data": {
                             "label": "src",
                             "nodeType": "apiInput",
-                            "config": {"path": ""},
+                            "config": _single_frame_api_input_config("region", label="src"),
                         },
                     },
                     {
@@ -2545,7 +2893,12 @@ class TestScoreGraphModelScoreRemap:
                     },
                 ],
                 "edges": [
-                    {"id": "e1", "source": "src", "target": "ms"},
+                    {
+                        "id": "e1",
+                        "source": "src",
+                        "target": "ms",
+                        "sourceHandle": "src",
+                    },
                     {"id": "e2", "source": "ms", "target": "out"},
                 ],
             }
@@ -2593,10 +2946,10 @@ class TestScoreGraphModelScoreRemap:
                         "data": {
                             "label": "src",
                             "nodeType": "apiInput",
-                            "config": {
-                                "path": "",
-                                "categorical_levels": {"region": ["north", "east"]},
-                            },
+                            "config": _single_frame_api_input_config(
+                                "region",
+                                categorical_levels={"region": ["north", "east"]},
+                            ),
                         },
                     },
                     {
@@ -2604,7 +2957,7 @@ class TestScoreGraphModelScoreRemap:
                         "data": {
                             "label": "prep",
                             "nodeType": "polars",
-                            "config": {"code": "df = df"},
+                            "config": {"code": "df = quotes"},
                         },
                     },
                     {
@@ -2628,7 +2981,12 @@ class TestScoreGraphModelScoreRemap:
                     },
                 ],
                 "edges": [
-                    {"id": "e1", "source": "src", "target": "prep"},
+                    {
+                        "id": "e1",
+                        "source": "src",
+                        "target": "prep",
+                        "sourceHandle": "quotes",
+                    },
                     {"id": "e2", "source": "prep", "target": "ms"},
                     {"id": "e3", "source": "ms", "target": "out"},
                 ],
@@ -2665,7 +3023,7 @@ class TestScoreGraphModelScoreRemap:
                         "data": {
                             "label": "src",
                             "nodeType": "apiInput",
-                            "config": {"path": ""},
+                            "config": _single_frame_api_input_config("x", "float", label="src"),
                         },
                     },
                     {
@@ -2692,7 +3050,12 @@ class TestScoreGraphModelScoreRemap:
                     },
                 ],
                 "edges": [
-                    {"id": "e1", "source": "src", "target": "ms"},
+                    {
+                        "id": "e1",
+                        "source": "src",
+                        "target": "ms",
+                        "sourceHandle": "src",
+                    },
                     {"id": "e2", "source": "ms", "target": "out"},
                 ],
             }
@@ -2742,7 +3105,7 @@ class TestScoreGraphModelScoreRemap:
                         "data": {
                             "label": "src",
                             "nodeType": "apiInput",
-                            "config": {"path": ""},
+                            "config": _single_frame_api_input_config("x", "float", label="src"),
                         },
                     },
                     {
@@ -2769,7 +3132,12 @@ class TestScoreGraphModelScoreRemap:
                     },
                 ],
                 "edges": [
-                    {"id": "e1", "source": "src", "target": "ms"},
+                    {
+                        "id": "e1",
+                        "source": "src",
+                        "target": "ms",
+                        "sourceHandle": "src",
+                    },
                     {"id": "e2", "source": "ms", "target": "out"},
                 ],
             }
@@ -2777,6 +3145,7 @@ class TestScoreGraphModelScoreRemap:
 
         with (
             patch("haute._mlflow_io.load_local_model", return_value=scoring_model),
+            patch("haute._mlflow_io.load_mlflow_model", return_value=scoring_model),
             patch(
                 "haute._model_scorer._run_score_pipeline",
                 side_effect=fake_run_score_pipeline,
@@ -2831,7 +3200,7 @@ class TestScoreGraphModelScoreRemap:
                         "data": {
                             "label": "src",
                             "nodeType": "apiInput",
-                            "config": {"path": ""},
+                            "config": _single_frame_api_input_config("x", "float", label="src"),
                         },
                     },
                     {
@@ -2858,7 +3227,12 @@ class TestScoreGraphModelScoreRemap:
                     },
                 ],
                 "edges": [
-                    {"id": "e1", "source": "src", "target": "ms"},
+                    {
+                        "id": "e1",
+                        "source": "src",
+                        "target": "ms",
+                        "sourceHandle": "src",
+                    },
                     {"id": "e2", "source": "ms", "target": "out"},
                 ],
             }
@@ -2925,7 +3299,7 @@ class TestScoreGraphModelScoreRemap:
                         "data": {
                             "label": "src",
                             "nodeType": "apiInput",
-                            "config": {"path": ""},
+                            "config": _single_frame_api_input_config("x", "float", label="src"),
                         },
                     },
                     {
@@ -2933,7 +3307,7 @@ class TestScoreGraphModelScoreRemap:
                         "data": {
                             "label": "aux",
                             "nodeType": "apiInput",
-                            "config": {"path": ""},
+                            "config": _single_frame_api_input_config("x", "float", label="aux"),
                         },
                     },
                     {
@@ -2965,8 +3339,18 @@ class TestScoreGraphModelScoreRemap:
                     },
                 ],
                 "edges": [
-                    {"id": "e1", "source": "src", "target": "ms"},
-                    {"id": "e2", "source": "aux", "target": "ms"},
+                    {
+                        "id": "e1",
+                        "source": "src",
+                        "target": "ms",
+                        "sourceHandle": "src",
+                    },
+                    {
+                        "id": "e2",
+                        "source": "aux",
+                        "target": "ms",
+                        "sourceHandle": "aux",
+                    },
                     {"id": "e3", "source": "ms", "target": "out"},
                 ],
             }
@@ -3013,7 +3397,7 @@ class TestScoreGraphModelScoreRemap:
                         "data": {
                             "label": "src",
                             "nodeType": "apiInput",
-                            "config": {"path": ""},
+                            "config": _single_frame_api_input_config("x", "float", label="src"),
                         },
                     },
                     {
@@ -3040,7 +3424,12 @@ class TestScoreGraphModelScoreRemap:
                     },
                 ],
                 "edges": [
-                    {"id": "e1", "source": "src", "target": "ms"},
+                    {
+                        "id": "e1",
+                        "source": "src",
+                        "target": "ms",
+                        "sourceHandle": "src",
+                    },
                     {"id": "e2", "source": "ms", "target": "out"},
                 ],
             }
@@ -3094,7 +3483,7 @@ class TestScoreGraphModelScoreRemap:
                         "data": {
                             "label": "src",
                             "nodeType": "apiInput",
-                            "config": {"path": ""},
+                            "config": _single_frame_api_input_config("x", "float", label="src"),
                         },
                     },
                     {
@@ -3121,7 +3510,12 @@ class TestScoreGraphModelScoreRemap:
                     },
                 ],
                 "edges": [
-                    {"id": "e1", "source": "src", "target": "ms"},
+                    {
+                        "id": "e1",
+                        "source": "src",
+                        "target": "ms",
+                        "sourceHandle": "src",
+                    },
                     {"id": "e2", "source": "ms", "target": "out"},
                 ],
             }
@@ -4281,13 +4675,28 @@ class TestValidateDeployEdgeCases:
             pruned_graph=_g(
                 {
                     "nodes": [
-                        {"id": "policies", "data": {"nodeType": "apiInput", "config": {}}},
+                        {
+                            "id": "policies",
+                            "data": {
+                                "nodeType": "apiInput",
+                                "config": _single_frame_api_input_config(
+                                    "col", "int", label="policies"
+                                ),
+                            },
+                        },
                         {
                             "id": "output",
                             "data": {"nodeType": "output", "config": make_output_config([])},
                         },
                     ],
-                    "edges": [{"id": "e1", "source": "policies", "target": "output"}],
+                    "edges": [
+                        {
+                            "id": "e1",
+                            "source": "policies",
+                            "target": "output",
+                            "sourceHandle": "policies",
+                        }
+                    ],
                 }
             ),
             input_node_ids=["policies"],
@@ -4312,13 +4721,28 @@ class TestValidateDeployEdgeCases:
             pruned_graph=_g(
                 {
                     "nodes": [
-                        {"id": "policies", "data": {"nodeType": "apiInput", "config": {}}},
+                        {
+                            "id": "policies",
+                            "data": {
+                                "nodeType": "apiInput",
+                                "config": _single_frame_api_input_config(
+                                    "col", "int", label="policies"
+                                ),
+                            },
+                        },
                         {
                             "id": "output",
                             "data": {"nodeType": "output", "config": make_output_config([])},
                         },
                     ],
-                    "edges": [{"id": "e1", "source": "policies", "target": "output"}],
+                    "edges": [
+                        {
+                            "id": "e1",
+                            "source": "policies",
+                            "target": "output",
+                            "sourceHandle": "policies",
+                        }
+                    ],
                 }
             ),
             input_node_ids=["policies"],

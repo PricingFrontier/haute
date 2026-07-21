@@ -152,7 +152,7 @@ export default function OptimiserApplyEditor({
             )}
             {ratebookInputSources.map((source) => (
               <option key={source.edgeId} value={source.sourceNodeId}>
-                {source.sourceLabel || source.varName}
+                {source.name}
               </option>
             ))}
           </select>

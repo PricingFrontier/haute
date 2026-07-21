@@ -212,8 +212,10 @@ class TestCommittedMirrorOnProductionBuild:
         shutil.rmtree(_json_cache_dir(str(data.resolve()), "working"))
 
         out = load_v2_api_source(str(data.resolve()), cfg)
-        assert isinstance(out, pl.LazyFrame)
-        assert out.collect()["id"].to_list() == [1, 2]
+        assert isinstance(out, dict)
+        assert list(out) == ["root"]
+        assert isinstance(out["root"], pl.LazyFrame)
+        assert out["root"].collect()["id"].to_list() == [1, 2]
 
 
 # ---------------------------------------------------------------------------
@@ -291,8 +293,10 @@ class TestDataFileSignatureValidity:
         )
 
         out = load_v2_api_source(str(data.resolve()), cfg)
-        assert isinstance(out, pl.LazyFrame)
-        assert out.collect()["id"].to_list() == [10, 20, 30]
+        assert isinstance(out, dict)
+        assert list(out) == ["root"]
+        assert isinstance(out["root"], pl.LazyFrame)
+        assert out["root"].collect()["id"].to_list() == [10, 20, 30]
 
     def test_validity_false_after_data_file_edit(self, tmp_path: Path) -> None:
         data = tmp_path / "data.json"
@@ -456,8 +460,10 @@ class TestSharedEmittingPredicate:
         build_per_port_cache(data, cfg, _json_cache_dir(str(data), "working"))
 
         out = load_v2_api_source(str(data), cfg)
-        assert isinstance(out, pl.LazyFrame)  # single EMITTING port -> bare frame
-        assert out.collect()["id"].to_list() == [7]
+        assert isinstance(out, dict)
+        assert list(out) == ["root"]
+        assert isinstance(out["root"], pl.LazyFrame)
+        assert out["root"].collect()["id"].to_list() == [7]
 
     def test_route_wedge_shape_builds_and_reports_cached(
         self, client: TestClient, isolated_cwd: Path

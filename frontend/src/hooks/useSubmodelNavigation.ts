@@ -15,7 +15,10 @@ interface SubmodelNavParams {
   submodelsRef: React.MutableRefObject<Record<string, unknown>>
   setNodesRaw: (nodes: Node[]) => void
   setEdgesRaw: (edges: Edge[]) => void
+  setSubmodelsRaw?: (submodels: Record<string, unknown>) => void
   setSelectedNode: (node: Node | null) => void
+  setLastSelectedId?: (id: string | null) => void
+  setCurrentSourceFile?: (sourceFile: string | null) => void
   setPreviewData: (data: null) => void
   preambleRef: React.MutableRefObject<string>
   descriptionRef: React.MutableRefObject<string>
@@ -34,8 +37,8 @@ export interface SubmodelNavReturn {
 
 export default function useSubmodelNavigation({
   graphRef, parentGraphRef, submodelsRef,
-  setNodesRaw, setEdgesRaw,
-  setSelectedNode, setPreviewData,
+  setNodesRaw, setEdgesRaw, setSubmodelsRaw,
+  setSelectedNode, setLastSelectedId, setCurrentSourceFile, setPreviewData,
   preambleRef, descriptionRef, sourceFileRef, pipelineNameRef,
   fitView,
 }: SubmodelNavParams): SubmodelNavReturn {
@@ -60,7 +63,9 @@ export default function useSubmodelNavigation({
       if (newGraph) {
         setNodesRaw(newGraph.nodes ?? [])
         setEdgesRaw(normalizeEdges(newGraph.edges ?? []))
-        submodelsRef.current = newGraph.submodels ?? {}
+        const nextSubmodels = newGraph.submodels ?? {}
+        submodelsRef.current = nextSubmodels
+        setSubmodelsRaw?.(nextSubmodels)
         addToast("success", `Submodel "${name}" created`)
         // Dirty is derived — the graph replacement itself triggers the
         // selectIsDirty comparison at the next render.
@@ -69,7 +74,7 @@ export default function useSubmodelNavigation({
     } catch (err: unknown) {
       addToast("error", `Create submodel failed: ${err instanceof Error ? err.message : String(err)}`)
     }
-  }, [graphRef, submodelsRef, setNodesRaw, setEdgesRaw, preambleRef, descriptionRef, sourceFileRef, pipelineNameRef, fitView, addToast])
+  }, [graphRef, submodelsRef, setNodesRaw, setEdgesRaw, setSubmodelsRaw, preambleRef, descriptionRef, sourceFileRef, pipelineNameRef, fitView, addToast])
 
   const handleDrillIntoSubmodel = useCallback(async (nodeId: string) => {
     const smName = nodeId.replace("submodel__", "")
@@ -95,6 +100,8 @@ export default function useSubmodelNavigation({
           return [...updated, { type: "submodel" as const, name: smName, file: submodelSourceFile }]
         })
         sourceFileRef.current = submodelSourceFile
+        setCurrentSourceFile?.(submodelSourceFile)
+        setLastSelectedId?.(null)
         const newNodes: Node[] = smGraph.nodes ?? []
         const newEdges: Edge[] = normalizeEdges(smGraph.edges ?? [])
 
@@ -180,7 +187,7 @@ export default function useSubmodelNavigation({
     } catch (err: unknown) {
       addToast("error", `Drill-down failed: ${err instanceof Error ? err.message : String(err)}`)
     }
-  }, [graphRef, parentGraphRef, submodelsRef, setNodesRaw, setEdgesRaw, setSelectedNode, setPreviewData, sourceFileRef, fitView, addToast])
+  }, [graphRef, parentGraphRef, submodelsRef, setNodesRaw, setEdgesRaw, setSelectedNode, setLastSelectedId, setCurrentSourceFile, setPreviewData, sourceFileRef, fitView, addToast])
 
   const handleBreadcrumbNavigate = useCallback((depth: number) => {
     const prev = viewStackRef.current
@@ -190,13 +197,15 @@ export default function useSubmodelNavigation({
       setNodesRaw(target._savedNodes)
       setEdgesRaw(normalizeEdges(target._savedEdges))
       setSelectedNode(null)
+      setLastSelectedId?.(null)
       setPreviewData(null)
       setTimeout(() => fitView({ padding: 0.8 }), 100)
     }
     if (depth === 0) parentGraphRef.current = null
     sourceFileRef.current = target.file
+    setCurrentSourceFile?.(target.file || null)
     setViewStack(prev.slice(0, depth + 1))
-  }, [parentGraphRef, sourceFileRef, setNodesRaw, setEdgesRaw, setSelectedNode, setPreviewData, fitView])
+  }, [parentGraphRef, sourceFileRef, setNodesRaw, setEdgesRaw, setSelectedNode, setLastSelectedId, setCurrentSourceFile, setPreviewData, fitView])
 
   const handleDissolveSubmodel = useCallback(async (smName: string) => {
     try {
@@ -213,7 +222,9 @@ export default function useSubmodelNavigation({
       if (flat) {
         setNodesRaw(flat.nodes ?? [])
         setEdgesRaw(normalizeEdges(flat.edges ?? []))
-        submodelsRef.current = data.graph?.submodels ?? submodelsRef.current
+        const nextSubmodels = data.graph?.submodels ?? submodelsRef.current
+        submodelsRef.current = nextSubmodels
+        setSubmodelsRaw?.(nextSubmodels)
         addToast("success", `Submodel "${smName}" dissolved`)
         // Dirty is derived — the graph replacement itself triggers the
         // selectIsDirty comparison at the next render.
@@ -222,7 +233,7 @@ export default function useSubmodelNavigation({
     } catch (err: unknown) {
       addToast("error", `Dissolve failed: ${err instanceof Error ? err.message : String(err)}`)
     }
-  }, [graphRef, submodelsRef, setNodesRaw, setEdgesRaw, preambleRef, descriptionRef, sourceFileRef, pipelineNameRef, fitView, addToast])
+  }, [graphRef, submodelsRef, setNodesRaw, setEdgesRaw, setSubmodelsRaw, preambleRef, descriptionRef, sourceFileRef, pipelineNameRef, fitView, addToast])
 
   return {
     viewStack,

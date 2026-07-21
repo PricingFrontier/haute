@@ -13,7 +13,7 @@
 | `src/haute/_node_apply.py` | Config-driven implementations of `liveSwitch` input selection, `scenarioExpander` row expansion, `optimiserApply` artifact dispatch, and `OUTPUT` response-document assembly (`assemble_output_from_config`) — the single code path both the canvas executor (via `_builders.py`) and codegen-generated `.py` files call. |
 | `src/haute/_topo.py` | `topo_sort_ids` (graphlib-backed topological sort with a custom multi-cycle reporter), `ancestors` (BFS over reversed edges). |
 | `src/haute/graph_utils.py` | Canonical re-export facade for graph models, execution helpers, topo helpers, and IO helpers used by generated pipeline code and application modules. |
-| `src/haute/_graph_utils.py` | Pure-function graph helpers decoupled from the Pydantic models: `build_parents_of`, `upstream_node_ids`, `_sanitize_func_name`, `build_instance_mapping`, `resolve_orig_source_names`, edge-id construction, sink-path normalisation. |
+| `src/haute/_graph_utils.py` | Pure-function graph helpers decoupled from the Pydantic models: `build_parents_of`, `upstream_node_ids`, `_sanitize_func_name`, `edge_input_name` (the single edge→input-name derivation: apiInput-frame edge → its frame label verbatim, else sanitised source-node label; consumed by the executor, codegen, projection, and the deploy scorer so all four agree byte-for-byte), `build_instance_mapping`, `resolve_orig_source_names`, edge-id construction, sink-path normalisation. |
 | `src/haute/_worker_isolation.py` | `run_isolated_worker()` — spawn a child process for one function call with an optional `RLIMIT_AS` cap, timeout, and cooperative stop-reason polling; typed error hierarchy for every terminal state. |
 | `src/haute/chunking.py` | `ChunkPlanRequest`/`chunk_plan()` (proves a graph suffix is chunk-safe, sizes chunks), `iter_chunked_frames()`/`run_chunked_reduce()`/`collect_chunked()` (the serial runner), the per-`NodeType` `ChunkCapability` registry, and the AST-based row-local user-code whitelist. |
 | `src/haute/_ram_estimate.py` | `available_ram_bytes()`/`available_vram_bytes()` (OS-level memory probing), `estimate_safe_training_rows()` (parquet-metadata-based peak-memory estimate and downsample decision). |
@@ -200,15 +200,53 @@ rather than replacing it.
 
 ## Edge cases and invariants
 
-- **Multi-frame sources.** An `apiInput` with 2+ emit-true tables returns
-  `dict[port_label, Frame]` instead of a bare frame. Both eager and lazy paths route
-  per-edge via `_pick_source_frame(source_output, edge)`, keyed on
-  `edge.sourceHandle`; a `None` `sourceHandle` against a multi-frame source raises
-  `ValueError`, an unknown `sourceHandle` raises `KeyError`, and an empty-dict source
-  (no emit-true tables configured) raises a `RuntimeError` blaming the source node,
-  not the edge. Column caches for these are keyed `(node_id, port_label)` instead of
-  just `node_id` so two consumers of different frames from the same source don't
-  collide on contract-check state.
+- **Frame sources are uniform from one frame up.** An `apiInput` with ≥1
+  emit-eligible table returns `dict[frame_label, Frame]` — there is no bare-frame
+  single-table special case, so one frame and eight frames route identically. Every
+  `apiInput` edge carries its frame label as `sourceHandle`/`source_port`. Both eager
+  and lazy paths route per-edge via `_pick_source_frame(source_output, edge)`, keyed
+  on `edge.sourceHandle`; a `None` `sourceHandle` against a dict source raises
+  `ValueError` (a legacy or hand-edited edge that names no frame), an unknown
+  `sourceHandle` raises `KeyError`, and an empty-dict source (no eligible tables
+  configured) raises a `RuntimeError` blaming the source node, not the edge. Column
+  caches for these are keyed `(node_id, frame_label)` instead of just `node_id` so
+  two consumers of different frames from the same source don't collide on
+  contract-check state.
+- **Per-edge input names, not per-source names.** `_build_funcs` derives each
+  node's `source_names` per incoming edge via `edge_input_name(edge, source_node)`
+  (`_graph_utils.py`) — an apiInput edge contributes its frame label, every other
+  edge its sanitised source label — in the same edge-declaration order the frames
+  are bound in, so parameter i's name always describes frame i. **Every production
+  caller supplies incoming-edge metadata**: `_execute_lazy` (lazy and eager cores),
+  `executor.py`'s preview path, `execution.py`'s linear/optimiser execution, and
+  `chunking.py`'s chunked runner all pass their node's incoming edges through the
+  same derivation — a caller with no edge metadata is a test-only convenience, never
+  a production path. `resolve_orig_source_names` likewise derives an instance's
+  *original* input names from the original node's incoming edges (edge-derived, not
+  parent-node-id-derived), so instance alias injection speaks the same names as the
+  original's signature. Duplicate derived names among one node's incoming edges
+  raise `ConfigError` naming the node and the colliding name (matching codegen's
+  save-time rejection); the executor never suffixes or renames. Detection is
+  the shared pure helper `duplicate_input_names(names)` (`_graph_utils.py`):
+  given one target's derived input names in edge order it returns the names
+  appearing more than once — each once, in first-duplicate-occurrence order,
+  `[]` when all unique — and never raises itself; the executor wraps a
+  non-empty result in `ConfigError`, codegen in `ParseError`, so both
+  surfaces report the same collision identically.
+- **The standalone `Pipeline.run()`/`score()` executor binds ports the same way.**
+  `src/haute/pipeline.py`'s live-object runner consults each `RegisteredEdge`'s
+  `source_port` through the shared `_pick_source_frame` selection before calling a
+  node function — a generated one-frame apiInput pipeline run standalone receives
+  its frame, not the `{label: frame}` dict — keeping the single-execution-engine
+  invariant across in-process, standalone, and deploy contexts (see
+  [pipeline-config](../pipeline-config/low-level.md) for the module owner).
+  `score(df)`'s seed follows the complete shape × port-count matrix owned by
+  [pipeline-config](../pipeline-config/high-level.md): bare frame for zero
+  (source-only) or one connected port; an exactly-matching
+  `{frame_label: DataFrame}` dict for one or more ports; everything else —
+  bare frame at 2+ ports, missing/unknown dict keys, any dict at zero ports —
+  raises `ExecutionError` naming the ports. Never a silent fan-out of one
+  frame to every port.
 - **Contract-resolution degradation is scoped narrowly.** `_effective_contract()`
   catches `ConfigError`/`OSError`/`MlflowException` from the builder's contract
   callback and falls back to `Contract.opaque()` — skipping only the boundary check,
@@ -361,7 +399,13 @@ Tests live in `tests/` (flat layout, no package-per-component subdirectories).
   detection, cache-satisfies-request logic) that the big integration suites don't
   exercise branch-by-branch.
 - **`test_executor_builders.py`**, **`test_port_aware_executor.py`** — per-`NodeType`
-  builder dispatch and multi-port/multi-frame routing through the executor.
+  builder dispatch and multi-port/multi-frame routing through the executor; the
+  input-identity scenarios live here: `edge_input_name` derivation (apiInput frame
+  label verbatim incl. the single-frame dict source, sanitised label for ordinary
+  nodes, flattened submodel child edges), per-edge `source_names` order matching
+  frame binding order under edge reordering (delete + reconnect in reverse order
+  keeps every name bound to its own frame), duplicate-input-name `ConfigError`, and
+  the loud `ValueError` for a null-handle edge against a dict source.
 - **`test_preview_cache_byte_awareness.py`**, **`test_preview_cache_regressions.py`**,
   **`test_preview_cache_hint.py`**, **`test_preview_json_serialization.py`** —
   preview-cache eviction-by-bytes, pinned regression scenarios, and JSON payload

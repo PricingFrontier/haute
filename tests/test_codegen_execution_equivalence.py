@@ -22,17 +22,23 @@ regression and pass only when both sides share one code path.
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 import uuid
+from collections.abc import Iterator
 from pathlib import Path
 
 import polars as pl
+import pytest
 from polars.testing import assert_frame_equal
 
 from haute._builders import _build_node_fn
 from haute._config_io import collect_node_configs
 from haute._execute_lazy import _execute_lazy
+from haute._json_flatten import _json_cache_dir
+from haute._json_shred import build_per_port_cache
 from haute._model_scorer import _scenario_ctx
+from haute._sandbox import _get_project_root, set_project_root
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute.codegen import graph_to_code
 
@@ -45,8 +51,13 @@ def _node(nid: str, label: str, node_type: NodeType, config: dict) -> GraphNode:
     return GraphNode(id=nid, data=NodeData(label=label, nodeType=node_type, config=config))
 
 
-def _edge(src: str, tgt: str) -> GraphEdge:
-    return GraphEdge(id=f"e_{src}_{tgt}", source=src, target=tgt)
+def _edge(src: str, tgt: str, *, source_port: str | None = None) -> GraphEdge:
+    return GraphEdge(
+        id=f"e_{src}_{tgt}_{source_port or 'default'}",
+        source=src,
+        target=tgt,
+        sourceHandle=source_port,
+    )
 
 
 def _const(nid: str, label: str, values: list[dict]) -> GraphNode:
@@ -95,6 +106,127 @@ def _executor_node_fn(node: GraphNode, source_names, source_ids, source: str):
         source=source,
     )
     return fn
+
+
+@pytest.fixture
+def isolated_project(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> Iterator[Path]:
+    """Keep generated modules and apiInput caches inside one temp project."""
+    original = _get_project_root()
+    monkeypatch.chdir(tmp_path)
+    set_project_root(tmp_path)
+    try:
+        yield tmp_path
+    finally:
+        set_project_root(original)
+
+
+def _column(name: str, path: str, type_: str = "int") -> dict:
+    return {"name": name, "path": path, "type": type_, "selected": True}
+
+
+def _cached_api_graph(
+    project: Path,
+    *,
+    records: list[dict],
+    tables: list[dict],
+    code: str,
+    ports: list[str],
+) -> PipelineGraph:
+    data_path = project / "request.json"
+    data_path.write_text(json.dumps(records), encoding="utf-8")
+    config = {
+        "path": str(data_path),
+        "contract": "opaque",
+        "tables": tables,
+    }
+    build_per_port_cache(data_path, config, _json_cache_dir(data_path, "working"))
+
+    api = _node("api", "Quote Input", NodeType.API_INPUT, config)
+    transform = _node("transform", "Price Transform", NodeType.POLARS, {"code": code})
+    return PipelineGraph(
+        nodes=[api, transform],
+        edges=[_edge("api", "transform", source_port=port) for port in ports],
+    )
+
+
+# ---------------------------------------------------------------------------
+# apiInput frame identity — generated standalone execution must bind the same
+# per-edge names as the canvas executor for both one- and multi-frame sources.
+# ---------------------------------------------------------------------------
+
+
+def test_one_frame_api_input_run_matches_executor_by_frame_label(
+    isolated_project: Path,
+) -> None:
+    graph = _cached_api_graph(
+        isolated_project,
+        records=[{"quote_id": 7}, {"quote_id": 11}],
+        tables=[
+            {
+                "path": "$[:]",
+                "label": "quotes",
+                "emit": True,
+                "columns": [_column("quote_id", "$[:].quote_id")],
+            }
+        ],
+        code="df = quotes.with_columns((pl.col('quote_id') * 2).alias('double_id'))",
+        ports=["quotes"],
+    )
+
+    module = _write_and_import(graph, isolated_project)
+    standalone = _collect(module.pipeline.run())
+    reference = _executor_frame(graph, "transform", source="batch")
+
+    assert standalone["double_id"].to_list() == [14, 22]
+    assert_frame_equal(standalone, reference)
+
+
+def test_multi_frame_api_input_run_matches_executor_by_each_frame_label(
+    isolated_project: Path,
+) -> None:
+    graph = _cached_api_graph(
+        isolated_project,
+        records=[
+            {"policy_id": 1, "drivers": [{"driver_id": 10}, {"driver_id": 11}]},
+            {"policy_id": 2, "drivers": [{"driver_id": 20}]},
+        ],
+        tables=[
+            {
+                "path": "$[:]",
+                "label": "quotes",
+                "emit": True,
+                "columns": [_column("policy_id", "$[:].policy_id")],
+            },
+            {
+                "path": "$[:].drivers[:]",
+                "label": "drivers",
+                "emit": True,
+                "columns": [
+                    _column("policy_id", "$[:].policy_id"),
+                    _column("driver_id", "$[:].drivers[:].driver_id"),
+                ],
+            },
+        ],
+        code=(
+            "df = quotes.join(drivers, on='policy_id', how='inner')"
+            ".select('policy_id', 'driver_id')"
+        ),
+        ports=["quotes", "drivers"],
+    )
+
+    module = _write_and_import(graph, isolated_project)
+    standalone = _collect(module.pipeline.run())
+    reference = _executor_frame(graph, "transform", source="batch")
+
+    assert standalone.to_dicts() == [
+        {"policy_id": 1, "driver_id": 10},
+        {"policy_id": 1, "driver_id": 11},
+        {"policy_id": 2, "driver_id": 20},
+    ]
+    assert_frame_equal(standalone, reference)
 
 
 # ---------------------------------------------------------------------------

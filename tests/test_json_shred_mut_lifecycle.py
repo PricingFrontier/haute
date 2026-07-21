@@ -9,8 +9,6 @@ the exact operator.
 Survivors covered:
 - 847  ``if existing_meta is not None:``  (Eq_GtE) — no-op trapdoor idempotency
 - 940  ``if skip_stats.total:``           (AddNot) — skip-warning gate
-- 1089 ``if len(emit_labels) == 1:``      — single vs multi frame return shape
-- 1090 ``return bundle[emit_labels[0]]``  — single-frame index
 - 1123 ``if meta.get("schema_mode") != "v2":`` (NotEq) — schema_mode gate
 - 1128 ``return False`` (FalseWithTrue)   — non-str label invalidates
 - 1131 ``continue`` (ContinueWithBreak)   — missing-parquet skips non-emit
@@ -150,32 +148,25 @@ def test_skip_warning_fires_only_when_records_skipped(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 1089 / 1090 — single emitting label returns a bare LazyFrame; 2+ returns a
-# dict keyed by label.
+# Runtime shape — every positive emitting-label count returns a dict keyed by
+# label; the former bare-frame single-table shorthand is removed.
 # ---------------------------------------------------------------------------
 
 
-def test_single_emitting_table_returns_bare_lazyframe(tmp_path: Path) -> None:
-    """One emitting label → bare LazyFrame (count boundary `== 1` + index 0).
-
-    Kills 1089 (`== 1` boundary): if it were `>= 1`, two-table configs would
-    wrongly return a frame too. Kills 1090's index: the single frame returned
-    must be the one keyed by the only emitting label."""
+def test_single_emitting_table_returns_dict_keyed_by_label(tmp_path: Path) -> None:
+    """One emitting label uses the same per-port bundle shape as many labels."""
     data = _write(tmp_path, [{"id": 10}, {"id": 20}])
     cfg = {"tables": [_table("$[:]", "root", [_col("id", "$[:].id")])]}
     build_per_port_cache(str(data), cfg, _working_cache(data))
     out = load_v2_api_source(str(data), cfg)
-    assert isinstance(out, pl.LazyFrame)
-    assert out.collect()["id"].to_list() == [10, 20]
+    assert isinstance(out, dict)
+    assert list(out) == ["root"]
+    assert isinstance(out["root"], pl.LazyFrame)
+    assert out["root"].collect()["id"].to_list() == [10, 20]
 
 
 def test_two_emitting_tables_return_dict_keyed_by_label(tmp_path: Path) -> None:
-    """Two emitting labels → dict keyed by label, NOT a bare frame.
-
-    Kills the 1089 count boundary: with `== 1` two tables fall through to the
-    dict branch; a mutation to `>= 1` / `> 1` / `<= 1` would change the shape
-    for one of the two arities. Pairing this with the single-table test pins
-    the boundary at exactly 1."""
+    """Two emitting labels preserve schema order and both labelled payloads."""
     data = _write(
         tmp_path,
         [{"id": 1, "drivers": [{"age": 30}, {"age": 40}]}],
@@ -194,6 +185,7 @@ def test_two_emitting_tables_return_dict_keyed_by_label(tmp_path: Path) -> None:
     out = load_v2_api_source(str(data), cfg)
     assert isinstance(out, dict)
     assert list(out) == ["root", "drivers"]
+    assert all(isinstance(frame, pl.LazyFrame) for frame in out.values())
     assert out["root"].collect()["id"].to_list() == [1]
     assert out["drivers"].collect()["age"].to_list() == [30, 40]
 

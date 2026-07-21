@@ -47,7 +47,12 @@
  */
 import { create } from "zustand"
 import type { Node, Edge } from "@xyflow/react"
-import { EMPTY_SNAPSHOT, serializeSnapshot, selectIsDirty } from "../utils/graphSnapshot"
+import {
+  EMPTY_SNAPSHOT,
+  serializeSnapshot,
+  selectIsDirty,
+  cloneGraphSnapshot,
+} from "../utils/graphSnapshot"
 import { shallowNodeDataHash } from "../utils/shallowNodeHash"
 import { nodeData } from "../types/node"
 
@@ -57,6 +62,8 @@ export interface GraphSnapshot {
   nodes: Node[]
   edges: Edge[]
   preamble: string
+  /** Present on snapshots created by this store; optional for legacy history entries. */
+  submodels?: Record<string, unknown>
 }
 
 /** A version-control operation (branch switch / archive / delete) riding the
@@ -83,6 +90,8 @@ export interface GraphStore {
   nodes: Node[]
   edges: Edge[]
   preamble: string
+  /** History-only metadata; excluded from persisted dirty fingerprints. */
+  submodels: Record<string, unknown>
   lastSavedSnapshot: GraphSnapshot | null
   undoStack: HistoryEntry[]
   redoStack: HistoryEntry[]
@@ -110,11 +119,17 @@ export interface GraphStore {
     nodes: Node[] | ((nds: Node[]) => Node[]),
     edges: Edge[] | ((eds: Edge[]) => Edge[]),
   ) => void
+  setNodesAndEdgesAndSubmodels: (
+    nodes: Node[] | ((nds: Node[]) => Node[]),
+    edges: Edge[] | ((eds: Edge[]) => Edge[]),
+    submodels: Record<string, unknown>,
+  ) => void
   setPreamble: (value: string) => void
 
   // Raw actions (skip history push — for mid-drag, WS sync, load)
   setNodesRaw: (nodes: Node[] | ((nds: Node[]) => Node[])) => void
   setEdgesRaw: (edges: Edge[] | ((eds: Edge[]) => Edge[])) => void
+  setSubmodelsRaw: (submodels: Record<string, unknown>) => void
   setPreambleRaw: (value: string) => void
 
   // Explicit history operations
@@ -155,36 +170,11 @@ type StructuralEdge = {
  * corrupt history or saved baselines.
  */
 export function captureGraphSnapshot(
-  state: Pick<GraphStore, "nodes" | "edges" | "preamble">,
+  state: Pick<GraphStore, "nodes" | "edges" | "preamble"> & {
+    submodels?: Record<string, unknown>
+  },
 ): GraphSnapshot {
-  return {
-    nodes: state.nodes.map((n) => cloneGraphValue(n)),
-    edges: state.edges.map((e) => cloneGraphValue(e)),
-    preamble: state.preamble,
-  }
-}
-
-function cloneGraphValue<T>(value: T, seen = new WeakMap<object, unknown>()): T {
-  if (value === null || typeof value !== "object") return value
-  const objectValue = value as object
-  const existing = seen.get(objectValue)
-  if (existing !== undefined) return existing as T
-
-  if (Array.isArray(value)) {
-    const clone: unknown[] = []
-    seen.set(objectValue, clone)
-    for (const item of value) {
-      clone.push(cloneGraphValue(item, seen))
-    }
-    return clone as T
-  }
-
-  const clone: Record<string, unknown> = {}
-  seen.set(objectValue, clone)
-  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
-    clone[key] = cloneGraphValue(child, seen)
-  }
-  return clone as T
+  return cloneGraphSnapshot(state)
 }
 
 /**
@@ -459,6 +449,7 @@ const useGraphStore = create<GraphStore>()((set, get) => {
     nodes: [],
     edges: [],
     preamble: "",
+    submodels: {},
     lastSavedSnapshot: null,
     undoStack: [],
     redoStack: [],
@@ -546,6 +537,36 @@ const useGraphStore = create<GraphStore>()((set, get) => {
           redoStack: [],
           nodes,
           edges,
+          ...computePanelContextPatch(state, nodes, edges),
+          persistedFingerprint: nextPersistedFingerprint,
+          dirty: computeDirty(
+            state.lastSavedSnapshot,
+            state.savedPersistedFingerprint,
+            nextPersistedFingerprint,
+          ),
+          ...(nextFingerprint === state.structuralFingerprint
+            ? {}
+            : {
+                structuralFingerprint: nextFingerprint,
+                structuralVersion: state.structuralVersion + 1,
+              }),
+        }
+      })
+    },
+
+    setNodesAndEdgesAndSubmodels: (nodesUpdater, edgesUpdater, submodels) => {
+      set((state) => {
+        const undoStack = pushSnapshotInternal()
+        const nodes = applyUpdater(state.nodes, nodesUpdater)
+        const edges = applyUpdater(state.edges, edgesUpdater)
+        const nextPersistedFingerprint = computePersistedFingerprint(nodes, edges, state.preamble)
+        const nextFingerprint = computeStructuralFingerprint(nodes, edges, state.preamble)
+        return {
+          undoStack,
+          redoStack: [],
+          nodes,
+          edges,
+          submodels,
           ...computePanelContextPatch(state, nodes, edges),
           persistedFingerprint: nextPersistedFingerprint,
           dirty: computeDirty(
@@ -675,6 +696,10 @@ const useGraphStore = create<GraphStore>()((set, get) => {
       })
     },
 
+    setSubmodelsRaw: (submodels) => {
+      set({ submodels })
+    },
+
     setPreambleRaw: (value) => {
       set((state) => {
         const nextPersistedFingerprint = computePersistedFingerprint(state.nodes, state.edges, value)
@@ -748,6 +773,7 @@ const useGraphStore = create<GraphStore>()((set, get) => {
         nodes: prev.nodes,
         edges: prev.edges,
         preamble: prev.preamble,
+        submodels: prev.submodels ?? {},
         persistedFingerprint: nextPersistedFingerprint,
         dirty: computeDirty(
           state.lastSavedSnapshot,
@@ -796,6 +822,7 @@ const useGraphStore = create<GraphStore>()((set, get) => {
         nodes: next.nodes,
         edges: next.edges,
         preamble: next.preamble,
+        submodels: next.submodels ?? {},
         persistedFingerprint: nextPersistedFingerprint,
         dirty: computeDirty(
           state.lastSavedSnapshot,

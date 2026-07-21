@@ -3,8 +3,8 @@
 Exercises the v2 apiInput at runtime end-to-end through execute_graph:
 
 - 0 emit-true tables → preview fails loud with a configuration message.
-- 1 emit-true table → single-port shorthand; source emits a bare
-  LazyFrame; downstream edges with null ``sourceHandle`` bind correctly.
+- 1 emit-true table → source emits a one-key dict just like a multi-frame
+  source; downstream edges select it by its required ``sourceHandle``.
 - 2+ emit-true tables → source emits a dict[port_label, LazyFrame]; the
   executor's edge-resolution picks per edge via ``sourceHandle``.
 - Cache absent → fail with the "click Cache as Parquet" hint.
@@ -153,10 +153,10 @@ def test_zero_emit_true_fails_loud(isolated_root) -> None:
     assert "tick" in error_msg or "configure" in error_msg or "configuration" in error_msg
 
 
-# ─── 2. single-port: bare frame, null-sourceHandle edge works ─────
+# ─── 2. single-port: one-key dict, labelled edge routing ──────────
 
 
-def test_single_port_emits_bare_frame_through_passthrough_consumer(isolated_root) -> None:
+def test_single_port_dict_routes_through_labelled_edge(isolated_root) -> None:
     data_path = isolated_root / "data.json"
     data_path.write_text(json.dumps(_rating_records()))
     config = _single_port_config(data_path)
@@ -175,10 +175,7 @@ def test_single_port_emits_bare_frame_through_passthrough_consumer(isolated_root
                 ),
             ),
         ],
-        edges=[
-            # Single-port: null sourceHandle (the shorthand).
-            GraphEdge(id="e", source="api", target="downstream", sourceHandle=None),
-        ],
+        edges=[GraphEdge(id="e", source="api", target="downstream", sourceHandle="policies")],
     )
     results = execute_graph(graph, target_node_id="downstream")
     assert results["api"].status == "ok"
@@ -187,6 +184,29 @@ def test_single_port_emits_bare_frame_through_passthrough_consumer(isolated_root
     assert results["api"].row_count == 2
     # Downstream passed it through unchanged.
     assert results["downstream"].row_count == 2
+
+
+def test_single_port_dict_with_null_source_handle_fails_loud(isolated_root) -> None:
+    data_path = isolated_root / "data.json"
+    data_path.write_text(json.dumps(_rating_records()))
+    config = _single_port_config(data_path)
+    _build_cache_for(isolated_root, data_path, config)
+    graph = PipelineGraph(
+        nodes=[
+            _api_input_node("api", config),
+            GraphNode(
+                id="downstream",
+                data=NodeData(label="downstream", nodeType=NodeType.POLARS, config={}),
+            ),
+        ],
+        edges=[GraphEdge(id="e", source="api", target="downstream")],
+    )
+
+    results = execute_graph(graph, target_node_id="downstream")
+
+    assert results["downstream"].status == "error"
+    error_msg = results["downstream"].error or ""
+    assert "sourceHandle" in error_msg
 
 
 # ─── 3. multi-port: dict emit, sourceHandle picks per edge ────────

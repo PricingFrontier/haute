@@ -4,13 +4,13 @@
 
 | File | Responsibility |
 | --- | --- |
-| `frontend/src/panels/NodePanel.tsx` | Selects configuration/columns/instance views and routes the selected node to an editor. |
+| `frontend/src/panels/NodePanel.tsx` | Selects configuration/columns/instance views, routes the selected node to an editor, and derives the per-edge `InputSource` list via `edgeInputName` (memoised on a per-edge signature covering edge id, source id/label, `sourceHandle`, the derived input name, and the `frameUnresolved` resolution state). |
 | `frontend/src/panels/NodePalette.tsx` | Renders draggable node templates. |
 | `frontend/src/panels/LazyNodeEditors.tsx` | Central dynamic-import registry and loading boundaries for editor bodies. |
 | `frontend/src/panels/PanelShell.tsx`, `frontend/src/panels/PanelHeader.tsx` | Right-panel shell/header used by node, imports and utility authoring views. |
 | `frontend/src/components/ReadOnlyNodeConfig.tsx`, `frontend/src/components/FramesTable.tsx`, `frontend/src/components/KeyPickerModal.tsx` | Inert configuration, API-frame rows and reusable API-input key picker. |
 | `frontend/src/panels/editors/index.ts` | Public editor exports. |
-| `frontend/src/panels/editors/_shared.tsx` | Shared editor types, styles, file browser, schema preview and input-source bar. |
+| `frontend/src/panels/editors/_shared.tsx` | Shared editor types, styles, file browser, schema preview and the input-source bar (chips keyed by edge id, showing each edge's input name — the code argument — with the source node named in the tooltip). |
 | `frontend/src/panels/editors/CodeEditor.tsx`, `frontend/src/panels/editors/CodeMirrorEditor.tsx`, `frontend/src/panels/editors/shared/PolarsCodePanel.tsx` | Code-editor wrappers and Polars-specific panel. |
 | `frontend/src/panels/editors/ConstantEditor.tsx`, `frontend/src/panels/editors/TransformEditor.tsx`, `frontend/src/panels/editors/EdgeJoinEditor.tsx`, `frontend/src/panels/editors/LiveSwitchEditor.tsx`, `frontend/src/panels/editors/ScenarioExpanderEditor.tsx` | Editors for scalar, transform, join, conditional-switch and scenario nodes. |
 | `frontend/src/panels/editors/DataSourceEditor.tsx`, `frontend/src/panels/editors/ExternalFileEditor.tsx`, `frontend/src/panels/editors/DataInputEditor.tsx`, `frontend/src/panels/editors/DataOutputEditor.tsx`, `frontend/src/panels/editors/SinkEditor.tsx` | File/database/IO source and destination configuration. |
@@ -34,6 +34,23 @@
 
 - `OnUpdateConfig`, `SimpleNode`, `SimpleEdge`, `SchemaInfo` and `InputSource` in
   `frontend/src/panels/editors/_shared.tsx` define the editor-to-panel contract.
+  `OnUpdateConfig` returns a commit result — `{ ok: true } | { ok: false; error: string }` —
+  from `App.onUpdateNode`'s preflight: editors whose edits can trigger a frame rename (the
+  ApiInputEditor label commit) surface `error` inline beside the offending field and clear it
+  on the next successful commit; edits that cannot fail preflight may ignore the return value
+  unchanged. Every production supplier of the callback migrates with the type — including the
+  read-only inspector (`frontend/src/components/ReadOnlyNodeConfig.tsx`), whose inert no-op
+  callback returns `{ ok: true }` — so the contract change is compile-time loud, not
+  runtime-discovered. `InputSource`
+  carries one identity: `name` is the input's single name — chip text, code argument, and the
+  key persisted contracts use (the live-switch `input_scenario_map`, the instance
+  `inputMapping`) — derived per edge by `edgeInputName` (an API-input edge's frame label
+  verbatim; a submodel `out__` edge's child sanitised label; else the sanitised source-node
+  label). `sourceLabel` is the raw source-node label used in tooltips and removal titles;
+  `edgeId` is the stable chip key and removal target; `frameUnresolved` marks an API-input edge
+  whose frame could not be resolved, rendering the chip in its warning state. `name` is
+  required, so every fixture constructing an `InputSource` fails to compile until it declares
+  one — the former `varName`/`displayLabel` pair no longer exists.
 - API schemas have separate persisted read/write and inferred/reconciled representations in
   `frontend/src/panels/editors/apiInputSchema.ts` and `frontend/src/panels/editors/apiInputInherit.ts`.
   Output mappings use the equivalent conversion boundary in
@@ -46,6 +63,18 @@
 
 1. `frontend/src/panels/NodePanel.tsx` receives selection and graph context, chooses an editor
    or generic tab, and passes config mutation callbacks and available preview/connection data.
+   For each upstream edge it builds an `InputSource`: `name` via
+   `edgeInputName(edge, sourceNode, submodels)` (from frontend-graph-canvas's
+   `frontend/src/utils/apiInputPorts.ts`, mirroring the backend's `edge_input_name`). An
+   API-input edge whose non-null `sourceHandle` names no currently-eligible frame — the only
+   unresolved case the editor can transiently observe, since null-handle API edges are always
+   pruned by reconciliation — keeps that handle **verbatim** as `name` and sets
+   `frameUnresolved: true`, so the chip shows the stale frame identity with its warning state
+   instead of impersonating a resolved input or renaming it to the parent. The memo's
+   staleness signature covers edge id, source id, source label, `sourceHandle`, the derived
+   name, and the resolution state — so a frame rename (which rebinds the edge's
+   `sourceHandle`) refreshes downstream chips, and a frame becoming resolvable under an
+   unchanged name string clears the warning.
 2. `frontend/src/panels/LazyNodeEditors.tsx` loads the selected editor module. React suspense
    displays its loading boundary while that import is unresolved; already-loaded modules are
    reused by the module loader.
@@ -72,6 +101,47 @@
   it, while the rating/banding grids validate their target coordinates and numeric values.
 - Path tools preserve/rewrite only recognised path prefixes. JSON path validation and
   canonicalisation hints are advisory client checks, not an alternative backend execution grammar.
+- Input chips and live-switch mapping rows are keyed by `edgeId`, so a removal can never route
+  to the wrong edge. Live-switch rows display `name` (with the same `frameUnresolved` warning
+  state as chips) and read/write `input_scenario_map` by that same `name` — two frames from one
+  API input are two distinct map keys, individually routable for the first time. A frame
+  rename's atomic commit updates every name-referencing config in the same pass that rebinds
+  the edges: `input_scenario_map` keys on downstream live-switches, instance `inputMapping`
+  **values** on downstream instance nodes, and instance `inputMapping` **keys** on every node
+  whose `instanceOf` references an affected *original* (the original's input names are the
+  mapping keys, so renaming a frame feeding the original would otherwise stale-key every
+  instance). The commit is **preflighted**: before anything mutates, every affected target's
+  post-rename input-name set is checked for duplicates (the new name colliding with another
+  input already on that target), and a collision rejects the entire rename with an inline
+  error naming the target and the colliding name — no config, edge, or mapping mutation
+  occurs. Name-referencing config can never half-apply or overwrite an existing key.
+- `edgeInputName` treats only API-input sources' handles as frame names; a submodel
+  `out__`-prefixed source handle resolves to the referenced child node's sanitised label (via
+  the graph context's `submodels`) — the same name the flattened code binds — and every other
+  node type derives the sanitised source label.
+- The API-input editor rejects a frame label that fails backend invariant B4 (not an ASCII
+  identifier, or a Python hard keyword) at commit time with the same inline validation used
+  for blank/duplicate labels (`apiInputLabelIssue` — the exact ASCII mirror) — the label is
+  the downstream argument name, so an invalid label never reaches the config.
+- Null-handle API-input edges never survive reconciliation (the zero-frame default handle is
+  non-connectable and `validSourceHandleKeys` for an apiInput never contains the empty key),
+  so the only unresolved state the panel can observe is transient: an edge whose non-null
+  `sourceHandle` names a frame that no longer resolves. Its chip keeps the handle text
+  verbatim with the `frameUnresolved` warning; at run time the executor's `KeyError` is the
+  loud backstop, and at save time codegen's port-less-edge `ParseError` covers hand-edited
+  files.
+- `frontend/src/panels/editors/OutputEditor.tsx`'s per-frame block label is the edge's input
+  name via the same shared helper, and the persisted `source_port` key (`framePortId`) now
+  *equals* that name by construction — the frame label for API-input edges, the sanitised
+  source label otherwise — so display and persisted identity cannot diverge. An unresolvable
+  API-input edge renders the block header in the explicit unresolved state (parent label
+  retained as identifying text plus a visible warning marker), never a normal-looking fallback.
+
+(The former NOTE here — two frames of one API input sharing one sanitised `varName`, leaving
+`input_scenario_map` unable to distinguish them — is resolved by the input-identity
+convergence: scenario-map keys are now the frame-derived input names, and the backend's
+matching in `executor.py`, `projection.py`, and the deploy pruner consumes the same
+`edge_input_name` derivation.)
 
 ## Error handling
 
@@ -90,7 +160,31 @@ schema paths, output paths, banding and rating editing, clipboard-related grid b
 Databricks/MLflow selection, panel dispatch/lazy loading and accessibility. There is no dedicated
 test file for every small barrel/style/helper module; those are covered through their consumers.
 
+The input-identity work is pinned by `frontend/src/panels/__tests__/NodePanel.test.tsx`
+(`name` derivation for API-frame edges — sole frame included — ordinary sources, and submodel
+`out__` edges resolving to child labels; the `frameUnresolved` warning chip for a
+zero-eligible-frame API source; the unresolved→resolved transition under an unchanged name
+string clearing the warning; signature-driven refresh on a frame rename; two frames from one
+API input rendering two distinct, independently removable chips whose names equal the
+generated argument names), by LiveSwitch cases (two frames from one API input render two rows
+with two distinct names and two independent `input_scenario_map` keys; a frame rename migrates
+its map key atomically with the edge rebind; a zero-eligible-frame API `InputSource` renders
+the row's unresolved warning marker/tooltip), by the ApiInputEditor identifier-validation
+cases (non-identifier and keyword labels rejected inline before commit, and a rename
+collision preflight rejection surfaced inline via the `OnUpdateConfig` result with the graph
+asserted unchanged), by the editor suites
+that render `InputSourcesBar` (`ModelScoreEditor`, `OptimiserApplyEditor`,
+`ScenarioExpanderEditor`, `BandingEditor`, and the hover suite), by the OutputEditor suite's
+name-equals-`framePortId` and unresolved-block-header cases, and by
+`frontend/src/utils/__tests__/apiInputPorts.test.ts` for the shared `edgeInputName`
+derivation. Because `InputSource.name` replaces the former `varName`/`displayLabel` pair,
+every suite constructing `InputSource` fixtures (Transform, RatingStep, LiveSwitch,
+ScenarioExpander, ModelScore, OptimiserApply, Banding, ExternalFile, ExploreCode, and the
+hover suite) migrates its fixtures — a compile-time-loud migration, not a runtime fallback.
+
 Browser coverage for authoring flows is in `frontend/e2e/data-io-nodes.spec.ts`,
 `frontend/e2e/migration/v1-to-v2-node-continuity.spec.ts`,
-`frontend/e2e/persistence/api-input-render-gate.spec.ts`, and
-`frontend/e2e/persistence/api-input-v2-native.spec.ts`.
+`frontend/e2e/persistence/api-input-render-gate.spec.ts`,
+`frontend/e2e/persistence/api-input-v2-native.spec.ts`, and
+`frontend/e2e/persistence/api-input-frame-alignment.spec.ts` (downstream frame-naming chips
+alongside its canvas geometry assertions).

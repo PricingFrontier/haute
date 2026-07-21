@@ -181,9 +181,8 @@ def _same_source_join_graph(api_config: dict[str, Any]) -> dict[str, Any]:
     """One apiInput feeding a single polars node through TWO edges (drivers +
     vehicles) — a join of two data-levels straight off the input.
 
-    The executor binds the first edge's frame as ``df`` and the last edge's
-    frame under the source's name (``api``), so the code joins drivers with
-    vehicles on their shared ancestor key.
+    Each edge's frame label is also its executable argument name, so the code
+    joins ``drivers`` with ``vehicles`` on their shared ancestor key.
     """
     return {
         "nodes": [
@@ -200,7 +199,7 @@ def _same_source_join_graph(api_config: dict[str, Any]) -> dict[str, Any]:
                 "data": {
                     "label": "j",
                     "nodeType": "polars",
-                    "config": {"code": "df = df.join(api, on='policy_id')"},
+                    "config": {"code": "df = drivers.join(vehicles, on='policy_id')"},
                 },
             },
         ],
