@@ -196,6 +196,10 @@ class TestCommitSave:
         assert _git(repo, "rev-parse", LEDGER) == sha
         # working branch untouched by a plain save
         assert _git(repo, "rev-parse", WORKING) == _parents(repo, sha)[0]
+        # The path-scoped commit must also reconcile its temporary staging.
+        # Leaving the saved path in the index makes a completed save appear as
+        # both staged and unstaged (MM) in the branch manager.
+        assert _git(repo, "status", "--porcelain", "--", "rating.py") == ""
 
     def test_noop_save_produces_no_commit(self, repo: Path) -> None:
         first = _write_and_save(repo, WORKING, {"rating.py": "# v2\n"})
@@ -235,6 +239,26 @@ class TestMilestoneMerge:
         assert _tree(repo, milestone) == _tree(repo, s2)
         # HEAD stayed on the ledger throughout — no checkout dance
         assert _git(repo, "symbolic-ref", "--short", "HEAD") == LEDGER
+
+    def test_milestone_captures_residual_tracked_project_changes(self, repo: Path) -> None:
+        from haute._git_state import write_working_branch
+
+        write_working_branch(repo, WORKING)
+        _write_and_save(repo, WORKING, {"uv.lock": "locked-v1\n"})
+        # A tracked project file can change outside the canvas after the last
+        # Haute save (dependency locking is the common setup-time example).
+        (repo / "uv.lock").write_text("locked-v2\n")
+        # Also reproduce an index/worktree cancellation: the staged version is
+        # stale, while the working file is already identical to HEAD.
+        (repo / "rating.py").write_text("# stale staged version\n")
+        _git(repo, "add", "rating.py")
+        (repo / "rating.py").write_text("# pipeline\n")
+        assert _git(repo, "status", "--porcelain", "--", "rating.py").startswith("MM")
+
+        milestone = commit_milestone("Include project state", repo, cwd=repo).sha
+
+        assert _git(repo, "show", f"{milestone}:uv.lock") == "locked-v2"
+        assert _git(repo, "status", "--porcelain", "--untracked-files=no") == ""
 
     def test_version_label_becomes_annotated_tag(self, repo: Path) -> None:
         _write_and_save(repo, WORKING, {"rating.py": "# v2\n"})
