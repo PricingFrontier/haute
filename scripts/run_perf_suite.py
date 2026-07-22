@@ -4,15 +4,26 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import platform
 import sys
+import threading
 import time
 from collections.abc import Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
+from typing import Any
 
 import pytest
+
+try:
+    from scripts.memory_smoke import StdlibMemorySampler
+except ModuleNotFoundError:  # Direct ``python scripts/run_perf_suite.py`` execution.
+    from memory_smoke import StdlibMemorySampler
+
+_POLARS_SCALE_ENV = "HAUTE_POLARS_PERF_SCALE"
 
 
 @dataclass(frozen=True)
@@ -22,12 +33,64 @@ class PerfTestResult:
     duration_seconds: float
     phase: str
     wasxfail: str | None = None
+    evidence: dict[str, object] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
 class PerfBudgets:
     max_total_seconds: float
     max_test_seconds: float
+
+
+@dataclass(frozen=True)
+class PerfRssEnvelope:
+    sampler: str
+    peak_rss_bytes: int | None
+    sample_count: int
+    poll_interval_seconds: float
+
+
+class ProcessRssMonitor:
+    """Independently poll this runner process while in-process pytest runs."""
+
+    def __init__(self, *, poll_interval_seconds: float = 0.02, sampler: Any = None) -> None:
+        if poll_interval_seconds <= 0:
+            raise ValueError("poll_interval_seconds must be greater than zero")
+        self._poll_interval_seconds = poll_interval_seconds
+        self._sampler = sampler or StdlibMemorySampler()
+        self._samples: list[int] = []
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> None:
+        if self._thread is not None:
+            raise RuntimeError("RSS monitor has already started")
+
+        def poll() -> None:
+            while not self._stop.is_set():
+                self._sample()
+                self._stop.wait(self._poll_interval_seconds)
+
+        self._thread = threading.Thread(target=poll, name="haute-perf-rss", daemon=True)
+        self._thread.start()
+
+    def stop(self) -> PerfRssEnvelope:
+        if self._thread is None:
+            raise RuntimeError("RSS monitor has not started")
+        self._stop.set()
+        self._thread.join(timeout=max(1.0, self._poll_interval_seconds * 4))
+        self._sample()
+        return PerfRssEnvelope(
+            sampler="independent_process_rss_poll",
+            peak_rss_bytes=max(self._samples) if self._samples else None,
+            sample_count=len(self._samples),
+            poll_interval_seconds=self._poll_interval_seconds,
+        )
+
+    def _sample(self) -> None:
+        rss = self._sampler.process_rss_bytes(os.getpid())
+        if rss is not None:
+            self._samples.append(int(rss))
 
 
 class PerfReportPlugin:
@@ -45,6 +108,13 @@ class PerfReportPlugin:
         if not should_record:
             return
 
+        evidence: dict[str, object] = {}
+        for key, value in getattr(report, "user_properties", ()):
+            if key == "haute_perf_evidence":
+                if not isinstance(value, dict):
+                    raise TypeError("haute_perf_evidence must be a mapping")
+                evidence = {str(item_key): item_value for item_key, item_value in value.items()}
+
         self.results.append(
             PerfTestResult(
                 nodeid=report.nodeid,
@@ -52,6 +122,7 @@ class PerfReportPlugin:
                 duration_seconds=report.duration,
                 phase=report.when,
                 wasxfail=getattr(report, "wasxfail", None),
+                evidence=evidence,
             )
         )
 
@@ -119,6 +190,8 @@ def _build_report(
     results: Sequence[PerfTestResult],
     budgets: PerfBudgets,
     command: Sequence[str],
+    polars_scale: str = "ci",
+    rss: PerfRssEnvelope | None = None,
 ) -> dict[str, object]:
     outcomes: dict[str, int] = {}
     for result in results:
@@ -126,11 +199,30 @@ def _build_report(
         outcomes[key] = outcomes.get(key, 0) + 1
 
     slowest = sorted(results, key=lambda result: result.duration_seconds, reverse=True)[:10]
+    try:
+        polars_version = version("polars")
+    except PackageNotFoundError:
+        polars_version = None
+    rss_payload = (
+        asdict(rss)
+        if rss is not None
+        else {
+            "sampler": "independent_process_rss_poll",
+            "peak_rss_bytes": None,
+            "sample_count": 0,
+            "poll_interval_seconds": None,
+        }
+    )
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "generated_at": datetime.now(UTC).isoformat(),
-        "python": platform.python_version(),
-        "platform": platform.platform(),
+        "environment": {
+            "python": platform.python_version(),
+            "platform": platform.platform(),
+            "polars": polars_version,
+        },
+        "scenario": {"polars_scale": polars_scale},
+        "rss": rss_payload,
         "command": list(command),
         "budgets": asdict(budgets),
         "summary": {
@@ -150,12 +242,23 @@ def _write_markdown_summary(report: dict[str, object], path: Path) -> None:
     assert isinstance(summary, dict)
     budgets = report["budgets"]
     assert isinstance(budgets, dict)
+    scenario = report["scenario"]
+    assert isinstance(scenario, dict)
+    rss = report["rss"]
+    assert isinstance(rss, dict)
     slowest = summary["slowest"]
     assert isinstance(slowest, list)
+    tests = report["tests"]
+    assert isinstance(tests, list)
+    peak_rss = rss["peak_rss_bytes"]
+    peak_rss_label = "unavailable" if peak_rss is None else f"{int(peak_rss):,} bytes"
 
     lines = [
         "# Performance Test Report",
         "",
+        f"- Polars scale: {scenario['polars_scale']}",
+        f"- Independent peak RSS: {peak_rss_label}",
+        f"- RSS samples: {rss['sample_count']}",
         f"- Total: {summary['total_seconds']:.2f}s",
         f"- Collected: {summary['collected']}",
         f"- Reported: {summary['reported']}",
@@ -173,6 +276,24 @@ def _write_markdown_summary(report: dict[str, object], path: Path) -> None:
         lines.append(
             f"| {item['duration_seconds']:.2f}s | {item['outcome']} | `{item['nodeid']}` |"
         )
+    evidence_rows = []
+    for item in tests:
+        assert isinstance(item, dict)
+        evidence = item.get("evidence")
+        if isinstance(evidence, dict) and evidence:
+            evidence_rows.append((str(item["nodeid"]), json.dumps(evidence, sort_keys=True)))
+    if evidence_rows:
+        lines.extend(
+            [
+                "",
+                "## Scenario Evidence",
+                "",
+                "| Test | Evidence |",
+                "| --- | --- |",
+            ]
+        )
+        for nodeid, evidence_json in evidence_rows:
+            lines.append(f"| `{nodeid}` | `{evidence_json}` |")
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
@@ -204,6 +325,18 @@ def _parse_args(argv: Sequence[str]) -> argparse.Namespace:
         type=float,
         default=120.0,
         help="Maximum call/setup/teardown duration for an individual perf test.",
+    )
+    parser.add_argument(
+        "--polars-scale",
+        choices=("ci", "1m", "10m"),
+        default="ci",
+        help="Generated Polars scenario scale. The 1m and 10m variants are opt-in.",
+    )
+    parser.add_argument(
+        "--rss-poll-interval",
+        type=float,
+        default=0.02,
+        help="Seconds between independent process-RSS samples.",
     )
     parser.add_argument(
         "--pytest-arg",
@@ -252,9 +385,20 @@ def main(argv: Sequence[str] | None = None) -> int:
     pytest_args = _build_pytest_args(args, junit_path)
 
     plugin = PerfReportPlugin()
+    rss_monitor = ProcessRssMonitor(poll_interval_seconds=args.rss_poll_interval)
+    previous_scale = os.environ.get(_POLARS_SCALE_ENV)
+    os.environ[_POLARS_SCALE_ENV] = args.polars_scale
     start = time.perf_counter()
-    exit_code = pytest.main(pytest_args, plugins=[plugin])
-    total_seconds = time.perf_counter() - start
+    rss_monitor.start()
+    try:
+        exit_code = pytest.main(pytest_args, plugins=[plugin])
+    finally:
+        total_seconds = time.perf_counter() - start
+        rss = rss_monitor.stop()
+        if previous_scale is None:
+            os.environ.pop(_POLARS_SCALE_ENV, None)
+        else:
+            os.environ[_POLARS_SCALE_ENV] = previous_scale
 
     report = _build_report(
         exit_code=exit_code,
@@ -263,6 +407,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         results=plugin.results,
         budgets=budgets,
         command=["pytest", *pytest_args],
+        polars_scale=args.polars_scale,
+        rss=rss,
     )
     _write_artifacts(report, args.output_dir)
 

@@ -20,6 +20,8 @@ from haute._scaffold import TARGETS, haute_toml
 from haute._types import NodeType
 
 ROOT = Path(__file__).resolve().parents[1]
+MKDOCS_CONFIG = ROOT / "mkdocs.yml"
+EXECUTION_STRATEGY_DOC = ROOT / "docs" / "building-models" / "execution-strategy.md"
 SPECS_README = ROOT / "docs" / "specs" / "README.md"
 PIPELINE_CONFIG_SPEC = ROOT / "docs" / "specs" / "pipeline-config" / "low-level.md"
 DEPLOYMENT_DOCS = sorted((ROOT / "docs" / "deployment").rglob("*.md"))
@@ -93,6 +95,22 @@ DATABRICKS_SECRET_DOCS = [
     ROOT / "docs" / "deployment" / "ci" / "gitlab.md",
     ROOT / "docs" / "deployment" / "ci" / "azure-devops.md",
 ]
+
+
+def test_execution_strategy_guide_is_in_public_navigation_and_states_key_contracts() -> None:
+    nav = MKDOCS_CONFIG.read_text(encoding="utf-8")
+    guide = EXECUTION_STRATEGY_DOC.read_text(encoding="utf-8")
+
+    assert "Execution Strategy: building-models/execution-strategy.md" in nav
+    for claim in (
+        "Schema all-except",
+        "Streaming boundary",
+        "Materialisation boundary",
+        "Haute never generically chunks a group-by.",
+        "`preview_eager` or `deploy_live`",
+        "unavailable or `null`",
+    ):
+        assert claim in guide
 
 
 def _normalise_doc_reference(value: str) -> str:

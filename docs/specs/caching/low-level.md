@@ -249,14 +249,16 @@
   cache, that stale existing entry is removed rather than left stranded.
 - **`LRUCache.pin`/`unpin` on an unknown key is a silent no-op** — deliberately,
   so a pin racing a rollback/eviction doesn't need coordination.
-- **`FingerprintCache.try_get` treats a stored-but-first-slot-missing entry as a
-  miss** (`_MISSING` sentinel check on `entry.get(first_slot, _MISSING)`), guarding
-  against a partially-constructed entry.
+- **`FingerprintCache.store` constructs every declared slot atomically** before
+  delegating to the shared LRU implementation, so supported cache entries are
+  always complete and `try_get` can return the fixed slot mapping directly.
 - **`FingerprintCache.update_slot` avoids remeasuring unchanged heavy slots**:
   updating a slot outside `size_sensitive_slots` under a byte cap preserves the
   stored byte estimate and just moves the entry to MRU, rather than re-running
   `size_of` (which could drift under allocator-dependent measurement) on an
-  object that didn't change.
+  object that didn't change. A custom `size_sensitive_slots` declaration is
+  accepted only with an active `max_bytes`/`size_of` pair; that declaration is
+  the caller's explicit assertion of which slot changes can affect `size_of`.
 - **`DataFrameExecutionCache.path_for_key` includes a UUID suffix** specifically
   so concurrent same-key store attempts (racing before the `RLock` was
   introduced, or across separate cache instances pointed at the same directory)
@@ -394,3 +396,92 @@ coverage relative to typical cache modules. This spec does not itself execute
 the suite; treat file/class presence as an index, not a substitute for running
 `pytest tests/test_dataframe_execution_cache.py tests/test_json_cache_routes.py`
 etc. when changing this component.
+
+## Polars backend contracts (0.6.0)
+
+The implementation tracked by the
+[F_0.6.0 Polars backend remediation plan](../../trip/plans/F_0.6.0_polars-backend-remediation.plan.md)
+satisfies this low-level contract.
+
+### Preview/trace key construction and lifecycle
+
+- Add one shared, versioned preview/trace key-factory API at the cache boundary.
+  Its mandatory inputs are the original graph; the source-pruned
+  `prepare_graph(graph, target, source)` result; explicit target;
+  source/`active_source`; normalised requested columns; initial width; row limit;
+  port/frame handle; contract fingerprint; selected live-switch path;
+  runtime/input fingerprint; and execution-semantics version. `None`, empty,
+  default, and named values are encoded as distinct explicit fields. Preview and
+  trace modules consume this API and do not own parallel key formats.
+- The factory derives a canonical lineage payload containing deterministically
+  ordered execution-relevant nodes and edges, including relevant node config and
+  handles, plus graph-level `preamble`, `source_file`, `preserved_blocks`,
+  `sources`, and `active_source`. It excludes downstream and disconnected graph
+  state. All map/set and graph insertion-order differences normalise before
+  `canonical_json()`; unsupported fields propagate its `TypeError` rather than
+  falling back to `repr()`.
+- Cache store returns an explicit retained-or-rejected outcome. It computes size
+  and rejects an oversized candidate before mutating the cache. Rejection leaves
+  an existing value under the same key untouched, performs no victim eviction,
+  and cannot create a request lease or pin.
+- An accepted store replaces/inserts atomically while holding the cache lock.
+  Readers see a complete old or complete new entry, never a partially updated
+  value or accounting state. Concurrent accepted same-key stores use completion
+  order: the last completed store wins. Entry count and byte count are updated in
+  the same critical section and remain coherent through replacement and eviction.
+- Only a confirmed retained outcome may acquire the request lease/pin used by a
+  consumer. Every acquired lease/pin is released from `finally`, including when
+  the consumer raises. The oversized outcome may continue with the already
+  computed value only where the caller's existing contract allows it; any other
+  store exception propagates unchanged and is not downgraded to a miss.
+
+### Runtime fingerprints, hashing, and cleanup
+
+- Runtime data-path fingerprinting must delegate unchanged-path reuse to the
+  shared `StatGatedCache` loader pattern used for utility hashes. The loader still
+  computes the required content hash on a cache miss and preserves the existing
+  torn-read failure semantics.
+- A matching `(mtime_ns, size)` is only a gate for reusing the same operation's
+  loaded content hash. It must not bypass JSON parsing, schema/version validation,
+  source selection, or any other semantic check required by a distinct JSON
+  operation. No stat-only cross-operation JSON-validity cache is permitted.
+- All new cache-key payloads use `_cache.canonical_json()`; remove duplicate
+  canonicalisation helpers after call sites migrate. Any direct row-hash buffer
+  replaces Python-list materialisation only behind a benchmark gate and must
+  preserve equal-frame/different-frame identity for supported shapes, including
+  nulls and empty frames. If its byte encoding changes existing digests, bump the
+  key version and document the deliberate one-time invalidation rather than
+  retaining the old allocation-heavy encoding for digest compatibility.
+- Obsolete `COLLECT_LAZY` selection paths, dead sink helpers, and no-op projection
+  guards are absent, with tests pinning no observable execution or diagnostic
+  effect. Do not retain compatibility aliases with no
+  live caller merely to conceal an incomplete migration.
+
+### Required automated evidence
+
+- Unit and consumer tests prove preview and trace reuse survives downstream or
+  disconnected edits and is invalidated by each lineage/config/wiring change and
+  each graph-level lineage field (`preamble`, `source_file`, `preserved_blocks`,
+  `sources`, `active_source`). Ordering permutations of relevant nodes, edges,
+  mappings, and sets produce the same key.
+- A field-by-field matrix independently mutates the original graph, prepared
+  source-pruned graph, target, source/active source, requested columns, initial
+  width, row limit, port/frame handle, contract fingerprint, selected live-switch
+  path, runtime/input fingerprint, and execution-semantics version. Every semantic
+  mutation changes identity; canonical equivalents and ordering-only changes do
+  not.
+- Store tests prove oversize is assessed before mutation; a rejected same-key
+  replacement preserves the old value, triggers no eviction or pin, and leaves
+  accounting unchanged. Concurrency tests prove readers observe only complete
+  old/new values, last-completed accepted same-key store wins, and byte/entry
+  counts remain coherent.
+- Lease tests prove only retained stores acquire protection and every lease/pin is
+  released in `finally`. Fault-injection tests prove unexpected store exceptions
+  propagate and are never reported as an oversize rejection or cache miss.
+- `StatGatedCache` tests prove no content re-read on an unchanged path, reload on
+  either metadata dimension changing, and preserve loader/torn-read failures.
+  JSON route/component tests prove matching metadata alone cannot make one
+  operation accept another operation's JSON-derived result.
+- Any direct row-hash-buffer patch includes equivalence tests plus a repeatable
+  benchmark with an agreed material-improvement threshold; absent that evidence,
+  do not make the optimisation.

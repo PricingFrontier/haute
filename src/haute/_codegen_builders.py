@@ -287,7 +287,7 @@ def {func_name}({params}) -> pl.LazyFrame:
     from haute.graph_utils import select_live_switch_input
     return select_live_switch_input(
         {input_scenario_map_repr}, _scenario_ctx.get(),
-        {frames_dict}, {input_order_repr},
+        {frames_dict}, {input_order_repr}, switch={switch_repr},
     )
 '''
 
@@ -557,6 +557,7 @@ def _gen_live_switch(node: GraphNode, source_names: list[str]) -> str:
         input_scenario_map_repr=repr(input_scenario_map),
         frames_dict=frames_dict,
         input_order_repr=repr(list(source_names)),
+        switch_repr=repr(func_name),
     )
 
 

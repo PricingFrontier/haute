@@ -283,3 +283,11 @@ click that triggered it.
 > or corrupt artifact as a 500 ("Re-run the solve..."), even though a missing artifact caused by
 > user action (e.g. a stale handle after the job's TTL evicted it) is arguably a 400/404-shaped
 > problem rather than a server error. See [low-level.md](low-level.md#error-handling).
+
+## Polars backend contracts (0.6.0)
+
+Optimiser estimate, setup, solve, and auto-range flows will use one execution-plan
+result for a given graph and request context. Each exposes the same bounded strategy
+diagnostics and deterministic feature provenance, so admission estimates and execution
+cannot silently select divergent plans. Execution-engine owns planner internals; see the
+[remediation plan](../../trip/plans/F_0.6.0_polars-backend-remediation.plan.md).

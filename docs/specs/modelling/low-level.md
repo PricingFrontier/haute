@@ -521,3 +521,11 @@ isolation — split logic (random/temporal/group strategies, the mask functions)
 exercised indirectly through `test_modelling.py`,
 `test_training_null_target_fused_split.py`, `test_training_split_streaming.py`, and
 `test_codegen_split.py` rather than one focused suite.
+
+## Polars backend contracts (0.6.0)
+
+`TrainService` and estimate paths consume the execution facade's typed result rather
+than selecting collection strategy themselves. Their response and job diagnostics retain
+the final feature inclusion/exclusion and provenance supplied by that result; execution
+engine remains the sole owner of planning mechanics. See the
+[remediation plan](../../trip/plans/F_0.6.0_polars-backend-remediation.plan.md).

@@ -28,7 +28,7 @@ from haute.chunking import (
     iter_chunked_frames,
     run_chunked_reduce,
 )
-from haute.errors import ChunkPlanUnsupportedError
+from haute.errors import ChunkPlanUnsupportedError, GroupByExecutionUnsupportedError
 from haute.executor import _build_node_fn
 from tests.conftest import make_edge, make_graph, make_output_config
 
@@ -713,7 +713,7 @@ def test_chunk_plan_rejects_global_polars_transform(tmp_path: Path) -> None:
         }
     )
 
-    with pytest.raises(ChunkPlanUnsupportedError, match="row-local"):
+    with pytest.raises(GroupByExecutionUnsupportedError) as exc_info:
         chunk_plan(
             ChunkPlanRequest(
                 graph=graph,
@@ -722,6 +722,7 @@ def test_chunk_plan_rejects_global_polars_transform(tmp_path: Path) -> None:
                 required_columns_by_node={"out": {"quote_id", "premium"}},
             )
         )
+    assert exc_info.value.reason_code == "profile_requires_bounded_execution"
 
 
 def test_chunk_local_polars_guard_accepts_row_local_and_rejects_global() -> None:
@@ -868,6 +869,28 @@ def test_run_chunked_reduce_accepts_bounded_reducer(tmp_path: Path) -> None:
         )
         == 18
     )
+
+
+def test_chunk_runner_creates_checkpoint_directory_once_per_run(tmp_path: Path) -> None:
+    graph = _chunk_safe_graph(_write_source(tmp_path))
+    checkpoint_dir = tmp_path / "checkpoint-once"
+    original_mkdir = Path.mkdir
+    checkpoint_mkdir_calls: list[Path] = []
+
+    def tracked_mkdir(path: Path, *args: Any, **kwargs: Any) -> None:
+        if path == checkpoint_dir:
+            checkpoint_mkdir_calls.append(path)
+        original_mkdir(path, *args, **kwargs)
+
+    with patch.object(Path, "mkdir", tracked_mkdir):
+        result = _run_chunked(
+            graph,
+            chunk_size=5,
+            checkpoint_dir=checkpoint_dir,
+        )
+
+    assert result.height == 18
+    assert checkpoint_mkdir_calls == [checkpoint_dir]
 
 
 def test_chunk_runner_cancels_before_next_chunk_and_cleans_checkpoints(tmp_path: Path) -> None:

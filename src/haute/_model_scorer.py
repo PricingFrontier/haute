@@ -1127,7 +1127,25 @@ def _run_score_pipeline(
             from haute._execution_context import ExecutionProfile
             from haute._polars_utils import streaming_collect
 
-            collected = streaming_collect(lf, profile=ExecutionProfile.PREVIEW_EAGER)
+            validation_lf = lf
+            validation_columns = _score_input_projection_columns(
+                lf,
+                features,
+                write_projection,
+                offset_column=resolved_offset,
+            )
+            if validation_columns is not None:
+                validation_lf = lf.select(
+                    _ordered_required_columns(
+                        schema.names(),
+                        validation_columns,
+                        context="live model-score categorical validation projection",
+                    )
+                )
+            collected = streaming_collect(
+                validation_lf,
+                profile=ExecutionProfile.PREVIEW_EAGER,
+            )
             _validate_runtime_categorical_values(collected, normalised_levels)
             eager_lf = collected.lazy()
         # Preserve the offset-less call arity: pass the kwarg only when an
@@ -1573,6 +1591,26 @@ def _sink_to_temp(
     return path
 
 
+def _declared_empty_score_dtypes(
+    *,
+    flavor: ModelFlavor,
+    task: str,
+    include_proba: bool,
+) -> (
+    tuple[
+        pl.DataType | type[pl.DataType],
+        pl.DataType | type[pl.DataType] | None,
+    ]
+    | None
+):
+    """Return task/flavor output dtypes when the scoring contract fixes them."""
+    if flavor != "catboost":
+        return None
+    prediction_dtype = pl.Int64 if task == "classification" else pl.Float64
+    proba_dtype = pl.Float64 if include_proba else None
+    return prediction_dtype, proba_dtype
+
+
 def _batch_score_to_parquet(
     scoring_model: Any,
     input_path: str,
@@ -1683,26 +1721,34 @@ def _batch_score_to_parquet(
             # labels, so an empty score and a non-empty score of the SAME model
             # produced parquet files with incompatible prediction schemas.
             #
-            # We derive the output dtypes exactly like the non-empty path: run
-            # the model against a one-row synthetic probe built from the input
-            # schema and take the resulting column dtypes.  A predict failure
-            # here propagates on purpose — a model that cannot score a
-            # schema-shaped row is broken, and defaulting to Float64 would
-            # resurrect the dtype-divergence bug this guards against.
+            # Prefer declared flavor/task output contracts.  This avoids
+            # asking CatBoost to score an artificial all-null row, which is
+            # not a valid input for categorical models.  Metadata-free model
+            # flavors still use a schema-shaped probe so their output dtype is
+            # learned rather than guessed.
             input_schema = pl.read_parquet_schema(input_path)
-            probe = pl.DataFrame(
-                {
-                    c: pl.Series([None], dtype=input_schema.get(c, pl.Float64))
-                    for c in input_schema_names
-                }
-            )
-            probe_x = _prepare_predict_frame(
-                probe.select(predict_features),
-                predict_features,
-                cat_feature_names=scoring_model.cat_feature_names,
+            declared_dtypes = _declared_empty_score_dtypes(
                 flavor=scoring_model.flavor,
+                task=task,
+                include_proba=can_predict_proba,
             )
-            if offset_column and scoring_model.flavor == "catboost":
+            probe_x: Any | None = None
+            prediction_dtype: pl.DataType | type[pl.DataType]
+            declared_proba_dtype: pl.DataType | type[pl.DataType] | None
+            if declared_dtypes is None:
+                probe = pl.DataFrame(
+                    {
+                        c: pl.Series([None], dtype=input_schema.get(c, pl.Float64))
+                        for c in input_schema_names
+                    }
+                )
+                probe_x = _prepare_predict_frame(
+                    probe.select(predict_features),
+                    predict_features,
+                    cat_feature_names=scoring_model.cat_feature_names,
+                    flavor=scoring_model.flavor,
+                )
+            if declared_dtypes is None and offset_column and scoring_model.flavor == "catboost":
                 # Dtype probe only: a null baseline would make CatBoost
                 # reject the Pool, so probe at the unit raw-score offset 0.
                 from catboost import Pool
@@ -1715,7 +1761,14 @@ def _batch_score_to_parquet(
                     cat_features=cat_indices if cat_indices else None,
                     baseline=np.zeros(1),
                 )
-            prediction_dtype = pl.Series(output_col, scoring_model.predict(probe_x)).dtype
+            if declared_dtypes is None:
+                prediction_dtype = pl.Series(
+                    output_col,
+                    scoring_model.predict(probe_x),
+                ).dtype
+                declared_proba_dtype = None
+            else:
+                prediction_dtype, declared_proba_dtype = declared_dtypes
             empty = pl.DataFrame(
                 {
                     c: pl.Series([], dtype=input_schema.get(c, pl.Float64))
@@ -1723,10 +1776,14 @@ def _batch_score_to_parquet(
                 }
             ).with_columns(pl.Series(output_col, [], dtype=prediction_dtype))
             if can_predict_proba:
-                proba_vector = _positive_class_proba_vector(
-                    scoring_model.predict_proba(probe_x), output_col
-                )
-                proba_dtype = pl.Series(f"{output_col}_proba", proba_vector).dtype
+                proba_dtype: pl.DataType | type[pl.DataType]
+                if declared_proba_dtype is None:
+                    proba_vector = _positive_class_proba_vector(
+                        scoring_model.predict_proba(probe_x), output_col
+                    )
+                    proba_dtype = pl.Series(f"{output_col}_proba", proba_vector).dtype
+                else:
+                    proba_dtype = declared_proba_dtype
                 empty = empty.with_columns(pl.Series(f"{output_col}_proba", [], dtype=proba_dtype))
             empty = _apply_score_write_projection(
                 empty,

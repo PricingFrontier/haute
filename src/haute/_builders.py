@@ -33,7 +33,7 @@ from haute._edge_join import (
     execute_edge_join,
     resolve_edge_join_role_indices,
 )
-from haute._execution_context import ExecutionProfile
+from haute._execution_context import ExecutionProfile, current_execution_context
 from haute._graph_utils import _sanitize_func_name
 from haute._io import load_external_object, read_data_source
 from haute._logging import get_logger
@@ -88,10 +88,31 @@ def _source_scan_projection(
     profile: str | None,
     columns: frozenset[str] | set[str] | None,
     config: Mapping[str, Any],
+    *,
+    node_id: str | None = None,
 ) -> projection.SourceScanProjection:
     if profile in {None, ExecutionProfile.PREVIEW_EAGER.value}:
-        return projection.SourceScanProjection(columns=None)
-    return projection.source_scan_projection(config, columns)
+        projected = projection.SourceScanProjection(columns=None)
+    else:
+        projected = projection.source_scan_projection(config, columns)
+    _record_source_scan_projection_evidence(node_id, columns, projected)
+    return projected
+
+
+def _record_source_scan_projection_evidence(
+    node_id: str | None,
+    columns: frozenset[str] | set[str] | None,
+    projected: projection.SourceScanProjection,
+) -> None:
+    execution_context = current_execution_context()
+    if execution_context is not None and node_id is not None:
+        execution_context.record_column_widths(
+            node_id=node_id,
+            requested_width=None if columns is None else len(columns),
+            physically_scanned_width=(
+                None if projected.columns is None else len(projected.columns)
+            ),
+        )
 
 
 def _allow_empty_source_path(profile: str | None) -> bool:
@@ -500,8 +521,14 @@ def _build_api_input(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
             _profile: str | None = ctx.execution_profile,
             _columns: frozenset[str] | set[str] | None = ctx.required_output_columns,
             _config: dict[str, Any] = config,
+            _node_id: str = ctx.node.id,
         ) -> _Frame:
-            projected = _source_scan_projection(_profile, _columns, _config)
+            projected = _source_scan_projection(
+                _profile,
+                _columns,
+                _config,
+                node_id=_node_id,
+            )
             # Anchor a relative flat-file path to the pipeline dir before the
             # read — the flat (CSV/parquet) apiInput codec is the third sibling
             # of the DATA_SOURCE sites above: the JSON apiInput fix (09a5500f)
@@ -539,10 +566,16 @@ def _build_data_source(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
             _config: Mapping[str, Any] = config,
             _profile: str | None = ctx.execution_profile,
             _columns: frozenset[str] | set[str] | None = ctx.required_output_columns,
+            _node_id: str = ctx.node.id,
         ) -> _Frame:
             if source_type != "databricks" and not path and _allow_empty_source_path(_profile):
                 return pl.LazyFrame()
-            projected = _source_scan_projection(_profile, _columns, _config)
+            projected = _source_scan_projection(
+                _profile,
+                _columns,
+                _config,
+                node_id=_node_id,
+            )
             # Anchor a relative flat-file path to the pipeline dir before the
             # read (same fix as the v2 apiInput closure): a nested-pipeline
             # relative ``path`` served from the project root must resolve
@@ -564,14 +597,20 @@ def _build_data_source(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
             _profile: str | None = ctx.execution_profile,
             _columns: frozenset[str] | set[str] | None = ctx.required_output_columns,
             _config: dict[str, Any] = config,
+            _node_id: str = ctx.node.id,
         ) -> _Frame:
             from haute._databricks_io import read_cached_table
 
             lf = read_cached_table(_table)
-            projected = _source_scan_projection(
-                _profile,
-                _columns if code_preserves_projection else None,
+            demanded_columns = _columns if code_preserves_projection else None
+            projected = projection.source_scan_projection(
                 _config,
+                demanded_columns,
+            )
+            _record_source_scan_projection_evidence(
+                _node_id,
+                demanded_columns,
+                projected,
             )
             if projected.validate_columns:
                 source_columns = set(lf.collect_schema().names())
@@ -592,6 +631,7 @@ def _build_data_source(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
             _config: Mapping[str, Any] = config,
             _profile: str | None = ctx.execution_profile,
             _columns: frozenset[str] | set[str] | None = ctx.required_output_columns,
+            _node_id: str = ctx.node.id,
         ) -> _Frame:
             if not path and _allow_empty_source_path(_profile):
                 return pl.LazyFrame()
@@ -599,6 +639,7 @@ def _build_data_source(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
                 _profile,
                 _columns if code_preserves_projection else None,
                 _config,
+                node_id=_node_id,
             )
             # Anchor a relative flat-file path to the pipeline dir before the
             # read — see _config_with_resolved_data_path / the plain_source_fn
@@ -708,7 +749,13 @@ def _build_live_switch(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
                 for extra_i in range(len(order), len(dfs_positional)):
                     frames[f"__arg{extra_i}"] = dfs_positional[extra_i]
                     order.append(f"__arg{extra_i}")
-        return select_live_switch_input(input_scenario_map, _source, frames, order)
+        return select_live_switch_input(
+            input_scenario_map,
+            _source,
+            frames,
+            order,
+            switch=ctx.func_name,
+        )
 
     return ctx.func_name, switch_fn, False
 

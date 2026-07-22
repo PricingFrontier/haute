@@ -1,0 +1,685 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import polars as pl
+import pytest
+from pydantic import ValidationError
+
+from haute._execution_context import ExecutionAdmission, ExecutionContext, ExecutionProfile
+from haute._ram_estimate import MaterialisationEstimate
+from haute.chunking import ChunkPlanRequest, chunk_plan
+from haute.errors import BoundedMemoryUnsupportedError, GroupByExecutionUnsupportedError
+from haute.execution import (
+    BoundedDiagnosticCollection,
+    DiagnosticDetailState,
+    ExecutionBoundedness,
+    ExecutionStrategy,
+    ExecutionStrategyDiagnostic,
+    ExecutionStrategyStatus,
+    ProjectionRequest,
+    execute_lazy_graph,
+    plan_execution_strategy,
+    plan_prepared_execution_strategy,
+)
+from haute.executor import _build_node_fn, execute_graph
+from haute.projection import _canonical_topological_ranks, prepare_graph
+from haute.schemas import ExecutionStrategyDiagnosticPayload
+from haute.trace import execute_trace
+from tests.conftest import make_edge, make_graph
+
+_STATUS_BY_STRATEGY = {
+    ExecutionStrategy.PROJECTED: ExecutionStrategyStatus.PROJECTED,
+    ExecutionStrategy.SCHEMA_ALL_EXCEPT: ExecutionStrategyStatus.PROJECTED,
+    ExecutionStrategy.FULL_WIDTH_ADMITTED_EAGER: ExecutionStrategyStatus.ADMITTED_EAGER,
+    ExecutionStrategy.UNPROJECTED_STREAMING_BOUNDARY: ExecutionStrategyStatus.BOUNDARY,
+    ExecutionStrategy.MATERIALISATION_BOUNDARY: ExecutionStrategyStatus.BOUNDARY,
+    ExecutionStrategy.UNSUPPORTED: ExecutionStrategyStatus.REJECTED,
+    ExecutionStrategy.NOT_PLANNED: ExecutionStrategyStatus.NOT_PLANNED,
+}
+
+
+def _available(items: list[dict[str, object]]) -> BoundedDiagnosticCollection:
+    return BoundedDiagnosticCollection.available(items)
+
+
+@pytest.mark.parametrize(("strategy", "status"), _STATUS_BY_STRATEGY.items())
+def test_v1_strategy_status_mapping_is_closed_and_json_safe(
+    strategy: ExecutionStrategy,
+    status: ExecutionStrategyStatus,
+) -> None:
+    diagnostic = ExecutionStrategyDiagnostic.create(
+        strategy=strategy,
+        profile=ExecutionProfile.PREVIEW_EAGER,
+        boundedness=ExecutionBoundedness.UNKNOWN,
+        reason_code="test_reason",
+        boundaries=_available([]),
+        reasons=_available([]),
+        provenance=_available([]),
+    )
+
+    payload = diagnostic.to_dict()
+
+    assert payload["schema_version"] == 1
+    assert payload["status"] == status.value
+    assert payload["strategy"] == strategy.value
+    assert payload["detail_state"] == "available"
+    assert (
+        ExecutionStrategyDiagnosticPayload.model_validate(payload).model_dump(
+            mode="json",
+            exclude_none=True,
+            exclude_defaults=True,
+        )
+        == payload
+    )
+    json.dumps(payload)
+
+
+def test_bounded_diagnostic_collections_sort_before_truncating_and_retain_duplicates() -> None:
+    reasons = [
+        {
+            "topological_rank": 1,
+            "node_id": "z",
+            "reason_code": f"reason_{index:02d}",
+            "operator": "polars",
+        }
+        for index in reversed(range(33))
+    ]
+    reasons.append(dict(reasons[-1]))
+
+    collection = BoundedDiagnosticCollection.from_items(
+        reasons,
+        cap=32,
+        sort_key="reasons",
+    )
+
+    assert collection.state is DiagnosticDetailState.TRUNCATED
+    assert collection.total_count == 34
+    assert len(collection.items) == 32
+    assert [item["reason_code"] for item in collection.items] == sorted(
+        item["reason_code"] for item in reasons
+    )[:32]
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("schema_version", 2),
+        ("status", "mystery"),
+        ("strategy", "mystery"),
+        ("boundedness", "mystery"),
+        ("detail_state", "mystery"),
+        ("profile", "mystery"),
+    ],
+)
+def test_v1_dto_rejects_unsupported_versions_and_unknown_enums(field: str, value: object) -> None:
+    payload = ExecutionStrategyDiagnostic.create(
+        strategy=ExecutionStrategy.PROJECTED,
+        profile=ExecutionProfile.PREVIEW_EAGER,
+        boundedness=ExecutionBoundedness.BOUNDED,
+        reason_code="projection_seed",
+        boundaries=_available([]),
+        reasons=_available([]),
+        provenance=_available([]),
+    ).to_dict()
+    payload[field] = value
+
+    with pytest.raises(ValidationError):
+        ExecutionStrategyDiagnosticPayload.model_validate(payload)
+
+
+def test_v1_dto_rejects_inconsistent_and_over_cap_collections() -> None:
+    payload = ExecutionStrategyDiagnostic.create(
+        strategy=ExecutionStrategy.PROJECTED,
+        profile=ExecutionProfile.PREVIEW_EAGER,
+        boundedness=ExecutionBoundedness.BOUNDED,
+        reason_code="projection_seed",
+        boundaries=_available([]),
+        reasons=_available([]),
+        provenance=_available([]),
+    ).to_dict()
+    payload["reasons"] = {
+        "state": "available",
+        "total_count": 1,
+        "items": [],
+    }
+    with pytest.raises(ValidationError):
+        ExecutionStrategyDiagnosticPayload.model_validate(payload)
+
+    payload["reasons"] = {
+        "state": "available",
+        "total_count": 33,
+        "items": [{"reason_code": f"r{index:02d}"} for index in range(33)],
+    }
+    with pytest.raises(ValidationError):
+        ExecutionStrategyDiagnosticPayload.model_validate(payload)
+
+
+def _group_by_graph():
+    return make_graph(
+        {
+            "nodes": [
+                {
+                    "id": "source",
+                    "data": {
+                        "label": "source",
+                        "nodeType": "dataSource",
+                        "config": {"path": "missing.parquet"},
+                    },
+                },
+                {
+                    "id": "agg",
+                    "data": {
+                        "label": "agg",
+                        "nodeType": "polars",
+                        "config": {
+                            "code": (
+                                "df = df.group_by('segment').agg("
+                                "pl.col('premium').sum().alias('premium'))"
+                            )
+                        },
+                    },
+                },
+                {
+                    "id": "out",
+                    "data": {
+                        "label": "out",
+                        "nodeType": "output",
+                        "config": {
+                            "outputMapping": [
+                                {
+                                    "source_port": "agg",
+                                    "source_column": "premium",
+                                    "output_path": "$[:].premium",
+                                    "enabled": True,
+                                }
+                            ]
+                        },
+                    },
+                },
+            ],
+            "edges": [
+                make_edge("source", "agg").model_dump(),
+                make_edge("agg", "out").model_dump(),
+            ],
+        }
+    )
+
+
+def _opaque_fan_out_graph():
+    return make_graph(
+        {
+            "nodes": [
+                {
+                    "id": "source",
+                    "data": {
+                        "label": "source",
+                        "nodeType": "dataSource",
+                        "config": {"path": "missing.parquet"},
+                    },
+                },
+                {
+                    "id": "left",
+                    "data": {
+                        "label": "left",
+                        "nodeType": "polars",
+                        "config": {"code": "df = df"},
+                    },
+                },
+                {
+                    "id": "right",
+                    "data": {
+                        "label": "right",
+                        "nodeType": "polars",
+                        "config": {"code": "df = df"},
+                    },
+                },
+            ],
+            "edges": [
+                make_edge("source", "left").model_dump(),
+                make_edge("source", "right").model_dump(),
+            ],
+        }
+    )
+
+
+def test_canonical_topological_ranks_use_lexical_tie_breaks() -> None:
+    children = {"z": ["out"], "a": ["out"], "out": []}
+
+    expected = {"a": 0, "z": 1, "out": 2}
+    assert dict(_canonical_topological_ranks(["z", "a", "out"], children)) == expected
+    assert dict(_canonical_topological_ranks(["out", "a", "z"], children)) == expected
+
+
+def test_non_strict_opaque_fan_out_reports_that_the_seed_cannot_apply() -> None:
+    result = plan_execution_strategy(
+        ProjectionRequest(
+            graph=_opaque_fan_out_graph(),
+            target_node_id=None,
+            profile=ExecutionProfile.PREVIEW_EAGER,
+            required_columns_by_node={"source": {"premium"}},
+        )
+    )
+
+    assert result.strategy is ExecutionStrategy.UNPROJECTED_STREAMING_BOUNDARY
+    source_reason = next(
+        item for item in result.diagnostic.reasons.items if item.get("node_id") == "source"
+    )
+    assert source_reason["reason_code"] == "projection_seed_blocked_by_opaque_fan_out"
+
+
+def test_strategy_diagnostic_reports_applied_seed_and_conservative_boundary_provenance() -> None:
+    seeded = plan_execution_strategy(
+        ProjectionRequest(
+            graph=_opaque_fan_out_graph(),
+            target_node_id="left",
+            profile=ExecutionProfile.PREVIEW_EAGER,
+            required_columns_by_node={"left": {"premium"}},
+        )
+    )
+
+    assert {
+        "column": "premium",
+        "origin_kind": "seed",
+        "source_node_id": "left",
+        "source_column": "premium",
+    } in [dict(item) for item in seeded.diagnostic.provenance.items]
+
+    blocked = plan_execution_strategy(
+        ProjectionRequest(
+            graph=_opaque_fan_out_graph(),
+            target_node_id=None,
+            profile=ExecutionProfile.PREVIEW_EAGER,
+            required_columns_by_node={"source": {"premium"}},
+        )
+    )
+    assert any(
+        item["column"] == "*"
+        and item["origin_kind"] == "conservative_boundary"
+        and item["source_node_id"] == "source"
+        for item in blocked.diagnostic.provenance.items
+    )
+
+
+def test_strategy_diagnostic_reports_edge_join_keys_as_join_key_provenance() -> None:
+    graph = make_graph(
+        {
+            "nodes": [
+                {
+                    "id": "base",
+                    "data": {
+                        "label": "base",
+                        "nodeType": "polars",
+                        "config": {
+                            "contract": {
+                                "inputs": [],
+                                "outputs": ["base_key", "premium"],
+                            }
+                        },
+                    },
+                },
+                {
+                    "id": "lookup",
+                    "data": {
+                        "label": "lookup",
+                        "nodeType": "polars",
+                        "config": {
+                            "contract": {
+                                "inputs": [],
+                                "outputs": ["lookup_key", "factor"],
+                            }
+                        },
+                    },
+                },
+                {
+                    "id": "joined",
+                    "data": {
+                        "label": "joined",
+                        "nodeType": "edgeJoin",
+                        "config": {
+                            "baseInput": "base",
+                            "joinInput": "lookup",
+                            "how": "left",
+                            "leftOn": ["base_key"],
+                            "rightOn": ["lookup_key"],
+                            "contract": "opaque",
+                        },
+                    },
+                },
+            ],
+            "edges": [
+                make_edge("base", "joined").model_dump(),
+                make_edge("lookup", "joined").model_dump(),
+            ],
+        }
+    )
+
+    result = plan_execution_strategy(
+        ProjectionRequest(
+            graph=graph,
+            target_node_id="joined",
+            profile=ExecutionProfile.LAZY_SINK,
+            required_columns_by_node={"joined": {"premium", "factor"}},
+        )
+    )
+
+    provenance = [dict(item) for item in result.diagnostic.provenance.items]
+    assert {
+        "column": "base_key",
+        "origin_kind": "join_key",
+        "source_node_id": "joined",
+        "source_column": "base_key",
+    } in provenance
+    assert {
+        "column": "lookup_key",
+        "origin_kind": "join_key",
+        "source_node_id": "joined",
+        "source_column": "lookup_key",
+    } in provenance
+
+
+def test_prepared_and_request_planners_return_the_same_contract() -> None:
+    graph = _opaque_fan_out_graph()
+    request = ProjectionRequest(
+        graph=graph,
+        target_node_id=None,
+        profile=ExecutionProfile.PREVIEW_EAGER,
+        required_columns_by_node={"source": {"premium"}},
+    )
+    prepared = prepare_graph(graph, None, source="live")
+    children = {node_id: [] for node_id in prepared.order}
+    for child_id, parents in prepared.parents_of.items():
+        for parent_id in parents:
+            children[parent_id].append(child_id)
+
+    request_result = plan_execution_strategy(request)
+    prepared_result = plan_prepared_execution_strategy(
+        prepared.order,
+        children,
+        prepared.node_map,
+        profile=request.profile,
+        required_columns_by_node=request.required_columns_by_node,
+    )
+
+    assert prepared_result.diagnostic.to_dict() == request_result.diagnostic.to_dict()
+    assert prepared_result.needed_by_node == request_result.needed_by_node
+
+
+def _context(
+    profile: ExecutionProfile,
+    *,
+    memory_limit_bytes: int = 100,
+    headroom_bytes: int | None = 100,
+) -> ExecutionContext:
+    admission = ExecutionAdmission(
+        operation="test",
+        profile=profile,
+        memory_limit_bytes=memory_limit_bytes,
+        rss_at_admission_bytes=10,
+        rss_limit_bytes=None if headroom_bytes is None else 10 + headroom_bytes,
+        headroom_bytes=headroom_bytes,
+        config_key="test",
+    )
+    return ExecutionContext(operation="test", profile=profile, admission=admission)
+
+
+@pytest.mark.parametrize(
+    "profile",
+    [
+        ExecutionProfile.LAZY_SINK,
+        ExecutionProfile.TRAINING_PREP,
+        ExecutionProfile.OPTIMISER_SETUP,
+        ExecutionProfile.EXPLORE_ANALYSIS,
+        ExecutionProfile.AUTO_RANGE,
+        ExecutionProfile.DEPLOY_BATCH,
+        ExecutionProfile.CHUNKED_MAP_REDUCE,
+    ],
+)
+def test_group_by_bounded_profiles_reject_before_considering_admission(
+    profile: ExecutionProfile,
+) -> None:
+    with pytest.raises(GroupByExecutionUnsupportedError) as error:
+        plan_execution_strategy(
+            ProjectionRequest(
+                graph=_group_by_graph(),
+                target_node_id="out",
+                profile=profile,
+            ),
+            execution_context=_context(profile),
+            materialisation_estimate=MaterialisationEstimate.available(0),
+        )
+
+    exc = error.value
+    assert isinstance(exc, BoundedMemoryUnsupportedError)
+    assert exc.reason_code == "profile_requires_bounded_execution"
+    assert exc.node_id == "agg"
+    assert exc.operator == "group_by"
+    assert exc.profile == profile.value
+    assert exc.estimated_peak_bytes is None
+    assert exc.headroom_bytes is None
+
+
+def test_group_by_never_enters_the_generic_chunk_runner() -> None:
+    with pytest.raises(GroupByExecutionUnsupportedError) as error:
+        chunk_plan(
+            ChunkPlanRequest(
+                graph=_group_by_graph(),
+                target_node_id="out",
+                chunk_size=10,
+            )
+        )
+
+    assert error.value.reason_code == "profile_requires_bounded_execution"
+
+
+def test_automatic_group_by_estimate_targets_the_boundary_node(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from haute import execution
+
+    estimated_nodes: list[str] = []
+
+    def estimate(_graph, node_id: str, *, source: str) -> MaterialisationEstimate:
+        estimated_nodes.append(node_id)
+        assert source == "live"
+        return MaterialisationEstimate.available(0)
+
+    monkeypatch.setattr(execution, "estimate_materialisation_boundary", estimate)
+
+    result = plan_execution_strategy(
+        ProjectionRequest(
+            graph=_group_by_graph(),
+            target_node_id="out",
+            profile=ExecutionProfile.PREVIEW_EAGER,
+        ),
+        execution_context=_context(ExecutionProfile.PREVIEW_EAGER),
+    )
+
+    assert result.strategy is ExecutionStrategy.MATERIALISATION_BOUNDARY
+    assert estimated_nodes == ["agg"]
+
+
+@pytest.mark.parametrize("profile", [ExecutionProfile.PREVIEW_EAGER, ExecutionProfile.DEPLOY_LIVE])
+@pytest.mark.parametrize(
+    ("context", "estimate", "reason"),
+    [
+        (None, MaterialisationEstimate.available(0), "execution_admission_unavailable"),
+        (
+            _context(ExecutionProfile.PREVIEW_EAGER, headroom_bytes=None),
+            MaterialisationEstimate.available(0),
+            "execution_admission_unavailable",
+        ),
+        (
+            _context(ExecutionProfile.PREVIEW_EAGER),
+            MaterialisationEstimate.unavailable("metadata_unavailable"),
+            "materialisation_estimate_unavailable",
+        ),
+        (
+            _context(ExecutionProfile.PREVIEW_EAGER),
+            MaterialisationEstimate.available(101),
+            "materialisation_exceeds_headroom",
+        ),
+    ],
+)
+def test_group_by_eligible_profiles_use_stable_rejection_precedence(
+    profile: ExecutionProfile,
+    context: ExecutionContext | None,
+    estimate: MaterialisationEstimate,
+    reason: str,
+) -> None:
+    if context is not None:
+        context.profile = profile
+        assert context.admission is not None
+        object.__setattr__(context.admission, "profile", profile)
+    with pytest.raises(GroupByExecutionUnsupportedError) as error:
+        plan_execution_strategy(
+            ProjectionRequest(
+                graph=_group_by_graph(),
+                target_node_id="out",
+                profile=profile,
+            ),
+            execution_context=context,
+            materialisation_estimate=estimate,
+        )
+
+    assert error.value.reason_code == reason
+
+
+@pytest.mark.parametrize("estimated", [0, 99, 100])
+@pytest.mark.parametrize("profile", [ExecutionProfile.PREVIEW_EAGER, ExecutionProfile.DEPLOY_LIVE])
+def test_group_by_admits_only_an_estimated_materialisation_boundary(
+    profile: ExecutionProfile,
+    estimated: int,
+) -> None:
+    context = _context(profile)
+    result = plan_execution_strategy(
+        ProjectionRequest(
+            graph=_group_by_graph(),
+            target_node_id="out",
+            profile=profile,
+        ),
+        execution_context=context,
+        materialisation_estimate=MaterialisationEstimate.available(estimated),
+    )
+
+    assert context.projection_plan is result
+    assert result.strategy is ExecutionStrategy.MATERIALISATION_BOUNDARY
+    assert result.status is ExecutionStrategyStatus.BOUNDARY
+    assert result.projection_plan.materialisation_boundaries == frozenset({"agg"})
+    assert result.diagnostic.estimated_peak_bytes == estimated
+    group_by_boundary = next(
+        item for item in result.diagnostic.boundaries.items if item["node_id"] == "agg"
+    )
+    assert group_by_boundary["boundary_kind"] == "materialisation-boundary"
+
+
+def _single_source_graph(path: Path):
+    return make_graph(
+        {
+            "nodes": [
+                {
+                    "id": "source",
+                    "data": {
+                        "label": "source",
+                        "nodeType": "dataSource",
+                        "config": {"path": str(path)},
+                    },
+                }
+            ],
+            "edges": [],
+        }
+    )
+
+
+def test_preview_entry_point_records_a_strategy_for_seedless_execution(tmp_path: Path) -> None:
+    path = tmp_path / "preview.parquet"
+    pl.DataFrame({"x": [1], "unused": [2]}).write_parquet(path)
+    context = _context(ExecutionProfile.PREVIEW_EAGER)
+
+    execute_graph(
+        _single_source_graph(path),
+        target_node_id="source",
+        row_limit=1,
+        target_preview_only=True,
+        execution_context=context,
+    )
+
+    assert context.projection_plan is not None
+    assert context.projection_plan.profile == ExecutionProfile.PREVIEW_EAGER.value
+    metrics = context.metrics_payload(status="completed")
+    assert metrics["execution_strategy"]["schema_version"] == 1
+    assert metrics["execution_strategy"]["status"] in {"projected", "admitted_eager"}
+    assert metrics["execution_strategy"]["remediation"]
+    assert metrics["streamability"] in {"streaming", "materialising"}
+
+
+def test_trace_entry_point_records_a_strategy_before_materialising(tmp_path: Path) -> None:
+    path = tmp_path / "trace.parquet"
+    pl.DataFrame({"x": [1]}).write_parquet(path)
+    context = _context(ExecutionProfile.PREVIEW_EAGER)
+
+    execute_trace(
+        _single_source_graph(path),
+        target_node_id="source",
+        row_limit=1,
+        execution_context=context,
+    )
+
+    assert context.projection_plan is not None
+    assert context.projection_plan.profile == ExecutionProfile.PREVIEW_EAGER.value
+
+
+def test_lazy_entry_point_records_a_strategy_without_a_projection_seed(tmp_path: Path) -> None:
+    path = tmp_path / "lazy.parquet"
+    pl.DataFrame({"x": [1]}).write_parquet(path)
+    context = _context(ExecutionProfile.LAZY_SINK)
+
+    execute_lazy_graph(
+        _single_source_graph(path),
+        _build_node_fn,
+        target_node_id="source",
+        execution_context=context,
+    )
+
+    assert context.projection_plan is not None
+    assert context.projection_plan.profile == ExecutionProfile.LAZY_SINK.value
+
+
+def test_lazy_source_reports_requested_and_physically_scanned_width(tmp_path: Path) -> None:
+    path = tmp_path / "projected.parquet"
+    pl.DataFrame({"x": [1], "unused": [2]}).write_parquet(path)
+    context = _context(ExecutionProfile.LAZY_SINK)
+
+    execute_lazy_graph(
+        _single_source_graph(path),
+        _build_node_fn,
+        target_node_id="source",
+        required_columns_by_node={"source": {"x"}},
+        execution_context=context,
+    )
+
+    widths = context.metrics_payload()["column_widths"]
+    source = next(item for item in widths["items"] if item["node_id"] == "source")
+    assert source["requested_width"] == 1
+    assert source["physically_scanned_width"] == 1
+
+
+def test_strategy_provenance_snapshots_one_shot_projection_seeds(tmp_path: Path) -> None:
+    path = tmp_path / "one-shot-seed.parquet"
+    pl.DataFrame({"x": [1], "unused": [2]}).write_parquet(path)
+
+    result = plan_execution_strategy(
+        ProjectionRequest(
+            graph=_single_source_graph(path),
+            target_node_id="source",
+            profile=ExecutionProfile.LAZY_SINK,
+            required_columns_by_node={"source": (column for column in ["x"])},
+        )
+    )
+
+    assert result.needed_by_node["source"] == frozenset({"x"})
+    assert {
+        (item["column"], item["origin_kind"], item["source_node_id"])
+        for item in result.diagnostic.provenance.items
+    } >= {("x", "seed", "source")}

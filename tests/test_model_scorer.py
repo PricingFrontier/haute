@@ -1545,18 +1545,66 @@ class TestBatchScoreToParquetEmptyDtype:
         assert ne_dtype == pl.Int64
         assert e_dtype == ne_dtype
 
+    @pytest.mark.parametrize(
+        ("task", "expected_columns"),
+        [
+            ("regression", {"pred": pl.Float64}),
+            (
+                "classification",
+                {"pred": pl.Int64, "pred_proba": pl.Float64},
+            ),
+        ],
+    )
+    def test_empty_catboost_uses_declared_task_dtypes_without_scoring_nulls(
+        self,
+        tmp_path: Path,
+        task: str,
+        expected_columns: dict[str, pl.DataType],
+    ) -> None:
+        class NullRejectingModel:
+            def predict(self, _frame):
+                raise AssertionError("empty input must not score a synthetic null row")
+
+            def predict_proba(self, _frame):
+                raise AssertionError("empty input must not score a synthetic null row")
+
+        input_path = str(tmp_path / f"empty-{task}.parquet")
+        pl.DataFrame(
+            {
+                "a": pl.Series([], dtype=pl.Int64),
+                "b": pl.Series([], dtype=pl.String),
+            }
+        ).write_parquet(input_path)
+        scoring_model = ScoringModel(
+            model=NullRejectingModel(),
+            feature_names=["a", "b"],
+            flavor="catboost",
+        )
+
+        out_path = _batch_score_to_parquet(
+            scoring_model,
+            input_path,
+            ["a", "b"],
+            "pred",
+            task,
+        )
+        try:
+            schema = pl.read_parquet_schema(out_path)
+        finally:
+            os.unlink(out_path)
+
+        assert {column: schema[column] for column in expected_columns} == expected_columns
+
     def test_empty_classification_proba_dtype_matches_nonempty(self, tmp_path):
         """Zero-row output reuses the model's *proba* dtype, not a hardcoded one.
 
         F676 follow-up: the prediction-dtype test above uses a model *without*
         ``predict_proba`` (``can_predict_proba=False``), so it never enters the
-        empty-path proba branch.  This test uses a model that *does* expose
-        ``predict_proba`` and returns Float32 probabilities, so a hardcoded
-        Float64 (or any dtype not derived from the model's real output) in the
-        zero-row proba branch would diverge from the non-empty path and fail
-        here.  Both paths must agree on the ``<output_col>_proba`` dtype.
+        empty-path proba branch. CatBoost's declared probability contract is
+        Float64, so both populated and empty results must use that dtype while
+        the empty path avoids invoking the model on synthetic nulls.
         """
-        proba_matrix = np.array([[0.2, 0.8], [0.3, 0.7]], dtype=np.float32)
+        proba_matrix = np.array([[0.2, 0.8], [0.3, 0.7]], dtype=np.float64)
 
         # Non-empty reference — 2 rows, Int64 hard labels + Float32 proba.
         ne_path = str(tmp_path / "ne.parquet")
@@ -1588,14 +1636,10 @@ class TestBatchScoreToParquetEmptyDtype:
         finally:
             os.unlink(out_e)
 
-        assert ne_schema["pred_proba"] == pl.Float32
+        assert ne_schema["pred_proba"] == pl.Float64
         assert e_schema["pred_proba"] == ne_schema["pred_proba"]
-        # Behavioural pin: the empty path now invokes the model on a synthetic
-        # one-row probe (pre-fix it hardcoded the dtype and never called the
-        # model).  Both predict and predict_proba must have been exercised so
-        # the derived dtypes are the model's real output dtypes.
-        assert sm_e._model.predict.called
-        assert sm_e._model.predict_proba.called
+        assert not sm_e._model.predict.called
+        assert not sm_e._model.predict_proba.called
 
 
 class TestFeatureMismatchTypeOverflow:

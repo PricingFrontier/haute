@@ -11,6 +11,7 @@ from __future__ import annotations
 import pytest
 
 from haute.routes._train_service import (
+    _build_training_feature_selection,
     _check_gpu_vram,
     _job_elapsed_seconds,
     _string_list_config,
@@ -72,6 +73,93 @@ class TestTrainingRequiredMetadataColumns:
 class TestTrainingRequiredColumnsByNode:
     def test_returns_none_without_target(self) -> None:
         assert _training_required_columns_by_node("n", {"algorithm": "catboost"}) is None
+
+
+class TestTrainingFeatureSelection:
+    def test_explicit_features_preserve_config_order_and_explain_every_other_column(self) -> None:
+        diagnostic = _build_training_feature_selection(
+            {
+                "algorithm": "catboost",
+                "target": "target",
+                "weight": "weight",
+                "feature_columns": ["feature_b", "feature_a"],
+                "exclude": ["ignored"],
+            },
+            ["target", "weight", "feature_a", "feature_b", "ignored", "unselected"],
+        )
+
+        assert diagnostic.mode == "explicit"
+        assert diagnostic.feature_count == 2
+        assert diagnostic.features.items == ["feature_b", "feature_a"]
+        assert [(item.column, item.reason) for item in diagnostic.retained_metadata.items] == [
+            ("target", "target"),
+            ("weight", "weight"),
+        ]
+        assert [(item.column, item.reason) for item in diagnostic.excluded_columns.items] == [
+            ("target", "target"),
+            ("weight", "weight"),
+            ("ignored", "configured_exclusion"),
+            ("unselected", "not_selected"),
+        ]
+
+    def test_all_except_features_preserve_schema_order(self) -> None:
+        diagnostic = _build_training_feature_selection(
+            {
+                "algorithm": "catboost",
+                "target": "target",
+                "id_columns": ["policy_id"],
+                "exclude": ["ignored"],
+            },
+            ["feature_b", "target", "policy_id", "feature_a", "ignored"],
+        )
+
+        assert diagnostic.mode == "all_except"
+        assert diagnostic.features.items == ["feature_b", "feature_a"]
+        assert diagnostic.feature_count == 2
+
+    def test_glm_terms_follow_schema_order_and_missing_columns_fail_before_execution(self) -> None:
+        diagnostic = _build_training_feature_selection(
+            {
+                "algorithm": "glm",
+                "target": "target",
+                "params": {"terms": {"feature_a": {}, "feature_b": {}}},
+            },
+            ["feature_b", "target", "feature_a", "unused"],
+        )
+
+        assert diagnostic.mode == "glm_terms"
+        assert diagnostic.features.items == ["feature_b", "feature_a"]
+        assert diagnostic.excluded_columns.items[-1].reason == "not_in_formula"
+
+        with pytest.raises(ValueError, match="Configured feature column.*missing"):
+            _build_training_feature_selection(
+                {
+                    "algorithm": "catboost",
+                    "target": "target",
+                    "feature_columns": ["missing"],
+                },
+                ["target", "feature"],
+            )
+
+    def test_empty_feature_set_fails_and_high_cardinality_detail_is_bounded(self) -> None:
+        with pytest.raises(ValueError, match="No feature columns remaining"):
+            _build_training_feature_selection(
+                {"algorithm": "catboost", "target": "target"},
+                ["target"],
+            )
+
+        diagnostic = _build_training_feature_selection(
+            {
+                "algorithm": "catboost",
+                "target": "target",
+                "feature_columns": ["feature"],
+            },
+            ["target", "feature", *(f"unused_{index:03d}" for index in range(140))],
+        )
+        assert diagnostic.detail_state == "truncated"
+        assert diagnostic.excluded_columns.state == "truncated"
+        assert diagnostic.excluded_columns.total_count == 141
+        assert len(diagnostic.excluded_columns.items) == 128
 
 
 class TestJobElapsedSeconds:

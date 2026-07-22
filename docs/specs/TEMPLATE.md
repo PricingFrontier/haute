@@ -71,6 +71,12 @@ the key scenarios covered, and known coverage gaps.
 
 - Describe the code **as it is**, not as it should be. If behaviour looks like a bug, describe
   the behaviour and add a `> NOTE:` callout rather than speccing the intended-but-absent behaviour.
+- For an approved spec-first change, add a final `## Approved change contract` section before
+  implementation begins. State the current limitation, the approved target behaviour, explicit
+  non-goals, failure and compatibility semantics, and executable acceptance evidence; link to the
+  implementation plan. Never write the future behaviour into the ordinary present-tense sections
+  before it ships. The implementation/release change must reconcile the approved contract into
+  the normal sections and remove the temporary section.
 - Reference source with an exact repository-root-relative path such as `src/haute/parser.py`, and
   functions as `haute.parser.parse_pipeline_file()`. Do not use an ambiguous basename when a path
   is available. Do not paste long code excerpts; the spec must survive refactors that keep

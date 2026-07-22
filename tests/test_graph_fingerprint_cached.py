@@ -543,23 +543,13 @@ class TestFingerprintRecomputeSpy:
             graph_fingerprint(g_copy)
             assert spy.calls == 2
 
-    def test_trace_does_not_recompute_preview_fingerprint(
+    def test_preview_and_trace_do_not_compute_a_whole_graph_fingerprint(
         self,
         monkeypatch: pytest.MonkeyPatch,
         tmp_path: Any,
     ) -> None:
-        """Item #94 — trace.py should not recompute a preview fingerprint
-        that ``execute_graph`` already computed on the same ``PipelineGraph``
-        instance.
-
-        With ``@cached_property`` on PipelineGraph, even if trace and
-        executor each call ``graph_fingerprint`` on the same instance,
-        the **base** computation happens once.  That's what this spy
-        asserts.  We don't need to assert "trace doesn't call it at all"
-        because the idiomatic fix (memoise on the graph) satisfies #94
-        regardless of whether the call sites are refactored to pass
-        fingerprints around.
-        """
+        """Preview and trace use the shared target-lineage key, not the
+        whole-graph fingerprint retained for other cache surfaces."""
         import polars as pl
 
         # A tiny, self-contained graph that both execute_graph and
@@ -592,17 +582,12 @@ class TestFingerprintRecomputeSpy:
         from haute.executor import execute_graph
         from haute.trace import execute_trace
 
-        # Run preview once, then run trace.  Both operate on *the same*
-        # PipelineGraph instance ``g``.  The base fingerprint must be
-        # computed exactly once across both calls.
+        # Both calls must stay on the lineage factory so unrelated graph
+        # state cannot enter their cache identity.
         with _CallCountingFingerprint(monkeypatch) as spy:
             execute_graph(g, target_node_id="t", row_limit=3)
             execute_trace(g, row_index=0, target_node_id="t", row_limit=3)
-            assert spy.calls == 1, (
-                f"Preview + trace on the same PipelineGraph computed the "
-                f"base fingerprint {spy.calls} times — item #94 expects "
-                "passthrough / @cached_property to collapse this to 1."
-            )
+            assert spy.calls == 0
 
 
 # ---------------------------------------------------------------------------

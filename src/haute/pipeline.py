@@ -32,6 +32,14 @@ class Node:
     fn: Callable
     is_source: bool
     config: dict = field(default_factory=dict)
+    _input_arity: _InputArity = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        self._input_arity = _inspect_input_arity(
+            self.fn,
+            is_source=self.is_source,
+            node_name=self.name,
+        )
 
     @property
     def is_deploy_input(self) -> bool:
@@ -67,26 +75,7 @@ class Node:
         parameters and positional parameters with defaults should not require
         extra edges.
         """
-        if self.is_source:
-            return _InputArity(min_inputs=0, max_inputs=0)
-        sig = inspect.signature(self.fn)
-        positional: list[inspect.Parameter] = []
-        has_varargs = False
-        for param in sig.parameters.values():
-            if param.name == "self":
-                continue
-            if param.kind in {
-                inspect.Parameter.POSITIONAL_ONLY,
-                inspect.Parameter.POSITIONAL_OR_KEYWORD,
-            }:
-                positional.append(param)
-            elif param.kind is inspect.Parameter.VAR_POSITIONAL:
-                has_varargs = True
-        min_inputs = sum(1 for param in positional if param.default is inspect.Parameter.empty)
-        return _InputArity(
-            min_inputs=min_inputs,
-            max_inputs=None if has_varargs else len(positional),
-        )
+        return self._input_arity
 
     def __call__(self, *dfs: pl.DataFrame) -> pl.DataFrame:
         if self.is_source:
@@ -130,6 +119,42 @@ class _InputArity:
         if self.min_inputs == self.max_inputs:
             return str(self.min_inputs)
         return f"{self.min_inputs}-{self.max_inputs}"
+
+
+def _inspect_input_arity(
+    fn: Callable,
+    *,
+    is_source: bool,
+    node_name: str,
+) -> _InputArity:
+    """Inspect and freeze the supported positional-input signature once."""
+    if is_source:
+        return _InputArity(min_inputs=0, max_inputs=0)
+    try:
+        signature = inspect.signature(fn)
+    except (TypeError, ValueError) as exc:
+        raise ExecutionError(
+            f"Node '{node_name}' has a callable signature that cannot be inspected.",
+            node=node_name,
+        ) from exc
+
+    positional: list[inspect.Parameter] = []
+    has_varargs = False
+    for parameter in signature.parameters.values():
+        if parameter.name == "self":
+            continue
+        if parameter.kind in {
+            inspect.Parameter.POSITIONAL_ONLY,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        }:
+            positional.append(parameter)
+        elif parameter.kind is inspect.Parameter.VAR_POSITIONAL:
+            has_varargs = True
+    min_inputs = sum(1 for parameter in positional if parameter.default is inspect.Parameter.empty)
+    return _InputArity(
+        min_inputs=min_inputs,
+        max_inputs=None if has_varargs else len(positional),
+    )
 
 
 @dataclass(frozen=True)

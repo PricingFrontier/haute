@@ -46,3 +46,20 @@ do not include a completed report are recorded as terminal errors and surfaced t
 report/job with a stale hash or source is not rendered. Invalid optional overview configuration is
 discarded while parsing, while malformed data that a renderer cannot safely interpret is allowed
 to surface rather than being fabricated.
+
+## Polars backend contracts (0.6.0)
+
+See [the remediation plan](../../trip/plans/F_0.6.0_polars-backend-remediation.plan.md).
+Preview and Explore surfaces will expose the five authoritative version-1 API states:
+`projected`, `boundary`, `admitted_eager`, `rejected`, and `not_planned`. They also expose a
+separate diagnostic-unavailable state when the shared parser rejects a missing/malformed payload,
+an unknown version-1 enum, or an unsupported higher schema version. Unknown additive fields are
+ignored only within version 1.
+
+The status identifies blocking node/operator/profile, cost, and remediation where present; raw
+bounded support/provenance detail remains available on demand. `detail_state` distinguishes
+available, unavailable, and deterministically truncated detail. A group-by shown as `boundary`
+must be the declared, RAM-admitted `materialisation-boundary`; a non-admitted group-by is a typed
+HTTP 422 rejection, never ordinary or unprojected streaming execution. The UI never invents data,
+treats `not_planned` or diagnostic unavailable as success, or treats a partial result as complete.
+Stable contract-error codes and named fields remain available to accessible error copy.

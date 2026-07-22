@@ -22,25 +22,92 @@ from __future__ import annotations
 import math
 import sys
 from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, NamedTuple, cast
+
+import polars as pl
 
 from haute._edge_join import build_edge_join_kwargs, edge_join_key_columns_by_role
 from haute._graph_utils import build_parents_of
 from haute._logging import get_logger
 from haute._polars_utils import read_parquet_metadata
-from haute.graph_utils import GraphNode, NodeType, PipelineGraph
+from haute.graph_utils import GraphEdge, GraphNode, NodeType, PipelineGraph
 
 logger = get_logger(component="ram_estimate")
 
 __all__ = [
+    "MaterialisationEstimate",
+    "MaterialisationEstimateState",
     "available_ram_bytes",
     "available_vram_bytes",
     "estimate_gpu_vram_bytes",
     "estimate_source_rows",
+    "estimate_materialisation_boundary",
     "estimate_safe_training_rows",
     "RamEstimate",
 ]
+
+
+class MaterialisationEstimateState(StrEnum):
+    """Availability state for a conservative full-boundary estimate."""
+
+    AVAILABLE = "available"
+    UNAVAILABLE = "unavailable"
+
+
+@dataclass(frozen=True, slots=True)
+class MaterialisationEstimate:
+    """Conservative peak estimate used to admit a full materialisation.
+
+    Unknown is represented only by ``state=unavailable`` and ``None``.  Zero
+    therefore remains an honest estimate for a known-empty input.
+    """
+
+    state: MaterialisationEstimateState
+    estimated_peak_bytes: int | None
+    assumptions: tuple[str, ...] = ()
+    unavailable_reason: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.state is MaterialisationEstimateState.AVAILABLE:
+            if (
+                not isinstance(self.estimated_peak_bytes, int)
+                or isinstance(self.estimated_peak_bytes, bool)
+                or self.estimated_peak_bytes < 0
+            ):
+                raise ValueError(
+                    "an available materialisation estimate requires a non-negative integer"
+                )
+            if self.unavailable_reason is not None:
+                raise ValueError("an available materialisation estimate has no unavailable reason")
+        elif self.estimated_peak_bytes is not None:
+            raise ValueError("an unavailable materialisation estimate must use None")
+
+    @classmethod
+    def available(
+        cls,
+        estimated_peak_bytes: int,
+        *,
+        assumptions: Iterable[str] = (),
+    ) -> MaterialisationEstimate:
+        return cls(
+            state=MaterialisationEstimateState.AVAILABLE,
+            estimated_peak_bytes=estimated_peak_bytes,
+            assumptions=tuple(str(item) for item in assumptions),
+        )
+
+    @classmethod
+    def unavailable(cls, reason: str) -> MaterialisationEstimate:
+        if not reason:
+            raise ValueError("an unavailable materialisation estimate requires a reason")
+        return cls(
+            state=MaterialisationEstimateState.UNAVAILABLE,
+            estimated_peak_bytes=None,
+            unavailable_reason=reason,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -48,13 +115,14 @@ __all__ = [
 # ---------------------------------------------------------------------------
 
 
-def available_ram_bytes() -> int:
-    """Return available system RAM in bytes.
+def available_ram_bytes() -> int | None:
+    """Return available system RAM in bytes, or ``None`` when unobservable.
 
     - **Linux**: reads ``/proc/meminfo`` (most accurate).
     - **macOS / POSIX**: ``os.sysconf`` page-based query.
     - **Windows**: ``GlobalMemoryStatusEx`` via ctypes.
-    - **Fallback**: conservative 4 GiB default.
+    No fallback capacity is fabricated: callers that require a physical-memory
+    limit must fail admission or require an explicit configured budget.
     """
     proc_meminfo_error: str | None = None
     sysconf_error: str | None = None
@@ -111,10 +179,8 @@ def available_ram_bytes() -> int:
         except (OSError, AttributeError, ImportError) as exc:
             windows_error = str(exc)
 
-    fallback_bytes = 4 * 1024**3
     logger.warning(
-        "available_ram_fallback_4gib",
-        fallback_bytes=fallback_bytes,
+        "available_ram_unavailable",
         platform=sys.platform,
         proc_meminfo_error=proc_meminfo_error,
         sysconf_error=sysconf_error,
@@ -123,7 +189,7 @@ def available_ram_bytes() -> int:
         windows_attempted=windows_attempted,
         windows_error=windows_error,
     )
-    return fallback_bytes
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -200,6 +266,7 @@ class _DetailedSourceMetadata(NamedTuple):
     column_width_keys: Mapping[str, str]
     column_uncompressed_size_bytes: Mapping[str, int]
     uncompressed_size_bytes: int
+    column_expanded_width_bytes: Mapping[str, float] | None = None
 
 
 class _AncestorSourceMetadata(NamedTuple):
@@ -213,6 +280,55 @@ class _ResolvedTargetColumns(NamedTuple):
     width_columns: Mapping[str, str]
 
 
+@dataclass(slots=True)
+class _EstimateGraphIndex:
+    """Per-estimate graph indexes and memoized metadata/schema results."""
+
+    graph: PipelineGraph
+    source: str
+    node_map: Mapping[str, GraphNode]
+    pruned_edges: tuple[GraphEdge, ...]
+    parents: Mapping[str, Sequence[str]]
+    metadata_by_node: dict[str, _DetailedSourceMetadata | None]
+    columns_by_target: dict[str, _ResolvedTargetColumns | None]
+    resolving_targets: set[str]
+
+    @classmethod
+    def build(cls, graph: PipelineGraph, source: str) -> _EstimateGraphIndex:
+        from haute._execute_lazy import _prune_live_switch_edges
+
+        node_map = {node.id: node for node in graph.nodes}
+        pruned_edges = tuple(_prune_live_switch_edges(graph.edges, node_map, source))
+        return cls(
+            graph=graph,
+            source=source,
+            node_map=node_map,
+            pruned_edges=pruned_edges,
+            parents=build_parents_of(list(pruned_edges), set(node_map)),
+            metadata_by_node={},
+            columns_by_target={},
+            resolving_targets=set(),
+        )
+
+    def source_metadata(self, node: GraphNode) -> _DetailedSourceMetadata | None:
+        if node.id not in self.metadata_by_node:
+            self.metadata_by_node[node.id] = _detailed_source_metadata_for_node(node)
+        return self.metadata_by_node[node.id]
+
+    def resolve_columns(self, target_node_id: str) -> _ResolvedTargetColumns | None:
+        if target_node_id in self.columns_by_target:
+            return self.columns_by_target[target_node_id]
+        if target_node_id in self.resolving_targets:
+            raise RuntimeError("cycle encountered while resolving RAM-estimate columns")
+        self.resolving_targets.add(target_node_id)
+        try:
+            resolved = _resolve_target_columns_from_index(self, target_node_id)
+            self.columns_by_target[target_node_id] = resolved
+            return resolved
+        finally:
+            self.resolving_targets.remove(target_node_id)
+
+
 # Bytes per column for the analytical estimate.  Training features are
 # cast to Float32 (4 bytes) in _build_pool, but the Polars DataFrame
 def _parquet_metadata(path: str) -> tuple[int, int]:
@@ -224,16 +340,55 @@ def _parquet_metadata(path: str) -> tuple[int, int]:
 def _detailed_parquet_metadata(path: str) -> _DetailedSourceMetadata:
     """Return footer-only parquet metadata used by the RAM estimator."""
     meta = read_parquet_metadata(Path(path))
+    columns = dict(meta.get("columns", {}))
     return _DetailedSourceMetadata(
         row_count=int(meta["row_count"]),
         column_count=int(meta["column_count"]),
-        columns=dict(meta.get("columns", {})),
-        column_width_keys={str(column): str(column) for column in dict(meta.get("columns", {}))},
+        columns=columns,
+        column_width_keys={str(column): str(column) for column in columns},
         column_uncompressed_size_bytes={
             str(name): int(size)
             for name, size in dict(meta.get("column_uncompressed_size_bytes", {})).items()
         },
         uncompressed_size_bytes=int(meta.get("uncompressed_size_bytes", 0)),
+        column_expanded_width_bytes=_probe_expanded_variable_widths(
+            path,
+            columns,
+            row_count=int(meta["row_count"]),
+        ),
+    )
+
+
+def _probe_expanded_variable_widths(
+    path: str,
+    columns: Mapping[str, str],
+    *,
+    row_count: int,
+    max_rows: int = 4096,
+) -> Mapping[str, float]:
+    """Return bounded in-memory widths for dictionary/variable columns.
+
+    Parquet's uncompressed page size can still describe dictionary codes
+    rather than the expanded Arrow/Polars string buffers.  A bounded head probe
+    measures the representation the materialisation will actually allocate.
+    """
+    if row_count <= 0:
+        return MappingProxyType({})
+    variable_columns = [
+        column
+        for column, arrow_type in columns.items()
+        if _is_variable_width_arrow_type(arrow_type)
+    ]
+    if not variable_columns:
+        return MappingProxyType({})
+    probe = pl.scan_parquet(path).select(variable_columns).head(min(row_count, max_rows)).collect()
+    if probe.height == 0:
+        return MappingProxyType({})
+    return MappingProxyType(
+        {
+            column: probe.get_column(column).estimated_size() / probe.height
+            for column in variable_columns
+        }
     )
 
 
@@ -278,7 +433,7 @@ def _count_source_rows_for_node(node: GraphNode) -> int | None:
                 if path.endswith(".csv"):
                     return _csv_row_count(path)
             return None
-    except Exception as exc:
+    except OSError as exc:
         logger.warning("source_row_count_failed", node_id=node.id, error=str(exc))
         return None
 
@@ -320,7 +475,7 @@ def _detailed_source_metadata_for_node(node: GraphNode) -> _DetailedSourceMetada
             if Path(path).exists() and path.endswith(".parquet"):
                 return _source_scoped_metadata(_detailed_parquet_metadata(path), node.id)
             return None
-    except Exception as exc:
+    except OSError as exc:
         logger.warning("source_metadata_failed", node_id=node.id, error=str(exc))
         return None
 
@@ -364,27 +519,29 @@ def _detailed_ancestor_source_metadata(
     graph: PipelineGraph,
     target_node_id: str,
     source: str = "live",
+    *,
+    _index: _EstimateGraphIndex | None = None,
 ) -> _AncestorSourceMetadata:
-    from haute._execute_lazy import _prune_live_switch_edges
     from haute._topo import ancestors
 
-    node_map = {n.id: n for n in graph.nodes}
-    all_ids = set(node_map)
-
-    pruned_edges = _prune_live_switch_edges(graph.edges, node_map, source)
-    ancestor_ids = ancestors(target_node_id, pruned_edges, all_ids)
+    index = _index or _EstimateGraphIndex.build(graph, source)
+    ancestor_ids = ancestors(
+        target_node_id,
+        list(index.pruned_edges),
+        set(index.node_map),
+    )
 
     max_rows: int | None = None
     max_cols: int = 0
     sources: list[_DetailedSourceMetadata] = []
 
-    for nid in ancestor_ids:
-        node = node_map.get(nid)
+    for nid in sorted(ancestor_ids):
+        node = index.node_map.get(nid)
         if node is None:
             continue
         if node.data.nodeType not in (NodeType.API_INPUT, NodeType.DATA_SOURCE):
             continue
-        meta = _detailed_source_metadata_for_node(node)
+        meta = index.source_metadata(node)
         if meta is not None:
             sources.append(meta)
             if max_rows is None or meta.row_count > max_rows:
@@ -464,7 +621,7 @@ class RamEstimate(NamedTuple):
     estimated_bytes: int
     """Estimated peak bytes across all training phases."""
     available_bytes: int
-    """Available system RAM in bytes."""
+    """Available system RAM in bytes (estimation fails if this is unknown)."""
     bytes_per_row: float
     """Estimated bytes per row (at peak phase)."""
     was_downsampled: bool
@@ -475,7 +632,7 @@ class RamEstimate(NamedTuple):
     """Number of columns (from source metadata)."""
 
 
-def _resolve_target_columns(
+def _resolve_target_columns_uncached(
     graph: PipelineGraph,
     target_node_id: str,
     source: str,
@@ -523,6 +680,19 @@ def _resolve_target_columns(
         queue.extend(parents.get(nid, []))
 
     return None
+
+
+def _resolve_target_columns(
+    graph: PipelineGraph,
+    target_node_id: str,
+    source: str,
+    *,
+    _index: _EstimateGraphIndex | None = None,
+) -> int | None:
+    """Resolve the target column count through one per-estimate index."""
+    index = _index or _EstimateGraphIndex.build(graph, source)
+    resolved = index.resolve_columns(target_node_id)
+    return len(resolved.columns) if resolved is not None else None
 
 
 def _edge_join_input_roles(
@@ -618,7 +788,20 @@ def _resolve_edge_join_columns(
     graph: PipelineGraph,
     source: str,
     parents: Mapping[str, Sequence[str]],
+    *,
+    _index: _EstimateGraphIndex | None = None,
 ) -> _ResolvedTargetColumns | None:
+    index = _index or _EstimateGraphIndex.build(graph, source)
+    return _resolve_edge_join_columns_from_index(node, index, parents=parents)
+
+
+def _resolve_edge_join_columns_from_index(
+    node: GraphNode,
+    index: _EstimateGraphIndex,
+    *,
+    parents: Mapping[str, Sequence[str]] | None = None,
+) -> _ResolvedTargetColumns | None:
+    parents = parents or index.parents
     roles = _edge_join_input_roles(node, parents)
     if roles is None:
         return None
@@ -628,8 +811,8 @@ def _resolve_edge_join_columns(
     if how not in {"inner", "left"}:
         return None
 
-    base_resolved = _resolve_target_columns_detail(graph, base_input, source)
-    join_resolved = _resolve_target_columns_detail(graph, join_input, source)
+    base_resolved = index.resolve_columns(base_input)
+    join_resolved = index.resolve_columns(join_input)
     if base_resolved is None or join_resolved is None:
         return None
 
@@ -673,17 +856,20 @@ def _resolve_target_columns_detail(
     graph: PipelineGraph,
     target_node_id: str,
     source: str,
+    *,
+    _index: _EstimateGraphIndex | None = None,
 ) -> _ResolvedTargetColumns | None:
     """Resolve target column names when config or parquet metadata exposes them."""
+    index = _index or _EstimateGraphIndex.build(graph, source)
+    return index.resolve_columns(target_node_id)
+
+
+def _resolve_target_columns_from_index(
+    index: _EstimateGraphIndex,
+    target_node_id: str,
+) -> _ResolvedTargetColumns | None:
+    """Resolve target columns through one memoized per-estimate graph index."""
     from collections import deque
-
-    from haute._execute_lazy import _prune_live_switch_edges
-
-    node_map = {n.id: n for n in graph.nodes}
-    all_ids = set(node_map)
-    pruned_edges = _prune_live_switch_edges(graph.edges, node_map, source)
-
-    parents = build_parents_of(pruned_edges, all_ids)
 
     visited: set[str] = set()
     queue = deque([target_node_id])
@@ -692,7 +878,7 @@ def _resolve_target_columns_detail(
         if nid in visited:
             continue
         visited.add(nid)
-        node = node_map.get(nid)
+        node = index.node_map.get(nid)
         if node is None:
             continue
 
@@ -701,30 +887,26 @@ def _resolve_target_columns_detail(
             return None
 
         if node.data.nodeType == NodeType.EDGE_JOIN:
-            edge_join_columns = _resolve_edge_join_columns(node, graph, source, parents)
+            edge_join_columns = _resolve_edge_join_columns_from_index(node, index)
             if edge_join_columns is not None:
                 if selected_columns is not None:
                     return _filter_resolved_columns(edge_join_columns, selected_columns)
                 return edge_join_columns
 
         if selected_columns is not None:
-            parent_ids = parents.get(nid, ())
+            parent_ids = index.parents.get(nid, ())
             if len(parent_ids) == 1:
-                parent_columns = _resolve_target_columns_detail(
-                    graph,
-                    parent_ids[0],
-                    source,
-                )
+                parent_columns = index.resolve_columns(parent_ids[0])
                 if parent_columns is not None:
                     return _filter_resolved_columns(parent_columns, selected_columns)
             return _resolved_from_columns(selected_columns)
 
         if node.data.nodeType in (NodeType.API_INPUT, NodeType.DATA_SOURCE):
-            meta = _detailed_source_metadata_for_node(node)
+            meta = index.source_metadata(node)
             if meta is not None:
                 return _resolved_from_source_metadata(meta)
 
-        queue.extend(parents.get(nid, []))
+        queue.extend(sorted(index.parents.get(nid, ())))
 
     return None
 
@@ -743,32 +925,32 @@ def _edge_join_key_columns_on_path(
     graph: PipelineGraph,
     target_node_id: str,
     source: str,
+    *,
+    _index: _EstimateGraphIndex | None = None,
 ) -> frozenset[str]:
     """Return materialized edgeJoin key output columns needed upstream."""
-    from haute._execute_lazy import _prune_live_switch_edges
     from haute._topo import ancestors
 
-    node_map = {n.id: n for n in graph.nodes}
-    all_ids = set(node_map)
-    pruned_edges = _prune_live_switch_edges(graph.edges, node_map, source)
-    parents = build_parents_of(pruned_edges, all_ids)
-    path_ids = ancestors(target_node_id, pruned_edges, all_ids) | {target_node_id}
+    index = _index or _EstimateGraphIndex.build(graph, source)
+    path_ids = ancestors(target_node_id, list(index.pruned_edges), set(index.node_map)) | {
+        target_node_id
+    }
 
     join_keys: set[str] = set()
-    for nid in path_ids:
-        node = node_map.get(nid)
+    for nid in sorted(path_ids):
+        node = index.node_map.get(nid)
         if node is None or node.data.nodeType != NodeType.EDGE_JOIN:
             continue
         base_keys, joined_keys = edge_join_key_columns_by_role(node.data.config)
         join_keys.update(base_keys)
-        roles = _edge_join_input_roles(node, parents)
+        roles = _edge_join_input_roles(node, index.parents)
         if roles is None:
             join_keys.update(joined_keys)
             continue
 
         _, join_input = roles
-        resolved = _resolve_target_columns_detail(graph, nid, source)
-        join_resolved = _resolve_target_columns_detail(graph, join_input, source)
+        resolved = index.resolve_columns(nid)
+        join_resolved = index.resolve_columns(join_input)
         if resolved is None or join_resolved is None:
             join_keys.update(joined_keys)
             continue
@@ -806,6 +988,10 @@ def _source_column_base_widths(
                     uncompressed_size = int(meta.uncompressed_size_bytes / meta.column_count)
                 if uncompressed_size is not None:
                     width = max(width, math.ceil(uncompressed_size / meta.row_count))
+                expanded_widths = meta.column_expanded_width_bytes or {}
+                expanded_width = expanded_widths.get(column)
+                if expanded_width is not None:
+                    width = max(width, math.ceil(expanded_width))
             width_key = meta.column_width_keys.get(column, column)
             widths[width_key] = max(widths.get(width_key, 0.0), width)
             widths[column] = max(widths.get(column, 0.0), width)
@@ -849,12 +1035,18 @@ def estimate_safe_training_rows(
     Returns a :class:`RamEstimate` with the decision and warning message.
     """
     available = available_ram_bytes()
+    if available is None:
+        raise RuntimeError(
+            "physical RAM is unavailable; configure an explicit execution memory limit"
+        )
 
     # ── 1. Source metadata for row count ──────────────────────────────
+    estimate_index = _EstimateGraphIndex.build(graph, source)
     source_metadata = _detailed_ancestor_source_metadata(
         graph,
         target_node_id,
         source,
+        _index=estimate_index,
     )
     total_rows = source_metadata.row_count
     source_cols = source_metadata.column_count
@@ -880,7 +1072,12 @@ def estimate_safe_training_rows(
     # ── 2. Column count at the training node ─────────────────────────
     #   Walk backwards through the graph from the target.  Returns the
     #   count from the first node with selected_columns or source metadata.
-    n_columns = _resolve_target_columns(graph, target_node_id, source)
+    n_columns = _resolve_target_columns(
+        graph,
+        target_node_id,
+        source,
+        _index=estimate_index,
+    )
 
     if not n_columns:
         logger.info(
@@ -908,9 +1105,19 @@ def estimate_safe_training_rows(
         if target_node
         else frozenset()
     )
-    join_keys_on_path = _edge_join_key_columns_on_path(graph, target_node_id, source)
+    join_keys_on_path = _edge_join_key_columns_on_path(
+        graph,
+        target_node_id,
+        source,
+        _index=estimate_index,
+    )
     preserved_excluded_join_keys = excluded & join_keys_on_path
-    target_columns = _resolve_target_columns_detail(graph, target_node_id, source)
+    target_columns = _resolve_target_columns_detail(
+        graph,
+        target_node_id,
+        source,
+        _index=estimate_index,
+    )
     if target_columns is not None:
         peak_columns = _filter_resolved_columns(
             target_columns,
@@ -996,4 +1203,81 @@ def estimate_safe_training_rows(
         was_downsampled=True,
         warning=warning,
         probe_columns=n_columns,
+    )
+
+
+def estimate_materialisation_boundary(
+    graph: PipelineGraph,
+    target_node_id: str,
+    *,
+    source: str = "live",
+) -> MaterialisationEstimate:
+    """Estimate the conservative peak of a full frame boundary.
+
+    The V1 estimator deliberately returns unavailable when source row or target
+    width metadata cannot be established.  It never converts an unknown value
+    to zero.  Join cardinality is not inferred from keys in V1, so the stated
+    assumption remains visible to diagnostics and callers can reject the
+    boundary when that assumption is unsuitable.
+    """
+    estimate_index = _EstimateGraphIndex.build(graph, source)
+    source_metadata = _detailed_ancestor_source_metadata(
+        graph,
+        target_node_id,
+        source,
+        _index=estimate_index,
+    )
+    total_rows = source_metadata.row_count
+    if total_rows is None:
+        return MaterialisationEstimate.unavailable("source_row_count_unavailable")
+    if total_rows == 0:
+        return MaterialisationEstimate.available(
+            0,
+            assumptions=("known-empty ancestor source",),
+        )
+
+    resolved_columns = _resolve_target_columns_detail(
+        graph,
+        target_node_id,
+        source,
+        _index=estimate_index,
+    )
+    if resolved_columns is not None and resolved_columns.columns:
+        column_names = resolved_columns.columns
+        width_column_names = tuple(
+            resolved_columns.width_columns.get(column, column) for column in column_names
+        )
+        n_columns = len(column_names)
+    else:
+        n_columns = (
+            _resolve_target_columns(
+                graph,
+                target_node_id,
+                source,
+                _index=estimate_index,
+            )
+            or 0
+        )
+        if n_columns <= 0:
+            return MaterialisationEstimate.unavailable("target_schema_unavailable")
+        column_names = None
+        width_column_names = None
+
+    base_bytes_per_row = _estimate_base_bytes_per_row(
+        n_columns,
+        target_columns=column_names,
+        target_width_columns=width_column_names,
+        sources=source_metadata.sources,
+    )
+    return MaterialisationEstimate.available(
+        _estimate_peak_bytes(
+            total_rows,
+            n_columns,
+            base_bytes_per_row=base_bytes_per_row,
+        ),
+        assumptions=(
+            "ancestor source row count is the boundary row-count basis",
+            "join cardinality is not expanded without source statistics",
+            f"full-boundary overhead multiplier={_OVERHEAD_MULTIPLIER:g}",
+        ),
     )

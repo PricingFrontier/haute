@@ -62,7 +62,20 @@ def test_local_performance_docs_cover_python_perf_suite_contract() -> None:
     assert "cached target preview: `< 0.5s`" in doc
     assert "first trace backed by a full preview cache: `< 0.8s`" in doc
     assert "trace-cache hit: `< 0.3s`" in doc
-    assert "Do not commit 10m-row fixtures" in doc
+    assert "Generated scale fixtures are never committed." in doc
+
+
+def test_local_performance_docs_describe_opt_in_polars_scale_workflow() -> None:
+    doc = _read_doc()
+
+    assert "CI runs the small Polars scale scenario by default." in doc
+    assert "--polars-scale 1m" in doc
+    assert "--polars-scale 10m" in doc
+    assert "The 10m run is not part of default CI." in doc
+    assert "Generated scale fixtures are never committed." in doc
+    assert "semantic evidence and product metrics" in doc
+    assert "independent runner RSS baseline" in doc
+    assert "Numeric thresholds are calibrated only against a baseline" in doc
 
 
 def test_local_performance_docs_cover_frontend_benchmark_and_bundle_commands() -> None:

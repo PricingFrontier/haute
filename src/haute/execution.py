@@ -10,7 +10,6 @@ evolve.
 from __future__ import annotations
 
 import atexit
-import json
 import shutil
 import tempfile
 import threading
@@ -18,7 +17,17 @@ from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
 from typing import Any
 
-from haute._cache import GraphFingerprintMemo, canonical_json
+from haute._cache import (
+    GraphFingerprintMemo,
+    LineageCacheKeyRequest,
+    canonical_json,
+    lineage_cache_key,
+    preamble_execution_fingerprint,
+    selected_live_switch_path,
+)
+from haute._cache import (
+    _pipeline_dir as _cache_pipeline_dir,
+)
 from haute._databricks_io import _cache_path_for as _databricks_table_cache_path
 from haute._dataframe_execution_cache import (
     CacheArtifactCorruptError,
@@ -39,6 +48,11 @@ from haute._graph_utils import upstream_node_ids
 from haute._hashing import HASH_ALGO, content_hash, content_hash_bytes
 from haute._json_flatten import cache_state_signature_for_graph
 from haute._path_resolution import resolve_runtime_file_path
+from haute._ram_estimate import (
+    MaterialisationEstimate,
+    MaterialisationEstimateState,
+    estimate_materialisation_boundary,
+)
 from haute._types import (
     MODEL_SCORE_CONFIG_KEYS,
     OPTIMISER_APPLY_CONFIG_KEYS,
@@ -48,21 +62,33 @@ from haute._types import (
     PipelineGraph,
     _Frame,
 )
+from haute.errors import GroupByExecutionUnsupportedError
 from haute.projection import (
     AllExceptColumns,
+    BoundedDiagnosticCollection,
+    DiagnosticDetailState,
+    ExecutionBoundedness,
+    ExecutionStrategy,
+    ExecutionStrategyDiagnostic,
+    ExecutionStrategyResult,
+    ExecutionStrategyStatus,
+    PreparedGraph,
     ProjectionPlan,
     ProjectionRequest,
+    build_execution_strategy_result,
     compute_prepared_plan,
+    group_by_operators_by_node,
+    normalise_required_columns_by_node,
+    prepare_graph,
     ratebook_factor_required_columns,
     source_scan_projection,
     strict_projection_required,
-)
-from haute.projection import (
-    plan as _plan_projection,
+    with_materialisation_boundaries,
 )
 
 __all__ = [
     "AllExceptColumns",
+    "BoundedDiagnosticCollection",
     "CacheArtifactCorruptError",
     "CacheArtifactMissingError",
     "CacheArtifactTooLargeError",
@@ -74,6 +100,13 @@ __all__ = [
     "dataframe_execution_policy_fingerprint",
     "dataframe_execution_cache_profile",
     "LazyExecutionResult",
+    "DiagnosticDetailState",
+    "ExecutionBoundedness",
+    "ExecutionStrategy",
+    "ExecutionStrategyDiagnostic",
+    "ExecutionStrategyResult",
+    "ExecutionStrategyStatus",
+    "MaterialisationEstimate",
     "ProjectionPlan",
     "ProjectionRequest",
     "build_linear_execution_chain_functions",
@@ -90,17 +123,22 @@ __all__ = [
     "materialize_lazy_frame_with_cache",
     "plan_prepared_execution_strategy",
     "plan_execution_strategy",
+    "preview_lineage_cache_key",
     "prune_source_switch_edges",
     "ratebook_factor_required_columns",
     "runtime_input_extra_keys",
     "source_scan_projection",
 ]
 
+PREVIEW_EXECUTION_SEMANTICS_VERSION = "preview-materialisation:v1"
+_PREVIEW_CONTRACT_FINGERPRINT_VERSION = 1
+
 LazyExecutionResult = tuple[dict[str, _Frame], list[str], dict[str, list[str]], dict[str, str]]
 
 _DEFAULT_DATAFRAME_EXECUTION_CACHE_ROOT: Path | None = None
 _DEFAULT_DATAFRAME_EXECUTION_CACHE: DataFrameExecutionCache | None = None
 _DEFAULT_DATAFRAME_EXECUTION_CACHE_LOCK = threading.Lock()
+_AUTO_MATERIALISATION_ESTIMATE = object()
 
 _GRAPH_PATH_CONFIG_BY_NODE_TYPE: dict[NodeType, str] = {
     NodeType.API_INPUT: "path",
@@ -197,17 +235,88 @@ def plan_execution_strategy(
     request: ProjectionRequest,
     *,
     execution_context: ExecutionContext | None = None,
-) -> ProjectionPlan:
-    """Plan projection/streaming strategy through the execution facade.
-
-    This is intentionally thin today: the projection planner remains the
-    source of truth, while application layers get one stable execution-engine
-    entry point that can grow as strategy selection broadens.
-    """
-    projection_plan = _plan_projection(request)
+    materialisation_estimate: MaterialisationEstimate | None | object = (
+        _AUTO_MATERIALISATION_ESTIMATE
+    ),
+) -> ExecutionStrategyResult:
+    """Return the sole route-facing V1 execution-planning result."""
+    prepared = prepare_graph(
+        request.graph,
+        request.target_node_id,
+        source=request.source,
+    )
+    children_of = _children_of(prepared.order, prepared.parents_of)
+    required_columns_by_node = normalise_required_columns_by_node(
+        request.required_columns_by_node,
+        prepared.order,
+    )
+    projection_plan = compute_prepared_plan(
+        prepared.order,
+        children_of,
+        prepared.node_map,
+        required_columns_by_node=required_columns_by_node,
+        strict_projection=strict_projection_required(
+            request.profile,
+            required_columns_by_node,
+        ),
+    )
+    group_by_operators = group_by_operators_by_node(prepared.order, prepared.node_map)
+    resolved_estimate: MaterialisationEstimate | None
+    if group_by_operators and request.profile in {
+        ExecutionProfile.PREVIEW_EAGER,
+        ExecutionProfile.DEPLOY_LIVE,
+    }:
+        if materialisation_estimate is _AUTO_MATERIALISATION_ESTIMATE:
+            resolved_estimate = _estimate_group_by_boundaries(
+                request.graph,
+                group_by_operators,
+                source=request.source,
+            )
+        elif materialisation_estimate is None:
+            resolved_estimate = MaterialisationEstimate.unavailable(
+                "materialisation_estimate_not_supplied"
+            )
+        elif isinstance(materialisation_estimate, MaterialisationEstimate):
+            resolved_estimate = materialisation_estimate
+        else:
+            raise TypeError("materialisation_estimate must be a MaterialisationEstimate or None")
+    else:
+        resolved_estimate = None
+    result = _finalise_execution_strategy(
+        projection_plan,
+        profile=request.profile,
+        order=prepared.order,
+        children_of=children_of,
+        node_map=prepared.node_map,
+        has_projection_seed=bool(required_columns_by_node),
+        group_by_operators=group_by_operators,
+        execution_context=execution_context,
+        materialisation_estimate=resolved_estimate,
+        required_columns_by_node=required_columns_by_node,
+    )
     if execution_context is not None:
-        execution_context.projection_plan = projection_plan
-    return projection_plan
+        execution_context.projection_plan = result
+    return result
+
+
+def _estimate_group_by_boundaries(
+    graph: PipelineGraph,
+    node_ids: Iterable[str],
+    *,
+    source: str,
+) -> MaterialisationEstimate:
+    """Return the conservative peak across every declared group-by boundary."""
+    peak_bytes = 0
+    assumptions: list[str] = []
+    for node_id in node_ids:
+        estimate = estimate_materialisation_boundary(graph, node_id, source=source)
+        if estimate.state is MaterialisationEstimateState.UNAVAILABLE:
+            reason = estimate.unavailable_reason or "unknown"
+            return MaterialisationEstimate.unavailable(f"{node_id}:{reason}")
+        assert estimate.estimated_peak_bytes is not None
+        peak_bytes = max(peak_bytes, estimate.estimated_peak_bytes)
+        assumptions.extend(f"{node_id}: {item}" for item in estimate.assumptions)
+    return MaterialisationEstimate.available(peak_bytes, assumptions=assumptions)
 
 
 def plan_prepared_execution_strategy(
@@ -218,8 +327,13 @@ def plan_prepared_execution_strategy(
     profile: ExecutionProfile,
     required_columns_by_node: Mapping[str, Iterable[str] | AllExceptColumns] | None = None,
     execution_context: ExecutionContext | None = None,
-) -> ProjectionPlan:
+    materialisation_estimate: MaterialisationEstimate | None = None,
+) -> ExecutionStrategyResult:
     """Plan projection/streaming strategy for an already prepared graph."""
+    required_columns_by_node = normalise_required_columns_by_node(
+        required_columns_by_node,
+        order,
+    )
     projection_plan = compute_prepared_plan(
         order,
         children_of,
@@ -227,9 +341,175 @@ def plan_prepared_execution_strategy(
         required_columns_by_node=required_columns_by_node,
         strict_projection=strict_projection_required(profile, required_columns_by_node),
     )
+    group_by_operators = group_by_operators_by_node(order, node_map)
+    result = _finalise_execution_strategy(
+        projection_plan,
+        profile=profile,
+        order=order,
+        children_of=children_of,
+        node_map=node_map,
+        has_projection_seed=bool(required_columns_by_node),
+        group_by_operators=group_by_operators,
+        execution_context=execution_context,
+        materialisation_estimate=materialisation_estimate,
+        required_columns_by_node=required_columns_by_node,
+    )
     if execution_context is not None:
-        execution_context.projection_plan = projection_plan
-    return projection_plan
+        execution_context.projection_plan = result
+    return result
+
+
+def _children_of(
+    order: Iterable[str],
+    parents_of: Mapping[str, Iterable[str]],
+) -> dict[str, list[str]]:
+    children: dict[str, list[str]] = {node_id: [] for node_id in order}
+    for child_id, parent_ids in parents_of.items():
+        for parent_id in parent_ids:
+            if parent_id in children:
+                children[parent_id].append(child_id)
+    return children
+
+
+def _group_by_rejection(
+    *,
+    node_id: str,
+    operator: str,
+    profile: ExecutionProfile,
+    reason_code: str,
+    estimated_peak_bytes: int | None,
+    headroom_bytes: int | None,
+) -> GroupByExecutionUnsupportedError:
+    remediation = {
+        "profile_requires_bounded_execution": (
+            "Remove the group-by, pre-aggregate the source, or run it through an "
+            "admitted preview/deploy-live materialisation boundary."
+        ),
+        "execution_admission_unavailable": (
+            "Create an admitted execution context with positive memory-limit and "
+            "headroom values before running this group-by."
+        ),
+        "materialisation_estimate_unavailable": (
+            "Provide readable source/schema metadata so Haute can estimate the full "
+            "group-by boundary before execution."
+        ),
+        "materialisation_exceeds_headroom": (
+            "Increase the configured memory headroom, narrow the input, or pre-aggregate "
+            "the source before this group-by."
+        ),
+    }[reason_code]
+    return GroupByExecutionUnsupportedError(
+        "Group-by execution is unsupported for the selected execution strategy.",
+        node_id=node_id,
+        operator=operator,
+        profile=profile.value,
+        reason_code=reason_code,
+        remediation=remediation,
+        estimated_peak_bytes=estimated_peak_bytes,
+        headroom_bytes=headroom_bytes,
+    )
+
+
+def _finalise_execution_strategy(
+    projection_plan: ProjectionPlan,
+    *,
+    profile: ExecutionProfile,
+    order: Iterable[str],
+    children_of: Mapping[str, Iterable[str]],
+    node_map: Mapping[str, GraphNode],
+    has_projection_seed: bool,
+    group_by_operators: Mapping[str, str],
+    execution_context: ExecutionContext | None,
+    materialisation_estimate: MaterialisationEstimate | None,
+    required_columns_by_node: Mapping[str, Iterable[str] | AllExceptColumns] | None,
+) -> ExecutionStrategyResult:
+    strategy: ExecutionStrategy | None = None
+    reason_code: str | None = None
+    remediation: str | None = None
+    estimated_peak_bytes: int | None = None
+    headroom_bytes: int | None = None
+    assumptions: tuple[str, ...] = ()
+
+    if group_by_operators:
+        node_id, operator = next(iter(group_by_operators.items()))
+        if profile not in {ExecutionProfile.PREVIEW_EAGER, ExecutionProfile.DEPLOY_LIVE}:
+            raise _group_by_rejection(
+                node_id=node_id,
+                operator=operator,
+                profile=profile,
+                reason_code="profile_requires_bounded_execution",
+                estimated_peak_bytes=None,
+                headroom_bytes=None,
+            )
+
+        admission = execution_context.admission if execution_context is not None else None
+        if (
+            admission is None
+            or not admission.admitted
+            or not isinstance(admission.memory_limit_bytes, int)
+            or isinstance(admission.memory_limit_bytes, bool)
+            or admission.memory_limit_bytes <= 0
+            or not isinstance(admission.headroom_bytes, int)
+            or isinstance(admission.headroom_bytes, bool)
+            or admission.headroom_bytes <= 0
+        ):
+            raise _group_by_rejection(
+                node_id=node_id,
+                operator=operator,
+                profile=profile,
+                reason_code="execution_admission_unavailable",
+                estimated_peak_bytes=None,
+                headroom_bytes=None,
+            )
+        headroom_bytes = min(admission.memory_limit_bytes, admission.headroom_bytes)
+        if (
+            materialisation_estimate is None
+            or materialisation_estimate.state is MaterialisationEstimateState.UNAVAILABLE
+        ):
+            raise _group_by_rejection(
+                node_id=node_id,
+                operator=operator,
+                profile=profile,
+                reason_code="materialisation_estimate_unavailable",
+                estimated_peak_bytes=None,
+                headroom_bytes=headroom_bytes,
+            )
+        estimated_peak_bytes = materialisation_estimate.estimated_peak_bytes
+        assert estimated_peak_bytes is not None
+        if estimated_peak_bytes > headroom_bytes:
+            raise _group_by_rejection(
+                node_id=node_id,
+                operator=operator,
+                profile=profile,
+                reason_code="materialisation_exceeds_headroom",
+                estimated_peak_bytes=estimated_peak_bytes,
+                headroom_bytes=headroom_bytes,
+            )
+        projection_plan = with_materialisation_boundaries(
+            projection_plan,
+            group_by_operators,
+        )
+        strategy = ExecutionStrategy.MATERIALISATION_BOUNDARY
+        reason_code = "group_by_materialisation_admitted"
+        remediation = "Keep the admitted boundary within its reported memory headroom."
+        assumptions = materialisation_estimate.assumptions
+
+    return build_execution_strategy_result(
+        projection_plan,
+        profile=profile,
+        order=order,
+        children_of=children_of,
+        node_map=node_map,
+        has_projection_seed=has_projection_seed,
+        required_columns_by_node=required_columns_by_node,
+        strategy=strategy,
+        reason_code=reason_code,
+        boundary_operators=group_by_operators,
+        remediation=remediation,
+        estimated_peak_bytes=estimated_peak_bytes,
+        headroom_bytes=headroom_bytes,
+        assumptions=assumptions,
+    )
 
 
 def _normalise_policy_column_demand(
@@ -376,7 +656,7 @@ def dataframe_paths_input_fingerprint(paths: Mapping[str, str]) -> Mapping[str, 
         if not isinstance(raw_path, str) or not raw_path:
             raise ValueError("external path fingerprint values must be non-empty strings")
         path = Path(raw_path).resolve()
-        payload[key] = _runtime_path_fingerprint(path)
+        payload[key] = _stat_gated_runtime_path_fingerprint(path)
     return payload
 
 
@@ -462,7 +742,7 @@ def _runtime_input_fingerprint_entry(
         "config": _config_subset(config, _runtime_input_config_fields(node.data.nodeType)),
     }
     files = {
-        path_field: _runtime_path_fingerprint(path)
+        path_field: _stat_gated_runtime_path_fingerprint(path)
         for path_field, path in _runtime_file_signature_paths(graph, node).items()
     }
     if files:
@@ -506,7 +786,7 @@ def dataframe_graph_input_fingerprint(
         "sources": source_entries,
         "extra": dict(sorted((extra_fingerprints or {}).items())),
     }
-    return content_hash_bytes(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode())
+    return content_hash_bytes(canonical_json(payload).encode())
 
 
 def _runtime_file_signature_paths(graph: PipelineGraph, node: GraphNode) -> dict[str, Path]:
@@ -613,6 +893,92 @@ def runtime_input_extra_keys(graph: PipelineGraph) -> tuple[str, ...]:
     if json_cache_signature:
         keys.append(json_cache_signature)
     return tuple(keys)
+
+
+def _lineage_runtime_graph(graph: PipelineGraph, prepared: PreparedGraph) -> PipelineGraph:
+    """Return the source-pruned target lineage used for runtime-input hashing."""
+    relevant_ids = set(prepared.order)
+    return graph.model_copy(
+        update={
+            "nodes": [node for node in graph.nodes if node.id in relevant_ids],
+            "edges": list(prepared.relevant_edges),
+        }
+    )
+
+
+def _preview_contract_fingerprint(
+    *,
+    enforce_contracts: bool,
+    materialisation_scope: str,
+) -> str:
+    if type(enforce_contracts) is not bool:
+        raise TypeError("enforce_contracts must be a bool")
+    if materialisation_scope not in {"full", "target_only"}:
+        raise ValueError("materialisation_scope must be 'full' or 'target_only'")
+    payload = {
+        "schema_version": _PREVIEW_CONTRACT_FINGERPRINT_VERSION,
+        "enforce_contracts": enforce_contracts,
+        "materialisation_scope": materialisation_scope,
+    }
+    digest = content_hash_bytes(canonical_json(payload).encode())
+    return f"preview-contract-v{_PREVIEW_CONTRACT_FINGERPRINT_VERSION}:{digest}"
+
+
+def _lineage_runtime_input_fingerprint(
+    graph: PipelineGraph,
+    prepared: PreparedGraph,
+    *,
+    memo: GraphFingerprintMemo | None,
+) -> str:
+    relevant_graph = _lineage_runtime_graph(graph, prepared)
+    payload = {
+        "runtime_input_keys": list(runtime_input_extra_keys(relevant_graph)),
+        "preamble_execution": preamble_execution_fingerprint(
+            relevant_graph.preamble,
+            pipeline_dir=_cache_pipeline_dir(relevant_graph),
+            memo=memo,
+        ),
+    }
+    return "runtime-input-v1:" + content_hash_bytes(canonical_json(payload).encode())
+
+
+def preview_lineage_cache_key(
+    graph: PipelineGraph,
+    *,
+    target_node_id: str | None,
+    source: str,
+    requested_columns: Iterable[str] | None,
+    initial_column_limit: int | None,
+    row_limit: int | None,
+    port_label: str | None,
+    enforce_contracts: bool,
+    materialisation_scope: str,
+    memo: GraphFingerprintMemo | None = None,
+) -> str:
+    """Return the sole preview/trace cache identity for one target lineage."""
+    prepared = prepare_graph(graph, target_node_id, source=source)
+    request = LineageCacheKeyRequest(
+        graph=graph,
+        prepared=prepared,
+        target_node_id=target_node_id,
+        source=source,
+        requested_columns=None if requested_columns is None else tuple(requested_columns),
+        initial_column_limit=initial_column_limit,
+        row_limit=row_limit,
+        port_label=port_label,
+        contract_fingerprint=_preview_contract_fingerprint(
+            enforce_contracts=enforce_contracts,
+            materialisation_scope=materialisation_scope,
+        ),
+        selected_live_switch_path=selected_live_switch_path(prepared),
+        runtime_input_fingerprint=_lineage_runtime_input_fingerprint(
+            graph,
+            prepared,
+            memo=memo,
+        ),
+        execution_semantics_version=PREVIEW_EXECUTION_SEMANTICS_VERSION,
+    )
+    return lineage_cache_key(request)
 
 
 def build_dataframe_execution_cache_request(

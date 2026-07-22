@@ -10,7 +10,7 @@ import pytest
 
 from haute._execution_context import ExecutionProfile
 from haute._user_exec import _exec_user_code
-from haute.errors import BoundedMemoryUnsupportedError
+from haute.errors import BoundedMemoryUnsupportedError, LiveSwitchScenarioError
 from haute.executor import (
     PreambleError,
     _build_node_fn,
@@ -1956,12 +1956,14 @@ class TestLiveSwitch:
         assert results["switch"].status == "ok"
         assert results["switch"].row_count == 4
 
-    def test_unmapped_scenario_falls_back_to_first_input(self, tmp_path):
-        """An unmapped scenario should fall back to the first input."""
+    def test_unmapped_scenario_reports_typed_error(self, tmp_path):
+        """A configured mapping must include the active scenario."""
         graph = self._switch_graph(tmp_path)
-        results = execute_graph(graph, target_node_id="switch", source="unknown_scenario")
-        assert results["switch"].status == "ok"
-        assert results["switch"].row_count == 3
+        with pytest.raises(LiveSwitchScenarioError) as exc_info:
+            execute_graph(graph, target_node_id="switch", source="unknown_scenario")
+
+        assert exc_info.value.switch == "switch"
+        assert exc_info.value.scenario == "unknown_scenario"
 
     def test_empty_scenario_map_falls_back_to_first_input(self, tmp_path):
         """Empty input_scenario_map {} should fall back to the first input."""

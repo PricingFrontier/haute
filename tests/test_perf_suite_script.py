@@ -6,6 +6,7 @@ import json
 
 from scripts.run_perf_suite import (
     PerfBudgets,
+    PerfRssEnvelope,
     PerfTestResult,
     _budget_violations,
     _build_report,
@@ -84,10 +85,23 @@ def test_report_artifacts_include_summary_and_slowest_tests(tmp_path) -> None:
         total_seconds=3.5,
         results=[
             PerfTestResult("tests/test_perf.py::test_fast", "passed", 0.1, "call"),
-            PerfTestResult("tests/test_perf.py::test_slow", "passed", 1.4, "call"),
+            PerfTestResult(
+                "tests/test_perf.py::test_slow",
+                "passed",
+                1.4,
+                "call",
+                evidence={"semantic_match": True, "physical_width": 6},
+            ),
         ],
         budgets=PerfBudgets(max_total_seconds=10.0, max_test_seconds=5.0),
         command=["pytest", "-m", "perf"],
+        polars_scale="1m",
+        rss=PerfRssEnvelope(
+            sampler="independent_process_rss_poll",
+            peak_rss_bytes=123_456,
+            sample_count=7,
+            poll_interval_seconds=0.02,
+        ),
     )
 
     _write_artifacts(report, tmp_path)
@@ -95,5 +109,12 @@ def test_report_artifacts_include_summary_and_slowest_tests(tmp_path) -> None:
     payload = json.loads((tmp_path / "perf-report.json").read_text(encoding="utf-8"))
     markdown = (tmp_path / "perf-report.md").read_text(encoding="utf-8")
     assert payload["summary"]["collected"] == 2
+    assert payload["schema_version"] == 2
+    assert payload["scenario"]["polars_scale"] == "1m"
+    assert payload["rss"]["peak_rss_bytes"] == 123_456
     assert payload["summary"]["slowest"][0]["nodeid"] == "tests/test_perf.py::test_slow"
     assert "`tests/test_perf.py::test_slow`" in markdown
+    assert "Polars scale: 1m" in markdown
+    assert "Independent peak RSS: 123,456 bytes" in markdown
+    assert "Scenario Evidence" in markdown
+    assert '"physical_width": 6' in markdown

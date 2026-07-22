@@ -86,6 +86,80 @@ export interface ExecutionMemoryPressureEvent {
   pressure_ratio: number
 }
 
+export type ExecutionStrategyStatus = "projected" | "admitted_eager" | "boundary" | "rejected" | "not_planned"
+export type ExecutionStrategy = "projected" | "schema-all-except" | "full-width-admitted-eager" | "unprojected-streaming-boundary" | "materialisation-boundary" | "unsupported" | "not-planned"
+export type ExecutionStrategyProfile = "preview_eager" | "lazy_sink" | "training_prep" | "optimiser_setup" | "explore_analysis" | "auto_range" | "deploy_live" | "deploy_batch" | "chunked_map_reduce"
+export type ExecutionStrategyBoundedness = "bounded" | "unbounded" | "unknown"
+export type ExecutionStrategyDetailState = "available" | "unavailable" | "truncated"
+
+export interface ExecutionStrategyBoundary {
+  topological_rank: number
+  node_id: string
+  operator: string
+  boundary_kind: "unprojected-streaming-boundary" | "materialisation-boundary"
+}
+
+export interface ExecutionStrategyReason {
+  reason_code: string
+  topological_rank: number | null
+  node_id: string | null
+  operator: string | null
+  message?: string | null
+  parent_node_id?: string | null
+}
+
+export interface ExecutionStrategyProvenance {
+  column: string
+  origin_kind: "seed" | "contract" | "expression" | "join_key" | "conservative_boundary"
+  source_node_id?: string | null
+  source_column?: string | null
+}
+
+export interface ExecutionStrategyBoundedCollection<T> {
+  state: ExecutionStrategyDetailState
+  total_count: number | null
+  items: T[]
+}
+
+export interface ExecutionStrategyDiagnostic {
+  schema_version: 1
+  status: ExecutionStrategyStatus
+  strategy: ExecutionStrategy
+  profile: ExecutionStrategyProfile
+  boundedness: ExecutionStrategyBoundedness
+  reason_code: string
+  detail_state: ExecutionStrategyDetailState
+  boundaries: ExecutionStrategyBoundedCollection<ExecutionStrategyBoundary>
+  reasons: ExecutionStrategyBoundedCollection<ExecutionStrategyReason>
+  provenance: ExecutionStrategyBoundedCollection<ExecutionStrategyProvenance>
+  blocking_node_id?: string | null
+  blocking_operator?: string | null
+  remediation?: string | null
+  estimated_peak_bytes?: number | null
+  headroom_bytes?: number | null
+  assumptions?: string[]
+}
+
+export interface ExecutionStreamabilityEvidence {
+  state: "available" | "unavailable" | "truncated"
+  total_count: number | null
+  items: string[]
+}
+
+export interface ExecutionColumnWidth {
+  node_id: string
+  input_width: number | null
+  output_width: number | null
+  requested_width: number | null
+  physically_scanned_width: number | null
+}
+
+export interface ExecutionColumnWidths {
+  state: "available" | "truncated"
+  total_count: number
+  items: ExecutionColumnWidth[]
+}
+
 export interface ExecutionMetrics {
   schema_version: number
   operation: string
@@ -114,7 +188,17 @@ export interface ExecutionMetrics {
   memory_limit_bytes: number | null
   memory_baseline_bytes: number | null
   rss_limit_bytes: number | null
+  streamability: "streaming" | "materialising" | null
+  streamability_evidence: ExecutionStreamabilityEvidence
+  column_widths: ExecutionColumnWidths
+  bytes_read: number | null
+  bytes_written: number | null
+  estimated_bytes: number | null
+  observed_peak_rss_bytes: number | null
+  checkpoint_count: number
+  chunk_count: number
   admission: ExecutionAdmission | null
+  execution_strategy: ExecutionStrategyDiagnostic | null
   projection_plan_diagnostics: Record<string, unknown> | null
   stages: ExecutionStageMetrics[]
   memory_pressure_events: ExecutionMemoryPressureEvent[]
@@ -420,6 +504,27 @@ export interface TrainDiagnosticsError {
   error_type: string
 }
 
+export interface TrainFeatureSelectionExcludedColumn {
+  column: string
+  reason: "target" | "weight" | "offset" | "fold" | "identifier" | "split" | "configured_exclusion" | "not_selected" | "not_in_formula"
+}
+
+export interface TrainFeatureSelectionCollection<T> {
+  state: "available" | "truncated"
+  total_count: number
+  items: T[]
+}
+
+export interface TrainFeatureSelection {
+  schema_version: 1
+  mode: "explicit" | "all_except" | "glm_terms"
+  feature_count: number
+  detail_state: "available" | "truncated"
+  features: TrainFeatureSelectionCollection<string>
+  retained_metadata: TrainFeatureSelectionCollection<TrainFeatureSelectionExcludedColumn>
+  excluded_columns: TrainFeatureSelectionCollection<TrainFeatureSelectionExcludedColumn>
+}
+
 export interface TrainResponse {
   status: string
   job_id?: string | null
@@ -454,6 +559,7 @@ export interface TrainResponse {
   glm_fit_statistics?: Record<string, number>
   glm_regularization_path?: GlmRegularizationPath | null
   diagnostics_errors?: TrainDiagnosticsError[]
+  feature_selection?: TrainFeatureSelection | null
 }
 
 export interface TrainStatusResponse {
@@ -470,6 +576,7 @@ export interface TrainStatusResponse {
   warning?: string | null
   terminal_reason?: string | null
   execution_metrics?: ExecutionMetrics | null
+  feature_selection?: TrainFeatureSelection | null
 }
 
 // ---------------------------------------------------------------------------

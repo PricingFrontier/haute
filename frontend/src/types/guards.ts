@@ -18,6 +18,14 @@ import type {
   ExecutionAdmission,
   ExecutionMemoryPressureEvent,
   ExecutionMetrics,
+  ExecutionColumnWidth,
+  ExecutionColumnWidths,
+  ExecutionStreamabilityEvidence,
+  ExecutionStrategyDiagnostic,
+  ExecutionStrategyBoundary,
+  ExecutionStrategyBoundedCollection,
+  ExecutionStrategyProvenance,
+  ExecutionStrategyReason,
   ExecutionStageMetrics,
   ExploreCacheReport,
   ExploreCategoricalColumnProfile,
@@ -610,9 +618,25 @@ function parseExecutionMetrics(
     memory_limit_bytes: optionalNullableNumber(parser, obj, "memory_limit_bytes"),
     memory_baseline_bytes: optionalNullableNumber(parser, obj, "memory_baseline_bytes"),
     rss_limit_bytes: optionalNullableNumber(parser, obj, "rss_limit_bytes"),
+    streamability: obj.streamability === undefined
+      ? null
+      : expectNullableStringLiteral(parser, obj.streamability, `${field}.streamability`, ["streaming", "materialising"]),
+    streamability_evidence: obj.streamability_evidence === undefined
+      ? { state: "unavailable", total_count: null, items: [] }
+      : parseStreamabilityEvidence(obj.streamability_evidence, `${field}.streamability_evidence`),
+    column_widths: obj.column_widths === undefined
+      ? { state: "available", total_count: 0, items: [] }
+      : parseColumnWidths(obj.column_widths, `${field}.column_widths`),
+    bytes_read: parseOptionalNullableNonNegativeNumber(obj, "bytes_read", field),
+    bytes_written: parseOptionalNullableNonNegativeNumber(obj, "bytes_written", field),
+    estimated_bytes: parseOptionalNullableNonNegativeNumber(obj, "estimated_bytes", field),
+    observed_peak_rss_bytes: parseOptionalNullableNonNegativeNumber(obj, "observed_peak_rss_bytes", field),
+    checkpoint_count: parseOptionalNonNegativeNumber(obj, "checkpoint_count", field),
+    chunk_count: parseOptionalNonNegativeNumber(obj, "chunk_count", field),
     admission: admission === null
       ? null
       : parseExecutionAdmission(parser, admission, `${field}.admission`),
+    execution_strategy: parseExecutionStrategyDiagnostic(obj.execution_strategy),
     projection_plan_diagnostics: optionalNullableObject(
       parser,
       obj,
@@ -624,6 +648,201 @@ function parseExecutionMetrics(
     memory_pressure_events: optionalArray(parser, obj, "memory_pressure_events", (item, itemField) =>
       parseExecutionMemoryPressureEvent(parser, item, itemField),
     ),
+  }
+}
+
+function expectNullableStringLiteral<T extends string>(
+  parser: string,
+  value: unknown,
+  field: string,
+  allowed: readonly T[],
+): T | null {
+  if (value === null) return null
+  return expectStringLiteral(parser, value, field, allowed)
+}
+
+function expectNonNegativeMetricNumber(value: unknown, field: string): number {
+  return expectInteger(value, field, true)
+}
+
+function parseOptionalNullableNonNegativeNumber(
+  obj: Record<string, unknown>,
+  key: string,
+  field: string,
+): number | null {
+  const value = obj[key]
+  if (value === undefined || value === null) return null
+  return expectNonNegativeMetricNumber(value, `${field}.${key}`)
+}
+
+function parseOptionalNonNegativeNumber(
+  obj: Record<string, unknown>,
+  key: string,
+  field: string,
+): number {
+  const value = obj[key]
+  return value === undefined ? 0 : expectNonNegativeMetricNumber(value, `${field}.${key}`)
+}
+
+function parseStreamabilityEvidence(value: unknown, field: string): ExecutionStreamabilityEvidence {
+  const obj = expectPlainObject("execution metrics", value, field)
+  const state = expectStringLiteral("execution metrics", obj.state, `${field}.state`, ["available", "unavailable", "truncated"])
+  const items = expectArray("execution metrics", obj.items, `${field}.items`).map((item, index) =>
+    expectString("execution metrics", item, `${field}.items[${index}]`),
+  )
+  if (items.length > 32) throw new Error(`execution metrics: ${field} exceeds its 32-item cap`)
+  const totalCount = obj.total_count === null ? null : expectInteger(obj.total_count, `${field}.total_count`, true)
+  if (state === "unavailable") {
+    if (totalCount !== null || items.length !== 0) throw new Error(`execution metrics: unavailable ${field} is inconsistent`)
+  } else if (totalCount === null || (state === "available" && totalCount !== items.length) || (state === "truncated" && totalCount <= items.length)) {
+    throw new Error(`execution metrics: ${field} count is inconsistent`)
+  }
+  for (let index = 1; index < items.length; index += 1) {
+    if (compareUnicode(items[index - 1], items[index]) >= 0) throw new Error(`execution metrics: ${field} must be sorted and unique`)
+  }
+  return { state, total_count: totalCount, items }
+}
+
+function parseColumnWidths(value: unknown, field: string): ExecutionColumnWidths {
+  const obj = expectPlainObject("execution metrics", value, field)
+  const state = expectStringLiteral("execution metrics", obj.state, `${field}.state`, ["available", "truncated"])
+  const items = expectArray("execution metrics", obj.items, `${field}.items`).map((item, index): ExecutionColumnWidth => {
+    const itemObj = expectPlainObject("execution metrics", item, `${field}.items[${index}]`)
+    const nullableWidth = (key: string): number | null => {
+      const itemValue = itemObj[key]
+      return itemValue === null ? null : expectNonNegativeMetricNumber(itemValue, `${field}.items[${index}].${key}`)
+    }
+    return {
+      node_id: expectString("execution metrics", itemObj.node_id, `${field}.items[${index}].node_id`),
+      input_width: nullableWidth("input_width"),
+      output_width: nullableWidth("output_width"),
+      requested_width: nullableWidth("requested_width"),
+      physically_scanned_width: nullableWidth("physically_scanned_width"),
+    }
+  })
+  if (items.length > 128) throw new Error(`execution metrics: ${field} exceeds its 128-item cap`)
+  const totalCount = expectInteger(obj.total_count, `${field}.total_count`, true)
+  if ((state === "available" && totalCount !== items.length) || (state === "truncated" && totalCount <= items.length)) {
+    throw new Error(`execution metrics: ${field} count is inconsistent`)
+  }
+  for (let index = 1; index < items.length; index += 1) {
+    if (compareUnicode(items[index - 1].node_id, items[index].node_id) >= 0) throw new Error(`execution metrics: ${field} must be sorted and unique`)
+  }
+  return { state, total_count: totalCount, items }
+}
+
+const STRATEGY_STATUS = {
+  projected: "projected",
+  "schema-all-except": "projected",
+  "full-width-admitted-eager": "admitted_eager",
+  "unprojected-streaming-boundary": "boundary",
+  "materialisation-boundary": "boundary",
+  unsupported: "rejected",
+  "not-planned": "not_planned",
+} as const
+
+const DETAIL_STATES = ["available", "unavailable", "truncated"] as const
+
+function expectInteger(value: unknown, field: string, nonNegative = false): number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || (nonNegative && value < 0)) {
+    throw new Error(`execution strategy: expected ${field} to be a ${nonNegative ? "non-negative " : ""}integer`)
+  }
+  return value
+}
+
+function expectOptionalNullableDiagnosticString(obj: Record<string, unknown>, key: string): string | null | undefined {
+  const value = obj[key]
+  if (value === undefined || value === null || typeof value === "string") return value
+  throw new Error(`execution strategy: expected ${key} to be a string or null`)
+}
+
+function compareUnicode(left: string, right: string): number {
+  const leftPoints = Array.from(left)
+  const rightPoints = Array.from(right)
+  for (let index = 0; index < Math.min(leftPoints.length, rightPoints.length); index += 1) {
+    const difference = leftPoints[index].codePointAt(0)! - rightPoints[index].codePointAt(0)!
+    if (difference !== 0) return difference
+  }
+  return leftPoints.length - rightPoints.length
+}
+
+function compareTuple(left: (number | string)[], right: (number | string)[]): number {
+  for (let index = 0; index < left.length; index += 1) {
+    const a = left[index]
+    const b = right[index]
+    const difference = typeof a === "number" && typeof b === "number" ? a - b : compareUnicode(String(a), String(b))
+    if (difference !== 0) return difference
+  }
+  return 0
+}
+
+function parseDiagnosticCollection<T>(
+  value: unknown,
+  name: string,
+  cap: number,
+  parseItem: (value: unknown, field: string) => T,
+  sortKey: (item: T) => (number | string)[],
+): ExecutionStrategyBoundedCollection<T> {
+  const obj = expectPlainObject("execution strategy", value, name)
+  const state = expectStringLiteral("execution strategy", obj.state, `${name}.state`, DETAIL_STATES)
+  const items = expectArray("execution strategy", obj.items, `${name}.items`).map((item, index) => parseItem(item, `${name}.items[${index}]`))
+  if (items.length > cap) throw new Error(`execution strategy: ${name} exceeds its ${cap}-item cap`)
+  const totalCount = obj.total_count === null ? null : expectInteger(obj.total_count, `${name}.total_count`, true)
+  if (state === "unavailable") {
+    if (totalCount !== null || items.length !== 0) throw new Error(`execution strategy: unavailable ${name} is inconsistent`)
+  } else if (totalCount === null || (state === "available" && totalCount !== items.length) || (state === "truncated" && totalCount <= items.length)) {
+    throw new Error(`execution strategy: ${name} count is inconsistent`)
+  }
+  for (let index = 1; index < items.length; index += 1) {
+    if (compareTuple(sortKey(items[index - 1]), sortKey(items[index])) > 0) {
+      throw new Error(`execution strategy: ${name} are not in canonical order`)
+    }
+  }
+  return { state, total_count: totalCount, items }
+}
+
+/** Parses the additive V1 strategy diagnostic. Invalid or unknown versions are unavailable. */
+export function parseExecutionStrategyDiagnostic(value: unknown): ExecutionStrategyDiagnostic | null {
+  if (value === undefined || value === null) return null
+  try {
+    const obj = expectPlainObject("execution strategy", value)
+    if (expectInteger(obj.schema_version, "schema_version") !== 1) return null
+    const strategy = expectStringLiteral("execution strategy", obj.strategy, "strategy", Object.keys(STRATEGY_STATUS) as (keyof typeof STRATEGY_STATUS)[])
+    const status = expectStringLiteral("execution strategy", obj.status, "status", ["projected", "admitted_eager", "boundary", "rejected", "not_planned"])
+    if (status !== STRATEGY_STATUS[strategy]) throw new Error("execution strategy: status does not match strategy")
+    const profile = expectStringLiteral("execution strategy", obj.profile, "profile", ["preview_eager", "lazy_sink", "training_prep", "optimiser_setup", "explore_analysis", "auto_range", "deploy_live", "deploy_batch", "chunked_map_reduce"])
+    const boundedness = expectStringLiteral("execution strategy", obj.boundedness, "boundedness", ["bounded", "unbounded", "unknown"])
+    const reasonCode = expectString("execution strategy", obj.reason_code, "reason_code")
+    const boundaries = parseDiagnosticCollection<ExecutionStrategyBoundary>(obj.boundaries, "boundaries", 32, (item, field) => {
+      const itemObj = expectPlainObject("execution strategy", item, field)
+      return {
+        topological_rank: expectInteger(itemObj.topological_rank, `${field}.topological_rank`, true),
+        node_id: expectString("execution strategy", itemObj.node_id, `${field}.node_id`),
+        operator: expectString("execution strategy", itemObj.operator, `${field}.operator`),
+        boundary_kind: expectStringLiteral("execution strategy", itemObj.boundary_kind, `${field}.boundary_kind`, ["unprojected-streaming-boundary", "materialisation-boundary"]),
+      }
+    }, (item) => [item.topological_rank, item.node_id, item.operator, item.boundary_kind])
+    const reasons = parseDiagnosticCollection<ExecutionStrategyReason>(obj.reasons, "reasons", 32, (item, field) => {
+      const itemObj = expectPlainObject("execution strategy", item, field)
+      const message = expectOptionalNullableDiagnosticString(itemObj, "message")
+      if (message !== undefined && message !== null && message.length > 512) throw new Error(`execution strategy: ${field}.message exceeds 512 characters`)
+      return { reason_code: expectString("execution strategy", itemObj.reason_code, `${field}.reason_code`), topological_rank: itemObj.topological_rank === undefined || itemObj.topological_rank === null ? null : expectInteger(itemObj.topological_rank, `${field}.topological_rank`, true), node_id: expectOptionalNullableDiagnosticString(itemObj, "node_id") ?? null, operator: expectOptionalNullableDiagnosticString(itemObj, "operator") ?? null, ...(message === undefined ? {} : { message }), ...(itemObj.parent_node_id === undefined ? {} : { parent_node_id: expectOptionalNullableDiagnosticString(itemObj, "parent_node_id") }) }
+    }, (item) => [item.topological_rank ?? Number.MAX_SAFE_INTEGER, item.node_id ?? "", item.reason_code, item.operator ?? ""])
+    const provenance = parseDiagnosticCollection<ExecutionStrategyProvenance>(obj.provenance, "provenance", 128, (item, field) => {
+      const itemObj = expectPlainObject("execution strategy", item, field)
+      return { column: expectString("execution strategy", itemObj.column, `${field}.column`), origin_kind: expectStringLiteral("execution strategy", itemObj.origin_kind, `${field}.origin_kind`, ["seed", "contract", "expression", "join_key", "conservative_boundary"]), ...(itemObj.source_node_id === undefined ? {} : { source_node_id: expectOptionalNullableDiagnosticString(itemObj, "source_node_id") }), ...(itemObj.source_column === undefined ? {} : { source_column: expectOptionalNullableDiagnosticString(itemObj, "source_column") }) }
+    }, (item) => [item.column, item.origin_kind, item.source_node_id ?? "", item.source_column ?? ""])
+    const detailState = expectStringLiteral("execution strategy", obj.detail_state, "detail_state", DETAIL_STATES)
+    const expectedDetailState = [boundaries.state, reasons.state, provenance.state].reduce((worst, state) => DETAIL_STATES.indexOf(state) > DETAIL_STATES.indexOf(worst) ? state : worst)
+    if (detailState !== expectedDetailState) throw new Error("execution strategy: detail_state is inconsistent")
+    const remediation = expectOptionalNullableDiagnosticString(obj, "remediation")
+    if (remediation !== undefined && remediation !== null && remediation.length > 512) throw new Error("execution strategy: remediation exceeds 512 characters")
+    const estimatedPeakBytes = obj.estimated_peak_bytes === undefined || obj.estimated_peak_bytes === null ? obj.estimated_peak_bytes : expectInteger(obj.estimated_peak_bytes, "estimated_peak_bytes", true)
+    const headroomBytes = obj.headroom_bytes === undefined || obj.headroom_bytes === null ? obj.headroom_bytes : expectInteger(obj.headroom_bytes, "headroom_bytes", true)
+    const assumptions = obj.assumptions === undefined ? undefined : expectArray("execution strategy", obj.assumptions, "assumptions").map((assumption, index) => expectString("execution strategy", assumption, `assumptions[${index}]`))
+    return { schema_version: 1, status, strategy, profile, boundedness, reason_code: reasonCode, detail_state: detailState, boundaries, reasons, provenance, ...(obj.blocking_node_id === undefined ? {} : { blocking_node_id: expectOptionalNullableDiagnosticString(obj, "blocking_node_id") }), ...(obj.blocking_operator === undefined ? {} : { blocking_operator: expectOptionalNullableDiagnosticString(obj, "blocking_operator") }), ...(remediation === undefined ? {} : { remediation }), ...(estimatedPeakBytes === undefined ? {} : { estimated_peak_bytes: estimatedPeakBytes }), ...(headroomBytes === undefined ? {} : { headroom_bytes: headroomBytes }), ...(assumptions === undefined ? {} : { assumptions }) }
+  } catch {
+    return null
   }
 }
 
@@ -1193,6 +1412,63 @@ function parseLossHistoryEntry(value: unknown, field: string): NonNullable<Train
   return result
 }
 
+function parseTrainFeatureSelectionCollection<T>(
+  value: unknown,
+  field: string,
+  parseItem: (value: unknown, field: string) => T,
+): { state: "available" | "truncated"; total_count: number; items: T[] } {
+  const obj = expectPlainObject("parseTrainFeatureSelection", value, field)
+  const state = expectStringLiteral("parseTrainFeatureSelection", obj.state, `${field}.state`, ["available", "truncated"])
+  const items = expectArray("parseTrainFeatureSelection", obj.items, `${field}.items`).map((item, index) =>
+    parseItem(item, `${field}.items[${index}]`),
+  )
+  if (items.length > 128) throw new Error(`parseTrainFeatureSelection: ${field} exceeds its 128-item cap`)
+  const totalCount = expectInteger(obj.total_count, `${field}.total_count`, true)
+  if ((state === "available" && totalCount !== items.length) || (state === "truncated" && totalCount <= items.length)) {
+    throw new Error(`parseTrainFeatureSelection: ${field} count is inconsistent`)
+  }
+  return { state, total_count: totalCount, items }
+}
+
+export function parseTrainFeatureSelection(value: unknown): NonNullable<TrainResponse["feature_selection"]> {
+  const obj = expectPlainObject("parseTrainFeatureSelection", value)
+  if (expectInteger(obj.schema_version, "schema_version") !== 1) {
+    throw new Error("parseTrainFeatureSelection: unsupported schema_version")
+  }
+  const features = parseTrainFeatureSelectionCollection(obj.features, "features", (item, field) =>
+    expectString("parseTrainFeatureSelection", item, field),
+  )
+  const parseExcludedColumn = (item: unknown, field: string) => {
+    const itemObj = expectPlainObject("parseTrainFeatureSelection", item, field)
+    return {
+      column: expectString("parseTrainFeatureSelection", itemObj.column, `${field}.column`),
+      reason: expectStringLiteral("parseTrainFeatureSelection", itemObj.reason, `${field}.reason`, ["target", "weight", "offset", "fold", "identifier", "split", "configured_exclusion", "not_selected", "not_in_formula"]),
+    }
+  }
+  const retainedMetadata = parseTrainFeatureSelectionCollection(obj.retained_metadata, "retained_metadata", parseExcludedColumn)
+  const excludedColumns = parseTrainFeatureSelectionCollection(obj.excluded_columns, "excluded_columns", parseExcludedColumn)
+  if (new Set(features.items).size !== features.items.length) throw new Error("parseTrainFeatureSelection: feature names must be unique")
+  for (const [name, collection] of [["retained_metadata", retainedMetadata], ["excluded_columns", excludedColumns]] as const) {
+    if (new Set(collection.items.map((item) => item.column)).size !== collection.items.length) {
+      throw new Error(`parseTrainFeatureSelection: ${name} columns must be unique`)
+    }
+  }
+  const detailState = expectStringLiteral("parseTrainFeatureSelection", obj.detail_state, "detail_state", ["available", "truncated"])
+  const expectedDetailState = [features.state, retainedMetadata.state, excludedColumns.state].includes("truncated") ? "truncated" : "available"
+  if (detailState !== expectedDetailState) throw new Error("parseTrainFeatureSelection: detail_state is inconsistent")
+  const featureCount = expectInteger(obj.feature_count, "feature_count", true)
+  if (featureCount !== features.total_count) throw new Error("parseTrainFeatureSelection: feature_count is inconsistent")
+  return {
+    schema_version: 1,
+    mode: expectStringLiteral("parseTrainFeatureSelection", obj.mode, "mode", ["explicit", "all_except", "glm_terms"]),
+    feature_count: featureCount,
+    detail_state: detailState,
+    features,
+    retained_metadata: retainedMetadata,
+    excluded_columns: excludedColumns,
+  }
+}
+
 const JOB_STATUSES = [
   "running",
   "completed",
@@ -1246,6 +1522,9 @@ export function parseTrainResponse(value: unknown): TrainResponse {
           n_nonzero: rawRegularization.n_nonzero === undefined ? undefined : expectNumber("parseTrainResponse", rawRegularization.n_nonzero, "field `glm_regularization_path.n_nonzero`"),
         },
     diagnostics_errors: optionalArray("parseTrainResponse", obj, "diagnostics_errors", parseTrainDiagnosticsError),
+    feature_selection: obj.feature_selection === undefined || obj.feature_selection === null
+      ? null
+      : parseTrainFeatureSelection(obj.feature_selection),
   }
 }
 
@@ -1263,6 +1542,9 @@ export function parseTrainStatusResponse(value: unknown): TrainStatusResponse {
     warning: optionalNullableString("parseTrainStatusResponse", obj, "warning"),
     terminal_reason: optionalNullableString("parseTrainStatusResponse", obj, "terminal_reason"),
     execution_metrics: optionalExecutionMetrics("parseTrainStatusResponse", obj, "execution_metrics"),
+    feature_selection: obj.feature_selection === undefined || obj.feature_selection === null
+      ? null
+      : parseTrainFeatureSelection(obj.feature_selection),
   }
 }
 

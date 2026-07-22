@@ -9,7 +9,7 @@ import polars as pl
 import pytest
 
 import haute._trace_correlation as trace_correlation
-from haute._trace_correlation import _find_matching_row
+from haute._trace_correlation import _find_matching_row, _trace_values_match
 from haute.trace import (
     SchemaDiff,
     TraceResult,
@@ -18,7 +18,6 @@ from haute.trace import (
     _find_target_row_index,
     _jsonify_row,
     _prune_to_column_relevance,
-    _trace_values_match,
     execute_trace,
     trace_result_to_dict,
 )

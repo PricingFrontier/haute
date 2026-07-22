@@ -1,4 +1,4 @@
-import type { ExecutionMemoryPressureEvent, ExecutionMetrics, JobStatus } from "../api/types"
+import type { ExecutionMemoryPressureEvent, ExecutionMetrics, ExecutionStrategyDiagnostic, JobStatus } from "../api/types"
 import { formatBytes } from "./formatBytes"
 
 export type ExecutionDiagnostic = {
@@ -52,6 +52,39 @@ function highestPressureEvent(metrics: ExecutionMetrics): ExecutionMemoryPressur
     if (!highest || pressureRank(event) > pressureRank(highest)) highest = event
   }
   return highest
+}
+
+function strategyLabel(status: ExecutionStrategyDiagnostic["status"]): string {
+  return {
+    projected: "Projection strategy applied",
+    boundary: "Execution boundary required",
+    admitted_eager: "Eager execution admitted",
+    rejected: "Execution strategy rejected",
+    not_planned: "Execution strategy was not planned",
+  }[status]
+}
+
+function rawCollectionDetail<T>(name: string, collection: { state: string; total_count: number | null; items: T[] }): string {
+  const availability = collection.state === "truncated" ? "truncated" : collection.state === "unavailable" ? "unavailable" : "available"
+  return `${name}: ${availability}; ${collection.total_count === null ? "count unavailable" : `${collection.total_count} total`}; ${JSON.stringify(collection.items)}`
+}
+
+export function buildExecutionStrategyDiagnostic(
+  metrics: ExecutionMetrics | null | undefined,
+): ExecutionDiagnostic | null {
+  const strategy = metrics?.execution_strategy
+  if (!strategy) return null
+  const details = [`Profile ${profileLabel(strategy.profile)}`]
+  if (strategy.blocking_node_id) details.push(`Blocking node ${strategy.blocking_node_id}`)
+  if (strategy.blocking_operator) details.push(`Operator ${strategy.blocking_operator}`)
+  if (strategy.estimated_peak_bytes !== undefined && strategy.estimated_peak_bytes !== null) details.push(`Estimated materialisation cost ${formatBytes(strategy.estimated_peak_bytes)}`)
+  if (strategy.headroom_bytes !== undefined && strategy.headroom_bytes !== null) details.push(`Available headroom ${formatBytes(strategy.headroom_bytes)}`)
+  details.push(`Reason ${strategy.reason_code}`)
+  if (strategy.remediation) details.push(`Remediation ${strategy.remediation}`)
+  details.push(rawCollectionDetail("Boundaries", strategy.boundaries))
+  details.push(rawCollectionDetail("Reasons", strategy.reasons))
+  details.push(rawCollectionDetail("Provenance", strategy.provenance))
+  return { message: strategyLabel(strategy.status), details }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -171,6 +204,8 @@ export function buildExecutionDiagnostic(
   metrics: ExecutionMetrics | null | undefined,
   options: ExecutionDiagnosticOptions = {},
 ): ExecutionDiagnostic | null {
+  const strategyDiagnostic = buildExecutionStrategyDiagnostic(metrics)
+  if (strategyDiagnostic) return strategyDiagnostic
   if (!shouldShowMemoryPressureDiagnostic(metrics, options) || !metrics) return null
   const event = highestPressureEvent(metrics)
   if (!event) return null

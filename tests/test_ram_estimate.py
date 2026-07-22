@@ -12,11 +12,14 @@ from structlog.testing import capture_logs
 
 from haute._polars_utils import read_parquet_metadata
 from haute._ram_estimate import (
+    MaterialisationEstimate,
+    MaterialisationEstimateState,
     RamEstimate,
     _ancestor_source_metadata,
     _count_source_rows_for_node,
     _csv_row_count,
     _dedupe_resolved_columns,
+    _detailed_source_metadata_for_node,
     _DetailedSourceMetadata,
     _edge_join_key_columns_on_path,
     _estimate_base_bytes_per_row,
@@ -27,10 +30,12 @@ from haute._ram_estimate import (
     _resolve_target_column_names,
     _resolve_target_columns,
     _resolve_target_columns_detail,
+    _source_column_base_widths,
     _source_metadata_for_node,
     available_ram_bytes,
     available_vram_bytes,
     estimate_gpu_vram_bytes,
+    estimate_materialisation_boundary,
     estimate_safe_training_rows,
     estimate_source_rows,
 )
@@ -91,6 +96,77 @@ def _make_modelling_node(
             config=config or {},
         ),
     )
+
+
+def test_materialisation_estimate_distinguishes_empty_from_unavailable() -> None:
+    empty = MaterialisationEstimate.available(0)
+    unavailable = MaterialisationEstimate.unavailable("metadata_unavailable")
+
+    assert empty.state is MaterialisationEstimateState.AVAILABLE
+    assert empty.estimated_peak_bytes == 0
+    assert unavailable.state is MaterialisationEstimateState.UNAVAILABLE
+    assert unavailable.estimated_peak_bytes is None
+    with pytest.raises(ValueError):
+        MaterialisationEstimate(MaterialisationEstimateState.AVAILABLE, None)
+    with pytest.raises(ValueError):
+        MaterialisationEstimate(MaterialisationEstimateState.UNAVAILABLE, 0)
+
+
+def test_source_metadata_propagates_programming_errors_but_marks_os_errors_unavailable(
+    tmp_path,
+) -> None:
+    path = tmp_path / "source.parquet"
+    path.touch()
+    node = _make_source_node(node_type="dataSource", config={"path": str(path)})
+
+    with patch("haute._ram_estimate._detailed_parquet_metadata", side_effect=KeyError("bug")):
+        with pytest.raises(KeyError, match="bug"):
+            _detailed_source_metadata_for_node(node)
+
+    with patch("haute._ram_estimate._detailed_parquet_metadata", side_effect=OSError("offline")):
+        assert _detailed_source_metadata_for_node(node) is None
+
+
+def test_low_cardinality_wide_strings_use_expanded_probe_width(tmp_path) -> None:
+    path = tmp_path / "wide_dictionary.parquet"
+    wide_value = "x" * 2048
+    pl.DataFrame({"category": [wide_value] * 256}).write_parquet(path)
+    node = _make_source_node(node_type="dataSource", config={"path": str(path)})
+
+    metadata = _detailed_source_metadata_for_node(node)
+
+    assert metadata is not None
+    widths = _source_column_base_widths((metadata,))
+    assert widths["category"] >= len(wide_value)
+
+
+def test_materialisation_estimate_reports_known_empty_parquet_as_available_zero(tmp_path) -> None:
+    path = tmp_path / "empty.parquet"
+    pl.DataFrame(schema={"x": pl.Int64}).write_parquet(path)
+    source = _make_source_node(node_type="dataSource", config={"path": str(path)})
+    graph = PipelineGraph(nodes=[source], edges=[])
+
+    estimate = estimate_materialisation_boundary(graph, source.id)
+
+    assert estimate.state is MaterialisationEstimateState.AVAILABLE
+    assert estimate.estimated_peak_bytes == 0
+
+
+def test_materialisation_estimate_reads_each_source_metadata_once(tmp_path) -> None:
+    path = tmp_path / "source.parquet"
+    pl.DataFrame({"x": [1, 2, 3]}).write_parquet(path)
+    source = _make_source_node(node_type="dataSource", config={"path": str(path)})
+    target = _make_modelling_node()
+    graph = PipelineGraph(
+        nodes=[source, target],
+        edges=[GraphEdge(id="edge", source=source.id, target=target.id)],
+    )
+
+    with patch("haute._ram_estimate.read_parquet_metadata", wraps=read_parquet_metadata) as read:
+        estimate = estimate_materialisation_boundary(graph, target.id)
+
+    assert estimate.state is MaterialisationEstimateState.AVAILABLE
+    assert read.call_count == 1
 
 
 def _make_edge_join_node(
@@ -154,16 +230,16 @@ class TestAvailableRam:
 
         mock_windll.kernel32.GlobalMemoryStatusEx.assert_called_once()
 
-    def test_ultimate_fallback_returns_4gib(self, monkeypatch) -> None:
-        """When all platform methods fail, returns 4 GiB default."""
+    def test_unavailable_probe_does_not_invent_capacity(self, monkeypatch) -> None:
+        """When all platform methods fail, capacity is explicitly unavailable."""
         monkeypatch.setattr("sys.platform", "freebsd13")
         with patch("builtins.open", side_effect=OSError):
             with patch("os.sysconf", side_effect=AttributeError, create=True):
                 ram = available_ram_bytes()
-        assert ram == 4 * 1024**3
+        assert ram is None
 
-    def test_ultimate_fallback_logs_structured_warning(self, monkeypatch) -> None:
-        """The 4 GiB fallback should be visible in logs with platform context."""
+    def test_unavailable_probe_logs_structured_warning(self, monkeypatch) -> None:
+        """An unavailable probe is visible in logs with platform context."""
         monkeypatch.setattr("sys.platform", "freebsd13")
         with (
             patch("builtins.open", side_effect=OSError("proc unavailable")),
@@ -172,16 +248,15 @@ class TestAvailableRam:
         ):
             ram = available_ram_bytes()
 
-        assert ram == 4 * 1024**3
-        fallback_logs = [
-            event for event in logs if event.get("event") == "available_ram_fallback_4gib"
+        assert ram is None
+        unavailable_logs = [
+            event for event in logs if event.get("event") == "available_ram_unavailable"
         ]
-        assert fallback_logs
-        assert fallback_logs[0]["fallback_bytes"] == 4 * 1024**3
-        assert fallback_logs[0]["platform"] == "freebsd13"
-        assert "proc unavailable" in fallback_logs[0]["proc_meminfo_error"]
-        assert "no sysconf" in fallback_logs[0]["sysconf_error"]
-        assert fallback_logs[0]["windows_attempted"] is False
+        assert unavailable_logs
+        assert unavailable_logs[0]["platform"] == "freebsd13"
+        assert "proc unavailable" in unavailable_logs[0]["proc_meminfo_error"]
+        assert "no sysconf" in unavailable_logs[0]["sysconf_error"]
+        assert unavailable_logs[0]["windows_attempted"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -1678,7 +1753,7 @@ class TestAvailableRamPlatformPaths:
                 result = available_ram_bytes()
         assert result == 2000 * 4096
 
-    def test_non_positive_sysconf_values_fall_through_to_default(
+    def test_non_positive_sysconf_values_are_unavailable(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Invalid POSIX memory values are ignored instead of producing zero RAM."""
@@ -1689,12 +1764,12 @@ class TestAvailableRamPlatformPaths:
         ):
             result = available_ram_bytes()
 
-        assert result == 4 * 1024**3
+        assert result is None
 
-    def test_windows_global_memory_status_false_falls_to_default(
+    def test_windows_global_memory_status_false_is_unavailable(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A failed Windows memory probe falls through to the conservative default."""
+        """A failed Windows memory probe is explicitly unavailable."""
         from types import SimpleNamespace
 
         status_probe = MagicMock(return_value=False)
@@ -1715,13 +1790,11 @@ class TestAvailableRamPlatformPaths:
         ):
             result = available_ram_bytes()
 
-        assert result == 4 * 1024**3
+        assert result is None
         status_probe.assert_called_once()
 
-    def test_windows_ctypes_exception_falls_to_default(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """ctypes failures on the Windows path are logged and use the default."""
+    def test_windows_ctypes_exception_is_unavailable(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """ctypes failures on the Windows path are logged as unavailable."""
         from types import SimpleNamespace
 
         fake_ctypes = SimpleNamespace(
@@ -1742,16 +1815,16 @@ class TestAvailableRamPlatformPaths:
         ):
             result = available_ram_bytes()
 
-        assert result == 4 * 1024**3
-        fallback_log = next(
-            event for event in logs if event.get("event") == "available_ram_fallback_4gib"
+        assert result is None
+        unavailable_log = next(
+            event for event in logs if event.get("event") == "available_ram_unavailable"
         )
-        assert fallback_log["windows_attempted"] is True
-        assert "ctypes unavailable" in fallback_log["windows_error"]
+        assert unavailable_log["windows_attempted"] is True
+        assert "ctypes unavailable" in unavailable_log["windows_error"]
 
     @pytest.mark.skipif(sys.platform != "win32", reason="ctypes.windll only exists on Windows")
-    def test_windows_ctypes_failure_falls_to_4gib(self, monkeypatch) -> None:
-        """When GlobalMemoryStatusEx raises OSError, falls to 4 GiB."""
+    def test_windows_ctypes_failure_is_unavailable(self, monkeypatch) -> None:
+        """When GlobalMemoryStatusEx raises OSError, capacity is unavailable."""
         monkeypatch.setattr("sys.platform", "win32")
         with patch("builtins.open", side_effect=OSError):
             with patch("os.sysconf", side_effect=AttributeError, create=True):
@@ -1761,7 +1834,7 @@ class TestAvailableRamPlatformPaths:
                     create=True,
                 ):
                     result = available_ram_bytes()
-        assert result == 4 * 1024**3
+        assert result is None
 
 
 # ---------------------------------------------------------------------------
@@ -1890,17 +1963,17 @@ class TestCountSourceRowsForNode:
 
         assert _count_source_rows_for_node(node) is None
 
-    def test_exception_returns_none(self) -> None:
-        """If _parquet_metadata raises, returns None and logs warning."""
+    def test_unexpected_exception_propagates(self) -> None:
+        """Programming failures are not misreported as unavailable metadata."""
         node = _make_source_node(
             node_type="apiInput",
             config={"path": "/some/file.parquet"},
         )
         with patch("haute._ram_estimate.Path") as mock_path:
             mock_path.return_value.exists.side_effect = RuntimeError("boom")
-            # The path check `Path(path).exists()` will raise
-            result = _count_source_rows_for_node(node)
-        assert result is None
+            # The path check `Path(path).exists()` will raise.
+            with pytest.raises(RuntimeError, match="boom"):
+                _count_source_rows_for_node(node)
 
     def test_unknown_node_type_returns_none(self) -> None:
         """A node type that's neither API_INPUT nor DATA_SOURCE returns None."""
@@ -1996,16 +2069,16 @@ class TestSourceMetadataForNode:
         result = _source_metadata_for_node(node)
         assert result is None
 
-    def test_exception_returns_none(self) -> None:
-        """Exception during metadata read returns None."""
+    def test_unexpected_exception_propagates(self) -> None:
+        """Programming failures during metadata reads remain visible."""
         node = _make_source_node(
             node_type="apiInput",
             config={"path": "/some/file.parquet"},
         )
         with patch("haute._ram_estimate.Path") as mock_path:
             mock_path.return_value.exists.side_effect = RuntimeError("boom")
-            result = _source_metadata_for_node(node)
-        assert result is None
+            with pytest.raises(RuntimeError, match="boom"):
+                _source_metadata_for_node(node)
 
     def test_unknown_node_type_returns_none(self) -> None:
         """Polars node type falls through to None."""

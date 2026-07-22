@@ -18,10 +18,12 @@ import pytest
 
 from haute._output_assembler import (
     OutputMappingSchemaError,
+    OutputNestingKeyError,
     _assemble_document,
     _CutPlan,
     _execute_plan,
     _gyo_residue,
+    _index_rows,
     _merge_groups,
     _parse_output_path,
     _plan_cut,
@@ -817,6 +819,80 @@ def test_validate_skips_disabled_entries() -> None:
     validate_v2_output_mapping(
         [_entry("p", "x", "$[:].a"), _entry("p", "y", "$[:].a.b", enabled=False)]
     )
+
+
+def test_validate_rejects_divergent_array_branches_before_frame_collection() -> None:
+    class CollectSpy:
+        def collect(self) -> None:
+            pytest.fail("structural validation must run before collection")
+
+    mapping = [_entry("p", "id", "$[:].left[:].id"), _entry("p", "id", "$[:].right[:].id")]
+    with pytest.raises(OutputMappingSchemaError, match="divergent"):
+        assemble_output_from_mapping({"p": CollectSpy()}, mapping)  # type: ignore[arg-type]
+
+
+def test_validate_allows_multiple_columns_at_one_array_prefix() -> None:
+    validate_v2_output_mapping(
+        [_entry("p", "id", "$[:].items[:].id"), _entry("p", "name", "$[:].items[:].name")]
+    )
+
+
+@pytest.mark.parametrize(
+    ("parent_id", "child_id", "expected_frame"),
+    [(None, 1, "parent"), (1, None, "child")],
+)
+def test_assemble_rejects_null_nesting_key_on_either_side(
+    parent_id: int | None, child_id: int | None, expected_frame: str
+) -> None:
+    frames = {
+        "parent": pl.LazyFrame({"$[:].id": [parent_id]}),
+        "child": pl.LazyFrame({"$[:].id": [child_id], "$[:].items[:].value": ["v"]}),
+    }
+    with pytest.raises(OutputNestingKeyError) as exc_info:
+        _assemble_document(frames)
+    assert exc_info.value.code == "output_nesting_key_null"
+    assert exc_info.value.context == {
+        "frame": expected_frame,
+        "output_path": "$[:].id",
+        "key": "$[:].id",
+    }
+
+
+def test_assemble_rejects_one_null_component_of_composite_nesting_key() -> None:
+    frames = {
+        "parent": pl.LazyFrame({"$[:].a": [1], "$[:].b": [None]}),
+        "child": pl.LazyFrame({"$[:].a": [1], "$[:].b": [2], "$[:].items[:].value": ["v"]}),
+    }
+    with pytest.raises(OutputNestingKeyError) as exc_info:
+        _assemble_document(frames)
+    assert exc_info.value.context["output_path"] == "$[:].b"
+
+
+def test_assemble_allows_null_scalar_payload_that_is_not_a_nesting_key() -> None:
+    frames = {
+        "parent": pl.LazyFrame({"$[:].id": [1], "$[:].optional": [None]}),
+        "child": pl.LazyFrame({"$[:].id": [1], "$[:].items[:].value": ["v"]}),
+    }
+    assert _assemble_document(frames) == [{"id": 1, "items": [{"value": "v"}]}]
+
+
+def test_assemble_indexes_child_rows_once_per_relation_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    import haute._output_assembler as assembler
+
+    seen: list[tuple[tuple[str, ...], int]] = []
+    original = _index_rows
+
+    def spy(
+        rows: list[dict[str, object]], keys: tuple[str, ...]
+    ) -> dict[tuple[object, ...], list[dict[str, object]]]:
+        seen.append((keys, len(rows)))
+        return original(rows, keys)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(assembler, "_index_rows", spy)
+    child = pl.LazyFrame({"$[:].id": [1, 2], "$[:].items[:].value": ["a", "b"]})
+    _assemble_document({"parent": pl.LazyFrame({"$[:].id": [1, 2]}), "child": child})
+    _assemble_document({"parent": pl.LazyFrame({"$[:].id": [1, 2, 3, 4]}), "child": child})
+    assert seen == [(("$[:].id",), 2), (("$[:].id",), 2)]
 
 
 # ─── Incomplete (half-built) mapping rows ─────────────────────────

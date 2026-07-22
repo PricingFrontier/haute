@@ -494,9 +494,15 @@ def test_dataframe_graph_input_fingerprint_tracks_file_backed_runtime_artifacts(
     assert second != first
 
 
-def test_dataframe_graph_input_fingerprint_uses_file_content_not_only_stat(
+def test_dataframe_graph_input_fingerprint_reuses_same_stat_gate_after_content_change(
     tmp_path: Path,
 ) -> None:
+    """A byte edit below the explicit ``(mtime_ns, size)`` gate is a cache hit.
+
+    Runtime-path fingerprints deliberately trade detection of same-size,
+    same-mtime rewrites for avoiding a full content hash on every request.
+    Independent JSON shred operations retain the stricter always-hash contract.
+    """
     source = tmp_path / "source.csv"
     source.write_text("a,b\n1,2\n")
     graph = PipelineGraph(
@@ -516,7 +522,7 @@ def test_dataframe_graph_input_fingerprint_uses_file_content_not_only_stat(
     )
     second = dataframe_graph_input_fingerprint(graph, target_node_id="target", source="batch")
 
-    assert second != first
+    assert second == first
 
 
 def test_materialize_lazy_frame_with_cache_reuses_cached_artifact(tmp_path: Path) -> None:

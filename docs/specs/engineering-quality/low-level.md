@@ -184,3 +184,13 @@
 - `mutation/` is tested as configuration/orchestration through its active
   script/tests and CI workflow. `docs/roadmap/`, `repro/`, review archives, and
   generated artifacts are intentionally not claimed as a current test suite.
+
+## Polars backend contracts (0.6.0)
+
+See [the remediation plan](../../trip/plans/F_0.6.0_polars-backend-remediation.plan.md).
+The existing performance-harness inputs will gain a deterministic CI-small semantic join-plus-
+training fixture and explicitly selected 1m and 10m variants. The fixture suite asserts exact
+output semantics, chosen strategy, source-width propagation, no unintended full collect, and
+budgeted rejection. Only the CI-small fixture belongs in ordinary CI; 1m/10m cases remain opt-in
+performance-harness work. Baselines are recorded as artifacts first: numeric throughput, latency
+or memory thresholds may not gate hardware-diverse CI until reproducible baselines are established.

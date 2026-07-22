@@ -23,6 +23,7 @@ from haute._banding_config import (
 from haute._logging import get_logger
 from haute._rating_step_config import normalise_rating_tables
 from haute._types import _Frame
+from haute.errors import RatingExtremaUndefinedError, RatingFactorMissingError
 
 logger = get_logger(component="rating")
 
@@ -552,6 +553,31 @@ def _apply_rating_table(
     if not factors or not entries or not output_col:
         return lf
 
+    # Validate the declared input contract before inspecting/canonicalising the
+    # lookup side.  An incomplete lookup may still be a documented passthrough,
+    # but it must never hide a factor that is absent from the input frame.
+    frame_schema = input_schema if input_schema is not None else _frame_schema(lf)
+    existing_cols = set(_schema_names(frame_schema))
+    table_label = str(table.get("name") or "").strip() or output_col
+    for factor in factors:
+        if factor not in existing_cols:
+            raise RatingFactorMissingError(
+                f"Rating table {table_label!r} requires input factor {factor!r}, "
+                "but that column is absent from the input schema",
+                table=table_label,
+                factor=factor,
+            )
+
+    # These are cheap structural passthrough checks.  They intentionally
+    # precede lookup construction: a malformed lookup entry remains a
+    # configuration no-op when its declared input factors do exist.
+    entry_cols: set[str] = set()
+    for entry in entries:
+        if isinstance(entry, dict):
+            entry_cols.update(entry.keys())
+    if "value" not in entry_cols or any(factor not in entry_cols for factor in factors):
+        return lf
+
     # Parse the default up front (B13: tolerate non-numeric/non-finite
     # values) — whether a usable default exists decides if the miss guard
     # is wired into the plan at all, and an unusable one is named in the
@@ -638,8 +664,6 @@ def _apply_rating_table(
     # Canonicalise factor columns in the main frame too.  Collect the frame
     # schema once: it gives both the existing-column set and the original
     # dtypes needed to restore factor columns after the join.
-    frame_schema = input_schema if input_schema is not None else _frame_schema(lf)
-    existing_cols = set(_schema_names(frame_schema))
     original_dtypes = {f: frame_schema[f] for f in factors if f in existing_cols}
     _validate_supported_factor_dtypes(
         original_dtypes,
@@ -709,26 +733,83 @@ def _combine_rating_columns(
     if not columns:
         return lf
     if len(columns) == 1:
-        return lf.with_columns(pl.col(columns[0]).alias(output_col))
+        expr = pl.col(columns[0])
+        if operation not in {"min", "max"}:
+            return lf.with_columns(expr.alias(output_col))
+        return lf.with_columns(_rating_extrema_expr(expr, columns, operation, output_col))
 
     if operation == "add":
-        # fill_null(0.0) for add: an opted-in miss contributes nothing
-        # fill_nan(0.0) also catches NaN from bad lookup entries
-        expr = pl.col(columns[0]).fill_null(0.0).fill_nan(0.0)
+        # fill_null(0.0) for add: an opted-in miss contributes nothing.
+        expr = pl.col(columns[0]).fill_null(0.0)
         for c in columns[1:]:
-            expr = expr + pl.col(c).fill_null(0.0).fill_nan(0.0)
+            expr = expr + pl.col(c).fill_null(0.0)
     elif operation == "min":
         expr = pl.min_horizontal(*[pl.col(c) for c in columns])
     elif operation == "max":
         expr = pl.max_horizontal(*[pl.col(c) for c in columns])
     else:  # multiply (default)
-        # fill_null(1.0) for multiply: an opted-in miss has no effect (neutral element)
-        # fill_nan(1.0) also catches NaN from bad lookup entries
-        expr = pl.col(columns[0]).fill_null(1.0).fill_nan(1.0)
+        # fill_null(1.0) for multiply: an opted-in miss has no effect (neutral element).
+        expr = pl.col(columns[0]).fill_null(1.0)
         for c in columns[1:]:
-            expr = expr * pl.col(c).fill_null(1.0).fill_nan(1.0)
+            expr = expr * pl.col(c).fill_null(1.0)
 
-    return lf.with_columns(expr.alias(output_col))
+    if operation in {"min", "max"}:
+        expr = _rating_extrema_expr(expr, columns, operation, output_col)
+    else:
+        expr = expr.alias(output_col)
+    return lf.with_columns(expr)
+
+
+def _rating_extrema_expr(
+    extrema: pl.Expr,
+    columns: list[str],
+    operation: str,
+    output_col: str,
+) -> pl.Expr:
+    """Return an extrema expression that fails for rows with no value.
+
+    The batch UDF is deliberately embedded in the output expression: it must
+    run only when the lazy result materialises, and cannot be pruned as an
+    unrelated validation side-column.
+    """
+
+    message = (
+        f"Rating {operation} output {output_col!r} is undefined for a row "
+        "where every participating value is null"
+    )
+
+    class _LazyRatingExtremaUndefinedError(RatingExtremaUndefinedError):
+        """Carry public error fields through Polars' positional recreation."""
+
+        def __init__(
+            self,
+            error_message: str | None = None,
+            error_output_column: str | None = None,
+            error_operation: str | None = None,
+        ) -> None:
+            error_message = error_message or message
+            error_output_column = error_output_column or output_col
+            error_operation = error_operation or operation
+            super().__init__(
+                error_message,
+                output_column=error_output_column,
+                operation=error_operation,
+            )
+            self.args = (error_message, error_output_column, error_operation)
+
+    def _require_value(batch: pl.Series) -> pl.Series:
+        values = batch.struct.unnest()
+        undefined = values.select(pl.all_horizontal(pl.all().is_null())).to_series()
+        if bool(undefined.any()):
+            raise _LazyRatingExtremaUndefinedError(message, output_col, operation)
+        return pl.Series("", [False] * len(batch), dtype=pl.Boolean)
+
+    guard = pl.struct(columns).map_batches(
+        _require_value,
+        return_dtype=pl.Boolean,
+        is_elementwise=True,
+    )
+    return pl.when(guard).then(pl.lit(None)).otherwise(extrema).alias(output_col)
 
 
 def _normalise_combined_outputs(config: dict[str, Any]) -> list[dict[str, Any]]:
@@ -816,13 +897,16 @@ def _combine_rating_output(
     operation: str,
     output_col: str,
     base_value: float | None = None,
+    input_schema: Any | None = None,
 ) -> _Frame:
     """Combine table outputs, optionally including a numeric base value."""
     if base_value is None:
         return _combine_rating_columns(lf, columns, operation, output_col)
     base_col = f"__haute_rating_base_{output_col}__"
-    existing_cols = set(
-        lf.collect_schema().names() if hasattr(lf, "collect_schema") else lf.columns
+    existing_cols = (
+        set(_schema_names(input_schema))
+        if input_schema is not None
+        else set(_schema_names(_frame_schema(lf)))
     )
     while base_col in columns or base_col in existing_cols:
         base_col = f"_{base_col}"
@@ -924,7 +1008,10 @@ def _apply_rating_step_outputs(
             combined["operation"],
             combined["outputColumn"],
             combined["baseValue"],
+            input_schema=schema,
         )
+        if combined["baseValue"] is not None or out_cols:
+            schema[combined["outputColumn"]] = pl.Float64
     return lf
 
 

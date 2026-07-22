@@ -18,6 +18,7 @@ These tests cover the live pieces that keep multi-port data flow explicit:
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from typing import Any
 
@@ -523,3 +524,230 @@ def test_optimiser_linear_builder_uses_original_edge_metadata_for_input_name() -
     )
 
     assert captured["transform"]["source_names"] == ["quotes"]
+
+
+# 5. Eager lazy-frame cache sharing at fan-out points
+
+
+def _cache_ids(plan: str) -> list[str]:
+    return re.findall(r"CACHE\[id: ([^\]]+)", plan)
+
+
+def test_eager_diamond_reuses_one_cached_lazyframe_and_executes_source_once() -> None:
+    """A target-only diamond shares one cache node, not one per branch."""
+    graph = PipelineGraph(
+        nodes=[
+            _node("src", "src", NodeType.DATA_SOURCE),
+            _node("left", "left", NodeType.POLARS),
+            _node("right", "right", NodeType.POLARS),
+            _node("sink", "sink", NodeType.POLARS),
+        ],
+        edges=[
+            GraphEdge(id="src_left", source="src", target="left"),
+            GraphEdge(id="src_right", source="src", target="right"),
+            GraphEdge(id="left_sink", source="left", target="sink"),
+            GraphEdge(id="right_sink", source="right", target="sink"),
+        ],
+    )
+    calls = 0
+    branch_inputs: list[pl.LazyFrame] = []
+    plans: list[str] = []
+
+    def build(node: GraphNode, **_kwargs: Any) -> tuple[str, Callable[..., Any], bool]:
+        nonlocal calls
+        if node.id == "src":
+
+            def source() -> pl.LazyFrame:
+                def count_batches(frame: pl.DataFrame) -> pl.DataFrame:
+                    nonlocal calls
+                    calls += 1
+                    return frame
+
+                return pl.LazyFrame({"id": [1, 2]}).map_batches(count_batches)
+
+            return node.id, source, True
+        if node.id in {"left", "right"}:
+
+            def branch(frame: pl.LazyFrame) -> pl.LazyFrame:
+                branch_inputs.append(frame)
+                return frame.with_columns(pl.lit(node.id).alias(node.id))
+
+            return node.id, branch, False
+
+        def sink(left: pl.LazyFrame, right: pl.LazyFrame) -> pl.LazyFrame:
+            result = left.join(right, on="id")
+            plans.append(result.explain(optimized=True))
+            return result
+
+        return node.id, sink, False
+
+    _execute_eager_core(graph, build, materialize_node_ids={"sink"})
+
+    assert branch_inputs[0] is branch_inputs[1]
+    assert calls == 1
+    cache_ids = _cache_ids(plans[0])
+    assert len(cache_ids) == 2
+    assert len(set(cache_ids)) == 1
+
+
+def test_eager_nested_diamond_has_one_cache_per_shared_lazy_producer() -> None:
+    """Nested fan-out retains one cache identity for each shared producer."""
+    graph = PipelineGraph(
+        nodes=[
+            _node("src", "src", NodeType.DATA_SOURCE),
+            _node("a", "a", NodeType.POLARS),
+            _node("b", "b", NodeType.POLARS),
+            _node("c", "c", NodeType.POLARS),
+            _node("d", "d", NodeType.POLARS),
+            _node("sink", "sink", NodeType.POLARS),
+        ],
+        edges=[
+            GraphEdge(id="src_a", source="src", target="a"),
+            GraphEdge(id="src_b", source="src", target="b"),
+            GraphEdge(id="a_c", source="a", target="c"),
+            GraphEdge(id="a_d", source="a", target="d"),
+            GraphEdge(id="b_sink", source="b", target="sink"),
+            GraphEdge(id="c_sink", source="c", target="sink"),
+            GraphEdge(id="d_sink", source="d", target="sink"),
+        ],
+    )
+    calls = 0
+    plans: list[str] = []
+
+    def build(node: GraphNode, **_kwargs: Any) -> tuple[str, Callable[..., Any], bool]:
+        nonlocal calls
+        if node.id == "src":
+
+            def source() -> pl.LazyFrame:
+                def count_batches(frame: pl.DataFrame) -> pl.DataFrame:
+                    nonlocal calls
+                    calls += 1
+                    return frame
+
+                return pl.LazyFrame({"id": [1, 2]}).map_batches(count_batches)
+
+            return node.id, source, True
+        if node.id == "sink":
+
+            def sink(*frames: pl.LazyFrame) -> pl.LazyFrame:
+                result = pl.concat([frame.select("id") for frame in frames])
+                plans.append(result.explain(optimized=True))
+                return result
+
+            return node.id, sink, False
+        return node.id, lambda frame: frame.with_columns(pl.lit(node.id).alias(node.id)), False
+
+    _execute_eager_core(graph, build, materialize_node_ids={"sink"})
+
+    assert calls == 1
+    cache_ids = _cache_ids(plans[0])
+    assert len(set(cache_ids)) == 2
+    assert all(cache_ids.count(cache_id) >= 2 for cache_id in set(cache_ids))
+
+
+def test_eager_dataframe_parent_is_not_wrapped_in_a_cache_hint() -> None:
+    """Concrete eager outputs retain their existing DataFrame-only path."""
+    graph = PipelineGraph(
+        nodes=[
+            _node("src", "src", NodeType.DATA_SOURCE),
+            _node("left", "left", NodeType.POLARS),
+            _node("right", "right", NodeType.POLARS),
+        ],
+        edges=[
+            GraphEdge(id="src_left", source="src", target="left"),
+            GraphEdge(id="src_right", source="src", target="right"),
+        ],
+    )
+    plans: list[str] = []
+
+    def build(node: GraphNode, **_kwargs: Any) -> tuple[str, Callable[..., Any], bool]:
+        if node.id == "src":
+            return node.id, lambda: pl.DataFrame({"x": [1]}), True
+
+        def branch(frame: pl.LazyFrame) -> pl.LazyFrame:
+            plans.append(frame.explain(optimized=True))
+            return frame
+
+        return node.id, branch, False
+
+    _execute_eager_core(graph, build)
+
+    assert all("CACHE[" not in plan for plan in plans)
+
+
+def test_eager_multi_port_fanout_caches_each_selected_port_once() -> None:
+    """Cache keys include source port, while reusing each port within its fan-out."""
+    graph = PipelineGraph(
+        nodes=[
+            _node("api", "api", NodeType.API_INPUT),
+            *[_node(node_id, node_id, NodeType.POLARS) for node_id in ("q1", "q2", "d1", "d2")],
+            _node("sink", "sink", NodeType.POLARS),
+        ],
+        edges=[
+            GraphEdge(id="api_q1", source="api", target="q1", sourceHandle="quotes"),
+            GraphEdge(id="api_q2", source="api", target="q2", sourceHandle="quotes"),
+            GraphEdge(id="api_d1", source="api", target="d1", sourceHandle="drivers"),
+            GraphEdge(id="api_d2", source="api", target="d2", sourceHandle="drivers"),
+            *[
+                GraphEdge(id=f"{node_id}_sink", source=node_id, target="sink")
+                for node_id in ("q1", "q2", "d1", "d2")
+            ],
+        ],
+    )
+    calls = {"quotes": 0, "drivers": 0}
+    branch_inputs: dict[str, pl.LazyFrame] = {}
+    plans: list[str] = []
+
+    def counted_port(port: str) -> pl.LazyFrame:
+        def count_batches(frame: pl.DataFrame) -> pl.DataFrame:
+            calls[port] += 1
+            return frame
+
+        return pl.LazyFrame({"id": [1, 2]}).map_batches(count_batches)
+
+    def build(node: GraphNode, **_kwargs: Any) -> tuple[str, Callable[..., Any], bool]:
+        if node.id == "api":
+            return node.id, lambda: {port: counted_port(port) for port in calls}, True
+        if node.id == "sink":
+
+            def sink(*frames: pl.LazyFrame) -> pl.LazyFrame:
+                result = pl.concat([frame.select("id") for frame in frames])
+                plans.append(result.explain(optimized=True))
+                return result
+
+            return node.id, sink, False
+
+        def branch(frame: pl.LazyFrame) -> pl.LazyFrame:
+            branch_inputs[node.id] = frame
+            return frame
+
+        return node.id, branch, False
+
+    _execute_eager_core(graph, build, materialize_node_ids={"sink"})
+
+    assert branch_inputs["q1"] is branch_inputs["q2"]
+    assert branch_inputs["d1"] is branch_inputs["d2"]
+    assert branch_inputs["q1"] is not branch_inputs["d1"]
+    assert calls == {"quotes": 1, "drivers": 1}
+    cache_ids = _cache_ids(plans[0])
+    assert len(set(cache_ids)) == 2
+    assert all(cache_ids.count(cache_id) == 2 for cache_id in set(cache_ids))
+
+
+def test_eager_multi_frame_timing_is_reported_in_milliseconds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    graph = PipelineGraph(nodes=[_node("api", "api", NodeType.API_INPUT)], edges=[])
+    clock = iter([10.0, 10.25])
+    monkeypatch.setattr("haute._execute_lazy.time.perf_counter", lambda: next(clock))
+
+    result = _execute_eager_core(
+        graph,
+        lambda node, **_kwargs: (
+            node.id,
+            lambda: {"quotes": pl.DataFrame({"id": [1]})},
+            True,
+        ),
+    )
+
+    assert result.timings["api"] == 250.0

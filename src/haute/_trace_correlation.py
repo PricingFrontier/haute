@@ -16,8 +16,12 @@ string/float comparisons for the non-Polars edges of the trace surface.
 from __future__ import annotations
 
 import math
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from datetime import UTC, date, datetime, time, timedelta
+from decimal import Decimal, InvalidOperation
+from enum import StrEnum
 from typing import Any, cast
 
 import polars as pl
@@ -52,10 +56,32 @@ class SchemaDiff:
     columns_passed: list[str]
 
 
-@dataclass(frozen=True)
-class _RowMatchCandidate:
-    columns: list[str]
-    row_indices: list[int]
+class _RowMatchStatus(StrEnum):
+    NO_MATCH = "no_match"
+    UNIQUE_STRICT = "unique_strict"
+    UNIQUE_RELAXED = "unique_relaxed"
+    AMBIGUOUS = "ambiguous"
+    UNSUPPORTED_DTYPE = "unsupported_dtype"
+
+
+class _CandidateIndicesState(StrEnum):
+    AVAILABLE = "available"
+    TRUNCATED = "truncated"
+    UNAVAILABLE = "unavailable"
+
+
+@dataclass(frozen=True, slots=True)
+class _RowMatchResult:
+    status: _RowMatchStatus
+    strict_key_columns: tuple[str, ...]
+    effective_key_columns: tuple[str, ...]
+    relaxation_reason: str | None
+    candidate_count: int | None
+    candidate_indices: tuple[int, ...]
+    candidate_indices_state: _CandidateIndicesState
+    dtypes: tuple[str, ...]
+    reason_code: str | None = None
+    omitted_key_columns: tuple[str, ...] = ()
 
 
 # ---------------------------------------------------------------------------
@@ -84,21 +110,14 @@ def _value_non_finite_token(value: Any) -> str | None:
 def _jsonify_row(row: dict[str, Any]) -> dict[str, Any]:
     """Convert Polars row values to JSON-serialisable Python types.
 
-    Primitive scalars use the shared preview JSON boundary helper; older
-    trace behavior for non-primitive values remains stringification.
+    The preview JSON boundary is the single display-value authority for
+    trace too, including recursive temporal, nested, non-finite, object,
+    and JavaScript-unsafe integer values.
     """
-    clean: dict[str, Any] = {}
-    for k, v in row.items():
-        if v is None:
-            clean[k] = None
-        elif isinstance(v, (bool, int, float, str)):
-            clean[k] = to_json_safe(v)
-        else:
-            clean[k] = str(v)
-    return clean
+    return {str(key): to_json_safe(value) for key, value in row.items()}
 
 
-def _trace_values_match(actual: Any, expected: Any) -> bool:
+def _legacy_trace_values_match(actual: Any, expected: Any) -> bool:
     """Compare a DataFrame cell value against a JSON-serialized value from the frontend.
 
     Handles type coercion (JSON ints ↔ Python floats, date strings, etc.)
@@ -127,6 +146,53 @@ def _trace_values_match(actual: Any, expected: Any) -> bool:
         if str(actual) == str(expected):
             return True
     return False
+
+
+def _trace_values_match(actual: Any, expected: Any) -> bool:
+    """Compare scalar explainability values under the correlation truth table."""
+    if actual is None or expected is None:
+        return actual is None and expected is None
+    if type(actual) is bool or type(expected) is bool:
+        return type(actual) is bool and type(expected) is bool and actual == expected
+    actual_non_finite = _value_non_finite_token(actual)
+    expected_non_finite = _value_non_finite_token(expected)
+    if actual_non_finite is not None or expected_non_finite is not None:
+        return actual_non_finite is not None and actual_non_finite == expected_non_finite
+    if isinstance(actual, int) and isinstance(expected, int):
+        return actual == expected
+    if isinstance(actual, int) and isinstance(expected, float):
+        if abs(actual) > 2**53 or not math.isfinite(expected):
+            return False
+        return abs(actual - expected) <= max(
+            _TRACE_ABS_TOL,
+            _TRACE_REL_TOL * max(abs(actual), abs(expected)),
+        )
+    if isinstance(actual, float) and isinstance(expected, int):
+        return _trace_values_match(expected, actual)
+    if isinstance(actual, float) and isinstance(expected, float):
+        if not math.isfinite(actual) or not math.isfinite(expected):
+            return False
+        return abs(actual - expected) <= max(
+            _TRACE_ABS_TOL,
+            _TRACE_REL_TOL * max(abs(actual), abs(expected)),
+        )
+    if isinstance(actual, int) and isinstance(expected, str):
+        return (
+            abs(actual) > MAX_SAFE_INTEGER
+            and _CANONICAL_INTEGER_RE.fullmatch(expected) is not None
+            and expected == str(actual)
+        )
+    if isinstance(expected, int) and isinstance(actual, str):
+        return _trace_values_match(expected, actual)
+    if isinstance(actual, Decimal) or isinstance(expected, Decimal):
+        return (
+            not isinstance(actual, float) and not isinstance(expected, float) and actual == expected
+        )
+    if isinstance(actual, datetime) or isinstance(expected, datetime):
+        return type(actual) is type(expected) and actual == expected
+    if isinstance(actual, (date, time, timedelta)) or isinstance(expected, (date, time, timedelta)):
+        return type(actual) is type(expected) and actual == expected
+    return type(actual) is type(expected) and actual == expected
 
 
 # ---------------------------------------------------------------------------
@@ -178,7 +244,9 @@ def _compute_schema_diff(
 # ---------------------------------------------------------------------------
 
 
-def _build_value_match_expr(column: str, value: Any, dtype: pl.DataType | None = None) -> pl.Expr:
+def _legacy_build_value_match_expr(
+    column: str, value: Any, dtype: pl.DataType | None = None
+) -> pl.Expr:
     """Build a Polars boolean expression matching one column to one trace value.
 
     *dtype* is the column's Polars dtype.  It makes the predicate
@@ -233,6 +301,407 @@ def _build_value_match_expr(column: str, value: Any, dtype: pl.DataType | None =
     return cast(pl.Expr, pl.col(column) == value)
 
 
+_CANONICAL_INTEGER_RE = re.compile(r"-?(?:0|[1-9][0-9]*)\Z")
+_INT_BOUNDS: dict[object, tuple[int, int]] = {
+    pl.Int8: (-(2**7), 2**7 - 1),
+    pl.Int16: (-(2**15), 2**15 - 1),
+    pl.Int32: (-(2**31), 2**31 - 1),
+    pl.Int64: (-(2**63), 2**63 - 1),
+    pl.Int128: (-(2**127), 2**127 - 1),
+    pl.UInt8: (0, 2**8 - 1),
+    pl.UInt16: (0, 2**16 - 1),
+    pl.UInt32: (0, 2**32 - 1),
+    pl.UInt64: (0, 2**64 - 1),
+}
+_TIME_UNIT_NS = {"ms": 1_000_000, "us": 1_000, "ns": 1}
+_INT64_MIN = -(2**63)
+_INT64_MAX = 2**63 - 1
+
+
+def _never_match_expr(column: str) -> pl.Expr:
+    """Return a frame-height false expression tied to *column*."""
+    return pl.col(column).is_null() & pl.lit(False)
+
+
+def _finite_numeric_match_expr(column: str, expected: float) -> pl.Expr:
+    actual = pl.col(column).cast(pl.Float64)
+    delta = (actual - pl.lit(expected)).abs()
+    magnitude = pl.max_horizontal(actual.abs(), pl.lit(abs(expected)))
+    tolerance = pl.max_horizontal(
+        pl.lit(_TRACE_ABS_TOL),
+        pl.lit(_TRACE_REL_TOL) * magnitude,
+    )
+    return actual.is_finite() & (delta <= tolerance)
+
+
+def _datetime_epoch_ns(value: datetime) -> tuple[int, bool] | None:
+    aware = value.utcoffset() is not None
+    normalised = value.astimezone(UTC).replace(tzinfo=None) if aware else value.replace(tzinfo=None)
+    delta = normalised - datetime(1970, 1, 1)
+    nanoseconds = (delta.days * 86_400 + delta.seconds) * 1_000_000_000 + delta.microseconds * 1_000
+    if not _INT64_MIN <= nanoseconds <= _INT64_MAX:
+        return None
+    return nanoseconds, aware
+
+
+def _parse_duration(value: Any) -> timedelta | None:
+    if isinstance(value, timedelta):
+        return value
+    if not isinstance(value, str):
+        return None
+    match = re.fullmatch(
+        r"(?:(?P<days>-?[0-9]+) day(?:s)?, )?"
+        r"(?P<hours>[0-9]+):(?P<minutes>[0-9]{2}):(?P<seconds>[0-9]{2})"
+        r"(?:\.(?P<microseconds>[0-9]{1,6}))?",
+        value,
+    )
+    if match is None:
+        return None
+    micros = (match.group("microseconds") or "0").ljust(6, "0")
+    return timedelta(
+        days=int(match.group("days") or 0),
+        hours=int(match.group("hours")),
+        minutes=int(match.group("minutes")),
+        seconds=int(match.group("seconds")),
+        microseconds=int(micros),
+    )
+
+
+def _typed_value_match_expr(
+    column: str,
+    value: Any,
+    dtype: pl.DataType,
+) -> tuple[pl.Expr | None, str | None]:
+    """Build one exhaustive V1 comparison or return an unsupported reason."""
+    never_match = _never_match_expr(column)
+    base = dtype.base_type()
+
+    if base is pl.Object:
+        return None, "unsupported_dtype"
+    if value is None:
+        return pl.col(column).is_null(), None
+    if base is pl.Null:
+        return never_match, None
+
+    non_finite = _value_non_finite_token(value)
+    if non_finite is not None:
+        if not dtype.is_float():
+            return None, "incompatible_non_finite_dtype"
+        if non_finite == "nan":
+            return pl.col(column).is_nan(), None
+        sign = 1 if non_finite == "inf" else -1
+        return pl.col(column).is_infinite() & (pl.col(column) * sign > 0), None
+
+    if base is pl.Boolean:
+        if type(value) is not bool:
+            return None, "boolean_is_not_numeric"
+        return pl.col(column) == pl.lit(value), None
+    if type(value) is bool:
+        return None, "boolean_is_not_numeric"
+
+    if dtype.is_integer():
+        bounds = _INT_BOUNDS.get(dtype)
+        if bounds is None:
+            return None, "unsupported_integer_dtype"
+        if isinstance(value, int):
+            if not bounds[0] <= value <= bounds[1]:
+                return None, "integer_range_mismatch"
+            return pl.col(column) == pl.lit(value), None
+        if isinstance(value, float):
+            if not math.isfinite(value):
+                return None, "incompatible_non_finite_dtype"
+            within_safe_range = (pl.col(column) >= -(2**53)) & (pl.col(column) <= 2**53)
+            return within_safe_range & _finite_numeric_match_expr(column, value), None
+        if isinstance(value, str):
+            if _CANONICAL_INTEGER_RE.fullmatch(value) is None:
+                return never_match, None
+            parsed = int(value)
+            if abs(parsed) <= MAX_SAFE_INTEGER or not bounds[0] <= parsed <= bounds[1]:
+                return never_match, None
+            return pl.col(column) == pl.lit(parsed), None
+        return None, "incompatible_integer_value"
+
+    if dtype.is_float():
+        if isinstance(value, int):
+            if abs(value) > 2**53:
+                return None, "unsafe_integer_float_comparison"
+            return _finite_numeric_match_expr(column, float(value)), None
+        if isinstance(value, float):
+            if not math.isfinite(value):
+                token = _float_non_finite_token(value)
+                assert token is not None
+                if token == "nan":
+                    return pl.col(column).is_nan(), None
+                sign = 1 if token == "inf" else -1
+                return pl.col(column).is_infinite() & (pl.col(column) * sign > 0), None
+            return _finite_numeric_match_expr(column, value), None
+        return None, "incompatible_float_value"
+
+    if base is pl.Decimal:
+        if isinstance(value, float):
+            return None, "decimal_float_unsupported"
+        try:
+            decimal_value = value if isinstance(value, Decimal) else Decimal(value)
+        except (InvalidOperation, TypeError, ValueError):
+            return None, "invalid_decimal_value"
+        if not decimal_value.is_finite():
+            return None, "invalid_decimal_value"
+        return pl.col(column) == pl.lit(decimal_value), None
+
+    if base in (pl.String, pl.Categorical, pl.Enum):
+        if not isinstance(value, str):
+            return None, "incompatible_string_value"
+        expression = pl.col(column).cast(pl.String) if base is not pl.String else pl.col(column)
+        return expression == pl.lit(value), None
+
+    if base is pl.Binary:
+        if not isinstance(value, (bytes, bytearray)):
+            return None, "incompatible_binary_value"
+        return pl.col(column) == pl.lit(bytes(value)), None
+
+    if base is pl.Date:
+        if isinstance(value, datetime):
+            return None, "date_datetime_mismatch"
+        try:
+            date_value = value if isinstance(value, date) else date.fromisoformat(value)
+        except (TypeError, ValueError):
+            return None, "invalid_date_value"
+        return pl.col(column) == pl.lit(date_value), None
+
+    if base is pl.Time:
+        try:
+            time_value = value if isinstance(value, time) else time.fromisoformat(value)
+        except (TypeError, ValueError):
+            return None, "invalid_time_value"
+        if time_value.utcoffset() is not None:
+            return None, "timezone_time_unsupported"
+        nanoseconds = (
+            time_value.hour * 3_600 + time_value.minute * 60 + time_value.second
+        ) * 1_000_000_000 + time_value.microsecond * 1_000
+        return pl.col(column).cast(pl.Int64) == nanoseconds, None
+
+    if isinstance(dtype, pl.Datetime):
+        if isinstance(value, date) and not isinstance(value, datetime):
+            return None, "date_datetime_mismatch"
+        try:
+            datetime_value = value if isinstance(value, datetime) else datetime.fromisoformat(value)
+        except (TypeError, ValueError):
+            return None, "invalid_datetime_value"
+        normalised = _datetime_epoch_ns(datetime_value)
+        if normalised is None:
+            return None, "datetime_nanosecond_overflow"
+        nanoseconds, aware = normalised
+        if aware != (dtype.time_zone is not None):
+            return None, "datetime_timezone_mismatch"
+        factor = _TIME_UNIT_NS[dtype.time_unit]
+        if nanoseconds % factor:
+            return never_match, None
+        return pl.col(column).cast(pl.Int64) == nanoseconds // factor, None
+
+    if isinstance(dtype, pl.Duration):
+        duration = _parse_duration(value)
+        if duration is None:
+            return None, "invalid_duration_value"
+        nanoseconds = (
+            duration.days * 86_400 + duration.seconds
+        ) * 1_000_000_000 + duration.microseconds * 1_000
+        if not _INT64_MIN <= nanoseconds <= _INT64_MAX:
+            return None, "duration_nanosecond_overflow"
+        factor = _TIME_UNIT_NS[dtype.time_unit]
+        if nanoseconds % factor:
+            return never_match, None
+        return pl.col(column).cast(pl.Int64) == nanoseconds // factor, None
+
+    if dtype.is_nested():
+        if not isinstance(value, (list, tuple, dict)):
+            return None, "incompatible_nested_value"
+        try:
+            literal = pl.lit(value, dtype=dtype)
+        except (TypeError, ValueError, pl.exceptions.PolarsError):
+            return None, "incompatible_nested_schema"
+        return pl.col(column) == literal, None
+
+    return None, "unsupported_dtype"
+
+
+def _build_value_match_expr(column: str, value: Any, dtype: pl.DataType | None = None) -> pl.Expr:
+    """Compatibility expression wrapper over the typed V1 matcher."""
+    if dtype is None:
+        return pl.col(column) == pl.lit(value)
+    expression, _reason = _typed_value_match_expr(column, value, dtype)
+    return expression if expression is not None else _never_match_expr(column)
+
+
+def _candidate_payload(
+    index_frame: pl.DataFrame,
+) -> tuple[int, tuple[int, ...], _CandidateIndicesState]:
+    ordered = index_frame.sort("__trace_row_index")
+    count = ordered.height
+    indices = tuple(
+        int(value) for value in ordered.get_column("__trace_row_index").head(16).to_list()
+    )
+    state = _CandidateIndicesState.AVAILABLE if count <= 16 else _CandidateIndicesState.TRUNCATED
+    return count, indices, state
+
+
+def _unsupported_match_result(
+    key_columns: tuple[str, ...],
+    dtypes: tuple[str, ...],
+    reason_code: str,
+) -> _RowMatchResult:
+    return _RowMatchResult(
+        status=_RowMatchStatus.UNSUPPORTED_DTYPE,
+        strict_key_columns=key_columns,
+        effective_key_columns=(),
+        relaxation_reason=None,
+        candidate_count=None,
+        candidate_indices=(),
+        candidate_indices_state=_CandidateIndicesState.UNAVAILABLE,
+        dtypes=dtypes,
+        reason_code=reason_code,
+    )
+
+
+def _match_rows_vectorized(
+    frame: pl.DataFrame,
+    row_values: Mapping[str, Any],
+    key_columns: Sequence[str],
+    *,
+    allow_relaxed: bool = False,
+) -> _RowMatchResult:
+    """Match row identity with native Polars expressions and bounded output."""
+    keys = tuple(
+        column for column in key_columns if column in frame.columns and column in row_values
+    )
+    dtypes = tuple(str(frame.schema[column]) for column in keys)
+    if not keys:
+        return _RowMatchResult(
+            status=_RowMatchStatus.NO_MATCH,
+            strict_key_columns=(),
+            effective_key_columns=(),
+            relaxation_reason=None,
+            candidate_count=0,
+            candidate_indices=(),
+            candidate_indices_state=_CandidateIndicesState.AVAILABLE,
+            dtypes=(),
+        )
+
+    expressions: list[pl.Expr] = []
+    for column in keys:
+        expression, reason = _typed_value_match_expr(
+            column,
+            row_values[column],
+            frame.schema[column],
+        )
+        if expression is None:
+            return _unsupported_match_result(keys, dtypes, reason or "unsupported_dtype")
+        expressions.append(expression.fill_null(False))
+
+    indexed = frame.with_row_index("__trace_row_index")
+    strict_predicate = pl.all_horizontal(expressions)
+    try:
+        strict_indices = (
+            indexed.select(
+                pl.col("__trace_row_index"),
+                strict_predicate.alias("__trace_matches"),
+            )
+            .filter(pl.col("__trace_matches"))
+            .select("__trace_row_index")
+        )
+    except pl.exceptions.PolarsError:
+        return _unsupported_match_result(keys, dtypes, "incompatible_nested_schema")
+    strict_count, strict_candidates, strict_state = _candidate_payload(strict_indices)
+    if strict_count:
+        return _RowMatchResult(
+            status=(
+                _RowMatchStatus.UNIQUE_STRICT if strict_count == 1 else _RowMatchStatus.AMBIGUOUS
+            ),
+            strict_key_columns=keys,
+            effective_key_columns=keys,
+            relaxation_reason=None,
+            candidate_count=strict_count,
+            candidate_indices=strict_candidates,
+            candidate_indices_state=strict_state,
+            dtypes=dtypes,
+        )
+
+    # A float cannot safely distinguish integer values outside ±2**53.
+    # A safe candidate may still win above, but when no candidate exists
+    # and the compared column contains such values the result is typed as
+    # unsupported rather than pretending to be a trustworthy no-match.
+    for column in keys:
+        expected = row_values[column]
+        if frame.schema[column].is_integer() and isinstance(expected, float):
+            has_unsafe = frame.select(
+                ((pl.col(column) < -(2**53)) | (pl.col(column) > 2**53)).any().alias("unsafe")
+            ).item()
+            if bool(has_unsafe):
+                return _unsupported_match_result(
+                    keys,
+                    dtypes,
+                    "unsafe_integer_float_comparison",
+                )
+
+    if not allow_relaxed or len(keys) < 2 or frame.height == 0:
+        return _RowMatchResult(
+            status=_RowMatchStatus.NO_MATCH,
+            strict_key_columns=keys,
+            effective_key_columns=keys,
+            relaxation_reason=None,
+            candidate_count=0,
+            candidate_indices=(),
+            candidate_indices_state=_CandidateIndicesState.AVAILABLE,
+            dtypes=dtypes,
+        )
+
+    aliases = [f"__trace_key_match_{index}" for index in range(len(keys))]
+    scored = indexed.select(
+        pl.col("__trace_row_index"),
+        *[expression.alias(alias) for expression, alias in zip(expressions, aliases, strict=True)],
+    ).with_columns(
+        pl.sum_horizontal(pl.col(alias).cast(pl.UInt16) for alias in aliases).alias(
+            "__trace_match_width"
+        )
+    )
+    best_width = scored.get_column("__trace_match_width").max()
+    if not isinstance(best_width, int) or best_width <= 0:
+        return _RowMatchResult(
+            status=_RowMatchStatus.NO_MATCH,
+            strict_key_columns=keys,
+            effective_key_columns=keys,
+            relaxation_reason=None,
+            candidate_count=0,
+            candidate_indices=(),
+            candidate_indices_state=_CandidateIndicesState.AVAILABLE,
+            dtypes=dtypes,
+        )
+    best = scored.filter(pl.col("__trace_match_width") == best_width)
+    relaxed_count, relaxed_candidates, relaxed_state = _candidate_payload(
+        best.select("__trace_row_index")
+    )
+    effective = tuple(
+        key for key, alias in zip(keys, aliases, strict=True) if bool(best.get_column(alias).any())
+    )
+    omitted = tuple(
+        key
+        for key, alias in zip(keys, aliases, strict=True)
+        if not bool(best.get_column(alias).all())
+    )
+    return _RowMatchResult(
+        status=(
+            _RowMatchStatus.UNIQUE_RELAXED if relaxed_count == 1 else _RowMatchStatus.AMBIGUOUS
+        ),
+        strict_key_columns=keys,
+        effective_key_columns=effective,
+        relaxation_reason="strict_keys_no_match_best_subset",
+        candidate_count=relaxed_count,
+        candidate_indices=relaxed_candidates,
+        candidate_indices_state=relaxed_state,
+        dtypes=dtypes,
+        omitted_key_columns=omitted,
+    )
+
+
 def _record_ambiguous_row_match(
     diagnostics: list[dict[str, Any]] | None,
     *,
@@ -243,14 +712,17 @@ def _record_ambiguous_row_match(
     match_columns: list[str],
     ignored_columns: list[str],
     matched_row_indices: list[int],
+    candidate_count: int | None = None,
+    candidate_indices_state: _CandidateIndicesState = _CandidateIndicesState.AVAILABLE,
 ) -> None:
     """Surface an ambiguous correlation match instead of selecting row zero."""
     node_label = "parent row" if node_id is None else f"node {node_id!r}"
     child_label = f" for child node {child_node_id!r}" if child_node_id is not None else ""
     column_label = ", ".join(match_columns) if match_columns else "(none)"
+    exact_count = len(matched_row_indices) if candidate_count is None else candidate_count
     message = (
         f"Row correlation for {node_label}{child_label} is ambiguous: "
-        f"{len(matched_row_indices)} {match_strategy} matches on columns {column_label}."
+        f"{exact_count} {match_strategy} matches on columns {column_label}."
     )
     diagnostic = {
         "code": "ambiguous_row_match",
@@ -262,8 +734,11 @@ def _record_ambiguous_row_match(
         "match_strategy": match_strategy,
         "match_columns": list(match_columns),
         "ignored_columns": list(ignored_columns),
-        "matched_row_count": len(matched_row_indices),
+        "matched_row_count": exact_count,
         "matched_row_indices": list(matched_row_indices),
+        "candidate_count": exact_count,
+        "candidate_indices": list(matched_row_indices),
+        "candidate_indices_state": candidate_indices_state.value,
     }
     logger.warning(
         "trace_row_match_ambiguous",
@@ -273,90 +748,11 @@ def _record_ambiguous_row_match(
         match_strategy=match_strategy,
         match_columns=match_columns,
         ignored_columns=ignored_columns,
-        matched_row_count=len(matched_row_indices),
+        matched_row_count=exact_count,
         matched_row_indices=matched_row_indices,
     )
     if diagnostics is not None:
         diagnostics.append(diagnostic)
-
-
-def _match_columns_by_row_index(
-    indexed: pl.DataFrame,
-    child_row: dict[str, Any],
-    cols: list[str],
-) -> dict[int, list[str]]:
-    """Return each row's matching columns for the proposed shared columns.
-
-    This is the polynomial equivalent of asking which relaxed column
-    subsets could match each row: a row that matches ``k`` individual
-    columns belongs to at least one relaxed subset of width ``k`` and no
-    wider relaxed subset.
-    """
-    if not cols:
-        return {}
-
-    aliases = [f"__trace_match_{i}" for i in range(len(cols))]
-    schema = indexed.schema
-    equality = indexed.select(
-        pl.col("__tmp_idx"),
-        *[
-            _build_value_match_expr(column, child_row[column], schema.get(column))
-            .fill_null(False)
-            .alias(alias)
-            for column, alias in zip(cols, aliases, strict=True)
-        ],
-    )
-    row_indices = [int(row_index) for row_index in equality["__tmp_idx"].to_list()]
-    matched_by_row: dict[int, list[str]] = {row_index: [] for row_index in row_indices}
-    for column, alias in zip(cols, aliases, strict=True):
-        for row_index, matches in zip(row_indices, equality[alias].to_list(), strict=True):
-            if matches:
-                matched_by_row[row_index].append(column)
-    return matched_by_row
-
-
-def _relaxed_candidates_from_row_matches(
-    matched_columns_by_row: dict[int, list[str]],
-    matched_row_indices: list[int],
-) -> list[_RowMatchCandidate]:
-    """Group best relaxed rows by the column set that identified them."""
-    grouped: dict[tuple[str, ...], list[int]] = {}
-    for row_index in matched_row_indices:
-        columns = tuple(matched_columns_by_row[row_index])
-        grouped.setdefault(columns, []).append(row_index)
-    return [
-        _RowMatchCandidate(columns=list(columns), row_indices=row_indices)
-        for columns, row_indices in grouped.items()
-    ]
-
-
-def _record_relaxed_candidate_ambiguity(
-    diagnostics: list[dict[str, Any]] | None,
-    *,
-    node_id: str | None,
-    child_node_id: str | None,
-    original_columns: list[str],
-    candidates: list[_RowMatchCandidate],
-) -> None:
-    matched_row_indices = sorted({idx for candidate in candidates for idx in candidate.row_indices})
-    match_columns = [
-        col for col in original_columns if any(col in candidate.columns for candidate in candidates)
-    ]
-    ignored_columns = [
-        col
-        for col in original_columns
-        if any(col not in candidate.columns for candidate in candidates)
-    ]
-    _record_ambiguous_row_match(
-        diagnostics,
-        reason="relaxed_match_ambiguous",
-        node_id=node_id,
-        child_node_id=child_node_id,
-        match_strategy="relaxed",
-        match_columns=match_columns,
-        ignored_columns=ignored_columns,
-        matched_row_indices=matched_row_indices,
-    )
 
 
 def _find_matching_row(
@@ -384,69 +780,73 @@ def _find_matching_row(
          Competing best rows are ambiguous and no row is selected.
       3. If still no match, return None (fail loudly).
     """
-    df_cols = set(df.columns)
-    shared = [c for c in child_row if c in df_cols]
-
-    if shared:
-        # Add a temporary positional index so we can report *which* row matched.
-        indexed = df.with_row_index("__tmp_idx")
-        original_shared = list(shared)
-
-        matched_columns_by_row = _match_columns_by_row_index(indexed, child_row, original_shared)
-        exact_row_indices = [
-            row_index
-            for row_index, matched_columns in matched_columns_by_row.items()
-            if len(matched_columns) == len(original_shared)
-        ]
-        if exact_row_indices:
-            matched_row_indices = exact_row_indices
-            if len(matched_row_indices) > 1:
-                _record_ambiguous_row_match(
-                    diagnostics,
-                    reason="duplicate_exact_match",
-                    node_id=node_id,
-                    child_node_id=child_node_id,
-                    match_strategy="exact",
-                    match_columns=original_shared,
-                    ignored_columns=[],
-                    matched_row_indices=matched_row_indices,
-                )
-                return None, -1
-            idx = matched_row_indices[0]
-            return _jsonify_row(df.row(idx, named=True)), idx
-
-        if allow_relaxed:
-            best_relaxed_width = max(
-                (len(matched_columns) for matched_columns in matched_columns_by_row.values()),
-                default=0,
+    shared = [column for column in child_row if column in df.columns]
+    match = _match_rows_vectorized(
+        df,
+        child_row,
+        shared,
+        allow_relaxed=allow_relaxed,
+    )
+    if match.status in {_RowMatchStatus.UNIQUE_STRICT, _RowMatchStatus.UNIQUE_RELAXED}:
+        idx = match.candidate_indices[0]
+        if match.status is _RowMatchStatus.UNIQUE_RELAXED and diagnostics is not None:
+            effective = list(match.effective_key_columns)
+            diagnostics.append(
+                {
+                    "code": "low_confidence_relaxed_match",
+                    "severity": "warning",
+                    "reason": match.relaxation_reason,
+                    "node_id": node_id,
+                    "child_node_id": child_node_id,
+                    "strict_key_columns": list(match.strict_key_columns),
+                    "effective_key_columns": effective,
+                    "omitted_key_columns": list(match.omitted_key_columns),
+                    "candidate_count": match.candidate_count,
+                    "candidate_indices": list(match.candidate_indices),
+                    "candidate_indices_state": match.candidate_indices_state.value,
+                }
             )
-            if best_relaxed_width > 0:
-                matched_row_indices = [
-                    row_index
-                    for row_index, matched_columns in matched_columns_by_row.items()
-                    if len(matched_columns) == best_relaxed_width
-                ]
-                if len(matched_row_indices) == 1:
-                    idx = matched_row_indices[0]
-                    return _jsonify_row(df.row(idx, named=True)), idx
+        return _jsonify_row(df.row(idx, named=True)), idx
 
-                _record_relaxed_candidate_ambiguity(
-                    diagnostics,
-                    node_id=node_id,
-                    child_node_id=child_node_id,
-                    original_columns=original_shared,
-                    candidates=_relaxed_candidates_from_row_matches(
-                        matched_columns_by_row,
-                        matched_row_indices,
-                    ),
-                )
-                return None, -1
+    if match.status is _RowMatchStatus.AMBIGUOUS:
+        relaxed = match.relaxation_reason is not None
+        _record_ambiguous_row_match(
+            diagnostics,
+            reason="relaxed_match_ambiguous" if relaxed else "duplicate_exact_match",
+            node_id=node_id,
+            child_node_id=child_node_id,
+            match_strategy="relaxed" if relaxed else "exact",
+            match_columns=list(match.effective_key_columns),
+            ignored_columns=list(match.omitted_key_columns),
+            matched_row_indices=list(match.candidate_indices),
+            candidate_count=match.candidate_count,
+            candidate_indices_state=match.candidate_indices_state,
+        )
+        return None, -1
+
+    if match.status is _RowMatchStatus.UNSUPPORTED_DTYPE:
+        if diagnostics is not None:
+            diagnostics.append(
+                {
+                    "code": "unsupported_dtype",
+                    "severity": "warning",
+                    "reason": match.reason_code,
+                    "node_id": node_id,
+                    "child_node_id": child_node_id,
+                    "key_columns": list(match.strict_key_columns[:16]),
+                    "dtypes": list(match.dtypes[:16]),
+                    "candidate_count": None,
+                    "candidate_indices": [],
+                    "candidate_indices_state": _CandidateIndicesState.UNAVAILABLE.value,
+                }
+            )
+        return None, -1
 
     # No match found — return None so the caller can mark the step
     # as unresolved rather than silently showing wrong data.
     logger.warning(
         "trace_row_match_failed",
-        shared_cols_tried=len(shared) if shared else 0,
+        shared_cols_tried=len(shared),
         df_rows=len(df),
         relaxed_matching=allow_relaxed,
     )
@@ -519,14 +919,9 @@ def _shared_key_is_unique(
     """
     if not shared_cols:
         return False
-    count = 0
-    for raw_row in df.iter_rows(named=True):
-        candidate = _jsonify_row(raw_row)
-        if all(_trace_values_match(candidate.get(c), match_row.get(c)) for c in shared_cols):
-            count += 1
-            if count > 1:
-                return False
-    return count == 1
+    return (
+        _match_rows_vectorized(df, match_row, shared_cols).status is _RowMatchStatus.UNIQUE_STRICT
+    )
 
 
 def _allows_relaxed_parent_match(
@@ -700,16 +1095,33 @@ def _match_parent_row(
     # transform (sort/join/gather/…) falls through and the step is
     # left unresolved rather than attached to the wrong parent row.
     if len(parent_df) == child_len and child_row_idx < len(parent_df):
-        candidate = _jsonify_row(parent_df.row(child_row_idx, named=True))
-        shared = [c for c in match_row if c in candidate]
+        shared = [column for column in match_row if column in parent_df.columns]
         child_may_reorder = _child_transform_may_reorder(child_node)
         if shared:
-            if all(_trace_values_match(candidate.get(c), match_row.get(c)) for c in shared) and (
-                not child_may_reorder or _shared_key_is_unique(parent_df, match_row, shared)
+            verification_frame = (
+                parent_df if child_may_reorder else parent_df.slice(child_row_idx, 1)
+            )
+            positional_match = _match_rows_vectorized(
+                verification_frame,
+                match_row,
+                shared,
+            )
+            expected_index = child_row_idx if child_may_reorder else 0
+            if (
+                positional_match.status is _RowMatchStatus.UNIQUE_STRICT
+                and positional_match.candidate_indices == (expected_index,)
             ):
-                return candidate, child_row_idx, len(match_row)
+                return (
+                    _jsonify_row(parent_df.row(child_row_idx, named=True)),
+                    child_row_idx,
+                    len(match_row),
+                )
         elif len(parent_df) == 1 or not child_may_reorder:
-            return candidate, child_row_idx, len(match_row)
+            return (
+                _jsonify_row(parent_df.row(child_row_idx, named=True)),
+                child_row_idx,
+                len(match_row),
+            )
 
     # Value matching: find the parent row that matches the child row
     row_dict, idx = _find_matching_row(

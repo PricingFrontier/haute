@@ -9,7 +9,7 @@ import math
 import os
 import threading
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
@@ -18,6 +18,8 @@ from typing import Any
 EXECUTION_METRICS_SCHEMA_VERSION = 1
 _DEFAULT_MAX_RETAINED_STAGES = 200
 _DEFAULT_MAX_RETAINED_MEMORY_PRESSURE_EVENTS = 32
+_MAX_RETAINED_COLUMN_WIDTHS = 128
+_MAX_STREAMABILITY_EVIDENCE = 32
 _MEMORY_PRESSURE_THRESHOLDS: tuple[float, ...] = (0.50, 0.75, 0.90)
 _CURRENT_EXECUTION_CONTEXT: contextvars.ContextVar[ExecutionContext | None] = (
     contextvars.ContextVar("haute_current_execution_context", default=None)
@@ -379,6 +381,26 @@ class _ActiveStage:
     n_checkpoints: int = 0
 
 
+@dataclass(frozen=True, slots=True)
+class ExecutionColumnWidths:
+    """Observed or planned column widths for one execution node."""
+
+    node_id: str
+    input_width: int | None = None
+    output_width: int | None = None
+    requested_width: int | None = None
+    physically_scanned_width: int | None = None
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "node_id": self.node_id,
+            "input_width": self.input_width,
+            "output_width": self.output_width,
+            "requested_width": self.requested_width,
+            "physically_scanned_width": self.physically_scanned_width,
+        }
+
+
 class ExecutionMetricsRecorder:
     """Thread-safe in-memory recorder for execution timing and memory samples."""
 
@@ -588,41 +610,83 @@ def _linux_current_rss_bytes() -> int | None:
     return None
 
 
+class _WindowsProcessMemoryCountersEx(ctypes.Structure):
+    _fields_ = [
+        ("cb", ctypes.c_ulong),
+        ("PageFaultCount", ctypes.c_ulong),
+        ("PeakWorkingSetSize", ctypes.c_size_t),
+        ("WorkingSetSize", ctypes.c_size_t),
+        ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
+        ("QuotaPagedPoolUsage", ctypes.c_size_t),
+        ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+        ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+        ("PagefileUsage", ctypes.c_size_t),
+        ("PeakPagefileUsage", ctypes.c_size_t),
+        ("PrivateUsage", ctypes.c_size_t),
+    ]
+
+
+@dataclass(frozen=True, slots=True)
+class _WindowsRssBindings:
+    get_current_process: Callable[[], Any]
+    get_process_memory_info: Callable[[Any, Any, int], int]
+
+
+_WINDOWS_RSS_BINDINGS_LOCK = threading.RLock()
+_WINDOWS_RSS_BINDINGS_BY_FACTORY: dict[int, tuple[object, _WindowsRssBindings | None]] = {}
+
+
+def _reset_windows_rss_sampler_for_tests() -> None:
+    """Clear cached Windows RSS API bindings for isolated tests."""
+    with _WINDOWS_RSS_BINDINGS_LOCK:
+        _WINDOWS_RSS_BINDINGS_BY_FACTORY.clear()
+
+
+def _windows_rss_bindings(
+    windll_factory: Callable[..., Any],
+) -> _WindowsRssBindings | None:
+    """Return bindings initialised once for this exact WinDLL factory."""
+    factory_id = id(windll_factory)
+    with _WINDOWS_RSS_BINDINGS_LOCK:
+        cached = _WINDOWS_RSS_BINDINGS_BY_FACTORY.get(factory_id)
+        if cached is not None and cached[0] is windll_factory:
+            return cached[1]
+        try:
+            kernel32 = windll_factory("kernel32.dll", use_last_error=True)
+            psapi = windll_factory("psapi.dll", use_last_error=True)
+            get_current_process = kernel32.GetCurrentProcess
+            get_process_memory_info = psapi.GetProcessMemoryInfo
+            get_process_memory_info.argtypes = [
+                ctypes.c_void_p,
+                ctypes.POINTER(_WindowsProcessMemoryCountersEx),
+                ctypes.c_ulong,
+            ]
+            get_process_memory_info.restype = ctypes.c_int
+        except (AttributeError, OSError):
+            bindings = None
+        else:
+            bindings = _WindowsRssBindings(
+                get_current_process=get_current_process,
+                get_process_memory_info=get_process_memory_info,
+            )
+        _WINDOWS_RSS_BINDINGS_BY_FACTORY[factory_id] = (windll_factory, bindings)
+        return bindings
+
+
 def _windows_current_rss_bytes() -> int | None:
     if os.name != "nt":
         return None
-
-    class ProcessMemoryCountersEx(ctypes.Structure):
-        _fields_ = [
-            ("cb", ctypes.c_ulong),
-            ("PageFaultCount", ctypes.c_ulong),
-            ("PeakWorkingSetSize", ctypes.c_size_t),
-            ("WorkingSetSize", ctypes.c_size_t),
-            ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
-            ("QuotaPagedPoolUsage", ctypes.c_size_t),
-            ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
-            ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
-            ("PagefileUsage", ctypes.c_size_t),
-            ("PeakPagefileUsage", ctypes.c_size_t),
-            ("PrivateUsage", ctypes.c_size_t),
-        ]
-
-    counters = ProcessMemoryCountersEx()
-    counters.cb = ctypes.sizeof(counters)
     windll_factory = getattr(ctypes, "WinDLL", None)
     if windll_factory is None:
         return None
+    bindings = _windows_rss_bindings(windll_factory)
+    if bindings is None:
+        return None
+    counters = _WindowsProcessMemoryCountersEx()
+    counters.cb = ctypes.sizeof(counters)
     try:
-        kernel32 = windll_factory("kernel32.dll", use_last_error=True)
-        psapi = windll_factory("psapi.dll", use_last_error=True)
-        handle = kernel32.GetCurrentProcess()
-        psapi.GetProcessMemoryInfo.argtypes = [
-            ctypes.c_void_p,
-            ctypes.POINTER(ProcessMemoryCountersEx),
-            ctypes.c_ulong,
-        ]
-        psapi.GetProcessMemoryInfo.restype = ctypes.c_int
-        ok = psapi.GetProcessMemoryInfo(
+        handle = bindings.get_current_process()
+        ok = bindings.get_process_memory_info(
             handle,
             ctypes.byref(counters),
             counters.cb,
@@ -681,6 +745,15 @@ class ExecutionContext:
         init=False,
     )
     _admission_released: bool = field(default=False, init=False)
+    _evidence_lock: threading.RLock = field(default_factory=threading.RLock, init=False)
+    _column_widths: dict[str, ExecutionColumnWidths] = field(
+        default_factory=dict,
+        init=False,
+    )
+    _bytes_read: int | None = field(default=None, init=False)
+    _bytes_written: int | None = field(default=None, init=False)
+    _chunk_count: int = field(default=0, init=False)
+    _observed_peak_rss_bytes: int | None = field(default=None, init=False)
 
     def cancel(self) -> None:
         self.cancellation_token.cancel()
@@ -786,6 +859,84 @@ class ExecutionContext:
         for stage in self._active_stage_stack():
             stage.n_collects += 1
 
+    def record_column_widths(
+        self,
+        *,
+        node_id: str,
+        input_width: int | None = None,
+        output_width: int | None = None,
+        requested_width: int | None = None,
+        physically_scanned_width: int | None = None,
+    ) -> None:
+        """Merge width evidence without collecting a frame solely for metrics."""
+        if not isinstance(node_id, str) or not node_id:
+            raise ValueError("column-width evidence requires a non-empty node_id")
+        values = {
+            "input_width": input_width,
+            "output_width": output_width,
+            "requested_width": requested_width,
+            "physically_scanned_width": physically_scanned_width,
+        }
+        for name, value in values.items():
+            if value is not None and (
+                not isinstance(value, int) or isinstance(value, bool) or value < 0
+            ):
+                raise ValueError(f"{name} must be a non-negative integer or None")
+        with self._evidence_lock:
+            previous = self._column_widths.get(node_id)
+            self._column_widths[node_id] = ExecutionColumnWidths(
+                node_id=node_id,
+                input_width=(
+                    input_width
+                    if input_width is not None
+                    else previous.input_width
+                    if previous is not None
+                    else None
+                ),
+                output_width=(
+                    output_width
+                    if output_width is not None
+                    else previous.output_width
+                    if previous is not None
+                    else None
+                ),
+                requested_width=(
+                    requested_width
+                    if requested_width is not None
+                    else previous.requested_width
+                    if previous is not None
+                    else None
+                ),
+                physically_scanned_width=(
+                    physically_scanned_width
+                    if physically_scanned_width is not None
+                    else previous.physically_scanned_width
+                    if previous is not None
+                    else None
+                ),
+            )
+
+    def record_bytes_read(self, byte_count: int) -> None:
+        self._record_supported_bytes("read", byte_count)
+
+    def record_bytes_written(self, byte_count: int) -> None:
+        self._record_supported_bytes("written", byte_count)
+
+    def _record_supported_bytes(self, direction: str, byte_count: int) -> None:
+        if not isinstance(byte_count, int) or isinstance(byte_count, bool) or byte_count < 0:
+            raise ValueError("supported byte counters must be non-negative integers")
+        with self._evidence_lock:
+            if direction == "read":
+                self._bytes_read = (self._bytes_read or 0) + byte_count
+            elif direction == "written":
+                self._bytes_written = (self._bytes_written or 0) + byte_count
+            else:
+                raise ValueError(f"unknown byte-counter direction: {direction!r}")
+
+    def record_chunk(self) -> None:
+        with self._evidence_lock:
+            self._chunk_count += 1
+
     def metrics_summary(
         self,
         *,
@@ -824,7 +975,85 @@ class ExecutionContext:
             if projection_plan is not None and hasattr(projection_plan, "diagnostics_payload")
             else None
         )
+        diagnostic = getattr(projection_plan, "diagnostic", None)
+        payload["execution_strategy"] = (
+            diagnostic.to_dict()
+            if diagnostic is not None and hasattr(diagnostic, "to_dict")
+            else None
+        )
+        payload.update(self._execution_evidence_payload(payload, diagnostic=diagnostic))
         return payload
+
+    def _execution_evidence_payload(
+        self,
+        metrics_payload: dict[str, object],
+        *,
+        diagnostic: Any | None,
+    ) -> dict[str, object]:
+        with self._evidence_lock:
+            widths = tuple(self._column_widths[node_id] for node_id in sorted(self._column_widths))
+            bytes_read = self._bytes_read
+            bytes_written = self._bytes_written
+            chunk_count = self._chunk_count
+            observed_peak_rss_bytes = self._observed_peak_rss_bytes
+
+        retained_widths = widths[:_MAX_RETAINED_COLUMN_WIDTHS]
+        width_state = "truncated" if len(widths) > len(retained_widths) else "available"
+        strategy = getattr(diagnostic, "strategy", None)
+        strategy_value = getattr(strategy, "value", strategy)
+        if strategy_value in {
+            "projected",
+            "schema-all-except",
+            "unprojected-streaming-boundary",
+        }:
+            streamability: str | None = "streaming"
+        elif strategy_value in {
+            "full-width-admitted-eager",
+            "materialisation-boundary",
+        }:
+            streamability = "materialising"
+        else:
+            streamability = None
+
+        evidence: list[str] = []
+        reason_code = getattr(diagnostic, "reason_code", None)
+        if isinstance(reason_code, str) and reason_code:
+            evidence.append(reason_code)
+        boundaries = getattr(getattr(diagnostic, "boundaries", None), "items", ())
+        evidence.extend(
+            str(item["boundary_kind"])
+            for item in boundaries
+            if isinstance(item, Mapping) and "boundary_kind" in item
+        )
+        canonical_evidence = tuple(sorted(set(evidence)))
+        retained_evidence = canonical_evidence[:_MAX_STREAMABILITY_EVIDENCE]
+        evidence_state = (
+            "unavailable"
+            if diagnostic is None
+            else "truncated"
+            if len(canonical_evidence) > len(retained_evidence)
+            else "available"
+        )
+        estimated_bytes = getattr(diagnostic, "estimated_peak_bytes", None)
+        return {
+            "streamability": streamability,
+            "streamability_evidence": {
+                "state": evidence_state,
+                "total_count": None if evidence_state == "unavailable" else len(canonical_evidence),
+                "items": list(retained_evidence),
+            },
+            "column_widths": {
+                "state": width_state,
+                "total_count": len(widths),
+                "items": [item.to_dict() for item in retained_widths],
+            },
+            "bytes_read": bytes_read,
+            "bytes_written": bytes_written,
+            "estimated_bytes": estimated_bytes,
+            "checkpoint_count": metrics_payload["n_checkpoints"],
+            "chunk_count": chunk_count,
+            "observed_peak_rss_bytes": observed_peak_rss_bytes,
+        }
 
     def _active_stage_stack(self) -> list[_ActiveStage]:
         stack = getattr(self._stage_local, "stack", None)
@@ -843,6 +1072,12 @@ class ExecutionContext:
     ) -> None:
         if rss_bytes is None:
             return
+        with self._evidence_lock:
+            self._observed_peak_rss_bytes = (
+                rss_bytes
+                if self._observed_peak_rss_bytes is None
+                else max(self._observed_peak_rss_bytes, rss_bytes)
+            )
         for active_stage in self._active_stage_stack():
             active_stage.rss_peak_bytes = (
                 rss_bytes

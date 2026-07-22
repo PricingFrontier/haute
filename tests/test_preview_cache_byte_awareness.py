@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+from threading import Event
+
 import polars as pl
 import pytest
 
@@ -60,7 +63,7 @@ class TestFingerprintCacheByteLimit:
         assert cache.try_get("c") is not None
         assert cache.stats()["bytes"] == 60
 
-    def test_oversized_entry_is_not_cached_and_replaces_stale_entry(self) -> None:
+    def test_store_reports_oversized_rejection_and_retains_stale_entry(self) -> None:
         cache = FingerprintCache(
             slots=("payload",),
             max_entries=10,
@@ -68,11 +71,79 @@ class TestFingerprintCacheByteLimit:
             size_of=_entry_size,
         )
 
-        cache.store("same-fp", payload={"bytes": 25})
-        cache.store("same-fp", payload={"bytes": 75})
+        assert cache.store("same-fp", payload={"bytes": 25}) is True
+        assert cache.store("same-fp", payload={"bytes": 75}) is False
 
-        assert cache.try_get("same-fp") is None
-        assert cache.stats()["bytes"] == 0
+        assert cache.try_get("same-fp") == {"payload": {"bytes": 25}}
+        assert cache.stats()["bytes"] == 25
+
+    def test_last_completed_concurrent_accepted_same_key_store_wins(self) -> None:
+        slow_measure_started = Event()
+        release_slow_measure = Event()
+
+        def controlled_size(entry: dict) -> int:
+            payload = entry["payload"]
+            if payload.get("label") == "slow":
+                slow_measure_started.set()
+                assert release_slow_measure.wait(timeout=5)
+            return int(payload["bytes"])
+
+        cache = FingerprintCache(
+            slots=("payload",),
+            max_entries=10,
+            max_bytes=100,
+            size_of=controlled_size,
+        )
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            slow_store = pool.submit(
+                cache.store,
+                "same-fp",
+                payload={"bytes": 40, "label": "slow"},
+            )
+            assert slow_measure_started.wait(timeout=5)
+            assert cache.store(
+                "same-fp",
+                payload={"bytes": 30, "label": "fast"},
+            )
+            release_slow_measure.set()
+            assert slow_store.result(timeout=5)
+
+        assert cache.try_get("same-fp") == {"payload": {"bytes": 40, "label": "slow"}}
+        assert cache.stats()["bytes"] == 40
+
+    def test_concurrent_rejected_same_key_store_preserves_accepted_value(self) -> None:
+        rejected_measure_started = Event()
+        release_rejected_measure = Event()
+
+        def controlled_size(entry: dict) -> int:
+            payload = entry["payload"]
+            if payload.get("label") == "rejected":
+                rejected_measure_started.set()
+                assert release_rejected_measure.wait(timeout=5)
+            return int(payload["bytes"])
+
+        cache = FingerprintCache(
+            slots=("payload",),
+            max_entries=10,
+            max_bytes=100,
+            size_of=controlled_size,
+        )
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            rejected_store = pool.submit(
+                cache.store,
+                "same-fp",
+                payload={"bytes": 101, "label": "rejected"},
+            )
+            assert rejected_measure_started.wait(timeout=5)
+            assert cache.store(
+                "same-fp",
+                payload={"bytes": 30, "label": "accepted"},
+            )
+            release_rejected_measure.set()
+            assert rejected_store.result(timeout=5) is False
+
+        assert cache.try_get("same-fp") == {"payload": {"bytes": 30, "label": "accepted"}}
+        assert cache.stats()["bytes"] == 30
 
     def test_invalid_byte_limits_fail_loudly(self) -> None:
         with pytest.raises(ValueError, match="max_bytes must be >= 1"):
@@ -115,7 +186,7 @@ class TestFingerprintCacheByteLimit:
         assert target["meta"] == {}
         assert cache.stats()["bytes"] == 80
 
-    def test_update_slot_oversized_replacement_removes_stale_entry(self) -> None:
+    def test_update_slot_oversized_replacement_retains_stale_entry(self) -> None:
         cache = FingerprintCache(
             slots=("payload",),
             max_entries=10,
@@ -126,8 +197,8 @@ class TestFingerprintCacheByteLimit:
         cache.store("same-fp", payload={"bytes": 25})
         cache.update_slot("payload", {"bytes": 75}, fingerprint="same-fp")
 
-        assert cache.try_get("same-fp") is None
-        assert cache.stats()["bytes"] == 0
+        assert cache.try_get("same-fp") == {"payload": {"bytes": 25}}
+        assert cache.stats()["bytes"] == 25
 
     def test_update_slot_preserves_size_for_non_size_sensitive_slots(self) -> None:
         calls = 0

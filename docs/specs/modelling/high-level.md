@@ -222,3 +222,11 @@ browser without a server or JS bundle.
   search (treated as `-inf` log-likelihood, not a hard error); only a search where *no*
   candidate converges raises, surfacing as the job's `contract_error`/`error` terminal
   state exactly like a training job's equivalent failure classes.
+
+## Polars backend contracts (0.6.0)
+
+Every pipeline materialisation, including initial eager previews, will use the universal
+execution-plan facade in the [remediation plan](../../trip/plans/F_0.6.0_polars-backend-remediation.plan.md).
+Its final feature include/exclude decision and deterministic provenance diagnostics
+accompany modelling validation and execution. Modelling does not reimplement planning
+or infer a competing feature set.

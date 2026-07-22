@@ -257,3 +257,74 @@ Out of scope (owned elsewhere, linked where relevant):
   only ever warms that projection — it intentionally will not satisfy a later
   request for a wider column set, even though both requests share the same
   upstream lineage.
+
+## Polars backend contracts (0.6.0)
+
+This contract authorises the cache-related work in
+[F_0.6.0 Polars backend remediation plan](../../trip/plans/F_0.6.0_polars-backend-remediation.plan.md).
+It supplements, rather than weakens, the fingerprint and failure contracts above.
+
+- **Preview and trace identity is lineage-scoped.** A preview or trace result is
+  identified from a deterministic canonical payload for the requested target's
+  execution-relevant upstream lineage, not from unrelated nodes elsewhere in the
+  graph. The payload contains the ordered relevant nodes and edges plus the
+  graph-level `preamble`, `source_file`, `preserved_blocks`, `sources`, and
+  `active_source`; downstream and disconnected state is excluded. Edits outside
+  that payload preserve reuse, while any change within it invalidates reuse.
+- **There is one mandatory normalised key factory.** Preview and trace callers
+  pass the original graph, the source-pruned result of
+  `prepare_graph(graph, target, source)`, and explicit values for target,
+  source/active source, requested columns, initial width, row limit, port/frame
+  handle, contract fingerprint, selected live-switch path, runtime/input
+  fingerprint, and execution-semantics version. The factory owns normalisation
+  and canonicalisation; callers cannot omit a dimension or reconstruct an
+  equivalent key ad hoc.
+- **Invalidation is exact and fail-loud.** The factory includes every input that
+  can change the materialised result, and excludes unrelated graph state. An
+  unsupported identity input is an error, not a best-effort key. Cache invalidation
+  must not rely on broad whole-graph clearing as a substitute for key correctness.
+- **Store admission is side-effect-free until accepted.** Oversize is assessed
+  before cache mutation. Rejection retains any old entry under the same key and
+  performs no eviction, lease acquisition, or pin. An accepted store commits
+  atomically under the cache lock, so readers observe either the complete old
+  value or the complete new value; among concurrent accepted stores for one key,
+  the last completed store wins and entry/byte accounting remains coherent.
+- **Only retained values can be protected.** A request lease or pin may be
+  acquired only after the store outcome confirms retention, and is always
+  released in `finally`. Oversize rejection is an explicit operational outcome;
+  unexpected store errors propagate rather than being translated into a miss or
+  a best-effort uncached path.
+- **Runtime input fingerprints share the stat gate.** Runtime path fingerprints
+  reuse the established `StatGatedCache` discipline for content-hash loading;
+  independent stat-gated hash implementations are not introduced. The stat gate
+  may avoid rereading unchanged bytes, but it is not a validity shortcut for
+  JSON: a JSON-derived result still requires the content/semantic checks its own
+  operation needs and may not be accepted merely because `(mtime_ns, size)` match.
+- **Hash and serialisation work remains canonical.** Cache-key JSON uses the one
+  shared canonical encoder. Row-hash processing may use a direct buffer rather
+  than a Python list only if benchmarks demonstrate a material benefit while
+  preserving deterministic frame identity. A deliberate encoding change must bump
+  the relevant key version and document the one-time cache invalidation; it need not
+  reproduce the obsolete digest byte-for-byte. Otherwise the simpler established
+  path remains authoritative.
+- **Cleanup is contractual, not cosmetic.** Retire unreachable collection
+  strategies, dead sink helpers, no-op projection guards, and duplicate
+  canonical-JSON paths once their callers have migrated. Removal must leave one
+  discoverable implementation for each surviving responsibility.
+
+Non-goals: this change does not promise a global disk quota, cache persistence
+across algorithm versions, approximate/stale preview reuse, or a stat-only
+cross-operation assertion that JSON-derived work is valid. It also does not
+replace the dataframe execution cache's distinct artifact lifecycle.
+
+Required tests cover: lineage-local reuse and invalidation for both preview and
+trace; independent mutation of every key-factory argument and every canonical
+lineage payload field; invariance to node, edge, map, and set insertion ordering;
+exclusion of downstream/disconnected edits; oversize rejection preserving an old
+same-key value without eviction or protection; atomic concurrent replacement and
+coherent byte/entry accounting; lease release on success and exceptions; loud
+unexpected store failures; stat-gated runtime hash reuse and changed-file
+invalidation; a regression proving unchanged file metadata alone cannot validate
+JSON work for a different operation; cleanup imports/callers; and benchmark-gated
+semantic identity plus version-bump tests for any direct row-hash buffer
+implementation.

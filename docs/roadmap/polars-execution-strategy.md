@@ -4,6 +4,9 @@
 
 **Current as of:** 2026-07-20
 
+**Implementation plan:**
+[`F_0.6.0_polars-backend-remediation.plan.md`](../trip/plans/F_0.6.0_polars-backend-remediation.plan.md)
+
 ## Outcome
 
 Every execution surface should choose and report the narrowest semantics-preserving

@@ -48,6 +48,12 @@ def test_build_pytest_args_selects_owned_perf_lane(tmp_path: Path) -> None:
     assert pytest_args[-3:] == ["tests/custom", "-k", "cache"]
 
 
+def test_parse_args_defaults_to_ci_scale_and_requires_opt_in_for_large_scales() -> None:
+    assert run_perf_suite._parse_args([]).polars_scale == "ci"
+    assert run_perf_suite._parse_args(["--polars-scale", "1m"]).polars_scale == "1m"
+    assert run_perf_suite._parse_args(["--polars-scale", "10m"]).polars_scale == "10m"
+
+
 def test_build_pytest_args_allows_targeted_perf_lane(tmp_path: Path) -> None:
     args = run_perf_suite._parse_args(
         [
@@ -118,7 +124,39 @@ def test_build_report_records_artifact_ready_summary() -> None:
         command=["pytest", "-m", "perf"],
     )
 
-    assert report["schema_version"] == 1
+    assert report["schema_version"] == 2
+    assert report["scenario"] == {"polars_scale": "ci"}
+    assert report["rss"]["peak_rss_bytes"] is None
+    assert set(report["environment"]) == {"python", "platform", "polars"}
     assert report["budgets"] == {"max_total_seconds": 60.0, "max_test_seconds": 5.0}
     assert report["summary"]["outcomes"] == {"passed": 1, "xfailed": 1}
     assert report["summary"]["slowest"][0]["nodeid"] == "tests/test_perf.py::test_fast"
+
+
+def test_process_rss_monitor_records_independent_peak() -> None:
+    from threading import Event
+
+    class Sampler:
+        def __init__(self) -> None:
+            self.values = iter([10, 30, 20])
+            self.sample_count = 0
+            self.third_sample = Event()
+
+        def process_rss_bytes(self, _pid: int) -> int:
+            self.sample_count += 1
+            if self.sample_count >= 3:
+                self.third_sample.set()
+            return next(self.values, 20)
+
+    sampler = Sampler()
+    monitor = run_perf_suite.ProcessRssMonitor(
+        poll_interval_seconds=0.001,
+        sampler=sampler,
+    )
+    monitor.start()
+    assert sampler.third_sample.wait(timeout=1)
+    envelope = monitor.stop()
+
+    assert envelope.sampler == "independent_process_rss_poll"
+    assert envelope.peak_rss_bytes == 30
+    assert envelope.sample_count >= 3

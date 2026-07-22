@@ -400,3 +400,54 @@ Known gaps: `Toolbar.tsx`'s inline timing/memory formatting helpers
 indirect coverage via `Toolbar.test.tsx`; `theme/colors.ts` has no test (it
 is a constants file with no logic to verify beyond TypeScript's own
 type-checking).
+
+## Polars backend contracts (0.6.0)
+
+See [the remediation plan](../../trip/plans/F_0.6.0_polars-backend-remediation.plan.md).
+The `api/` and `types/guards.ts` boundary will define one execution-strategy type and parser.
+Version 1 requires integer `schema_version=1`, `status`, `strategy`, `profile`, `boundedness`
+(`bounded|unbounded|unknown`), `reason_code`, `detail_state`
+(`available|unavailable|truncated`), and `boundaries`, `reasons`, and `provenance`. It accepts
+optional blocking/remediation, cost, metric, and provenance item detail. Human messages and
+remediation are capped at 512 characters, and strategy diagnostics must never carry plans,
+frames, or user data.
+
+Each bounded collection is parsed as exactly
+`{state: available|unavailable|truncated, total_count: number|null, items: T[]}`. `available`
+requires a non-negative integer `total_count === items.length`; `truncated` requires an integer
+`total_count > items.length`; and `unavailable` requires `total_count === null` and an empty
+array. Boundary/reason arrays may contain at most 32 items and provenance at most 128. The
+top-level `detail_state` must equal the worst wrapper state under
+`truncated` > `unavailable` > `available`.
+
+The parser validates, but never repairs, those invariants. An over-cap array, inconsistent
+state/count/items combination, inconsistent top-level `detail_state`, or non-canonical item
+ordering makes the full diagnostic unavailable; the browser must not perform its own truncation
+or present the malformed prefix as server-authoritative detail. Boundary ordering is
+`(topological_rank, node_id, operator, boundary_kind)`, where ranks come from the server's
+canonical topological sort. Reason ordering is
+`(topological_rank or max, node_id or '', reason_code, operator or '')`; provenance ordering is
+`(column, origin_kind, source_node_id or '', source_column or '')`. Comparators use ascending
+Unicode code-point order for those primary tuples. The parser accepts any relative order within
+an equal-primary group and preserves identical duplicates; it does not reproduce or validate the
+producer's Python-only canonical-JSON tie-break.
+
+The parser enforces the authoritative mapping: `projected` and `schema-all-except` map to
+`projected`; `full-width-admitted-eager` to `admitted_eager`;
+`unprojected-streaming-boundary` and `materialisation-boundary` to `boundary`; `unsupported`
+to `rejected`; and `not-planned` to `not_planned`. The shared UI states are therefore
+`projected`, `boundary`, `admitted_eager`, `rejected`, and `not_planned`, plus a distinct
+diagnostic-unavailable render state.
+
+Consumers ignore unknown additive fields only within version 1. Missing or malformed required
+fields, unknown version-1 enum values, and unsupported higher versions produce diagnostic
+unavailable; they are not preserved as an unknown success status. Guard tests pin every mapping,
+all schema-version paths, all wrapper/detail states, Unicode primary-tuple ordering, every
+equal-primary permutation and duplicate retention, the 32/128 cap boundaries, over-cap rejection
+without client truncation, additive
+version-1 fields, and all other invalid payload paths. Feature panels import this shared type and
+guard rather than creating local readers. Typed HTTP 422 contract errors retain their stable code
+and named fields for accessible display, including `trace_correlation_unsupported` with
+`node_id`, ordered `key_columns`/`dtypes` arrays capped at 16, and `reason_code`. The group-by
+error additionally retains `remediation` and nullable `estimated_peak_bytes`/
+`headroom_bytes`.

@@ -10,7 +10,14 @@ from __future__ import annotations
 import math
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, BeforeValidator, Field, RootModel, field_validator
+from pydantic import (
+    BaseModel,
+    BeforeValidator,
+    Field,
+    RootModel,
+    field_validator,
+    model_validator,
+)
 
 from haute._types import GraphEdge as GraphEdge  # noqa: F401
 from haute._types import GraphNode as GraphNode  # noqa: F401
@@ -224,6 +231,200 @@ class SchemaWarning(BaseModel):
     status: str
 
 
+DiagnosticCollectionState = Literal["available", "unavailable", "truncated"]
+
+
+class ExecutionStrategyBoundaryPayload(BaseModel):
+    topological_rank: int = Field(ge=0)
+    node_id: str
+    operator: str
+    boundary_kind: Literal[
+        "unprojected-streaming-boundary",
+        "materialisation-boundary",
+    ]
+
+
+class ExecutionStrategyReasonPayload(BaseModel):
+    reason_code: str
+    topological_rank: int | None = Field(default=None, ge=0)
+    node_id: str | None = None
+    operator: str | None = None
+    message: str | None = Field(default=None, max_length=512)
+    parent_node_id: str | None = None
+
+
+class ExecutionStrategyProvenancePayload(BaseModel):
+    column: str
+    origin_kind: Literal[
+        "seed",
+        "contract",
+        "expression",
+        "join_key",
+        "conservative_boundary",
+    ]
+    source_node_id: str | None = None
+    source_column: str | None = None
+
+
+def _validate_diagnostic_collection(
+    *,
+    state: DiagnosticCollectionState,
+    total_count: int | None,
+    items: list[Any],
+    cap: int,
+) -> None:
+    if len(items) > cap:
+        raise ValueError(f"diagnostic collection exceeds its {cap}-item cap")
+    if state == "unavailable":
+        if total_count is not None or items:
+            raise ValueError("an unavailable collection has null total_count and no items")
+        return
+    if total_count is None or total_count < 0:
+        raise ValueError("an available/truncated collection requires a non-negative count")
+    if state == "available" and total_count != len(items):
+        raise ValueError("available total_count must equal len(items)")
+    if state == "truncated" and total_count <= len(items):
+        raise ValueError("truncated total_count must exceed len(items)")
+
+
+class ExecutionStrategyBoundaryCollectionPayload(BaseModel):
+    state: DiagnosticCollectionState
+    total_count: int | None
+    items: list[ExecutionStrategyBoundaryPayload]
+
+    @model_validator(mode="after")
+    def _validate_collection(self) -> ExecutionStrategyBoundaryCollectionPayload:
+        _validate_diagnostic_collection(
+            state=self.state,
+            total_count=self.total_count,
+            items=self.items,
+            cap=32,
+        )
+        keys = [
+            (item.topological_rank, item.node_id, item.operator, item.boundary_kind)
+            for item in self.items
+        ]
+        if keys != sorted(keys):
+            raise ValueError("boundary items must be in nondecreasing primary-key order")
+        return self
+
+
+class ExecutionStrategyReasonCollectionPayload(BaseModel):
+    state: DiagnosticCollectionState
+    total_count: int | None
+    items: list[ExecutionStrategyReasonPayload]
+
+    @model_validator(mode="after")
+    def _validate_collection(self) -> ExecutionStrategyReasonCollectionPayload:
+        _validate_diagnostic_collection(
+            state=self.state,
+            total_count=self.total_count,
+            items=self.items,
+            cap=32,
+        )
+        max_rank = 2**63 - 1
+        keys = [
+            (
+                max_rank if item.topological_rank is None else item.topological_rank,
+                item.node_id or "",
+                item.reason_code,
+                item.operator or "",
+            )
+            for item in self.items
+        ]
+        if keys != sorted(keys):
+            raise ValueError("reason items must be in nondecreasing primary-key order")
+        return self
+
+
+class ExecutionStrategyProvenanceCollectionPayload(BaseModel):
+    state: DiagnosticCollectionState
+    total_count: int | None
+    items: list[ExecutionStrategyProvenancePayload]
+
+    @model_validator(mode="after")
+    def _validate_collection(self) -> ExecutionStrategyProvenanceCollectionPayload:
+        _validate_diagnostic_collection(
+            state=self.state,
+            total_count=self.total_count,
+            items=self.items,
+            cap=128,
+        )
+        keys = [
+            (
+                item.column,
+                item.origin_kind,
+                item.source_node_id or "",
+                item.source_column or "",
+            )
+            for item in self.items
+        ]
+        if keys != sorted(keys):
+            raise ValueError("provenance items must be in nondecreasing primary-key order")
+        return self
+
+
+class ExecutionStrategyDiagnosticPayload(BaseModel):
+    """Strict V1 API DTO for one shared execution-planning decision."""
+
+    schema_version: Literal[1]
+    status: Literal["projected", "admitted_eager", "boundary", "rejected", "not_planned"]
+    strategy: Literal[
+        "projected",
+        "schema-all-except",
+        "full-width-admitted-eager",
+        "unprojected-streaming-boundary",
+        "materialisation-boundary",
+        "unsupported",
+        "not-planned",
+    ]
+    profile: Literal[
+        "preview_eager",
+        "lazy_sink",
+        "training_prep",
+        "optimiser_setup",
+        "explore_analysis",
+        "auto_range",
+        "deploy_live",
+        "deploy_batch",
+        "chunked_map_reduce",
+    ]
+    boundedness: Literal["bounded", "unbounded", "unknown"]
+    reason_code: str
+    detail_state: DiagnosticCollectionState
+    boundaries: ExecutionStrategyBoundaryCollectionPayload
+    reasons: ExecutionStrategyReasonCollectionPayload
+    provenance: ExecutionStrategyProvenanceCollectionPayload
+    blocking_node_id: str | None = None
+    blocking_operator: str | None = None
+    remediation: str | None = Field(default=None, max_length=512)
+    estimated_peak_bytes: int | None = Field(default=None, ge=0)
+    headroom_bytes: int | None = Field(default=None, ge=0)
+    assumptions: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _validate_strategy_contract(self) -> ExecutionStrategyDiagnosticPayload:
+        expected_status = {
+            "projected": "projected",
+            "schema-all-except": "projected",
+            "full-width-admitted-eager": "admitted_eager",
+            "unprojected-streaming-boundary": "boundary",
+            "materialisation-boundary": "boundary",
+            "unsupported": "rejected",
+            "not-planned": "not_planned",
+        }[self.strategy]
+        if self.status != expected_status:
+            raise ValueError("status does not match the V1 strategy mapping")
+        precedence = {"available": 0, "unavailable": 1, "truncated": 2}
+        expected_detail_state = max(
+            (self.boundaries.state, self.reasons.state, self.provenance.state),
+            key=precedence.__getitem__,
+        )
+        if self.detail_state != expected_detail_state:
+            raise ValueError("detail_state must equal the worst child collection state")
+        return self
+
+
 class ExecutionStageMetricsPayload(BaseModel):
     schema_version: int = 1
     name: str = ""
@@ -243,6 +444,51 @@ class ExecutionStageMetricsPayload(BaseModel):
     columns_scanned: int | None = None
     n_collects: int = 0
     n_checkpoints: int = 0
+
+
+class ExecutionStreamabilityEvidencePayload(BaseModel):
+    state: DiagnosticCollectionState = "unavailable"
+    total_count: int | None = None
+    items: list[str] = Field(default_factory=list, max_length=32)
+
+    @model_validator(mode="after")
+    def _validate_collection(self) -> ExecutionStreamabilityEvidencePayload:
+        _validate_diagnostic_collection(
+            state=self.state,
+            total_count=self.total_count,
+            items=self.items,
+            cap=32,
+        )
+        if self.items != sorted(set(self.items)):
+            raise ValueError("streamability evidence must be sorted and unique")
+        return self
+
+
+class ExecutionColumnWidthsPayload(BaseModel):
+    node_id: str
+    input_width: int | None = Field(default=None, ge=0)
+    output_width: int | None = Field(default=None, ge=0)
+    requested_width: int | None = Field(default=None, ge=0)
+    physically_scanned_width: int | None = Field(default=None, ge=0)
+
+
+class ExecutionColumnWidthsCollectionPayload(BaseModel):
+    state: Literal["available", "truncated"] = "available"
+    total_count: int = Field(default=0, ge=0)
+    items: list[ExecutionColumnWidthsPayload] = Field(default_factory=list, max_length=128)
+
+    @model_validator(mode="after")
+    def _validate_collection(self) -> ExecutionColumnWidthsCollectionPayload:
+        _validate_diagnostic_collection(
+            state=self.state,
+            total_count=self.total_count,
+            items=self.items,
+            cap=128,
+        )
+        node_ids = [item.node_id for item in self.items]
+        if node_ids != sorted(node_ids) or len(node_ids) != len(set(node_ids)):
+            raise ValueError("column-width items must have unique sorted node ids")
+        return self
 
 
 class ExecutionAdmissionPayload(BaseModel):
@@ -333,7 +579,21 @@ class ExecutionMetricsPayload(BaseModel):
     admission: ExecutionAdmissionPayload | None = None
     stages: list[ExecutionStageMetricsPayload] = Field(default_factory=list)
     memory_pressure_events: list[ExecutionMemoryPressureEventPayload] = Field(default_factory=list)
+    execution_strategy: ExecutionStrategyDiagnosticPayload | None = None
     projection_plan_diagnostics: dict[str, Any] | None = None
+    streamability: Literal["streaming", "materialising"] | None = None
+    streamability_evidence: ExecutionStreamabilityEvidencePayload = Field(
+        default_factory=ExecutionStreamabilityEvidencePayload
+    )
+    column_widths: ExecutionColumnWidthsCollectionPayload = Field(
+        default_factory=ExecutionColumnWidthsCollectionPayload
+    )
+    bytes_read: int | None = Field(default=None, ge=0)
+    bytes_written: int | None = Field(default=None, ge=0)
+    estimated_bytes: int | None = Field(default=None, ge=0)
+    checkpoint_count: int = Field(default=0, ge=0)
+    chunk_count: int = Field(default=0, ge=0)
+    observed_peak_rss_bytes: int | None = Field(default=None, ge=0)
 
 
 NodeExecutionStatus = Literal["ok", "error"]
@@ -970,6 +1230,90 @@ class TrainRequest(BaseModel):
     streaming_chunk_size: StreamingChunkSize = None
 
 
+TrainingFeatureSelectionMode = Literal["explicit", "all_except", "glm_terms"]
+TrainingFeatureExclusionReason = Literal[
+    "target",
+    "weight",
+    "offset",
+    "fold",
+    "identifier",
+    "split",
+    "configured_exclusion",
+    "not_selected",
+    "not_in_formula",
+]
+
+
+class TrainingFeatureNameCollectionPayload(BaseModel):
+    state: Literal["available", "truncated"]
+    total_count: int = Field(ge=0)
+    items: list[str] = Field(max_length=128)
+
+    @model_validator(mode="after")
+    def _validate_collection(self) -> TrainingFeatureNameCollectionPayload:
+        _validate_diagnostic_collection(
+            state=self.state,
+            total_count=self.total_count,
+            items=self.items,
+            cap=128,
+        )
+        if len(self.items) != len(set(self.items)):
+            raise ValueError("training feature names must be unique")
+        return self
+
+
+class TrainingFeatureColumnReasonPayload(BaseModel):
+    column: str
+    reason: TrainingFeatureExclusionReason
+
+
+class TrainingFeatureColumnReasonCollectionPayload(BaseModel):
+    state: Literal["available", "truncated"]
+    total_count: int = Field(ge=0)
+    items: list[TrainingFeatureColumnReasonPayload] = Field(max_length=128)
+
+    @model_validator(mode="after")
+    def _validate_collection(self) -> TrainingFeatureColumnReasonCollectionPayload:
+        _validate_diagnostic_collection(
+            state=self.state,
+            total_count=self.total_count,
+            items=self.items,
+            cap=128,
+        )
+        columns = [item.column for item in self.items]
+        if len(columns) != len(set(columns)):
+            raise ValueError("training feature column reasons must be unique")
+        return self
+
+
+class TrainingFeatureSelectionDiagnosticPayload(BaseModel):
+    schema_version: Literal[1] = 1
+    mode: TrainingFeatureSelectionMode
+    feature_count: int = Field(ge=0)
+    detail_state: Literal["available", "truncated"]
+    features: TrainingFeatureNameCollectionPayload
+    retained_metadata: TrainingFeatureColumnReasonCollectionPayload
+    excluded_columns: TrainingFeatureColumnReasonCollectionPayload
+
+    @model_validator(mode="after")
+    def _validate_selection(self) -> TrainingFeatureSelectionDiagnosticPayload:
+        if self.feature_count != self.features.total_count:
+            raise ValueError("feature_count must equal features.total_count")
+        expected = (
+            "truncated"
+            if "truncated"
+            in {
+                self.features.state,
+                self.retained_metadata.state,
+                self.excluded_columns.state,
+            }
+            else "available"
+        )
+        if self.detail_state != expected:
+            raise ValueError("detail_state must equal the worst child collection state")
+        return self
+
+
 class TrainResponse(BaseModel):
     status: Literal["started", "completed", "error"]
     job_id: str | None = None
@@ -1010,6 +1354,7 @@ class TrainResponse(BaseModel):
     diagnostics_errors: list[dict[str, str]] = Field(default_factory=list)
     warning: str | None = None
     total_source_rows: int | None = None
+    feature_selection: TrainingFeatureSelectionDiagnosticPayload | None = None
 
 
 class TrainStatusResponse(BaseModel):
@@ -1026,6 +1371,7 @@ class TrainStatusResponse(BaseModel):
     warning: str | None = None
     terminal_reason: str | None = None
     execution_metrics: ExecutionMetricsPayload | None = None
+    feature_selection: TrainingFeatureSelectionDiagnosticPayload | None = None
 
 
 class TrainEstimateRequest(BaseModel):

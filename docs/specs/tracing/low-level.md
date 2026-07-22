@@ -556,3 +556,155 @@ particular have dedicated regression files (`test_trace_w4_fixes.py`,
 tests. This spec does not itself execute the suite; treat file/class presence as
 an index, not a substitute for running `pytest tests/test_trace*.py
 tests/test_optimiser_apply_trace_enrichment.py` when changing this component.
+
+## Polars backend contracts (0.6.0)
+
+This implementation slice is governed by the
+[Polars backend remediation plan](../../trip/plans/F_0.6.0_polars-backend-remediation.plan.md)
+and is delivered as P9a (correlation/enrichment) followed by P9b (cache
+integration). P9a does not wait for or introduce lineage-key code. P9b starts
+only after the shared caching/lineage-preview-key slice is complete.
+
+### Correlation primitive
+
+Introduce one internal vectorized matching primitive and typed result used by
+`_find_target_row_index`, ordinary post-hoc parent correlation, edge-join parent
+matching, and multi-frame source-frame selection. The result distinguishes
+`no_match`, `unique_strict`, `unique_relaxed`, `ambiguous`, and
+`unsupported_dtype`, and includes at least strict/effective key columns,
+relaxation reason, exact `candidate_count`, up to 16 candidate indices, and an
+explicit candidate availability/truncation state. It builds Polars expressions
+and never materialises shared keys into Python or iterates a frame row-by-row in
+Python. Counting candidates can inspect the full result inside Polars, but no
+more than 16 indices cross into Python.
+
+The V1 strict-comparison matrix is bounded and exhaustive. It is also the
+per-value comparator used after any key relaxation; relaxation can omit keys but
+cannot weaken a retained key's comparison:
+
+| Dtype family | Exact V1 comparison contract |
+| --- | --- |
+| Null | Null matches only null. It does not match any finite/non-finite value or sentinel. |
+| Boolean | Exact boolean equality. Boolean is never numeric: `true` does not match `1`/`1.0`, and `false` does not match `0`/`0.0`. |
+| Integer/integer | Exact mathematical integer equality after lossless signed/unsigned coercion. Overflow or an unrepresentable cross-signed comparison is `unsupported_dtype`, not a float cast. |
+| Integer/float | Allowed only when `abs(integer) <= 2**53` and the float is finite. Compare with the finite-numeric formula below. Above that boundary integer/float is `unsupported_dtype`. |
+| Unsafe integer/string | An integer represented at the JSON boundary outside the JavaScript-safe range matches only its exact canonical base-10 decimal string. No whitespace, `+`, exponent, decimal point, or redundant leading zero is accepted; `0` is the only zero spelling. No other numeric/string coercion is supported. |
+| Finite float/numeric | For finite values `a` and `b`, match iff `abs(a - b) <= max(1e-12, 1e-9 * max(abs(a), abs(b)))`. This one formula is used for float/float and the permitted integer/float case. |
+| Non-finite float/sentinel | NaN matches only NaN or `{"__haute_type__": "non_finite_float", "value": "nan"}`; positive infinity only positive infinity or the same canonical sentinel with value `"inf"`; negative infinity only negative infinity or the sentinel with value `"-inf"`. There is no cross-sign, finite, null, malformed-sentinel, or other-sentinel match. |
+| String/binary | Exact equality within a compatible string or binary family. Apart from the unsafe-integer rule above, string is not numeric. String/binary cross-family comparison is unsupported. |
+| Date | Date matches only Date representing the same calendar day. Date-versus-Datetime is unsupported. |
+| Time | Time matches only Time at the exact same integer nanosecond-of-day. Unit conversion is checked. |
+| Datetime | Normalise compatible units to a checked integer UTC nanosecond value. Timezone-aware matches only timezone-aware at the same instant; naive matches only naive. Aware-versus-naive, Date-versus-Datetime, or conversion overflow is `unsupported_dtype`. |
+| Duration | Exact equality after checked conversion to signed integer nanoseconds. A lossy or overflowing conversion is `unsupported_dtype`. |
+| Decimal | Exact equality after losslessly rescaling both integer coefficients to the larger scale. Decimal never compares through float; rescaling overflow or incompatible precision is `unsupported_dtype`. |
+| Categorical/enum | Compare normalised string values, not physical category codes. |
+| List/array/struct | Polars 1.39.3 native equality against a typed one-row literal, only for the same compatible schema. |
+
+Object values and incompatible nested schemas return `unsupported_dtype`.
+Neither case can invoke a Python scalar loop or full-frame fallback. The
+canonical preview/trace serializer remains the display-value authority only;
+its support for arbitrary objects is not a correlation-key contract.
+
+Relaxation runs only after zero strict candidates, follows an explicit ordered
+rule set, and returns `unique_relaxed` only for one candidate. Ambiguous relaxed
+results remain ambiguous. Callers emit a `low_confidence_relaxed_match`
+diagnostic naming omitted/relaxed keys, reason, exact candidate count, available
+candidate indices, and whether those indices were truncated; they cannot promote
+it to an unmarked strict result.
+
+Every match result has these exact candidate fields:
+
+- `candidate_count: int|null`
+- `candidate_indices: list[int]`
+- `candidate_indices_state: available|truncated|unavailable`
+
+For every supported path, the primitive adds `with_row_index` before filtering,
+counts the full candidate set exactly inside Polars, orders the original physical
+row indices ascending, and returns the first 16. `candidate_indices_state` is
+`available` if and only if `candidate_count <= 16` (including zero), and is
+`truncated` if and only if `candidate_count > 16`. For `unsupported_dtype`, the
+only valid payload is `candidate_count = null`, `candidate_indices = []`, and
+`candidate_indices_state = unavailable`. All arrays returned by the primitive
+or copied into diagnostics are deterministic and capped at 16 entries.
+
+Target relocation maps ambiguity to the existing loud `ValueError`; upstream
+correlation maps it to the unresolved-step diagnostic. Target relocation maps
+`unsupported_dtype` to the public
+`TraceCorrelationUnsupportedError(ExecutionError)`, exported from
+`haute.errors`. That exception has stable code
+`trace_correlation_unsupported` and exactly the stable diagnostic fields
+`node_id`, `key_columns`, `dtypes`, and `reason_code`; the HTTP route maps it to
+422 and a background execution records `contract_error`. Array-valued fields
+are deterministic and capped at 16 entries. `key_columns` and `dtypes` are
+aligned, retain deterministic match-key order, and are capped together. Upstream
+correlation remains unresolved and records a typed `unsupported_dtype`
+diagnostic. Existing edge-join provenance and multi-frame deterministic
+selection rules supply match rows and frames to the common primitive rather
+than reimplementing comparison.
+
+### Serialisation, caching, and enrichment
+
+`trace_result_to_dict()` delegates value conversion to the canonical preview
+JSON-safe serializer, including recursive temporal/nested values, arbitrary
+objects, non-finite values, and unsafe integers. Parity tests compare every
+trace input/output cell's JSON value with its preview equivalent. This serializer
+is display-only for arbitrary objects and must not be called as a way to turn an
+unsupported object or incompatible nested value into a correlation key.
+
+P9b trace-key construction calls the shared lineage preview-key factory from the
+caching remediation slice, after that API lands. It supplies every mandatory
+factory input and may add only trace-specific dimensions allowed by that factory;
+it must not recompute whole-graph identity or maintain a parallel lineage
+fingerprint. P9a makes no temporary cache-key abstraction.
+
+Create two distinct request-local structures owned by one `execute_trace()` call:
+
+- A completed-result enrichment memo, passed to enrichment helpers. Its key
+  includes node identity, concern, column, row identity, frame/port identity, and
+  every other input read by that concern. A sibling diamond may reuse an already
+  completed result with the identical key. Exceptions are never inserted.
+- An active recursion stack scoped to each call path. A helper pushes before
+  descent and pops in `finally`; encountering an active key produces the existing
+  structured cycle/error marker. Active entries are not completed memo values,
+  so a sibling branch is not mistaken for a cycle.
+
+Neither structure is module-level, embedded in the response, or retained after
+the request finishes.
+
+### Delivery and verification
+
+Implement P9a in this order: (1) typed primitive and every V1 matrix-cell test;
+(2) strict/JSON-parity tests; (3) all correlation call-site migration with
+duplicate and unsupported-dtype regressions; (4) relaxed diagnostics and bounded
+candidate reporting; (5) completed-result memo and per-call-path stack tests.
+Implement P9b only after the lineage key factory exists: integrate it and delete
+duplicate trace key construction. Do not implement row-id injection, persistent
+enrichment caching, new API/UI surfaces, arbitrary-object key coercion, or
+heuristic ambiguity resolution in either slice.
+
+Tests prove no Python shared-key full-frame scan remains (source/AST or
+instrumented structural assertion), vectorized matching is used by every call
+site, and every matrix cell has supported and unsupported coverage. Boundary
+tests pin finite comparisons just below, exactly on, and just above the absolute
+and relative tolerance branches; negative and zero-centred values; boolean
+versus 0/1; exact integer/integer comparison; integer/float at `abs(integer) ==
+2**53` and rejection above it; exact canonical unsafe-integer strings plus
+leading-zero, plus-sign, whitespace, exponent, and decimal-point rejections; and
+the complete NaN/`nan`, positive-infinity/`inf`, negative-infinity/`-inf`,
+cross-sign, finite, and null truth table.
+
+Temporal and Decimal boundary tests cover Date only with Date; Date-versus-
+Datetime rejection; Time nanosecond-of-day equality; Datetime unit normalisation,
+aware same-instant equality, aware-versus-naive rejection, and checked-nanosecond
+overflow; negative and positive Duration equality plus lossy/overflow rejection;
+and Decimal equal values at different scales, unequal values, precision/rescale
+overflow, and Decimal-versus-float rejection. Candidate tests assert the exact
+payload at counts 0, 1, 16, and 17, including ascending original physical row
+indices from `with_row_index` and the only valid unsupported payload. Duplicate
+target/parent matches remain loud or unresolved; unsupported target values raise
+`TraceCorrelationUnsupportedError`; its code, named fields, 422/background
+mapping, deterministic order, and 16-entry caps are pinned; unsupported parent
+values stay unresolved with the typed diagnostic; and trace/preview JSON parity
+holds without broadening key support. Add large-frame correlation performance
+coverage plus memo tests for same-key reuse, differing concern inputs, sibling
+diamonds, cycle push/pop, exceptions, and cross-request isolation.

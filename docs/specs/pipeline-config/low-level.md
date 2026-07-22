@@ -336,3 +336,31 @@ generated graphs.
 > equivalent graphs for the same source pipeline — consistent with the type-inference
 > divergence noted above under Edge cases. The static unknown-endpoint omission is unit-tested
 > as current behaviour, but no end-to-end test requires it to produce a visible warning.
+
+## Polars backend contracts (0.6.0)
+
+This component implements the pipeline-config portions of
+[`F_0.6.0_polars-backend-remediation.plan.md`](../../trip/plans/F_0.6.0_polars-backend-remediation.plan.md).
+
+`Node` computes `_InputArity` exactly once from `inspect.signature(fn)` during registration or
+construction and stores it as immutable node state; execution consumes that stored result rather
+than inspecting the callable again. `POSITIONAL_ONLY` and `POSITIONAL_OR_KEYWORD` parameters
+are supported edge inputs, with defaults making them optional. `KEYWORD_ONLY` parameters are
+never edges. `VAR_POSITIONAL` (`*args`) is the only supported unbounded form, after required
+positional inputs. Unsupported callable signatures and all arity/wiring mismatches raise loudly
+with node name and expected arity.
+
+Live-switch execution distinguishes an absent mapping from a present mapping. Without a mapping,
+default-source fallback remains permitted. With one, lookup of the active scenario is mandatory:
+a missing key raises `LiveSwitchScenarioError(ExecutionError)` and never silently selects the
+default source. The exception exposes stable code `live_switch_scenario_missing` plus stable
+`switch`, `scenario`, and `available_mappings` fields; `available_mappings` is deterministic so
+the same configuration produces the same diagnostic. HTTP translation returns 422, while a
+background run records `contract_error` with the same code and fields.
+
+Focused tests cover one-time signature inspection, required/optional/`*args` arity, malformed
+wiring, unconfigured live-switch fallback, configured matching selection, and configured
+mappings missing the active scenario, including exact exception inheritance/code/fields and
+HTTP/background translation. The 0.6 pre-1.0 migration note documents the newly loud configured
+mapping miss. Non-goals: implicit wiring inference, additional variadic forms, changes to
+successful mapped live-switch selection, or removal of unconfigured default-source fallback.

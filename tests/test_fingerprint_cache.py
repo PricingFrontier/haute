@@ -97,10 +97,10 @@ class TestCacheMiss:
         cache.store("fp1", x={"a": 1})
         assert cache.try_get("wrong_fp") is None
 
-    def test_empty_first_slot_treated_as_hit(self) -> None:
-        """Empty dict is a valid stored value (not a miss) thanks to _MISSING sentinel."""
+    def test_store_always_populates_the_first_declared_slot(self) -> None:
+        """Every supported write constructs the complete fixed-slot entry."""
         cache = FingerprintCache(slots=("primary", "secondary"))
-        cache.store("fp1", primary={}, secondary={"ok": True})
+        cache.store("fp1", secondary={"ok": True})
         data = cache.try_get("fp1")
         assert data is not None
         assert data["primary"] == {}
@@ -173,6 +173,13 @@ class TestValidation:
         cache = FingerprintCache(slots=("a", "b"))
         with pytest.raises(ValueError, match="Unknown slot"):
             cache.store("fp1", a={}, c={"bad": True})
+
+    def test_size_sensitive_slots_require_byte_accounting(self) -> None:
+        with pytest.raises(ValueError, match="size_sensitive_slots requires max_bytes and size_of"):
+            FingerprintCache(
+                slots=("payload", "metadata"),
+                size_sensitive_slots=("payload",),
+            )
 
 
 # ---------------------------------------------------------------------------

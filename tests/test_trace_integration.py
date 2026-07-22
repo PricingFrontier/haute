@@ -2324,14 +2324,14 @@ class TestEdgeCaseListColumns:
 
         result = execute_trace(graph, row_index=0, target_node_id="t")
         t_step = _step_by_id(result, "t")
-        # List should be stringified
-        assert isinstance(t_step.output_values["tags"], str)
+        # Trace shares preview's recursive JSON-safe representation.
+        assert t_step.output_values["tags"] == ["a", "b"]
 
 
 class TestEdgeCaseStructColumns:
     """M.8: Row with struct columns.
 
-    Struct values should be stringified.
+    Struct values use the preview JSON-safe representation.
     Why: Nested data structures appear in some policy schemas.
     """
 
@@ -2354,8 +2354,7 @@ class TestEdgeCaseStructColumns:
 
         result = execute_trace(graph, row_index=0, target_node_id="t")
         t_step = _step_by_id(result, "t")
-        # Struct should be stringified
-        assert isinstance(t_step.output_values["s"], str)
+        assert t_step.output_values["s"] == {"x": 1, "y": 10}
 
 
 class TestEdgeCaseUnicodeColumnNames:

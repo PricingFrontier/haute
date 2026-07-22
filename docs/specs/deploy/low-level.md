@@ -390,3 +390,11 @@ suite.
 `NotImplementedError`, since the implementations don't exist yet. Generated `app.py` is
 imported and exercised in-process through `TestClient`, but no test boots a built Docker
 image, contacts a real registry/Databricks workspace, or verifies a cloud service update.
+
+## Polars backend contracts (0.6.0)
+
+Deploy's batch scorer and seedless live-scoring entry points call the shared execution
+facade and propagate its typed diagnostics. Their score, schema, ordering, and output
+envelope contracts remain unchanged. No deploy module decides execution strategy;
+execution-engine owns that policy. See the
+[remediation plan](../../trip/plans/F_0.6.0_polars-backend-remediation.plan.md).

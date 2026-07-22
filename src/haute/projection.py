@@ -8,11 +8,14 @@ than reaching into executor internals.
 from __future__ import annotations
 
 import ast
+import heapq
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from enum import StrEnum
 from types import MappingProxyType
 from typing import Any, NamedTuple
 
+from haute._cache import canonical_json
 from haute._code_extraction import _strip_generated_boilerplate_from_code
 from haute._contracts import Contract, get_column_contract
 from haute._edge_join import (
@@ -52,6 +55,266 @@ __all__ = [
 ]
 
 
+class ExecutionStrategy(StrEnum):
+    """Closed V1 execution-strategy vocabulary."""
+
+    PROJECTED = "projected"
+    SCHEMA_ALL_EXCEPT = "schema-all-except"
+    FULL_WIDTH_ADMITTED_EAGER = "full-width-admitted-eager"
+    UNPROJECTED_STREAMING_BOUNDARY = "unprojected-streaming-boundary"
+    MATERIALISATION_BOUNDARY = "materialisation-boundary"
+    UNSUPPORTED = "unsupported"
+    NOT_PLANNED = "not-planned"
+
+
+class ExecutionStrategyStatus(StrEnum):
+    PROJECTED = "projected"
+    ADMITTED_EAGER = "admitted_eager"
+    BOUNDARY = "boundary"
+    REJECTED = "rejected"
+    NOT_PLANNED = "not_planned"
+
+
+class ExecutionBoundedness(StrEnum):
+    BOUNDED = "bounded"
+    UNBOUNDED = "unbounded"
+    UNKNOWN = "unknown"
+
+
+class DiagnosticDetailState(StrEnum):
+    AVAILABLE = "available"
+    UNAVAILABLE = "unavailable"
+    TRUNCATED = "truncated"
+
+
+_STATUS_BY_STRATEGY: Mapping[ExecutionStrategy, ExecutionStrategyStatus] = MappingProxyType(
+    {
+        ExecutionStrategy.PROJECTED: ExecutionStrategyStatus.PROJECTED,
+        ExecutionStrategy.SCHEMA_ALL_EXCEPT: ExecutionStrategyStatus.PROJECTED,
+        ExecutionStrategy.FULL_WIDTH_ADMITTED_EAGER: ExecutionStrategyStatus.ADMITTED_EAGER,
+        ExecutionStrategy.UNPROJECTED_STREAMING_BOUNDARY: ExecutionStrategyStatus.BOUNDARY,
+        ExecutionStrategy.MATERIALISATION_BOUNDARY: ExecutionStrategyStatus.BOUNDARY,
+        ExecutionStrategy.UNSUPPORTED: ExecutionStrategyStatus.REJECTED,
+        ExecutionStrategy.NOT_PLANNED: ExecutionStrategyStatus.NOT_PLANNED,
+    }
+)
+
+_DETAIL_STATE_PRECEDENCE = {
+    DiagnosticDetailState.AVAILABLE: 0,
+    DiagnosticDetailState.UNAVAILABLE: 1,
+    DiagnosticDetailState.TRUNCATED: 2,
+}
+_DIAGNOSTIC_MESSAGE_LIMIT = 512
+_BOUNDARY_REASON_CAP = 32
+_PROVENANCE_CAP = 128
+_MAX_TOPOLOGICAL_RANK = 2**63 - 1
+
+
+def _bounded_item_primary_key(item: Mapping[str, Any], kind: str) -> tuple[Any, ...]:
+    if kind == "boundaries":
+        return (
+            item["topological_rank"],
+            item["node_id"],
+            item["operator"],
+            item["boundary_kind"],
+        )
+    if kind == "reasons":
+        rank = item.get("topological_rank")
+        return (
+            _MAX_TOPOLOGICAL_RANK if rank is None else rank,
+            item.get("node_id") or "",
+            item["reason_code"],
+            item.get("operator") or "",
+        )
+    if kind == "provenance":
+        return (
+            item["column"],
+            item["origin_kind"],
+            item.get("source_node_id") or "",
+            item.get("source_column") or "",
+        )
+    raise ValueError(f"unknown diagnostic collection kind: {kind!r}")
+
+
+def _bounded_item(item: Mapping[str, Any]) -> Mapping[str, Any]:
+    copied = dict(item)
+    for field_name in ("message", "remediation"):
+        value = copied.get(field_name)
+        if isinstance(value, str):
+            copied[field_name] = value[:_DIAGNOSTIC_MESSAGE_LIMIT]
+    canonical_json(copied)
+    return MappingProxyType(copied)
+
+
+@dataclass(frozen=True)
+class BoundedDiagnosticCollection:
+    """A complete, deterministically truncated, or unavailable V1 detail list."""
+
+    state: DiagnosticDetailState
+    total_count: int | None
+    items: tuple[Mapping[str, Any], ...]
+
+    def __post_init__(self) -> None:
+        if self.state is DiagnosticDetailState.UNAVAILABLE:
+            if self.total_count is not None or self.items:
+                raise ValueError("an unavailable collection has null count and no items")
+            return
+        if (
+            not isinstance(self.total_count, int)
+            or isinstance(self.total_count, bool)
+            or self.total_count < 0
+        ):
+            raise ValueError("an available/truncated collection requires a non-negative count")
+        if self.state is DiagnosticDetailState.AVAILABLE:
+            if self.total_count != len(self.items):
+                raise ValueError("an available collection count must equal its item count")
+        elif self.total_count <= len(self.items):
+            raise ValueError("a truncated collection count must exceed its retained item count")
+
+    @classmethod
+    def available(cls, items: Iterable[Mapping[str, Any]]) -> BoundedDiagnosticCollection:
+        copied = tuple(_bounded_item(item) for item in items)
+        return cls(DiagnosticDetailState.AVAILABLE, len(copied), copied)
+
+    @classmethod
+    def unavailable(cls) -> BoundedDiagnosticCollection:
+        return cls(DiagnosticDetailState.UNAVAILABLE, None, ())
+
+    @classmethod
+    def from_items(
+        cls,
+        items: Iterable[Mapping[str, Any]],
+        *,
+        cap: int,
+        sort_key: str,
+    ) -> BoundedDiagnosticCollection:
+        if not isinstance(cap, int) or isinstance(cap, bool) or cap < 0:
+            raise ValueError("diagnostic collection cap must be a non-negative integer")
+        copied = [_bounded_item(item) for item in items]
+        copied.sort(
+            key=lambda item: (
+                _bounded_item_primary_key(item, sort_key),
+                canonical_json(item),
+            )
+        )
+        total_count = len(copied)
+        retained = tuple(copied[:cap])
+        if total_count > len(retained):
+            return cls(DiagnosticDetailState.TRUNCATED, total_count, retained)
+        return cls(DiagnosticDetailState.AVAILABLE, total_count, retained)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "state": self.state.value,
+            "total_count": self.total_count,
+            "items": [dict(item) for item in self.items],
+        }
+
+
+@dataclass(frozen=True)
+class ExecutionStrategyDiagnostic:
+    """Versioned JSON-safe strategy diagnostic produced by the shared planner."""
+
+    schema_version: int
+    status: ExecutionStrategyStatus
+    strategy: ExecutionStrategy
+    profile: str
+    boundedness: ExecutionBoundedness
+    reason_code: str
+    detail_state: DiagnosticDetailState
+    boundaries: BoundedDiagnosticCollection
+    reasons: BoundedDiagnosticCollection
+    provenance: BoundedDiagnosticCollection
+    blocking_node_id: str | None = None
+    blocking_operator: str | None = None
+    remediation: str | None = None
+    estimated_peak_bytes: int | None = None
+    headroom_bytes: int | None = None
+    assumptions: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.schema_version != 1:
+            raise ValueError("the strategy producer supports schema_version=1 only")
+        if self.status is not _STATUS_BY_STRATEGY[self.strategy]:
+            raise ValueError("strategy status does not match the V1 mapping")
+        expected_detail_state = max(
+            (self.boundaries.state, self.reasons.state, self.provenance.state),
+            key=_DETAIL_STATE_PRECEDENCE.__getitem__,
+        )
+        if self.detail_state is not expected_detail_state:
+            raise ValueError("detail_state must be the worst bounded collection state")
+        if len(self.remediation or "") > _DIAGNOSTIC_MESSAGE_LIMIT:
+            raise ValueError("remediation exceeds the V1 512-character cap")
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        strategy: ExecutionStrategy,
+        profile: ExecutionProfile | str,
+        boundedness: ExecutionBoundedness,
+        reason_code: str,
+        boundaries: BoundedDiagnosticCollection,
+        reasons: BoundedDiagnosticCollection,
+        provenance: BoundedDiagnosticCollection,
+        blocking_node_id: str | None = None,
+        blocking_operator: str | None = None,
+        remediation: str | None = None,
+        estimated_peak_bytes: int | None = None,
+        headroom_bytes: int | None = None,
+        assumptions: Iterable[str] = (),
+    ) -> ExecutionStrategyDiagnostic:
+        detail_state = max(
+            (boundaries.state, reasons.state, provenance.state),
+            key=_DETAIL_STATE_PRECEDENCE.__getitem__,
+        )
+        profile_name = profile.value if isinstance(profile, ExecutionProfile) else profile
+        return cls(
+            schema_version=1,
+            status=_STATUS_BY_STRATEGY[strategy],
+            strategy=strategy,
+            profile=profile_name,
+            boundedness=boundedness,
+            reason_code=reason_code,
+            detail_state=detail_state,
+            boundaries=boundaries,
+            reasons=reasons,
+            provenance=provenance,
+            blocking_node_id=blocking_node_id,
+            blocking_operator=blocking_operator,
+            remediation=(remediation[:_DIAGNOSTIC_MESSAGE_LIMIT] if remediation else None),
+            estimated_peak_bytes=estimated_peak_bytes,
+            headroom_bytes=headroom_bytes,
+            assumptions=tuple(str(item) for item in assumptions),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "schema_version": self.schema_version,
+            "status": self.status.value,
+            "strategy": self.strategy.value,
+            "profile": self.profile,
+            "boundedness": self.boundedness.value,
+            "reason_code": self.reason_code,
+            "detail_state": self.detail_state.value,
+            "boundaries": self.boundaries.to_dict(),
+            "reasons": self.reasons.to_dict(),
+            "provenance": self.provenance.to_dict(),
+        }
+        optional = {
+            "blocking_node_id": self.blocking_node_id,
+            "blocking_operator": self.blocking_operator,
+            "remediation": self.remediation,
+            "estimated_peak_bytes": self.estimated_peak_bytes,
+            "headroom_bytes": self.headroom_bytes,
+        }
+        payload.update({key: value for key, value in optional.items() if value is not None})
+        if self.assumptions:
+            payload["assumptions"] = list(self.assumptions)
+        canonical_json(payload)
+        return payload
+
+
 @dataclass(frozen=True)
 class ProjectionRequest:
     """Inputs required to compute a projection plan for a graph target."""
@@ -81,12 +344,7 @@ class ProjectionReason:
 
 @dataclass(frozen=True)
 class ProjectionDiagnostics:
-    """Lightweight diagnostics attached to a shared projection plan.
-
-    Full per-column provenance is intentionally deferred until the rule
-    extraction sub-slice.  This initial shape gives callers a stable place to
-    read opaque boundaries without depending on executor-private details.
-    """
+    """Lightweight diagnostics attached to a shared projection plan."""
 
     opaque_reasons: Mapping[str, ProjectionReason] = field(
         default_factory=lambda: MappingProxyType({})
@@ -199,6 +457,383 @@ class ProjectionPlan:
         payload = self.diagnostics.to_dict()
         payload["strategy_summary"] = self.strategy_summary_payload(profile=profile)
         return payload
+
+
+@dataclass(frozen=True)
+class ExecutionStrategyResult:
+    """Facade result pairing the internal projection plan with its V1 diagnostic."""
+
+    projection_plan: ProjectionPlan
+    diagnostic: ExecutionStrategyDiagnostic
+
+    @property
+    def schema_version(self) -> int:
+        return self.diagnostic.schema_version
+
+    @property
+    def status(self) -> ExecutionStrategyStatus:
+        return self.diagnostic.status
+
+    @property
+    def strategy(self) -> ExecutionStrategy:
+        return self.diagnostic.strategy
+
+    @property
+    def profile(self) -> str:
+        return self.diagnostic.profile
+
+    @property
+    def boundedness(self) -> ExecutionBoundedness:
+        return self.diagnostic.boundedness
+
+    @property
+    def reason_code(self) -> str:
+        return self.diagnostic.reason_code
+
+    @property
+    def detail_state(self) -> DiagnosticDetailState:
+        return self.diagnostic.detail_state
+
+    @property
+    def needed_by_node(self) -> Mapping[str, frozenset[str] | None]:
+        return self.projection_plan.needed_by_node
+
+    @property
+    def edge_demands(self) -> Mapping[tuple[str, str], frozenset[str] | None]:
+        return self.projection_plan.edge_demands
+
+    @property
+    def materialisation_boundaries(self) -> frozenset[str]:
+        return self.projection_plan.materialisation_boundaries
+
+    @property
+    def opaque_boundaries(self) -> frozenset[str]:
+        return self.projection_plan.opaque_boundaries
+
+    @property
+    def diagnostics(self) -> ProjectionDiagnostics:
+        return self.projection_plan.diagnostics
+
+    def diagnostics_payload(self, *, profile: str | None = None) -> dict[str, Any]:
+        """Return V1 wire fields plus the temporary legacy detail keys.
+
+        The compatibility keys carry existing internal metrics consumers until
+        P12 migrates them; strategy decisions themselves come only from the V1
+        fields above.
+        """
+        payload = self.diagnostic.to_dict()
+        legacy = self.projection_plan.diagnostics_payload(profile=profile or self.profile)
+        payload.update(legacy)
+        return payload
+
+
+def build_execution_strategy_result(
+    projection_plan: ProjectionPlan,
+    *,
+    profile: ExecutionProfile,
+    order: Iterable[str],
+    children_of: Mapping[str, Iterable[str]],
+    node_map: Mapping[str, GraphNode],
+    has_projection_seed: bool,
+    required_columns_by_node: Mapping[str, Iterable[str] | AllExceptColumns] | None = None,
+    strategy: ExecutionStrategy | None = None,
+    reason_code: str | None = None,
+    boundary_operators: Mapping[str, str] | None = None,
+    remediation: str | None = None,
+    estimated_peak_bytes: int | None = None,
+    headroom_bytes: int | None = None,
+    assumptions: Iterable[str] = (),
+) -> ExecutionStrategyResult:
+    """Build the deterministic V1 diagnostic for one projection plan."""
+    canonical_order = tuple(order)
+    ranks = _canonical_topological_ranks(canonical_order, children_of)
+    schema_all_except = any(
+        reason.rule == "schema_all_except"
+        for reason in projection_plan.diagnostics.node_reasons.values()
+    )
+    if strategy is None:
+        if not canonical_order:
+            strategy = ExecutionStrategy.NOT_PLANNED
+        elif projection_plan.materialisation_boundaries:
+            strategy = ExecutionStrategy.MATERIALISATION_BOUNDARY
+        elif schema_all_except:
+            strategy = ExecutionStrategy.SCHEMA_ALL_EXCEPT
+        elif projection_plan.opaque_boundaries:
+            strategy = (
+                ExecutionStrategy.FULL_WIDTH_ADMITTED_EAGER
+                if profile in {ExecutionProfile.PREVIEW_EAGER, ExecutionProfile.DEPLOY_LIVE}
+                and not has_projection_seed
+                else ExecutionStrategy.UNPROJECTED_STREAMING_BOUNDARY
+            )
+        else:
+            strategy = ExecutionStrategy.PROJECTED
+
+    if reason_code is None:
+        reason_code = {
+            ExecutionStrategy.PROJECTED: "projection_available",
+            ExecutionStrategy.SCHEMA_ALL_EXCEPT: "schema_all_except",
+            ExecutionStrategy.FULL_WIDTH_ADMITTED_EAGER: "full_width_admitted",
+            ExecutionStrategy.UNPROJECTED_STREAMING_BOUNDARY: ("unprojected_streaming_boundary"),
+            ExecutionStrategy.MATERIALISATION_BOUNDARY: ("group_by_materialisation_admitted"),
+            ExecutionStrategy.UNSUPPORTED: "unsupported",
+            ExecutionStrategy.NOT_PLANNED: "not_planned",
+        }[strategy]
+
+    if remediation is None:
+        remediation = {
+            ExecutionStrategy.PROJECTED: (
+                "No change is needed; the requested columns are projected through the graph."
+            ),
+            ExecutionStrategy.SCHEMA_ALL_EXCEPT: (
+                "Review the training exclusions if a narrower feature projection is required."
+            ),
+            ExecutionStrategy.FULL_WIDTH_ADMITTED_EAGER: (
+                "Select required columns or add column contracts to avoid "
+                "full-width eager execution."
+            ),
+            ExecutionStrategy.UNPROJECTED_STREAMING_BOUNDARY: (
+                "Add an explicit column contract or narrow the requested output "
+                "at the blocking node."
+            ),
+            ExecutionStrategy.MATERIALISATION_BOUNDARY: (
+                "Keep the materialisation within the reported memory headroom or narrow its input."
+            ),
+            ExecutionStrategy.UNSUPPORTED: (
+                "Narrow the input or remove the unsupported operator before running this profile."
+            ),
+            ExecutionStrategy.NOT_PLANNED: (
+                "Provide an executable target so Haute can plan the run."
+            ),
+        }[strategy]
+
+    boundedness = {
+        ExecutionStrategy.PROJECTED: ExecutionBoundedness.BOUNDED,
+        ExecutionStrategy.SCHEMA_ALL_EXCEPT: ExecutionBoundedness.BOUNDED,
+        ExecutionStrategy.UNPROJECTED_STREAMING_BOUNDARY: ExecutionBoundedness.BOUNDED,
+        ExecutionStrategy.FULL_WIDTH_ADMITTED_EAGER: ExecutionBoundedness.UNBOUNDED,
+        ExecutionStrategy.MATERIALISATION_BOUNDARY: ExecutionBoundedness.UNBOUNDED,
+        ExecutionStrategy.UNSUPPORTED: ExecutionBoundedness.UNKNOWN,
+        ExecutionStrategy.NOT_PLANNED: ExecutionBoundedness.UNKNOWN,
+    }[strategy]
+
+    operator_overrides = dict(boundary_operators or {})
+    boundary_items: list[dict[str, Any]] = []
+    boundary_node_ids = set(projection_plan.opaque_boundaries) | set(
+        projection_plan.materialisation_boundaries
+    )
+    for node_id in boundary_node_ids:
+        node = node_map.get(node_id)
+        operator = operator_overrides.get(
+            node_id,
+            node.data.nodeType.value if node is not None else "unknown",
+        )
+        boundary_items.append(
+            {
+                "topological_rank": ranks.get(node_id, _MAX_TOPOLOGICAL_RANK),
+                "node_id": node_id,
+                "operator": operator,
+                "boundary_kind": (
+                    ExecutionStrategy.MATERIALISATION_BOUNDARY.value
+                    if node_id in projection_plan.materialisation_boundaries
+                    else ExecutionStrategy.UNPROJECTED_STREAMING_BOUNDARY.value
+                ),
+            }
+        )
+
+    reason_items: list[dict[str, Any]] = []
+    for node_id, reason in projection_plan.diagnostics.node_reasons.items():
+        node = node_map.get(node_id)
+        reason_items.append(
+            {
+                "topological_rank": ranks.get(node_id),
+                "node_id": node_id,
+                "operator": node.data.nodeType.value if node is not None else None,
+                "reason_code": reason.rule,
+                "message": reason.message,
+            }
+        )
+    for (parent_id, child_id), reason in projection_plan.diagnostics.edge_reasons.items():
+        node = node_map.get(child_id)
+        reason_items.append(
+            {
+                "topological_rank": ranks.get(child_id),
+                "node_id": child_id,
+                "operator": node.data.nodeType.value if node is not None else None,
+                "reason_code": reason.rule,
+                "message": reason.message,
+                "parent_node_id": parent_id,
+            }
+        )
+
+    boundaries = BoundedDiagnosticCollection.from_items(
+        boundary_items,
+        cap=_BOUNDARY_REASON_CAP,
+        sort_key="boundaries",
+    )
+    reasons = BoundedDiagnosticCollection.from_items(
+        reason_items,
+        cap=_BOUNDARY_REASON_CAP,
+        sort_key="reasons",
+    )
+    provenance = BoundedDiagnosticCollection.from_items(
+        _execution_strategy_provenance_items(
+            projection_plan,
+            order=canonical_order,
+            node_map=node_map,
+            required_columns_by_node=required_columns_by_node,
+        ),
+        cap=_PROVENANCE_CAP,
+        sort_key="provenance",
+    )
+    first_boundary = boundaries.items[0] if boundaries.items else None
+    diagnostic = ExecutionStrategyDiagnostic.create(
+        strategy=strategy,
+        profile=profile,
+        boundedness=boundedness,
+        reason_code=reason_code,
+        boundaries=boundaries,
+        reasons=reasons,
+        provenance=provenance,
+        blocking_node_id=(str(first_boundary["node_id"]) if first_boundary else None),
+        blocking_operator=(str(first_boundary["operator"]) if first_boundary else None),
+        remediation=remediation,
+        estimated_peak_bytes=estimated_peak_bytes,
+        headroom_bytes=headroom_bytes,
+        assumptions=assumptions,
+    )
+    return ExecutionStrategyResult(projection_plan=projection_plan, diagnostic=diagnostic)
+
+
+def _execution_strategy_provenance_items(
+    projection_plan: ProjectionPlan,
+    *,
+    order: Iterable[str],
+    node_map: Mapping[str, GraphNode],
+    required_columns_by_node: Mapping[str, Iterable[str] | AllExceptColumns] | None,
+) -> tuple[Mapping[str, Any], ...]:
+    """Return deterministic, data-free per-column demand origins.
+
+    A provenance row names the node where a demand entered the reverse sweep.
+    Exact demands are attributed to a caller seed, a node expression, a join
+    key, or the ordinary column contract. Opaque demand is represented by the
+    reserved ``*`` column and never guesses at a source schema.
+    """
+    canonical_order = tuple(order)
+    seeded = normalise_required_columns_by_node(
+        required_columns_by_node,
+        list(canonical_order),
+    )
+    items: dict[tuple[str, str, str, str], Mapping[str, Any]] = {}
+    attributed: set[tuple[str, str]] = set()
+
+    def add(
+        column: str,
+        origin_kind: str,
+        source_node_id: str,
+        source_column: str | None = None,
+    ) -> None:
+        item: dict[str, Any] = {
+            "column": column,
+            "origin_kind": origin_kind,
+            "source_node_id": source_node_id,
+        }
+        if source_column is not None:
+            item["source_column"] = source_column
+        key = (column, origin_kind, source_node_id, source_column or "")
+        items[key] = item
+        attributed.add((source_node_id, column))
+
+    for node_id in canonical_order:
+        demand = projection_plan.needed_by_node.get(node_id)
+        reason = projection_plan.diagnostics.node_reasons.get(node_id)
+        if demand is None:
+            add("*", "conservative_boundary", node_id)
+
+        seed = seeded.get(node_id)
+        seed_applied = reason is not None and reason.rule in {
+            "projection_seed",
+            "schema_all_except",
+        }
+        if seed_applied and seed is not None:
+            seed_columns = seed.keep if isinstance(seed, AllExceptColumns) else seed
+            for column in sorted(seed_columns):
+                if demand is None or column in demand:
+                    add(column, "seed", node_id, column)
+
+        node = node_map.get(node_id)
+        if node is None:
+            continue
+        # An opaque demand has no column-level expression provenance to
+        # inspect.  In particular, dynamic contracts such as modelScore may
+        # resolve external artifacts; diagnostics must not perform that work
+        # after the planner has already classified the node as conservative.
+        if demand is None:
+            continue
+        produced, referenced = projection_contract(node).to_tuple()
+        if produced is not None and referenced is not None:
+            for column in sorted(referenced):
+                add(column, "expression", node_id, column)
+
+        if node.data.nodeType is NodeType.EDGE_JOIN:
+            base_keys, join_keys = edge_join_key_columns_by_role(node.data.config)
+            for column in sorted(base_keys | join_keys):
+                add(column, "join_key", node_id, column)
+
+    for node_id in canonical_order:
+        demand = projection_plan.needed_by_node.get(node_id)
+        if demand is None:
+            continue
+        for column in sorted(demand):
+            if (node_id, column) not in attributed:
+                add(column, "contract", node_id, column)
+
+    return tuple(items.values())
+
+
+def _canonical_topological_ranks(
+    order: Iterable[str],
+    children_of: Mapping[str, Iterable[str]],
+) -> Mapping[str, int]:
+    """Return canonical Kahn ranks with lexical node-id tie breaks."""
+    node_ids = set(order)
+    in_degree = dict.fromkeys(node_ids, 0)
+    canonical_children: dict[str, tuple[str, ...]] = {}
+    for parent_id in node_ids:
+        children = tuple(
+            sorted(
+                {child_id for child_id in children_of.get(parent_id, ()) if child_id in node_ids}
+            )
+        )
+        canonical_children[parent_id] = children
+        for child_id in children:
+            in_degree[child_id] += 1
+
+    ready = [node_id for node_id, degree in in_degree.items() if degree == 0]
+    heapq.heapify(ready)
+    canonical_order: list[str] = []
+    while ready:
+        node_id = heapq.heappop(ready)
+        canonical_order.append(node_id)
+        for child_id in canonical_children[node_id]:
+            in_degree[child_id] -= 1
+            if in_degree[child_id] == 0:
+                heapq.heappush(ready, child_id)
+    if len(canonical_order) != len(node_ids):
+        raise RuntimeError("execution strategy diagnostics received a cyclic prepared graph")
+    return MappingProxyType({node_id: rank for rank, node_id in enumerate(canonical_order)})
+
+
+def with_materialisation_boundaries(
+    projection_plan: ProjectionPlan,
+    node_ids: Iterable[str],
+) -> ProjectionPlan:
+    """Return a plan whose named nodes are explicit full-materialisation boundaries."""
+    boundaries = frozenset(node_ids)
+    return replace(
+        projection_plan,
+        materialisation_boundaries=projection_plan.materialisation_boundaries | boundaries,
+        opaque_boundaries=projection_plan.opaque_boundaries - boundaries,
+    )
 
 
 @dataclass(frozen=True)
@@ -540,6 +1175,47 @@ def source_user_code_preserves_column_projection(code: str) -> bool:
         return False
 
     return saw_df_assignment
+
+
+def group_by_operators_by_node(
+    order: Iterable[str],
+    node_map: Mapping[str, GraphNode],
+) -> Mapping[str, str]:
+    """Return group-by operators in deterministic execution order.
+
+    Only actual AST call attributes are classified; comments and string
+    literals containing ``group_by`` cannot accidentally trigger the boundary.
+    Syntax failures remain the owning code validator's error rather than being
+    broadened through a textual fallback.
+    """
+    found: dict[str, str] = {}
+    for node_id in order:
+        node = node_map[node_id]
+        if node.data.nodeType is not NodeType.POLARS:
+            continue
+        code = node.data.config.get("code")
+        if not isinstance(code, str) or not code.strip():
+            continue
+        try:
+            tree = ast.parse(code)
+        except SyntaxError:
+            continue
+        calls: list[tuple[ast.Call, str]] = []
+        for ast_node in ast.walk(tree):
+            if not isinstance(ast_node, ast.Call) or not isinstance(ast_node.func, ast.Attribute):
+                continue
+            if ast_node.func.attr in {"group_by", "groupby"}:
+                calls.append((ast_node, ast_node.func.attr))
+        calls.sort(
+            key=lambda item: (
+                getattr(item[0], "lineno", _MAX_TOPOLOGICAL_RANK),
+                getattr(item[0], "col_offset", _MAX_TOPOLOGICAL_RANK),
+                item[1],
+            )
+        )
+        if calls:
+            found[node_id] = calls[0][1]
+    return MappingProxyType(found)
 
 
 def builder_required_output_columns_by_node(
@@ -1400,16 +2076,6 @@ def _must_run_source_user_code_unprojected(node: GraphNode) -> bool:
     } and _user_code_has_unbounded_projection_contract(node)
 
 
-def _raise_if_unbounded_user_code_is_terminal(
-    node: GraphNode,
-    parent_ids: Iterable[str],
-    *,
-    strict_projection: bool,
-) -> None:
-    _ = node, parent_ids, strict_projection
-    return
-
-
 def opaque_contract_demands_for_node(
     node: GraphNode,
     parent_ids: Iterable[str],
@@ -2245,6 +2911,18 @@ def compute_prepared_plan(
                         seeded_columns=sorted(seed),
                         child_node_ids=sorted(children),
                     )
+                else:
+                    node_reasons[node_id] = ProjectionReason(
+                        rule="projection_seed_blocked_by_opaque_fan_out",
+                        message=(
+                            "caller projection seed could not safely replace opaque "
+                            "demand from multiple downstream consumers"
+                        ),
+                        details={
+                            "seeded_columns": tuple(sorted(seed)),
+                            "child_node_ids": tuple(sorted(children)),
+                        },
+                    )
             else:
                 existing = needed[node_id]
                 if existing is None:
@@ -2288,11 +2966,6 @@ def compute_prepared_plan(
             continue
 
         if my_needed is None:
-            _raise_if_unbounded_user_code_is_terminal(
-                node,
-                parent_ids,
-                strict_projection=strict_projection,
-            )
             contribution[node_id] = ParentDemandResult(
                 default=None,
                 by_parent={},

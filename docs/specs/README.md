@@ -10,6 +10,15 @@ and writing rules):
 Specs describe the code **as it currently is**. Suspected defects are flagged with `> NOTE:`
 callouts inside the specs rather than being specced away.
 
+Planned changes follow the repository's spec-first workflow. Before tests or production code
+change, the owning component spec may add an explicitly labelled
+`## Approved change contract` section that states the agreed future behaviour, failure model,
+compatibility decision, and acceptance evidence. That section must distinguish the current
+behaviour from the approved target and link to its implementation plan. It is not a claim that
+the change has shipped. When implementation lands, the release step folds the approved contract
+into the normal present-tense sections, removes the temporary section, and verifies that code,
+tests, and specification agree.
+
 ## System overview
 
 A Haute pipeline is a directed acyclic graph of nodes, authored as a decorated Python file

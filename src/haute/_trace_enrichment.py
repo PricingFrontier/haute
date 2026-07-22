@@ -30,7 +30,9 @@ and simplified test configs (from the TDD test suite).
 
 from __future__ import annotations
 
+import copy
 import dataclasses
+import json
 import math
 import re
 import sys
@@ -41,6 +43,7 @@ import polars as pl
 
 from haute._banding_config import normalise_banding_factors
 from haute._graph_utils import _sanitize_func_name
+from haute._json_safe import to_json_safe
 from haute._logging import get_logger
 from haute._rating import (
     _breakpoints_to_rules,
@@ -53,6 +56,42 @@ if TYPE_CHECKING:
     from haute.trace import TraceStep
 
 logger = get_logger(component="trace_enrichment")
+
+_EnrichmentMemoKey = tuple[object, ...]
+
+
+def _enrichment_value_identity(value: Any) -> str:
+    """Return a deterministic request-local identity for concern inputs."""
+    return json.dumps(
+        to_json_safe(value),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def _enrichment_frame_identity(
+    eager_outputs: Mapping[str, Any],
+) -> tuple[tuple[str, str, int], ...]:
+    identities: list[tuple[str, str, int]] = []
+    for node_id, output in eager_outputs.items():
+        if isinstance(output, dict):
+            identities.extend(
+                (str(node_id), str(handle), id(frame)) for handle, frame in output.items()
+            )
+        else:
+            identities.append((str(node_id), "", id(output)))
+    return tuple(sorted(identities))
+
+
+def _enrichment_contains_error(value: Any) -> bool:
+    if isinstance(value, Mapping):
+        if "error" in value or "error_type" in value:
+            return True
+        return any(_enrichment_contains_error(item) for item in value.values())
+    if isinstance(value, (list, tuple)):
+        return any(_enrichment_contains_error(item) for item in value)
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -1089,7 +1128,9 @@ def _build_input_sources(
     *,
     depth: int = 0,
     max_depth: int = 3,
-    visited: set[tuple[str, str]] | None = None,
+    completed_memo: dict[_EnrichmentMemoKey, dict[str, Any]] | None = None,
+    active_path: tuple[tuple[str, str], ...] = (),
+    frame_identity: object | None = None,
 ) -> dict[str, Any]:
     """Recursively build input source derivations for referenced columns.
 
@@ -1101,8 +1142,8 @@ def _build_input_sources(
     parse_expression = trace_mod.parse_expression
     evaluate_expression = trace_mod.evaluate_expression
 
-    if visited is None:
-        visited = set()
+    if completed_memo is None:
+        completed_memo = {}
     result: dict[str, Any] = {}
     try:
         current_step_index = all_steps.index(current_step)
@@ -1112,10 +1153,6 @@ def _build_input_sources(
         ) from exc
 
     for ref_col in ref_cols:
-        visit_key = (current_step.node_id, ref_col)
-        if visit_key in visited:
-            continue
-        visited.add(visit_key)
         upstream_steps = all_steps[:current_step_index]
         for other_step in reversed(upstream_steps):
             if other_step is current_step:
@@ -1125,6 +1162,35 @@ def _build_input_sources(
                 and ref_col not in other_step.schema_diff.columns_modified
             ):
                 continue
+            memo_node = node_map.get(other_step.node_id)
+            memo_config = (
+                memo_node.data.config
+                if memo_node is not None and isinstance(memo_node.data.config, dict)
+                else {}
+            )
+            active_key = (other_step.node_id, ref_col)
+            memo_key: _EnrichmentMemoKey = (
+                "input_source",
+                other_step.node_id,
+                ref_col,
+                _enrichment_value_identity(other_step.input_values),
+                _enrichment_value_identity(other_step.output_values),
+                _enrichment_value_identity(memo_config),
+                frame_identity,
+                id(preamble_ns),
+            )
+            memo_value = completed_memo.get(memo_key)
+            if memo_value is not None:
+                result[ref_col] = copy.deepcopy(memo_value)
+                break
+            if active_key in active_path:
+                result[ref_col] = {
+                    "error": "input-source enrichment cycle detected",
+                    "error_type": "TraceEnrichmentCycle",
+                    "node_id": other_step.node_id,
+                    "column": ref_col,
+                }
+                break
             other_combined = {**other_step.input_values, **other_step.output_values}
             source_info: dict[str, Any] = {
                 "node_id": other_step.node_id,
@@ -1240,12 +1306,16 @@ def _build_input_sources(
                     preamble_ns,
                     depth=depth + 1,
                     max_depth=max_depth,
-                    visited=set(visited),
+                    completed_memo=completed_memo,
+                    active_path=(*active_path, active_key),
+                    frame_identity=frame_identity,
                 )
                 if sub_sources:
                     source_info["input_sources"] = sub_sources
 
             result[ref_col] = source_info
+            if not _enrichment_contains_error(source_info):
+                completed_memo[memo_key] = copy.deepcopy(source_info)
             break
     return result
 
@@ -1258,6 +1328,9 @@ def _attach_banding_lineage(
     node_map: dict[str, Any],
     preamble_ns: dict[str, Any] | None,
     eager_outputs: dict[str, pl.DataFrame],
+    *,
+    completed_memo: dict[_EnrichmentMemoKey, dict[str, Any]],
+    frame_identity: object,
 ) -> None:
     if not column:
         return
@@ -1278,6 +1351,8 @@ def _attach_banding_lineage(
             preamble_ns,
             depth=0,
             max_depth=3,
+            completed_memo=completed_memo,
+            frame_identity=frame_identity,
         )
         if input_sources:
             calculation["input_sources"] = input_sources
@@ -1463,6 +1538,8 @@ def enrich_steps(
     lookups to the frame(s) a node actually consumes.
     """
     trace_mod = _trace_module()
+    completed_memo: dict[_EnrichmentMemoKey, dict[str, Any]] = {}
+    frame_identity = _enrichment_frame_identity(eager_outputs)
 
     for step in steps:
         try:
@@ -1779,6 +1856,8 @@ def enrich_steps(
                             preamble_ns,
                             depth=0,
                             max_depth=3,
+                            completed_memo=completed_memo,
+                            frame_identity=frame_identity,
                         )
                         if input_sources:
                             if step.calculation is None:
@@ -1918,6 +1997,8 @@ def enrich_steps(
                                 node_map,
                                 preamble_ns,
                                 eager_outputs,
+                                completed_memo=completed_memo,
+                                frame_identity=frame_identity,
                             )
                 except Exception as exc:
                     logger.warning(

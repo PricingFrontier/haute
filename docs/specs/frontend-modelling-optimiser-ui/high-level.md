@@ -48,3 +48,21 @@ local action/result area. A locally aborted/superseded auto-range request suppre
 while a terminal cancelled/superseded status returned by the server is shown in the auto-range
 error area. Deliberately strict helper parsers throw for malformed numerical result contracts
 rather than silently charting incorrect values.
+
+## Polars backend contracts (0.6.0)
+
+See [the remediation plan](../../trip/plans/F_0.6.0_polars-backend-remediation.plan.md).
+Modelling and optimiser entry points will present the shared version-1 states `projected`,
+`boundary`, `admitted_eager`, `rejected`, and `not_planned`, plus a distinct diagnostic-
+unavailable state. Components use the authoritative shared mapping and never reinterpret internal
+strategies. Missing/malformed required fields, unknown version-1 enum values, and unsupported
+higher versions become diagnostic unavailable; unknown additive fields are ignored only within
+version 1.
+
+Rejections and boundaries name available blocking node/operator/profile, cost, reason, and
+remediation, with bounded metric/provenance detail available secondarily and its
+`available|unavailable|truncated` state preserved. Group-by may appear only as a RAM-admitted
+`materialisation-boundary` or a typed HTTP 422 rejection; it is never shown as ordinary checked or
+unprojected streaming execution. `not_planned`, rejection, and diagnostic unavailable are not
+successful execution. Stable contract-error codes and named fields remain available to accessible
+error copy.

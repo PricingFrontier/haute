@@ -378,10 +378,8 @@ class TestRowLimitEdgeCases:
         p = tmp_path / "data.parquet"
         pl.DataFrame({"x": list(range(15))}).write_parquet(p)
         graph = _g({"nodes": [_source_node("src", str(p))], "edges": []})
-        results = execute_graph(graph, row_limit=-1)
-        assert results["src"].status == "error"
-        err = results["src"].error.lower()
-        assert "negative" in err or "invalid" in err
+        with pytest.raises(ValueError, match="row_limit must be a non-negative integer"):
+            execute_graph(graph, row_limit=-1)
 
 
 # ===========================================================================

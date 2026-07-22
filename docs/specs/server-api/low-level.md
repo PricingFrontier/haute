@@ -425,3 +425,97 @@ for route-level tests, and direct unit tests for the pure-function modules.
 
 Known gap: `test_output_assemble_routes.py` does not pin admission-context release; the
 implemented route currently omits release on every outcome, as noted above.
+
+## Polars backend contracts (0.6.0)
+
+Add one Pydantic execution-strategy diagnostic DTO at the shared API schema boundary. Its
+required fields are integer `schema_version` (the producer emits exactly `1`), `status`,
+`strategy`, `profile`, `boundedness` (`bounded|unbounded|unknown`), `reason_code`,
+`detail_state` (`available|unavailable|truncated`), and `boundaries`, `reasons`, and
+`provenance`. Blocking/remediation, cost, metric, and provenance item objects are otherwise
+optional; human messages/remediation have at most 512 characters. The DTO rejects plans,
+frames, source values, and other user data.
+
+`boundaries`, `reasons`, and `provenance` each use exactly
+`{state: available|unavailable|truncated, total_count: int|null, items: [...]}`. Validators
+enforce non-negative counts and these invariants:
+
+| `state` | `total_count` | `items` |
+|---|---|---|
+| `available` | `len(items)` | Complete collection |
+| `truncated` | Greater than `len(items)` | Deterministic prefix of the complete collection |
+| `unavailable` | `null` | Empty |
+
+Boundary and reason `items` have at most 32 entries; provenance `items` have at most 128. The
+producer canonical-sorts the complete collection and only then takes the capped prefix. An
+over-cap or internally inconsistent wrapper is invalid input to every consumer and maps to the
+typed diagnostic-unavailable result; consumers must not silently re-sort or truncate it.
+Top-level `detail_state` is derived as the worst collection state using
+`truncated` > `unavailable` > `available`, and a supplied inconsistent value is invalid.
+
+Boundary items require integer `topological_rank` plus string `node_id`, `operator`, and
+`boundary_kind`; their primary sort key is
+`(topological_rank, node_id, operator, boundary_kind)`. The rank is assigned by a canonical
+topological sort whose ready-node queue uses ascending lexical `node_id`. Reason items require
+`reason_code` and sort by
+`(topological_rank or max, node_id or '', reason_code, operator or '')`. Provenance items
+require `column` and `origin_kind` and sort by
+`(column, origin_kind, source_node_id or '', source_column or '')`. All string comparison is
+ascending Unicode code-point order. For all three collections, the producer appends its Python
+canonical-JSON serialization of the item as an internal final sort component so capped prefixes
+are deterministic; duplicate items, including identical canonical JSON, are retained. This
+server-only component is not a wire-order rule. Consumers validate nondecreasing primary tuples
+only and accept any relative order within an equal-primary group; in particular, browser code
+must not attempt to reproduce the Python serializer.
+
+Version 1 maps internal strategies to `status` exactly as follows:
+
+| `strategy` | `status` |
+|---|---|
+| `projected`, `schema-all-except` | `projected` |
+| `full-width-admitted-eager` | `admitted_eager` |
+| `unprojected-streaming-boundary`, `materialisation-boundary` | `boundary` |
+| `unsupported` | `rejected` |
+| `not-planned` | `not_planned` |
+
+Readers accept version 1 and ignore unknown additive fields only within version 1. A missing
+or malformed required field, unknown version-1 enum value, or unsupported higher schema
+version produces the typed diagnostic-unavailable result; it must not be coerced to a known
+status. All route adapters consume this DTO and never expose planner internals.
+
+Group-by route execution has only two version-1 outcomes: an admitted
+`materialisation-boundary` after both profile permission and RAM admission, or
+`GroupByExecutionUnsupportedError(BoundedMemoryUnsupportedError)` before execution. It must
+not be labelled as ordinary checked execution or `unprojected-streaming-boundary`. Its public
+fields are `node_id`, `operator`, `profile`, `reason_code`, `remediation`,
+`estimated_peak_bytes`, and `headroom_bytes`; the two byte estimates are nullable when the
+corresponding measurement could not be established.
+
+One shared exception adapter maps each of the following to HTTP 422 for synchronous routes
+and `contract_error` for background jobs, preserving its stable code and named fields:
+
+| Exception | Stable code | Named fields |
+|---|---|---|
+| `GroupByExecutionUnsupportedError` | `group_by_execution_unsupported` | `node_id`, `operator`, `profile`, `reason_code`, `remediation`, `estimated_peak_bytes`, `headroom_bytes` |
+| `TraceCorrelationUnsupportedError` | `trace_correlation_unsupported` | `node_id`, `key_columns`, `dtypes`, `reason_code` |
+| `RatingExtremaUndefinedError` | `rating_extrema_undefined` | `output_column`, `operation` |
+| `RatingFactorMissingError` | `rating_factor_missing` | `table`, `factor` |
+| `LiveSwitchScenarioError` | `live_switch_scenario_missing` | `switch`, `scenario`, `available_mappings` |
+| `OutputNestingKeyError` | `output_nesting_key_null` | `frame`, `output_path`, `key` |
+
+The declared inheritance is
+`GroupByExecutionUnsupportedError(BoundedMemoryUnsupportedError)`,
+`TraceCorrelationUnsupportedError(ExecutionError)`,
+`RatingExtremaUndefinedError(ExecutionError)`,
+`RatingFactorMissingError(SchemaMismatchError)`, `LiveSwitchScenarioError(ExecutionError)`,
+and `OutputNestingKeyError(OutputMappingSchemaError)`. `TraceCorrelationUnsupportedError`'s
+`key_columns` and `dtypes` arrays preserve correlation-key order, correspond positionally, and
+are each capped at 16 items. Error-response and background-job tests pin status/reason, code,
+and fields for every class. DTO tests pin every schema-version path, wrapper invariant,
+producer primary ordering and internal tie-break, consumer acceptance of equal-primary
+permutations, cap boundary, over-cap rejection, aggregate `detail_state`, and duplicate
+retention. Release 0.6 is an intentional
+pre-1.0 fail-loud compatibility change: release and migration notes are required, and no
+shim may preserve unsafe silent fallback. The execution-engine spec owns production of the
+strategy data; see the
+[remediation plan](../../trip/plans/F_0.6.0_polars-backend-remediation.plan.md).
