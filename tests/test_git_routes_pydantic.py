@@ -201,3 +201,25 @@ class TestGitRouteWireShapeUnchanged:
         assert isinstance(body["main_ahead_by"], int)
         # main_last_updated may be null; must not be an arbitrary object.
         assert body["main_last_updated"] is None or isinstance(body["main_last_updated"], str)
+
+
+class TestGitPushResponseContract:
+    def test_default_bootstrap_fields_are_required_with_false_default(self) -> None:
+        from pydantic import ValidationError
+
+        from haute.schemas import GitPushResponse
+
+        with pytest.raises(ValidationError):
+            GitPushResponse(
+                remote="origin",
+                working_branch="pricing/alice/dev",
+                ledger_branch="pricing/alice/dev-save",
+            )
+        response = GitPushResponse(
+            remote="origin",
+            working_branch="pricing/alice/dev",
+            ledger_branch="pricing/alice/dev-save",
+            default_branch="main",
+        )
+        assert response.default_branch == "main"
+        assert response.bootstrapped_default is False

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
-import { render, screen, fireEvent, cleanup, waitFor } from "@testing-library/react"
+import { render, screen, fireEvent, cleanup, waitFor, act } from "@testing-library/react"
 import BranchManager from "../BranchManager"
 import useGitStore from "../../stores/useGitStore"
 import useGraphStore from "../../stores/useGraphStore"
@@ -49,7 +49,15 @@ const listing = {
 describe("BranchManager", () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    useGitStore.setState({ status: null, loading: false, modal: null, pendingAction: null, peekBranch: null })
+    useGitStore.setState({
+      status: null,
+      loading: false,
+      modal: null,
+      pendingAction: null,
+      peekBranch: null,
+      historyNonce: 0,
+      commitNonce: 0,
+    })
     // In-app branch ops record undoable VC entries on the graph store.
     useGraphStore.setState({ undoStack: [], redoStack: [], vcBusy: false })
     mockGetWorkingBranches.mockResolvedValue(listing)
@@ -198,6 +206,64 @@ describe("BranchManager", () => {
     render(<BranchManager />)
     await waitFor(() => expect(screen.getByTestId("branch-manager-uncommitted")).toBeInTheDocument())
     expect(screen.getByTestId("branch-manager-unsaved")).toBeInTheDocument()
+  })
+
+  it("clears stale branch badges after a milestone commit", async () => {
+    mockGetWorkingBranches
+      .mockResolvedValueOnce({
+        current: "demo",
+        branches: [branch({
+          name: "demo",
+          is_current: true,
+          has_uncommitted_changes: true,
+          has_unmerged_saves: true,
+        })],
+      })
+      .mockResolvedValue({
+        current: "demo",
+        branches: [branch({ name: "demo", is_current: true })],
+      })
+
+    render(<BranchManager />)
+    await waitFor(() => expect(screen.getByTestId("branch-manager-unsaved")).toBeInTheDocument())
+
+    useGitStore.getState().notifyMilestoneCommitted()
+
+    await waitFor(() => {
+      expect(screen.queryByTestId("branch-manager-uncommitted")).not.toBeInTheDocument()
+      expect(screen.queryByTestId("branch-manager-unsaved")).not.toBeInTheDocument()
+    })
+  })
+
+  it("does not let an older branch refresh restore stale badges", async () => {
+    let resolveInitial!: (value: typeof listing) => void
+    const initial = new Promise<typeof listing>((resolve) => { resolveInitial = resolve })
+    mockGetWorkingBranches
+      .mockReturnValueOnce(initial)
+      .mockResolvedValue({
+        current: "demo",
+        branches: [branch({ name: "demo", is_current: true })],
+      })
+
+    render(<BranchManager />)
+    useGitStore.getState().notifyHistoryChanged()
+    await waitFor(() => expect(screen.getByTestId("branch-manager-current")).toBeInTheDocument())
+
+    await act(async () => {
+      resolveInitial({
+        current: "demo",
+        branches: [branch({
+          name: "demo",
+          is_current: true,
+          has_uncommitted_changes: true,
+          has_unmerged_saves: true,
+        })],
+      })
+      await initial
+    })
+
+    expect(screen.queryByTestId("branch-manager-uncommitted")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("branch-manager-unsaved")).not.toBeInTheDocument()
   })
 
   it("keeps delete enabled even with uncommitted changes (always deletable)", async () => {

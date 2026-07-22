@@ -11,7 +11,9 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from threading import RLock
 
+from haute._file_ops import atomic_write_text
 from haute._logging import get_logger
 
 logger = get_logger(component="git_state")
@@ -23,6 +25,13 @@ _FORKS_FILE = "forks.json"
 _PUSHED_FILE = "pushed.json"
 _TRASH_FILE = "trash.json"
 _WORKING_BRANCH_KEY = "workingBranch"
+
+# Serialises pushed.json access within this process. Atomic replacement keeps
+# the file complete, while the lock prevents Windows readers from holding the
+# destination open during replacement and makes read/merge/replace one
+# transaction for concurrent successful pushes. RLock lets the public reader
+# remain safe if it is reused from another locked operation in future.
+_pushed_state_lock = RLock()
 
 # Most recent tombstones kept in trash.json — a recovery net, not an archive;
 # the oldest entry drops when a new delete would exceed this.
@@ -231,8 +240,8 @@ def remove_trash(project_root: Path, branch: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def read_pushed_shas(project_root: Path) -> dict[str, str]:
-    """Map of ``<remote>/<ref>`` → the SHA this clone last pushed it to."""
+def _read_pushed_shas_unlocked(project_root: Path) -> dict[str, str]:
+    """Read pushed tips; caller must hold ``_pushed_state_lock``."""
     path = _pushed_path(project_root)
     try:
         raw = json.loads(path.read_text())
@@ -246,15 +255,22 @@ def read_pushed_shas(project_root: Path) -> dict[str, str]:
     return {k: v for k, v in raw.items() if isinstance(k, str) and isinstance(v, str)}
 
 
+def read_pushed_shas(project_root: Path) -> dict[str, str]:
+    """Map of ``<remote>/<ref>`` → the SHA this clone last pushed it to."""
+    with _pushed_state_lock:
+        return _read_pushed_shas_unlocked(project_root)
+
+
 def record_pushed_shas(project_root: Path, pushed: dict[str, str]) -> None:
     """Merge *pushed* (``<remote>/<ref>`` → SHA) into the recorded last-pushed
     tips, preserving entries for other remotes/refs (creates ``.haute/`` if
     needed)."""
     if not pushed:
         return
-    current = read_pushed_shas(project_root)
-    current.update(pushed)
-    path = _pushed_path(project_root)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(current, indent=2) + "\n")
+    with _pushed_state_lock:
+        current = _read_pushed_shas_unlocked(project_root)
+        current.update(pushed)
+        path = _pushed_path(project_root)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write_text(path, json.dumps(current, indent=2) + "\n")
     logger.info("git_pushed_recorded", refs=sorted(pushed))

@@ -1827,7 +1827,9 @@ class GitPushResponse(BaseModel):
     remote: str
     working_branch: str
     ledger_branch: str
-    # Refs actually pushed (working, plus ledger when it exists).
+    default_branch: str
+    bootstrapped_default: bool = False
+    # Explicit branch refs submitted (never --follow-tags additions).
     pushed_refs: list[str] = Field(default_factory=list)
 
 

@@ -30,8 +30,9 @@ In scope:
   `MilestoneCommitModal` (save & commit a milestone, including the fork-warning override),
   `DivergenceModal` (recover when the recorded working branch and HEAD disagree),
   `MoveConfirmModal` (the pre-move save/discard/confirm prompt — see Behaviour), and the
-  push surface `RemotePushControl` (remote selection, ahead/behind, push, fast-forward
-  catch-up, the non-fast-forward rejection recovery flow).
+  push surface `RemotePushControl` (remote selection, ahead/behind, explicit publication
+  including empty-remote default-branch bootstrap, fast-forward catch-up, and the non-fast-
+  forward rejection recovery flow).
 - `CommitBreadcrumb`, the small version-relative label used on comparison canvases.
 - Client-side state for this surface: `useGitStore` (status, modal routing, peek/compare/
   move targets, refresh nonces) and the session-lived read caches in `gitPanelCache.ts`.
@@ -52,6 +53,9 @@ Out of scope (owned by neighbouring components):
   [frontend-graph-canvas](../frontend-graph-canvas/high-level.md).
 - The websocket sync that lands a branch switch on the canvas after `setWorkingBranch`
   resolves.
+- Any hosting-provider control plane used to select a repository-level default branch;
+  this UI reports git-ref publication only and does not claim to reconfigure GitHub,
+  GitLab, or another remote host.
 
 ## Behaviour
 
@@ -103,12 +107,21 @@ manager. `MoveConfirmModal` gates every move-to-version action (`GitPanel`'s row
 canvas has unsaved edits it forces an explicit choice between saving them onto the
 current branch first or discarding them, because a move is a real checkout that replaces
 the whole working canvas and in-memory-only edits — which never reached disk — would
-otherwise be lost silently. `RemotePushControl` requires a deliberate remote selection (no default push
-target unless exactly one remote exists), shows the working branch's and the save-
-ledger's ahead/behind/diverged state per remote, warns (overridably) before pushing
-out-of-version saves, and on a non-fast-forward rejection shows an honest recovery modal:
-fast-forward catch-up when the fork is behind-only, or "spin off a copy" (never a local
-merge) when it has genuinely diverged.
+otherwise be lost silently.
+
+**Remote push.** `RemotePushControl` requires a deliberate remote selection (no default
+push target unless exactly one remote exists), shows the working branch's and save-ledger's
+ahead/behind/diverged state per remote, and warns (overridably) before pushing out-of-version
+saves. Nothing remote is triggered by project initialization, server startup, or working-
+branch creation; only clicking Push calls the publication endpoint.
+
+The Push tooltip says: "Push your branch and save history. If the remote is empty, Haute
+also publishes the default branch as your merge target." When that explicit push reports
+`bootstrapped_default=true`, success is surfaced with the distinct toast `Published
+<default_branch> and your branch history to <remote>`. Otherwise the ordinary pushed-
+branch-count toast remains. On a non-fast-forward rejection the control shows an honest
+recovery modal: fast-forward catch-up when the fork is behind-only, or "spin off a copy"
+(never a local merge) when it has genuinely diverged.
 
 **Invariants.**
 - A plain save never changes the panel's selection; a milestone commit does (selects the
@@ -167,6 +180,12 @@ crashing the modal.
 catch-up) either fast-forwards or forks off a new branch; there is no code path in this UI
 that could trigger a three-way merge, matching the underlying engine's guarantee.
 
+**Bootstrap uses the existing explicit Push.** A separate automatic onboarding push would
+make `init`, `serve`, or branch selection depend on remote availability and credentials.
+Using the already-deliberate Push action keeps the remote boundary understandable while the
+response metadata lets the UI explain the one extra ref published only for a genuinely
+empty remote. The UI reads `default_branch`; it never hardcodes `main`.
+
 ## Interactions
 
 - Depends on [git-integration](../git-integration/high-level.md) for every git read and
@@ -220,6 +239,9 @@ are not the user's data, and **mutations**, which always surface an error.
   version, push, fast-forward, branch-away, fork) always surface a toast on failure, and several also
   persist the error inline (`BranchManager`'s `actionError` banner) since a modal or panel
   dismiss elsewhere in the app should not silently swallow it.
+- **Push inspection/validation failures** use that mutation path: authentication, timeout,
+  non-empty-missing-default, or unrelated-history refusal shows the push error toast, does
+  not show the bootstrap success toast, and is never retried automatically.
 - **Structured 409 bodies** (fork warning, push rejection) are parsed defensively
   (`parseGitMilestoneFork`, `parseGitPushRejection`); an unparseable body falls through to
   the generic error-toast path rather than throwing.

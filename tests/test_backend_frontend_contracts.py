@@ -21,6 +21,7 @@ from haute.schemas import (
     FetchTableResponse,
     GitArchiveResponse,
     GitDeleteBranchResponse,
+    GitPushResponse,
     GitStatusResponse,
     JsonCacheBuildResponse,
     LogExperimentResponse,
@@ -92,6 +93,7 @@ def _load_fixture(name: str) -> dict[str, Any]:
         ("utility_delete_response", UtilityDeleteResponse),
         ("git_archive_response", GitArchiveResponse),
         ("git_delete_branch_response", GitDeleteBranchResponse),
+        ("git_push_response", GitPushResponse),
     ],
 )
 def test_ui_contract_fixture_validates_against_backend_model(

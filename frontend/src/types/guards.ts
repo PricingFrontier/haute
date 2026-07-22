@@ -2189,6 +2189,12 @@ export function parseGitPushResponse(value: unknown): GitPushResponse {
     working_branch: expectString("parseGitPushResponse", obj.working_branch, "working_branch"),
     ledger_branch: expectString("parseGitPushResponse", obj.ledger_branch, "ledger_branch"),
     pushed_refs: optionalStringArray("parseGitPushResponse", obj, "pushed_refs"),
+    default_branch: expectString("parseGitPushResponse", obj.default_branch, "default_branch"),
+    bootstrapped_default: expectBoolean(
+      "parseGitPushResponse",
+      obj.bootstrapped_default,
+      "bootstrapped_default",
+    ),
   }
 }
 

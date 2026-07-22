@@ -26,8 +26,9 @@ In scope:
 - Read paths for the panel: status, branch listing, milestone history, ledger save
   expansion, whole-forest graph topology, commit "breadcrumb" context.
 - Remote interaction: listing remotes, throttled/hardened background fetch, deliberate
-  atomic push of the working+ledger pair, fast-forward catch-up, and "branch away" fork
-  resolution — never an automatic push, fetch-and-merge, or force-push.
+  atomic publication of the resolved local default branch (only when bootstrapping an
+  advertised-empty remote) plus the working+ledger pair, fast-forward catch-up, and
+  "branch away" fork resolution — never an automatic push, fetch-and-merge, or force-push.
 - Per-clone local state: which working branch this clone serves, local UI preferences,
   the fork-point map, trash tombstones, and last-pushed SHAs (all untracked, all living
   under `.haute/`).
@@ -41,6 +42,9 @@ Out of scope (owned by neighbouring components):
   see [frontend-git-ui](../frontend-git-ui/high-level.md).
 - What files get committed as part of a pipeline save (config schema, pathspec meaning
   beyond the seed allow-list) — see [pipeline-config](../pipeline-config/high-level.md).
+- Configuring a hosting provider's repository-level default-branch setting (for example,
+  changing which branch GitHub selects for new pull requests). Haute publishes git refs;
+  provider control-plane configuration remains outside this component.
 
 ## Behaviour
 
@@ -61,16 +65,39 @@ Any user-supplied ref name (branch name, SHA, tag label) is validated against a
 denylist of characters that could be interpreted as a CLI flag or contain control
 characters, closing an argument-injection path from user input into the `git` CLI.
 
-**Deliberate remote interaction.** Nothing is ever pushed automatically. A push moves the
-working branch AND its ledger together, atomically — both refs land or neither does — and
-never force-pushes; a non-fast-forward rejection surfaces as a structured "fork" the UI can
-explain (which leg diverged, by how much) rather than a dead-end error. A remote fast-
-forward catch-up only ever advances refs when every leg is a clean fast-forward; anything
-else is refused so the user spins off a copy instead of triggering a silent merge. Background
-polling fetches (for the "main is ahead" badge, and for divergence detection) are throttled,
-time-bounded, and prompt-proof, so a slow or credential-walled remote can never hang a
-request. Remote URLs returned to the browser strip URL userinfo (`user:password@`) while
-leaving scp-style `git@host:path` and local paths unchanged.
+**Deliberate remote interaction.** No remote mutation or publication happens during `haute
+init`, `haute serve`, or working-branch creation. Those stages may scaffold files, establish
+the local default/working/ledger history, and perform existing prompt-proof remote status
+reads, but only the user's explicit Push action may publish refs. This keeps offline startup
+usable, avoids credential prompts during project setup, and makes the remote mutation
+boundary visible to the user.
+
+Before that push, Haute strictly inspects the selected remote with terminal and SSH prompts
+disabled and a hard timeout. Only a successful advertisement containing zero object refs
+means "empty"; an unborn symbolic `HEAD` alone is still empty, while any branch or tag makes
+the remote non-empty. Timeout, authentication/network failure, or an unreadable
+advertisement is an inspection failure and refuses the push rather than being treated as an
+empty remote. An empty remote receives the resolved default branch, working branch, and the
+save ledger when it exists in one atomic push, creating the merge target at the same time
+the work is shared. A create-only lease on the default ref makes that bootstrap a
+compare-and-create: a default branch that appears after inspection is never advanced or
+replaced.
+
+For a non-empty remote, the expected default branch must already exist. Haute fetches that
+ref and validates that it shares history with the local working line before publishing the
+working+ledger pair. It never implicitly advances or replaces an existing remote default
+branch. A non-empty remote missing the expected default, an unrelated default history, or
+an inspection/fetch failure refuses before publication; the atomic push guarantees that a
+later ref rejection cannot leave only part of the submitted set behind. A working/ledger
+non-fast-forward rejection still surfaces as a structured "fork" the UI can explain (which
+leg diverged, by how much) rather than a dead-end error. No path force-pushes.
+
+A remote fast-forward catch-up only ever advances refs when every leg is a clean fast-
+forward; anything else is refused so the user spins off a copy instead of triggering a
+silent merge. Background polling fetches (for the "main is ahead" badge, and for divergence
+detection) are throttled, time-bounded, and prompt-proof, so a slow or credential-walled
+remote can never hang a request. Remote URLs returned to the browser strip URL userinfo
+(`user:password@`) while leaving scp-style `git@host:path` and local paths unchanged.
 
 **History as read-only.** Viewing a historical commit's pipeline (`GET /show/{sha}`) never
 touches HEAD or the working tree. Actually moving the working directory to a historical
@@ -107,6 +134,18 @@ remove working-tree files.
   is detected and reported distinctly from ordinary divergence (`_is_rewrite`) using a
   locally-recorded last-pushed SHA, because gc can prune the reflog that would otherwise
   answer "was this rewritten".
+- **Bootstrap at explicit Push, not project setup.** The local root/default commit is an
+  input to branch creation, but publishing it is a remote side effect. Folding an empty-
+  remote bootstrap into the already-deliberate atomic Push gives a new project a merge
+  target without making `init`, `serve`, or branch selection depend on a remote, network,
+  or credentials. Existing remote defaults are validation inputs, never implicit push
+  targets, so this convenience cannot rewrite or advance an established shared branch.
+- **Create-only lease is not a force update.** Bootstrap attaches an empty expected value to
+  the default ref. It can never authorize replacing or advancing an existing default. If a
+  concurrent writer creates the exact commit Haute intended, Git may treat that default as
+  already up to date and safely publish the pair; a different commit loses the lease and the
+  atomic push fails. All branch sources are the validated commit snapshots, the working and
+  ledger destinations remain ordinary non-force updates, and the submitted set is atomic.
 - **Content-addressed caching.** Git's own objects are immutable once written, so any pure
   function of a full 40-hex commit SHA (merge-base, ancestry, first-parent spine, a
   commit's tree, its parents) is cached forever with no invalidation story — only ref-name
@@ -172,7 +211,9 @@ unreadable object never populates a cache (every cached helper raises rather tha
 a failure); a `_wipe_volatile_artefacts` failure is logged but not fatal, because volatile
 caches are reconstructable by definition; a failed background fetch degrades silently to
 the last-known remote-tracking refs, because fetches only ever advance `refs/remotes/*` and
-can never violate a local invariant by failing.
+can never violate a local invariant by failing. The explicit Push preflight is intentionally
+different: it authorizes remote mutation, so inspection or validation failure aborts loudly
+and never degrades to an assumed-empty or assumed-related remote.
 
 > NOTE: `_get_default_branch_cached` and the content-addressed caches
 > (`_merge_base_cached`, `_is_ancestor_cached`, `_first_parent_spine_cached`,

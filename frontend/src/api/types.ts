@@ -1219,6 +1219,8 @@ export interface GitPushResponse {
   working_branch: string
   ledger_branch: string
   pushed_refs: string[]
+  default_branch: string
+  bootstrapped_default: boolean
 }
 
 /** A conflict-free catch-up result (P7 D1/D2): the working pair advanced to the

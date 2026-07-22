@@ -46,7 +46,9 @@ falls through to an uncached live subprocess on every call.
 `skipSwitchConfirm`), `forks.json` (`{branch_name: fork_point_sha}`), `pushed.json`
 (`{"<remote>/<ref>": sha}`), `trash.json` (`{deleted_branch_name: {branch_tip, ledger_tip,
 forked_from, was_archived, deleted_at}}`, capped at `_TRASH_MAX_ENTRIES = 20`, insertion
-order = recency).
+order = recency). `record_pushed_shas` serializes its process-local read/merge/write
+transaction and replaces `pushed.json` atomically, preserving concurrent entries while
+readers observe either the old complete document or the new complete document.
 
 **Gitignore guards** (`_gitignore_guard.py`): `GITIGNORE_GUARD_ENTRIES` is exactly
 `.env`, `.haute/`, `impact_report.md`, `.haute_cache/`, `mlruns/`, `data/`, and `.venv/`.
@@ -88,7 +90,7 @@ validation envelope.
 | `GET /api/git/remotes` | None | `GitRemotesResponse {remotes:[GitRemote...],working_branch?}`; URL userinfo is redacted |
 | `GET /api/git/show/{sha}` | Commit SHA path | Read-only `PipelineGraph` |
 | `GET /api/git/commit-context/{sha}` | Commit SHA path; query `base=null` | `GitCommitContext`, with `delta_from_base` only when `base` is supplied |
-| `POST /api/git/push` | `GitPushRequest {remote}` | `GitPushResponse {remote,working_branch,ledger_branch,pushed_refs=[]}`; non-fast-forward is 409 |
+| `POST /api/git/push` | `GitPushRequest {remote}` | `GitPushResponse {remote,working_branch,ledger_branch,default_branch,bootstrapped_default=false,pushed_refs=[]}`; `default_branch` and `bootstrapped_default` are required response members, and working/ledger non-fast-forward is 409 |
 | `POST /api/git/fast-forward` | `GitFastForwardRequest {remote}` | `GitFastForwardResponse {remote,working_branch,fast_forwarded=[]}` |
 | `POST /api/git/branch-away` | `GitBranchAwayRequest {remote}` | `GitBranchAwayResponse {working_branch,set_aside_as}` |
 
@@ -190,18 +192,98 @@ genuine spawn — binary-searches the parent's spine (containment along a first-
 is monotone) for the oldest parent milestone whose fold already contains the spawn source,
 i.e. the row that should visually "take credit" for it.
 
-**Push (`push_working_pair`).** Pre-checks `version/*` tag collisions against the remote
-(`_tag_collisions` via `git ls-remote`, best-effort — a genuine collision is still caught
-by git's own tag-push rejection if this pre-check can't reach the remote) before attempting
-anything. Pushes with `git push --atomic --follow-tags <remote> <working>:<working>
-[<ledger>:<ledger>]` — atomic so a partially-fast-forwardable pair never lands half-pushed,
-never `--force`. A non-fast-forward failure (`non-fast-forward` / `fetch first` /
-`[rejected]` in stderr) is turned into `_push_rejection`, which force-fetches past the
-throttle (a rejection is authoritative, not a poll), recomputes both legs, and checks
-`_is_rewrite` per leg using the last-pushed-SHA record to distinguish "the remote moved
-past this clone" from "the remote history was actually rewritten" (the latter survives a
-pruned reflog because it's read from the clone's own untracked record, not git's). On
-success, the just-pushed tips are recorded via `_git_state.record_pushed_shas`.
+**Push (`push_working_pair`).** This is the first and only publication boundary: `haute
+init`, `haute serve`, `set_working_branch`, and `create_working_branch` perform no remote
+mutation. The recorded working name must first pass the normal working-branch guardrails and
+resolve specifically through `refs/heads/<working>`; an optional ledger likewise exists only
+when `refs/heads/<ledger>` resolves, so a corrupted state value cannot reinterpret `HEAD`, a
+tag, or another revision expression as a branch. Push then performs a strict `git ls-remote
+--symref` inspection of the selected
+remote using a prompt-proof environment (`GIT_TERMINAL_PROMPT=0`, SSH `BatchMode=yes` with a
+connection timeout) plus the process timeout. Unlike a best-effort poll, this helper must
+preserve three outcomes: a successful advertisement with object refs, a successful
+advertisement with zero object refs, and failure. An unborn symbolic `HEAD` without an
+object SHA does not make the remote non-empty; any advertised branch or tag does. Timeout,
+`OSError`, non-zero exit (including authentication/network failure), or malformed/unreadable
+output raises and aborts before any push.
+
+Advertisement parsing accepts only a `HEAD` symref to a Git-valid `refs/heads/*` target and
+non-zero 40- or 64-hex object IDs attached to `HEAD` or Git-valid fully qualified refs; every
+object ID in one advertisement must use the same width. A `^{}` pseudo-ref is allowed only
+as the peeled form of a valid tag. Conflicting duplicate object lines, or an object `HEAD`
+that disagrees with its advertised target branch, are
+malformed. This validation is deliberately stricter than merely finding one usable branch:
+an untrusted advertisement must be internally coherent before it can authorize publication.
+
+Default resolution is selected-remote-aware and never accepts the current working or ledger
+branch as a fallback. An advertised symbolic `HEAD` naming `refs/heads/<name>` is
+authoritative for a non-empty remote; if that named ref is absent/dangling, the push refuses.
+When a non-empty advertisement contains no `HEAD` symref, a distinct resolving local
+`main` (then `master`) is an expectation: the matching advertised remote head is required,
+and its absence refuses instead of selecting some other branch. If neither conventional
+local branch exists, resolution considers names present both as advertised remote heads and
+as distinct resolving base refs from either local branches or remote-tracking refs belonging
+to that selected remote (never another remote): `main`, then `master`, then exactly one
+remaining unmanaged intersection. No match or several matches refuses rather than guessing
+which remote branch is the merge target. Including the selected remote-tracking namespace
+keeps a normal clone usable when its remote `HEAD` is dangling and Git therefore created
+`origin/main` but no local `main` branch.
+
+For an empty remote, the symbolic target is used only when a distinct local branch of that
+name resolves. Otherwise resolution checks a resolving local `main`, then `master`, then
+requires exactly one remaining unmanaged local base branch after excluding the current
+working/ledger pair, ledger-suffixed branches, archived branches, and branches that have a
+managed ledger sibling. Zero or several remaining candidates is ambiguous and refuses.
+The resulting `default_branch` is therefore deterministic, can be custom-named, and cannot
+come from another canonical remote by accident.
+
+For a zero-object-ref remote, the local default, working, and optional ledger refs are first
+resolved to commit-SHA snapshots and must share history; a missing ref or missing merge base
+refuses before mutation. The explicit branch refspecs pin those validated sources:
+`<default_sha>:refs/heads/<default> <working_sha>:refs/heads/<working>
+[<ledger_sha>:refs/heads/<ledger>]`. The push also supplies a create-only lease
+`--force-with-lease=refs/heads/<default>:`: its empty expected value can never authorize
+updating an existing default. If a concurrent writer creates that ref at the exact validated
+`default_sha`, Git may classify the refspec as already up to date and submit no update for
+that ref; allowing the atomic pair to proceed is safe because the required merge target is
+already identical. A different-SHA concurrent default fails the lease.
+For a non-empty remote, the resolved expected default ref must be advertised; it is fetched
+authoritatively with `--no-tags` and checked for a merge base with the local working history
+and ledger when present. The existing remote default is validation-only and is omitted from the push
+refspecs, so Haute never implicitly advances it. A non-empty remote without the expected
+default, an unrelated history, or an inspection/fetch failure raises a domain or sanitized
+git error before either pair ref is published. Haute does not configure the remote host's
+repository-level default-branch setting.
+
+After preflight, `_tag_collisions` still checks `version/*` labels (best-effort — git's tag
+rejection remains the backstop), then the pinned-SHA refspecs are submitted with `git push
+--atomic --follow-tags` and, only for bootstrap, the create-only default lease described
+above. No path supplies `--force`, a force refspec, or a lease that expects an existing
+object. The default, working, and optional ledger therefore all land or none lands during
+bootstrap; on an established remote the working/ledger pair remains atomic. Any bootstrap
+rejection, including a different-SHA default winning the create-only race, follows a safe
+non-409 push-failure path and is never misreported as working/ledger divergence. On an
+established remote, a
+working/ledger non-fast-forward failure (`non-fast-forward` / `fetch first` / `[rejected]`
+in stderr) is turned into `_push_rejection`, which force-fetches past the throttle (a
+rejection is authoritative, not a poll), recomputes both legs, and checks `_is_rewrite` per
+leg using the last-pushed-SHA record. The same validated working/ledger SHA snapshots used
+as push sources are recorded on success via `_git_state.record_pushed_shas`, so a concurrent
+local branch move can neither publish an unvalidated tip nor record a tip that was not
+submitted. The one-time default is deliberately omitted because
+`pushed.json` is rewrite evidence only for pair refs Haute may publish again, while an
+established default is validation-only and never Haute-owned.
+
+`GitPushResponse.default_branch` is the selected-remote-aware default used by the preflight.
+`bootstrapped_default` is a required boolean response member whose model default is `false`;
+it is `true` only when the successful atomic push submitted the default ref to a zero-ref
+remote. `pushed_refs` lists the names from explicit branch refspecs, excluding annotated tags
+that `--follow-tags` may add; it is not a claim that every named ref advanced. Bootstrap
+returns `[default, working]` plus the ledger when that local ref exists, while an established
+remote returns `[working]` plus that optional ledger. `ledger_branch` continues to name the
+managed ledger even when it has not spawned and is therefore absent from `pushed_refs`.
+Repeating a successful push is idempotent and reports `bootstrapped_default=false` once the
+remote advertises refs.
 
 **Fast-forward (`fast_forward_pair`).** Requires HEAD to currently be on the ledger (refuses
 mid-move/detached states) and a clean tracked tree. Force-fetches, then requires EVERY leg
@@ -249,17 +331,29 @@ refs + tombstone. The restored pair is NOT auto-adopted as the working branch.
   `_fetch_exec_lock` because worktrees share one object store and git itself races on
   concurrent fetches into it.
 - **Concurrent git mutations are not globally serialised** — `_fetch_time_lock` protects
-  cooldown bookkeeping and `_fetch_exec_lock` serialises fetch subprocesses, but there is no
-  module-wide lock around archive/delete/fork/move/milestone/push operations. FastAPI can run
+  cooldown bookkeeping, `_fetch_exec_lock` serialises fetch subprocesses, and
+  `_pushed_state_lock` protects only `pushed.json` reads and its merge/replace transaction;
+  there is no module-wide lock around archive/delete/fork/move/milestone/push operations.
+  FastAPI can run
   their synchronous handlers on different worker threads. Individual operations rely on git
-  ref checks, CAS `update-ref` where implemented, dirty-tree/git-op guardrails, and their
-  documented best-effort rollback paths; callers must not infer whole-engine transaction
-  isolation across concurrent mutation requests.
-- **A slow / credential-walled remote** — every fetch (`_fetch_refs`, `_ls_remote_version_tags`)
-  disables terminal/SSH prompts (`GIT_TERMINAL_PROMPT=0`, SSH `BatchMode=yes`) and is
-  wrapped in `subprocess.run(..., timeout=_FETCH_TIMEOUT_SECONDS)`; timeout or any `OSError`
-  degrades to `False` / `{}` rather than propagating, so a request thread can never hang on
-  network I/O.
+  ref checks, pinned snapshots or CAS `update-ref` where implemented, dirty-tree/git-op
+  guardrails, and their documented best-effort rollback paths; callers must not infer whole-
+  engine transaction isolation across concurrent mutation requests.
+- **A slow / credential-walled remote** — every remote read disables terminal/SSH prompts
+  (`GIT_TERMINAL_PROMPT=0`, SSH `BatchMode=yes`) and is wrapped in
+  `subprocess.run(..., timeout=_FETCH_TIMEOUT_SECONDS)`, so a request thread cannot hang on
+  network I/O. Background/polling helpers (`_fetch_refs`, `_ls_remote_version_tags`) may
+  degrade to stale/empty best-effort data. The explicit Push inspection and expected-
+  default fetch are strict: timeout, launch failure, non-zero exit, or unreadable output
+  refuses publication and must never be reclassified as a zero-ref remote.
+- **Remote baseline states at Push** — successful zero-object-ref advertisement is the sole
+  bootstrap case; non-empty + expected default + related history publishes only the pair;
+  non-empty + missing expected default and non-empty + unrelated default both refuse before
+  submitting any refspec. “Empty” describes the strict preflight snapshot: a different
+  branch or tag may appear afterward and coexist safely. A concurrently-created default at
+  a different SHA fails the empty-value lease; one at the exact submitted SHA may be an
+  up-to-date no-op and safely coexist with successful pair publication. Atomicity prevents
+  any failure from partially creating the submitted default/working/optional-ledger set.
 - **Rename detection in ledger-save history** — `_parse_ledger_saves` runs `git log -M
   --name-status` so a renamed config file shows as one rename entry, not a delete+add pair.
 - **Unicode / space-containing paths in log output** — `core.quotepath=false` is passed
@@ -291,6 +385,15 @@ memoizing a bad answer). None of these three general wrappers catches a subproce
 `OSError`; that propagates to the route's generic 500 handler. Only the hardened remote
 polling helpers explicitly catch timeout/OS failures and degrade to stale local refs.
 
+Push-time remote inspection is not a polling helper and never degrades. It logs unsafe raw
+stderr server-side, returns only hand-authored safe detail when a specific domain condition
+is known, and otherwise follows the sanitized `GitError` path. Authentication, network,
+timeout, launch, or advertisement-parse failure occurs before refspec submission and leaves
+HEAD, local branch/tag refs, the index, working tree, and `.haute` state unchanged; it must
+not be converted into an empty-remote bootstrap. A later authoritative default fetch may
+update the selected remote-tracking ref and object database before validation refuses, but
+never mutates those user-owned local surfaces.
+
 `routes/git.py`'s `_handle_git_error(e: GitError) -> NoReturn` is the sole error-to-HTTP
 mapping point, dispatched by `isinstance` in most-specific-first order:
 `GitGuardrailError` → 403, `GitDomainError` → 400 (verbatim message), plain `GitError` → 400
@@ -305,9 +408,10 @@ this layer itself).
 
 ## Testing
 
-Tests live under `tests/`, all synchronous and driving real git repositories in temp
-directories (no git mocking) via the shared helpers in `tests/_git_helpers.py`
-(`git_run`, `init_repo`).
+Tests live under `tests/` and are synchronous. Workflow tests drive real git repositories in
+temporary directories via the shared helpers in `tests/_git_helpers.py` (`git_run`,
+`init_repo`); narrow subprocess seams are mocked only to make malformed advertisements,
+process failures, and precise ref-movement races deterministic.
 
 - **`tests/test_git_engine.py`** — the primary unit suite for `_git.py`, ~3,050 lines
   organized into 32 test classes covering: slugification, branch-category naming, ledger
@@ -319,10 +423,21 @@ directories (no git mocking) via the shared helpers in `tests/_git_helpers.py`
   expansion, the branch manager (archive/delete/undelete/restore), fetch throttling,
   canonical-remote resolution, fork/create-working-branch (both move and non-move), archive-
   commit read-only extraction, remotes/push/fast-forward/branch-away, the milestone fork
-  gate, protected-branch env-var configuration, and subprocess text-encoding.
+  gate, protected-branch env-var configuration, and subprocess text-encoding. Push coverage
+  includes the full unborn-repo → first working branch → explicit Push journey; atomic
+  publication of resolved default + working + optional ledger to a zero-object-ref remote;
+  required response metadata and explicit-branch-refspec reporting; absent-ledger behavior;
+  idempotent re-push; selected-remote and custom-default resolution; preservation of an
+  existing related default; both outcomes of an empty-snapshot/concurrent-default race;
+  pinned source-SHA refspecs and exact pair-only `pushed.json` snapshots; and refusal without
+  partial publication for a tags-only or non-empty
+  missing-default remote, unrelated history, malformed advertisement, remote-only tag
+  auto-follow during a refused preflight,
+  inspection/auth/timeout failure, or any ref rejection.
 - **`tests/test_git_rollback_coverage.py`** — crash-safety-net tests specifically for the
   partial-failure rollback paths: `_rollback_fork`, `_rollback_branch_away`, branch-away
-  guard conditions, and that push/fast-forward correctly raise rather than swallow.
+  guard conditions, and that unreachable-remote push preflight and fast-forward failures
+  correctly raise rather than swallow.
 - **`tests/test_git_content_caches.py`** — the SHA-keyed cache layer specifically: milestone
   version-label batching, cache freshness across branch moves, subprocess call-count
   assertions (proving the caches actually eliminate the N+1 they claim to), tree-SHA
@@ -333,7 +448,9 @@ directories (no git mocking) via the shared helpers in `tests/_git_helpers.py`
   mutation observed across calls).
 - **`tests/test_git_state_coverage.py`** — malformed-input fallback behaviour for every
   `_git_state.py` reader: corrupt JSON, wrong top-level type, missing file — each must
-  degrade to the documented empty/default value rather than raising.
+  degrade to the documented empty/default value rather than raising; deterministic thread
+  coordination also pins lossless concurrent `pushed.json` merges and atomic reader-visible
+  replacement.
 - **`tests/test_gitignore_guard.py`** — exact deny-list membership (including the positive
   assertion that `*.haute.json` remains tracked), file creation, idempotent byte preservation,
   append-only missing-entry repair, and non-UTF-8 input handling.
@@ -341,12 +458,14 @@ directories (no git mocking) via the shared helpers in `tests/_git_helpers.py`
   handlers are genuinely sync `def` (not `async def`, to avoid event-loop blocking),
   general-exception-to-500 handling, `_handle_git_error`'s logging and status-code mapping
   for all three error families, and that ref-moving routes correctly wrap their `_git` call
-  in `pause_watcher()`.
+  in `pause_watcher()`. The push route pins `default_branch`,
+  `bootstrapped_default`, and `pushed_refs` on bootstrap and established-remote responses,
+  plus refusal/error mapping without partial publication.
 - **`tests/test_git_routes_pydantic.py`** — a narrower contract-pinning suite (item #74)
   asserting `_git` functions return real Pydantic model instances (not dicts), that route
   bodies don't re-wrap what `_git` already returns, and that the wire shape of responses is
-  unchanged.
-- **Known gaps**: none flagged explicitly in the test files; the suite does not appear to
-  exercise true network-level remote failures (a genuinely unreachable host mid-fetch)
-  beyond the timeout path, relying instead on `subprocess.run(timeout=...)` semantics being
-  correct by construction.
+  pinned, including the two required default-bootstrap response members and their false-
+  by-default semantics.
+- **Known gaps**: provider control-plane behaviour is intentionally outside this suite;
+  tests assert git refs only and do not claim that GitHub/GitLab/another host changes its
+  repository-level default-branch setting after the bootstrap push.

@@ -244,6 +244,15 @@ def _run_git_rc(*args: str, cwd: Path | None = None) -> tuple[int, str]:
     return result.returncode, result.stdout.strip()
 
 
+def _remote_env() -> dict[str, str]:
+    """Environment for remote Git commands that must never prompt interactively."""
+    return {
+        **os.environ,
+        "GIT_TERMINAL_PROMPT": "0",
+        "GIT_SSH_COMMAND": "ssh -oBatchMode=yes -oConnectTimeout=10",
+    }
+
+
 def _should_fetch(remote: str, cwd: Path | None = None, kind: str = "deploy") -> bool:
     """Whether a throttled background fetch may run now for this
     ``(cwd, remote, kind)``, claiming the cooldown slot if so.
@@ -275,11 +284,6 @@ def _fetch_refs(remote: str, *refs: str, cwd: Path | None = None) -> bool:
     any hang, so a legitimately-configured non-interactive helper (token cache)
     keeps working rather than being forced off.
     """
-    env = {
-        **os.environ,
-        "GIT_TERMINAL_PROMPT": "0",
-        "GIT_SSH_COMMAND": "ssh -oBatchMode=yes -oConnectTimeout=10",
-    }
     cmd = ["git", "fetch", remote, *refs, "--quiet"]
     try:
         result = subprocess.run(
@@ -288,10 +292,10 @@ def _fetch_refs(remote: str, *refs: str, cwd: Path | None = None) -> bool:
             text=True,
             encoding="utf-8",
             cwd=cwd or Path.cwd(),
-            env=env,
+            env=_remote_env(),
             timeout=_FETCH_TIMEOUT_SECONDS,
         )
-    except (subprocess.TimeoutExpired, OSError) as exc:
+    except (subprocess.TimeoutExpired, OSError, UnicodeError) as exc:
         logger.warning("git_fetch_degraded", remote=remote, error=str(exc))
         return False
     if result.returncode != 0:
@@ -382,6 +386,28 @@ def _validate_ref_name(name: str) -> None:
         raise GitDomainError(f"Invalid ref name: {name!r} (must not start with '-').")
     if _BAD_REF_CHARS.search(name):
         raise GitDomainError(f"Invalid ref name: {name!r} (contains forbidden characters).")
+
+
+def _is_valid_full_ref_name(name: str) -> bool:
+    """Whether *name* obeys Git's full ref-name rules without normalisation.
+
+    This mirrors ``git check-ref-format`` for fully-qualified refs.  Keeping the
+    check in-process lets strict remote-advertisement parsing validate every ref
+    without spawning an unbounded number of subprocesses for tag-heavy repos.
+    """
+    if not name.startswith("refs/") or name.endswith("/") or "//" in name:
+        return False
+    if name == "@" or name.endswith(".") or ".." in name or "@{" in name:
+        return False
+    if any(ord(char) <= 0x20 or ord(char) == 0x7F for char in name):
+        return False
+    if any(char in {"~", "^", ":", "?", "*", "[", "\\"} for char in name):
+        return False
+    components = name.split("/")
+    return all(
+        component and not component.startswith(".") and not component.endswith(".lock")
+        for component in components
+    )
 
 
 def _protected_branches() -> frozenset[str]:
@@ -682,6 +708,23 @@ def _assert_eligible_working(branch: str) -> None:
         )
 
 
+def _validate_managed_working_branch(branch: str, cwd: Path | None = None) -> None:
+    """Validate the untracked clone-state value before it reaches Git commands."""
+    full_ref = f"refs/heads/{branch}"
+    if (
+        not branch
+        or branch in {"HEAD", "@"}
+        or branch.startswith("-")
+        or not _is_valid_full_ref_name(full_ref)
+    ):
+        raise GitDomainError(f"Invalid working branch {branch!r} in clone state.")
+    _validate_ref_name(branch)
+    ok, checked = _run_git_ok("check-ref-format", "--branch", branch, cwd=cwd)
+    if not ok or checked.strip() != branch:
+        raise GitDomainError(f"Invalid working branch {branch!r} in clone state.")
+    _assert_eligible_working(branch)
+
+
 def _rev_parse(ref: str, cwd: Path | None = None) -> str | None:
     """SHA for *ref*, or None when the ref does not resolve."""
     ok, sha = _run_git_ok("rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}", cwd=cwd)
@@ -868,6 +911,12 @@ def commit_save(
     # New files must be known to git before a pathspec'd commit can include
     # them; the explicit-path add also stages deletions of tracked paths.
     _run_git("add", "--", *paths, cwd=cwd)
+    # A stale index entry can make porcelain report ``MM`` even when the
+    # working-tree content already matches HEAD. The add above reconciles that
+    # entry; if no net path change remains, there is nothing to commit.
+    clean, _ = _run_git_ok("diff", "--cached", "--quiet", "HEAD", "--", *paths, cwd=cwd)
+    if clean:
+        return None
     # `git commit -- <paths>` commits the working-tree state of exactly those
     # paths, bypassing unrelated index content the user may have pre-staged.
     _run_git("commit", "-m", msg, "--", *paths, cwd=cwd)
@@ -875,6 +924,47 @@ def commit_save(
     sha = _run_git("rev-parse", "HEAD", cwd=cwd).strip()
     logger.info("save_committed", ledger=ledger, sha=sha, files=len(changed))
     return sha
+
+
+def _residual_tracked_changes(cwd: Path | None = None) -> list[str]:
+    """Return tracked paths whose index or working content differs from HEAD.
+
+    Milestone commits represent the whole tracked project state, not only the
+    files last generated by the canvas save. Untracked/staged-new files are
+    deliberately excluded so an unrelated local file cannot silently enter
+    history. Both comparisons are needed: the HEAD comparison finds real net
+    changes, while the index comparison also finds stale ``MM`` entries whose
+    working content has returned to HEAD and merely need reconciliation.
+    """
+
+    def parse_name_status(raw: str) -> list[str]:
+        tokens = raw.split("\0")
+        paths: list[str] = []
+        i = 0
+        while i < len(tokens) and tokens[i]:
+            status = tokens[i]
+            i += 1
+            code = status[0]
+            if code in ("R", "C"):
+                if i + 1 >= len(tokens):
+                    raise GitError("Malformed git name-status output.")
+                old_path, new_path = tokens[i], tokens[i + 1]
+                i += 2
+                paths.extend((old_path, new_path))
+            else:
+                if i >= len(tokens):
+                    raise GitError("Malformed git name-status output.")
+                path = tokens[i]
+                i += 1
+                # A means newly staged/untracked. Save & commit captures only
+                # files that were already tracked by the project.
+                if code in ("M", "D", "T"):
+                    paths.append(path)
+        return paths
+
+    net = _run_git("diff", "--name-status", "-z", "-M", "HEAD", "--", cwd=cwd)
+    staged = _run_git("diff", "--cached", "--name-status", "-z", "-M", "HEAD", "--", cwd=cwd)
+    return list(dict.fromkeys(parse_name_status(net) + parse_name_status(staged)))
 
 
 def check_invariants(working: str, cwd: Path | None = None) -> list[str]:
@@ -1655,6 +1745,16 @@ def commit_milestone(
                 GitMilestoneFork(remote=remote, working=leg, message=message_text)
             )
 
+    # The canvas save immediately preceding this action captures Haute-owned
+    # generated files. A project can also have changes to already-tracked files
+    # made by dependency tooling or a code editor (uv.lock is a common example).
+    # Fold those into the ledger before creating the milestone so an explicit
+    # "Save & commit" leaves the tracked project clean. Newly-added/untracked
+    # files remain untouched and cannot ride into history implicitly.
+    residual = _residual_tracked_changes(cwd)
+    if residual:
+        commit_save(residual, working, cwd=cwd, message="Updated tracked project files")
+
     sha = merge_to_working(working, message, tag_label=version_label, cwd=cwd)
     logger.info("milestone_committed", working=working, sha=sha, tag=version_label or "")
     return GitCommitResponse(
@@ -2341,10 +2441,12 @@ def archive_commit(sha: str, dest: Path, cwd: Path | None = None) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Remotes and deliberate push (S16/S33) — no auto-push, no add-remote from the
-# UI, no force-push ever. Push the working/ledger PAIR atomically to an EXISTING
-# remote. ahead/behind are read from locally-known remote refs only (no fetch,
-# so no egress; fetch cadence is a later deliberate surface, P7/D10).
+# Remotes and deliberate push (S16/S33) — no auto-push and no add-remote from
+# the UI. An advertised-empty remote receives its resolved default plus the
+# working/ledger pair in one create-only atomic push; an established remote
+# receives only the validated pair. Existing refs are never force-updated.
+# ahead/behind are read from locally-known remote refs only (no fetch, so no
+# egress; fetch cadence is a later deliberate surface, P7/D10).
 # ---------------------------------------------------------------------------
 
 
@@ -2547,11 +2649,6 @@ def _ls_remote_version_tags(remote: str, cwd: Path | None = None) -> dict[str, s
     the release commit, not the tag object — annotated tags have ``objsha !=
     commitsha`` even when pointing at the same commit, which would otherwise
     false-positive on every idempotent re-push of an already-published label."""
-    env = {
-        **os.environ,
-        "GIT_TERMINAL_PROMPT": "0",
-        "GIT_SSH_COMMAND": "ssh -oBatchMode=yes -oConnectTimeout=10",
-    }
     try:
         result = subprocess.run(
             ["git", "ls-remote", "--tags", remote, "refs/tags/version/*"],
@@ -2559,10 +2656,10 @@ def _ls_remote_version_tags(remote: str, cwd: Path | None = None) -> dict[str, s
             text=True,
             encoding="utf-8",
             cwd=cwd or Path.cwd(),
-            env=env,
+            env=_remote_env(),
             timeout=_FETCH_TIMEOUT_SECONDS,
         )
-    except (subprocess.TimeoutExpired, OSError):
+    except (subprocess.TimeoutExpired, OSError, UnicodeError):
         return {}
     if result.returncode != 0:
         return {}
@@ -2610,10 +2707,207 @@ def _tag_collisions(remote: str, working: str, cwd: Path | None = None) -> list[
     return collisions
 
 
+def _inspect_remote(remote: str, cwd: Path | None = None) -> tuple[set[str], str | None, bool]:
+    """Strictly inspect one remote; empty means a successful zero-object advertisement."""
+    try:
+        result = subprocess.run(
+            ["git", "ls-remote", "--symref", remote],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            cwd=cwd or Path.cwd(),
+            env=_remote_env(),
+            timeout=_FETCH_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise GitError("git ls-remote timed out") from exc
+    except (OSError, UnicodeError) as exc:
+        raise GitError("git ls-remote failed") from exc
+    if result.returncode != 0:
+        logger.warning("git_remote_inspection_failed", remote=remote, stderr=result.stderr.strip())
+        raise GitError(result.stderr.strip() or "git ls-remote failed")
+    heads: set[str] = set()
+    head_target: str | None = None
+    has_object_refs = False
+    object_refs: dict[str, str] = {}
+    object_id_width: int | None = None
+    for line in result.stdout.splitlines():
+        parts = line.split("\t")
+        if len(parts) != 2:
+            raise GitError("malformed git ls-remote advertisement")
+        value, ref = parts
+        if value.startswith("ref: "):
+            if ref != "HEAD" or not value.startswith("ref: refs/heads/"):
+                raise GitError("malformed git ls-remote advertisement")
+            target_ref = value[len("ref: ") :]
+            target = target_ref[len("refs/heads/") :]
+            if not _is_valid_full_ref_name(target_ref) or (
+                head_target is not None and head_target != target
+            ):
+                raise GitError("malformed git ls-remote advertisement")
+            head_target = target
+        elif re.fullmatch(r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})", value):
+            object_id = value.lower()
+            if not object_id.strip("0"):
+                raise GitError("malformed git ls-remote advertisement")
+            if object_id_width is None:
+                object_id_width = len(object_id)
+            elif len(object_id) != object_id_width:
+                raise GitError("malformed git ls-remote advertisement")
+            peeled = ref.endswith("^{}")
+            canonical_ref = ref[:-3] if peeled else ref
+            if ref != "HEAD" and (
+                not _is_valid_full_ref_name(canonical_ref)
+                or (peeled and not canonical_ref.startswith("refs/tags/"))
+            ):
+                raise GitError("malformed git ls-remote advertisement")
+            previous = object_refs.get(ref)
+            if previous is not None and previous != object_id:
+                raise GitError("malformed git ls-remote advertisement")
+            object_refs[ref] = object_id
+            has_object_refs = True
+            if canonical_ref.startswith("refs/heads/"):
+                name = ref[len("refs/heads/") :]
+                heads.add(name)
+        else:
+            raise GitError("malformed git ls-remote advertisement")
+    if head_target is not None:
+        head_object = object_refs.get("HEAD")
+        target_object = object_refs.get(f"refs/heads/{head_target}")
+        if head_object is not None and target_object is not None and head_object != target_object:
+            raise GitError("malformed git ls-remote advertisement")
+    return heads, head_target, has_object_refs
+
+
+def _local_unmanaged_bases(working: str, ledger: str, cwd: Path | None = None) -> set[str]:
+    ok, raw = _run_git_ok("for-each-ref", "--format=%(refname:lstrip=2)", "refs/heads/", cwd=cwd)
+    if not ok:
+        raise GitError("could not list local branches")
+    names = {name.strip() for name in raw.splitlines() if name.strip()}
+    return {
+        name
+        for name in names
+        if name not in {working, ledger}
+        and not name.endswith(LEDGER_SUFFIX)
+        and not name.startswith(f"{_ARCHIVE_PREFIX}/")
+        and f"{name}{LEDGER_SUFFIX}" not in names
+        and _rev_parse(f"refs/heads/{name}", cwd=cwd) is not None
+    }
+
+
+def _resolve_push_default(
+    heads: set[str],
+    symbolic_head: str | None,
+    has_object_refs: bool,
+    working: str,
+    ledger: str,
+    remote: str,
+    cwd: Path | None = None,
+) -> str:
+    local_bases = _local_unmanaged_bases(working, ledger, cwd=cwd)
+    if has_object_refs:
+        if symbolic_head is not None:
+            if symbolic_head in {working, ledger}:
+                raise GitDomainError(
+                    "The remote default cannot be the working branch or save ledger."
+                )
+            if symbolic_head not in heads:
+                raise GitDomainError("The remote's default branch is missing or dangling.")
+            return symbolic_head
+        # A clone need not have a local ``main``/``master`` head after it has
+        # checked out only a working branch.  The selected remote's tracking
+        # ref is still an authoritative local baseline, but refs belonging to
+        # another remote must never influence this decision.
+        remote_base_names = {
+            name
+            for name in heads
+            if name not in {working, ledger}
+            and not name.endswith(LEDGER_SUFFIX)
+            and not name.startswith(f"{_ARCHIVE_PREFIX}/")
+            and f"{name}{LEDGER_SUFFIX}" not in heads
+        }
+        selected_remote_bases = {
+            name
+            for name in remote_base_names
+            if _rev_parse(f"refs/remotes/{remote}/{name}", cwd=cwd) is not None
+        }
+        matches = remote_base_names & (local_bases | selected_remote_bases)
+        # A real local canonical base is an explicit expectation, not merely a
+        # weak preference: an established remote missing it is unsafe to guess
+        # around by selecting a different branch.
+        if "main" in local_bases:
+            if "main" not in heads:
+                raise GitDomainError(
+                    "The expected local default branch 'main' is missing on the remote."
+                )
+            return "main"
+        if "master" in local_bases:
+            if "master" not in heads:
+                raise GitDomainError(
+                    "The expected local default branch 'master' is missing on the remote."
+                )
+            return "master"
+        for name in ("main", "master"):
+            if name in matches:
+                return name
+        if len(matches) == 1:
+            return next(iter(matches))
+        raise GitDomainError("Could not determine the remote default branch safely.")
+    if symbolic_head in {working, ledger}:
+        raise GitDomainError("The remote default cannot be the working branch or save ledger.")
+    if symbolic_head is not None and symbolic_head in local_bases:
+        return symbolic_head
+    for name in ("main", "master"):
+        if name in local_bases:
+            return name
+    if len(local_bases) == 1:
+        return next(iter(local_bases))
+    raise GitDomainError("Could not determine a local default branch for remote bootstrap.")
+
+
+def _fetch_expected_default(remote: str, branch: str, cwd: Path | None = None) -> str:
+    destination = f"refs/remotes/{remote}/{branch}"
+    try:
+        with _fetch_exec_lock:
+            result = subprocess.run(
+                [
+                    "git",
+                    "fetch",
+                    "--no-tags",
+                    remote,
+                    f"refs/heads/{branch}:{destination}",
+                    "--quiet",
+                ],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                cwd=cwd or Path.cwd(),
+                env=_remote_env(),
+                timeout=_FETCH_TIMEOUT_SECONDS,
+            )
+    except subprocess.TimeoutExpired as exc:
+        raise GitError("git fetch timed out") from exc
+    except (OSError, UnicodeError) as exc:
+        raise GitError("git fetch failed") from exc
+    if result.returncode != 0:
+        logger.warning(
+            "git_default_fetch_failed", remote=remote, branch=branch, stderr=result.stderr.strip()
+        )
+        raise GitError(result.stderr.strip() or "git fetch failed")
+    sha = _rev_parse(destination, cwd=cwd)
+    if sha is None:
+        raise GitError("fetched default branch did not resolve")
+    return sha
+
+
 def push_working_pair(remote: str, project_root: Path, cwd: Path | None = None) -> GitPushResponse:
-    """Deliberately push the working branch AND its ledger to *remote*, atomically
-    (S16): both refs land or neither does. NEVER force-pushes (S33). Pushes only
-    to a remote that already exists (no add-remote from the UI)."""
+    """Deliberately publish managed history to an existing *remote* atomically.
+
+    A successfully inspected empty remote receives the resolved default branch
+    plus the working branch and optional ledger under a create-only default-ref
+    lease. An established remote receives only the working/ledger pair after its
+    default has been validated. No existing remote ref is ever force-updated.
+    """
     from haute._git_state import read_working_branch
 
     _assert_git_repo(cwd)
@@ -2624,16 +2918,39 @@ def push_working_pair(remote: str, project_root: Path, cwd: Path | None = None) 
     working = read_working_branch(project_root)
     if working is None:
         raise GitDomainError("No working branch is set for this clone — nothing to push.")
-    if _rev_parse(working, cwd=cwd) is None:
+    _validate_managed_working_branch(working, cwd=cwd)
+    working_sha = _rev_parse(f"refs/heads/{working}", cwd=cwd)
+    if working_sha is None:
         raise GitDomainError(f"Working branch '{working}' does not exist.")
     ledger = ledger_name(working)
+    ledger_sha = _rev_parse(f"refs/heads/{ledger}", cwd=cwd)
+    ledger_exists = ledger_sha is not None
+    advertised_heads, symbolic_head, has_object_refs = _inspect_remote(remote, cwd=cwd)
+    default = _resolve_push_default(
+        advertised_heads, symbolic_head, has_object_refs, working, ledger, remote, cwd=cwd
+    )
+    bootstrapping = not has_object_refs
+    default_sha: str | None = None
+
+    if bootstrapping:
+        default_sha = _rev_parse(f"refs/heads/{default}", cwd=cwd)
+        if default_sha is None:
+            raise GitDomainError("The local default and working branches must resolve before push.")
+        related = [default_sha, working_sha] + ([ledger_sha] if ledger_sha is not None else [])
+        if any(_merge_base(related[0], sha, cwd=cwd) is None for sha in related[1:]):
+            raise GitDomainError("The local default and working history are unrelated.")
+    else:
+        remote_default = _fetch_expected_default(remote, default, cwd=cwd)
+        related = [working_sha] + ([ledger_sha] if ledger_sha is not None else [])
+        if any(_merge_base(remote_default, sha, cwd=cwd) is None for sha in related):
+            raise GitDomainError("The remote default and local working history are unrelated.")
 
     # X4: version labels are canonical org-wide (one `version/<label>` per
     # release). Pre-check for a label already on the remote at a DIFFERENT object
     # and refuse with a friendly message before the push, rather than letting it
     # surface as a raw atomic-push rejection (best-effort: an unreachable remote
     # skips the check and git's own tag-reject backstops a real collision).
-    collisions = _tag_collisions(remote, working, cwd=cwd)
+    collisions = _tag_collisions(remote, working_sha, cwd=cwd)
     if collisions:
         labels = ", ".join(sorted(c[len("version/") :] for c in collisions))
         plural = "s" if len(collisions) > 1 else ""
@@ -2643,45 +2960,61 @@ def push_working_pair(remote: str, project_root: Path, cwd: Path | None = None) 
             "pick a different label, or coordinate with whoever published it."
         )
 
-    # Push the pair; include the ledger only when it has been spawned. No
-    # --force / --force-with-lease — published history is never rewritten (S33).
+    # Include the ledger only when it has been spawned. Bootstrap's empty-value
+    # lease is compare-and-create only; no existing ref can be force-updated (S33).
     # --follow-tags carries the annotated version/<label> tags reachable from the
     # pushed commits (X4: labels travel with the work they mark).
-    refspecs = [f"{working}:{working}"]
-    if _rev_parse(ledger, cwd=cwd) is not None:
-        refspecs.append(f"{ledger}:{ledger}")
+    refspecs: list[str] = []
+    if bootstrapping:
+        if default_sha is None:  # guarded above; keep the snapshot invariant explicit
+            raise GitError("default branch snapshot is missing")
+        refspecs.append(f"{default_sha}:refs/heads/{default}")
+    refspecs.append(f"{working_sha}:refs/heads/{working}")
+    if ledger_sha is not None:
+        refspecs.append(f"{ledger_sha}:refs/heads/{ledger}")
 
-    cmd = ["git", "push", "--atomic", "--follow-tags", remote, *refspecs]
+    cmd = ["git", "push", "--atomic", "--follow-tags"]
+    if bootstrapping:
+        cmd.append(f"--force-with-lease=refs/heads/{default}:")
+    cmd.extend([remote, *refspecs])
     result = subprocess.run(
-        cmd, capture_output=True, text=True, encoding="utf-8", cwd=cwd or Path.cwd()
+        cmd,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        cwd=cwd or Path.cwd(),
+        env=_remote_env(),
     )
     if result.returncode != 0:
         stderr = result.stderr.strip()
         logger.warning("git_push_failed", remote=remote, refs=refspecs, stderr=stderr)
-        if any(s in stderr for s in ("non-fast-forward", "fetch first", "[rejected]")):
+        if not bootstrapping and any(
+            s in stderr for s in ("non-fast-forward", "fetch first", "[rejected]")
+        ):
             # M7: a rejection is the moment we KNOW we're diverged — turn it into
             # the data-bearing fork the UI needs, not a generic dead-end string.
             raise _push_rejection(remote, working, ledger, project_root, cwd=cwd)
         raise GitError(stderr or "git push failed")
 
-    pushed = [working] + ([ledger] if len(refspecs) == 2 else [])
+    pushed = ([default] if bootstrapping else []) + [working] + ([ledger] if ledger_exists else [])
     # X3 robustness (§6.8): record the tips we just published so rewrite detection
     # survives a pruned reflog (keyed <remote>/<ref>).
     from haute._git_state import record_pushed_shas
 
-    pushed_shas: dict[str, str] = {}
-    w_tip = _rev_parse(working, cwd=cwd)
-    if w_tip is not None:
-        pushed_shas[f"{remote}/{working}"] = w_tip
-    if len(refspecs) == 2:
-        l_tip = _rev_parse(ledger, cwd=cwd)
-        if l_tip is not None:
-            pushed_shas[f"{remote}/{ledger}"] = l_tip
+    pushed_shas = {f"{remote}/{working}": working_sha}
+    if ledger_sha is not None:
+        pushed_shas[f"{remote}/{ledger}"] = ledger_sha
     record_pushed_shas(project_root, pushed_shas)
 
     logger.info("pushed_working_pair", remote=remote, branches=pushed)
     return GitPushResponse(
-        remote=remote, working_branch=working, ledger_branch=ledger, pushed_refs=pushed
+        remote=remote,
+        working_branch=working,
+        ledger_branch=ledger,
+        default_branch=default,
+        bootstrapped_default=bootstrapping,
+        pushed_refs=pushed,
     )
 
 

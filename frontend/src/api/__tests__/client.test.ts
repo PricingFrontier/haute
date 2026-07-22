@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
+import { loadUiContractFixture } from "../../testSupport/uiContractFixtures"
 import {
   ApiError,
   ApiTimeoutError,
@@ -659,12 +660,7 @@ describe("git endpoints", () => {
   })
 
   it("gitPush POSTs /api/git/push with the remote", async () => {
-    const data = {
-      remote: "origin",
-      working_branch: "dev",
-      ledger_branch: "dev-save",
-      pushed_refs: ["dev", "dev-save"],
-    }
+    const data = loadUiContractFixture("git_push_response")
     mockFetch.mockReturnValue(jsonResponse(data))
     const result = await gitPush("origin")
     const [url, opts] = mockFetch.mock.calls[0]
@@ -672,6 +668,19 @@ describe("git endpoints", () => {
     expect(opts.method).toBe("POST")
     expect(JSON.parse(opts.body)).toEqual({ remote: "origin" })
     expect(result).toEqual(data)
+  })
+
+  it("gitPush rejects a success payload without required bootstrap metadata", async () => {
+    mockFetch.mockReturnValue(
+      jsonResponse({
+        remote: "origin",
+        working_branch: "dev",
+        ledger_branch: "dev-save",
+        pushed_refs: ["dev", "dev-save"],
+      }),
+    )
+
+    await expect(gitPush("origin")).rejects.toThrow(/default_branch/i)
   })
 
   it("getWorkingBranches GETs /api/git/working-branches", async () => {

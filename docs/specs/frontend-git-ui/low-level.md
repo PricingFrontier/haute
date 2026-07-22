@@ -15,7 +15,7 @@
 | `frontend/src/components/MilestoneCommitModal.tsx` | Save & commit modal: message + version label form, the 409 fork-warning override flow. |
 | `frontend/src/components/MoveConfirmModal.tsx` | Pre-move save/discard/confirm prompt: reads `useGitStore.moveTarget` for the target label and `useGraphStore.dirty` to decide single-confirm vs. save-or-discard, and locks its buttons (`busy`) once clicked while the caller performs the actual move. |
 | `frontend/src/components/WorkingBranchModal.tsx` | Startup / save-gate branch-selection modal, with an inline git-identity sub-form. |
-| `frontend/src/components/RemotePushControl.tsx` | Remote dropdown, ahead/behind + ledger-divergence display, push (with the pending-save integrity confirm), catch-up, the non-fast-forward `PushRejectedModal`, `AheadBehind`/`LedgerStatus`/`RejectedLeg` sub-components. |
+| `frontend/src/components/RemotePushControl.tsx` | Remote dropdown, ahead/behind + ledger-divergence display, explicit push (including empty-remote default-bootstrap tooltip/toast and the pending-save integrity confirm), catch-up, the non-fast-forward `PushRejectedModal`, `AheadBehind`/`LedgerStatus`/`RejectedLeg` sub-components. |
 | `frontend/src/components/DivergenceModal.tsx` | Recorded-branch-vs-HEAD divergence recovery modal (go home / stay here / open branch manager). |
 | `frontend/src/utils/vcHistory.ts` | Records switch/archive/restore/delete as undoable entries on `useGraphStore`'s VC history stacks; each entry's undo/redo leg re-syncs git status + the panel's history nonce. |
 
@@ -32,6 +32,14 @@ fields with independent lifecycles.
 
 **`GitPendingAction`** — `"save" | "commit" | null`; an action queued behind a
 `WorkingBranchModal` confirmation (the save-gate).
+
+**`GitPushResponse`** (`frontend/src/api/types.ts`) — the push result includes required
+`default_branch: string` and `bootstrapped_default: boolean` members in addition to the
+remote, working/ledger names, and `pushed_refs`. The matching runtime guard requires and
+parses both members; `bootstrapped_default` is false by default on the server but is always
+present on the wire. `pushed_refs` names the explicit branch refspecs submitted by the
+atomic push (not implicit `--follow-tags` tags), and does not necessarily mean each tip
+changed.
 
 **`GitState`** (the store) — see `frontend/src/stores/useGitStore.ts:32-104` for the full
 field list. Notable invariants:
@@ -185,6 +193,21 @@ the actual sequencing: optionally flushing unsaved edits via `handleSave()`, the
 so the client re-initialises from scratch rather than reconciling in place) — or closing the
 modal (`closeMove`) and toasting on either a failed save or a failed move.
 
+**Remote push flow.** `RemotePushControl` loads configured remotes and auto-selects only a
+sole remote. Project initialization, server startup, and working-branch confirmation never
+call `gitPush`; publication begins only from `onPushClick`. The button tooltip is "Push your
+branch and save history. If the remote is empty, Haute also publishes the default branch as
+your merge target." Pending saves still interpose the existing confirmation before
+`doPush`; otherwise `doPush` calls `gitPush(selected)` directly.
+
+On success, `doPush` branches only on the response metadata. When
+`bootstrapped_default=true`, it emits `Published <default_branch> and your branch history to
+<remote>`. When false, it retains the ordinary pushed-ref-count toast. It then reloads
+remote divergence in either case. The frontend neither infers emptiness nor hardcodes
+`main`; strict inspection, related-history validation, refspec choice, atomicity, and remote-
+host default-branch configuration are backend/out-of-scope concerns. Any refusal follows
+the existing push error path and never emits a success toast or retries automatically.
+
 ## Edge cases and invariants
 
 - **A save must never move the selection; a commit must, but only on the user's own
@@ -239,6 +262,10 @@ modal (`closeMove`) and toasting on either a failed save or a failed move.
 - **`RemotePushControl` never defaults to a push target** unless exactly one remote exists
   — with 0 remotes it shows an explicit "no remotes" message, with 2+ it requires a
   deliberate selection, so a push is never accidental.
+- **Bootstrap is response-driven and first-Push-only.** The special toast appears only for
+  `bootstrapped_default=true`; an idempotent second push receives false and uses the normal
+  toast. The displayed branch comes from `default_branch`, so custom defaults work and UI
+  copy never assumes `main`.
 - **Catch-up eligibility mirrors the engine's fast-forward precondition exactly**:
   `canCatchUp` requires no leg (`working` or `ledger`) to be `ahead`/`diverged`, and at
   least one leg `behind` — computed identically in `RemotePushControl`'s standalone button
@@ -259,6 +286,10 @@ modal (`closeMove`) and toasting on either a failed save or a failed move.
   `null` on an unparseable body rather than throwing; both call sites treat a `null` parse
   as "not this structured case" and fall back to the generic toast path, so a server-shape
   drift degrades to a plain error message instead of crashing the modal.
+- `parseGitPushResponse` treats `default_branch` and `bootstrapped_default` as required and
+  type-checks both. A malformed success body rejects through the normal request promise and
+  reaches `RemotePushControl`'s error toast; the UI must not infer a bootstrap from
+  `pushed_refs` or silently substitute `main`.
 - `GitPanel.refresh()`'s catch only toasts and returns `null` when its own generation is
   still current — a superseded refresh's rejection is swallowed entirely (the newer
   refresh owns error reporting for that logical operation).
@@ -360,11 +391,18 @@ Library component/unit tests (no e2e for this surface).
   (synced / diverged / unknown-vs-never-pushed), ledger-status display (behind / forked /
   silent-when-synced), the 409 rejection modal, non-409 fallback toast, catch-up
   offer/exclusion by leg state, the rejection modal's catch-up vs. spin-off-a-copy
-  routing, and the rewrite-specific heading.
+  routing, and the rewrite-specific heading. Push-success coverage pins the exact tooltip,
+  the special bootstrap toast using a custom `default_branch`, the ordinary toast when
+  `bootstrapped_default=false` (including an idempotent later push), post-push reload, and
+  the guarantee that no push occurs merely from mount/startup/branch selection.
 - **`components/__tests__/RemotePushControl.gaps.test.tsx`** — error-message fidelity for
   catch-up and branch-away failures (`Error` vs. non-`Error` rejection), unparseable-409
   fallback to a plain toast (both a bad body shape and a missing detail), and the full
   behind/ahead/diverged×working/ledger catch-up-eligibility matrix.
+- **`api/__tests__/client.test.ts` and `types/__tests__/guards.contract.test.ts`** — the push
+  client/guard contract requires `default_branch` and `bootstrapped_default`, preserves
+  submitted `pushed_refs`, accepts both boolean values, and rejects missing or wrongly typed
+  bootstrap metadata rather than inventing a default.
 - **`components/__tests__/DivergenceModal.test.tsx`** — recorded/current branch naming,
   each of the three resolution choices, and stay-here's disabled state when the current
   branch isn't eligible.

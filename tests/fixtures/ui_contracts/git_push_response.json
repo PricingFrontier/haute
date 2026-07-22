@@ -1,0 +1,8 @@
+{
+  "remote": "origin",
+  "working_branch": "dev",
+  "ledger_branch": "dev-save",
+  "default_branch": "release",
+  "bootstrapped_default": true,
+  "pushed_refs": ["release", "dev", "dev-save"]
+}

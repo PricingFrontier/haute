@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import {
   GitBranch, Archive, Trash2, Plus, AlertTriangle,
   RotateCcw, ChevronRight, ChevronDown, ArrowRightLeft,
@@ -42,6 +42,7 @@ export default function BranchManager({ selectedBranch, onPeek }: BranchManagerP
   // Undo/redo of a VC operation changes the branch forest from outside this
   // component — the nonce tells us to re-list.
   const historyNonce = useGitStore((s) => s.historyNonce)
+  const commitNonce = useGitStore((s) => s.commitNonce)
   const addToast = useToastStore((s) => s.addToast)
 
   const [branches, setBranches] = useState<GitManagedBranch[]>([])
@@ -60,12 +61,19 @@ export default function BranchManager({ selectedBranch, onPeek }: BranchManagerP
 
   // Persisted "don't ask again" for switching (loaded once; whole-environment).
   const [skipSwitchConfirm, setSkipSwitchConfirm] = useState(false)
+  // A save/commit can start a refresh while the mount request is still in
+  // flight. Only the newest request may publish its branch flags; otherwise an
+  // older dirty listing can restore badges that the newer request just cleared.
+  const refreshGeneration = useRef(0)
 
   const refresh = useCallback(async () => {
+    const generation = ++refreshGeneration.current
     try {
       const res = await getWorkingBranches()
+      if (generation !== refreshGeneration.current) return
       setBranches(res.branches)
     } catch (err) {
+      if (generation !== refreshGeneration.current) return
       setActionError(`Failed to load branches: ${err instanceof Error ? err.message : "error"}`)
     }
   }, [])
@@ -82,10 +90,12 @@ export default function BranchManager({ selectedBranch, onPeek }: BranchManagerP
     if (branchesExpandNonce > 0) setCollapsed(false)
   }, [branchesExpandNonce])
 
-  // Re-list after out-of-component history changes (VC undo/redo, saves).
+  // Re-list after out-of-component history changes (VC undo/redo, saves and
+  // milestone commits). The commit refresh is essential because the preceding
+  // save refresh still sees its ledger entries as unmerged.
   useEffect(() => {
-    if (historyNonce > 0) void refresh()
-  }, [historyNonce, refresh])
+    if (historyNonce > 0 || commitNonce > 0) void refresh()
+  }, [historyNonce, commitNonce, refresh])
 
   // Right-click on a branch row: the row's actions as a context menu.
   const [rowMenu, setRowMenu] = useState<{ b: GitManagedBranch; x: number; y: number } | null>(
