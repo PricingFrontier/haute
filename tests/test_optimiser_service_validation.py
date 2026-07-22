@@ -26,11 +26,14 @@ import polars as pl
 import pytest
 from fastapi import HTTPException
 
+from haute.errors import GroupByExecutionUnsupportedError
 from haute.routes._job_store import JobStore
 from haute.routes._optimiser_service import (
     OptimiserSolveService,
+    SolveContext,
     _compute_scenario_value_stats,
 )
+from haute.schemas import OptimiserFrontierAutoRangeRequest, OptimiserSolveRequest
 from tests.conftest import make_edge, make_graph
 
 _TERMINAL_STATUSES = {"completed", "error", "contract_error", "cancelled", "memory_limited"}
@@ -374,6 +377,132 @@ def test_build_grid_still_rejects_non_finite_scenario_grid() -> None:
     job = store.require_job(job_id)
     assert job["status"] == "contract_error"
     assert job["terminal_reason"] == "contract_error"
+
+
+def _group_by_contract_error() -> GroupByExecutionUnsupportedError:
+    return GroupByExecutionUnsupportedError(
+        "group-by needs an admitted materialisation boundary",
+        node_id="opt",
+        operator="groupBy",
+        profile="optimiser_setup",
+        reason_code="profile_requires_bounded_execution",
+        remediation="use an admitted eager profile",
+        estimated_peak_bytes=1_024,
+        headroom_bytes=512,
+    )
+
+
+def test_execute_pipeline_adapts_public_contract_errors(tmp_path) -> None:
+    store = JobStore()
+    service = OptimiserSolveService(store)
+    job_id = store.create_job({"status": "running"})
+    body = OptimiserSolveRequest.model_validate(
+        {
+            "graph": _source_to_optimiser_graph("missing.parquet", _solver_config()),
+            "node_id": "opt",
+        }
+    )
+    checkpoint_dir = tmp_path / "checkpoints"
+    checkpoint_dir.mkdir()
+
+    with (
+        patch(
+            "haute.routes._optimiser_service.execute_lazy_graph",
+            side_effect=_group_by_contract_error(),
+        ),
+        patch("haute.executor._compile_preamble", return_value={}),
+        patch("haute.executor._pipeline_dir", return_value=None),
+        patch("haute.executor._resolve_batch_scenario", return_value="batch"),
+    ):
+        with pytest.raises(HTTPException) as exc_info:
+            service._execute_pipeline(body, job_id, checkpoint_dir)
+
+    assert exc_info.value.status_code == 422
+    assert exc_info.value.detail["error_code"] == "group_by_execution_unsupported"
+    assert store.require_job(job_id)["status"] == "contract_error"
+
+
+def test_build_grid_adapts_public_contract_errors() -> None:
+    store = JobStore()
+    service = OptimiserSolveService(store)
+    job_id = store.create_job({"status": "running"})
+
+    with patch(
+        "haute.routes._optimiser_service.bounded_sink",
+        side_effect=_group_by_contract_error(),
+    ):
+        with pytest.raises(HTTPException) as exc_info:
+            service._build_grid(
+                _two_quote_frame().lazy(),
+                ["volume"],
+                _solver_config(),
+                "opt",
+                job_id,
+            )
+
+    assert exc_info.value.status_code == 422
+    assert exc_info.value.detail["error_code"] == "group_by_execution_unsupported"
+    assert store.require_job(job_id)["status"] == "contract_error"
+
+
+def test_frontier_auto_range_adapts_public_contract_errors(tmp_path) -> None:
+    source_path = tmp_path / "source.parquet"
+    _two_quote_frame().write_parquet(source_path)
+    body = OptimiserFrontierAutoRangeRequest.model_validate(
+        {
+            "graph": _source_to_optimiser_graph(str(source_path), _solver_config()),
+            "node_id": "opt",
+        }
+    )
+    store = JobStore()
+    service = OptimiserSolveService(store)
+    job_id = store.create_job({"status": "running", "job_type": "frontier_auto_range"})
+    prepared = service._prepare_frontier_auto_range(body)
+    prepared["streaming_plan"] = None
+
+    with (
+        patch.object(service, "_execute_pipeline", side_effect=_group_by_contract_error()),
+        pytest.raises(HTTPException) as exc_info,
+    ):
+        service._run_frontier_auto_range_job(body, job_id, **prepared)
+
+    assert exc_info.value.status_code == 422
+    assert exc_info.value.detail["error_code"] == "group_by_execution_unsupported"
+    job = store.require_job(job_id)
+    assert job["status"] == "contract_error"
+    assert job["error_code"] == "group_by_execution_unsupported"
+
+
+def test_solve_worker_records_public_contract_errors() -> None:
+    class InlineThread:
+        def __init__(self, *, target, daemon):
+            self.target = target
+            self.daemon = daemon
+
+        def start(self) -> None:
+            self.target()
+
+    store = JobStore()
+    service = OptimiserSolveService(store)
+    job_id = store.create_job({"status": "running"})
+
+    with (
+        patch("haute.routes._optimiser_service.threading.Thread", InlineThread),
+        patch(
+            "haute.routes._optimiser_service._solve_online",
+            side_effect=_group_by_contract_error(),
+        ),
+    ):
+        service._launch_background(
+            SolveContext(job_id=job_id, node_id="opt", mode="online"),
+            config={},
+            quote_grid=object(),
+            ratebook_factors_handle=None,
+        )
+
+    job = store.require_job(job_id)
+    assert job["status"] == "contract_error"
+    assert job["error_code"] == "group_by_execution_unsupported"
 
 
 # ---------------------------------------------------------------------------

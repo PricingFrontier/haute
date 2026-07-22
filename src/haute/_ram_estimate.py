@@ -632,56 +632,6 @@ class RamEstimate(NamedTuple):
     """Number of columns (from source metadata)."""
 
 
-def _resolve_target_columns_uncached(
-    graph: PipelineGraph,
-    target_node_id: str,
-    source: str,
-) -> int | None:
-    """Walk backwards from the target to determine column count.
-
-    BFS from the target through ancestor nodes (respecting source
-    pruning).  Returns the column count from the first node that has
-    a definitive schema — either a ``selected_columns`` config or a
-    source parquet file with readable metadata.
-    """
-    from collections import deque
-
-    from haute._execute_lazy import _prune_live_switch_edges
-
-    node_map = {n.id: n for n in graph.nodes}
-    all_ids = set(node_map)
-    pruned_edges = _prune_live_switch_edges(graph.edges, node_map, source)
-
-    parents = build_parents_of(pruned_edges, all_ids)
-
-    visited: set[str] = set()
-    queue = deque([target_node_id])
-    while queue:
-        nid = queue.popleft()
-        if nid in visited:
-            continue
-        visited.add(nid)
-        node = node_map.get(nid)
-        if node is None:
-            continue
-
-        # selected_columns on the node config gives an exact answer
-        sel = node.data.config.get("selected_columns")
-        if sel and isinstance(sel, list) and len(sel) > 0:
-            return len(sel)
-
-        # Source nodes — read parquet metadata
-        if node.data.nodeType in (NodeType.API_INPUT, NodeType.DATA_SOURCE):
-            meta = _source_metadata_for_node(node)
-            if meta is not None:
-                _rows, cols = meta
-                return cols
-
-        queue.extend(parents.get(nid, []))
-
-    return None
-
-
 def _resolve_target_columns(
     graph: PipelineGraph,
     target_node_id: str,

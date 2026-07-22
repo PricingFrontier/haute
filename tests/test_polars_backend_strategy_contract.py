@@ -25,7 +25,14 @@ from haute.execution import (
 )
 from haute.executor import _build_node_fn, execute_graph
 from haute.projection import _canonical_topological_ranks, prepare_graph
-from haute.schemas import ExecutionStrategyDiagnosticPayload
+from haute.schemas import (
+    ExecutionColumnWidthsCollectionPayload,
+    ExecutionStrategyDiagnosticPayload,
+    ExecutionStreamabilityEvidencePayload,
+    TrainingFeatureColumnReasonCollectionPayload,
+    TrainingFeatureNameCollectionPayload,
+    TrainingFeatureSelectionDiagnosticPayload,
+)
 from haute.trace import execute_trace
 from tests.conftest import make_edge, make_graph
 
@@ -154,6 +161,133 @@ def test_v1_dto_rejects_inconsistent_and_over_cap_collections() -> None:
     }
     with pytest.raises(ValidationError):
         ExecutionStrategyDiagnosticPayload.model_validate(payload)
+
+
+def test_v1_dto_rejects_every_inconsistent_collection_state_and_order() -> None:
+    def valid_payload() -> dict[str, object]:
+        return ExecutionStrategyDiagnostic.create(
+            strategy=ExecutionStrategy.PROJECTED,
+            profile=ExecutionProfile.PREVIEW_EAGER,
+            boundedness=ExecutionBoundedness.BOUNDED,
+            reason_code="projection_seed",
+            boundaries=_available([]),
+            reasons=_available([]),
+            provenance=_available([]),
+        ).to_dict()
+
+    invalid_reasons = [
+        {"state": "unavailable", "total_count": 0, "items": []},
+        {"state": "available", "total_count": None, "items": []},
+        {
+            "state": "truncated",
+            "total_count": 1,
+            "items": [{"reason_code": "one"}],
+        },
+        {
+            "state": "available",
+            "total_count": 2,
+            "items": [
+                {"reason_code": "later", "topological_rank": 1},
+                {"reason_code": "earlier", "topological_rank": 0},
+            ],
+        },
+    ]
+    for reasons in invalid_reasons:
+        payload = valid_payload()
+        payload["reasons"] = reasons
+        with pytest.raises(ValidationError):
+            ExecutionStrategyDiagnosticPayload.model_validate(payload)
+
+    payload = valid_payload()
+    payload["boundaries"] = {
+        "state": "available",
+        "total_count": 2,
+        "items": [
+            {
+                "topological_rank": 1,
+                "node_id": "later",
+                "operator": "polars",
+                "boundary_kind": "materialisation-boundary",
+            },
+            {
+                "topological_rank": 0,
+                "node_id": "earlier",
+                "operator": "polars",
+                "boundary_kind": "materialisation-boundary",
+            },
+        ],
+    }
+    with pytest.raises(ValidationError):
+        ExecutionStrategyDiagnosticPayload.model_validate(payload)
+
+    payload = valid_payload()
+    payload["provenance"] = {
+        "state": "available",
+        "total_count": 2,
+        "items": [
+            {"column": "z", "origin_kind": "seed"},
+            {"column": "a", "origin_kind": "seed"},
+        ],
+    }
+    with pytest.raises(ValidationError):
+        ExecutionStrategyDiagnosticPayload.model_validate(payload)
+
+    payload = valid_payload()
+    payload["status"] = "boundary"
+    with pytest.raises(ValidationError):
+        ExecutionStrategyDiagnosticPayload.model_validate(payload)
+
+    payload = valid_payload()
+    payload["provenance"] = {"state": "unavailable", "total_count": None, "items": []}
+    with pytest.raises(ValidationError):
+        ExecutionStrategyDiagnosticPayload.model_validate(payload)
+
+    with pytest.raises(ValidationError):
+        ExecutionStreamabilityEvidencePayload.model_validate(
+            {"state": "available", "total_count": 2, "items": ["z", "a"]}
+        )
+    with pytest.raises(ValidationError):
+        ExecutionColumnWidthsCollectionPayload.model_validate(
+            {
+                "state": "available",
+                "total_count": 2,
+                "items": [{"node_id": "z"}, {"node_id": "a"}],
+            }
+        )
+
+
+def test_training_feature_dto_rejects_duplicate_and_inconsistent_diagnostics() -> None:
+    with pytest.raises(ValidationError):
+        TrainingFeatureNameCollectionPayload.model_validate(
+            {"state": "available", "total_count": 2, "items": ["x", "x"]}
+        )
+    with pytest.raises(ValidationError):
+        TrainingFeatureColumnReasonCollectionPayload.model_validate(
+            {
+                "state": "available",
+                "total_count": 2,
+                "items": [
+                    {"column": "x", "reason": "target"},
+                    {"column": "x", "reason": "not_selected"},
+                ],
+            }
+        )
+
+    payload = {
+        "mode": "explicit",
+        "feature_count": 2,
+        "detail_state": "available",
+        "features": {"state": "available", "total_count": 1, "items": ["x"]},
+        "retained_metadata": {"state": "available", "total_count": 0, "items": []},
+        "excluded_columns": {"state": "available", "total_count": 0, "items": []},
+    }
+    with pytest.raises(ValidationError):
+        TrainingFeatureSelectionDiagnosticPayload.model_validate(payload)
+
+    payload["feature_count"] = 2
+    payload["features"] = {"state": "truncated", "total_count": 2, "items": ["x"]}
+    with pytest.raises(ValidationError):
+        TrainingFeatureSelectionDiagnosticPayload.model_validate(payload)
 
 
 def _group_by_graph():
