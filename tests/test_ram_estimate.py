@@ -24,6 +24,7 @@ from haute._ram_estimate import (
     _edge_join_key_columns_on_path,
     _estimate_base_bytes_per_row,
     _estimate_peak_bytes,
+    _EstimateGraphIndex,
     _jsonl_row_count,
     _parquet_metadata,
     _resolve_edge_join_column_names,
@@ -110,6 +111,23 @@ def test_materialisation_estimate_distinguishes_empty_from_unavailable() -> None
         MaterialisationEstimate(MaterialisationEstimateState.AVAILABLE, None)
     with pytest.raises(ValueError):
         MaterialisationEstimate(MaterialisationEstimateState.UNAVAILABLE, 0)
+    with pytest.raises(ValueError, match="has no unavailable reason"):
+        MaterialisationEstimate(
+            MaterialisationEstimateState.AVAILABLE,
+            1,
+            unavailable_reason="not allowed",
+        )
+    with pytest.raises(ValueError, match="requires a reason"):
+        MaterialisationEstimate.unavailable("")
+
+
+def test_ram_estimate_column_index_rejects_recursive_resolution() -> None:
+    source = _make_source_node()
+    index = _EstimateGraphIndex.build(PipelineGraph(nodes=[source], edges=[]), "live")
+    index.resolving_targets.add(source.id)
+
+    with pytest.raises(RuntimeError, match="cycle encountered"):
+        index.resolve_columns(source.id)
 
 
 def test_source_metadata_propagates_programming_errors_but_marks_os_errors_unavailable(

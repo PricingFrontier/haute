@@ -32,6 +32,9 @@ from haute.routes._optimiser_service import (
     OptimiserSolveService,
     SolveContext,
     _compute_scenario_value_stats,
+    _memory_limit_message,
+    _normalise_memory_limit_payload,
+    _optional_positive_int,
 )
 from haute.schemas import OptimiserFrontierAutoRangeRequest, OptimiserSolveRequest
 from tests.conftest import make_edge, make_graph
@@ -503,6 +506,15 @@ def test_solve_worker_records_public_contract_errors() -> None:
     job = store.require_job(job_id)
     assert job["status"] == "contract_error"
     assert job["error_code"] == "group_by_execution_unsupported"
+
+
+def test_memory_limit_helpers_cover_unstructured_and_absent_values() -> None:
+    assert _normalise_memory_limit_payload("memory exhausted") == {
+        "message": "memory exhausted",
+        "error_code": "memory_limit",
+    }
+    assert _optional_positive_int(None, field="timeout") is None
+    assert _memory_limit_message({}) == "Auto-range exceeded its memory budget."
 
 
 # ---------------------------------------------------------------------------
