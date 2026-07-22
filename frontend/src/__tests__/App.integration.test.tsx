@@ -158,6 +158,8 @@ vi.mock("../api/client", async () => {
         working_branch: "dev",
         ledger_branch: "dev-save",
         pushed_refs: ["dev", "dev-save"],
+        default_branch: "main",
+        bootstrapped_default: false,
       }),
     ),
   }

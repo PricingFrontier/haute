@@ -7,6 +7,7 @@ const mockGetGitRemotes = vi.fn()
 const mockGitPush = vi.fn()
 const mockFastForward = vi.fn()
 const mockBranchAway = vi.fn()
+const mockAddToast = vi.fn()
 
 // Spread the real module so `ApiError` (used for the 409 rejection path) stays
 // the genuine class — only the network calls are stubbed.
@@ -20,6 +21,11 @@ vi.mock("../../api/client", async () => {
     gitBranchAway: (...a: unknown[]) => mockBranchAway(...a),
   }
 })
+
+vi.mock("../../stores/useToastStore", () => ({
+  default: (selector: (s: { addToast: typeof mockAddToast }) => unknown) =>
+    selector({ addToast: mockAddToast }),
+}))
 
 const remote = (over: Partial<Record<string, unknown>> = {}) => ({
   name: "origin",
@@ -38,6 +44,8 @@ describe("RemotePushControl", () => {
       working_branch: "dev",
       ledger_branch: "dev-save",
       pushed_refs: ["dev", "dev-save"],
+      default_branch: "main",
+      bootstrapped_default: false,
     })
     mockFastForward.mockResolvedValue({
       remote: "origin",
@@ -74,6 +82,94 @@ describe("RemotePushControl", () => {
     await waitFor(() => expect(mockGitPush).toHaveBeenCalledWith("origin"))
   })
 
+  it("does not push merely from mounting or selecting the sole remote", async () => {
+    mockGetGitRemotes.mockResolvedValue({ remotes: [remote()], working_branch: "dev" })
+    render(<RemotePushControl pendingSaveCount={0} />)
+    await waitFor(() => expect(screen.getByTestId("git-push-button")).toBeEnabled())
+    expect(mockGitPush).not.toHaveBeenCalled()
+  })
+
+  it("uses the exact bootstrap tooltip and reports a custom default branch", async () => {
+    mockGetGitRemotes.mockResolvedValue({ remotes: [remote()], working_branch: "dev" })
+    mockGitPush.mockResolvedValue({
+      remote: "origin",
+      working_branch: "dev",
+      ledger_branch: "dev-save",
+      pushed_refs: ["trunk", "dev", "dev-save"],
+      default_branch: "trunk",
+      bootstrapped_default: true,
+    })
+    render(<RemotePushControl pendingSaveCount={0} />)
+    await waitFor(() => expect(screen.getByTestId("git-push-button")).toBeEnabled())
+    expect(
+      screen.getByRole("tooltip", {
+        name: "Push your branch and save history. If the remote is empty, Haute also publishes the default branch as your merge target.",
+      }),
+    ).toBeInTheDocument()
+    fireEvent.click(screen.getByTestId("git-push-button"))
+    await waitFor(() =>
+      expect(mockAddToast).toHaveBeenCalledWith(
+        "success",
+        "Published trunk and your branch history to origin",
+      ),
+    )
+  })
+
+  it("keeps the ordinary pushed-ref count toast when default bootstrap was not needed", async () => {
+    mockGetGitRemotes.mockResolvedValue({ remotes: [remote()], working_branch: "dev" })
+    mockGitPush.mockResolvedValue({
+      remote: "origin",
+      working_branch: "dev",
+      ledger_branch: "dev-save",
+      pushed_refs: ["dev", "dev-save"],
+      default_branch: "trunk",
+      bootstrapped_default: false,
+    })
+    render(<RemotePushControl pendingSaveCount={0} />)
+    await waitFor(() => expect(screen.getByTestId("git-push-button")).toBeEnabled())
+    fireEvent.click(screen.getByTestId("git-push-button"))
+    await waitFor(() =>
+      expect(mockAddToast).toHaveBeenCalledWith("success", "Pushed 2 branches to origin"),
+    )
+  })
+
+  it("uses the bootstrap toast only for the first of two explicit pushes", async () => {
+    mockGetGitRemotes.mockResolvedValue({ remotes: [remote()], working_branch: "dev" })
+    mockGitPush
+      .mockResolvedValueOnce({
+        remote: "origin",
+        working_branch: "dev",
+        ledger_branch: "dev-save",
+        pushed_refs: ["release", "dev", "dev-save"],
+        default_branch: "release",
+        bootstrapped_default: true,
+      })
+      .mockResolvedValueOnce({
+        remote: "origin",
+        working_branch: "dev",
+        ledger_branch: "dev-save",
+        pushed_refs: ["dev", "dev-save"],
+        default_branch: "release",
+        bootstrapped_default: false,
+      })
+    render(<RemotePushControl pendingSaveCount={0} />)
+    await waitFor(() => expect(screen.getByTestId("git-push-button")).toBeEnabled())
+
+    fireEvent.click(screen.getByTestId("git-push-button"))
+    await waitFor(() =>
+      expect(mockAddToast).toHaveBeenCalledWith(
+        "success",
+        "Published release and your branch history to origin",
+      ),
+    )
+
+    fireEvent.click(screen.getByTestId("git-push-button"))
+    await waitFor(() =>
+      expect(mockAddToast).toHaveBeenCalledWith("success", "Pushed 2 branches to origin"),
+    )
+    expect(mockGitPush).toHaveBeenCalledTimes(2)
+  })
+
   it("requires a deliberate selection when there are multiple remotes", async () => {
     mockGetGitRemotes.mockResolvedValue({
       remotes: [remote({ name: "origin" }), remote({ name: "backup" })],
@@ -90,7 +186,7 @@ describe("RemotePushControl", () => {
     await waitFor(() => expect(mockGitPush).toHaveBeenCalledWith("backup"))
   })
 
-  it("warns before pushing out-of-version saves and pushes on confirm (overridable)", async () => {
+  it("preserves the pending-save confirmation before an explicit push", async () => {
     mockGetGitRemotes.mockResolvedValue({ remotes: [remote()], working_branch: "dev" })
     render(<RemotePushControl pendingSaveCount={3} />)
     await waitFor(() => expect(screen.getByTestId("git-push-button")).toBeEnabled())

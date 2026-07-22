@@ -536,8 +536,41 @@ class TestGitRemotesAndPush:
         assert res.status_code == 200
         body = res.json()
         assert body["remote"] == "origin"
+        assert body["default_branch"] == "main"
+        assert body["bootstrapped_default"] is True
+        assert body["pushed_refs"][0] == "main"
         assert "pricing/test-user/dev" in body["pushed_refs"]
         assert "refs/heads/pricing/test-user/dev" in _git(tmp_path, "ls-remote", "origin")
+
+        established = client.post("/api/git/push", json={"remote": "origin"})
+        assert established.status_code == 200
+        established_body = established.json()
+        assert established_body["default_branch"] == "main"
+        assert established_body["bootstrapped_default"] is False
+        assert established_body["pushed_refs"] == [
+            "pricing/test-user/dev",
+            "pricing/test-user/dev-save",
+        ]
+
+    def test_push_sanitizes_raw_git_error_detail(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import haute.routes.git as git_routes
+        from haute._git import GitError
+        from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
+
+        raw_detail = "authentication failed for https://token-secret@example.test/repo.git"
+        monkeypatch.setattr(
+            git_routes,
+            "push_working_pair",
+            lambda *args, **kwargs: (_ for _ in ()).throw(GitError(raw_detail)),
+        )
+
+        response = client.post("/api/git/push", json={"remote": "origin"})
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == _INTERNAL_ERROR_DETAIL
+        assert "token-secret" not in response.text
 
     def test_push_to_unknown_remote_returns_400(self, client: TestClient, tmp_path: Path) -> None:
         self._adopt(client)
