@@ -12,11 +12,11 @@
 | `src/haute/_execution_admission.py` | Resolves an `ExecutionBudget` per `ExecutionProfile` (fixed default / explicit env override / adaptive fraction of available RAM), performs pre-flight admission (`create_admitted_execution_context`), and tracks a process-wide in-flight reservation for "heavy" profiles. |
 | `src/haute/_node_apply.py` | Config-driven implementations of `liveSwitch` input selection, `scenarioExpander` row expansion, `optimiserApply` artifact dispatch, and `OUTPUT` response-document assembly (`assemble_output_from_config`) — the single code path both the canvas executor (via `_builders.py`) and codegen-generated `.py` files call. |
 | `src/haute/_topo.py` | `topo_sort_ids` (graphlib-backed topological sort with a custom multi-cycle reporter), `ancestors` (BFS over reversed edges). |
-| `src/haute/graph_utils.py` | Canonical re-export facade for graph models, execution helpers, topo helpers, and IO helpers used by generated pipeline code and application modules. |
+| `src/haute/graph_utils.py` | Canonical outward re-export facade for graph models, execution helpers, topo helpers, and IO helpers used by generated pipeline code and application modules. Low-level engine modules import canonical graph models from `_types.py` and pure helpers from `_graph_utils.py` directly; importing back through this heavyweight facade would re-enter `_execute_lazy.py` and create an execution/RAM-estimation cycle. |
 | `src/haute/_graph_utils.py` | Pure-function graph helpers decoupled from the Pydantic models: `build_parents_of`, `upstream_node_ids`, `_sanitize_func_name`, `edge_input_name` (the single edge→input-name derivation: apiInput-frame edge → its frame label verbatim, else sanitised source-node label; consumed by the executor, codegen, projection, and the deploy scorer so all four agree byte-for-byte), `build_instance_mapping`, `resolve_orig_source_names`, edge-id construction, sink-path normalisation. |
 | `src/haute/_worker_isolation.py` | `run_isolated_worker()` — spawn a child process for one function call with an optional `RLIMIT_AS` cap, timeout, and cooperative stop-reason polling; typed error hierarchy for every terminal state. |
 | `src/haute/chunking.py` | `ChunkPlanRequest`/`chunk_plan()` (proves a graph suffix is chunk-safe, sizes chunks), `iter_chunked_frames()`/`run_chunked_reduce()`/`collect_chunked()` (the serial runner), the per-`NodeType` `ChunkCapability` registry, and the AST-based row-local user-code whitelist. |
-| `src/haute/_ram_estimate.py` | `available_ram_bytes()`/`available_vram_bytes()` (OS-level memory probing), `estimate_safe_training_rows()` (parquet-metadata-based peak-memory estimate and downsample decision). |
+| `src/haute/_ram_estimate.py` | `available_ram_bytes()`/`available_vram_bytes()` (OS-level memory probing), `estimate_safe_training_rows()` (parquet-metadata-based peak-memory estimate and downsample decision), and the `MaterialisationEstimate` contract consumed by strategy planning. It imports graph models directly from `_types.py` so admission and route cold imports do not re-enter the execution facade. |
 
 ## Key types and data structures
 
@@ -488,7 +488,8 @@ high-level approved contract.
   provenance detail is JSON-safe. Boundary and reason collections have at most 32 entries,
   provenance has at most 128, and human messages/remediation have at most 512 characters;
   truncation order is deterministic. Never serialise lazy plans, frames, source values, or
-  other user data.
+  other user data. Provenance assembly consumes the demand already resolved by the planner;
+  it never re-resolves an external `modelScore` artifact merely to label that demand.
 - Map strategies to API statuses exactly: `projected` and `schema-all-except` to `projected`;
   `full-width-admitted-eager` to `admitted_eager`; `unprojected-streaming-boundary` and
   `materialisation-boundary` to `boundary`; `unsupported` to `rejected`; and `not-planned`

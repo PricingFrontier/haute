@@ -1413,7 +1413,7 @@ class TestTrainingProjection:
 
         def fake_execute_lazy(*_args, **_kwargs):
             return (
-                {"train": pl.DataFrame({"claim_count": [1.0]}).lazy()},
+                {"train": pl.DataFrame({"claim_count": [1.0], "driver_age": [40]}).lazy()},
                 ["train"],
                 {},
                 {},

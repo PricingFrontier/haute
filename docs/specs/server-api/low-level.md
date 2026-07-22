@@ -19,6 +19,7 @@
 | `src/haute/routes/_save_pipeline.py` | `SavePipelineService` — the transactional save orchestrator: singleton/name-collision/load-error validation, codegen invocation, config-file + sidecar writes, stale-config cleanup, and rollback. |
 | `src/haute/routes/_supersession.py` | `SupersessionCoordinator` / `_SupersessionState` — generation-counted "run latest, cancel/skip the rest" concurrency primitive used by preview and trace. |
 | `src/haute/routes/output_assemble.py` | `POST /api/output-assemble/dry-run` — validates an unsaved `outputMapping`, swaps it into the target node's in-memory config, executes up to that node, returns the rendered document. |
+| `src/haute/routes/_contract_errors.py` | Shared public-contract-error adapter: validates the closed public error set, emits stable payloads, maps synchronous failures to HTTP 422, and supplies the matching `contract_error` fields for background jobs. |
 
 ## Key types and data structures
 

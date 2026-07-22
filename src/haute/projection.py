@@ -769,6 +769,12 @@ def _execution_strategy_provenance_items(
         # after the planner has already classified the node as conservative.
         if demand is None:
             continue
+        # A modelScore contract can resolve an external model artifact.  The
+        # planner has already incorporated that contract into ``demand``;
+        # provenance must describe the resulting demand without loading the
+        # same artifact a second time.
+        if node.data.nodeType is NodeType.MODEL_SCORE:
+            continue
         produced, referenced = projection_contract(node).to_tuple()
         if produced is not None and referenced is not None:
             for column in sorted(referenced):

@@ -63,7 +63,12 @@ Out of scope, owned elsewhere:
   (CatBoost hyperparameters, or GLM terms/family/link/regularization/interactions).
 - Starting training (`POST /api/modelling/train`) validates the config, estimates
   memory requirements, executes the upstream pipeline to materialise training data,
-  and runs the full train pipeline in a background thread. The training job store has
+  derives the exact feature choice from the materialised schema, and runs the full train
+  pipeline in a background thread. The response includes a bounded, versioned diagnostic
+  describing the feature choice and why other columns were retained as metadata or excluded.
+  A configuration that leaves no feature columns is rejected with HTTP 422 before a sink
+  or trainer runs.
+  The training job store has
   one process-wide running slot shared by training and GLM dispersion estimation; a
   second request of either kind is rejected while the first is running.
 - The client polls for status (`GET /api/modelling/train/status/{job_id}`), receiving
@@ -108,6 +113,10 @@ Invariants that always hold:
 - Optional diagnostics (SHAP, partial dependence, GLM inference statistics) can fail
   independently without aborting the run; failures are recorded and surfaced, not
   swallowed.
+- Training never silently proceeds with an empty feature set. Explicit features,
+  all-except selection, and GLM terms produce the same version-1 feature-selection
+  diagnostic shape in start/status results, including deterministic capped lists of
+  selected features, retained metadata, and exclusions.
 
 ## Design rationale
 

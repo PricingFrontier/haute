@@ -41,7 +41,6 @@ from haute._model_scorer import (
     model_score_temp_file_scope,
     score_from_config,
 )
-from haute.errors import BoundedMemoryUnsupportedError
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -542,15 +541,16 @@ class TestSinkToTemp:
         finally:
             os.unlink(path)
 
-    def test_streaming_sink_failure_propagates_without_collect_fallback(self):
-        """Model-score temp sinks fail loudly instead of broadening to collect."""
+    def test_unknown_streaming_sink_failure_propagates_without_collect_fallback(self):
+        """Unknown Polars errors propagate instead of broadening to collect."""
         lf = MagicMock(spec=pl.LazyFrame)
-        lf.sink_parquet.side_effect = pl.exceptions.ComputeError("streaming sink failed")
+        error = pl.exceptions.ComputeError("streaming sink failed")
+        lf.sink_parquet.side_effect = error
         lf.collect.side_effect = AssertionError("collect fallback should not run")
 
-        with pytest.raises(BoundedMemoryUnsupportedError, match="Bounded streaming sink failed"):
+        with pytest.raises(pl.exceptions.ComputeError) as exc_info:
             _sink_to_temp(lf)
-
+        assert exc_info.value is error
         lf.collect.assert_not_called()
 
     def test_temp_path_removed_when_streaming_sink_raises(self, tmp_path, monkeypatch):

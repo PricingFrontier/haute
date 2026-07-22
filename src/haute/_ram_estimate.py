@@ -34,7 +34,7 @@ from haute._edge_join import build_edge_join_kwargs, edge_join_key_columns_by_ro
 from haute._graph_utils import build_parents_of
 from haute._logging import get_logger
 from haute._polars_utils import read_parquet_metadata
-from haute.graph_utils import GraphEdge, GraphNode, NodeType, PipelineGraph
+from haute._types import GraphEdge, GraphNode, NodeType, PipelineGraph
 
 logger = get_logger(component="ram_estimate")
 
