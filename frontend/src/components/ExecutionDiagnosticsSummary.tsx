@@ -22,7 +22,9 @@ export default function ExecutionDiagnosticsSummary({
   })
   if (!diagnostic) return null
   const strategyDiagnostic = buildExecutionStrategyDiagnostic(metrics)
-  const summaryLabel = strategyDiagnostic ? "Execution strategy technical details" : "Technical details"
+  const summaryLabel = metrics?.execution_strategy?.status === "rejected" && strategyDiagnostic
+    ? "Execution strategy technical details"
+    : "Technical details"
 
   return (
     <div

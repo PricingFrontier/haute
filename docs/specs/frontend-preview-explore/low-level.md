@@ -104,13 +104,18 @@ Browser preview/smoke coverage is in `frontend/e2e/core-flows.spec.ts`,
 ## Polars backend contracts (0.6.0)
 
 See [the remediation plan](../../trip/plans/F_0.6.0_polars-backend-remediation.plan.md).
-`DataPreview.tsx` and `ExplorePreview.tsx` will consume only the shared guarded version-1
-strategy payload. The display distinguishes `projected`, `boundary`, `admitted_eager`,
-`rejected`, and `not_planned`, with a separate diagnostic-unavailable state. It uses the shared
+`DataPreview.tsx` and `ExplorePreview.tsx` consume only the shared guarded version-1
+strategy payload. The consumer distinguishes `projected`, `boundary`, `admitted_eager`,
+`rejected`, and `not_planned`, with a separate diagnostic-unavailable state, and uses the shared
 authoritative strategy-to-status mapping; components must not reinterpret internal strategies.
-A non-success state shows available blocking node/operator/profile, cost, reason, and actionable
-remediation. An expandable section shows only the bounded optional metric/provenance detail and
-honours `detail_state=available|unavailable|truncated`.
+Planning states remain available in execution metrics for support and observability, but
+`DataPreview` does not render a full-width strategy banner. `projected`,
+`admitted_eager`, and `not_planned` stay silent. A `boundary` adds a warning icon immediately after
+the Preview row/column summary; `rejected` uses an error icon in the same position. Activating the
+icon explains in plain language where projection stopped, that result correctness is unaffected,
+the possible I/O/memory cost, and an available remediation. Independently actionable memory
+pressure uses the warning indicator too. Raw reason codes, bounded-collection wrappers, and
+collection JSON are support data and are not user-facing copy.
 
 Missing/malformed required fields, unknown version-1 enums, and unsupported higher versions render
 diagnostic unavailable. Unknown additive fields are ignored only within version 1. A group-by
@@ -118,6 +123,8 @@ boundary is valid only for `strategy=materialisation-boundary`; a rejected group
 HTTP 422 stable code and named fields and blocks execution. No component may recast group-by as
 ordinary checked execution or `unprojected-streaming-boundary`.
 
-Tests cover all five statuses, diagnostic unavailable, every version/detail-state path, keyboard
-and screen-reader access, deterministic truncated detail, rejected execution gating, the group-by
-boundary/rejection distinction, and typed 422 error fields without fabricated values.
+Tests prove projected/admitted/not-planned statuses stay silent, cover boundary/rejected icon
+placement and accessible explanations, and cover diagnostic unavailable, every
+version/detail-state path, keyboard and screen-reader access,
+deterministic truncated detail, rejected execution gating, the group-by boundary/rejection
+distinction, and typed 422 error fields without fabricated values.

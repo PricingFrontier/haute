@@ -12,6 +12,7 @@ function strategyMetrics(status: "projected" | "boundary" | "admitted_eager" | "
     not_planned: "not-planned",
   } as const
   return makeExecutionMetricsFixture({
+    memory_pressure_events: [],
     execution_strategy: {
       schema_version: 1,
       status,
@@ -35,16 +36,21 @@ function strategyMetrics(status: "projected" | "boundary" | "admitted_eager" | "
 afterEach(cleanup)
 
 describe("ExecutionDiagnosticsSummary", () => {
-  it.each([
-    ["projected", "Projection strategy applied"],
-    ["boundary", "Execution boundary required"],
-    ["admitted_eager", "Eager execution admitted"],
-    ["rejected", "Execution strategy rejected"],
-    ["not_planned", "Execution strategy was not planned"],
-  ] as const)("renders the %s strategy state", (status, message) => {
+  it.each(["projected", "boundary", "admitted_eager", "not_planned"] as const)(
+    "does not turn the successful or informational %s strategy into a warning banner",
+    (status) => {
+      render(<ExecutionDiagnosticsSummary metrics={strategyMetrics(status)} />)
+
+      expect(screen.queryByText(/Execution|Projection|Eager/)).not.toBeInTheDocument()
+      expect(screen.queryByLabelText("Execution strategy technical details")).not.toBeInTheDocument()
+    },
+  )
+
+  it("renders a rejected strategy with its actionable details", () => {
+    const status = "rejected"
     render(<ExecutionDiagnosticsSummary metrics={strategyMetrics(status)} />)
 
-    expect(screen.getByText(message)).toBeInTheDocument()
+    expect(screen.getByText("Execution strategy rejected")).toBeInTheDocument()
     expect(screen.getByLabelText("Execution strategy technical details")).toBeInTheDocument()
     expect(screen.getByText(/Estimated materialisation cost/)).toBeInTheDocument()
     expect(screen.getByText(/Remediation Use a bounded aggregation/)).toBeInTheDocument()

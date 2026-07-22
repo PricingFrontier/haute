@@ -3154,18 +3154,21 @@ def with_runtime_inferred_streaming_edges(
     *,
     child_id: str,
     demands_by_parent: Mapping[str, Iterable[str]],
+    resolved_parent_ids: Iterable[str] = (),
 ) -> ProjectionPlan:
     """Return *projection_plan* annotated with runtime-inferred join demands."""
     if not demands_by_parent:
         return projection_plan
 
+    needed_by_node = dict(projection_plan.needed_by_node)
     edge_demands = dict(projection_plan.edge_demands)
+    node_reasons = dict(projection_plan.diagnostics.node_reasons)
+    opaque_reasons = dict(projection_plan.diagnostics.opaque_reasons)
     edge_reasons = dict(projection_plan.diagnostics.edge_reasons)
+    resolved_parents = frozenset(resolved_parent_ids)
     for parent_id, columns in demands_by_parent.items():
         frozen_columns = frozenset(columns)
-        edge = (parent_id, child_id)
-        edge_demands[edge] = frozen_columns
-        edge_reasons[edge] = ProjectionReason(
+        reason = ProjectionReason(
             rule=RUNTIME_INFERRED_STREAMING_RULE_NAME,
             message="runtime-inferred streaming join demand",
             details={
@@ -3173,15 +3176,22 @@ def with_runtime_inferred_streaming_edges(
                 "columns": tuple(sorted(frozen_columns)),
             },
         )
+        if parent_id in resolved_parents:
+            needed_by_node[parent_id] = frozen_columns
+            node_reasons[parent_id] = reason
+            opaque_reasons.pop(parent_id, None)
+        edge = (parent_id, child_id)
+        edge_demands[edge] = frozen_columns
+        edge_reasons[edge] = reason
 
     return ProjectionPlan(
-        needed_by_node=projection_plan.needed_by_node,
+        needed_by_node=MappingProxyType(needed_by_node),
         edge_demands=MappingProxyType(edge_demands),
         materialisation_boundaries=projection_plan.materialisation_boundaries,
-        opaque_boundaries=projection_plan.opaque_boundaries,
+        opaque_boundaries=(projection_plan.opaque_boundaries - resolved_parents),
         diagnostics=ProjectionDiagnostics(
-            opaque_reasons=projection_plan.diagnostics.opaque_reasons,
-            node_reasons=projection_plan.diagnostics.node_reasons,
+            opaque_reasons=MappingProxyType(opaque_reasons),
+            node_reasons=MappingProxyType(node_reasons),
             edge_reasons=MappingProxyType(edge_reasons),
         ),
     )
