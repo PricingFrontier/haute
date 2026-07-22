@@ -52,6 +52,11 @@ from haute.modelling._train_config import (
     training_objective_issue,
 )
 from haute.routes._background_jobs import BackgroundJobStoppedError, CancellableJobRegistry
+from haute.routes._contract_errors import (
+    PUBLIC_CONTRACT_ERROR_TYPES,
+    contract_error_http_exception,
+    contract_error_job_fields,
+)
 from haute.routes._helpers import find_typed_node
 from haute.routes._job_lifecycle import (
     JobLifecycle,
@@ -61,6 +66,7 @@ from haute.routes._job_store import JobStore
 from haute.schemas import (
     DispersionEstimateRequest,
     DispersionEstimateResponse,
+    TrainingFeatureSelectionDiagnosticPayload,
     TrainRequest,
     TrainResponse,
 )
@@ -281,6 +287,140 @@ def _training_required_metadata_columns(config: Mapping[str, Any]) -> set[str]:
 
     columns.update(_string_list_config(config, "id_columns"))
     return columns
+
+
+def _training_metadata_reasons(config: Mapping[str, Any]) -> dict[str, str]:
+    """Return configured non-feature columns in deterministic role precedence."""
+    reasons: dict[str, str] = {}
+
+    def add(raw_column: object, reason: str) -> None:
+        if isinstance(raw_column, str) and raw_column:
+            reasons.setdefault(raw_column, reason)
+
+    add(config.get("target"), "target")
+    add(config.get("weight"), "weight")
+    add(config.get("offset"), "offset")
+    add(config.get("fold_column"), "fold")
+    for column in _string_list_config(config, "id_columns"):
+        add(column, "identifier")
+    split = config.get("split") or DEFAULT_SPLIT_DICT
+    if isinstance(split, dict):
+        strategy = split.get("strategy", "random")
+        if strategy == "temporal":
+            add(split.get("date_column"), "split")
+        elif strategy == "group":
+            add(split.get("group_column"), "split")
+    return reasons
+
+
+def _bounded_training_detail(items: list[Any], *, cap: int = 128) -> dict[str, Any]:
+    retained = items[:cap]
+    return {
+        "state": "truncated" if len(items) > len(retained) else "available",
+        "total_count": len(items),
+        "items": retained,
+    }
+
+
+def _build_training_feature_selection(
+    config: Mapping[str, Any],
+    schema_columns: Iterable[str],
+) -> TrainingFeatureSelectionDiagnosticPayload:
+    """Validate and explain the final ordered training feature selection.
+
+    This operates on schema metadata only. It is intentionally called before
+    the training sink, so missing features or an empty feature set cannot
+    trigger a data collection first.
+    """
+    schema = list(schema_columns)
+    if any(not isinstance(column, str) or not column for column in schema):
+        raise ValueError("training schema must contain non-empty column names")
+    if len(schema) != len(set(schema)):
+        raise ValueError("training schema contains duplicate column names")
+    schema_set = set(schema)
+    metadata_reasons = _training_metadata_reasons(config)
+    missing_metadata = [column for column in metadata_reasons if column not in schema_set]
+    if missing_metadata:
+        raise ValueError(
+            "Training input is missing required column(s): "
+            f"{missing_metadata}. Available columns: {schema}"
+        )
+
+    explicit_features = _string_list_config(config, "feature_columns")
+    term_columns = _glm_training_term_columns(dict(config))
+    configured_exclusions = set(_string_list_config(config, "exclude"))
+    if explicit_features:
+        mode = "explicit"
+        missing_features = [column for column in explicit_features if column not in schema_set]
+        if missing_features:
+            raise ValueError(
+                "Configured feature column(s) not found in training data: "
+                f"{missing_features}. Available columns: {schema}"
+            )
+        features = explicit_features
+    elif term_columns is not None:
+        mode = "glm_terms"
+        missing_terms = sorted(term_columns - schema_set)
+        if missing_terms:
+            raise ValueError(
+                "GLM terms reference columns not found in training data: "
+                f"{missing_terms}. Available columns: {schema}"
+            )
+        features = [column for column in schema if column in term_columns]
+    else:
+        mode = "all_except"
+        non_features = set(metadata_reasons) | configured_exclusions
+        features = [column for column in schema if column not in non_features]
+
+    if not features:
+        raise ValueError(
+            "No feature columns remaining after applying target, metadata, and exclusion settings."
+        )
+
+    retained_metadata = [
+        {"column": column, "reason": metadata_reasons[column]}
+        for column in schema
+        if column in metadata_reasons
+    ]
+    feature_set = set(features)
+    excluded: list[dict[str, str]] = []
+    for column in schema:
+        if column in feature_set:
+            continue
+        if column in metadata_reasons:
+            reason = metadata_reasons[column]
+        elif column in configured_exclusions:
+            reason = "configured_exclusion"
+        elif mode == "glm_terms":
+            reason = "not_in_formula"
+        else:
+            reason = "not_selected"
+        excluded.append({"column": column, "reason": reason})
+
+    features_payload = _bounded_training_detail(features)
+    metadata_payload = _bounded_training_detail(retained_metadata)
+    excluded_payload = _bounded_training_detail(excluded)
+    detail_state = (
+        "truncated"
+        if "truncated"
+        in {
+            features_payload["state"],
+            metadata_payload["state"],
+            excluded_payload["state"],
+        }
+        else "available"
+    )
+    return TrainingFeatureSelectionDiagnosticPayload.model_validate(
+        {
+            "schema_version": 1,
+            "mode": mode,
+            "feature_count": len(features),
+            "detail_state": detail_state,
+            "features": features_payload,
+            "retained_metadata": metadata_payload,
+            "excluded_columns": excluded_payload,
+        }
+    )
 
 
 def _training_required_columns_by_node(
@@ -561,6 +701,7 @@ class TrainService:
                 required_columns_by_node=required_columns_by_node,
                 execution_context=execution_context,
             )
+            feature_selection = self._store.require_job(job_id).get("feature_selection")
 
             # Default output_dir to <pipeline_dir>/outputs when not explicitly set.
             if "output_dir" not in config:
@@ -580,6 +721,7 @@ class TrainService:
                 tmp_parquet,
                 ram_warning,
                 total_source_rows,
+                feature_selection=feature_selection,
                 execution_context=execution_context,
             )
             launch_started = True
@@ -641,7 +783,11 @@ class TrainService:
             if execution_context is not None and not launch_started:
                 execution_context.release_admission()
 
-        return TrainResponse(status="started", job_id=job_id)
+        return TrainResponse(
+            status="started",
+            job_id=job_id,
+            feature_selection=feature_selection,
+        )
 
     def cancel(self, job_id: str) -> dict[str, Any]:
         """Cancel a running training job."""
@@ -1353,6 +1499,19 @@ class TrainService:
                 else target_lf.columns
             )
             schema_set = set(schema_cols)
+            try:
+                feature_selection = _build_training_feature_selection(
+                    body.graph.node_map[body.node_id].data.config,
+                    schema_cols,
+                )
+            except ValueError as exc:
+                self._lifecycle.transition(
+                    job_id,
+                    to="contract_error",
+                    message=str(exc),
+                )
+                raise HTTPException(status_code=422, detail=str(exc)) from None
+            self._store.update_job(job_id, feature_selection=feature_selection)
             required_training_columns = set(keep_columns or [])
             node_demand = (
                 required_columns_by_node.get(body.node_id)
@@ -1436,6 +1595,16 @@ class TrainService:
                 message=str(exc),
             )
             raise _memory_limit_http_exception(exc) from None
+        except PUBLIC_CONTRACT_ERROR_TYPES as exc:
+            if Path(tmp_parquet).exists():
+                os.unlink(tmp_parquet)
+            self._lifecycle.transition(
+                job_id,
+                to="contract_error",
+                message=str(exc),
+                fields=contract_error_job_fields(exc),
+            )
+            raise contract_error_http_exception(exc) from None
         except BoundedMemoryUnsupportedError as exc:
             if Path(tmp_parquet).exists():
                 os.unlink(tmp_parquet)
@@ -1491,6 +1660,7 @@ class TrainService:
         total_source_rows: int | None,
         *,
         execution_context: ExecutionContext,
+        feature_selection: TrainingFeatureSelectionDiagnosticPayload | None = None,
     ) -> None:
         """Run TrainingJob in a background thread, owning admission release."""
         # Ownership of ``execution_context`` transfers here from ``start()``;
@@ -1602,6 +1772,7 @@ class TrainService:
                     diagnostics_errors=train_result.diagnostics_errors,
                     warning=ram_warning,
                     total_source_rows=total_source_rows,
+                    feature_selection=feature_selection,
                 )
                 _assert_json_finite(response)
                 self._lifecycle.transition(
@@ -1638,6 +1809,14 @@ class TrainService:
                         "error_code": "memory_limit",
                         "http_status_code": 507,
                     },
+                    elapsed_seconds=time.monotonic() - start_time,
+                )
+            except PUBLIC_CONTRACT_ERROR_TYPES as exc:
+                self._lifecycle.transition(
+                    job_id,
+                    to="contract_error",
+                    message=str(exc),
+                    fields=contract_error_job_fields(exc),
                     elapsed_seconds=time.monotonic() - start_time,
                 )
             except BoundedMemoryUnsupportedError as exc:

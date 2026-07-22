@@ -65,6 +65,8 @@ def select_live_switch_input(
     source: str,
     frames: dict[str, _Frame],
     input_order: list[str],
+    *,
+    switch: str,
 ) -> _Frame:
     """Select the liveSwitch input mapped to the active runtime *source*.
 
@@ -74,23 +76,25 @@ def select_live_switch_input(
     hard-wiring the ``"live"`` input.
 
     *frames* maps each input's function/parameter name to its frame;
-    *input_order* is the declared input order used for the
-    unmapped-scenario fallback (the first declared input).
+    *input_order* is the declared input order used for the unconfigured
+    fallback (the first declared input).  A non-empty mapping is exhaustive:
+    it must resolve the active *source* to a present input frame.
     """
+    if not frames:
+        raise ValueError("live_switch received no input DataFrames")
+
     for inp, scn in input_scenario_map.items():
         if scn == source and inp in frames:
             return frames[inp]
     if input_scenario_map:
-        from haute._logging import get_logger
+        from haute.errors import LiveSwitchScenarioError
 
-        get_logger(component="executor").warning(
-            "live_switch_unmapped_scenario",
-            source=source,
-            mapped_scenarios=list(input_scenario_map.values()),
-            falling_back_to=input_order[0] if input_order else "<none>",
+        raise LiveSwitchScenarioError(
+            f"Live switch {switch!r} has no input for scenario {source!r}",
+            switch=switch,
+            scenario=source,
+            available_mappings=tuple(input_scenario_map.values()),
         )
-    if not frames:
-        raise ValueError("live_switch received no input DataFrames")
     if input_order and input_order[0] in frames:
         return frames[input_order[0]]
     return next(iter(frames.values()))
@@ -133,9 +137,9 @@ def expand_scenarios_from_config(
     if col_name:
         import numpy as np
 
-        vals = np.linspace(min_val, max_val, steps)
+        vals = np.linspace(min_val, max_val, steps, dtype=np.float32)
         # Float32 to match Rust QuoteGrid schema (price-contour ingests f32).
-        scenario_exprs.append(pl.lit(vals.astype("float32").tolist()).alias(col_name))
+        scenario_exprs.append(pl.lit(pl.Series(col_name, vals).implode()).first().alias(col_name))
         explode_cols.append(col_name)
     cast_exprs = [pl.col(step_col).cast(pl.Int32)]
     if col_name:

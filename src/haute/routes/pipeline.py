@@ -55,6 +55,11 @@ from haute.graph_utils import (
     graph_fingerprint,
 )
 from haute.parser import parse_pipeline_file
+from haute.routes._contract_errors import (
+    PUBLIC_CONTRACT_ERROR_TYPES,
+    contract_error_http_exception,
+    contract_error_payload,
+)
 from haute.routes._helpers import (
     _INTERNAL_ERROR_DETAIL,
     discover_pipelines,
@@ -438,6 +443,8 @@ async def trace_row(body: TraceRequest) -> JSONResponse:
     _ensure_printable_lookup_id(body.target_node_id, "target_node_id")
     _validate_runtime_input_paths(graph)
 
+    trace_context: ExecutionContext | None = None
+
     try:
         # One memo per request: the supersession key below and every
         # graph_fingerprint call inside execute_trace share it, so the
@@ -460,6 +467,11 @@ async def trace_row(body: TraceRequest) -> JSONResponse:
         )
 
         async def _run_trace() -> dict[str, Any]:
+            nonlocal trace_context
+            trace_context = create_admitted_execution_context(
+                operation="pipeline_trace",
+                profile=ExecutionProfile.PREVIEW_EAGER,
+            )
             chunk_size = body.streaming_chunk_size or DEFAULT_STREAMING_CHUNK_SIZE
 
             def _execute_trace_with_chunk_size() -> dict[str, Any]:
@@ -480,6 +492,7 @@ async def trace_row(body: TraceRequest) -> JSONResponse:
                         # or ``None`` on miss.
                         preview=_preview_cache,
                         fingerprint_memo=fingerprint_memo,
+                        execution_context=trace_context,
                     )
                     # Serialise to a JSON-safe dict here, still in the
                     # worker thread, so the event loop never walks the
@@ -504,8 +517,23 @@ async def trace_row(body: TraceRequest) -> JSONResponse:
         # again — ``response_model`` is kept for the OpenAPI schema, and
         # FastAPI skips model validation for explicit ``Response``s.
         return JSONResponse({"status": "ok", "trace": trace_dict})
+    except ExecutionAdmissionError as e:
+        raise _memory_limit_http_exception(e) from None
+    except ExecutionMemoryLimitExceededError as e:
+        raise _memory_budget_http_exception(e) from None
     except SupersededRequestError as e:
         raise HTTPException(status_code=409, detail=str(e)) from None
+    except BlockingWorkTimeoutError as e:
+        if trace_context is not None:
+            timed_out_context = trace_context
+            e.background_task.add_done_callback(
+                lambda _future: timed_out_context.release_admission()
+            )
+            trace_context = None
+        raise HTTPException(
+            status_code=504,
+            detail=f"Trace execution timed out ({_trace_timeout():.0f}s limit)",
+        )
     except TimeoutError:
         raise HTTPException(
             status_code=504,
@@ -513,6 +541,9 @@ async def trace_row(body: TraceRequest) -> JSONResponse:
         )
     except HTTPException:
         raise
+    except PUBLIC_CONTRACT_ERROR_TYPES as e:
+        logger.warning("trace_public_contract_error", **contract_error_payload(e))
+        raise contract_error_http_exception(e) from None
     except ContractMismatchError as e:
         # Contract mismatches carry the node id and the symmetric column
         # diff in ``str(e)``.  Surface that directly (422 Unprocessable
@@ -543,6 +574,9 @@ async def trace_row(body: TraceRequest) -> JSONResponse:
     except Exception as e:
         logger.error("trace_failed", error=str(e))
         raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
+    finally:
+        if trace_context is not None:
+            trace_context.release_admission()
 
 
 @router.post("/pipeline/preview", response_model=PreviewNodeResponse)
@@ -740,6 +774,9 @@ async def preview_node(body: PreviewNodeRequest) -> PreviewNodeResponse:
         )
     except HTTPException:
         raise
+    except PUBLIC_CONTRACT_ERROR_TYPES as e:
+        logger.warning("preview_public_contract_error", **contract_error_payload(e))
+        raise contract_error_http_exception(e) from None
     except ContractMismatchError as e:
         # ``_execute_eager_core`` re-raises ``ContractMismatchError`` even
         # with ``swallow_errors=True`` (API-level violation, not a per-node
@@ -830,6 +867,9 @@ async def execute_sink_node(body: SinkRequest) -> SinkResponse:
         raise _memory_limit_http_exception(e) from None
     except ExecutionMemoryLimitExceededError as e:
         raise _memory_budget_http_exception(e) from None
+    except PUBLIC_CONTRACT_ERROR_TYPES as e:
+        logger.warning("sink_public_contract_error", **contract_error_payload(e))
+        raise contract_error_http_exception(e) from None
     except BoundedMemoryUnsupportedError as e:
         logger.warning(
             "sink_bounded_streaming_unsupported",

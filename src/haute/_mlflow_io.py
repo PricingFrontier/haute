@@ -155,13 +155,13 @@ class _ModelCacheWithCascade(LRUCache[tuple[str, ...], "ScoringModel"]):
 
     __slots__ = ()
 
-    def put(self, key: tuple[str, ...], value: ScoringModel) -> None:
+    def put(self, key: tuple[str, ...], value: ScoringModel) -> bool:
         with self._lock:
             # Snapshot live entries *before* the put so we can diff after
             # super().put() completes.  The diff is exact because puts
             # are serialised on self._lock and eviction happens inline.
             before = dict(self._data)
-            super().put(key, value)
+            stored = super().put(key, value)
             # Any key that was live before but is gone now was evicted.
             after_keys = set(self._data)
             evicted_models = [v for k, v in before.items() if k not in after_keys]
@@ -170,6 +170,7 @@ class _ModelCacheWithCascade(LRUCache[tuple[str, ...], "ScoringModel"]):
 
                 for sm in evicted_models:
                     _ms._invalidate_feature_validation_cache_for(sm)
+            return stored
 
     def clear(self) -> None:
         with self._lock:

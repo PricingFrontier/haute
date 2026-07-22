@@ -36,13 +36,44 @@ import {
   parseSubmodelGraphResponse,
   parseSolveOptimiserResponse,
   parseTrainEstimateResponse,
+  parseTrainFeatureSelection,
   parseTrainResponse,
   parseTrainStatusResponse,
+  parseExecutionStrategyDiagnostic,
   parseUtilityDeleteResponse,
   parseUtilityListResponse,
   parseUtilityReadResponse,
   parseUtilityWriteResponse,
 } from "../guards"
+
+function executionStrategyFixture(overrides: Record<string, unknown> = {}) {
+  return {
+    schema_version: 1,
+    status: "projected",
+    strategy: "projected",
+    profile: "preview_eager",
+    boundedness: "bounded",
+    reason_code: "projection_seed",
+    detail_state: "available",
+    boundaries: { state: "available", total_count: 0, items: [] },
+    reasons: { state: "available", total_count: 0, items: [] },
+    provenance: { state: "available", total_count: 0, items: [] },
+    ...overrides,
+  }
+}
+
+function featureSelectionFixture(overrides: Record<string, unknown> = {}) {
+  return {
+    schema_version: 1,
+    mode: "explicit",
+    feature_count: 2,
+    detail_state: "available",
+    features: { state: "available", total_count: 2, items: ["age", "premium"] },
+    retained_metadata: { state: "available", total_count: 1, items: [{ column: "policy_id", reason: "identifier" }] },
+    excluded_columns: { state: "available", total_count: 1, items: [{ column: "claim", reason: "target" }] },
+    ...overrides,
+  }
+}
 
 function executionMetricsFixture() {
   return {
@@ -140,6 +171,81 @@ function executionMetricsFixture() {
   }
 }
 
+describe("parseExecutionStrategyDiagnostic", () => {
+  it.each([
+    ["projected", "projected"],
+    ["schema-all-except", "projected"],
+    ["full-width-admitted-eager", "admitted_eager"],
+    ["unprojected-streaming-boundary", "boundary"],
+    ["materialisation-boundary", "boundary"],
+    ["unsupported", "rejected"],
+    ["not-planned", "not_planned"],
+  ])("accepts the V1 %s strategy mapping", (strategy, status) => {
+    expect(parseExecutionStrategyDiagnostic(executionStrategyFixture({ strategy, status }))?.status).toBe(status)
+  })
+
+  it("makes malformed fields, caps, wrappers, and ordering unavailable", () => {
+    expect(parseExecutionStrategyDiagnostic(executionStrategyFixture({ reason_code: 3 }))).toBeNull()
+    expect(parseExecutionStrategyDiagnostic(executionStrategyFixture({
+      reasons: { state: "available", total_count: 33, items: Array.from({ length: 33 }, () => ({ reason_code: "r" })) },
+    }))).toBeNull()
+    expect(parseExecutionStrategyDiagnostic(executionStrategyFixture({
+      boundaries: {
+        state: "available",
+        total_count: 2,
+        items: [
+          { topological_rank: 1, node_id: "b", operator: "x", boundary_kind: "materialisation-boundary" },
+          { topological_rank: 0, node_id: "a", operator: "x", boundary_kind: "materialisation-boundary" },
+        ],
+      },
+    }))).toBeNull()
+  })
+
+  it("accepts V1 additive fields and equal-primary duplicates but rejects higher versions", () => {
+    const diagnostic = parseExecutionStrategyDiagnostic(executionStrategyFixture({ unknown_additive_field: true, reasons: { state: "available", total_count: 2, items: [{ reason_code: "same" }, { reason_code: "same" }] } }))
+    expect(diagnostic?.reasons.items).toHaveLength(2)
+    expect(parseExecutionStrategyDiagnostic(executionStrategyFixture({ schema_version: 2 }))).toBeNull()
+  })
+})
+
+describe("parseTrainFeatureSelection", () => {
+  it.each(["explicit", "all_except"] as const)("accepts %s selections and preserves server order", (mode) => {
+    const parsed = parseTrainFeatureSelection(featureSelectionFixture({
+      mode,
+      features: { state: "available", total_count: 2, items: ["premium", "age"] },
+    }))
+
+    expect(parsed.features.items).toEqual(["premium", "age"])
+  })
+
+  it("accepts truncated wrappers when detail state is truncated", () => {
+    const parsed = parseTrainFeatureSelection(featureSelectionFixture({
+      detail_state: "truncated",
+      excluded_columns: { state: "truncated", total_count: 3, items: [{ column: "claim", reason: "target" }] },
+    }))
+
+    expect(parsed.excluded_columns.total_count).toBe(3)
+  })
+
+  it("rejects malformed schema, count, and exclusion reasons", () => {
+    expect(() => parseTrainFeatureSelection(featureSelectionFixture({ schema_version: 2 }))).toThrow(/schema_version/i)
+    expect(() => parseTrainFeatureSelection(featureSelectionFixture({ features: { state: "available", total_count: 3, items: ["age"] } }))).toThrow(/count/i)
+    expect(() => parseTrainFeatureSelection(featureSelectionFixture({ excluded_columns: { state: "available", total_count: 1, items: [{ column: "claim", reason: "unknown" }] } }))).toThrow(/reason/i)
+  })
+
+  it("attaches the nullable selection to train and train-status responses", () => {
+    const featureSelection = featureSelectionFixture()
+    expect(parseTrainResponse({
+      ...loadUiContractFixture<Record<string, unknown>>("train_response"),
+      feature_selection: featureSelection,
+    }).feature_selection?.mode).toBe("explicit")
+    expect(parseTrainStatusResponse({
+      ...loadUiContractFixture<Record<string, unknown>>("train_status_response"),
+      feature_selection: featureSelection,
+    }).feature_selection?.feature_count).toBe(2)
+  })
+})
+
 describe("API response guards", () => {
   it("parses savePipeline responses with warnings", () => {
     const parsed = parseSavePipelineResponse(loadUiContractFixture("save_pipeline"))
@@ -219,6 +325,70 @@ describe("API response guards", () => {
     expect(parsed.execution_metrics?.admission?.available_ram_bytes).toBe(8000)
     expect(parsed.execution_metrics?.memory_pressure_events[0]?.pressure_ratio).toBe(0.75)
     expect(parsed.execution_metrics?.memory_pressure_events[0]?.budget_policy).toBe("adaptive_local")
+  })
+
+  it("makes malformed execution-strategy diagnostics unavailable without rejecting metrics", () => {
+    const parsed = parsePreviewNodeResponse({
+      ...loadUiContractFixture<Record<string, unknown>>("preview_node"),
+      execution_metrics: {
+        ...executionMetricsFixture(),
+        execution_strategy: executionStrategyFixture({ schema_version: 2 }),
+      },
+    })
+
+    expect(parsed.execution_metrics?.execution_strategy).toBeNull()
+    expect(parsed.execution_metrics?.memory_pressure_events).toHaveLength(1)
+  })
+
+  it("parses P12 streamability counters and deterministic bounded evidence", () => {
+    const parsed = parsePreviewNodeResponse({
+      ...loadUiContractFixture<Record<string, unknown>>("preview_node"),
+      execution_metrics: {
+        ...executionMetricsFixture(),
+        streamability: "streaming",
+        streamability_evidence: { state: "available", total_count: 2, items: ["filter", "scan"] },
+        column_widths: {
+          state: "available",
+          total_count: 2,
+          items: [
+            { node_id: "filter", input_width: 4, output_width: 3, requested_width: null, physically_scanned_width: 4 },
+            { node_id: "scan", input_width: null, output_width: 4, requested_width: 3, physically_scanned_width: 4 },
+          ],
+        },
+        bytes_read: 1024,
+        bytes_written: null,
+        estimated_bytes: 2048,
+        observed_peak_rss_bytes: null,
+        checkpoint_count: 2,
+        chunk_count: 3,
+      },
+    })
+
+    expect(parsed.execution_metrics?.streamability_evidence.items).toEqual(["filter", "scan"])
+    expect(parsed.execution_metrics?.column_widths.items.map((item) => item.node_id)).toEqual(["filter", "scan"])
+    expect(parsed.execution_metrics?.bytes_written).toBeNull()
+    expect(parsed.execution_metrics?.checkpoint_count).toBe(2)
+  })
+
+  it("rejects over-cap or non-deterministically ordered P12 wrappers", () => {
+    expect(() => parsePreviewNodeResponse({
+      ...loadUiContractFixture<Record<string, unknown>>("preview_node"),
+      execution_metrics: {
+        ...executionMetricsFixture(),
+        streamability_evidence: { state: "available", total_count: 2, items: ["scan", "filter"] },
+      },
+    })).toThrow(/streamability_evidence/i)
+    expect(() => parsePreviewNodeResponse({
+      ...loadUiContractFixture<Record<string, unknown>>("preview_node"),
+      execution_metrics: {
+        ...executionMetricsFixture(),
+        column_widths: {
+          state: "available",
+          total_count: 129,
+          items: Array.from({ length: 129 }, (_, index) => ({ node_id: `n${index}`, input_width: null, output_width: null, requested_width: null, physically_scanned_width: null })),
+        },
+      },
+    })).toThrow(/column_widths/i)
   })
 
   it("rejects malformed preview node ids", () => {

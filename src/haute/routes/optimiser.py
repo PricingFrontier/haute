@@ -24,6 +24,10 @@ from haute._polars_utils import (
 from haute._sandbox import _get_project_root
 from haute._types import SolveResultLike
 from haute.errors import BoundedMemoryUnsupportedError
+from haute.routes._contract_errors import (
+    PUBLIC_CONTRACT_ERROR_TYPES,
+    contract_error_http_exception,
+)
 from haute.routes._helpers import _INTERNAL_ERROR_DETAIL, validate_safe_path
 from haute.routes._job_lifecycle import JobLifecycle, TerminalReason, require_job_status
 from haute.routes._job_store import get_job_store
@@ -1148,6 +1152,8 @@ def estimate_solve(body: OptimiserEstimateRequest) -> OptimiserEstimateResponse:
 
     try:
         metrics = _optimiser_input_metrics(body)
+    except PUBLIC_CONTRACT_ERROR_TYPES as exc:
+        raise contract_error_http_exception(exc) from None
     except BoundedMemoryUnsupportedError as exc:
         detail = f"Optimiser estimate cannot run in bounded streaming mode: {exc}"
         logger.warning(

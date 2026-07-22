@@ -293,3 +293,11 @@ therefore fail at the caller, consistent with the application's fail-loud policy
   it logs via `console.error` and shows a "Try again" fallback scoped to
   the boundary it wraps, so one panel's crash is visible and recoverable
   without reloading the whole app.
+
+## Polars backend contracts (0.6.0)
+
+See [the remediation plan](../../trip/plans/F_0.6.0_polars-backend-remediation.plan.md).
+Shared frontend infrastructure owns the typed API boundary for execution-strategy results. Its
+runtime guard accepts known status fields while retaining safe representations of unknown future
+fields, truncation and unavailable values. Feature-specific panels consume that single guarded
+contract; they must not independently parse or normalise backend strategy payloads.

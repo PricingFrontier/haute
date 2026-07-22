@@ -15,6 +15,11 @@ from haute._rating import (
     _normalise_banding_factors,
     apply_rating_step_from_config,
 )
+from haute.errors import (
+    RatingExtremaUndefinedError,
+    RatingFactorMissingError,
+    SchemaMismatchError,
+)
 
 # ---------------------------------------------------------------------------
 # _banding_condition
@@ -300,6 +305,101 @@ class TestCombineRatingColumns:
         assert _combine_rating_columns(lf, ["a", "b"], "min", "o").collect()["o"].to_list() == [2.0]
         assert _combine_rating_columns(lf, ["a", "b"], "max", "o").collect()["o"].to_list() == [4.0]
 
+    @pytest.mark.parametrize("operation", ["min", "max"])
+    def test_extrema_all_null_raises_only_when_collected(self, operation: str) -> None:
+        lf = pl.DataFrame(
+            {"a": pl.Series([None], dtype=pl.Float64), "b": pl.Series([None], dtype=pl.Float64)}
+        ).lazy()
+
+        result_lf = _combine_rating_columns(lf, ["a", "b"], operation, "out")
+
+        with pytest.raises(RatingExtremaUndefinedError) as exc_info:
+            result_lf.collect()
+        error = exc_info.value
+        assert error.output_column == "out"
+        assert error.operation == operation
+        assert "out" in str(error)
+        assert operation in str(error)
+
+    @pytest.mark.parametrize("operation", ["min", "max"])
+    def test_extrema_batch_with_any_all_null_row_fails_atomically(self, operation: str) -> None:
+        lf = pl.DataFrame(
+            {
+                "a": pl.Series([2.0, None], dtype=pl.Float64),
+                "b": pl.Series([3.0, None], dtype=pl.Float64),
+            }
+        ).lazy()
+
+        with pytest.raises(RatingExtremaUndefinedError):
+            _combine_rating_columns(lf, ["a", "b"], operation, "out").collect()
+
+    @pytest.mark.parametrize("operation, expected", [("min", 2.0), ("max", 3.0)])
+    def test_extrema_mixed_null_row_has_defined_value(
+        self, operation: str, expected: float
+    ) -> None:
+        lf = pl.DataFrame(
+            {
+                "a": pl.Series([None], dtype=pl.Float64),
+                "b": pl.Series([expected], dtype=pl.Float64),
+            }
+        ).lazy()
+
+        result = _combine_rating_columns(lf, ["a", "b"], operation, "out").collect()
+        assert result["out"].to_list() == [expected]
+
+    @pytest.mark.parametrize("operation, expected", [("add", 3.0), ("multiply", 2.0)])
+    def test_nan_is_not_neutralised(self, operation: str, expected: float) -> None:
+        lf = pl.DataFrame({"a": [float("nan")], "b": [expected]}).lazy()
+
+        result = _combine_rating_columns(lf, ["a", "b"], operation, "out").collect()
+        assert result["out"][0] != result["out"][0]
+
+
+class TestRatingFactorInputSchema:
+    @pytest.mark.parametrize(
+        "factors, missing",
+        [(["a"], "a"), (["a", "b"], "b"), (["a", "b", "c"], "c")],
+    )
+    def test_missing_factor_fails_before_lookup_or_join(
+        self, monkeypatch: pytest.MonkeyPatch, factors: list[str], missing: str
+    ) -> None:
+        from haute import _rating
+
+        table = {
+            "name": "Named table",
+            "factors": factors,
+            "outputColumn": "factor",
+            "entries": [{**{factor: "x" for factor in factors}, "value": 1.0}],
+        }
+        input_columns = {factor: ["x"] for factor in factors if factor != missing}
+        lf = pl.DataFrame(input_columns or {"other": ["x"]}).lazy()
+        monkeypatch.setattr(
+            _rating.pl, "DataFrame", lambda *_args, **_kwargs: pytest.fail("lookup built")
+        )
+
+        with pytest.raises(RatingFactorMissingError) as exc_info:
+            _apply_rating_table(lf, table)
+        error = exc_info.value
+        assert isinstance(error, SchemaMismatchError)
+        assert error.table == "Named table"
+        assert error.factor == missing
+        assert "Named table" in str(error)
+        assert missing in str(error)
+
+    def test_missing_input_factor_is_not_hidden_by_incomplete_entries(self) -> None:
+        table = {
+            "name": "Incomplete lookup",
+            "factors": ["missing"],
+            "outputColumn": "factor",
+            "entries": [{"value": 1.0}],
+        }
+
+        with pytest.raises(RatingFactorMissingError) as exc_info:
+            _apply_rating_table(pl.DataFrame({"present": ["x"]}).lazy(), table)
+
+        assert exc_info.value.table == "Incomplete lookup"
+        assert exc_info.value.factor == "missing"
+
 
 # ---------------------------------------------------------------------------
 # B13: Non-numeric defaultValue handled gracefully
@@ -482,17 +582,17 @@ class TestApplyRatingTableExtraColumns:
         assert "extra1" not in result.columns
         assert "extra2" not in result.columns
 
-    def test_factor_column_missing_from_entries_passthrough(self) -> None:
-        """If a factor column doesn't exist in any entry, bail out safely."""
+    def test_missing_input_factor_precedes_incomplete_entry_passthrough(self) -> None:
+        """An incomplete lookup cannot hide an absent declared input factor."""
         lf = pl.DataFrame({"region": ["North"]}).lazy()
         table: dict[str, Any] = {
             "factors": ["region", "nonexistent"],
             "outputColumn": "factor",
             "entries": [{"region": "North", "value": 1.0}],
         }
-        result = _apply_rating_table(lf, table).collect()
-        assert "factor" not in result.columns
-        assert result.columns == ["region"]
+        with pytest.raises(RatingFactorMissingError) as exc_info:
+            _apply_rating_table(lf, table)
+        assert exc_info.value.factor == "nonexistent"
 
     def test_no_extra_keys_still_works(self) -> None:
         """When entries have only factor+value keys, nothing changes."""
@@ -609,8 +709,8 @@ class TestApplyRatingTableSchemaCallCount:
         # existing_cols set correctly filters it from cast_exprs.
         # The join on ["region", "nonexistent"] would fail because
         # "nonexistent" is not in the main frame schema.
-        with pytest.raises((pl.exceptions.ColumnNotFoundError, pl.exceptions.SchemaError)):
-            _apply_rating_table(lf, table).collect()
+        with pytest.raises(RatingFactorMissingError):
+            _apply_rating_table(lf, table)
 
 
 # ===========================================================================
@@ -1426,15 +1526,16 @@ class TestApplyBandingEdgeCases:
 
 
 class TestApplyRatingTableEdgeCases:
-    def test_non_existent_factor_in_entries_passthrough(self) -> None:
+    def test_non_existent_input_factor_in_incomplete_entries_raises(self) -> None:
         lf = pl.DataFrame({"region": ["North"]}).lazy()
         table: dict[str, Any] = {
             "factors": ["region", "missing_col"],
             "outputColumn": "factor",
             "entries": [{"region": "North", "value": 1.0}],
         }
-        result = _apply_rating_table(lf, table).collect()
-        assert "factor" not in result.columns
+        with pytest.raises(RatingFactorMissingError) as exc_info:
+            _apply_rating_table(lf, table)
+        assert exc_info.value.factor == "missing_col"
 
     def test_non_existent_factor_in_frame_raises(self) -> None:
         lf = pl.DataFrame({"region": ["North"]}).lazy()
@@ -1443,8 +1544,8 @@ class TestApplyRatingTableEdgeCases:
             "outputColumn": "factor",
             "entries": [{"nonexistent": "x", "value": 1.0}],
         }
-        with pytest.raises((pl.exceptions.ColumnNotFoundError, pl.exceptions.SchemaError)):
-            _apply_rating_table(lf, table).collect()
+        with pytest.raises(RatingFactorMissingError):
+            _apply_rating_table(lf, table)
 
     def test_missing_value_key_in_entries(self) -> None:
         lf = pl.DataFrame({"region": ["North"]}).lazy()
@@ -1604,21 +1705,21 @@ class TestCombineRatingColumnsEdgeCases:
         lf = pl.DataFrame(
             {
                 "a": [3.0, None, 5.0],
-                "b": [None, None, 2.0],
+                "b": [None, 4.0, 2.0],
             }
         ).lazy()
         result = _combine_rating_columns(lf, ["a", "b"], "min", "out").collect()
-        assert result["out"].to_list() == [3.0, None, 2.0]
+        assert result["out"].to_list() == [3.0, 4.0, 2.0]
 
     def test_max_with_nulls(self) -> None:
         lf = pl.DataFrame(
             {
                 "a": [3.0, None, 5.0],
-                "b": [None, None, 2.0],
+                "b": [None, 4.0, 2.0],
             }
         ).lazy()
         result = _combine_rating_columns(lf, ["a", "b"], "max", "out").collect()
-        assert result["out"].to_list() == [3.0, None, 5.0]
+        assert result["out"].to_list() == [3.0, 4.0, 5.0]
 
     def test_non_existent_column_raises(self) -> None:
         lf = pl.DataFrame({"a": [1.0]}).lazy()

@@ -316,3 +316,13 @@ Out of scope (owned elsewhere):
 > model is instead re-resolved through MLflow's own `pyfunc.load_model`
 > path (which has its own, separate local caching behaviour) on every
 > cache-miss load.
+
+## Polars backend contracts (0.6.0)
+
+This component implements the scoring portions of the [Polars backend remediation plan](../../trip/plans/F_0.6.0_polars-backend-remediation.plan.md).
+
+- A valid empty scoring batch produces typed empty prediction output without scoring a synthetic all-null row when model metadata can determine the output schema. If metadata is insufficient, the operation fails loudly rather than guessing a dtype or invoking a semantically invalid probe.
+- Live categorical validation projects only the model features and other columns required by validation/scoring; unrelated input columns are not materialised for that check.
+- Any array-contiguity optimisation in model preparation is benchmark-gated and must preserve values, null handling, dtype semantics, and model input ordering.
+
+Non-goals: altering model predictions, relaxing feature/categorical validation, or adding a broad fallback for unknown empty-output schemas. Required tests cover metadata-derived empty output for each supported flavor, the fail-loud insufficient-metadata path, minimal live-validation projection on wide frames, and semantic equivalence for any benchmark-approved contiguity optimisation.

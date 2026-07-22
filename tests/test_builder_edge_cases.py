@@ -10,6 +10,7 @@ from __future__ import annotations
 import polars as pl
 import pytest
 
+from haute.errors import ExecutionError, LiveSwitchScenarioError
 from haute.executor import _build_node_fn, resolve_instance_node
 from haute.graph_utils import GraphNode, NodeData
 from tests.conftest import make_node as _n
@@ -314,7 +315,7 @@ class TestBuildLiveSwitchEdgeCases:
         result = fn(live_df, batch_df).collect()
         assert result["v"].to_list() == [2]
 
-    def test_unmapped_scenario_falls_back_to_first_input(self) -> None:
+    def test_unmapped_scenario_raises_typed_error(self) -> None:
         node = _n(
             {
                 "id": "n1",
@@ -334,8 +335,22 @@ class TestBuildLiveSwitchEdgeCases:
         )
         df_a = pl.DataFrame({"val": [10]}).lazy()
         df_b = pl.DataFrame({"val": [20]}).lazy()
-        result = fn(df_a, df_b).collect()
-        assert result["val"].to_list() == [10]
+        with pytest.raises(LiveSwitchScenarioError) as exc_info:
+            fn(df_a, df_b)
+
+        exc = exc_info.value
+        assert isinstance(exc, ExecutionError)
+        assert exc.error_code == "live_switch_scenario_missing"
+        assert exc.switch == "Switch"
+        assert exc.scenario == "totally_unknown"
+        assert exc.available_mappings == ("live", "test")
+        assert exc.to_payload() == {
+            "error_code": "live_switch_scenario_missing",
+            "message": "Live switch 'Switch' has no input for scenario 'totally_unknown'",
+            "switch": "Switch",
+            "scenario": "totally_unknown",
+            "available_mappings": ("live", "test"),
+        }
 
     def test_empty_input_raises_value_error(self) -> None:
         _, fn, _ = _build(
@@ -343,6 +358,16 @@ class TestBuildLiveSwitchEdgeCases:
             {"input_scenario_map": {}},
             source_names=[],
             source="live",
+        )
+        with pytest.raises(ValueError, match="no input"):
+            fn()
+
+    def test_empty_frames_take_precedence_over_missing_mapping(self) -> None:
+        _, fn, _ = _build(
+            "liveSwitch",
+            {"input_scenario_map": {"a": "live"}},
+            source_names=[],
+            source="unknown",
         )
         with pytest.raises(ValueError, match="no input"):
             fn()

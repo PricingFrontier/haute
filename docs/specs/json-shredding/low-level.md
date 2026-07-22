@@ -479,3 +479,61 @@ Edge join (`_edge_join.py`):
 
 Projection planning and its `tests/test_projection_planner.py` coverage are owned
 by [execution-engine](../execution-engine/low-level.md).
+
+## Polars backend contracts (0.6.0)
+
+Implementation is sequenced by the [Polars backend remediation plan](../../trip/plans/F_0.6.0_polars-backend-remediation.plan.md).
+
+### OUTPUT assembler (Review-P04)
+
+`_output_assembler.py` must construct reusable indexes/groupings for active mapping
+rows and collected-frame rows so the assembly pipeline is indexed or near-linear in
+the mapping/frame inputs.  It must preserve the existing deterministic cut plan and
+bag-natural-join output semantics; optimisation may not alter row multiplicity or
+the ordering contract already covered by assembler tests.
+
+Every internal nesting relation uses the shared fail-loud orphan guard. Before any
+grouping, assembly, or rendering, each active parent and child row participating in
+that relation is checked across every component of its simple or composite nesting
+key. A null component raises
+`OutputNestingKeyError(OutputMappingSchemaError)` with stable frame, output-path, and
+key fields; API translation returns HTTP 422. The guard belongs in the shared
+assembler relation primitive rather than one call site. It must not silently drop,
+exclude, or merely fail to match the row. Scalar payload columns remain nullable when
+they are not relation-key components.
+
+Before materialising or rendering, mapping validation must group each source frame's
+active rows by their `emit` prefix.  More than one divergent prefix for a frame must
+raise `OutputMappingSchemaError` containing the source frame/port and conflicting
+prefixes.  The guard must run in every execution entry point, including the direct
+assembler, route/dry-run flow, and generated/deploy flow.  It may not discard a
+column to make the mapping appear valid.  A future relaxation requires a separately
+specified, explicit unambiguous source-to-prefix mapping; none is introduced here.
+
+### Raw-file signatures (Review-P06 / FR17)
+
+`_json_shred.py` and cache-validity/build callers must carry an operation-scoped
+raw-file signature object containing the observed size, mtime, and SHA-256.  A
+logical `load_v2_api_source` attempt or cache build computes that signature once and
+passes it to every freshness/manifest consumer instead of independently rehashing
+the same file.  The scope must not persist between independently initiated loads,
+builds, or promotions: each independently initiated operation recomputes and checks
+content.  Stat values remain part of the manifest/signature, and SHA-256 remains
+authoritative, so a same-size/same-mtime rewrite is detected.
+
+### Tests and non-goals
+
+`tests/test_output_assembler.py` (and route/codegen/deploy integration coverage) must add
+large-fixture work-count or spy coverage proving indexed/near-linear behaviour;
+simple-key and every-position composite-key null rejection for active parent and child
+rows; allowed non-key scalar nulls; exact error fields and HTTP 422; divergent-prefix
+rejection; preservation of every valid source row and column; and equivalent direct,
+route, generated, and deployed acceptance, error, and rendering.
+JSON cache tests must prove one raw-file hash per logical operation, a fresh hash for
+an independent operation, and invalidation after a same-size/same-mtime rewrite.
+
+The 0.6 pre-1.0 migration notes document that null relation keys now raise instead of
+silently producing orphan/non-matching rows. No output-path grammar change,
+cache-layout migration, relaxation of cache content verification, or divergent-prefix
+feature is part of this work. Existing bag semantics for valid keys, deterministic
+cuts, pruning, and cache manifest fields remain unchanged.

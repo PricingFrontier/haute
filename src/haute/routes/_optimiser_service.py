@@ -91,6 +91,11 @@ from haute.routes._background_jobs import (
     SingleFlightCoordinator,
     SingleFlightHandle,
 )
+from haute.routes._contract_errors import (
+    PUBLIC_CONTRACT_ERROR_TYPES,
+    contract_error_http_exception,
+    contract_error_job_fields,
+)
 from haute.routes._helpers import find_typed_node
 from haute.routes._job_lifecycle import (
     CANCELLED_STATUS,
@@ -755,6 +760,8 @@ def _source_node_schema_has_column(node: GraphNode, column: str) -> bool:
             validate_columns=projected.validate_columns,
         )
         return column in set(lf.collect_schema().names())
+    except PUBLIC_CONTRACT_ERROR_TYPES:
+        raise
     except (OSError, ValueError, BoundedMemoryUnsupportedError, SchemaMismatchError):
         return False
 
@@ -2943,6 +2950,22 @@ class OptimiserSolveService:
                     fields=memory_error_update,
                     elapsed_seconds=elapsed_seconds,
                 )
+            except PUBLIC_CONTRACT_ERROR_TYPES as exc:
+                elapsed_seconds = time.monotonic() - start_time
+                contract_fields = contract_error_job_fields(exc)
+                contract_fields["elapsed_seconds"] = elapsed_seconds
+                if execution_context is not None:
+                    contract_fields["execution_metrics"] = execution_context.metrics_payload(
+                        status=CONTRACT_ERROR_STATUS,
+                        terminal_reason="contract_error",
+                    )
+                self._lifecycle.transition(
+                    job_id,
+                    to="contract_error",
+                    message=str(exc),
+                    fields=contract_fields,
+                    elapsed_seconds=elapsed_seconds,
+                )
             except BoundedMemoryUnsupportedError as exc:
                 detail = f"Optimiser setup cannot run in bounded streaming mode: {exc}"
                 logger.warning(
@@ -2952,13 +2975,13 @@ class OptimiserSolveService:
                     job_id=job_id,
                 )
                 elapsed_seconds = time.monotonic() - start_time
-                fields: dict[str, Any] = {
+                bounded_fields: dict[str, Any] = {
                     "http_status_code": 422,
                     "error_detail": detail,
                     "elapsed_seconds": elapsed_seconds,
                 }
                 if execution_context is not None:
-                    fields["execution_metrics"] = execution_context.metrics_payload(
+                    bounded_fields["execution_metrics"] = execution_context.metrics_payload(
                         status=CONTRACT_ERROR_STATUS,
                         terminal_reason="contract_error",
                     )
@@ -2966,7 +2989,7 @@ class OptimiserSolveService:
                     job_id,
                     to="contract_error",
                     message=detail,
-                    fields=fields,
+                    fields=bounded_fields,
                     elapsed_seconds=elapsed_seconds,
                 )
             except Exception as exc:
@@ -3710,6 +3733,16 @@ class OptimiserSolveService:
                 ),
             )
             raise
+        except PUBLIC_CONTRACT_ERROR_TYPES as exc:
+            elapsed_seconds = _job_elapsed_seconds(self._store.jobs[job_id])
+            fields = contract_error_job_fields(exc)
+            fields["elapsed_seconds"] = elapsed_seconds
+            fields["execution_metrics"] = execution_context.metrics_payload(
+                status=CONTRACT_ERROR_STATUS,
+                terminal_reason="contract_error",
+            )
+            self._lifecycle.transition(job_id, to="contract_error", fields=fields)
+            raise contract_error_http_exception(exc) from None
         except BoundedMemoryUnsupportedError as exc:
             detail = f"Frontier auto range cannot run in bounded streaming mode: {exc}"
             logger.warning(
@@ -4001,6 +4034,16 @@ class OptimiserSolveService:
                 ),
             )
             raise
+        except PUBLIC_CONTRACT_ERROR_TYPES as exc:
+            elapsed_seconds = _job_elapsed_seconds(self._store.jobs[job_id])
+            fields = contract_error_job_fields(exc)
+            fields["elapsed_seconds"] = elapsed_seconds
+            fields["execution_metrics"] = execution_context.metrics_payload(
+                status=CONTRACT_ERROR_STATUS,
+                terminal_reason="contract_error",
+            )
+            self._lifecycle.transition(job_id, to="contract_error", fields=fields)
+            raise contract_error_http_exception(exc) from None
         except BoundedMemoryUnsupportedError as exc:
             detail = f"Frontier auto range cannot run in bounded streaming mode: {exc}"
             logger.warning(
@@ -4384,6 +4427,15 @@ class OptimiserSolveService:
             return lazy_outputs
         except HTTPException:
             raise
+        except PUBLIC_CONTRACT_ERROR_TYPES as exc:
+            self._record_setup_failure(
+                job_id,
+                to="contract_error",
+                message=str(exc),
+                fields=contract_error_job_fields(exc),
+                execution_context=execution_context,
+            )
+            raise contract_error_http_exception(exc) from None
         except ProjectionImpossibleError as exc:
             error_msg = f"Pipeline cannot run with bounded projection: {exc}"
             logger.warning(
@@ -4895,6 +4947,15 @@ class OptimiserSolveService:
             raise
         except (ExecutionCancelledError, ExecutionMemoryLimitExceededError):
             raise
+        except PUBLIC_CONTRACT_ERROR_TYPES as exc:
+            self._record_setup_failure(
+                job_id,
+                to="contract_error",
+                message=str(exc),
+                fields=contract_error_job_fields(exc),
+                execution_context=execution_context,
+            )
+            raise contract_error_http_exception(exc) from None
         except BoundedMemoryUnsupportedError as exc:
             detail = f"Grid construction cannot run in bounded streaming mode: {exc}"
             logger.warning(
@@ -5058,6 +5119,14 @@ class OptimiserSolveService:
                     elapsed_seconds=time.monotonic() - start_time,
                 )
                 logger.info("solve_worker_cancelled", job_id=job_id, error=str(exc))
+            except PUBLIC_CONTRACT_ERROR_TYPES as exc:
+                self._lifecycle.transition(
+                    job_id,
+                    to="contract_error",
+                    message=str(exc),
+                    fields=contract_error_job_fields(exc),
+                    elapsed_seconds=time.monotonic() - start_time,
+                )
             except Exception as exc:
                 error_categories: dict[type, tuple[str, str]] = {
                     ValueError: ("Data error", "data"),

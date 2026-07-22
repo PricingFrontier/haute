@@ -52,6 +52,87 @@ def _rating_node(
     )
 
 
+class TestRatingStepP3:
+    @pytest.mark.parametrize("operation, expected", [("min", 100.0), ("max", 100.0)])
+    def test_base_value_defines_otherwise_all_null_extrema(
+        self, operation: str, expected: float
+    ) -> None:
+        from haute._rating import apply_rating_step_from_config
+
+        config = {
+            "tables": [
+                {
+                    "factors": ["band"],
+                    "outputColumn": "factor",
+                    "onMissing": "neutral",
+                    "entries": [{"band": "A", "value": 2.0}],
+                }
+            ],
+            "combinedOutputs": [
+                {"outputColumn": "premium", "operation": operation, "baseValue": expected}
+            ],
+        }
+        result = apply_rating_step_from_config(
+            pl.DataFrame({"band": ["missing"]}), config
+        ).collect()
+        assert result["premium"].to_list() == [expected]
+
+    def test_extrema_base_value_keeps_missing_table_value_defined(self) -> None:
+        from haute._rating import apply_rating_step_from_config
+
+        config = {
+            "tables": [
+                {
+                    "factors": ["band"],
+                    "outputColumn": "factor",
+                    "onMissing": "neutral",
+                    "entries": [{"band": "A", "value": 2.0}],
+                }
+            ],
+            "combinedOutputs": [{"outputColumn": "premium", "operation": "min", "baseValue": 1.0}],
+        }
+        result_lf = apply_rating_step_from_config(pl.DataFrame({"band": ["missing"]}), config)
+        assert result_lf.collect()["premium"].to_list() == [1.0]
+
+    def test_multi_table_multi_output_plan_resolves_schema_once(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from haute import _rating
+
+        original_frame_schema = _rating._frame_schema
+        calls = 0
+
+        def counting_frame_schema(frame: object) -> object:
+            nonlocal calls
+            calls += 1
+            return original_frame_schema(frame)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(_rating, "_frame_schema", counting_frame_schema)
+        config = {
+            "tables": [
+                {
+                    "factors": ["band"],
+                    "outputColumn": "first",
+                    "entries": [{"band": "A", "value": 2.0}],
+                },
+                {
+                    "factors": ["band"],
+                    "outputColumn": "second",
+                    "entries": [{"band": "A", "value": 3.0}],
+                },
+            ],
+            "combinedOutputs": [
+                {"outputColumn": "premium", "operation": "multiply", "baseValue": 10.0},
+                {"outputColumn": "total", "operation": "add", "baseValue": 1.0},
+            ],
+        }
+
+        out = _rating.apply_rating_step_from_config(pl.DataFrame({"band": ["A"]}), config).collect()
+        assert calls == 1
+        assert out["premium"].to_list() == [60.0]
+        assert out["total"].to_list() == [6.0]
+
+
 # ---------------------------------------------------------------------------
 # Executor: _apply_rating_table via _build_node_fn
 # ---------------------------------------------------------------------------

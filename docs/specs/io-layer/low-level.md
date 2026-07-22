@@ -424,3 +424,35 @@ No test exercises two concurrent `_polars_utils.atomic_write`/profiled-sink
 calls to the same destination. The fixed temp path makes that unsupported in
 the current implementation; only `_file_ops`'s unique-temp concurrent-writer
 contract is directly tested.
+
+## Polars backend contracts (0.6.0)
+
+This component implements the IO portions of the [Polars backend remediation plan](../../trip/plans/F_0.6.0_polars-backend-remediation.plan.md).
+
+- Replace substring-based streaming failure detection in `_polars_utils` with a committed
+  classifier table whose key is `(polars_version, exception_class,
+  anchored_full_message_signature)`. The first supported version is exactly Polars `1.39.3`.
+  A spec-only evidence step must reproduce real incompatible operations on that version and
+  commit their concrete exception classes and complete messages here before classifier code
+  begins. An empty verified table is valid; broad invented signatures are not. Message
+  signatures are anchored and evaluated as full-message matches.
+- Only a listed tuple is classified and may be converted or handed to the existing caller's
+  documented fallback branch. A version mismatch, subclass/type mismatch, or message mismatch
+  re-raises the original exception object unchanged and never selects a broad/eager fallback.
+  Adding support for another Polars version requires independently harvested signatures and
+  an explicit table-version update.
+- Execution telemetry exposes byte and column counters only where the Polars operation supplies them. Use an explicit unavailable value/state when a counter cannot be obtained; do not coerce absence to `0`.
+- The repository audit for this plan found no production import/caller, package re-export,
+  generated reference, or supported published contract for the private underscored-module
+  `best_effort_sink` and `safe_sink` symbols. Remove the helpers, fallback tests, and call
+  sites; if contrary evidence appears before the batch, stop and revise this contract first.
+  Retain `bounded_sink` as a strict
+  bounded-memory surface. Add a 0.6 pre-1.0 migration/release note naming the removals, with no
+  deprecation shim because retaining the unsafe fallback is worse than a loud break.
+- Do not alter CSV recounting in this change. A later implementation requires a benchmark showing a material win and tests proving identical semantics.
+
+Tests must exercise each harvested Polars 1.39.3 tuple and assert exact propagation of the
+original exception for an unknown version, wrong exception class, prefix/suffix message drift,
+and unrelated messages containing tempting tokens such as `downstream`, `upstream`, or
+`stream_id`. They also cover counter availability and, after a successful removal audit, prove
+that no public or internal caller can select the removed broadening helpers.

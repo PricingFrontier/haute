@@ -1,5 +1,6 @@
 """Tests for the Scenario Expander node type."""
 
+import numpy as np
 import polars as pl
 import pytest
 
@@ -102,6 +103,22 @@ class TestExecutor:
         assert prices[1] == pytest.approx(1.5)
         assert prices[2] == pytest.approx(2.0)
         assert result["idx"].to_list() == [0, 1, 2]
+
+    def test_grid_values_preserve_float32_numpy_values(self):
+        config = {
+            "column_name": "price",
+            "min_value": 0.1,
+            "max_value": 0.3,
+            "steps": 3,
+        }
+        _, fn, _ = _build_node_fn(_make_node(config), source_names=["upstream"])
+
+        result = fn(pl.DataFrame({"x": [1]}).lazy()).collect()["price"]
+
+        expected = np.linspace(0.1, 0.3, 3, dtype=np.float32)
+        assert result.dtype == pl.Float32
+        assert result.to_numpy().dtype == np.float32
+        np.testing.assert_array_equal(result.to_numpy(), expected)
 
     def test_defaults(self):
         """Empty config uses sensible defaults (no value column without column_name)."""

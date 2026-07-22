@@ -228,7 +228,7 @@ class TestByteAwareEviction:
         with pytest.raises(ValueError, match="non-negative int"):
             cache_negative.put("a", 1)
 
-    def test_oversized_put_warns_with_drop_details_and_removes_stale_entry(
+    def test_oversized_put_reports_rejection_and_retains_existing_entry(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
         cache: LRUCache[str, int] = LRUCache(
@@ -236,13 +236,14 @@ class TestByteAwareEviction:
             max_bytes=50,
             size_of=lambda value: value,
         )
-        cache.put("same-fp", 25)
+        assert cache.put("same-fp", 25) is True
 
         with caplog.at_level(logging.WARNING, logger="haute._lru_cache"):
-            cache.put("same-fp", 75)
+            retained = cache.put("same-fp", 75)
 
-        assert cache.get("same-fp") is None
-        assert cache.stats()["bytes"] == 0
+        assert retained is False
+        assert cache.get("same-fp") == 25
+        assert cache.stats()["bytes"] == 25
         record = next(
             record
             for record in caplog.records
@@ -263,8 +264,9 @@ class TestByteAwareEviction:
         )
 
         with caplog.at_level(logging.WARNING, logger="haute._lru_cache"):
-            cache.put("too-large", 75)
+            retained = cache.put("too-large", 75)
 
+        assert retained is False
         assert cache.get("too-large") is None
         assert cache.stats()["bytes"] == 0
         record = next(

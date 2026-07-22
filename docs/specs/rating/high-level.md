@@ -224,3 +224,36 @@ Out of scope (owned by neighbouring components):
   > when a factor is absent from every already-normalised entry; when reached
   > through `_apply_rating_step_outputs`, that skip is visible only through the
   > WARNING log.
+
+## Polars backend contracts (0.6.0)
+
+Implementation is governed by the [Polars backend remediation plan](../../trip/plans/F_0.6.0_polars-backend-remediation.plan.md). The following rating changes are approved before code work begins:
+
+- A `min` or `max` combined output whose participating values are all null for any row
+  raises `RatingExtremaUndefinedError(ExecutionError)` at runtime materialisation. The
+  error identifies the combined-output column and operation; it never quietly returns
+  null or an invented neutral value. Discovery of one invalid row fails the whole eager
+  or lazy materialisation batch atomically before output publication or cache promotion,
+  including a batch containing both valid rows and all-null rows. Partial output is never
+  published.
+- The transport contract maps `RatingExtremaUndefinedError` to HTTP 422 for synchronous
+  requests and to `contract_error` for background execution. This is a data-dependent
+  execution failure, not an eager configuration-validation failure.
+- Once finite lookup-entry values have been validated, rating must remove the dead/masking `fill_nan` neutralisation from combine semantics. Null behaviour remains the documented miss-policy behaviour; NaN must not be silently converted into an arithmetic neutral value.
+- A table whose declared input factor is absent from the input frame raises
+  `RatingFactorMissingError(SchemaMismatchError)`, identifying the table and factor. The
+  factor is checked against the once-resolved input schema before join construction or
+  collection; it is not an incomplete-table no-op. The transport contract maps this error
+  to HTTP 422 and background `contract_error`.
+- A rating/combine plan resolves its input schema once and shares that resolved schema through every table and combined-output operation in that plan.
+- Optimising the miss guard (FR22) is conditional on a representative benchmark showing a material benefit. Any such change must retain lazy/streaming materialisation timing, exact `RatingTableMissError` type and message content, warning behaviour for `onMissing: "neutral"`, and missing-key/row-count reporting.
+
+Required tests cover all-null `min`/`max` rows, mixed-null extrema, mixed valid/all-null
+batches, eager/lazy atomicity before publication and cache promotion, HTTP/background error
+mapping, NaN rejection/non-masking after entry validation, absent factors for every supported
+factor arity, one schema-resolution call across multi-table/combine plans, and error/warning
+parity for any benchmark-gated miss-guard change. The 0.6 pre-1.0 release notes must call out
+that all-null extrema and absent factors now fail loudly and name their exception and transport
+contracts. Non-goals:
+changing documented neutral-miss semantics, adding unsupported temporal factor support, or
+implementing a speculative miss-guard optimisation without benchmark evidence.

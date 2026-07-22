@@ -22,11 +22,15 @@ module are the ones the ``HauteError`` promise applies to.
 
 from __future__ import annotations
 
-from typing import Any
+from collections.abc import Sequence
+from typing import Any, ClassVar, TypeGuard
 
 
 class HauteError(Exception):
     """Root of the Haute exception hierarchy."""
+
+    error_code: ClassVar[str | None] = None
+    public_fields: ClassVar[tuple[str, ...]] = ()
 
     def __init__(self, message: str = "", **context: Any) -> None:
         self.message = message
@@ -46,6 +50,34 @@ class HauteError(Exception):
 
     def __repr__(self) -> str:
         return f"{type(self).__name__}({self._render()!r})"
+
+    def to_payload(self) -> dict[str, Any]:
+        """Return the stable public payload for a typed contract error.
+
+        Ordinary Haute errors deliberately have no public code or fields.  The
+        small set of versioned contract errors below opts in explicitly so a
+        route or background-job adapter never has to scrape ``str(exc)``.
+        """
+        if self.error_code is None:
+            return {"message": str(self)}
+        payload: dict[str, Any] = {
+            "error_code": self.error_code,
+            "message": self.message,
+        }
+        for field_name in self.public_fields:
+            payload[field_name] = getattr(self, field_name)
+        return payload
+
+
+def is_public_contract_error(exc: BaseException) -> TypeGuard[HauteError]:
+    """Return whether *exc* opts into the versioned public error contract.
+
+    A stable ``error_code`` is the explicit opt-in.  Keeping the predicate in
+    the core error module lets execution code fail these errors loudly without
+    importing the HTTP adapter (and its FastAPI dependency).
+    """
+
+    return isinstance(exc, HauteError) and exc.error_code is not None
 
 
 class ConfigError(HauteError):
@@ -68,6 +100,51 @@ class ChunkPlanUnsupportedError(BoundedMemoryUnsupportedError):
     """Raised when a graph cannot prove a safe chunked execution plan."""
 
 
+class GroupByExecutionUnsupportedError(BoundedMemoryUnsupportedError):
+    """Raised before a group-by that cannot honour the active profile."""
+
+    error_code = "group_by_execution_unsupported"
+    public_fields = (
+        "node_id",
+        "operator",
+        "profile",
+        "reason_code",
+        "remediation",
+        "estimated_peak_bytes",
+        "headroom_bytes",
+    )
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        node_id: str,
+        operator: str,
+        profile: str,
+        reason_code: str,
+        remediation: str,
+        estimated_peak_bytes: int | None,
+        headroom_bytes: int | None,
+    ) -> None:
+        self.node_id = node_id
+        self.operator = operator
+        self.profile = profile
+        self.reason_code = reason_code
+        self.remediation = remediation[:512]
+        self.estimated_peak_bytes = estimated_peak_bytes
+        self.headroom_bytes = headroom_bytes
+        super().__init__(
+            message,
+            node_id=node_id,
+            operator=operator,
+            profile=profile,
+            reason_code=reason_code,
+            remediation=self.remediation,
+            estimated_peak_bytes=estimated_peak_bytes,
+            headroom_bytes=headroom_bytes,
+        )
+
+
 class DeployError(HauteError):
     """Deploy validation or bundling failure."""
 
@@ -78,6 +155,85 @@ class FeatureMismatchError(HauteError):
 
 class SchemaMismatchError(HauteError):
     """Raised when a source or node schema boundary is incompatible."""
+
+
+class RatingFactorMissingError(SchemaMismatchError):
+    """Raised when a configured rating factor is absent from the input schema."""
+
+    error_code = "rating_factor_missing"
+    public_fields = ("table", "factor")
+
+    def __init__(self, message: str, *, table: str, factor: str) -> None:
+        self.table = table
+        self.factor = factor
+        super().__init__(message, table=table, factor=factor)
+
+
+class RatingExtremaUndefinedError(ExecutionError):
+    """Raised when a min/max rating combination has no defined value."""
+
+    error_code = "rating_extrema_undefined"
+    public_fields = ("output_column", "operation")
+
+    def __init__(self, message: str, *, output_column: str, operation: str) -> None:
+        self.output_column = output_column
+        self.operation = operation
+        super().__init__(message, output_column=output_column, operation=operation)
+
+
+class LiveSwitchScenarioError(ExecutionError):
+    """Raised when a configured live switch has no mapping for a scenario."""
+
+    error_code = "live_switch_scenario_missing"
+    public_fields = ("switch", "scenario", "available_mappings")
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        switch: str,
+        scenario: str,
+        available_mappings: Sequence[str],
+    ) -> None:
+        self.switch = switch
+        self.scenario = scenario
+        self.available_mappings = tuple(sorted(str(item) for item in available_mappings))
+        super().__init__(
+            message,
+            switch=switch,
+            scenario=scenario,
+            available_mappings=self.available_mappings,
+        )
+
+
+class TraceCorrelationUnsupportedError(ExecutionError):
+    """Raised when trace row relocation cannot compare its identity columns."""
+
+    error_code = "trace_correlation_unsupported"
+    public_fields = ("node_id", "key_columns", "dtypes", "reason_code")
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        node_id: str,
+        key_columns: Sequence[str],
+        dtypes: Sequence[str],
+        reason_code: str,
+    ) -> None:
+        if len(key_columns) != len(dtypes):
+            raise ValueError("key_columns and dtypes must be positionally aligned")
+        self.node_id = node_id
+        self.key_columns = tuple(str(item) for item in key_columns[:16])
+        self.dtypes = tuple(str(item) for item in dtypes[:16])
+        self.reason_code = reason_code
+        super().__init__(
+            message,
+            node_id=node_id,
+            key_columns=self.key_columns,
+            dtypes=self.dtypes,
+            reason_code=reason_code,
+        )
 
 
 class ContractMismatchError(HauteError):

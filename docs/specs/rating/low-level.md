@@ -133,3 +133,36 @@ covers the malformed top-level shape. The one area flagged as under-tested by
 design (rather than by a missing test case) is the F084 dedup-ordering behaviour
 in `_apply_rating_table`, which cannot be distinguished by any currently
 constructible input (see [Edge cases](#edge-cases-and-invariants)).
+
+## Polars backend contracts (0.6.0)
+
+The authoritative delivery sequence is the [Polars backend remediation plan](../../trip/plans/F_0.6.0_polars-backend-remediation.plan.md). Review-P07 has these implementation-level requirements:
+
+- `_combine_rating_columns` / `_combine_rating_output` detect a per-row all-null participant
+  set for `min` and `max` and raise `RatingExtremaUndefinedError(ExecutionError)` at eager or
+  lazy materialisation. Mixed-null extrema retain Polars' skip-null behaviour. The exception
+  carries the combined-output column and operation as stable fields and renders both in its
+  message.
+- The extrema guard is part of the materialisation transaction: if any row fails, the whole
+  batch fails before publication or cache promotion, even when other rows are valid. No
+  partial frame, output artifact, or cache entry may become visible. API error translation
+  returns HTTP 422; background execution records stable `contract_error` status/code and the
+  same output/operation fields.
+- After lookup entry values are validated finite, remove `fill_nan`-based neutralisation from `add` and `multiply`; no combine operation may disguise a NaN as `0.0` or `1.0`. Preserve the specified null treatment for an explicit `onMissing: "neutral"` result.
+- Before canonicalisation, join construction, or collection, `_apply_rating_table` validates
+  each declared factor against the plan's resolved input schema. An absent factor raises
+  `RatingFactorMissingError(SchemaMismatchError)` with stable table and factor fields, rather
+  than being treated as an incomplete-table skip. API error translation returns HTTP 422 and
+  background execution records `contract_error` with those fields.
+- `_apply_rating_step_outputs` owns a single schema snapshot for the complete rating/combine plan and passes it to table and combine operations. Code must not call `collect_schema()` once per table or re-resolve schema after a plan-expanding join.
+- FR22 may replace or optimise `_rating_miss_guard_expr` only behind a benchmark gate using representative hit-heavy and miss-heavy workloads. The replacement must preserve `RatingTableMissError` type, message fields and display cap, batch-time failure timing under lazy and streaming collection, and `onMissing: "neutral"` warning contents/counts exactly.
+
+Regression tests must pin: all-null `min` and `max` (including configured base-value
+semantics), mixed null/non-null extrema, a mixed valid/all-null batch, eager and lazy failure
+before publish/cache side effects, exact HTTP/background mappings and stable fields, NaN
+propagation/rejection rather than neutralisation, absent one-, two-, and three-factor inputs
+before join/collection, schema-resolution call count for multi-table/combine plans, and
+baseline-versus-optimised miss-guard error and warning parity. The 0.6 pre-1.0 migration note
+documents both newly loud cases and their exception and transport contracts. Non-goals are changing miss
+policy, silently supplying absent factors, expanding factor dtype support, or landing FR22
+without benchmark evidence.

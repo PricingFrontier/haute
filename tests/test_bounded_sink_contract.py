@@ -28,14 +28,13 @@ def test_bounded_memory_callers_do_not_use_fallback_sink(relative_path: Path) ->
     assert "bounded_sink(" in source
 
 
-def test_production_code_does_not_call_fallback_sink_outside_helper() -> None:
-    """No production path should reintroduce safe_sink as a broad fallback."""
+def test_removed_fallback_sink_symbols_and_call_sites_stay_absent() -> None:
+    """The deprecated broad fallback helpers must not return."""
     offenders: list[str] = []
     for path in (ROOT / "src" / "haute").rglob("*.py"):
         relative = path.relative_to(ROOT)
-        if relative == Path("src/haute/_polars_utils.py"):
-            continue
-        if "safe_sink(" in path.read_text(encoding="utf-8"):
+        source = path.read_text(encoding="utf-8")
+        if "safe_sink" in source or "best_effort_sink" in source:
             offenders.append(str(relative).replace("\\", "/"))
 
     assert offenders == []

@@ -8,6 +8,7 @@ from unittest.mock import patch
 import polars as pl
 import pytest
 
+from haute import _polars_utils as polars_utils
 from haute._execution_context import (
     ExecutionCancelledError,
     ExecutionContext,
@@ -17,44 +18,12 @@ from haute._execution_context import (
 from haute._polars_utils import (
     _malloc_trim,
     atomic_write,
-    best_effort_sink,
     bounded_collect_batches,
     bounded_sink,
     read_parquet_metadata,
-    safe_sink,
     streaming_collect,
     temporary_streaming_chunk_size,
 )
-from haute.errors import BoundedMemoryUnsupportedError
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-# Newer Polars (>= 1.x) routes DataFrame.write_parquet through
-# LazyFrame.sink_parquet internally.  That means a class-level mock on
-# sink_parquet also breaks the eager fallback path.  We work around this by
-# patching write_parquet / write_csv so the fallback writes the file
-# directly via PyArrow, completely bypassing the mocked sink methods.
-
-
-def _pyarrow_write_parquet(self: pl.DataFrame, path, **_kw) -> None:
-    """Write a DataFrame to Parquet via PyArrow, bypassing Polars sinks."""
-    import pyarrow.parquet as pq
-
-    pq.write_table(self.to_arrow(), str(path))
-
-
-def _manual_write_csv(self: pl.DataFrame, path, **_kw) -> None:
-    """Write a DataFrame to CSV via stdlib, bypassing Polars sinks."""
-    import csv
-
-    cols = self.columns
-    with open(str(path), "w", encoding="utf-8", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow(cols)
-        for row in self.iter_rows():
-            writer.writerow(row)
-
 
 # ---------------------------------------------------------------------------
 # Happy-path tests
@@ -110,17 +79,66 @@ def test_streaming_collect_records_collect_metric_on_active_context_stage() -> N
     assert metric.to_summary().to_dict()["n_collects"] == 1
 
 
-def test_streaming_collect_raises_typed_error_without_broad_fallback() -> None:
-    """Bounded profiles must not silently broaden when streaming collect fails."""
+def test_verified_streaming_compatibility_table_is_intentionally_empty() -> None:
+    """No Polars 1.39.3 signature is classified without reproducible evidence."""
+    assert pl.__version__ == "1.39.3"
+    assert polars_utils._POLARS_STREAMING_COMPATIBILITY_SIGNATURES == ()
+
+
+def test_streaming_classifier_requires_exact_version_type_and_full_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    message = "verified exact incompatibility"
+    row = (pl.__version__, pl.exceptions.ComputeError, r"verified exact incompatibility")
+    monkeypatch.setattr(
+        polars_utils,
+        "_POLARS_STREAMING_COMPATIBILITY_SIGNATURES",
+        (row,),
+    )
+
+    assert polars_utils._is_streaming_compatibility_error(pl.exceptions.ComputeError(message))
+    assert not polars_utils._is_streaming_compatibility_error(
+        pl.exceptions.ComputeError(f"prefix {message}")
+    )
+    assert not polars_utils._is_streaming_compatibility_error(
+        pl.exceptions.ComputeError(f"{message} suffix")
+    )
+    assert not polars_utils._is_streaming_compatibility_error(pl.exceptions.SchemaError(message))
+
+    monkeypatch.setattr(pl, "__version__", "1.39.4")
+    assert not polars_utils._is_streaming_compatibility_error(pl.exceptions.ComputeError(message))
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "downstream node failed",
+        "upstream source failed",
+        "stream_id was invalid",
+        "streaming collect failed",
+    ],
+)
+def test_streaming_collect_propagates_unverified_message_unchanged(message: str) -> None:
+    """Tempting tokens do not classify an unverified Polars error."""
+    original = pl.exceptions.ComputeError(message)
+    calls = 0
 
     class Lazy:
         def collect(self, *args, **kwargs) -> pl.DataFrame:
-            if kwargs == {"engine": "streaming"}:
-                raise pl.exceptions.ComputeError("streaming collect failed")
-            raise AssertionError("broad collect fallback should not run")
+            nonlocal calls
+            calls += 1
+            del args, kwargs
+            raise original
 
-    with pytest.raises(BoundedMemoryUnsupportedError, match="Bounded streaming collect failed"):
-        streaming_collect(Lazy(), profile=ExecutionProfile.LAZY_SINK)  # type: ignore[arg-type]
+    with pytest.raises(pl.exceptions.ComputeError) as exc_info:
+        streaming_collect(
+            Lazy(),  # type: ignore[arg-type]
+            profile=ExecutionProfile.PREVIEW_EAGER,
+            allow_broad=True,
+        )
+
+    assert exc_info.value is original
+    assert calls == 1
 
 
 def test_streaming_collect_preserves_non_streaming_data_errors() -> None:
@@ -282,22 +300,21 @@ def test_bounded_collect_batches_records_only_real_batch_stages() -> None:
     assert summary.n_checkpoints == 3
 
 
-def test_bounded_collect_batches_maps_streaming_iteration_failure() -> None:
+def test_bounded_collect_batches_preserves_unverified_iteration_failure() -> None:
+    original = pl.exceptions.ComputeError("streaming batch failed")
+
     class FailingIterator:
         def __iter__(self):
             return self
 
         def __next__(self) -> pl.DataFrame:
-            raise pl.exceptions.ComputeError("streaming batch failed")
+            raise original
 
     class Lazy:
         def collect_batches(self, **_kwargs):
             return FailingIterator()
 
-    with pytest.raises(
-        BoundedMemoryUnsupportedError,
-        match="Bounded streaming batch collection failed",
-    ):
+    with pytest.raises(pl.exceptions.ComputeError) as exc_info:
         list(
             bounded_collect_batches(
                 Lazy(),  # type: ignore[arg-type]
@@ -306,33 +323,39 @@ def test_bounded_collect_batches_maps_streaming_iteration_failure() -> None:
             )
         )
 
+    assert exc_info.value is original
 
-def test_streaming_collect_explicit_broad_fallback() -> None:
-    """Preview-style callers can opt into broad collect fallback deliberately."""
+
+def test_streaming_collect_does_not_broaden_for_unverified_error() -> None:
+    """Broad permission is inert unless the exact error tuple is verified."""
     calls: list[dict[str, object]] = []
+    original = pl.exceptions.ComputeError("streaming collect failed")
 
     class Lazy:
         def collect(self, *args, **kwargs) -> pl.DataFrame:
             calls.append(dict(kwargs))
             if kwargs == {"engine": "streaming"}:
-                raise pl.exceptions.ComputeError("streaming collect failed")
+                raise original
             return pl.DataFrame({"x": [2]})
 
-    result = streaming_collect(
-        Lazy(),  # type: ignore[arg-type]
-        profile=ExecutionProfile.PREVIEW_EAGER,
-        allow_broad=True,
-    )
+    with pytest.raises(pl.exceptions.ComputeError) as exc_info:
+        streaming_collect(
+            Lazy(),  # type: ignore[arg-type]
+            profile=ExecutionProfile.PREVIEW_EAGER,
+            allow_broad=True,
+        )
 
-    assert result["x"].to_list() == [2]
-    assert calls == [{"engine": "streaming"}, {}]
+    assert exc_info.value is original
+    assert calls == [{"engine": "streaming"}]
 
 
-def test_streaming_collect_uses_active_context_profile_for_typed_errors() -> None:
+def test_streaming_collect_with_active_context_preserves_unverified_error() -> None:
+    original = pl.exceptions.ComputeError("streaming collect failed")
+
     class Lazy:
         def collect(self, *args, **kwargs) -> pl.DataFrame:
             del args, kwargs
-            raise pl.exceptions.ComputeError("streaming collect failed")
+            raise original
 
     context = ExecutionContext(
         operation="deploy",
@@ -342,14 +365,14 @@ def test_streaming_collect_uses_active_context_profile_for_typed_errors() -> Non
 
     with (
         context.stage("collect"),
-        pytest.raises(BoundedMemoryUnsupportedError) as exc_info,
+        pytest.raises(pl.exceptions.ComputeError) as exc_info,
     ):
         streaming_collect(
             Lazy(),  # type: ignore[arg-type]
             profile=ExecutionProfile.PREVIEW_EAGER,
         )
 
-    assert exc_info.value.context["profile"] == ExecutionProfile.DEPLOY_BATCH.value
+    assert exc_info.value is original
 
 
 def test_bounded_sink_writes_parquet(tmp_path: Path):
@@ -398,17 +421,19 @@ def test_bounded_sink_raises_typed_error_without_collect_fallback(
     lf = pl.LazyFrame({"a": [1, 2, 3]})
     out = tmp_path / "test.parquet"
 
+    original = error_cls("streaming sink failed")
     with (
         patch.object(
             pl.LazyFrame,
             "sink_parquet",
-            side_effect=error_cls("streaming sink failed"),
+            side_effect=original,
         ),
         patch.object(pl.LazyFrame, "collect", autospec=True) as collect_mock,
     ):
-        with pytest.raises(BoundedMemoryUnsupportedError, match="Bounded streaming sink failed"):
+        with pytest.raises(error_cls) as exc_info:
             bounded_sink(lf, out)
 
+    assert exc_info.value is original
     collect_mock.assert_not_called()
     assert not out.exists()
     assert not out.with_suffix(".parquet.tmp").exists()
@@ -442,108 +467,27 @@ def test_bounded_sink_preserves_non_streaming_compute_errors(tmp_path: Path) -> 
             bounded_sink(lf, out)
 
 
-def test_bounded_sink_maps_streaming_compute_error_without_collect_fallback(
+def test_bounded_sink_preserves_unverified_streaming_compute_error(
     tmp_path: Path,
 ) -> None:
     """Streaming ComputeErrors are bounded sink failures, not broad collects."""
     lf = pl.LazyFrame({"a": [1]})
     out = tmp_path / "test.parquet"
 
+    original = pl.exceptions.ComputeError("streaming sink failed")
     with (
         patch.object(
             pl.LazyFrame,
             "sink_parquet",
-            side_effect=pl.exceptions.ComputeError("streaming sink failed"),
+            side_effect=original,
         ),
         patch.object(pl.LazyFrame, "collect", autospec=True) as collect_mock,
     ):
-        with pytest.raises(BoundedMemoryUnsupportedError, match="Bounded streaming sink failed"):
+        with pytest.raises(pl.exceptions.ComputeError) as exc_info:
             bounded_sink(lf, out)
 
+    assert exc_info.value is original
     collect_mock.assert_not_called()
-
-
-def test_best_effort_sink_requires_explicit_broadening(tmp_path: Path) -> None:
-    """Fallback-capable sink callers must opt into the broad collect path."""
-    lf = pl.LazyFrame({"a": [1]})
-
-    with pytest.raises(ValueError, match="allow_broad=True"):
-        best_effort_sink(lf, tmp_path / "out.parquet")
-
-
-@pytest.mark.parametrize("error_cls", _POLARS_FALLBACK_ERRORS)
-def test_best_effort_sink_parquet_fallback_on_error(tmp_path: Path, error_cls: type):
-    """Polars error in sink_parquet triggers collect+write_parquet fallback."""
-    lf = pl.LazyFrame({"a": [1, 2, 3]})
-    out = tmp_path / "test.parquet"
-
-    with (
-        patch.object(pl.LazyFrame, "sink_parquet", side_effect=error_cls("sink failed")),
-        patch.object(
-            pl.DataFrame,
-            "write_parquet",
-            autospec=True,
-            side_effect=_pyarrow_write_parquet,
-        ),
-    ):
-        best_effort_sink(lf, out, allow_broad=True)
-
-    result = pl.read_parquet(out)
-    assert result["a"].to_list() == [1, 2, 3]
-
-
-def test_best_effort_sink_fallback_records_collect_on_active_context(tmp_path: Path) -> None:
-    lf = pl.LazyFrame({"a": [1, 2, 3]})
-    out = tmp_path / "test.parquet"
-    context = ExecutionContext(
-        operation="preview",
-        profile=ExecutionProfile.PREVIEW_EAGER,
-        memory_sampler=lambda: 1_000,
-    )
-
-    with (
-        context.stage("fallback_sink"),
-        patch.object(
-            pl.LazyFrame,
-            "sink_parquet",
-            side_effect=pl.exceptions.ComputeError("streaming sink failed"),
-        ),
-        patch.object(
-            pl.DataFrame,
-            "write_parquet",
-            autospec=True,
-            side_effect=_pyarrow_write_parquet,
-        ),
-    ):
-        best_effort_sink(lf, out, allow_broad=True)
-
-    assert pl.read_parquet(out)["a"].to_list() == [1, 2, 3]
-    assert context.metrics.snapshot()[0].n_collects == 1
-
-
-@pytest.mark.parametrize("error_cls", _POLARS_FALLBACK_ERRORS)
-def test_best_effort_sink_csv_fallback_on_error(tmp_path: Path, error_cls: type):
-    """Polars error in sink_csv triggers collect+write_csv fallback."""
-    lf = pl.LazyFrame({"v": [10, 20]})
-    out = tmp_path / "test.csv"
-
-    with (
-        patch.object(
-            pl.LazyFrame,
-            "sink_csv",
-            side_effect=error_cls("csv sink failed"),
-        ),
-        patch.object(
-            pl.DataFrame,
-            "write_csv",
-            autospec=True,
-            side_effect=_manual_write_csv,
-        ),
-    ):
-        best_effort_sink(lf, out, fmt="csv", allow_broad=True)
-
-    result = pl.read_csv(out)
-    assert result["v"].to_list() == [10, 20]
 
 
 # ---------------------------------------------------------------------------
@@ -563,16 +507,6 @@ def test_bounded_sink_real_error_propagates(tmp_path: Path):
     ):
         with pytest.raises(PermissionError, match="permission denied"):
             bounded_sink(lf, out)
-
-
-def test_safe_sink_keeps_compatibility_alias_for_best_effort(tmp_path: Path) -> None:
-    """Existing extension code can still call safe_sink as the explicit fallback path."""
-    lf = pl.LazyFrame({"a": [1, 2]})
-    out = tmp_path / "test.parquet"
-
-    safe_sink(lf, out)
-
-    assert pl.read_parquet(out)["a"].to_list() == [1, 2]
 
 
 # ---------------------------------------------------------------------------
@@ -803,18 +737,18 @@ class TestReadParquetMetadata:
 
 
 # ---------------------------------------------------------------------------
-# safe_sink edge cases
+# bounded_sink edge cases
 # ---------------------------------------------------------------------------
 
 
-class TestSafeSinkEdgeCases:
+class TestBoundedSinkEdgeCases:
     def test_fast_checkpoint_uses_lz4(self, tmp_path: Path):
         lf = pl.LazyFrame({"x": list(range(1000))})
         lz4_path = tmp_path / "lz4.parquet"
         zstd_path = tmp_path / "zstd.parquet"
 
-        safe_sink(lf, lz4_path, fast_checkpoint=True)
-        safe_sink(lf, zstd_path, fast_checkpoint=False)
+        bounded_sink(lf, lz4_path, fast_checkpoint=True)
+        bounded_sink(lf, zstd_path, fast_checkpoint=False)
 
         assert lz4_path.exists()
         assert zstd_path.exists()
@@ -825,7 +759,7 @@ class TestSafeSinkEdgeCases:
     def test_fast_checkpoint_false_uses_zstd(self, tmp_path: Path):
         lf = pl.LazyFrame({"x": [1, 2, 3]})
         out = tmp_path / "zstd.parquet"
-        safe_sink(lf, out, fast_checkpoint=False)
+        bounded_sink(lf, out, fast_checkpoint=False)
 
         import pyarrow.parquet as pq
 
@@ -836,7 +770,7 @@ class TestSafeSinkEdgeCases:
     def test_fast_checkpoint_true_uses_lz4_compression(self, tmp_path: Path):
         lf = pl.LazyFrame({"x": [1, 2, 3]})
         out = tmp_path / "lz4.parquet"
-        safe_sink(lf, out, fast_checkpoint=True)
+        bounded_sink(lf, out, fast_checkpoint=True)
 
         import pyarrow.parquet as pq
 
@@ -847,7 +781,7 @@ class TestSafeSinkEdgeCases:
     def test_csv_write_and_read_back(self, tmp_path: Path):
         lf = pl.LazyFrame({"name": ["alice", "bob"], "age": [30, 25]})
         out = tmp_path / "test.csv"
-        safe_sink(lf, out, fmt="csv")
+        bounded_sink(lf, out, fmt="csv")
 
         result = pl.read_csv(out)
         assert result.shape == (2, 2)
@@ -863,7 +797,7 @@ class TestSafeSinkEdgeCases:
             }
         )
         out = tmp_path / "empty.parquet"
-        safe_sink(lf, out)
+        bounded_sink(lf, out)
 
         result = pl.read_parquet(out)
         assert result.shape == (0, 3)
@@ -873,7 +807,7 @@ class TestSafeSinkEdgeCases:
         nested = tmp_path / "a" / "b" / "c" / "out.parquet"
         nested.parent.mkdir(parents=True, exist_ok=True)
         lf = pl.LazyFrame({"x": [1]})
-        safe_sink(lf, nested)
+        bounded_sink(lf, nested)
 
         assert nested.exists()
         assert pl.read_parquet(nested)["x"].to_list() == [1]
@@ -888,7 +822,7 @@ class TestSafeSinkEdgeCases:
             side_effect=RuntimeError("unexpected"),
         ):
             with pytest.raises(RuntimeError, match="unexpected"):
-                safe_sink(lf, out)
+                bounded_sink(lf, out)
 
     def test_oserror_propagates(self, tmp_path: Path):
         lf = pl.LazyFrame({"a": [1]})
@@ -900,12 +834,12 @@ class TestSafeSinkEdgeCases:
             side_effect=OSError("disk full"),
         ):
             with pytest.raises(OSError, match="disk full"):
-                safe_sink(lf, out)
+                bounded_sink(lf, out)
 
     def test_path_as_string(self, tmp_path: Path):
         lf = pl.LazyFrame({"x": [1, 2]})
         out = str(tmp_path / "string_path.parquet")
-        safe_sink(lf, out)
+        bounded_sink(lf, out)
 
         result = pl.read_parquet(out)
         assert result["x"].to_list() == [1, 2]
@@ -913,13 +847,13 @@ class TestSafeSinkEdgeCases:
     def test_path_as_path_object(self, tmp_path: Path):
         lf = pl.LazyFrame({"x": [3, 4]})
         out = tmp_path / "path_obj.parquet"
-        safe_sink(lf, out)
+        bounded_sink(lf, out)
 
         result = pl.read_parquet(out)
         assert result["x"].to_list() == [3, 4]
 
     def test_nonexistent_parent_skips_atomic_write(self, tmp_path: Path):
-        """When parent dir does not exist, safe_sink uses direct _do_sink
+        """A missing parent directory is surfaced by the bounded sink.
         (no atomic_write wrapper) — this exercises the else branch at line 166."""
         lf = pl.LazyFrame({"x": [1, 2]})
         # Create a path whose parent does NOT exist
@@ -929,7 +863,7 @@ class TestSafeSinkEdgeCases:
         # sink_parquet will fail because dir doesn't exist — that's expected.
         # The important thing is it goes through _do_sink(path) not atomic_write.
         with pytest.raises((FileNotFoundError, OSError)):
-            safe_sink(lf, out)
+            bounded_sink(lf, out)
 
 
 # ---------------------------------------------------------------------------

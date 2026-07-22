@@ -1,4 +1,5 @@
 import asyncio
+import ctypes
 import json
 import threading
 import time
@@ -51,6 +52,146 @@ def test_windows_current_rss_bytes_returns_none_when_windll_is_unavailable(
     monkeypatch.delattr(context_mod.ctypes, "WinDLL", raising=False)
 
     assert context_mod._windows_current_rss_bytes() is None
+
+
+class _FakeWindowsFunction:
+    def __init__(self, result: int | bool = True, callback=None) -> None:
+        self.result = result
+        self.callback = callback
+        self.calls = 0
+
+    def __call__(self, *args):
+        self.calls += 1
+        if self.callback is not None:
+            return self.callback(*args)
+        return self.result
+
+
+class _FakeWindowsApiFactory:
+    def __init__(
+        self,
+        counters_type: type[ctypes.Structure],
+        *,
+        working_set_size: int = 1234,
+        memory_info_result: bool = True,
+    ) -> None:
+        self.working_set_size = working_set_size
+        self.calls: list[tuple[str, bool]] = []
+        self.get_current_process = _FakeWindowsFunction(99)
+
+        def populate_counters(handle, counters, size):
+            assert handle == 99
+            assert size > 0
+            ctypes.cast(
+                counters, ctypes.POINTER(counters_type)
+            ).contents.WorkingSetSize = self.working_set_size
+            return memory_info_result
+
+        self.get_process_memory_info = _FakeWindowsFunction(
+            memory_info_result, callback=populate_counters
+        )
+
+    def __call__(self, name: str, *, use_last_error: bool):
+        self.calls.append((name, use_last_error))
+        if name == "kernel32.dll":
+            return type("Kernel32", (), {"GetCurrentProcess": self.get_current_process})()
+        if name == "psapi.dll":
+            return type("Psapi", (), {"GetProcessMemoryInfo": self.get_process_memory_info})()
+        raise AssertionError(f"unexpected DLL: {name}")
+
+
+def test_windows_current_rss_bytes_memoises_bindings_per_factory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from haute import _execution_context as context_mod
+
+    factory = _FakeWindowsApiFactory(
+        context_mod._WindowsProcessMemoryCountersEx, working_set_size=4321
+    )
+    context_mod._reset_windows_rss_sampler_for_tests()
+    monkeypatch.setattr(context_mod.os, "name", "nt")
+    monkeypatch.setattr(context_mod.ctypes, "WinDLL", factory, raising=False)
+
+    assert context_mod._windows_current_rss_bytes() == 4321
+    assert context_mod._windows_current_rss_bytes() == 4321
+    assert factory.calls == [("kernel32.dll", True), ("psapi.dll", True)]
+    assert factory.get_current_process.calls == 2
+    assert factory.get_process_memory_info.calls == 2
+
+
+def test_windows_current_rss_bytes_preserves_unavailable_and_failed_call_semantics(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from haute import _execution_context as context_mod
+
+    context_mod._reset_windows_rss_sampler_for_tests()
+    monkeypatch.setattr(context_mod.os, "name", "nt")
+    monkeypatch.delattr(context_mod.ctypes, "WinDLL", raising=False)
+    assert context_mod._windows_current_rss_bytes() is None
+
+    factory = _FakeWindowsApiFactory(
+        context_mod._WindowsProcessMemoryCountersEx, memory_info_result=False
+    )
+    monkeypatch.setattr(context_mod.ctypes, "WinDLL", factory, raising=False)
+    assert context_mod._windows_current_rss_bytes() is None
+
+
+def test_windows_current_rss_bytes_separates_factory_identities_and_reset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from haute import _execution_context as context_mod
+
+    first = _FakeWindowsApiFactory(
+        context_mod._WindowsProcessMemoryCountersEx, working_set_size=100
+    )
+    second = _FakeWindowsApiFactory(
+        context_mod._WindowsProcessMemoryCountersEx, working_set_size=200
+    )
+    context_mod._reset_windows_rss_sampler_for_tests()
+    monkeypatch.setattr(context_mod.os, "name", "nt")
+    monkeypatch.setattr(context_mod.ctypes, "WinDLL", first, raising=False)
+    assert context_mod._windows_current_rss_bytes() == 100
+    monkeypatch.setattr(context_mod.ctypes, "WinDLL", second, raising=False)
+    assert context_mod._windows_current_rss_bytes() == 200
+    assert first.calls == [("kernel32.dll", True), ("psapi.dll", True)]
+    assert second.calls == [("kernel32.dll", True), ("psapi.dll", True)]
+
+    context_mod._reset_windows_rss_sampler_for_tests()
+    assert context_mod._windows_current_rss_bytes() == 200
+    assert second.calls == [
+        ("kernel32.dll", True),
+        ("psapi.dll", True),
+        ("kernel32.dll", True),
+        ("psapi.dll", True),
+    ]
+
+
+def test_windows_current_rss_bytes_initialises_same_factory_once_concurrently(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from haute import _execution_context as context_mod
+
+    factory = _FakeWindowsApiFactory(
+        context_mod._WindowsProcessMemoryCountersEx, working_set_size=2468
+    )
+    context_mod._reset_windows_rss_sampler_for_tests()
+    monkeypatch.setattr(context_mod.os, "name", "nt")
+    monkeypatch.setattr(context_mod.ctypes, "WinDLL", factory, raising=False)
+    barrier = threading.Barrier(8)
+    results: list[int | None] = []
+
+    def sample() -> None:
+        barrier.wait()
+        results.append(context_mod._windows_current_rss_bytes())
+
+    threads = [threading.Thread(target=sample) for _ in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert results == [2468] * 8
+    assert factory.calls == [("kernel32.dll", True), ("psapi.dll", True)]
 
 
 class _ImmediateThread:
@@ -136,6 +277,22 @@ def test_default_memory_budgets_adapt_to_available_ram(
     assert live_budget.memory_limit_bytes == gib
     assert live_budget.config_key == "default:deploy_live"
     assert live_budget.budget_policy == "fixed_default"
+
+
+@pytest.mark.parametrize(
+    "profile",
+    [ExecutionProfile.PREVIEW_EAGER, ExecutionProfile.LAZY_SINK],
+)
+def test_adaptive_admission_fails_when_physical_ram_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+    profile: ExecutionProfile,
+) -> None:
+    """Neither strict nor non-strict local profiles invent host capacity."""
+    _clear_execution_memory_env(monkeypatch)
+    monkeypatch.setattr("haute._execution_admission.available_ram_bytes", lambda: None)
+
+    with pytest.raises(RuntimeError, match="physical RAM is unavailable"):
+        execution_budget_for_profile(profile)
 
 
 def test_adaptive_default_memory_budgets_never_exceed_available_ram(
@@ -295,6 +452,63 @@ def test_heavy_execution_admission_counts_in_flight_budget(
         first.release_admission()
 
 
+def test_heavy_admission_releases_reservation_when_context_construction_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from haute import _execution_admission as admission_mod
+
+    _clear_execution_memory_env(monkeypatch)
+    gib = 1024 * 1024 * 1024
+    monkeypatch.setattr(admission_mod, "available_ram_bytes", lambda: 10 * gib)
+    monkeypatch.setattr("haute._ram_estimate.available_ram_bytes", lambda: 10 * gib)
+
+    real_context = admission_mod.ExecutionContext
+
+    def fail_context(**_kwargs):
+        raise RuntimeError("context construction failed")
+
+    monkeypatch.setattr(admission_mod, "ExecutionContext", fail_context)
+    with pytest.raises(RuntimeError, match="context construction failed"):
+        admission_mod.create_admitted_execution_context(
+            operation="optimiser_setup_failed",
+            profile=ExecutionProfile.OPTIMISER_SETUP,
+            memory_sampler=lambda: 100,
+        )
+
+    assert admission_mod._IN_FLIGHT_RESERVATIONS == {}
+    monkeypatch.setattr(admission_mod, "ExecutionContext", real_context)
+    context = admission_mod.create_admitted_execution_context(
+        operation="optimiser_setup_after_failure",
+        profile=ExecutionProfile.OPTIMISER_SETUP,
+        memory_sampler=lambda: 100,
+    )
+    context.release_admission()
+
+
+def test_heavy_admission_releases_reservation_when_finalizer_registration_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from haute import _execution_admission as admission_mod
+
+    _clear_execution_memory_env(monkeypatch)
+    gib = 1024 * 1024 * 1024
+    monkeypatch.setattr(admission_mod, "available_ram_bytes", lambda: 10 * gib)
+    monkeypatch.setattr("haute._ram_estimate.available_ram_bytes", lambda: 10 * gib)
+
+    def fail_finalize(*_args, **_kwargs):
+        raise RuntimeError("finalizer registration failed")
+
+    monkeypatch.setattr(admission_mod.weakref, "finalize", fail_finalize)
+    with pytest.raises(RuntimeError, match="finalizer registration failed"):
+        admission_mod.create_admitted_execution_context(
+            operation="optimiser_setup_failed",
+            profile=ExecutionProfile.OPTIMISER_SETUP,
+            memory_sampler=lambda: 100,
+        )
+
+    assert admission_mod._IN_FLIGHT_RESERVATIONS == {}
+
+
 def test_preview_execution_admission_does_not_reserve_heavy_budget(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -415,6 +629,54 @@ def test_preview_cache_unpins_entry_when_preview_projection_fails(tmp_path) -> N
         )
 
     assert _preview_cache.stats()["pinned_entries"] == 0
+
+
+def test_preview_cache_does_not_pin_when_store_rejects_entry(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import structlog.testing
+
+    from haute import executor as executor_mod
+
+    class RejectingPreviewCache:
+        fingerprint = None
+
+        def __init__(self) -> None:
+            self.store_calls = 0
+            self.pin_calls = 0
+            self.unpin_calls = 0
+
+        def try_get(self, _fingerprint):
+            return None
+
+        def store(self, _fingerprint, **_slots):
+            self.store_calls += 1
+            return False
+
+        def pin(self, _fingerprint):
+            self.pin_calls += 1
+
+        def unpin(self, _fingerprint):
+            self.unpin_calls += 1
+
+    rejecting_cache = RejectingPreviewCache()
+    monkeypatch.setattr(executor_mod, "_preview_cache", rejecting_cache)
+    data_path = tmp_path / "input.parquet"
+    pl.DataFrame({"a": [1, 2]}).write_parquet(data_path)
+    graph = make_graph({"nodes": [make_source_node("source", str(data_path))], "edges": []})
+
+    with structlog.testing.capture_logs() as logs:
+        result = executor_mod.execute_graph(
+            graph,
+            target_node_id="source",
+            target_preview_only=True,
+        )
+
+    assert result["source"].status == "ok"
+    assert rejecting_cache.store_calls == 1
+    assert rejecting_cache.pin_calls == 0
+    assert rejecting_cache.unpin_calls == 0
+    assert any(record.get("event") == "preview_cache_store_skipped" for record in logs)
 
 
 def test_preview_execution_metrics_identify_cache_miss_and_hit(tmp_path) -> None:
@@ -773,6 +1035,44 @@ def test_execution_metrics_payload_includes_projection_diagnostics() -> None:
             ],
         },
     }
+
+
+def test_execution_metrics_payload_bounds_width_evidence_and_keeps_unavailable_counters_null() -> (
+    None
+):
+    context = ExecutionContext(
+        operation="training",
+        profile=ExecutionProfile.TRAINING_PREP,
+        memory_limit_bytes=1_000,
+        memory_baseline_bytes=0,
+        memory_sampler=lambda: 256,
+    )
+    for index in reversed(range(130)):
+        context.record_column_widths(
+            node_id=f"node-{index:03d}",
+            input_width=index,
+            output_width=index + 1,
+            requested_width=2,
+            physically_scanned_width=3,
+        )
+    context.record_bytes_written(4096)
+    context.record_chunk()
+    context.checkpoint(label="after_chunk")
+
+    payload = context.metrics_payload(status="completed")
+
+    assert payload["bytes_read"] is None
+    assert payload["bytes_written"] == 4096
+    assert payload["estimated_bytes"] is None
+    assert payload["checkpoint_count"] == 1
+    assert payload["chunk_count"] == 1
+    assert payload["observed_peak_rss_bytes"] == 256
+    assert payload["column_widths"]["state"] == "truncated"
+    assert payload["column_widths"]["total_count"] == 130
+    assert len(payload["column_widths"]["items"]) == 128
+    assert payload["column_widths"]["items"][0]["node_id"] == "node-000"
+    assert payload["column_widths"]["items"][-1]["node_id"] == "node-127"
+    assert ExecutionMetricsPayload.model_validate(payload).model_dump(mode="json") == payload
     ExecutionMetricsPayload.model_validate(payload)
 
 

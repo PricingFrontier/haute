@@ -212,3 +212,28 @@ a Haute project (no `haute.toml`, or no git repository above it) raises. The sol
 is unrecognised config keys, which are logged at WARNING and dropped or ignored rather than
 failing the surrounding operation — called out above as the deliberate exception to this
 component's fail-loud default.
+
+## Polars backend contracts (0.6.0)
+
+This component participates in the remediation plan at
+[`F_0.6.0_polars-backend-remediation.plan.md`](../../trip/plans/F_0.6.0_polars-backend-remediation.plan.md).
+
+- A configured live-switch mapping is exhaustive for the active scenario set. When a mapping
+  exists and the active scenario is absent, execution raises
+  `LiveSwitchScenarioError(ExecutionError)` with stable code
+  `live_switch_scenario_missing` and stable `switch`, `scenario`, and
+  `available_mappings` fields. Synchronous API execution maps it to HTTP 422; background
+  execution records `contract_error` with the same code and fields. Default-source fallback
+  remains valid only when no mapping is configured.
+- A node derives positional DataFrame-input arity once at registration/construction and reuses
+  that immutable result. Positional-only and positional-or-keyword parameters are supported;
+  defaulted positional parameters are optional; keyword-only parameters are configuration, not
+  edges; and `*args` is the sole supported variadic-input form. Unsupported signatures and
+  invalid wiring fail loudly with node identity and expected/received arity.
+
+Focused tests cover configured versus unconfigured live-switch fallback, missing-scenario
+diagnostics and transport mappings, fixed/optional/variadic arities, cached signature
+inspection, and malformed wiring. The 0.6 pre-1.0 release/migration notes must identify the
+formerly silent configured-mapping fallback and the new stable error code and fields.
+Non-goals: implicit-edge changes, static source-graph inference changes, and changes to
+successful mapped live-switch selection or unconfigured fallback.

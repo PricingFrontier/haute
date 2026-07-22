@@ -207,11 +207,10 @@ class TestPositionalFastPath:
 class TestValueMatchExprDtypeRobust:
     def test_numeric_value_against_string_column_does_not_crash(self):
         df = pl.DataFrame({"x": ["a", "b", "5"]})
-        # Numeric value vs Utf8 column: previously raised ComputeError.
+        # Numeric value vs Utf8 is a supported non-match, never coercion.
         expr = _build_value_match_expr("x", 5, df.schema["x"])
         matches = df.select(expr.fill_null(False).alias("m"))["m"].to_list()
-        # int-like value still matches the "5" string key via stringwise compare.
-        assert matches == [False, False, True]
+        assert matches == [False, False, False]
 
     def test_nan_value_against_string_column_does_not_crash(self):
         df = pl.DataFrame({"x": ["a", "b"]})

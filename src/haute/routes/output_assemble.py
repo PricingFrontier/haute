@@ -32,6 +32,10 @@ from haute._output_assembler import OutputMappingSchemaError, validate_v2_output
 from haute.errors import ConfigError, ContractMismatchError
 from haute.executor import execute_graph
 from haute.graph_utils import NodeType, flatten_graph
+from haute.routes._contract_errors import (
+    PUBLIC_CONTRACT_ERROR_TYPES,
+    contract_error_http_exception,
+)
 from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
 from haute.routes._timeouts import (
     BlockingWorkTimeoutError,
@@ -79,6 +83,8 @@ async def output_assemble_dry_run(
     #    data is touched (A4). The loudest, cheapest failure.
     try:
         validate_v2_output_mapping(body.output_mapping)
+    except PUBLIC_CONTRACT_ERROR_TYPES as exc:
+        raise contract_error_http_exception(exc) from None
     except OutputMappingSchemaError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -127,6 +133,8 @@ async def output_assemble_dry_run(
         )
     except BlockingWorkTimeoutError as exc:
         raise HTTPException(status_code=504, detail="Output dry-run timed out") from exc
+    except PUBLIC_CONTRACT_ERROR_TYPES as exc:
+        raise contract_error_http_exception(exc) from None
     except OutputMappingSchemaError as exc:
         # A port the mapping names is not wired into the OUTPUT node, etc.
         raise HTTPException(status_code=422, detail=str(exc)) from exc

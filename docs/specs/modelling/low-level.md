@@ -100,6 +100,14 @@
   the shared job store by a `job_type` field (`"training"` vs. `"dispersion_estimate"`)
   so `dispersion_job()` 404s if asked for a job of the other type.
 
+- **`TrainingFeatureSelectionDiagnosticPayload`** (`schemas.py`) — the version-1
+  explanation of the pre-training feature choice. `mode` is `explicit`, `all_except`,
+  or `glm_terms`; `feature_count` must equal the selected-feature collection's total;
+  selected features, retained metadata, and excluded columns are deterministically
+  ordered and capped at 128 entries with `available|truncated` state. `TrainResponse`
+  and `TrainStatusResponse` carry the payload additively as `feature_selection`, or
+  `null` before a selection is available.
+
 ## Control flow
 
 ### Live training (HTTP)
@@ -119,8 +127,11 @@
    compute required-column demand per node (`_training_required_columns_by_node`);
    create an admitted `ExecutionContext` (RAM ceiling + cancellation token) via
    `create_admitted_execution_context`; `_execute_and_sink` runs the upstream pipeline
-   lazily, validates the required columns actually arrived, projects away excluded
-   columns, and streams the result to a temp parquet with `bounded_sink`;
+   lazily, derives and records the version-1 feature-selection diagnostic from the
+   materialised schema, rejects HTTP 422/`contract_error` if target/metadata/exclusion
+   rules leave no feature columns, validates the required columns actually arrived,
+   projects away excluded columns, and streams the result to a temp parquet with
+   `bounded_sink`;
    `_launch_background` builds the `TrainingJob` via `build_training_job_kwargs`
    (`params` overridden by the GPU-adjusted `train_params`) and starts a daemon thread
    running `TrainingJob.run()`.
@@ -521,3 +532,11 @@ isolation — split logic (random/temporal/group strategies, the mask functions)
 exercised indirectly through `test_modelling.py`,
 `test_training_null_target_fused_split.py`, `test_training_split_streaming.py`, and
 `test_codegen_split.py` rather than one focused suite.
+
+## Polars backend contracts (0.6.0)
+
+`TrainService` and estimate paths consume the execution facade's typed result rather
+than selecting collection strategy themselves. Their response and job diagnostics retain
+the final feature inclusion/exclusion and provenance supplied by that result; execution
+engine remains the sole owner of planning mechanics. See the
+[remediation plan](../../trip/plans/F_0.6.0_polars-backend-remediation.plan.md).

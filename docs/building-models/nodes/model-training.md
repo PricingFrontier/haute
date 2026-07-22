@@ -29,6 +29,25 @@ This node accepts a single input and produces no downstream data  - it's a termi
 !!! tip "`name` vs `model_name`"
     `name` is a display label for the node on the canvas. `model_name` is the name under which the trained model is registered in MLflow  - this is what you reference in a [Model Score](model-score.md) node downstream.
 
+## Feature selection and validation
+
+Feature selection is explicit. When you provide an explicit feature list, Haute
+uses exactly those named feature columns. Without one, it uses the
+schema-derived **all-except** set: every available column except the target,
+weight, and columns in `exclude`.
+
+The training metadata needed to identify the run is retained separately from
+model features. Target and weight are excluded because they have training
+roles; `exclude` is for identifiers, dates, leakage-prone fields, and any
+other columns you deliberately do not want the model to learn from. The
+feature-selection diagnostics show the final ordered feature set (or count),
+retained metadata, and every excluded column with its reason.
+
+Haute validates feature selection before collecting training data. A missing,
+invalid, or unsuitable feature therefore fails clearly before a large eager
+collection begins. See [Execution Strategy](../execution-strategy.md) for the
+schema all-except strategy and for reading execution diagnostics.
+
 ## Split configuration
 
 Controls how data is divided for training and validation.

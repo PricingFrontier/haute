@@ -248,6 +248,37 @@ class TestCommittedMirrorOnProductionBuild:
 
 
 class TestDataFileSignatureValidity:
+    def test_stale_build_hashes_raw_data_once_per_operation(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A rebuild reuses its one raw-data signature for the stale check."""
+        import haute._json_shred as shred_mod
+
+        data = tmp_path / "data.json"
+        _write_json(data, [{"id": 1}])
+        cfg = _root_cfg(_col("id", "$[:].id"))
+        cache_dir = tmp_path / "cache"
+        build_per_port_cache(data, cfg, cache_dir)
+
+        original_stat = data.stat()
+        _write_json(data, [{"id": 2}])  # same serialized byte length
+        os.utime(data, ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns))
+
+        raw_hashes = 0
+        real_hash_file = shred_mod._hash_file
+
+        def counting_hash_file(path: Path) -> str:
+            nonlocal raw_hashes
+            if Path(path) == data:
+                raw_hashes += 1
+            return real_hash_file(path)
+
+        monkeypatch.setattr(shred_mod, "_hash_file", counting_hash_file)
+        build_per_port_cache(data, cfg, cache_dir)
+
+        assert raw_hashes == 1
+        assert load_per_port_cache(cache_dir, cfg)["root"].collect()["id"].to_list() == [2]
+
     @pytest.mark.asyncio
     async def test_status_hashes_mtime_only_drift_off_event_loop(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1038,12 +1069,14 @@ class TestAtomicSerializedBuild:
             checked_config: dict[str, Any],
             *,
             data_path: str | Path,
+            data_file_signature: dict[str, Any] | None = None,
         ) -> dict[str, Any] | None:
             nonlocal removed
             matching_meta = real_read_matching_meta(
                 checked_cache_dir,
                 checked_config,
                 data_path=data_path,
+                data_file_signature=data_file_signature,
             )
             if matching_meta is not None and not removed:
                 removed = True

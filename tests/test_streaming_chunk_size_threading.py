@@ -307,11 +307,11 @@ class TestTrainExecuteAndSinkChunkSize:
 
         def fake_bounded_sink(lf, path, **kwargs):
             captured.update(kwargs)
-            pl.DataFrame({"claim_count": [1.0]}).write_parquet(path)
+            pl.DataFrame({"claim_count": [1.0], "driver_age": [40]}).write_parquet(path)
 
         def fake_execute_lazy(*_args, **_kwargs):
             return (
-                {"train": pl.DataFrame({"claim_count": [1.0]}).lazy()},
+                {"train": pl.DataFrame({"claim_count": [1.0], "driver_age": [40]}).lazy()},
                 ["train"],
                 {},
                 {},

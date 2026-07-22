@@ -1,6 +1,6 @@
 import { AlertTriangle } from "lucide-react"
 import type { ExecutionMetrics } from "../api/types"
-import { buildExecutionDiagnostic } from "../utils/executionDiagnostics"
+import { buildExecutionDiagnostic, buildExecutionStrategyDiagnostic } from "../utils/executionDiagnostics"
 
 type ExecutionDiagnosticsSummaryProps = {
   metrics?: ExecutionMetrics | null
@@ -21,6 +21,8 @@ export default function ExecutionDiagnosticsSummary({
     errorCode,
   })
   if (!diagnostic) return null
+  const strategyDiagnostic = buildExecutionStrategyDiagnostic(metrics)
+  const summaryLabel = strategyDiagnostic ? "Execution strategy technical details" : "Technical details"
 
   return (
     <div
@@ -31,7 +33,7 @@ export default function ExecutionDiagnosticsSummary({
       <div className="min-w-0">
         <div className="font-medium" style={{ color: "var(--warning)" }}>{diagnostic.message}</div>
         <details className="mt-0.5">
-          <summary className="cursor-pointer" style={{ color: "var(--text-muted)" }}>Technical details</summary>
+          <summary aria-label={summaryLabel} className="cursor-pointer" style={{ color: "var(--text-muted)" }}>{summaryLabel}</summary>
           <div className="mt-0.5 flex flex-wrap gap-x-2 gap-y-0.5 font-mono leading-5" style={{ color: "var(--text-secondary)" }}>
             {diagnostic.details.map((detail) => (
               <span key={detail}>{detail}</span>

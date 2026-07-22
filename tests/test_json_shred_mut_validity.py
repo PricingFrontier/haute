@@ -18,6 +18,7 @@ import pytest
 from haute._api_input_schema import ApiInputSchemaError
 from haute._json_shred import (
     _data_file_matches,
+    _data_file_signature,
     _hash_file,
     _v2_fingerprint,
 )
@@ -34,6 +35,26 @@ def test_hash_file_matches_sha256_of_content(tmp_path: Path) -> None:
     p = tmp_path / "data.json"
     p.write_bytes(content)
     assert _hash_file(p) == hashlib.sha256(content).hexdigest()
+
+
+def test_data_file_signature_rejects_a_file_changed_while_hashing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Raw-data signatures use the same before/after stat guard as artifacts."""
+    import haute._json_shred as shred_mod
+
+    p = tmp_path / "data.json"
+    p.write_bytes(b"[1]")
+    real_hash_file = shred_mod._hash_file
+
+    def racing_hash_file(path: Path) -> str:
+        path.write_bytes(b"[1, 2]")
+        return real_hash_file(path)
+
+    monkeypatch.setattr(shred_mod, "_hash_file", racing_hash_file)
+
+    with pytest.raises(OSError, match="changed while its signature was computed"):
+        _data_file_signature(p)
 
 
 # ─── _data_file_matches — stat-fast freshness with hash arbitration ──

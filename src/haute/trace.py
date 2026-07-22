@@ -45,7 +45,10 @@ from typing import Any, Protocol, cast, runtime_checkable
 
 import polars as pl
 
+import haute.execution as execution_facade
 from haute._cache import GraphFingerprintMemo
+from haute._execution_admission import create_admitted_execution_context
+from haute._execution_context import ExecutionContext, ExecutionProfile
 from haute._expression_parser import (
     evaluate_expression,
     parse_expression,
@@ -59,7 +62,8 @@ from haute._trace_correlation import (
     _compute_schema_diff,
     _correlate_rows_posthoc,
     _jsonify_row,
-    _trace_values_match,
+    _match_rows_vectorized,
+    _RowMatchStatus,
 )
 from haute._trace_enrichment import (
     detect_row_lineage_type,
@@ -72,7 +76,7 @@ from haute._trace_enrichment import (
 )
 from haute._trace_enrichment import enrich_steps as _enrich_steps
 from haute._trace_waterfall import build_waterfall_from_steps
-from haute.execution import runtime_input_extra_keys
+from haute.errors import TraceCorrelationUnsupportedError
 from haute.executor import (
     ENFORCE_CONTRACTS,
     PREVIEW_CACHE_MAX_BYTES,
@@ -81,14 +85,12 @@ from haute.executor import (
     _estimate_preview_cache_entry_bytes,
     _pipeline_dir,
     _positive_int_from_env,
-    _preview_projection_cache_suffix,
 )
 from haute.graph_utils import (
     NodeType,
     PipelineGraph,
     _execute_eager_core,
     _prepare_graph,
-    graph_fingerprint,
     topo_sort_ids,
 )
 
@@ -259,29 +261,36 @@ _cache = FingerprintCache(
 # ---------------------------------------------------------------------------
 
 
-def _find_target_row_index(df: pl.DataFrame, row_values: dict[str, Any]) -> int | None:
+def _find_target_row_index(
+    df: pl.DataFrame,
+    row_values: dict[str, Any],
+    *,
+    node_id: str = "target",
+) -> int | None:
     """Find the target row that exactly matches the GUI's clicked row values."""
     shared = [col for col in row_values if col in df.columns]
     if not shared:
         return None
 
-    # Duplicate rows on the shared columns are ambiguous: silently
-    # anchoring to the first match would correlate upstream from the
-    # wrong row.  Mirror the W4 policy (_record_ambiguous_row_match)
-    # and fail loud instead.
-    matches = [
-        idx
-        for idx, row in enumerate(df.select(shared).iter_rows(named=True))
-        if all(_trace_values_match(row.get(col), row_values.get(col)) for col in shared)
-    ]
-    if len(matches) > 1:
+    match = _match_rows_vectorized(df, row_values, shared)
+    if match.status is _RowMatchStatus.UNSUPPORTED_DTYPE:
+        raise TraceCorrelationUnsupportedError(
+            "Trace row correlation cannot compare the selected key dtype.",
+            node_id=node_id,
+            key_columns=match.strict_key_columns,
+            dtypes=match.dtypes,
+            reason_code="unsupported_dtype",
+        )
+    if match.status is _RowMatchStatus.AMBIGUOUS:
         raise ValueError(
             "Trace row match is ambiguous: "
-            f"{len(matches)} rows match the clicked values on "
+            f"{match.candidate_count} rows match the clicked values on "
             f"columns {shared}. The preview data may have changed. "
             "Please click the node to refresh, then retry."
         )
-    return matches[0] if matches else None
+    if match.status is _RowMatchStatus.UNIQUE_STRICT:
+        return match.candidate_indices[0]
+    return None
 
 
 def _requested_preview_columns_from_row(
@@ -331,6 +340,7 @@ def execute_trace(
     preamble_ns: dict[str, Any] | None = None,
     preview: PreviewReader | dict[str, Any] | None = None,
     fingerprint_memo: GraphFingerprintMemo | None = None,
+    execution_context: ExecutionContext | None = None,
 ) -> TraceResult:
     """Execute a pipeline graph and return a single-row trace.
 
@@ -384,8 +394,47 @@ def execute_trace(
         target_node_id = topo_sort_ids([n.id for n in nodes], edges)[-1]
     if not any(n.id == target_node_id for n in nodes):
         raise ValueError(f"Target node '{target_node_id}' not found in graph")
+    if execution_context is None:
+        admitted_context = create_admitted_execution_context(
+            operation="execute_trace",
+            profile=ExecutionProfile.PREVIEW_EAGER,
+        )
+        try:
+            return execute_trace(
+                graph,
+                row_index=row_index,
+                target_node_id=target_node_id,
+                column=column,
+                row_limit=row_limit,
+                source=source,
+                row_values=row_values,
+                preamble_ns=preamble_ns,
+                preview=preview,
+                fingerprint_memo=fingerprint_memo,
+                execution_context=admitted_context,
+            )
+        finally:
+            admitted_context.release_admission()
 
-    # ---------- Eager execution with single-entry cache ----------
+    requested_columns = _requested_preview_columns_from_row(row_values, column)
+    execution_facade.plan_execution_strategy(
+        execution_facade.ProjectionRequest(
+            graph=graph,
+            target_node_id=target_node_id,
+            profile=(
+                execution_context.profile
+                if execution_context is not None
+                else ExecutionProfile.PREVIEW_EAGER
+            ),
+            required_columns_by_node=(
+                {target_node_id: requested_columns} if requested_columns is not None else None
+            ),
+            source=source,
+        ),
+        execution_context=execution_context,
+    )
+
+    # ---------- Eager execution with a byte-bounded LRU cache ----------
     # Model-scoring nodes can take ~1s on large datasets (678K rows).
     # The pipeline structure doesn't change between trace clicks — only the
     # row_index and column change.  Cache the materialized DataFrames and
@@ -395,18 +444,20 @@ def execute_trace(
     # files are hashed once per request rather than once per call.
     if fingerprint_memo is None:
         fingerprint_memo = GraphFingerprintMemo()
-    # Runtime-input extras (flat-file dataSource / external-file / model-
-    # artifact signatures + the apiInput JSON-cache state) are part of the
-    # trace key so an out-of-band re-export or cache rebuild invalidates
-    # cached trace frames.  Computed once and shared with the preview-key
-    # reconstruction below so one trace observes one input state and the
-    # keys match executor.py's construction exactly.
-    runtime_extra_keys = runtime_input_extra_keys(graph)
-    fp = graph_fingerprint(
+    # The shared lineage key scopes both graph structure and runtime inputs
+    # to this target's source-selected ancestors. The same full-materialisation
+    # identity is used by preview, which makes reuse explicit rather than a
+    # private reconstruction of executor key text.
+    fp = execution_facade.preview_lineage_cache_key(
         graph,
-        target_node_id,
-        f"{row_limit}:{source}",
-        *runtime_extra_keys,
+        target_node_id=target_node_id,
+        source=source,
+        requested_columns=None,
+        initial_column_limit=None,
+        row_limit=row_limit,
+        port_label=None,
+        enforce_contracts=ENFORCE_CONTRACTS,
+        materialisation_scope="full",
         memo=fingerprint_memo,
     )
 
@@ -433,33 +484,24 @@ def execute_trace(
             prev_fingerprint=(_cache.fingerprint or "")[:8],
         )
 
-        base_preview_key = f"{row_limit}:{source}:contracts={int(ENFORCE_CONTRACTS)}"
-        requested_preview_columns = _requested_preview_columns_from_row(row_values, column)
+        requested_preview_columns = requested_columns
         preview_fps: list[str] = []
         if requested_preview_columns is not None:
             preview_fps.append(
-                graph_fingerprint(
+                execution_facade.preview_lineage_cache_key(
                     graph,
-                    base_preview_key
-                    + _preview_projection_cache_suffix(
-                        graph,
-                        target_node_id,
-                        requested_preview_columns,
-                        target_preview_only=True,
-                        initial_column_limit=None,
-                    ),
-                    *runtime_extra_keys,
+                    target_node_id=target_node_id,
+                    source=source,
+                    requested_columns=requested_preview_columns,
+                    initial_column_limit=None,
+                    row_limit=row_limit,
+                    port_label=None,
+                    enforce_contracts=ENFORCE_CONTRACTS,
+                    materialisation_scope="target_only",
                     memo=fingerprint_memo,
                 )
             )
-        preview_fps.append(
-            graph_fingerprint(
-                graph,
-                base_preview_key,
-                *runtime_extra_keys,
-                memo=fingerprint_memo,
-            )
-        )
+        preview_fps.append(fp)
 
         eager_outputs, order, parents_of, node_map, source_ids = _materialize_eager_outputs(
             graph=graph,
@@ -468,12 +510,12 @@ def execute_trace(
             source=source,
             row_values=row_values,
             preamble_ns=preamble_ns,
-            # Match executor.py's preview cache keys.  Projected preview
-            # requests include the visible row columns in the suffix; the
-            # unsuffixed key remains the fallback for full preview calls.
+            # Try the clicked row's projected target-only preview first, then
+            # the exact shared key for a full-lineage preview.
             preview_fps=preview_fps,
             fp=fp,
             preview=preview,
+            execution_context=execution_context,
         )
 
         # Populate cache — unmodified DataFrames from the single execution
@@ -517,13 +559,16 @@ def execute_trace(
         target_df = eager_outputs[target_node_id]
         row_matches = False
         if row_index < len(target_df):
-            actual_row = target_df.row(row_index, named=True)
-            mismatched = []
-            for col, expected in row_values.items():
-                actual = actual_row.get(col)
-                if not _trace_values_match(actual, expected):
-                    mismatched.append(col)
-            row_matches = not mismatched
+            shared = [column for column in row_values if column in target_df.columns]
+            row_matches = (
+                bool(shared)
+                and _match_rows_vectorized(
+                    target_df.slice(row_index, 1),
+                    row_values,
+                    shared,
+                ).status
+                is _RowMatchStatus.UNIQUE_STRICT
+            )
 
         if not row_matches:
             # The backend preview cache can be evicted between the GUI
@@ -531,7 +576,11 @@ def execute_trace(
             # may still reproduce the clicked row, but joins can reorder
             # rows. Treat the clicked values as the source of truth and
             # relocate the target row before correlating upstream rows.
-            matched_index = _find_target_row_index(target_df, row_values)
+            matched_index = _find_target_row_index(
+                target_df,
+                row_values,
+                node_id=target_node_id,
+            )
             if matched_index is not None:
                 row_index = matched_index
             else:
@@ -720,6 +769,7 @@ def _materialize_eager_outputs(
     preview_fps: list[str],
     fp: str,
     preview: PreviewReader | dict[str, Any] | None,
+    execution_context: ExecutionContext | None,
 ) -> tuple[
     dict[str, pl.DataFrame],
     list[str],
@@ -812,6 +862,7 @@ def _materialize_eager_outputs(
         swallow_errors=False,
         preamble_ns=effective_preamble or None,
         source=source,
+        execution_context=execution_context,
     )
     eager_outputs = {nid: df for nid, df in result.outputs.items() if df is not None}
     order = result.order

@@ -12,11 +12,11 @@
 | `src/haute/_execution_admission.py` | Resolves an `ExecutionBudget` per `ExecutionProfile` (fixed default / explicit env override / adaptive fraction of available RAM), performs pre-flight admission (`create_admitted_execution_context`), and tracks a process-wide in-flight reservation for "heavy" profiles. |
 | `src/haute/_node_apply.py` | Config-driven implementations of `liveSwitch` input selection, `scenarioExpander` row expansion, `optimiserApply` artifact dispatch, and `OUTPUT` response-document assembly (`assemble_output_from_config`) — the single code path both the canvas executor (via `_builders.py`) and codegen-generated `.py` files call. |
 | `src/haute/_topo.py` | `topo_sort_ids` (graphlib-backed topological sort with a custom multi-cycle reporter), `ancestors` (BFS over reversed edges). |
-| `src/haute/graph_utils.py` | Canonical re-export facade for graph models, execution helpers, topo helpers, and IO helpers used by generated pipeline code and application modules. |
+| `src/haute/graph_utils.py` | Canonical outward re-export facade for graph models, execution helpers, topo helpers, and IO helpers used by generated pipeline code and application modules. Low-level engine modules import canonical graph models from `_types.py` and pure helpers from `_graph_utils.py` directly; importing back through this heavyweight facade would re-enter `_execute_lazy.py` and create an execution/RAM-estimation cycle. |
 | `src/haute/_graph_utils.py` | Pure-function graph helpers decoupled from the Pydantic models: `build_parents_of`, `upstream_node_ids`, `_sanitize_func_name`, `edge_input_name` (the single edge→input-name derivation: apiInput-frame edge → its frame label verbatim, else sanitised source-node label; consumed by the executor, codegen, projection, and the deploy scorer so all four agree byte-for-byte), `build_instance_mapping`, `resolve_orig_source_names`, edge-id construction, sink-path normalisation. |
 | `src/haute/_worker_isolation.py` | `run_isolated_worker()` — spawn a child process for one function call with an optional `RLIMIT_AS` cap, timeout, and cooperative stop-reason polling; typed error hierarchy for every terminal state. |
 | `src/haute/chunking.py` | `ChunkPlanRequest`/`chunk_plan()` (proves a graph suffix is chunk-safe, sizes chunks), `iter_chunked_frames()`/`run_chunked_reduce()`/`collect_chunked()` (the serial runner), the per-`NodeType` `ChunkCapability` registry, and the AST-based row-local user-code whitelist. |
-| `src/haute/_ram_estimate.py` | `available_ram_bytes()`/`available_vram_bytes()` (OS-level memory probing), `estimate_safe_training_rows()` (parquet-metadata-based peak-memory estimate and downsample decision). |
+| `src/haute/_ram_estimate.py` | `available_ram_bytes()`/`available_vram_bytes()` (OS-level memory probing), `estimate_safe_training_rows()` (parquet-metadata-based peak-memory estimate and downsample decision), and the `MaterialisationEstimate` contract consumed by strategy planning. It imports graph models directly from `_types.py` so admission and route cold imports do not re-enter the execution facade. |
 
 ## Key types and data structures
 
@@ -305,10 +305,8 @@ rather than replacing it.
   (`_memory_pressure_seen`, a `set[int]` of `threshold_percent` values guarded by
   `_memory_pressure_lock`) — each of the 50/75/90% thresholds fires at most once per
   `ExecutionContext`, not once per checkpoint that happens to be above it.
-- **`_CheckpointAction.COLLECT_LAZY` is dormant.** The enum member and its docstring
-  describe an in-memory checkpoint, but `_checkpoint_decision()` currently returns
-  only `SKIP` or `PARQUET`, and `_execute_lazy()` handles only `PARQUET`. No current
-  execution path performs an in-memory `.collect().lazy()` checkpoint.
+- **Checkpoint actions are `SKIP` or `PARQUET` only.** No execution path performs
+  an in-memory `.collect().lazy()` checkpoint, and no dormant action advertises it.
 - **RAM estimation returns `None` rather than guessing** when parquet metadata is
   unavailable (Databricks sources, JSON-shape `apiInput` caches which are one parquet
   per emit-true table rather than a single summarisable file) — callers must treat
@@ -460,3 +458,125 @@ tests that construct real admitted contexts. The direct suite asserts complete
 coverage of `_ADAPTIVE_MEMORY_POLICY`, `_PROFILE_MEMORY_ENV`, and
 `_PROFILE_PROCESS_RSS_ENV` for every `ExecutionProfile`, and exercises adaptive,
 fixed, strict-server, explicit-override, process-RSS, and in-flight-reservation paths.
+
+## Polars backend contracts (0.6.0)
+
+This is an approved spec-first change. The implementation plan is
+[F_0.6.0_polars-backend-remediation.plan.md](../../trip/plans/F_0.6.0_polars-backend-remediation.plan.md).
+
+### Current limitations
+
+`src/haute/projection.py` and `src/haute/execution.py` expose strategy information,
+but the result is not yet a single versioned contract consumed by all execution paths.
+The initial/seedless preview and deploy-live paths do not yet have universal planner
+coverage. `src/haute/chunking.py` has no group-by execution contract beyond unsupported
+capability shapes. `src/haute/_execution_context.py`,
+`src/haute/_execution_admission.py`, `src/haute/_ram_estimate.py`, and
+`src/haute/_execute_lazy.py` retain the operational limitations enumerated in the
+high-level approved contract.
+
+### Approved implementation contract
+
+- Define the versioned strategy result in `src/haute/projection.py` and export it only
+  through `src/haute/execution.py`. Version 1's closed internal vocabulary is `projected`,
+  `schema-all-except`, `full-width-admitted-eager`, `unprojected-streaming-boundary`,
+  `materialisation-boundary`, `unsupported`, and `not-planned`. All execution callers,
+  including seedless preview and deploy-live, must obtain their decision through this facade.
+- The producer emits integer `schema_version=1` plus required `status`, `strategy`, `profile`,
+  `boundedness` (`bounded|unbounded|unknown`), `reason_code`, and `detail_state`
+  (`available|unavailable|truncated`). Optional blocking/remediation, cost, metric, and
+  provenance detail is JSON-safe. Boundary and reason collections have at most 32 entries,
+  provenance has at most 128, and human messages/remediation have at most 512 characters;
+  truncation order is deterministic. Never serialise lazy plans, frames, source values, or
+  other user data. Provenance assembly consumes the demand already resolved by the planner;
+  it never re-resolves an external `modelScore` artifact merely to label that demand.
+- Map strategies to API statuses exactly: `projected` and `schema-all-except` to `projected`;
+  `full-width-admitted-eager` to `admitted_eager`; `unprojected-streaming-boundary` and
+  `materialisation-boundary` to `boundary`; `unsupported` to `rejected`; and `not-planned`
+  to `not_planned`.
+- Extend `src/haute/chunking.py` and its callers with the following authoritative version-1
+  group-by profile matrix:
+
+  | `ExecutionProfile` | Planner result / rejection reason |
+  | --- | --- |
+  | `PREVIEW_EAGER` | `materialisation-boundary` iff the admission/estimate predicate below holds |
+  | `DEPLOY_LIVE` | `materialisation-boundary` iff the admission/estimate predicate below holds |
+  | `LAZY_SINK` | `profile_requires_bounded_execution` regardless of estimate |
+  | `TRAINING_PREP` | `profile_requires_bounded_execution` regardless of estimate |
+  | `OPTIMISER_SETUP` | `profile_requires_bounded_execution` regardless of estimate |
+  | `EXPLORE_ANALYSIS` | `profile_requires_bounded_execution` regardless of estimate |
+  | `AUTO_RANGE` | `profile_requires_bounded_execution` regardless of estimate |
+  | `DEPLOY_BATCH` | `profile_requires_bounded_execution` regardless of estimate |
+  | `CHUNKED_MAP_REDUCE` | `profile_requires_bounded_execution` regardless of estimate |
+
+  For the two eligible profiles, require an `ExecutionContext` whose `admission` is present,
+  whose `memory_limit_bytes` and `headroom_bytes` are both positive, and a
+  `MaterialisationEstimate(state=available)` satisfying
+  `estimated_peak_bytes <= min(admission.memory_limit_bytes,
+  admission.headroom_bytes)`. Treat equality as admitted. Apply rejection precedence as
+  follows: a missing context/admission or non-positive admission value is
+  `execution_admission_unavailable`; `state=unavailable` is
+  `materialisation_estimate_unavailable`; and an available estimate above effective
+  headroom is `materialisation_exceeds_headroom`. Rejections raise
+  `GroupByExecutionUnsupportedError(BoundedMemoryUnsupportedError)` before execution and
+  expose stable fields `node_id`, `operator`, `profile`, `reason_code`, `remediation`,
+  `estimated_peak_bytes: int | None`, and `headroom_bytes: int | None`; populate nullable
+  fields when known at decision time.
+- Never put group-by in the chunk runner, ordinary checked execution,
+  `unprojected-streaming-boundary`, or any implicit streaming/chunk fallback; do not
+  implement aggregation reducers in this release. Plan batch P1's group-by integration
+  depends on P4 delivering `MaterialisationEstimate`: P1 may land the typed rejection
+  surface first, but must not land its admitted branch without that P4 contract.
+- Memoise Windows sampler process/DLL bindings in `src/haute/_execution_context.py` per
+  factory object identity, preserve `None` when sampling is unavailable, and provide an
+  explicit reset seam. Initialisation is once per identity under concurrent access; changing
+  factory identity performs fresh initialisation. In
+  `src/haute/_execute_lazy.py`, construct one producer-side Polars cache node and pass the
+  identical cached `LazyFrame` to every dependent branch. Do not collect it eagerly or add a
+  cache wrapper around a parent that is already a `DataFrame`.
+- In `src/haute/_ram_estimate.py`, cache per-estimate metadata/schema lookups, model
+  string/variable-width columns conservatively, and let unexpected programming/metadata
+  failures propagate. Avoid repeated recursive column-index resolution. P4 must expose
+  `MaterialisationEstimate` with explicit `state=available|unavailable` and
+  `estimated_peak_bytes: int | None`: `available` requires a non-negative integer,
+  `unavailable` requires `None`, and an available zero-byte estimate represents legitimate
+  empty input rather than unknown.
+- In the execution context/admission and node-application call paths, normalise public
+  timing to milliseconds, replace invalid `liveSwitch` unmapped-input behaviour with
+  `LiveSwitchScenarioError(ExecutionError)` carrying a stable code and named fields, and
+  guard reservation acquisition with terminal-path
+  cleanup. Preserve the already-shipped FR33 eager contract-cache-miss fix.
+- The unreachable `COLLECT_LAZY` action and handling are removed; duplicate predicates
+  use the canonical path, and benchmark-justified Review-P11 cleanup preserves semantics.
+
+### Non-goals and compatibility
+
+- Do not add reducers, silently fall back from unsupported bounded execution, or change
+  supported node results solely to optimise internals.
+- Version-1 consumers may ignore unknown additive fields only within version 1. Missing or
+  malformed required fields, unknown version-1 enum values, and unsupported higher versions
+  are invalid and become an explicit diagnostic-unavailable state at consumer boundaries.
+  Before 1.0, release 0.6 intentionally replaces unsafe fallback with typed failure; release
+  notes and migration guidance are required, with no compatibility shim for unsafe behaviour.
+- Do not remove an execution cleanup candidate until search confirms it has no supported
+  consumer; do not retain a compatibility shim for a dead internal enum/action.
+
+### Acceptance evidence
+
+- Add focused contract tests for required fields, authoritative status mapping, strict
+  version/enum handling, deterministic caps, facade-only strategy selection, every
+  seeded/seedless preview and deploy-live entry point, and boundary provenance. Add a
+  table-driven group-by matrix covering every profile, every reason code, and the boundary
+  result; for both eligible profiles include missing context, missing/non-positive
+  admission, unavailable estimate, available zero-byte/empty input, below-headroom,
+  equal-headroom, and over-headroom cases. Assert the stable error fields in every rejection
+  case.
+- Add regression tests that assert sampler initialisation is once per factory identity under
+  concurrency, factory switching and explicit reset initialise anew, a diamond producer
+  is evaluated once, RAM estimates memoise lookup work and distinguish unknown from raised
+  failures, variable-width estimates are conservative, timings are milliseconds,
+  invalid `liveSwitch` mappings are typed, and every reservation is released.
+- Removal tests/search assertions pin the absence of `COLLECT_LAZY`, its dead guard,
+  and duplicated predicates. Run the focused execution and projection suites plus the
+  affected preview/deploy/admission/RAM suites; attach benchmark results for each Review-P11
+  optimisation accepted into the implementation.

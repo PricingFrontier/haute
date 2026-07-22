@@ -49,7 +49,7 @@ NEG_INF_SENTINEL = {"__haute_type__": "non_finite_float", "value": "-inf"}
 
 
 class TestJsonifyRowEdgeCases:
-    """Cover date stringification, datetime, timedelta, list, struct."""
+    """Cover temporal conversion and recursively JSON-safe nested values."""
 
     def test_date_stringified(self):
         row = {"d": date(2025, 6, 15)}
@@ -68,16 +68,15 @@ class TestJsonifyRowEdgeCases:
         result = _jsonify_row(row)
         assert isinstance(result["td"], str)
 
-    def test_list_stringified(self):
+    def test_list_preserved_as_structured_json(self):
         row = {"lst": [1, 2, 3]}
         result = _jsonify_row(row)
-        assert isinstance(result["lst"], str)
-        assert result["lst"] == "[1, 2, 3]"
+        assert result["lst"] == [1, 2, 3]
 
-    def test_dict_stringified(self):
+    def test_dict_preserved_as_structured_json(self):
         row = {"d": {"nested": "value"}}
         result = _jsonify_row(row)
-        assert isinstance(result["d"], str)
+        assert result["d"] == {"nested": "value"}
 
     def test_empty_row(self):
         assert _jsonify_row({}) == {}

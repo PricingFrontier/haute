@@ -14,7 +14,11 @@ import pytest
 
 from haute._execution_context import ExecutionProfile
 from haute._output_assembler import OutputMappingSchemaError
-from haute.errors import BoundedMemoryUnsupportedError, SchemaMismatchError
+from haute.errors import (
+    BoundedMemoryUnsupportedError,
+    LiveSwitchScenarioError,
+    SchemaMismatchError,
+)
 from haute.executor import NodeBuildContext, _build_node_fn
 from haute.graph_utils import GraphNode, NodeData
 from tests.conftest import make_node as _n
@@ -1148,7 +1152,7 @@ class TestBuildLiveSwitch:
         result = fn(live_df, batch_df).collect()
         assert result["source"].to_list() == ["batch"]
 
-    def test_fallback_to_first_input_on_unmapped_scenario(self) -> None:
+    def test_configured_mapping_rejects_unmapped_scenario(self) -> None:
         node = _n(
             {
                 "id": "n1",
@@ -1166,5 +1170,8 @@ class TestBuildLiveSwitch:
         )
         df_a = pl.DataFrame({"val": [1]}).lazy()
         df_b = pl.DataFrame({"val": [2]}).lazy()
-        result = fn(df_a, df_b).collect()
-        assert result["val"].to_list() == [1]
+        with pytest.raises(LiveSwitchScenarioError) as exc_info:
+            fn(df_a, df_b)
+
+        assert exc_info.value.scenario == "unknown_scenario"
+        assert exc_info.value.available_mappings == ("live", "test")

@@ -140,5 +140,6 @@
       "error": "too small",
       "error_type": "ValueError"
     }
-  ]
+  ],
+  "feature_selection": null
 }

@@ -353,7 +353,7 @@ def _memory_policy_name() -> str:
     return policy
 
 
-def available_ram_bytes() -> int:
+def available_ram_bytes() -> int | None:
     """Return available RAM through an admission-local patch point."""
     return _ram_estimate.available_ram_bytes()
 
@@ -361,7 +361,9 @@ def available_ram_bytes() -> int:
 def _adaptive_default_memory_limit_bytes(profile: ExecutionProfile) -> tuple[int, int, int]:
     available = available_ram_bytes()
     if not isinstance(available, int) or isinstance(available, bool) or available < 1:
-        raise RuntimeError("available_ram_bytes must return a positive integer")
+        raise RuntimeError(
+            "physical RAM is unavailable; configure an explicit execution memory limit"
+        )
     policy = _ADAPTIVE_MEMORY_POLICY[profile]
     reserve = min(_resolve_os_reserve_bytes(), max(available // 2, 1))
     usable = max(available - reserve, 1)
@@ -433,35 +435,39 @@ def create_admitted_execution_context(
         budget=budget,
         rss_at_admission_bytes=rss_at_admission,
     )
-
-    admission = ExecutionAdmission(
-        operation=operation,
-        profile=profile,
-        memory_limit_bytes=budget.memory_limit_bytes,
-        rss_at_admission_bytes=rss_at_admission,
-        rss_limit_bytes=rss_limit_bytes,
-        process_rss_limit_bytes=budget.process_rss_limit_bytes,
-        headroom_bytes=rss_limit_bytes - rss_at_admission,
-        config_key=budget.config_key,
-        budget_policy=budget.budget_policy,
-        available_ram_bytes=budget.available_ram_bytes,
-        os_reserve_bytes=budget.os_reserve_bytes,
-    )
-    context = ExecutionContext(
-        operation=operation,
-        profile=profile,
-        job_id=job_id,
-        cancellation_token=cancellation_token or ExecutionCancellationToken(),
-        memory_limit_bytes=budget.memory_limit_bytes,
-        memory_baseline_bytes=rss_at_admission,
-        rss_limit_bytes=rss_limit_bytes,
-        admission=admission,
-        memory_sampler=sampler,
-        memory_pressure_callback=memory_pressure_callback,
-        admission_release=admission_release,
-    )
-    if admission_release is not None:
-        weakref.finalize(context, admission_release)
+    try:
+        admission = ExecutionAdmission(
+            operation=operation,
+            profile=profile,
+            memory_limit_bytes=budget.memory_limit_bytes,
+            rss_at_admission_bytes=rss_at_admission,
+            rss_limit_bytes=rss_limit_bytes,
+            process_rss_limit_bytes=budget.process_rss_limit_bytes,
+            headroom_bytes=rss_limit_bytes - rss_at_admission,
+            config_key=budget.config_key,
+            budget_policy=budget.budget_policy,
+            available_ram_bytes=budget.available_ram_bytes,
+            os_reserve_bytes=budget.os_reserve_bytes,
+        )
+        context = ExecutionContext(
+            operation=operation,
+            profile=profile,
+            job_id=job_id,
+            cancellation_token=cancellation_token or ExecutionCancellationToken(),
+            memory_limit_bytes=budget.memory_limit_bytes,
+            memory_baseline_bytes=rss_at_admission,
+            rss_limit_bytes=rss_limit_bytes,
+            admission=admission,
+            memory_sampler=sampler,
+            memory_pressure_callback=memory_pressure_callback,
+            admission_release=admission_release,
+        )
+        if admission_release is not None:
+            weakref.finalize(context, admission_release)
+    except BaseException:
+        if admission_release is not None:
+            admission_release()
+        raise
     return context
 
 
@@ -548,7 +554,9 @@ def _in_flight_limit_bytes(budget: ExecutionBudget) -> int:
     if available is None:
         available = available_ram_bytes()
     if not isinstance(available, int) or isinstance(available, bool) or available < 1:
-        raise RuntimeError("available_ram_bytes must return a positive integer")
+        raise RuntimeError(
+            "physical RAM is unavailable; configure an explicit execution memory limit"
+        )
     reserve = budget.os_reserve_bytes
     if reserve is None:
         reserve = min(_resolve_os_reserve_bytes(), max(available // 2, 1))

@@ -322,3 +322,122 @@ Out of scope (owned elsewhere, linked where relevant):
   precondition failure that means a waterfall simply does not apply (fewer than 3
   contributing steps, no numeric traced output value) returns `None` instead,
   which is distinct from an error.
+
+## Polars backend contracts (0.6.0)
+
+This slice implements the tracing commitments in the
+[Polars backend remediation plan](../../trip/plans/F_0.6.0_polars-backend-remediation.plan.md).
+Delivery is split deliberately: P9a owns correlation and request-local
+enrichment; P9b, sequenced only after the shared lineage-key work, integrates
+trace caching. P9b consumes the shared lineage preview-key factory rather than
+constructing, translating, or fingerprinting a trace-specific representation.
+
+### Required behaviour
+
+- Every target relocation, ordinary parent/child correlation, edge-join
+  projection, and multi-frame candidate comparison uses one shared,
+  tolerance-aware, vectorized Polars matching primitive. Its V1 scalar truth
+  table is exact:
+  - null matches only null, and boolean matches only the same boolean; boolean
+    is never treated as numeric;
+  - integer/integer comparison is exact; integer/float comparison is allowed
+    only when the integer has `abs(value) <= 2**53` and the float is finite,
+    using the finite-float formula below; an unsafe integer can instead match
+    only its exact canonical decimal-string representation;
+  - finite numeric values `a` and `b` match exactly when
+    `abs(a - b) <= max(1e-12, 1e-9 * max(abs(a), abs(b)))`;
+  - NaN matches only NaN or the canonical `nan` sentinel, positive infinity
+    only positive infinity or the canonical `inf` sentinel, and negative
+    infinity only negative infinity or the canonical `-inf` sentinel. No
+    non-finite value matches the opposite sign, a finite value, or null;
+  - Date matches only Date on the same day; Time matches only Time at the same
+    nanosecond-of-day; Datetime values are compared as checked integer UTC
+    nanoseconds, with aware values matching only aware values at the same
+    instant and naive values matching only naive values. Date-versus-Datetime
+    and aware-versus-naive are unsupported. Duration is exact after checked
+    conversion to signed integer nanoseconds;
+  - Decimal comparison is exact after lossless integer rescaling to the larger
+    scale. Decimal/float is unsupported, as are rescaling overflow and
+    incompatible precision;
+  - string and binary comparison is exact within its compatible family;
+    categorical/enum compares normalised string values; and same-schema
+    list/array/struct uses Polars 1.39.3 native equality against a typed one-row
+    literal. Objects and incompatible nested schemas are unsupported.
+  A Polars upgrade must re-run this matrix before matcher support is extended.
+- Correlation must not perform a Python full-frame scan over shared keys, nor
+  duplicate matching logic between target relocation and upstream correlation.
+  Python may inspect at most 16 candidate indices returned by the primitive.
+- Object values and incompatible nested dtypes return `unsupported_dtype`; they
+  never trigger a Python full-frame fallback. Target relocation converts that
+  result to a named `TraceCorrelationUnsupportedError`; upstream parent
+  resolution stays unresolved with a typed diagnostic.
+- Multiple equally valid candidates remain an ambiguity, never a first-row
+  fallback. Every typed result contains exactly
+  `candidate_count: int|null`, `candidate_indices: list[int]`, and
+  `candidate_indices_state: available|truncated|unavailable`. Supported
+  matches assign an original physical row index with `with_row_index`, count
+  all candidates exactly, sort their physical indices ascending, and expose the
+  first 16. State is `available` if and only if the exact count is at most 16
+  (including zero), and `truncated` if and only if it is greater than 16. An
+  unsupported comparison reports null count, an empty list, and `unavailable`.
+  Target relocation fails loudly; upstream correlation leaves the step
+  unresolved and records the ambiguity.
+- A relaxed match is permitted only when strict keys return no match. It must
+  emit an explicit low-confidence diagnostic identifying strict/effective keys,
+  candidate count, and the reason confidence was reduced; it is never silently
+  equivalent to a strict match. Relaxation may omit keys but may not weaken the
+  V1 per-value truth table.
+- Unsupported target relocation raises the public
+  `TraceCorrelationUnsupportedError(ExecutionError)`, exported from
+  `haute.errors`, with stable code
+  `trace_correlation_unsupported` and stable fields `node_id`, `key_columns`,
+  `dtypes`, and `reason_code`. The HTTP contract is 422 and a background caller
+  records `contract_error`. Every array in matcher results, diagnostics, and
+  this error is deterministic and capped at 16 entries; aligned
+  `key_columns`/`dtypes` retain deterministic key order when capped.
+- `trace_result_to_dict()` preserves the same JSON-safe representation used by
+  preview data for temporal, nested, non-finite, arbitrary, and JavaScript
+  precision-sensitive values. That canonical serializer is a display boundary;
+  accepting an arbitrary object for display does not make it a valid correlation
+  key or extend the V1 comparison matrix.
+- Repeated completed enrichment work is memoised only within one trace request,
+  separately from the active recursion stack. Memo identity covers node,
+  concern, column, row identity, frame/port, and every concern input. Each call
+  path pushes/pops its own active stack: cycles retain the existing structured
+  cycle/error marker, while sibling diamond branches can reuse a completed
+  result. Exceptions are not memoised and no state survives the request.
+
+### Sequencing, non-goals, and acceptance
+
+1. P9a specifies and tests the typed match result, the full V1 dtype matrix, and
+   preview JSON parity before replacing correlation call sites.
+2. P9a migrates relocation and upstream paths, then adds relaxed diagnostics and
+   the completed-result request memo plus per-call-path recursion stack.
+3. After the lineage-key slice lands, P9b wires trace to the shared key factory
+   and removes superseded duplicate key construction in the same change.
+
+This slice does not introduce row-id injection, heuristic ambiguity resolution,
+pipeline output changes, persistent enrichment caches, or new trace routes/UI.
+
+Acceptance tests cover every V1 matrix cell, including positive, no-match,
+ambiguous, and unsupported combinations; shared numeric tolerance and NaN/Inf;
+preview-JSON round trips without treating arbitrary display objects as keys;
+exact candidate counts with 0–16 available indices and explicit truncation;
+edge-join and multi-frame paths; named target errors and typed unresolved-parent
+diagnostics; cycles; sibling diamonds; exceptions; and per-request enrichment
+reuse without leakage. Structural performance tests assert vectorized Polars
+matching, no shared-key Python full-frame scan, and guard large-frame correlation
+latency and allocations.
+
+The boundary suite pins finite values just below, exactly on, and just above
+both tolerance terms; boolean-versus-0/1; integer/integer exactness;
+integer/float at `2**53` and rejection above it; canonical and non-canonical
+unsafe-integer strings; and every NaN/infinity pairing. Temporal and Decimal
+boundaries cover Date-versus-Datetime, aware-versus-naive, cross-unit Datetime
+equality, checked nanosecond overflow, signed Duration, lossless Decimal
+rescaling, precision/rescale overflow, and Decimal-versus-float rejection.
+Candidate payloads are asserted exactly at counts 0, 1, 16, and 17, including
+ascending original physical indices and the `available`, `truncated`, and
+`unavailable` states. The public unsupported error's exact code, fields,
+HTTP-422/background mappings, deterministic order, and 16-entry array caps are
+also contract tests.

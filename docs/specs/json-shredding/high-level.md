@@ -233,3 +233,55 @@ strict build and raises a specific, column-named error instead.
   loud and specific; the direct path never replaces them with a cache prompt.
 - `edgeJoin` node misconfiguration (ambiguous/missing base or join role, unsupported
   join strategy, mismatched key counts) raises `ConfigError` before any join runs.
+
+## Polars backend contracts (0.6.0)
+
+Implementation is sequenced by the [Polars backend remediation plan](../../trip/plans/F_0.6.0_polars-backend-remediation.plan.md).
+
+### OUTPUT assembly (Review-P04)
+
+Assembly must preserve the existing output shape, bag semantics, deterministic cut
+planning, pruning, and active-row rules while replacing repeated per-mapping-frame
+filtering with an indexed or near-linear grouping strategy.  The implementation
+must not introduce a Python-level quadratic scan over mapping rows or frame rows.
+
+Nesting uses a fail-loud orphan policy. Any active parent or child row participating
+in a nesting relation with null in any component of its simple or composite nesting
+key raises `OutputNestingKeyError(OutputMappingSchemaError)` before assembly or
+rendering. The error identifies the source frame, output path, and offending key, and
+the route/API contract maps it to HTTP 422. Such rows are never silently excluded or
+treated as non-matching. Null scalar payload values remain valid when those values do
+not participate in a relation key.
+
+One frame may not silently supply columns for multiple divergent `emit` prefixes.
+Such a mapping is rejected with `OutputMappingSchemaError` before collection or
+rendering, unless a future specification introduces an explicit, unambiguous mapping
+contract for it.  A rejection must name the frame and conflicting prefixes.  No
+source column may be silently dropped while applying this guard.
+
+The direct assembler, dry-run/route path, generated pipeline, and deployed execution
+path must accept, reject, and render equivalent mappings identically, including the
+null nesting-key error type, fields, and HTTP mapping.
+
+### Raw-file signatures (Review-P06 / FR17)
+
+Within one logical raw-file load or cache-build operation, the source signature
+(size, mtime, and content hash) is computed once and shared by all consumers of that
+operation.  This removes redundant hashing without weakening cache integrity:
+independent operations still verify source content, and a rewrite that preserves
+size and mtime is still detected by its changed hash.
+
+### Required tests and non-goals
+
+Tests must pin near-linear assembler work on large mapping/frame fixtures; fail-loud
+simple and composite null nesting keys on active parent and child rows; allowed null
+scalar payloads; divergent-prefix rejection; no silent row or column loss; HTTP 422;
+and direct/route/generated/deploy parity. Signature tests must pin one hash computation per logical operation,
+fresh hashing by an independent operation, and same-size/same-mtime content rewrite
+detection.
+
+The 0.6 pre-1.0 migration notes must call out that relation-key nulls now fail rather
+than being silently orphaned. This change does not alter output-path grammar, bag
+semantics for valid keys, pruning rules, cache directory layout, source-signature
+fields, or cache validity requirements. It does not define a divergent-prefix mapping
+feature; that requires a separate explicit contract.

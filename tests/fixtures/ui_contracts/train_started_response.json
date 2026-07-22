@@ -31,5 +31,6 @@
   "glm_relativities": [],
   "glm_fit_statistics": {},
   "glm_regularization_path": null,
-  "diagnostics_errors": []
+  "diagnostics_errors": [],
+  "feature_selection": null
 }

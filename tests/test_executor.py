@@ -10,7 +10,7 @@ import pytest
 
 from haute._execution_context import ExecutionProfile
 from haute._user_exec import _exec_user_code
-from haute.errors import BoundedMemoryUnsupportedError
+from haute.errors import BoundedMemoryUnsupportedError, LiveSwitchScenarioError
 from haute.executor import (
     PreambleError,
     _build_node_fn,
@@ -1956,12 +1956,14 @@ class TestLiveSwitch:
         assert results["switch"].status == "ok"
         assert results["switch"].row_count == 4
 
-    def test_unmapped_scenario_falls_back_to_first_input(self, tmp_path):
-        """An unmapped scenario should fall back to the first input."""
+    def test_unmapped_scenario_reports_typed_error(self, tmp_path):
+        """A configured mapping must include the active scenario."""
         graph = self._switch_graph(tmp_path)
-        results = execute_graph(graph, target_node_id="switch", source="unknown_scenario")
-        assert results["switch"].status == "ok"
-        assert results["switch"].row_count == 3
+        with pytest.raises(LiveSwitchScenarioError) as exc_info:
+            execute_graph(graph, target_node_id="switch", source="unknown_scenario")
+
+        assert exc_info.value.switch == "switch"
+        assert exc_info.value.scenario == "unknown_scenario"
 
     def test_empty_scenario_map_falls_back_to_first_input(self, tmp_path):
         """Empty input_scenario_map {} should fall back to the first input."""
@@ -2537,7 +2539,7 @@ class TestResolveBatchScenario:
 class TestPreviewCachePartialHit:
     """Verify the cache-extend (partial-hit) path in execute_graph."""
 
-    def test_partial_hit_extends_cache(self, tmp_path):
+    def test_partial_hit_extends_cache(self, tmp_path, monkeypatch):
         """When a cached graph fingerprint exists but the target node is
         not yet materialized, execute_graph should re-execute for the new
         target and merge the results.
@@ -2564,6 +2566,14 @@ class TestPreviewCachePartialHit:
             }
         )
 
+        # Force both target requests into one lineage slot so this test
+        # exercises the defensive cache-extension path rather than merely
+        # proving that target-specific fingerprints cause two cache misses.
+        monkeypatch.setattr(
+            "haute.executor.execution_facade.preview_lineage_cache_key",
+            lambda *_args, **_kwargs: "partial-hit-regression",
+        )
+
         # First call: only up to "mid"
         results1 = execute_graph(graph, target_node_id="mid")
         assert results1["mid"].status == "ok"
@@ -2579,6 +2589,30 @@ class TestPreviewCachePartialHit:
         assert results2["mid"].status == "ok"
 
         _preview_cache.invalidate()
+
+    def test_projection_cache_suffix_signs_scope_columns_and_port(self):
+        from haute.executor import _preview_projection_cache_suffix
+
+        graph = _g({"nodes": [], "edges": []})
+
+        target_only = _preview_projection_cache_suffix(
+            graph,
+            "target",
+            None,
+            target_preview_only=True,
+            initial_column_limit=32,
+        )
+        projected_port = _preview_projection_cache_suffix(
+            graph,
+            "target",
+            ["premium"],
+            port_label="quotes",
+        )
+
+        assert "preview_target_only='target'" in target_only
+        assert "initial_col_limit=32" in target_only
+        assert "preview_cols=('premium',)" in projected_port
+        assert "preview_port='quotes'" in projected_port
 
     def test_full_cache_hit_returns_instantly(self, tmp_path):
         """When the target node is already in the cached outputs, no

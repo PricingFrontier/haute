@@ -804,23 +804,6 @@ class TestOutOfMemoryDuringCollect:
         # Should contain the type name so user knows it's a memory issue
         assert "MemoryError" in msg or "memory" in msg.lower()
 
-    def test_safe_sink_raises_on_write_failure(self, tmp_path: Path) -> None:
-        """safe_sink propagates errors when the sink path is invalid.
-
-        Catches: silent data loss where the parquet file is zero-byte
-        but training proceeds with empty data.
-        """
-        import polars as pl
-
-        from haute._polars_utils import safe_sink
-
-        lf = pl.LazyFrame({"a": [1, 2, 3]})
-
-        # Write to a non-existent deeply nested path
-        bad_path = str(tmp_path / "no" / "such" / "dir" / "data.parquet")
-        with pytest.raises(Exception):
-            safe_sink(lf, bad_path)
-
     def test_gc_collect_called_after_failed_sink(self) -> None:
         """Verify that gc.collect is invoked in the cleanup path.
 

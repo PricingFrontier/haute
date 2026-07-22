@@ -40,7 +40,12 @@ from haute._types import (
     PipelineGraph,
     _Frame,
 )
-from haute.errors import ConfigError, ContractMismatchError, SchemaMismatchError
+from haute.errors import (
+    ConfigError,
+    ContractMismatchError,
+    SchemaMismatchError,
+    is_public_contract_error,
+)
 
 logger = get_logger(component="execute")
 
@@ -369,11 +374,6 @@ class _CheckpointAction(StrEnum):
     SKIP = "skip"
     """Keep the LazyFrame as-is — no materialization needed."""
 
-    COLLECT_LAZY = "collect_lazy"
-    """Materialize in RAM via ``collect().lazy()`` to break plan
-    duplication without disk I/O.  Only used when the estimated
-    intermediate fits comfortably in available memory."""
-
     PARQUET = "parquet"
     """Sink to a temp parquet file and replace with ``scan_parquet``.
     The safest option — frees RAM and isolates the query plan."""
@@ -470,6 +470,17 @@ def _apply_selected_columns(
     if valid and len(valid) < len(all_cols):
         return frame.select(valid)
     return frame
+
+
+def _is_plain_model_score(node: GraphNode) -> bool:
+    """Return whether a model-score node has no output-shaping overrides."""
+    config = node.data.config
+    return (
+        node.data.nodeType == NodeType.MODEL_SCORE
+        and not config.get("code")
+        and not config.get("column_renames")
+        and not config.get("selected_columns")
+    )
 
 
 def _assert_simple_join_key_dtypes_compatible(
@@ -855,41 +866,22 @@ def _execute_lazy(
     # nodes also consume this demand locally so their internal temp
     # parquet write can avoid unused passthrough columns even when the
     # outer checkpoint layer skips model-score nodes.
-    strict_projection = _strict_projection_for_context(
-        execution_context,
-        normalised_required_columns,
+    public_strategy_result = execution_facade.plan_prepared_execution_strategy(
+        order,
+        children_of,
+        node_map,
+        profile=(
+            execution_context.profile
+            if execution_context is not None
+            else ExecutionProfile.PREVIEW_EAGER
+        ),
+        required_columns_by_node=normalised_required_columns,
+        execution_context=execution_context,
     )
-    needs_projection_analysis = (
-        checkpoint_dir is not None
-        or source != "live"
-        or bool(normalised_required_columns)
-        or strict_projection
-    )
-    public_projection_plan: projection_planner.ProjectionPlan | None = None
-    if needs_projection_analysis:
-        public_projection_plan = execution_facade.plan_prepared_execution_strategy(
-            order,
-            children_of,
-            node_map,
-            profile=(
-                execution_context.profile
-                if execution_context is not None
-                else ExecutionProfile.PREVIEW_EAGER
-            ),
-            required_columns_by_node=normalised_required_columns,
-            execution_context=execution_context,
-        )
-    projection_plan: _ProjectionPlan | None = (
-        _compat_projection_plan(public_projection_plan)
-        if public_projection_plan is not None
-        else None
-    )
-    needed_cols: dict[str, set[str] | None] = (
-        projection_plan.needed_by_node if projection_plan is not None else {}
-    )
-    edge_demands: dict[tuple[str, str], set[str] | None] = (
-        projection_plan.edge_demands if projection_plan is not None else {}
-    )
+    public_projection_plan = public_strategy_result.projection_plan
+    projection_plan = _compat_projection_plan(public_projection_plan)
+    needed_cols: dict[str, set[str] | None] = projection_plan.needed_by_node
+    edge_demands: dict[tuple[str, str], set[str] | None] = projection_plan.edge_demands
 
     # Full parent lookup from ALL edges for instance resolution
     all_parents = graph.parents_of
@@ -1086,10 +1078,16 @@ def _execute_lazy(
         # consumer in this function passes the result through
         # ``isinstance(lf, dict)`` narrowing before LazyFrame-only operations.
         # ``# type: ignore[return-value]`` on the dict-return site captures it.
-        nonlocal public_projection_plan
+        nonlocal public_projection_plan, public_strategy_result
 
         fn, is_source = funcs[nid]
         node = node_map[nid]
+        requested_columns = needed_cols.get(nid)
+        if execution_context is not None:
+            execution_context.record_column_widths(
+                node_id=nid,
+                requested_width=(None if requested_columns is None else len(requested_columns)),
+            )
         contract = _effective_contract(node) if enforce_contracts else None
         check_here = bool(contract) and _should_check_contract(contract)  # type: ignore[arg-type]
         # Builder-wired ``_passthrough_fn`` means the node is in a stub
@@ -1136,7 +1134,11 @@ def _execute_lazy(
                     child_id=nid,
                     demands_by_parent=runtime_edge_demands,
                 )
-                execution_context.projection_plan = public_projection_plan
+                public_strategy_result = projection_planner.ExecutionStrategyResult(
+                    projection_plan=public_projection_plan,
+                    diagnostic=public_strategy_result.diagnostic,
+                )
+                execution_context.projection_plan = public_strategy_result
             for input_id, input_lf in zip(input_ids, input_lfs, strict=True):
                 projected_lf, projected_cols = _apply_edge_projection(
                     nid,
@@ -1147,6 +1149,15 @@ def _execute_lazy(
                 projected_input_lfs.append(projected_lf)
                 projected_input_columns.append(projected_cols)
             input_lfs = projected_input_lfs
+            if execution_context is not None and all(
+                columns is not None for columns in projected_input_columns
+            ):
+                execution_context.record_column_widths(
+                    node_id=nid,
+                    input_width=sum(
+                        len(columns) for columns in projected_input_columns if columns is not None
+                    ),
+                )
 
             if check_here and contract is not None and contract.inputs is not None:
                 upstream_col_sets: list[frozenset[str]] = []
@@ -1179,6 +1190,11 @@ def _execute_lazy(
             lf = fn(*input_lfs)
 
         if isinstance(lf, pl.DataFrame):
+            if execution_context is not None:
+                execution_context.record_column_widths(
+                    node_id=nid,
+                    output_width=lf.width,
+                )
             lf = lf.lazy()
 
         # Multi-frame emit: a source (currently only apiInput when v2 has
@@ -1217,6 +1233,11 @@ def _execute_lazy(
         ):
             out_cols = _columns_of(lf)
             column_cache[(nid, None)] = out_cols
+            if execution_context is not None:
+                execution_context.record_column_widths(
+                    node_id=nid,
+                    output_width=len(out_cols),
+                )
             _assert_outputs_satisfy_contract(node, contract, out_cols)
 
         return lf, is_source, node
@@ -1307,15 +1328,11 @@ def _execute_lazy(
                                     node_id=nid,
                                 )
 
-        # Adaptive checkpoint to break Polars plan duplication and
-        # chained-join memory accumulation (pola-rs/polars#24206).
+        # Adaptive checkpoint to break Polars plan duplication.
         #
         # Three structural triggers (joins, fan-outs, join-feeders) are
-        # evaluated by _checkpoint_decision which chooses the cheapest
-        # safe strategy:
+        # evaluated by _checkpoint_decision:
         #   PARQUET      — disk round-trip, safest, frees RAM
-        #   COLLECT_LAZY — in-memory materialization, no I/O, breaks
-        #                  plan duplication but holds data in RAM
         #   SKIP         — keep the LazyFrame as-is (source nodes,
         #                  batch MODEL_SCORE which already checkpoints
         #                  internally, or nodes that don't need it)
@@ -1669,6 +1686,14 @@ def _execute_eager_core(
                 children_count[_pid] += 1
                 children_of[_pid].append(_nid)
 
+    # Count fan-out by the selected source frame, rather than only by node.
+    # A multi-frame producer can expose multiple independent source ports.
+    frame_fanout_count: dict[tuple[str, str | None], int] = {}
+    for edge in relevant_edges:
+        if edge.source in node_map and edge.target in node_map:
+            frame_key = (edge.source, edge.sourceHandle)
+            frame_fanout_count[frame_key] = frame_fanout_count.get(frame_key, 0) + 1
+
     projection_plan: _ProjectionPlan | None = (
         _compute_projection_plan(
             order,
@@ -1717,6 +1742,9 @@ def _execute_eager_core(
         str,
         pl.LazyFrame | pl.DataFrame | dict[str, pl.DataFrame] | dict[str, pl.LazyFrame] | None,
     ] = {}
+    # Reuse one cache node per lazy producer frame. DataFrames are already
+    # materialised and deliberately never enter this mapping.
+    cached_lazy_frames: dict[tuple[str, str | None], pl.LazyFrame] = {}
     errors: dict[str, str] = {}
     error_lines: dict[str, int] = {}
     timings: dict[str, float] = {}
@@ -1757,12 +1785,7 @@ def _execute_eager_core(
         actual_columns: list[tuple[str, str]],
     ) -> list[tuple[str, str]]:
         config = node.data.config
-        if (
-            node.data.nodeType != NodeType.MODEL_SCORE
-            or config.get("code")
-            or config.get("column_renames")
-            or config.get("selected_columns")
-        ):
+        if not _is_plain_model_score(node):
             return actual_columns
 
         parent_ids = parents_of.get(node_id, [])
@@ -1793,6 +1816,12 @@ def _execute_eager_core(
     for nid in order:
         fn, is_source = funcs[nid]
         node = node_map[nid]
+        if execution_context is not None:
+            requested_columns = needed_cols.get(nid)
+            execution_context.record_column_widths(
+                node_id=nid,
+                requested_width=(None if requested_columns is None else len(requested_columns)),
+            )
         contract = _effective_contract(node) if enforce_contracts else None
         check_here = bool(contract) and _should_check_contract(contract)  # type: ignore[arg-type]
         # A node that the builder chose to wire to ``_passthrough_fn`` is
@@ -1855,9 +1884,17 @@ def _execute_eager_core(
                     if parent_frame is None:
                         continue
                     picked = _pick_source_frame(parent_frame, edge)
-                    parent_lf = picked if isinstance(picked, pl.LazyFrame) else picked.lazy()
-                    if children_count.get(pid, 0) > 1:
-                        parent_lf = parent_lf.cache()
+                    frame_key = (pid, edge.sourceHandle)
+                    if (
+                        isinstance(picked, pl.LazyFrame)
+                        and frame_fanout_count.get(frame_key, 0) > 1
+                    ):
+                        parent_lf = cached_lazy_frames.get(frame_key)
+                        if parent_lf is None:
+                            parent_lf = picked.cache()
+                            cached_lazy_frames[frame_key] = parent_lf
+                    else:
+                        parent_lf = picked if isinstance(picked, pl.LazyFrame) else picked.lazy()
                     input_lfs.append(parent_lf)
                 if not input_lfs:
                     raise ValueError(
@@ -1898,6 +1935,11 @@ def _execute_eager_core(
                     # (no incoming edges) needs no special handling — though
                     # it cannot occur here: an empty ``input_lfs`` raises above.
                     upstream_cols: frozenset[str] = frozenset().union(*upstream_col_sets)
+                    if execution_context is not None:
+                        execution_context.record_column_widths(
+                            node_id=nid,
+                            input_width=sum(len(columns) for columns in upstream_col_sets),
+                        )
                     _assert_inputs_satisfy_contract(node, contract, upstream_cols)  # type: ignore[arg-type]
 
                 if enforce_contracts:
@@ -1979,6 +2021,11 @@ def _execute_eager_core(
                             frame_schema_cache[(nid, port_label)] = [
                                 (name, str(port_schema[name])) for name in port_df.columns
                             ]
+                    if execution_context is not None:
+                        execution_context.record_column_widths(
+                            node_id=nid,
+                            output_width=sum(frame.width for frame in materialised.values()),
+                        )
                     eager_outputs[nid] = materialised
                     if len(materialised) == 1:
                         only_frame = next(iter(materialised.values()))
@@ -2014,7 +2061,7 @@ def _execute_eager_core(
                         available_columns[nid] = only_schema
                         output_columns[nid] = only_schema
                 t1 = time.perf_counter()
-                timings[nid] = round(t1 - t0, 6)
+                timings[nid] = round((t1 - t0) * 1000, 1)
                 available_columns.setdefault(nid, [])
                 output_columns.setdefault(nid, [])
                 if execution_context is not None:
@@ -2038,15 +2085,15 @@ def _execute_eager_core(
             output_lf = renamed if isinstance(renamed, pl.LazyFrame) else renamed.lazy()
             full_output_columns = _schema_items_of(output_lf)
             full_output_columns = _full_model_score_schema(nid, node, full_output_columns)
-            if (
-                node.data.nodeType == NodeType.MODEL_SCORE
-                and not node.data.config.get("code")
-                and not node.data.config.get("column_renames")
-                and not node.data.config.get("selected_columns")
-            ):
+            if _is_plain_model_score(node):
                 available_columns[nid] = full_output_columns
             output_columns[nid] = full_output_columns
             output_column_names = [name for name, _dtype in full_output_columns]
+            if execution_context is not None:
+                execution_context.record_column_widths(
+                    node_id=nid,
+                    output_width=len(output_column_names),
+                )
             output_column_set = set(output_column_names)
 
             # Output-side contract check: every column the node promises
@@ -2136,6 +2183,10 @@ def _execute_eager_core(
             # so cancellation and memory-limit semantics stay consistent.
             raise
         except Exception as exc:
+            if is_public_contract_error(exc):
+                # Versioned public errors are run-level contract failures.
+                # Preview's per-node swallow mode must never hide them.
+                raise
             if not swallow_errors:
                 raise
             logger.error("node_failed", node_id=nid, error=str(exc))

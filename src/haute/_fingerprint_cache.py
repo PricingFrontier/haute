@@ -31,8 +31,6 @@ from haute._lru_cache import LRUCache
 
 logger = get_logger(component="fingerprint_cache")
 
-_MISSING = object()
-
 
 class FingerprintCache(LRUCache[str, dict[str, Any]]):
     """Multi-slot fingerprint cache layered on top of :class:`LRUCache`.
@@ -67,6 +65,8 @@ class FingerprintCache(LRUCache[str, dict[str, Any]]):
     ) -> None:
         if not slots:
             raise ValueError("At least one slot name is required")
+        if size_sensitive_slots is not None and (max_bytes is None or size_of is None):
+            raise ValueError("size_sensitive_slots requires max_bytes and size_of")
         if size_sensitive_slots is None:
             size_sensitive_slots = slots
         unknown_size_slots = set(size_sensitive_slots) - set(slots)
@@ -101,14 +101,11 @@ class FingerprintCache(LRUCache[str, dict[str, Any]]):
             entry = self._data.get(fingerprint)
             if entry is None:
                 return None
-            first_slot = self._slots[0]
-            if entry.get(first_slot, _MISSING) is _MISSING:
-                return None
             self._data.move_to_end(fingerprint)
             return {name: entry[name] for name in self._slots}
 
-    def store(self, fingerprint: str, **slot_data: Any) -> None:
-        """Store (or replace) an entry for *fingerprint*.
+    def store(self, fingerprint: str, **slot_data: Any) -> bool:
+        """Store an entry and return whether the new value was retained.
 
         Every key in *slot_data* must be a declared slot name.  Any
         declared slot not provided is reset to an empty dict.  LRU
@@ -122,7 +119,7 @@ class FingerprintCache(LRUCache[str, dict[str, Any]]):
             )
         entry = {name: slot_data.get(name, {}) for name in self._slots}
         # Use ``put`` for the base-class eviction + pinning logic.
-        self.put(fingerprint, entry)
+        return self.put(fingerprint, entry)
 
     def update_slot(self, slot: str, value: Any, *, fingerprint: str) -> None:
         """Replace a single slot's value on the entry matching *fingerprint*.

@@ -113,3 +113,12 @@ Out of scope:
 - E2E failures retain Playwright trace/screenshots/video according to its
   configuration. Benchmark/performance failures retain their workflow artifacts
   when the job reaches the upload step.
+
+## Polars backend contracts (0.6.0)
+
+See [the remediation plan](../../trip/plans/F_0.6.0_polars-backend-remediation.plan.md).
+The assurance suite will add a deterministic CI-small semantic join-plus-training fixture and
+opt-in 1m/10m variants through the existing performance harness. It will assert output equivalence,
+strategy selection, source-width handling, absence of unintended full collection, and budgeted
+rejection. The 10m case is never default CI, and no hardware-specific numeric performance gate is
+introduced until stable baselines exist.

@@ -106,7 +106,8 @@ def _get_available_mb() -> float:
     cross-platform detection (Linux ``/proc``, macOS ``sysconf``,
     Windows ``GlobalMemoryStatusEx``, 4 GiB fallback).
     """
-    return available_ram_bytes() / (1024 * 1024)
+    available_bytes = available_ram_bytes()
+    return 0.0 if available_bytes is None else available_bytes / (1024 * 1024)
 
 
 def _mem_checkpoint(label: str) -> None:

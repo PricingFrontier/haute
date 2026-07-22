@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import random
 
-from hypothesis import given, settings
+from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
 from haute._cache import (
@@ -104,7 +104,7 @@ class TestSeparatorInjectivity:
             unique=True,
         ),
     )
-    @settings(max_examples=200)
+    @settings(max_examples=200, suppress_health_check=[HealthCheck.too_slow])
     def test_distinct_node_id_sets_never_collide(self, ids: list[str]) -> None:
         """For any two graphs built from distinct node-id sets drawn from an
         alphabet that includes the internal separators, fingerprints differ."""

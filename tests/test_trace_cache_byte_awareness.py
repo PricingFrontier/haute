@@ -134,7 +134,7 @@ class TestTraceCacheOversizedEntry:
     """A single entry larger than the whole budget is rejected at store time.
 
     Same policy as the dataframe-execution cache's oversized artifacts:
-    never admitted, removed-if-replacing, loud telemetry — and the trace
+    never admitted, with an existing entry retained, loud telemetry — and the trace
     request itself still succeeds (only the re-click loses its cache hit).
     """
 
@@ -149,7 +149,7 @@ class TestTraceCacheOversizedEntry:
         assert stats["entries"] == 0
         assert stats["bytes"] == 0
 
-    def test_oversized_replacement_removes_stale_entry(self) -> None:
+    def test_oversized_replacement_retains_existing_entry(self) -> None:
         small = pl.DataFrame({"x": [1]})
         big = pl.DataFrame({"x": list(range(100))})
         cache = _trace_shaped_cache(max_bytes=small.estimated_size())
@@ -157,12 +157,14 @@ class TestTraceCacheOversizedEntry:
         cache.store("fp", **_trace_entry({"node": small}))
         assert cache.try_get("fp") is not None
 
-        cache.store("fp", **_trace_entry({"node": big}))
+        assert cache.store("fp", **_trace_entry({"node": big})) is False
 
-        # The stale small entry must not be served for the new fingerprint
-        # contents — deterministic rejection, not silent stale reuse.
-        assert cache.try_get("fp") is None
-        assert cache.stats()["bytes"] == 0
+        # A rejected replacement never destroys the previously retained
+        # value; callers learn explicitly that the new value was not stored.
+        retained = cache.try_get("fp")
+        assert retained is not None
+        assert retained["eager_outputs"]["node"].equals(small)
+        assert cache.stats()["bytes"] == small.estimated_size()
 
     def test_oversized_rejection_is_loud(self, caplog: pytest.LogCaptureFixture) -> None:
         df = pl.DataFrame({"x": [1, 2, 3]})

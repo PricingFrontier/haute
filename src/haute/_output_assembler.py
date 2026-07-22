@@ -67,6 +67,32 @@ class OutputMappingSchemaError(HauteError):
     """
 
 
+class OutputNestingKeyError(OutputMappingSchemaError):
+    """A row cannot be placed beneath its parent because a nesting key is null."""
+
+    code = "output_nesting_key_null"
+    error_code = code
+    public_fields = ("frame", "output_path", "key")
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        frame: str,
+        output_path: str,
+        key: str,
+    ) -> None:
+        self.frame = frame
+        self.output_path = output_path
+        self.key = key
+        super().__init__(
+            message,
+            frame=frame,
+            output_path=output_path,
+            key=key,
+        )
+
+
 # ---------------------------------------------------------------------------
 # The cut planner — schema-determined (A4), OUTPUT_ASSEMBLY_PROPERTIES §3–4
 # ---------------------------------------------------------------------------
@@ -355,6 +381,16 @@ def _group_rows(rows: list[dict[str, Any]], keys: list[str]) -> list[list[dict[s
     return [groups[k] for k in order]
 
 
+def _index_rows(
+    rows: list[dict[str, Any]], keys: tuple[str, ...]
+) -> dict[tuple[Any, ...], list[dict[str, Any]]]:
+    """Index rows by *keys*, preserving the source order within every bucket."""
+    index: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
+    for row in rows:
+        index.setdefault(tuple(row.get(key) for key in keys), []).append(row)
+    return index
+
+
 def _prune(value: Any) -> Any:
     """Recursively drop absent structure (the Q1 null-prune + empty-collection rule).
 
@@ -436,10 +472,41 @@ def _assemble_document(field_frames: dict[str, pl.LazyFrame]) -> list[Any]:
             if pref[: len(n)] == n:
                 carries[n].update(port_paths[port])
 
+    # A parent object can only nest a child under values it emits at this level
+    # and the child subtree also carries.  Null is not an identity: accepting it
+    # would co-locate unrelated partial rows under a fabricated ``None`` key.
+    for parent in nodes:
+        parent_own = {c for c, parsed in all_paths.items() if _array_prefix(parsed) == parent}
+        for child in (n for n in nodes if len(n) == len(parent) + 1 and n[: len(parent)] == parent):
+            relation_keys = tuple(sorted(parent_own & carries[child]))
+            if not relation_keys:
+                continue
+            parent_ports = sorted(p for p, pref in emit_prefix.items() if pref == parent)
+            child_ports = sorted(
+                p for p, pref in emit_prefix.items() if pref[: len(child)] == child
+            )
+            for port in parent_ports + child_ports:
+                for row in rows_by_port[port]:
+                    for key in relation_keys:
+                        if row.get(key) is None:
+                            raise OutputNestingKeyError(
+                                "a parent-to-child nesting key cannot be null",
+                                frame=port,
+                                output_path=key,
+                                key=key,
+                            )
+
     def children_of(prefix: tuple[str, ...]) -> list[tuple[str, ...]]:
         return sorted(n for n in nodes if len(n) == len(prefix) + 1 and n[: len(prefix)] == prefix)
 
-    def build(prefix: tuple[str, ...], scope: dict[str, Any]) -> list[dict[str, Any]]:
+    level_rows_cache: dict[tuple[str, ...], list[dict[str, Any]]] = {}
+    indexes: dict[
+        tuple[tuple[str, ...], tuple[str, ...]], dict[tuple[Any, ...], list[dict[str, Any]]]
+    ] = {}
+
+    def level_rows_for(prefix: tuple[str, ...]) -> list[dict[str, Any]]:
+        if prefix in level_rows_cache:
+            return level_rows_cache[prefix]
         port_list = ports_at.get(prefix, [])
         if not port_list:
             # No frame emits here: synthesise this level from the ancestor keys its
@@ -461,7 +528,20 @@ def _assemble_document(field_frames: dict[str, pl.LazyFrame]) -> list[Any]:
             level_rows = (
                 _execute_plan({p: field_frames[p] for p in port_list}, plan).collect().to_dicts()
             )
-        rows = [r for r in level_rows if all(r.get(k) == v for k, v in scope.items())]
+        level_rows_cache[prefix] = level_rows
+        return level_rows
+
+    def scoped_rows(prefix: tuple[str, ...], scope: dict[str, Any]) -> list[dict[str, Any]]:
+        if not scope:
+            return level_rows_for(prefix)
+        keys = tuple(sorted(scope))
+        cache_key = (prefix, keys)
+        if cache_key not in indexes:
+            indexes[cache_key] = _index_rows(level_rows_for(prefix), keys)
+        return indexes[cache_key].get(tuple(scope[key] for key in keys), [])
+
+    def build(prefix: tuple[str, ...], scope: dict[str, Any]) -> list[dict[str, Any]]:
+        rows = scoped_rows(prefix, scope)
 
         own = [c for c, p in all_paths.items() if _array_prefix(p) == prefix]
         objects: list[dict[str, Any]] = []
@@ -629,6 +709,18 @@ def validate_v2_output_mapping(mapping: list[dict[str, Any]]) -> None:
                         output_path=f"{a} vs {b}",
                     )
 
+        prefixes = [(path, _array_prefix(_parse_output_path(path))) for path in distinct]
+        for i, (a, a_prefix) in enumerate(prefixes):
+            for b, b_prefix in prefixes[i + 1 :]:
+                if not (
+                    a_prefix[: len(b_prefix)] == b_prefix or b_prefix[: len(a_prefix)] == a_prefix
+                ):
+                    raise OutputMappingSchemaError(
+                        "one source frame cannot emit into divergent array branches",
+                        source_port=port,
+                        output_path=f"{a} vs {b}",
+                    )
+
 
 def assemble_output_from_mapping(
     frames: dict[str, pl.LazyFrame], mapping: list[dict[str, Any]]
@@ -643,6 +735,8 @@ def assemble_output_from_mapping(
     swappable serialiser is the Python nester (Q1); a polars struct-column
     variant can replace ``_assemble_document`` behind this same boundary.
     """
+    validate_v2_output_mapping(mapping)
+
     by_port: dict[str, list[dict[str, Any]]] = {}
     for entry in mapping:
         if not is_active_mapping_entry(entry):

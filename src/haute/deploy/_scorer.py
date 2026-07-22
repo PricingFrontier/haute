@@ -349,6 +349,30 @@ def _bundled_contract_path(node_id: str, remap: dict[str, str]) -> str | None:
     return remap.get(f"{node_id}__{CONTRACT_FILENAME}")
 
 
+def _validate_deploy_model_score_source(node: GraphNode, remap: dict[str, str]) -> None:
+    """Reject a deploy modelScore that would become an identity passthrough."""
+    if node.data.nodeType != NodeType.MODEL_SCORE:
+        return
+    config = node.data.config
+    if (
+        _model_score_has_configured_source(config)
+        or _remap_artifact(node.id, config, remap, "artifact_path") is not None
+        or _bundled_contract_path(node.id, remap) is not None
+    ):
+        return
+
+    from haute.errors import DeployError
+
+    raise DeployError(
+        f"modelScore node {node.id!r} cannot be served: it has no usable "
+        "model source (set sourceType with a run_id or "
+        "registered_model) and no bundled model artifact, so the "
+        "deployed endpoint would serve it as a silent identity "
+        "passthrough that omits the model from every quote.",
+        node_id=node.id,
+    )
+
+
 def _declared_categorical_levels_for_model_score(
     node: GraphNode,
     source_ids: list[str],
@@ -523,6 +547,13 @@ def score_graph_lazy(
     _validate_deploy_input_edges(graph)
     node_by_id = {node.id: node for node in graph.nodes}
     parents_of = graph.parents_of
+    relevant_node_ids = set(upstream_node_ids(output_node_id, parents_of)) | {output_node_id}
+    for node in graph.nodes:
+        if node.id in relevant_node_ids:
+            # Strategy planning now precedes function construction. Preserve
+            # deploy's purpose-built passthrough rejection before a malformed
+            # dynamic model contract can fail with a lower-level config error.
+            _validate_deploy_model_score_source(node, remap)
     input_set = set(input_node_ids)
     input_lf = input_df.lazy()
     model_score_temp_paths: list[str] = []
@@ -779,17 +810,7 @@ def score_graph_lazy(
             # modelScore as a passthrough — the served quote would silently omit
             # the model.  Fail loud at build/validate time instead of shipping a
             # container that quietly returns unscored inputs.
-            if not _model_score_has_configured_source(config):
-                from haute.errors import DeployError
-
-                raise DeployError(
-                    f"modelScore node {nid!r} cannot be served: it has no usable "
-                    "model source (set sourceType with a run_id or "
-                    "registered_model) and no bundled model artifact, so the "
-                    "deployed endpoint would serve it as a silent identity "
-                    "passthrough that omits the model from every quote.",
-                    node_id=nid,
-                )
+            _validate_deploy_model_score_source(node, remap)
 
         # Intercept: static dataSource with remapped artifact path
         if node_type == NodeType.DATA_SOURCE and nid not in input_set and remap:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import threading
 from collections.abc import Generator, Iterator
 from contextlib import contextmanager
@@ -29,6 +30,12 @@ _POLARS_STREAMING_ERRORS = (
     pl.exceptions.SchemaError,
 )
 
+# No reproducible streaming-incompatibility exception was harvested for the
+# locked Polars 1.39.3 corpus during the spec evidence step.  The empty table
+# is therefore intentional: a future entry must name the exact version,
+# concrete exception class, and anchored full-message signature.
+_POLARS_STREAMING_COMPATIBILITY_SIGNATURES: tuple[tuple[str, type[BaseException], str], ...] = ()
+
 
 _BROAD_COLLECT_PROFILES = frozenset({ExecutionProfile.PREVIEW_EAGER})
 
@@ -40,8 +47,14 @@ def _normalise_profile(profile: ExecutionProfile | str) -> ExecutionProfile:
 
 
 def _is_streaming_compatibility_error(exc: BaseException) -> bool:
-    message = str(exc).lower()
-    return "stream" in message
+    return any(
+        pl.__version__ == version
+        and type(exc) is exception_type
+        and re.fullmatch(message_signature, str(exc), flags=re.IGNORECASE) is not None
+        for version, exception_type, message_signature in (
+            _POLARS_STREAMING_COMPATIBILITY_SIGNATURES
+        )
+    )
 
 
 def _is_streaming_sink_error(exc: BaseException) -> bool:
@@ -262,6 +275,9 @@ def bounded_sink(
             fast_checkpoint=fast_checkpoint,
             cause=type(exc).__name__,
         ) from exc
+    metrics_context = current_execution_context()
+    if metrics_context is not None:
+        metrics_context.record_bytes_written(path.stat().st_size)
 
 
 # ---------------------------------------------------------------------------
@@ -270,12 +286,14 @@ def bounded_sink(
 
 
 @contextmanager
-def atomic_write(dest: Path) -> Generator[Path, None, None]:
+def atomic_write(dest: Path, *, ensure_parent: bool = True) -> Generator[Path, None, None]:
     """Context manager for atomic file writes via temp-then-rename.
 
     Yields a temporary path (``dest`` with ``.parquet.tmp`` suffix).
     On successful exit, atomically renames the temp file to *dest*.
     On exception, cleans up the temp file and re-raises.
+    Callers that create a shared parent once before a write loop may pass
+    ``ensure_parent=False`` to avoid repeating the directory operation.
 
     Usage::
 
@@ -283,7 +301,8 @@ def atomic_write(dest: Path) -> Generator[Path, None, None]:
             df.write_parquet(tmp, compression="zstd")
         # cache_path now exists
     """
-    dest.parent.mkdir(parents=True, exist_ok=True)
+    if ensure_parent:
+        dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = dest.with_suffix(".parquet.tmp")
     try:
         yield tmp
@@ -386,72 +405,3 @@ def _malloc_trim() -> None:
         except (OSError, AttributeError):
             logger.debug("heap_compact_unavailable", platform=platform)
     # macOS / other: no native heap compaction API available
-
-
-def best_effort_sink(
-    lf: pl.LazyFrame,
-    path: str | Path,
-    *,
-    fmt: str = "parquet",
-    fast_checkpoint: bool = False,
-    allow_broad: bool = False,
-) -> None:
-    """Sink a LazyFrame to file via streaming, with explicit eager fallback.
-
-    Tries ``sink_parquet`` / ``sink_csv`` first (streaming, low memory).
-    If Polars raises a streaming-incompatible error, falls back to
-    ``collect(engine="streaming")`` + eager write.  Callers must pass
-    ``allow_broad=True`` so any use of the high-memory path is deliberate
-    at the call site.
-
-    Only retries on Polars-specific errors (``ComputeError``,
-    ``InvalidOperationError``, ``SchemaError``).  Real I/O errors
-    (permissions, disk full) propagate immediately.
-
-    When *fast_checkpoint* is ``True``, uses ``lz4`` compression instead
-    of the default ``zstd``.  This is ~3× faster for write and ~2× faster
-    for read — ideal for temporary checkpoint files that are consumed
-    immediately and then deleted.
-    """
-    if not allow_broad:
-        raise ValueError("best_effort_sink requires allow_broad=True")
-
-    path = Path(path)
-    compression = _checkpoint_compression(fast_checkpoint)
-
-    def _do_sink(target: Path) -> None:
-        try:
-            _streaming_sink_to_path(lf, target, fmt=fmt, compression=compression)
-        except _POLARS_STREAMING_ERRORS:
-            logger.info("sink_streaming_fallback", path=str(path), fmt=fmt)
-            context = current_execution_context()
-            df = streaming_collect(
-                lf,
-                profile=context.profile if context is not None else ExecutionProfile.LAZY_SINK,
-                execution_context=context,
-            )
-            try:
-                _eager_write_to_path(df, target, fmt=fmt, compression=compression)
-            finally:
-                del df
-
-    # Use atomic write only when parent directory already exists —
-    # otherwise let the sink raise naturally on missing dirs.
-    _write_atomically_if_possible(path, _do_sink)
-
-
-def safe_sink(
-    lf: pl.LazyFrame,
-    path: str | Path,
-    *,
-    fmt: str = "parquet",
-    fast_checkpoint: bool = False,
-) -> None:
-    """Compatibility wrapper for the legacy fallback-capable sink."""
-    best_effort_sink(
-        lf,
-        path,
-        fmt=fmt,
-        fast_checkpoint=fast_checkpoint,
-        allow_broad=True,
-    )

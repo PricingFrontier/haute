@@ -40,7 +40,7 @@ import shutil
 import threading
 import time
 import uuid
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from itertools import islice
 from pathlib import Path
@@ -268,10 +268,14 @@ def _data_file_signature(data_path: Path) -> dict[str, Any]:
     unreadable — the build cannot meaningfully record a signature then.
     """
     st = data_path.stat()
+    digest = _hash_file(data_path)
+    final_st = data_path.stat()
+    if (st.st_size, st.st_mtime_ns) != (final_st.st_size, final_st.st_mtime_ns):
+        raise OSError(f"data file changed while its signature was computed: {data_path}")
     return {
-        "size": st.st_size,
-        "mtime_ns": st.st_mtime_ns,
-        "sha256": _hash_file(data_path),
+        "size": final_st.st_size,
+        "mtime_ns": final_st.st_mtime_ns,
+        "sha256": digest,
     }
 
 
@@ -333,7 +337,12 @@ def _payload_content_matches(recorded: Any, payload: bytes) -> bool:
     return len(payload) == size and hashlib.sha256(payload).hexdigest() == digest
 
 
-def _data_file_matches(recorded: Any, data_path: Path) -> bool:
+def _data_file_matches(
+    recorded: Any,
+    data_path: Path,
+    *,
+    data_file_signature: Mapping[str, Any] | None = None,
+) -> bool:
     """True iff the data file on disk still matches the recorded signature.
 
     Order of checks: missing/garbled signature → stale (pre-W2 caches
@@ -351,7 +360,14 @@ def _data_file_matches(recorded: Any, data_path: Path) -> bool:
     validity path; the deploy-copy case (mtime moved, content identical)
     still validates because the hash matches.
     """
-    return _file_content_matches(recorded, data_path)
+    if data_file_signature is None:
+        try:
+            data_file_signature = _data_file_signature(data_path)
+        except OSError:
+            return False
+    recorded_parts = _content_signature_parts(recorded)
+    observed_parts = _content_signature_parts(data_file_signature)
+    return recorded_parts is not None and recorded_parts == observed_parts
 
 
 # ---------------------------------------------------------------------------
@@ -1204,6 +1220,9 @@ def build_per_port_cache(
     cd = Path(cache_dir)
 
     table_specs = _emitting_table_specs(v2_config)
+    # A build has one source identity. Reuse this exact, double-stat-verified
+    # signature for the no-op decision and for a possible new meta.json.
+    data_file_sig = _data_file_signature(dp)
 
     with _build_lock_for(cd):
         # No-op trapdoor: if the existing meta.json's fingerprint matches the
@@ -1211,7 +1230,12 @@ def build_per_port_cache(
         # every expected parquet matches its signed manifest entry and footer
         # schema, skip the rebuild entirely. Repeated cache-button clicks then
         # don't churn the preview cache.
-        if is_per_port_cache_valid(cd, v2_config, data_path=dp):
+        if is_per_port_cache_valid(
+            cd,
+            v2_config,
+            data_path=dp,
+            data_file_signature=data_file_sig,
+        ):
             existing_meta = read_per_port_cache_meta(cd)
             if existing_meta is not None:
                 fp8 = str(existing_meta.get("schema_fingerprint", ""))[:8]  # pragma: no mutate
@@ -1229,12 +1253,6 @@ def build_per_port_cache(
                     "skipped": existing_meta.get("skipped", {"records": 0, "rows_by_table": {}}),
                     "cache_dir": str(cd),
                 }
-
-        # Record the data-file signature BEFORE reading records so the
-        # signature can only ever be same-or-older than the data we shred —
-        # a mid-build edit then invalidates on the next validity check
-        # rather than being masked.
-        data_file_sig = _data_file_signature(dp)
 
         # The shared parsed specs drive both walking and frame construction;
         # cache builds and direct runtime loads therefore have one selected-
@@ -1404,6 +1422,7 @@ def _cache_meta_matches_config_and_source(
     v2_config: dict[str, Any],
     *,
     data_path: str | Path,
+    data_file_signature: Mapping[str, Any] | None = None,
 ) -> bool:
     """Return whether captured metadata identifies this schema and source."""
     if meta.get("schema_mode") != "v2":
@@ -1415,7 +1434,9 @@ def _cache_meta_matches_config_and_source(
         # malformed in-memory config. Build and load boundaries validate loud.
         return False
     return meta.get("schema_fingerprint") == expected_fingerprint and _data_file_matches(
-        meta.get("data_file"), Path(data_path)
+        meta.get("data_file"),
+        Path(data_path),
+        data_file_signature=data_file_signature,
     )
 
 
@@ -1424,6 +1445,7 @@ def _read_matching_cache_meta(
     v2_config: dict[str, Any],
     *,
     data_path: str | Path,
+    data_file_signature: Mapping[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     """Read metadata once and return it when schema/source identity matches.
 
@@ -1443,6 +1465,7 @@ def _read_matching_cache_meta(
         meta,
         v2_config,
         data_path=data_path,
+        data_file_signature=data_file_signature,
     ):
         return None
     return meta
@@ -1492,6 +1515,8 @@ def load_v2_api_source(
             f"Open the node and tick at least one column on the emitting "
             f"table(s): {labels}, then preview again.",
         )
+    # Reuse one raw-data signature while probing both cache layers.
+    data_file_sig = _data_file_signature(Path(data_path))
     # A valid parquet cache is an optimization, not a runtime prerequisite.
     # Prefer the user's current working cache, then the saved/deployable
     # committed cache. If either disappears between validation and scanning,
@@ -1503,6 +1528,7 @@ def load_v2_api_source(
             cache_dir,
             config,
             data_path=data_path,
+            data_file_signature=data_file_sig,
         )
         if cache_meta is None:
             continue
@@ -1574,6 +1600,7 @@ def is_per_port_cache_valid(
     v2_config: dict[str, Any],
     *,  # pragma: no mutate
     data_path: str | Path,  # pragma: no mutate
+    data_file_signature: Mapping[str, Any] | None = None,
 ) -> bool:
     """Return whether a complete, readable cache can serve the current input.
 
@@ -1593,10 +1620,19 @@ def is_per_port_cache_valid(
     A meta without a recorded source or per-parquet signature is stale by
     construction — one-time invalidation on upgrade.
     """
+    try:
+        signature = (
+            _data_file_signature(Path(data_path))
+            if data_file_signature is None
+            else data_file_signature
+        )
+    except OSError:
+        return False
     cache_meta = _read_matching_cache_meta(
         cache_dir,
         v2_config,
         data_path=data_path,
+        data_file_signature=signature,
     )
     if cache_meta is None:
         return False

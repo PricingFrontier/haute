@@ -510,3 +510,13 @@ here.
 
 Known coverage gaps: none flagged with `xfail` or an explicit gap marker
 in this component's own test files at the time of writing.
+
+## Polars backend contracts (0.6.0)
+
+This component implements the scoring portions of the [Polars backend remediation plan](../../trip/plans/F_0.6.0_polars-backend-remediation.plan.md).
+
+- Replace `_batch_score_to_parquet`'s all-null synthetic-row dtype probe with a typed empty-output construction when the selected model flavor and its metadata fully determine prediction and probability dtypes. Never call `predict()` for a valid zero-row batch merely to infer a schema. If the required metadata is absent or ambiguous, raise a contextual error.
+- In deploy-live/eager scoring, derive the categorical-validation input from the union of categorical feature columns, model-required features, offset handling, and write-projection necessities. Validate against that projected frame rather than the complete input frame.
+- Do not add an array-contiguity conversion until its dedicated benchmark exceeds the agreed threshold and its regression tests demonstrate identical feature order, values, null treatment, and output dtypes.
+
+Tests must pin zero-row schemas for every flavor/task/probability combination that metadata supports, forbid a predict call in those cases, assert failure when metadata cannot establish a schema, prove wide live frames materialise only required validation columns, and gate any contiguity change on both benchmark evidence and semantic parity.

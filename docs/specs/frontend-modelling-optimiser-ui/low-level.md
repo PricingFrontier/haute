@@ -113,3 +113,29 @@ through their parent preview tests; not every helper has a dedicated test file.
 
 Performance regression coverage for background progress rendering is in
 `frontend/e2e/job-progress-render.benchmark.spec.ts`.
+
+## Polars backend contracts (0.6.0)
+
+See [the remediation plan](../../trip/plans/F_0.6.0_polars-backend-remediation.plan.md).
+`ModellingConfig.tsx`, `OptimiserConfig.tsx`, their action/result areas, and shared diagnostics
+consume only the guarded version-1 strategy contract. They render `projected`, `boundary`,
+`admitted_eager`, `rejected`, and `not_planned`, plus diagnostic unavailable, using the shared
+authoritative strategy-to-status mapping. Components must not define local response readers or
+reinterpret `strategy`.
+
+Boundary/rejection detail includes available blocking node/operator/profile, cost, stable reason,
+and remediation; bounded metric/provenance detail is disclosed on demand and preserves
+`detail_state=available|unavailable|truncated`. Missing/malformed required fields, unknown
+version-1 enums, and unsupported higher versions render diagnostic unavailable. Unknown additive
+fields are ignored only within version 1.
+
+`rejected` disables the relevant submit action while leaving configuration editable;
+`not_planned` and diagnostic unavailable remain explicit non-success diagnostics without
+inventing an execution decision. A group-by enables execution only when the strategy is the
+RAM-admitted `materialisation-boundary`; `GroupByExecutionUnsupportedError` surfaces as the
+typed HTTP 422 contract error with stable code/named fields. The UI never labels group-by
+ordinary checked execution or `unprojected-streaming-boundary`.
+
+Focused tests cover all five status semantics, diagnostic unavailable, strict version/enum
+handling, additive version-1 fields, accessible truncated/raw detail, group-by boundary versus
+rejection, stable 422 fields, and submit gating.

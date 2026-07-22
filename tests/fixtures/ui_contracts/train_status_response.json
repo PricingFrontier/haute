@@ -152,9 +152,11 @@
         "error": "too small",
         "error_type": "ValueError"
       }
-    ]
+    ],
+    "feature_selection": null
   },
   "warning": null,
   "terminal_reason": null,
-  "execution_metrics": null
+  "execution_metrics": null,
+  "feature_selection": null
 }

@@ -36,6 +36,10 @@ from haute._polars_utils import DEFAULT_STREAMING_CHUNK_SIZE, streaming_collect
 from haute._types import NodeType
 from haute.errors import BoundedMemoryUnsupportedError, ContractMismatchError, SchemaMismatchError
 from haute.routes._background_jobs import CancellableJobRegistry, JobCancellation
+from haute.routes._contract_errors import (
+    PUBLIC_CONTRACT_ERROR_TYPES,
+    contract_error_job_fields,
+)
 from haute.routes._helpers import find_typed_node
 from haute.routes._job_lifecycle import JobLifecycle, bind_running_execution_metrics_publisher
 from haute.routes._job_store import JobStore
@@ -849,6 +853,14 @@ class ExploreService:
                 to="memory_limited",
                 message=str(exc.to_payload()),
                 fields={"error": str(exc.to_payload())},
+                elapsed_seconds=time.monotonic() - start_time,
+            )
+        except PUBLIC_CONTRACT_ERROR_TYPES as exc:
+            self._lifecycle.transition(
+                job_id,
+                to="contract_error",
+                message=str(exc),
+                fields=contract_error_job_fields(exc),
                 elapsed_seconds=time.monotonic() - start_time,
             )
         except (ContractMismatchError, SchemaMismatchError, BoundedMemoryUnsupportedError) as exc:

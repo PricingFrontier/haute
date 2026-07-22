@@ -274,3 +274,10 @@ most: a silent wrong answer here mis-prices real policies.
   total-percent-change calculation would divide by a zero production baseline against a
   non-zero staging value (`_impact.py::_raise_for_non_finite_predictions`,
   `_zero_baseline_change_count`, `_total_percent_change`).
+
+## Polars backend contracts (0.6.0)
+
+Batch deployment and seedless live scoring will use the universal execution-plan facade.
+This adds strategy/provenance diagnostics and consistent bounded execution decisions
+without changing established input-to-output scoring semantics. Execution-engine owns
+plan selection; see the [remediation plan](../../trip/plans/F_0.6.0_polars-backend-remediation.plan.md).

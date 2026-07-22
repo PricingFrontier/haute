@@ -38,15 +38,16 @@ def test_live_switch_body_is_scenario_aware_not_hard_wired() -> None:
     _compile_node_code(code)
 
 
-def test_live_switch_body_passes_declared_order_for_runtime_fallback() -> None:
-    # The unmapped-scenario fallback (first declared input) is handled at
-    # runtime, so the body threads the declared input order to the selector.
+def test_live_switch_body_passes_declared_order_and_switch_name() -> None:
+    # The unconfigured fallback and configured-mapping diagnostic are handled
+    # by the shared runtime selector, so generated code passes both inputs.
     node = _live_switch_node({"missing_live_src": "live", "batch_src": "test_batch"})
 
     code = _gen_live_switch(node, ["batch_src", "shadow_src"])
 
     assert "select_live_switch_input(" in code
     assert "['batch_src', 'shadow_src']" in code
+    assert "switch='Switch'" in code
     _compile_node_code(code)
 
 

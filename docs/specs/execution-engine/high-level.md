@@ -162,10 +162,8 @@ running heavy work in a child process the parent can kill on timeout or memory l
   decision is acted on only when `checkpoint_dir` is non-`None`; direct lazy callers
   may intentionally omit checkpointing.
 
-  > NOTE: `_CheckpointAction.COLLECT_LAZY` is defined but `_checkpoint_decision()`
-  > never returns it and the executor has no handler for it. The current strategy is
-  > therefore `SKIP` or `PARQUET` only; in-memory `.collect().lazy()` checkpointing is
-  > not implemented behaviour.
+  The checkpoint action set is intentionally `SKIP` or `PARQUET` only;
+  in-memory `.collect().lazy()` checkpointing is not supported behaviour.
 - **Profile-scoped memory budgets, not one global limit.** A preview click and a
   10M-row training run have wildly different acceptable memory footprints and
   latency expectations. `ExecutionProfile` lets each call site (preview route,
@@ -268,3 +266,134 @@ running heavy work in a child process the parent can kill on timeout or memory l
   sources, JSON-shape apiInput caches), `estimate_safe_training_rows` returns
   `safe_row_limit=None` / `total_rows=None` — the caller proceeds without a downsample
   rather than receiving a fabricated number.
+
+## Polars backend contracts (0.6.0)
+
+This is an approved spec-first change. The implementation plan is
+[F_0.6.0_polars-backend-remediation.plan.md](../../trip/plans/F_0.6.0_polars-backend-remediation.plan.md).
+
+### Current limitations
+
+Execution strategy selection is projection-centred but does not yet provide one stable,
+versioned vocabulary at the `haute.execution` boundary, nor cover every execution entry
+point when no projection seed is available. Strategy diagnostics do not yet consistently
+describe boundedness, boundaries, cost, and feature provenance. Chunk planning rejects
+group-by implicitly through capability limits rather than exposing a deliberate execution
+boundary/rejection contract. Several execution paths also retain avoidable overhead or
+ambiguous operational behaviour: Windows RSS sampler setup is repeated, eager diamonds
+may cache consumers rather than their shared producer, RAM estimation can suppress
+unexpected failures or repeat work, and selected context/lifecycle paths have inconsistent
+timing, error, and cleanup semantics.
+
+### Approved target behaviour
+
+- `haute.execution` shall expose the sole projection-owned, stable, versioned strategy
+  vocabulary. Version 1 has the internal strategies `projected`, `schema-all-except`,
+  `full-width-admitted-eager`, `unprojected-streaming-boundary`,
+  `materialisation-boundary`, `unsupported`, and `not-planned`. Existing consumers shall
+  migrate to that facade rather than carrying parallel strategy representations.
+- Every strategy result shall contain integer `schema_version=1`, API `status`, internal
+  `strategy`, `profile`, `boundedness` (`bounded`, `unbounded`, or `unknown`), stable
+  `reason_code`, and `detail_state` (`available`, `unavailable`, or `truncated`). Optional
+  blocking/remediation, cost, metric, and provenance detail is bounded and contains no
+  plans, frames, or user data. Boundary and reason collections are capped at 32 entries,
+  provenance at 128 entries, and human messages/remediation at 512 characters, with
+  deterministic truncation.
+- The version-1 strategy-to-status mapping is authoritative: `projected` and
+  `schema-all-except` map to `projected`; `full-width-admitted-eager` maps to
+  `admitted_eager`; both boundary strategies map to `boundary`; `unsupported` maps to
+  `rejected`; and `not-planned` maps to `not_planned`.
+- The execution planner shall cover projection-seeded and seedless preview and deploy-live
+  entry points. When no safe bounded plan is available, the result shall explicitly describe
+  the admitted eager/materialised boundary or raise the applicable typed unsupported error;
+  it shall not silently claim bounded execution.
+- Group-by version 1 is never chunked and follows this authoritative profile matrix:
+
+  | `ExecutionProfile` | Version-1 group-by outcome |
+  | --- | --- |
+  | `PREVIEW_EAGER` | `materialisation-boundary` only after the admission and estimate checks below; otherwise typed rejection |
+  | `DEPLOY_LIVE` | `materialisation-boundary` only after the admission and estimate checks below; otherwise typed rejection |
+  | `LAZY_SINK` | reject with `profile_requires_bounded_execution` regardless of estimate |
+  | `TRAINING_PREP` | reject with `profile_requires_bounded_execution` regardless of estimate |
+  | `OPTIMISER_SETUP` | reject with `profile_requires_bounded_execution` regardless of estimate |
+  | `EXPLORE_ANALYSIS` | reject with `profile_requires_bounded_execution` regardless of estimate |
+  | `AUTO_RANGE` | reject with `profile_requires_bounded_execution` regardless of estimate |
+  | `DEPLOY_BATCH` | reject with `profile_requires_bounded_execution` regardless of estimate |
+  | `CHUNKED_MAP_REDUCE` | reject with `profile_requires_bounded_execution` regardless of estimate |
+
+  For `PREVIEW_EAGER` and `DEPLOY_LIVE`, a boundary is admitted only when an
+  `ExecutionContext` with an admission exists, both `admission.memory_limit_bytes` and
+  `admission.headroom_bytes` are positive, the `MaterialisationEstimate` has
+  `state=available`, and `estimated_peak_bytes <= min(admission.memory_limit_bytes,
+  admission.headroom_bytes)`. Equality is admitted. A missing context/admission or
+  non-positive admission value rejects with `execution_admission_unavailable`; an
+  unavailable estimate rejects with `materialisation_estimate_unavailable`; and an
+  available estimate above effective headroom rejects with
+  `materialisation_exceeds_headroom`. Every rejection raises
+  `GroupByExecutionUnsupportedError`, a `BoundedMemoryUnsupportedError`, before execution,
+  with stable fields `node_id`, `operator`, `profile`, `reason_code`, `remediation`, nullable
+  `estimated_peak_bytes`, and nullable `headroom_bytes`. Nullable fields are populated when
+  their values are known at decision time.
+- Group-by must never be represented as ordinary checked execution or an
+  `unprojected-streaming-boundary`, and has no streaming or chunk fallback. Chunk-local
+  partial/final reducers are not part of this change. The implementation plan's P1 group-by
+  integration depends on the P4 `MaterialisationEstimate` work: P1 may establish the typed
+  rejection surface first, but its admitted boundary must not ship until P4 supplies the
+  estimate contract.
+- Execution diagnostics shall remain bounded in size and safe to expose to callers; they
+  shall identify the decisive unsupported/opaque feature and any materialisation boundary
+  without embedding unbounded plans, frames, or user data.
+- Windows RSS sampling shall memoise process/DLL bindings per factory object identity,
+  without changing sampling failure semantics, and expose an explicit reset seam. The
+  cache must initialise once under concurrent access for one identity and initialise a new
+  binding after a factory switch. Eager diamond execution shall create one cached lazy-plan
+  node at the common producer and share that same `LazyFrame` with dependent branches; it
+  must not add an eager collection or wrap an already-materialised `DataFrame`.
+- RAM estimation shall distinguish unavailable metadata from unexpected failures (which
+  propagate), memoise metadata/schema resolution for a single estimate, and account
+  conservatively for variable-width string columns. P4 shall expose an explicit
+  `MaterialisationEstimate` with `state=available|unavailable`: an available estimate has a
+  non-negative integer `estimated_peak_bytes`, while an unavailable estimate has
+  `estimated_peak_bytes=None`. Zero bytes is a legitimate available estimate for empty input
+  and must never be overloaded to mean unknown. The estimator shall not fabricate a safe
+  row limit.
+- Execution-owned lifecycle semantics shall report stage timings in milliseconds,
+  raise `LiveSwitchScenarioError` (an `ExecutionError`) with a stable code and named fields
+  for invalid `liveSwitch` selection, and release every
+  acquired admission reservation on every terminal path. FR33's eager contract-cache miss
+  behaviour is already delivered and is not reopened by this change.
+- The dormant `COLLECT_LAZY` action and its unreachable guard are absent. Duplicate
+  execution predicates and measured execution hot-path cleanup are consolidated without
+  changing supported semantics.
+
+### Non-goals and compatibility
+
+- This change does not add chunked group-by reducers, alter node computation semantics,
+  introduce broad best-effort fallbacks, or promise that all Polars operations are bounded.
+- Before 1.0, 0.6 intentionally replaces unsafe silent fallback with typed failure. Existing
+  version-1 consumers may ignore unknown additive fields, but missing/malformed required
+  fields, unknown version-1 enum values, and unsupported higher schema versions are invalid.
+  Release notes and a migration note are required; no compatibility shim may preserve the
+  unsafe group-by or live-switch behaviour.
+- Performance cleanups require representative benchmarks; unmeasured speculative Review-P11 changes
+  are not required merely because they appear in the review.
+
+### Acceptance evidence
+
+- Contract tests prove all public execution entry points consume the same versioned strategy
+  result, including seedless preview and deploy-live paths, enforce the authoritative mapping,
+  version rules and deterministic caps, and keep diagnostics data-free and size-bounded.
+- Table-driven scenario tests cover every `ExecutionProfile` and every group-by reason code,
+  and prove the sole admitted result is a `materialisation-boundary`. For both eligible
+  profiles they cover missing context, missing/invalid admission, unavailable estimate,
+  empty-input zero estimate, estimate below headroom, estimate equal to headroom, and
+  estimate over headroom. No test may route group-by through streaming, chunking, ordinary
+  checked execution, or an unprojected streaming boundary.
+- Focused tests prove sampler initialisation is once per factory identity under concurrency,
+  switching factories creates a fresh binding, the reset seam works, one shared producer
+  materialisation across an eager diamond, RAM-estimate
+  unknown/fail-loud/memoisation/string-width behaviour, millisecond timing, typed live-switch
+  mapping failure, and reservation release after success,
+  cancellation, and exceptions.
+- The relevant execution, projection, RAM-estimate, admission/context, eager/lazy, and
+  deploy/preview test suites pass; benchmark evidence accompanies any Review-P11 optimisation claim.

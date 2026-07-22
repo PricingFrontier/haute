@@ -253,3 +253,26 @@ Out of scope (owned elsewhere):
 - None of these errors are swallowed or converted into a default value —
   every failure surfaces to the caller (executor, route handler, or CLI)
   for it to report or convert into an HTTP status as appropriate.
+
+## Polars backend contracts (0.6.0)
+
+This component implements the IO portions of the [Polars backend remediation plan](../../trip/plans/F_0.6.0_polars-backend-remediation.plan.md).
+
+- Streaming incompatibility is classified only by a committed, versioned table keyed by
+  the supported Polars version (`1.39.3`), concrete exception class, and a verified anchored
+  full-message signature. Initial entries must be harvested from actual Polars 1.39.3
+  failures and committed to this spec in a spec-only evidence step before classifier code
+  starts; an empty verified table is valid, while invented substring rules are forbidden.
+  Only a listed tuple may be converted or permit the existing caller's documented fallback policy.
+  An unknown Polars version, exception type, or full-message signature propagates unchanged
+  and never triggers a broad/eager fallback.
+- Where Polars exposes supported byte and column counters, execution reports their measured values. A counter unavailable for a given operation is represented explicitly as unavailable, never as a guessed zero or estimate.
+- The repository audit for this plan confirms that `safe_sink` and `best_effort_sink`
+  are private underscored-module symbols with no production caller, package export, or
+  supported public-documentation contract. Remove them; if contrary evidence appears before
+  the batch, implementation stops and this contract is revised first. The 0.6 pre-1.0 release notes name both
+  symbols; there is no deprecation shim because the fallback behaviour is unsafe and the
+  API is pre-1.0. Bounded execution retains its fail-loud guarantee.
+- CSV recount changes are deferred behind an explicit benchmark and semantic-equivalence gate; no recount optimisation is part of this approved change.
+
+Non-goals: changing registry format coverage, introducing implicit eager fallbacks, or inventing counter values for operations that cannot report them. Required tests cover every committed classifier tuple; unknown version/type/signature propagation; full-match negatives containing `downstream`, `upstream`, or `stream_id`; each counter's present/unavailable state; and, subject to the audit gate, the absence of the retired sink APIs. Any future CSV recount proposal must first add representative correctness and performance benchmarks.

@@ -132,8 +132,8 @@ class LRUCache(Generic[K, V]):
             self._data.move_to_end(key)
             return value  # type: ignore[return-value]
 
-    def put(self, key: K, value: V) -> None:
-        """Insert or update *key*.
+    def put(self, key: K, value: V) -> bool:
+        """Insert or update *key* and report whether the value was retained.
 
         When capacity is exceeded, the least-recently-used *unpinned*
         entry is evicted.  If every live entry is pinned, the cache is
@@ -153,9 +153,7 @@ class LRUCache(Generic[K, V]):
                         "replaced_existing": replaced_existing,
                     },
                 )
-                if replaced_existing:
-                    self._remove_key(key)
-                return
+                return False
             if key in self._data:
                 self._data.move_to_end(key)
                 self._current_bytes -= self._sizes.pop(key, 0)
@@ -168,6 +166,7 @@ class LRUCache(Generic[K, V]):
             if self._ttl is not None:
                 self._timestamps[key] = _time.monotonic()
             self._evict_if_over_capacity()
+            return key in self._data
 
     def pin(self, key: K) -> None:
         """Exempt *key* from LRU eviction.

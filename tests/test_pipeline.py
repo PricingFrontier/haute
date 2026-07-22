@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import inspect
+
 import polars as pl
 import pytest
 
@@ -1129,6 +1131,53 @@ class TestOutputResolution:
 
 
 class TestNodeArityValidation:
+    def test_signature_is_inspected_once_at_node_construction(self, monkeypatch) -> None:
+        calls = 0
+        real_signature = inspect.signature
+
+        def counting_signature(fn):
+            nonlocal calls
+            calls += 1
+            return real_signature(fn)
+
+        monkeypatch.setattr("haute.pipeline.inspect.signature", counting_signature)
+
+        node = Node(name="cached", description="", fn=lambda df: df, is_source=False)
+        assert node.n_inputs == 1
+        assert node.input_arity.describe() == "1"
+        node(pl.DataFrame({"x": [1]}))
+        assert calls == 1
+
+    def test_positional_only_and_defaulted_inputs_define_bounded_arity(self) -> None:
+        def transform(
+            required: pl.DataFrame,
+            optional: pl.DataFrame | None = None,
+            /,
+            *,
+            label: str = "ignored",
+        ) -> pl.DataFrame:
+            _ = label
+            return required if optional is None else required.vstack(optional)
+
+        node = Node(name="positional", description="", fn=transform, is_source=False)
+
+        assert node.input_arity.min_inputs == 1
+        assert node.input_arity.max_inputs == 2
+        assert node.input_arity.accepts(1)
+        assert node.input_arity.accepts(2)
+        assert not node.input_arity.accepts(3)
+
+    def test_varargs_are_the_supported_unbounded_input_form(self) -> None:
+        def combine(first: pl.DataFrame, *rest: pl.DataFrame) -> pl.DataFrame:
+            return pl.concat((first, *rest), how="vertical")
+
+        node = Node(name="variadic", description="", fn=combine, is_source=False)
+
+        assert node.input_arity.min_inputs == 1
+        assert node.input_arity.max_inputs is None
+        result = node(pl.DataFrame({"x": [1]}), pl.DataFrame({"x": [2]}))
+        assert result["x"].to_list() == [1, 2]
+
     def test_single_param_node_fed_two_edges_raises(self):
         """A one-input node wired to two sources must not silently drop one."""
         p = Pipeline("over_wired")

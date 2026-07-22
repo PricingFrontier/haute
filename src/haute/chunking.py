@@ -878,6 +878,16 @@ def chunk_plan(request: ChunkPlanRequest) -> ChunkPlan:
         request.target_node_id,
         source=request.source,
     )
+    # Strategy policy is authoritative and runs before capability-specific
+    # chunk planning.  In particular, every group-by receives the stable
+    # profile rejection and can never be mistaken for generic reducer support.
+    projection = plan_prepared_execution_strategy(
+        prepared.order,
+        _children_of(prepared.order, prepared.parents_of),
+        prepared.node_map,
+        profile=ExecutionProfile.CHUNKED_MAP_REDUCE,
+        required_columns_by_node=request.required_columns_by_node,
+    )
     source_node_ids: list[str] = []
     for node_id in prepared.order:
         node = prepared.node_map[node_id]
@@ -907,13 +917,14 @@ def chunk_plan(request: ChunkPlanRequest) -> ChunkPlan:
 
     start_index = prepared.order.index(chunk_start_node_id)
     pre_chunk_node_ids = tuple(prepared.order[:start_index])
+    pre_chunk_node_id_set = set(pre_chunk_node_ids)
     chunk_node_ids = tuple(prepared.order[start_index:])
     capabilities: dict[str, ChunkCapability] = {}
     row_expansion_factor = 1
     for node_id in prepared.order:
         node = resolve_instance_node(prepared.node_map[node_id], prepared.node_map)
         parent_ids = prepared.parents_of.get(node_id, [])
-        if node_id in pre_chunk_node_ids or (
+        if node_id in pre_chunk_node_id_set or (
             node_id == chunk_start_node_id and chunk_start_node_id != source_node_id
         ):
             if node.data.nodeType == NodeType.DATA_SOURCE:
@@ -941,13 +952,6 @@ def chunk_plan(request: ChunkPlanRequest) -> ChunkPlan:
         parents_of=prepared.parents_of,
     )
 
-    projection = plan_prepared_execution_strategy(
-        prepared.order,
-        _children_of(prepared.order, prepared.parents_of),
-        prepared.node_map,
-        profile=ExecutionProfile.CHUNKED_MAP_REDUCE,
-        required_columns_by_node=request.required_columns_by_node,
-    )
     chunk_size, source_chunk_size, estimated_source_row_bytes, estimated_target_row_bytes = (
         _plan_chunk_sizes(
             request,
@@ -1114,6 +1118,8 @@ def iter_chunked_frames(request: ChunkRunnerRequest) -> Iterator[ChunkBatch]:
         source_chunk_size=plan.source_chunk_size,
     )
     try:
+        if checkpoint_dir is not None:
+            checkpoint_dir.mkdir(parents=True, exist_ok=True)
         if context is not None:
             context.checkpoint(label="chunk_runner_start")
         source_batches = bounded_collect_batches(
@@ -1210,6 +1216,21 @@ def iter_chunked_frames(request: ChunkRunnerRequest) -> Iterator[ChunkBatch]:
             )
             if checkpoint_path is not None:
                 written_checkpoints.append(checkpoint_path)
+            if context is not None:
+                source_demand = plan.required_columns_by_node.get(plan.chunk_start_node_id)
+                target_demand = plan.required_columns_by_node.get(plan.target_node_id)
+                context.record_column_widths(
+                    node_id=plan.chunk_start_node_id,
+                    output_width=source_batch.width,
+                    requested_width=None if source_demand is None else len(source_demand),
+                    physically_scanned_width=source_batch.width,
+                )
+                context.record_column_widths(
+                    node_id=plan.target_node_id,
+                    output_width=frame.width,
+                    requested_width=None if target_demand is None else len(target_demand),
+                )
+                context.record_chunk()
             yield ChunkBatch(
                 index=chunk_index,
                 frame=frame,
@@ -1231,12 +1252,10 @@ def iter_chunked_frames(request: ChunkRunnerRequest) -> Iterator[ChunkBatch]:
             error=str(exc),
             error_type=type(exc).__name__,
         )
-        if request.cleanup_checkpoints_on_error:
-            _cleanup_written_checkpoints(written_checkpoints)
         raise
     finally:
         if not completed and request.cleanup_checkpoints_on_error:
-            _cleanup_written_checkpoints(written_checkpoints)
+            _cleanup_written_checkpoints(written_checkpoints, checkpoint_dir=checkpoint_dir)
         chunk_size_stack.close()
 
 
@@ -1720,30 +1739,15 @@ def _write_chunk_checkpoint(
 ) -> Path | None:
     if checkpoint_dir is None:
         return None
-    checkpoint_dir.mkdir(parents=True, exist_ok=True)
     path = checkpoint_dir / f"{target_node_id}_chunk_{chunk_index:08d}.parquet"
     from haute._polars_utils import atomic_write
 
-    try:
-        with atomic_write(path) as tmp:
-            frame.write_parquet(tmp, compression="lz4")
-    except BaseException:
-        # ``atomic_write`` already removes the ``.parquet.tmp`` on failure and the
-        # destination is only created by ``tmp.replace(dest)`` on success, so the
-        # only load-bearing cleanup left is removing the directory we just made.
-        try:
-            checkpoint_dir.rmdir()
-        except OSError as exc:
-            logger.warning(
-                "chunk_checkpoint_cleanup_failed",
-                path=str(checkpoint_dir),
-                error=str(exc),
-            )
-        raise
+    with atomic_write(path, ensure_parent=False) as tmp:
+        frame.write_parquet(tmp, compression="lz4")
     return path
 
 
-def _cleanup_written_checkpoints(paths: list[Path]) -> None:
+def _cleanup_written_checkpoints(paths: list[Path], *, checkpoint_dir: Path | None = None) -> None:
     seen: set[Path] = set()
     for path in paths:
         if path in seen:
@@ -1757,7 +1761,12 @@ def _cleanup_written_checkpoints(paths: list[Path]) -> None:
                 path=str(path),
                 error=str(exc),
             )
-    for parent in sorted({path.parent for path in paths}, key=lambda p: len(p.parts), reverse=True):
+    directories = {path.parent for path in paths}
+    if checkpoint_dir is not None:
+        directories.add(checkpoint_dir)
+    for parent in sorted(directories, key=lambda p: len(p.parts), reverse=True):
+        if not parent.exists():
+            continue
         try:
             parent.rmdir()
         except OSError as exc:

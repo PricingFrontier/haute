@@ -4,6 +4,7 @@
 - Build new functionality consistently with the existing codebase. Reuse and extend existing abstractions when that produces a clearer design.
 - Do not add speculative or silent fallbacks. Let unexpected states fail clearly so the underlying defect can be found and fixed.
 - Preserve existing user changes and avoid unrelated edits.
+- Make sure changes to functionality are defined in docs/specs before changing code.
 
 # Model and delegation budget
 

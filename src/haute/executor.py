@@ -32,6 +32,7 @@ from typing import Any
 
 import polars as pl
 
+import haute.execution as execution_facade
 from haute._builders import (  # noqa: F401
     NodeBuildContext,
     NodeBuilder,
@@ -47,6 +48,7 @@ from haute._cache import (
     preamble_execution_fingerprint,
     preamble_imports_utility,
 )
+from haute._execution_admission import create_admitted_execution_context
 from haute._execution_context import ExecutionContext, ExecutionProfile
 from haute._fingerprint_cache import FingerprintCache
 from haute._logging import get_logger
@@ -56,7 +58,6 @@ from haute._rating import _apply_banding  # noqa: F401 — re-exported for tests
 from haute._registry import ensure_registry_ready
 from haute._sandbox import safe_globals, validate_user_code
 from haute._types import NodeData
-from haute.execution import runtime_input_extra_keys
 from haute.graph_utils import (
     HauteError,
     NodeType,
@@ -66,7 +67,6 @@ from haute.graph_utils import (
     _prune_live_switch_edges,
     _resolve_sink_path,
     ancestors,
-    graph_fingerprint,
 )
 from haute.schemas import (
     ColumnInfo,
@@ -910,8 +910,8 @@ def execute_graph(
 ) -> dict[str, NodeResult]:
     """Execute a graph and return per-node results.
 
-    Uses eager single-pass execution with a single-entry cache so
-    clicking different nodes doesn't re-execute the full pipeline.
+    Uses eager single-pass execution with a bounded multi-entry lineage cache
+    so switching between recently previewed nodes avoids redundant execution.
 
     Args:
         graph: React Flow graph with "nodes" and "edges".
@@ -957,6 +957,27 @@ def execute_graph(
         enforce_contracts = ENFORCE_CONTRACTS
     if not graph.nodes:
         return {}
+    if execution_context is None:
+        admitted_context = create_admitted_execution_context(
+            operation="execute_graph",
+            profile=ExecutionProfile.PREVIEW_EAGER,
+        )
+        try:
+            return execute_graph(
+                graph,
+                target_node_id=target_node_id,
+                row_limit=row_limit,
+                max_preview_rows=max_preview_rows,
+                source=source,
+                enforce_contracts=enforce_contracts,
+                target_preview_only=target_preview_only,
+                requested_preview_columns=requested_preview_columns,
+                include_schema_metadata=include_schema_metadata,
+                port_label=port_label,
+                execution_context=admitted_context,
+            )
+        finally:
+            admitted_context.release_admission()
 
     # Include enforce_contracts in the cache key so a toggle flips
     # between distinct cache slots instead of serving a stale entry
@@ -968,47 +989,47 @@ def execute_graph(
         target_node_id,
         requested_preview_columns,
     )
+    execution_facade.plan_execution_strategy(
+        execution_facade.ProjectionRequest(
+            graph=graph,
+            target_node_id=target_node_id,
+            profile=(
+                execution_context.profile
+                if execution_context is not None
+                else ExecutionProfile.PREVIEW_EAGER
+            ),
+            required_columns_by_node=preview_required_columns or None,
+            source=source,
+        ),
+        execution_context=execution_context,
+    )
     preview_materialize_node_ids: frozenset[str] | None = (
         frozenset({target_node_id}) if target_preview_only and target_node_id is not None else None
     )
-    preview_materialize_column_limits: dict[str, int] | None = (
-        {target_node_id: PREVIEW_INITIAL_COLUMN_LIMIT}
-        if (
-            target_preview_only and target_node_id is not None and requested_preview_columns is None
-        )
+    preview_initial_column_limit = (
+        PREVIEW_INITIAL_COLUMN_LIMIT
+        if target_preview_only and target_node_id is not None and requested_preview_columns is None
         else None
     )
-    preview_cache_suffix = _preview_projection_cache_suffix(
-        graph,
-        target_node_id,
-        requested_preview_columns,
-        target_preview_only=target_preview_only,
-        initial_column_limit=(
-            PREVIEW_INITIAL_COLUMN_LIMIT
-            if target_preview_only and requested_preview_columns is None
-            else None
-        ),
-        port_label=port_label,
+    preview_materialize_column_limits: dict[str, int] | None = (
+        {target_node_id: preview_initial_column_limit}
+        if target_node_id is not None and preview_initial_column_limit is not None
+        else None
     )
-    # Include runtime-input state in the fingerprint so out-of-band input
-    # changes invalidate affected preview entries instead of serving stale
-    # frames: flat-file dataSource content, external files, model artifacts
-    # (modelScore / file-sourced optimiserApply), and the JSON-cache state
-    # of every apiInput (build/clear/mirror).  Empty for graphs without
-    # such inputs; non-empty graphs add extra keys whose presence is
-    # itself stable across calls.  trace.py reconstructs this exact key
-    # shape to reuse preview entries — both sides call
-    # ``runtime_input_extra_keys`` so they cannot drift.
-    extra_keys = [
-        f"{row_limit}:{source}:contracts={int(enforce_contracts)}{preview_cache_suffix}",
-        *runtime_input_extra_keys(graph),
-    ]
-    fp = graph_fingerprint(
+    fp = execution_facade.preview_lineage_cache_key(
         graph,
-        *extra_keys,
+        target_node_id=target_node_id,
+        source=source,
+        requested_columns=requested_preview_columns,
+        initial_column_limit=preview_initial_column_limit,
+        row_limit=row_limit,
+        port_label=port_label,
+        enforce_contracts=enforce_contracts,
+        materialisation_scope="target_only" if target_preview_only else "full",
         memo=fingerprint_memo,
     )
-
+    # Runtime inputs and source-selected lineage are fingerprinted inside
+    # the shared factory, so unrelated graph state cannot invalidate this entry.
     errors: dict[str, str] = {}
     error_lines: dict[str, int] = {}
     avail_cols: dict[str, list[tuple[str, str]]] = {}
@@ -1115,7 +1136,7 @@ def execute_graph(
                 if nid not in errors:
                     merged_errors.pop(nid, None)
                     merged_error_lines.pop(nid, None)
-            _preview_cache.store(
+            preview_store_retained = _preview_cache.store(
                 fp,
                 eager_outputs=merged,
                 errors=merged_errors,
@@ -1127,8 +1148,15 @@ def execute_graph(
                 output_columns=merged_output_cols,
                 frame_columns=merged_frame_cols,
             )
-            _preview_cache.pin(fp)
-            preview_entry_pinned = True
+            if preview_store_retained:
+                _preview_cache.pin(fp)
+                preview_entry_pinned = True
+            else:
+                logger.info(
+                    "preview_cache_store_skipped",
+                    fingerprint=fp[:8],
+                    reason="entry_exceeds_cache_budget",
+                )
             eager_outputs = merged
             errors = merged_errors
             timings = merged_timings
@@ -1170,7 +1198,7 @@ def execute_graph(
                 execution_context=execution_context,
             )
         eager_outputs = {k: v for k, v in raw_outputs.items() if v is not None}
-        _preview_cache.store(
+        preview_store_retained = _preview_cache.store(
             fp,
             eager_outputs=eager_outputs,
             errors=errors,
@@ -1186,8 +1214,15 @@ def execute_graph(
         # evicted while the caller is still building the response. Full
         # preview entries may later be reused by trace; target-only
         # entries intentionally retain only the selected node.
-        _preview_cache.pin(fp)
-        preview_entry_pinned = True
+        if preview_store_retained:
+            _preview_cache.pin(fp)
+            preview_entry_pinned = True
+        else:
+            logger.info(
+                "preview_cache_store_skipped",
+                fingerprint=fp[:8],
+                reason="entry_exceeds_cache_budget",
+            )
 
     try:
         # Pre-compute schema warnings for instance nodes by comparing the

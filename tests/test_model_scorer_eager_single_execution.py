@@ -438,6 +438,54 @@ class TestRunScorePipelineLiveSingleExecution:
         )
         assert result["pred"].to_list() == [2.5, 2.5, 2.5]
 
+    def test_live_categorical_validation_collects_only_score_projection(
+        self,
+        monkeypatch,
+    ) -> None:
+        """Unrelated wide columns never enter the live validation collect."""
+        import haute._polars_utils as polars_utils
+
+        collected_schemas: list[list[str]] = []
+        real_collect = polars_utils.streaming_collect
+
+        def recording_collect(lf: pl.LazyFrame, *args: Any, **kwargs: Any) -> pl.DataFrame:
+            collected_schemas.append(lf.collect_schema().names())
+            return real_collect(lf, *args, **kwargs)
+
+        monkeypatch.setattr(polars_utils, "streaming_collect", recording_collect)
+
+        model = MagicMock()
+        model.predict.side_effect = lambda pdf: np.full(len(pdf), 2.5, dtype=np.float64)
+        del model.predict_proba
+        scoring_model = ScoringModel(
+            model=model,
+            feature_names=["region"],
+            cat_feature_names=frozenset({"region"}),
+            flavor="catboost",
+        )
+        lf = pl.DataFrame(
+            {
+                "region": ["north", "south"],
+                "keep": [1, 2],
+                "unused_wide": ["x" * 1_000, "y" * 1_000],
+            }
+        ).lazy()
+
+        result = _run_score_pipeline(
+            scoring_model,
+            lf,
+            task="regression",
+            output_col="pred",
+            source="live",
+            required_output_columns=frozenset({"keep", "pred"}),
+            categorical_levels={"region": ["north", "south"]},
+        ).collect()
+
+        assert collected_schemas
+        assert collected_schemas[0] == ["region", "keep"]
+        assert all("unused_wide" not in schema for schema in collected_schemas)
+        assert result.columns == ["keep", "pred"]
+
     def test_live_categorical_violation_raises_before_scoring(self) -> None:
         spy = _UpstreamSpy(pl.DataFrame({"region": ["west"]}))
         model = MagicMock()

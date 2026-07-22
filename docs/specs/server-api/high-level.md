@@ -304,3 +304,65 @@ turn that loudness into a well-typed HTTP response rather than a raw traceback.
 > `haute.toml` or an unreadable one raises `ConfigError` rather than falling back — the
 > asymmetry is deliberate (a missing key is a fresh-project state; a decode failure would
 > silently misroute every subsequent save/load to the wrong directory if swallowed).
+
+## Polars backend contracts (0.6.0)
+
+Execution-consuming endpoints will expose the execution engine's bounded, typed strategy
+diagnostic DTO. The producer emits integer `schema_version=1`; required fields are `status`,
+`strategy`, `profile`, `boundedness` (`bounded|unbounded|unknown`), `reason_code`,
+`detail_state` (`available|unavailable|truncated`), and the three bounded collection fields
+`boundaries`, `reasons`, and `provenance`. Blocking/remediation, cost, metric, and provenance
+item details are otherwise optional. The payload never contains frames, user data, or plans,
+and human messages/remediation are capped at 512 characters.
+
+Every bounded collection has exactly the wrapper
+`{state: available|unavailable|truncated, total_count: int|null, items: [...]}`. An `available`
+wrapper has `total_count == len(items)`; a `truncated` wrapper has
+`total_count > len(items)`; and an `unavailable` wrapper has `total_count=null` and no items.
+Counts are non-negative. Boundary and reason item arrays are capped at 32 entries and provenance
+at 128. The producer canonical-sorts the complete collection before truncating it. A consumer
+receiving an over-cap collection or a wrapper whose state/count/items disagree treats the entire
+strategy diagnostic as malformed and exposes diagnostic unavailable; client-side truncation is
+not permitted. Top-level `detail_state` is the worst of the three wrapper states, ordered
+`truncated` > `unavailable` > `available`; a disagreement is malformed.
+
+Boundary entries require `topological_rank`, `node_id`, `operator`, and `boundary_kind` and sort
+by that tuple. Ranks come from the graph's canonical topological sort, which breaks every ready-
+node tie by lexical `node_id`. Reason entries require `reason_code` and sort by
+`(topological_rank or max, node_id or '', reason_code, operator or '')`. Provenance entries
+require `column` and `origin_kind` and sort by
+`(column, origin_kind, source_node_id or '', source_column or '')`. String ordering is ascending
+Unicode code-point order. After the primary tuple, the producer uses the server's canonical JSON
+serialisation as an internal final tie-break so truncation is deterministic; byte-identical
+duplicates are retained. That tie-break is not a wire-order rule: consumers validate only that
+primary tuples are nondecreasing and accept any relative order within an equal-primary group.
+
+The version-1 mapping is authoritative: internal `projected` and `schema-all-except` map to
+API `projected`; `full-width-admitted-eager` to `admitted_eager`;
+`unprojected-streaming-boundary` and `materialisation-boundary` to `boundary`; `unsupported`
+to `rejected`; and `not-planned` to `not_planned`. Consumers accept version 1 and ignore
+unknown additive fields only within it. Missing or malformed required fields, unknown
+version-1 enum values, and unsupported higher versions become an explicit diagnostic-
+unavailable result, never a fabricated successful status.
+
+Group-by version 1 is either returned as `materialisation-boundary` after the active profile
+allows full materialisation and RAM admission succeeds, or fails before execution with
+`GroupByExecutionUnsupportedError(BoundedMemoryUnsupportedError)`. The public failure carries
+`node_id`, `operator`, `profile`, `reason_code`, `remediation`, and nullable
+`estimated_peak_bytes` and `headroom_bytes`. It is never ordinary checked execution or an
+unprojected streaming boundary.
+
+The shared route and background-job mapper maps these public errors to HTTP 422 and terminal
+`contract_error`, respectively: `GroupByExecutionUnsupportedError`,
+`TraceCorrelationUnsupportedError(ExecutionError)`,
+`RatingExtremaUndefinedError(ExecutionError)`,
+`RatingFactorMissingError(SchemaMismatchError)`,
+`LiveSwitchScenarioError(ExecutionError)`, and
+`OutputNestingKeyError(OutputMappingSchemaError)`. Each response carries the exception's
+stable code and named fields. `TraceCorrelationUnsupportedError` uses stable code
+`trace_correlation_unsupported` and fields `node_id`, `key_columns`, `dtypes`, and `reason_code`;
+the two arrays preserve the engine's correlation-key order, correspond positionally, and contain
+at most 16 items each. This is an intentional pre-1.0 change in 0.6 from unsafe silent
+fallback to typed failure; release and migration notes are required, with no compatibility
+shim for the unsafe behaviour. The DTO reports decisions; the execution engine owns how they
+are made. See the [remediation plan](../../trip/plans/F_0.6.0_polars-backend-remediation.plan.md).

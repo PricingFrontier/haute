@@ -7,7 +7,7 @@ import importlib as _importlib
 import json as _json
 import math as _math
 import sys as _sys
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from importlib.machinery import PathFinder as _PathFinder
 from pathlib import Path
@@ -16,7 +16,7 @@ from typing import Any
 from haute._hashing import content_hash, content_hash_bytes
 from haute._logging import get_logger
 from haute._stat_gated_cache import StatGatedCache, artifact_cache_key
-from haute._types import GraphNode, NodeType, PipelineGraph
+from haute._types import GraphEdge, GraphNode, NodeType, PipelineGraph
 
 logger = get_logger(component="cache")
 
@@ -262,6 +262,190 @@ def _node_config_for_execution_fingerprint(node: GraphNode) -> dict[str, Any]:
     if node.data.nodeType == NodeType.EXPLORE:
         return {key: value for key, value in config.items() if key != "overview"}
     return config
+
+
+# Preview lineage keys deliberately do not use ``graph_fingerprint``: a preview
+# must be invalidated by precisely the portion of the graph that can execute
+# for its selected target/source, not by unrelated canvas state.
+LINEAGE_CACHE_KEY_VERSION = 1
+
+
+@dataclass(frozen=True)
+class LineageCacheKeyRequest:
+    """All dimensions which identify a lineage-scoped preview result.
+
+    ``prepared`` is structural on purpose.  Importing ``PreparedGraph`` here
+    would create a cache/projection import cycle, so its small public shape is
+    checked by :func:`lineage_cache_key` instead.
+    """
+
+    graph: PipelineGraph
+    prepared: Any
+    target_node_id: str | None
+    source: str
+    requested_columns: Iterable[str] | None
+    initial_column_limit: int | None
+    row_limit: int | None
+    port_label: str | None
+    contract_fingerprint: str
+    selected_live_switch_path: tuple[dict[str, object], ...]
+    runtime_input_fingerprint: str
+    execution_semantics_version: str
+
+
+def _lineage_node_identity(node: GraphNode) -> dict[str, Any]:
+    return {
+        "id": node.id,
+        "label": node.data.label,
+        "nodeType": str(node.data.nodeType),
+        "config": _node_config_for_execution_fingerprint(node),
+    }
+
+
+def _lineage_edge_identity(edge: GraphEdge) -> dict[str, Any]:
+    return {
+        "id": edge.id,
+        "source": edge.source,
+        "sourceHandle": edge.sourceHandle,
+        "target": edge.target,
+        "targetHandle": edge.targetHandle,
+    }
+
+
+def _normalise_requested_columns(columns: Iterable[str] | None) -> tuple[str, ...] | None:
+    if columns is None:
+        return None
+    if isinstance(columns, (str, bytes)):
+        raise TypeError("requested_columns must be an iterable of non-empty strings")
+
+    normalised: list[str] = []
+    seen: set[str] = set()
+    for column in columns:
+        if not isinstance(column, str) or not column:
+            raise ValueError("requested_columns must contain only non-empty strings")
+        if column not in seen:
+            seen.add(column)
+            normalised.append(column)
+    return tuple(normalised)
+
+
+def _validate_lineage_request(
+    request: LineageCacheKeyRequest,
+) -> tuple[dict[str, GraphNode], list[GraphEdge]]:
+    if not isinstance(request.graph, PipelineGraph):
+        raise TypeError("graph must be a PipelineGraph")
+    for name in (
+        "source",
+        "contract_fingerprint",
+        "runtime_input_fingerprint",
+        "execution_semantics_version",
+    ):
+        if not isinstance(getattr(request, name), str):
+            raise TypeError(f"{name} must be a string")
+    if request.target_node_id is not None and not isinstance(request.target_node_id, str):
+        raise TypeError("target_node_id must be a string or None")
+    if request.port_label is not None and not isinstance(request.port_label, str):
+        raise TypeError("port_label must be a string or None")
+    for name in ("initial_column_limit", "row_limit"):
+        value = getattr(request, name)
+        if value is not None and (
+            isinstance(value, bool) or not isinstance(value, int) or value < 0
+        ):
+            raise ValueError(f"{name} must be a non-negative integer or None")
+
+    prepared = request.prepared
+    if not all(hasattr(prepared, name) for name in ("node_map", "order", "relevant_edges")):
+        raise ValueError("prepared graph does not match: missing lineage fields")
+    if not isinstance(prepared.node_map, Mapping):
+        raise ValueError("prepared graph does not match: node_map is invalid")
+
+    graph_nodes = request.graph.node_map
+    relevant_ids = list(prepared.order)
+    if len(set(relevant_ids)) != len(relevant_ids):
+        raise ValueError("prepared graph does not match: duplicate node id")
+    relevant_nodes: dict[str, GraphNode] = {}
+    for node_id in relevant_ids:
+        prepared_node = prepared.node_map.get(node_id)
+        graph_node = graph_nodes.get(node_id)
+        if prepared_node is None or graph_node is None:
+            raise ValueError("prepared graph does not match: missing relevant node")
+        if canonical_json(_lineage_node_identity(prepared_node)) != canonical_json(
+            _lineage_node_identity(graph_node),
+        ):
+            raise ValueError("prepared graph does not match: relevant node differs")
+        relevant_nodes[node_id] = graph_node
+
+    graph_edges = {canonical_json(_lineage_edge_identity(edge)) for edge in request.graph.edges}
+    relevant_edges = list(prepared.relevant_edges)
+    for edge in relevant_edges:
+        if canonical_json(_lineage_edge_identity(edge)) not in graph_edges:
+            raise ValueError("prepared graph does not match: relevant edge differs")
+        if edge.source not in relevant_nodes or edge.target not in relevant_nodes:
+            raise ValueError("prepared graph does not match: edge leaves lineage")
+    if request.target_node_id is not None and request.target_node_id not in relevant_nodes:
+        raise ValueError("prepared graph does not match: target is not relevant")
+    return relevant_nodes, relevant_edges
+
+
+def selected_live_switch_path(prepared: Any) -> tuple[dict[str, object], ...]:
+    """Return the source-selected incoming wiring of relevant live switches."""
+    relevant_ids = set(prepared.order)
+    switches: list[dict[str, object]] = []
+    for switch_id in sorted(relevant_ids):
+        node = prepared.node_map.get(switch_id)
+        if node is None or node.data.nodeType != NodeType.LIVE_SWITCH:
+            continue
+        incoming = [
+            _lineage_edge_identity(edge)
+            for edge in prepared.relevant_edges
+            if edge.target == switch_id and edge.source in relevant_ids
+        ]
+        switches.append(
+            {
+                "switch_id": switch_id,
+                "incoming_edges": tuple(sorted(incoming, key=canonical_json)),
+            },
+        )
+    return tuple(switches)
+
+
+def lineage_cache_key(request: LineageCacheKeyRequest) -> str:
+    """Build a deterministic, lineage-scoped preview cache key."""
+    if not isinstance(request, LineageCacheKeyRequest):
+        raise TypeError("request must be a LineageCacheKeyRequest")
+    relevant_nodes, relevant_edges = _validate_lineage_request(request)
+    requested_columns = _normalise_requested_columns(request.requested_columns)
+
+    payload = {
+        "graph": {
+            "preamble": request.graph.preamble,
+            "source_file": request.graph.source_file,
+            "preserved_blocks": request.graph.preserved_blocks,
+            "sources": request.graph.sources,
+            "active_source": request.graph.active_source,
+            "nodes": [
+                _lineage_node_identity(relevant_nodes[node_id])
+                for node_id in sorted(relevant_nodes)
+            ],
+            "edges": sorted(
+                (_lineage_edge_identity(edge) for edge in relevant_edges),
+                key=canonical_json,
+            ),
+        },
+        "target_node_id": request.target_node_id,
+        "source": request.source,
+        "requested_columns": requested_columns,
+        "initial_column_limit": request.initial_column_limit,
+        "row_limit": request.row_limit,
+        "port_label": request.port_label,
+        "contract_fingerprint": request.contract_fingerprint,
+        "selected_live_switch_path": request.selected_live_switch_path,
+        "runtime_input_fingerprint": request.runtime_input_fingerprint,
+        "execution_semantics_version": request.execution_semantics_version,
+    }
+    return f"lineage-preview:v{LINEAGE_CACHE_KEY_VERSION}:" + content_hash_bytes(
+        canonical_json(payload).encode(),
+    )
 
 
 def _is_utility_module_name(value: str) -> bool:

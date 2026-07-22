@@ -100,3 +100,24 @@ helpers are exercised through these component tests rather than owning standalon
 
 Browser preview/smoke coverage is in `frontend/e2e/core-flows.spec.ts`,
 `frontend/e2e/data-preview-scroll.benchmark.spec.ts`, and `frontend/e2e/smoke.spec.ts`.
+
+## Polars backend contracts (0.6.0)
+
+See [the remediation plan](../../trip/plans/F_0.6.0_polars-backend-remediation.plan.md).
+`DataPreview.tsx` and `ExplorePreview.tsx` will consume only the shared guarded version-1
+strategy payload. The display distinguishes `projected`, `boundary`, `admitted_eager`,
+`rejected`, and `not_planned`, with a separate diagnostic-unavailable state. It uses the shared
+authoritative strategy-to-status mapping; components must not reinterpret internal strategies.
+A non-success state shows available blocking node/operator/profile, cost, reason, and actionable
+remediation. An expandable section shows only the bounded optional metric/provenance detail and
+honours `detail_state=available|unavailable|truncated`.
+
+Missing/malformed required fields, unknown version-1 enums, and unsupported higher versions render
+diagnostic unavailable. Unknown additive fields are ignored only within version 1. A group-by
+boundary is valid only for `strategy=materialisation-boundary`; a rejected group-by surfaces its
+HTTP 422 stable code and named fields and blocks execution. No component may recast group-by as
+ordinary checked execution or `unprojected-streaming-boundary`.
+
+Tests cover all five statuses, diagnostic unavailable, every version/detail-state path, keyboard
+and screen-reader access, deterministic truncated detail, rejected execution gating, the group-by
+boundary/rejection distinction, and typed 422 error fields without fabricated values.

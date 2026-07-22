@@ -123,6 +123,7 @@ async def train_status(job_id: str) -> TrainStatusResponse:
         warning=job.get("warning"),
         terminal_reason=job.get("terminal_reason"),
         execution_metrics=job.get("execution_metrics"),
+        feature_selection=job.get("feature_selection"),
     )
 
 
@@ -144,6 +145,7 @@ async def cancel_training(job_id: str) -> TrainStatusResponse:
         warning=job.get("warning"),
         terminal_reason=job.get("terminal_reason"),
         execution_metrics=job.get("execution_metrics"),
+        feature_selection=job.get("feature_selection"),
     )
 
 

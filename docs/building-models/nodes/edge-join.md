@@ -21,6 +21,27 @@ The node has two fixed input roles:
 
 Use the swap button in the editor if the roles need to be reversed. The canvas handles and the saved config move together, so the code and UI stay in sync.
 
+## A common canvas join
+
+For example, connect `policies` to the **Dominant input** and
+`competitor_scores` to the **Joining input**, then configure a left join on
+`quote_id`. The canvas remains explicit about which table continues downstream:
+
+```json
+{
+  "baseInput": "policies",
+  "joinInput": "competitor_scores",
+  "how": "left",
+  "on": ["quote_id"]
+}
+```
+
+The projection planner keeps the columns needed by downstream nodes **and**
+the join keys. Do not remove or rename a join key before this node. If a custom
+branch has an uncertain column contract, the join can become a conservative
+execution boundary; see [Execution Strategy](../execution-strategy.md) for how
+to read that result.
+
 | Config | Description |
 |---|---|
 | `baseInput` | The dominant input node id. Set from the canvas connection. |
@@ -85,4 +106,5 @@ The role handles are important: `base` and `join` tell the parser, executor, pre
 
 The node fails loudly when the shape is invalid. Common examples are missing role connections, stale `baseInput` or `joinInput` values, duplicate role handles, non-cross joins without keys, and Polars schema errors such as missing join columns.
 
-**See also:** [Polars](polars.md) for custom dataframe logic.
+**See also:** [Polars](polars.md) for custom dataframe logic and
+[Execution Strategy](../execution-strategy.md) for planning diagnostics.

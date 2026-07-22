@@ -87,6 +87,28 @@ def _csv_graph(path: Path):
     return _g({"nodes": [_source_node("src", str(path))], "edges": []})
 
 
+def test_graph_input_fingerprint_uses_canonical_json(monkeypatch, tmp_path: Path) -> None:
+    from haute import execution
+
+    seen: list[object] = []
+    canonical = execution.canonical_json
+
+    def recording_canonical_json(payload: object) -> str:
+        seen.append(payload)
+        return canonical(payload)
+
+    monkeypatch.setattr(execution, "canonical_json", recording_canonical_json)
+    first = execution.dataframe_graph_input_fingerprint(
+        _csv_graph(tmp_path / "source.csv"), target_node_id=None, source="live"
+    )
+    second = execution.dataframe_graph_input_fingerprint(
+        _csv_graph(tmp_path / "source.csv"), target_node_id=None, source="live"
+    )
+
+    assert seen
+    assert first == second
+
+
 def _flat_api_input_node(nid: str, path: Path):
     """apiInput with a non-JSON path — the builder dispatches it to
     ``read_data_source``, so preview reads the raw flat file directly."""
@@ -598,6 +620,26 @@ class TestStatGatedFingerprintMemo:
 
         execute_graph(graph)
         assert hash_calls.get(key) == 2, "a changed stat must re-hash content"
+
+    def test_all_runtime_path_fingerprint_surfaces_share_the_stat_gate(self, tmp_path, hash_calls):
+        """Public path and graph fingerprints must not bypass the shared memo."""
+        from haute.execution import (
+            dataframe_graph_input_fingerprint,
+            dataframe_paths_input_fingerprint,
+        )
+
+        p = tmp_path / "data.csv"
+        _write_csv(p, [1, 2])
+        key = str(p.resolve())
+
+        dataframe_paths_input_fingerprint({"source": str(p)})
+        dataframe_paths_input_fingerprint({"source": str(p)})
+        assert hash_calls.get(key) == 1
+
+        graph = _csv_graph(p)
+        dataframe_graph_input_fingerprint(graph, target_node_id=None, source="test")
+        dataframe_graph_input_fingerprint(graph, target_node_id=None, source="test")
+        assert hash_calls.get(key) == 1
 
     def test_touch_with_identical_bytes_recomputes(self, tmp_path):
         """Pinned semantics: mtime is digest material (like the sink path's
