@@ -21,11 +21,9 @@ from haute._trace_correlation import (
     _trace_values_match,
 )
 from haute._trace_enrichment import (
-    _fix_upstream_values,
     _match_continuous_rule,
     detect_row_lineage_type,
 )
-from haute._trace_export import export_trace
 from haute._trace_waterfall import (
     WaterfallReconciliationError,
     _check_display_consistency,
@@ -247,53 +245,6 @@ class TestTraceValuesMatchNearZero:
 
 
 # ---------------------------------------------------------------------------
-# F042 / F078 — _fix_upstream_values: scale-relative + unique + by node_id
-# ---------------------------------------------------------------------------
-
-
-class TestFixUpstreamValues:
-    def test_distinct_small_factors_do_not_collide(self):
-        """1e-6 absolute tolerance collided 1.0000001 and 1.0000004 and
-        .row(0) overwrote the value with the wrong row."""
-        eager = {"n": pl.DataFrame({"f": [1.0000001, 1.0000004]})}
-        steps = [_step("n", name="src", output={"f": None})]
-        input_sources = {"f": {"node_id": "n", "node_name": "src", "result_value": 1.0000004}}
-
-        _fix_upstream_values(input_sources, steps, eager)
-
-        assert steps[0].output_values["f"] == pytest.approx(1.0000004, abs=1e-12)
-
-    def test_ambiguous_match_leaves_value_untouched_and_logs(self):
-        eager = {"n": pl.DataFrame({"f": [2.0, 2.0]})}
-        steps = [_step("n", name="src", output={"f": None})]
-        input_sources = {"f": {"node_id": "n", "node_name": "src", "result_value": 2.0}}
-
-        with structlog.testing.capture_logs() as captured:
-            _fix_upstream_values(input_sources, steps, eager)
-
-        assert steps[0].output_values["f"] is None
-        assert any(e.get("event") == "fix_upstream_row_ambiguous" for e in captured)
-
-    def test_matches_by_node_id_not_shared_name(self):
-        """Two nodes share the display name 'src'; the known value belongs
-        to the second node and must land there, not on the first match."""
-        eager = {
-            "s1": pl.DataFrame({"a": [10.0]}),
-            "s2": pl.DataFrame({"a": [30.0]}),
-        }
-        steps = [
-            _step("s1", name="src", output={"a": None}),
-            _step("s2", name="src", output={"a": None}),
-        ]
-        input_sources = {"a": {"node_id": "s2", "node_name": "src", "result_value": 30.0}}
-
-        _fix_upstream_values(input_sources, steps, eager)
-
-        assert steps[0].output_values["a"] is None
-        assert steps[1].output_values["a"] == pytest.approx(30.0)
-
-
-# ---------------------------------------------------------------------------
 # F693 — continuous banding equality must be dtype-faithful (Float32)
 # ---------------------------------------------------------------------------
 
@@ -335,49 +286,6 @@ class TestRowLineageEdgeJoin:
             detect_row_lineage_type(input_row_count=1, output_row_count=5, node_type="edgeJoin")
             == "joined"
         )
-
-
-# ---------------------------------------------------------------------------
-# F314 — export_trace reports the upstream-most origin of a source column
-# ---------------------------------------------------------------------------
-
-
-class TestExportTraceOrigin:
-    def test_origin_is_first_producer_not_last_carrier(self):
-        steps = [
-            _step(
-                "creator",
-                added=["burn"],
-                output={"burn": 70.0},
-            ),
-            _step(
-                "carrier",
-                node_type="polars",
-                passed=["burn"],
-                added=["premium"],
-                output={"burn": 70.0, "premium": 100.0},
-                input_values={"burn": 70.0},
-                expression={
-                    "expression_text": "premium = burn * 1.4",
-                    "referenced_columns": ["burn"],
-                },
-            ),
-        ]
-        trace_result = types.SimpleNamespace(
-            steps=steps,
-            column="premium",
-            output_value=100.0,
-            target_node_id="carrier",
-            row_index=0,
-            execution_ms=1.0,
-            total_nodes_in_pipeline=2,
-        )
-
-        exported = export_trace(trace_result)
-
-        origins = {s["column"]: s["origin"] for s in exported["sources"]}
-        # 'burn' originates at 'creator', not at the downstream 'carrier'.
-        assert origins["burn"] == "creator"
 
 
 # ---------------------------------------------------------------------------

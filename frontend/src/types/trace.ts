@@ -22,8 +22,8 @@ export interface TraceStep {
   schema_diff: TraceSchemaDiff
   input_values: Record<string, unknown>
   output_values: Record<string, unknown>
+  topological_rank: number
   column_relevant: boolean
-  execution_ms: number
   expression?: {
     expression_text: string
     expression_type: string
@@ -45,11 +45,6 @@ export interface TraceStep {
   } | null
   node_detail?: TraceNodeDetail | null
   row_lineage_type?: string | null
-  taken_branch?: string | null
-  taken_branch_index?: number | null
-  null_explanation?: string | null
-  expression_chain?: Array<{expression_text: string; target_column: string}> | null
-  rename_info?: {original_name: string; chain: string[]} | null
 }
 
 export interface RatingStepFactorDetail {
@@ -63,6 +58,7 @@ export interface RatingStepTableDetail {
   factors?: RatingStepFactorDetail[]
   lookup_keys?: Record<string, unknown>
   selected_value?: unknown
+  post_code_output_value?: unknown
   rate_value?: unknown
   status?: "matched" | "default" | "no_match" | "unmatched_value"
   matched?: boolean
@@ -190,6 +186,7 @@ export interface ModelScoreNodeDetail {
   prediction_column?: string
   feature_columns?: string[]
   feature_values?: Record<string, unknown>
+  feature_metadata_unavailable?: string
   model_identity?: ModelScoreIdentityDetail
   explanation?: ModelScoreExplanationDetail
 }
@@ -311,6 +308,7 @@ export interface WaterfallEntry {
   value: number
   delta: number
   cumulative: number
+  default_used: boolean
 }
 
 export interface TraceCorrelationDiagnostic {
@@ -320,11 +318,21 @@ export interface TraceCorrelationDiagnostic {
   message: string
   node_id: string | null
   child_node_id: string | null
-  match_strategy: string
+  match_strategy?: string | null
   match_columns: string[]
   ignored_columns: string[]
-  matched_row_count: number
+  matched_row_count?: number | null
   matched_row_indices: number[]
+  [metadata: string]: unknown
+}
+
+export interface TraceOmission {
+  node_id: string
+  node_name: string
+  node_type: string
+  topological_rank: number
+  reason: string
+  diagnostic_index: number
 }
 
 export interface TraceResult {
@@ -333,13 +341,17 @@ export interface TraceResult {
   column: string | null
   output_value: unknown
   steps: TraceStep[]
+  omissions: TraceOmission[]
   row_id_column: string | null
   row_id_value: unknown
   total_nodes_in_pipeline: number
   nodes_in_trace: number
   execution_ms: number
   waterfall?: WaterfallEntry[] | WaterfallError | null
-  correlation_diagnostics?: TraceCorrelationDiagnostic[]
+  correlation_diagnostics: TraceCorrelationDiagnostic[]
+  generated_at: string
+  pipeline_source: string | null
+  execution_origin: "fresh_execution" | "preview_cache" | "trace_cache"
 }
 
 export interface WaterfallError {

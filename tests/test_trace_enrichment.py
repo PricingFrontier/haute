@@ -2650,17 +2650,17 @@ class TestMatchContinuousRule:
 
         assert _match_continuous_rule(10, {"op1": "==", "val1": 10}) is True
 
-    def test_not_equal(self):
+    def test_not_equal_is_rejected(self):
         from haute._trace_enrichment import _match_continuous_rule
 
-        assert _match_continuous_rule(5, {"op1": "!=", "val1": 10}) is True
-        assert _match_continuous_rule(10, {"op1": "!=", "val1": 10}) is False
+        with pytest.raises(ValueError, match="unsupported operator"):
+            _match_continuous_rule(5, {"op1": "!=", "val1": 10})
 
-    def test_not_equal_diamond(self):
+    def test_not_equal_diamond_is_rejected(self):
         from haute._trace_enrichment import _match_continuous_rule
 
-        assert _match_continuous_rule(5, {"op1": "<>", "val1": 10}) is True
-        assert _match_continuous_rule(10, {"op1": "<>", "val1": 10}) is False
+        with pytest.raises(ValueError, match="unsupported operator"):
+            _match_continuous_rule(5, {"op1": "<>", "val1": 10})
 
     def test_two_conditions_range(self):
         """Test a range rule: val >= 10 AND val < 20."""
@@ -2693,15 +2693,17 @@ class TestMatchContinuousRule:
 
         assert _match_continuous_rule(5, {"op1": "<", "val1": ""}) is True
 
-    def test_non_numeric_threshold_skips(self):
+    def test_non_numeric_threshold_is_rejected(self):
         from haute._trace_enrichment import _match_continuous_rule
 
-        assert _match_continuous_rule(5, {"op1": "<", "val1": "abc"}) is True
+        with pytest.raises(ValueError, match="non-numeric threshold"):
+            _match_continuous_rule(5, {"op1": "<", "val1": "abc"})
 
-    def test_unknown_operator_skips(self):
+    def test_unknown_operator_is_rejected(self):
         from haute._trace_enrichment import _match_continuous_rule
 
-        assert _match_continuous_rule(5, {"op1": "??", "val1": 10}) is True
+        with pytest.raises(ValueError, match="unsupported operator"):
+            _match_continuous_rule(5, {"op1": "??", "val1": 10})
 
     def test_string_numeric_input(self):
         from haute._trace_enrichment import _match_continuous_rule
@@ -3613,8 +3615,8 @@ class TestEnrichModelScoreRealConfig:
         assert result["model_identity"]["version"] == "3"
         assert result["model_identity"]["task"] == "classification"
 
-    def test_feature_columns_inferred(self):
-        """Feature columns inferred from input_row minus prediction column."""
+    def test_feature_columns_unavailable_without_authority(self):
+        """Technical input columns must never be guessed as model features."""
         from haute._trace_enrichment import enrich_model_score
 
         config = {"output_column": "pred"}
@@ -3622,11 +3624,11 @@ class TestEnrichModelScoreRealConfig:
         output_row = {"feat_a": 1, "feat_b": 2, "pred": 0.9}
 
         result = enrich_model_score(config, input_row, output_row)
-        assert "feat_a" in result["feature_columns"]
-        assert "feat_b" in result["feature_columns"]
-        assert "pred" not in result["feature_columns"]
-        assert result["feature_values"]["feat_a"] == 1
-        assert result["feature_values"]["feat_b"] == 2
+        assert "feature_columns" not in result
+        assert "feature_values" not in result
+        assert result["feature_metadata_unavailable"] == (
+            "No authoritative feature metadata is available."
+        )
 
     def test_feature_columns_explicit(self):
         """Explicit feature_columns used when provided."""

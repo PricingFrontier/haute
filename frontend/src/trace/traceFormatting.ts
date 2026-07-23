@@ -1,6 +1,10 @@
 import type React from "react"
 
 import { formatJsonSpecialValue } from "../utils/formatValue"
+import {
+  formatTraceValue as formatCanonicalTraceValue,
+  TRACE_MAX_FRACTION_DIGITS,
+} from "../utils/formatTrace"
 
 // ---------------------------------------------------------------------------
 // Value formatting helpers shared across CalculationHero and its sub-components.
@@ -10,44 +14,41 @@ import { formatJsonSpecialValue } from "../utils/formatValue"
 // ---------------------------------------------------------------------------
 
 export function formatSmartValue(v: unknown): string {
-  const special = formatJsonSpecialValue(v)
-  if (special !== null) return special
-  if (v === null || v === undefined) return "null"
-  if (typeof v !== "number") return String(v)
-  if (Number.isNaN(v)) return "NaN"
-  if (!Number.isFinite(v)) return String(v)
-  if (Number.isInteger(v)) return v.toLocaleString("en-US")
-  const abs = Math.abs(v)
-  if (abs < 10 && abs > 0) {
-    return v.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 4 })
-  }
-  return v.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+  return formatCanonicalTraceValue(v)
 }
 
 export function formatResultValue(v: unknown, precision?: number): string {
-  const special = formatJsonSpecialValue(v)
-  if (special !== null) return special
-  if (v === null || v === undefined) return "null"
-  if (typeof v === "number") {
-    if (Number.isNaN(v)) return "NaN"
-    if (!Number.isFinite(v)) return String(v)
-    if (Number.isInteger(v)) return v.toLocaleString("en-US")
-    if (precision !== undefined) {
-      return v.toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: precision })
-    }
-    return String(v)
-  }
-  if (typeof v === "string") return `"${v}"`
-  if (typeof v === "object") return JSON.stringify(v)
-  return String(v)
+  return formatCanonicalTraceValue(v, precision ?? TRACE_MAX_FRACTION_DIGITS)
 }
 
 export function formatResultValueFull(v: unknown): string {
-  return formatResultValue(v)
+  const special = formatJsonSpecialValue(v)
+  if (special !== null) return special
+  if (v === null || v === undefined) return "—"
+  if (typeof v === "number") return String(v)
+  if (typeof v === "string") return v
+  if (typeof v === "object") {
+    return JSON.stringify(v, (_key, value: unknown) => formatJsonSpecialValue(value) ?? value)
+  }
+  return String(v)
 }
 
-export function formatResultValue2dp(v: unknown): string {
-  return formatResultValue(v, 2)
+export const formatTraceValue = formatCanonicalTraceValue
+
+export function traceValuePresentation(
+  value: unknown,
+  context: string,
+  maxFractionDigits = TRACE_MAX_FRACTION_DIGITS,
+): { display: string; title?: string; ariaLabel?: string } {
+  const display = formatCanonicalTraceValue(value, maxFractionDigits)
+  if (typeof value !== "number" || !Number.isFinite(value)) return { display }
+  const full = String(value)
+  if (display === full) return { display }
+  return {
+    display,
+    title: `${context}: ${full}`,
+    ariaLabel: `${context}: ${display} (full precision ${full})`,
+  }
 }
 
 export function formatDisplayExpression(

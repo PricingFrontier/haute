@@ -34,8 +34,8 @@ def _make_trace_result() -> TraceResult:
                 ),
                 input_values={},
                 output_values={"base_rate": 10.0},
+                topological_rank=0,
                 column_relevant=True,
-                execution_ms=1.2,
                 expression=None,
                 calculation=None,
                 node_detail=None,
@@ -54,8 +54,12 @@ def _make_trace_result() -> TraceResult:
                 "value": 10.0,
                 "delta": 10.0,
                 "cumulative": 10.0,
+                "default_used": False,
             }
         ],
+        generated_at="2026-07-23T12:00:00+00:00",
+        pipeline_source="pricing/example.py",
+        execution_origin="fresh_execution",
     )
 
 

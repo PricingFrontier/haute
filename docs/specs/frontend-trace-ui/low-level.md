@@ -4,9 +4,10 @@
 
 | File | Responsibility |
 | --- | --- |
-| `frontend/src/panels/TracePanel.tsx` | Trace header, focused/full story state, correlation diagnostics and card list. |
+| `frontend/src/panels/TracePanel.tsx` | Ready/loading/error panel shell, trace header, focused/full story state, omissions, correlation diagnostics, export controls, and card list. |
 | `frontend/src/panels/trace/traceGrouping.ts`, `frontend/src/panels/trace/traceStoryView.ts` | Target selection, pass-through collapsing and dependency/default-expansion sets. |
-| `frontend/src/hooks/useTracing.ts` | Asynchronous trace request/cancellation and canvas trace/hover projection producer consumed outside this synchronous panel. |
+| `frontend/src/hooks/useTracing.ts` | Semantic-context-bound trace request state (`idle/loading/ready/error`), delayed progress, cancellation/recovery, and canvas trace/hover projection. |
+| `frontend/src/trace/traceExport.ts` | Lazily loaded deterministic projection of a validated `TraceResult` into Markdown and CSV, reused by download, clipboard, and print without adding export-only code to the initial application bundle. |
 | `frontend/src/trace/StepCard.tsx` | Expandable trace-step presentation and primary-detail selection. |
 | `frontend/src/trace/CalculationHero.tsx`, `frontend/src/trace/ExpressionChain.tsx`, `frontend/src/trace/InputSourceTree.tsx` | Calculation/result hero, expression-chain rows and input-source hierarchy. |
 | `frontend/src/trace/WaterfallChart.tsx`, `frontend/src/trace/WaterfallErrorAlert.tsx` | Contribution waterfall and explicit backend waterfall-error alert. |
@@ -22,7 +23,7 @@
 
 ## Key types and data structures
 
-- `TraceResult`, `TraceStep` and the discriminated `TraceNodeDetail` union are defined in the
+- `TraceResult`, `TraceStep`, `TraceOmission`, `TraceRequestState` and the discriminated `TraceNodeDetail` union are defined in the
   consumed `frontend/src/types/trace.ts`. The renderer accepts backend extension fields but narrows
   known variants through each helper module.
 - `CollapsedEntry` in `frontend/src/panels/trace/traceGrouping.ts` is either a `TraceStep` or a
@@ -33,21 +34,29 @@
 
 ## Control flow
 
-1. `frontend/src/panels/TracePanel.tsx` derives a remount key, finds the last applicable producer
+1. `frontend/src/hooks/useTracing.ts` captures graph `structuralVersion`, active source, row limit,
+   target, row, column, and clicked values with each request. A semantic change aborts and clears
+   the state; requests resolving within the 500 ms progress delay show no loading
+   chrome, while a request still pending after that delay enables compact
+   progress/cancel UI.
+2. `frontend/src/panels/TracePanel.tsx` derives a remount key, finds the last applicable producer
    for the traced column, calculates dependency-preservation/default-expansion sets, and chooses a
-   focused or full sequence. With no traced column, it leaves the steps uncollapsed.
-2. `collapsePassthroughs` groups hidden runs. If a focused target exists the UI removes the
+   focused or full sequence. It interleaves typed omissions by topological rank. With no traced
+   column, it leaves the steps uncollapsed.
+3. `collapsePassthroughs` groups hidden runs. If a focused target exists the UI removes the
    collapsed markers until the user asks for the full trace; otherwise the marker is a button that
    reveals the full trace.
-3. `frontend/src/trace/StepCard.tsx` renders schema/value context and routes its expanded body to
+4. `frontend/src/trace/StepCard.tsx` renders schema/value context and routes its expanded body to
    a calculation hero, expression/source view, `NodeDetailBlock`, or value table according to the
    data present.
-4. `frontend/src/trace/NodeDetailBlock.tsx` dispatches on `detail_type` (and optimiser status/mode).
+5. `frontend/src/trace/NodeDetailBlock.tsx` dispatches on `detail_type` (and optimiser status/mode).
    Detail components call their matching helpers before rendering; an unknown type is shown as
    formatted generic detail instead of disappearing.
-5. `frontend/src/trace/CalculationHero.tsx` prefers backend waterfall entries. It builds a local
+6. `frontend/src/trace/CalculationHero.tsx` prefers backend waterfall entries. It builds a local
    arithmetic waterfall only when appropriate backend data/error is absent, and renders branch
    information from calculation/expression context.
+7. An export action dynamically imports `frontend/src/trace/traceExport.ts`; clipboard, download,
+   and print failures remain visible in the mounted trace panel.
 
 ## Edge cases and invariants
 
@@ -67,10 +76,11 @@
 ## Error handling
 
 Missing calculation data for an expression that should explain a value, backend waterfall errors,
-and optimiser/scenario/live-switch errors render `role="alert"` UI. Unknown node detail falls back
-to generic JSON. Pure parsers intentionally throw on invalid required numerical contracts instead
-of silently showing a plausible-but-wrong calculation; the panel has no local asynchronous fetch
-or error recovery path.
+typed omissions, request failures, and optimiser/scenario/live-switch errors render persistent
+`role="alert"` UI. A 409 invalidates the preview and requires a new row selection rather than
+retrying the same identity. Unknown node detail falls back to generic JSON. Pure parsers
+intentionally throw on invalid required numerical contracts instead of silently showing a
+plausible-but-wrong calculation.
 
 ## Testing
 
@@ -84,5 +94,7 @@ detail dispatcher) are principally covered through integration rendering rather 
 per module.
 
 The browser-level preview-to-trace path is covered by
-`frontend/e2e/core-flows.spec.ts`. The trace-specific component and helper suites do not provide
-browser coverage for every specialised detail renderer.
+`frontend/e2e/core-flows.spec.ts`. `frontend/e2e/trace-render.benchmark.spec.ts` measures
+trace-request-to-render latency for representative linear and multi-frame traces. The
+trace-specific component and helper suites do not provide browser coverage for every specialised
+detail renderer.

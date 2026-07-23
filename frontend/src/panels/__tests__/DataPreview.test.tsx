@@ -150,11 +150,43 @@ describe("DataPreview", () => {
     expect(screen.queryByText("Test Node")).not.toBeInTheDocument()
   })
 
-  it("surfaces preview memory-pressure diagnostics with technical details", () => {
+  it("places preview memory-pressure details behind the status warning icon", () => {
     render(<DataPreview data={makePreview({ execution_metrics: makeExecutionMetricsFixture() })} />)
 
+    const warning = screen.getByLabelText("Preview execution warning details")
+    expect(screen.getByText(/3 rows/).compareDocumentPosition(warning) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    fireEvent.click(warning)
+    expect(screen.getByText("Preview memory pressure")).toBeInTheDocument()
     expect(screen.getByText("Memory pressure reached 75% of the preview budget.")).toBeInTheDocument()
-    expect(screen.getByText("RSS 1.7 KB of 2.9 KB limit")).toBeInTheDocument()
+  })
+
+  it("explains a projection boundary beside the preview dimensions without raw planner JSON", () => {
+    const metrics = makeExecutionMetricsFixture({
+      memory_pressure_events: [],
+      execution_strategy: {
+        schema_version: 1,
+        status: "boundary",
+        strategy: "unprojected-streaming-boundary",
+        profile: "preview_eager",
+        boundedness: "bounded",
+        reason_code: "unprojected_streaming_boundary",
+        detail_state: "available",
+        boundaries: { state: "available", total_count: 1, items: [{ topological_rank: 0, node_id: "competitor_premiums", operator: "dataSource", boundary_kind: "unprojected-streaming-boundary" }] },
+        reasons: { state: "available", total_count: 0, items: [] },
+        provenance: { state: "available", total_count: 0, items: [] },
+        blocking_node_id: "competitor_premiums",
+        blocking_operator: "dataSource",
+        remediation: "Narrow the requested output or define the node's columns.",
+      },
+    })
+    render(<DataPreview data={makePreview({ execution_metrics: metrics })} />)
+
+    const warning = screen.getByLabelText("Preview execution warning details")
+    fireEvent.click(warning)
+    expect(screen.getByText("Column projection was limited")).toBeInTheDocument()
+    expect(screen.getByText(/preview result is still correct/i)).toBeInTheDocument()
+    expect(screen.getByText(/competitor_premiums/)).toBeInTheDocument()
+    expect(screen.queryByText(/Boundaries:/)).not.toBeInTheDocument()
   })
 
   it("cell click calls onCellClick with row index and column", () => {

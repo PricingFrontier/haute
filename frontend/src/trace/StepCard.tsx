@@ -5,10 +5,10 @@ import {
   nodeTypeLabels,
   nodeTypeColors,
 } from "../utils/nodeTypes"
-import { formatValue as _formatValue } from "../utils/formatValue"
 import { formatExpression } from "../utils/formatTrace"
-import { formatResultValueFull } from "./traceFormatting"
+import { traceValuePresentation } from "./traceFormatting"
 import CalculationHero from "./CalculationHero"
+import WaterfallErrorAlert from "./WaterfallErrorAlert"
 import { isTraceOriginStep } from "./traceOrigins"
 import { CHART_COLORS } from "../theme/colors"
 import { NodeDetailBlock } from "./NodeDetailBlock"
@@ -19,18 +19,16 @@ import {
   hasRichBandingDetail,
 } from "../panels/trace/traceStoryView"
 
-const formatValue = (v: unknown) => _formatValue(v, 2)
-
-function formatTraceValue(value: unknown, context: string): { display: string; title?: string; ariaLabel?: string } {
-  const display = formatValue(value)
-  if (typeof value !== "number" || !Number.isFinite(value)) return { display }
-  const full = formatResultValueFull(value)
-  if (display === full) return { display }
-  return {
-    display,
-    title: `${context}: ${full}`,
-    ariaLabel: `${context}: ${display} (full precision ${full})`,
-  }
+function detailUsesDefault(value: unknown): boolean {
+  if (Array.isArray(value)) return value.some(detailUsesDefault)
+  if (typeof value !== "object" || value === null) return false
+  const detail = value as Record<string, unknown>
+  if (
+    detail.default_used === true ||
+    detail.is_default === true ||
+    detail.status === "default"
+  ) return true
+  return Object.values(detail).some(detailUsesDefault)
 }
 
 function isComputedPlaceholder(value: string | undefined): boolean {
@@ -56,6 +54,10 @@ export function StepCard({
   const accent = nodeTypeColors[step.node_type] || CHART_COLORS.cyan
   const typeLabel = nodeTypeLabels[step.node_type] || "NODE"
   const relevant = step.column_relevant
+  const defaultUsed = detailUsesDefault(step.node_detail)
+  const waterfallError = waterfall && !Array.isArray(waterfall) && "error" in waterfall
+    ? waterfall
+    : null
 
   const { columns_added, columns_modified, columns_removed } = step.schema_diff
 
@@ -168,10 +170,12 @@ export function StepCard({
               const diff = step.schema_diff
               if (diff.columns_added.includes(tracedColumn)) return "creates"
               if (diff.columns_modified.includes(tracedColumn)) return "modifies"
-              if (diff.columns_passed.includes(tracedColumn)) return "passes"
+              if (diff.columns_passed.includes(tracedColumn)) return "rows unchanged"
               return null
             }
-            return step.row_lineage_type || null
+            return step.row_lineage_type === "passthrough"
+              ? "rows unchanged"
+              : step.row_lineage_type || null
           })()
           return badge ? (
             <span
@@ -182,9 +186,14 @@ export function StepCard({
             </span>
           ) : null
         })()}
-        <span className="ml-auto text-[10px] font-mono shrink-0" style={{ color: "var(--text-muted)" }}>
-          {step.execution_ms.toFixed(1)}ms
-        </span>
+        {defaultUsed && (
+          <span
+            className="ml-auto text-[9px] font-semibold shrink-0 px-1.5 py-0.5 rounded"
+            style={{ color: "var(--warning-strong)", background: "var(--warning-soft)" }}
+          >
+            default used
+          </span>
+        )}
       </button>
 
       {/* Key values (always visible when there are entries) */}
@@ -192,7 +201,7 @@ export function StepCard({
         <div className="px-3 pb-2 flex flex-wrap gap-1.5" style={{ paddingLeft: "2.8rem" }}>
           {keyEntries.map(({ col, val, tag }) => {
             const tc = tagColors[tag]
-            const formattedValue = formatTraceValue(val, col)
+            const formattedValue = traceValuePresentation(val, col)
             return (
               <span
                 key={col}
@@ -225,6 +234,14 @@ export function StepCard({
           className="px-3 pb-3"
           style={{ borderTop: "1px solid var(--border)" }}
         >
+          {waterfallError && (
+            <div className="pt-2">
+              <WaterfallErrorAlert
+                error={waterfallError.error}
+                errorType={waterfallError.error_type}
+              />
+            </div>
+          )}
           {showCalculationHero && tracedColumn && (
             <div className="pt-2">
               <CalculationHero
@@ -234,8 +251,7 @@ export function StepCard({
                 nodeName={step.node_name}
                 nodeType={step.node_type}
                 isSourceOrigin={isOriginStep}
-                takenBranchIndex={step.calculation?.taken_branch_index ?? step.taken_branch_index}
-                waterfall={waterfall}
+                waterfall={waterfallError ? undefined : waterfall}
                 frame={false}
               />
             </div>
@@ -304,8 +320,8 @@ export function StepCard({
               const inputVal = step.input_values[col]
               const outputVal = step.output_values[col]
               const isTraced = col === tracedColumn
-              const formattedInputValue = formatTraceValue(inputVal, `${col} input`)
-              const formattedOutputValue = formatTraceValue(outputVal, `${col} output`)
+              const formattedInputValue = traceValuePresentation(inputVal, `${col} input`)
+              const formattedOutputValue = traceValuePresentation(outputVal, `${col} output`)
 
               let rowColor = "var(--text-secondary)"
               let prefix = ""

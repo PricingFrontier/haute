@@ -509,8 +509,8 @@ function makeStep(overrides: Partial<TraceStep> = {}): TraceStep {
     },
     input_values: { age: 25 },
     output_values: { age: 25, premium: 100 },
+    topological_rank: 0,
     column_relevant: true,
-    execution_ms: 5.0,
     ...overrides,
   }
 }
@@ -532,6 +532,11 @@ function makeTrace(overrides: Partial<TraceResult> = {}): TraceResult {
     nodes_in_trace: 3,
     execution_ms: 9.0,
     ...overrides,
+    omissions: overrides.omissions ?? [],
+    correlation_diagnostics: overrides.correlation_diagnostics ?? [],
+    generated_at: overrides.generated_at ?? "2026-07-23T12:00:00+00:00",
+    pipeline_source: overrides.pipeline_source ?? null,
+    execution_origin: overrides.execution_origin ?? "fresh_execution",
   }
 }
 
@@ -708,8 +713,6 @@ describe("CalculationHero stays hover-mutation free", () => {
           expression_chain: null,
           input_sources: null,
         }}
-        executionMs={4.2}
-        stepCount={3}
         nodeName="Pricing"
         waterfall={null}
       />,

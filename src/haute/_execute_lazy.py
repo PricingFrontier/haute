@@ -17,7 +17,12 @@ import haute.execution as execution_facade
 import haute.projection as projection_planner
 from haute._builders import _passthrough_fn
 from haute._contracts import Contract, get_column_contract
-from haute._edge_join import narrow_join_parent_demand
+from haute._edge_join import (
+    build_edge_join_kwargs,
+    edge_join_key_columns_by_role,
+    narrow_join_parent_demand,
+    resolve_edge_join_role_indices,
+)
 from haute._execution_context import (
     ExecutionCancelledError,
     ExecutionContext,
@@ -550,6 +555,88 @@ def _assert_simple_join_key_dtypes_compatible(
                 )
 
 
+def _runtime_join_demands(
+    node: GraphNode,
+    input_ids: list[str],
+    input_lfs: list[_Frame],
+    projection: set[str] | frozenset[str] | None,
+    existing_edge_demands: Mapping[tuple[str, str], set[str] | frozenset[str] | None],
+) -> dict[str, set[str]]:
+    """Resolve a safe join projection from lazy parent schemas."""
+    if projection is None or len(input_ids) != 2:
+        return {}
+    if any(existing_edge_demands.get((parent_id, node.id)) is not None for parent_id in input_ids):
+        return {}
+
+    frame_by_parent = dict(zip(input_ids, input_lfs, strict=True))
+
+    def schema_names(parent_id: str) -> set[str]:
+        frame = frame_by_parent[parent_id]
+        lazy_frame = frame if isinstance(frame, pl.LazyFrame) else frame.lazy()
+        return set(lazy_frame.collect_schema().names())
+
+    left_keys: set[str]
+    right_keys: set[str]
+    if node.data.nodeType is NodeType.EDGE_JOIN:
+        base_index, join_index = resolve_edge_join_role_indices(node.data.config, input_ids)
+        left_parent = input_ids[base_index]
+        right_parent = input_ids[join_index]
+        base_keys, join_keys = edge_join_key_columns_by_role(node.data.config)
+        left_keys = set(base_keys)
+        right_keys = set(join_keys)
+        kwargs = build_edge_join_kwargs(node.data.config)
+        how = str(kwargs["how"])
+        suffix = str(kwargs["suffix"])
+    elif node.data.nodeType is NodeType.POLARS:
+        joins = projection_planner.simple_join_calls_for_parent_inputs(node, input_ids)
+        if len(joins) != 1:
+            return {}
+        join = joins[0]
+        if {join.left_parent, join.right_parent} != set(input_ids):
+            return {}
+        left_parent = join.left_parent
+        right_parent = join.right_parent
+        left_keys = {left_key for left_key, _right_key in join.key_pairs}
+        right_keys = {right_key for _left_key, right_key in join.key_pairs}
+        how = join.how
+        suffix = join.suffix
+    else:
+        return {}
+
+    routed = narrow_join_parent_demand(
+        projection,
+        left_keys=left_keys,
+        right_keys=right_keys,
+        left_schema=schema_names(left_parent),
+        right_schema=schema_names(right_parent),
+        how=how,
+        suffix=suffix,
+    )
+    if routed is None:
+        return {}
+    left_demand, right_demand = routed
+    return {left_parent: left_demand, right_parent: right_demand}
+
+
+def _runtime_projectable_source_ids(
+    parent_ids: Iterable[str],
+    node_map: Mapping[str, GraphNode],
+) -> frozenset[str]:
+    """Return source parents whose lazy scans can absorb an edge projection."""
+    source_types = {NodeType.API_INPUT, NodeType.DATA_SOURCE, NodeType.EXTERNAL_FILE}
+    projectable: set[str] = set()
+    for parent_id in parent_ids:
+        parent = node_map[parent_id]
+        if parent.data.nodeType not in source_types:
+            continue
+        code = parent.data.config.get("code")
+        if not isinstance(code, str) or not code.strip():
+            projectable.add(parent_id)
+        elif projection_planner.source_user_code_preserves_column_projection(code):
+            projectable.add(parent_id)
+    return frozenset(projectable)
+
+
 def _prune_live_switch_edges(
     edges: list[GraphEdge],
     node_map: dict[str, GraphNode],
@@ -1023,54 +1110,18 @@ def _execute_lazy(
         ordered = [column for column in schema_cols if column in demand]
         return lazy_frame.select(ordered), frozenset(ordered)
 
-    def _runtime_simple_join_edge_demands(
+    def _runtime_join_edge_demands(
         child_id: str,
         input_ids: list[str],
         input_lfs: list[_Frame],
     ) -> dict[str, set[str]]:
-        """Infer per-parent projection for a simple uncontracted Polars join.
-
-        Static planning intentionally treats contract-free fan-in Polars code as
-        an unprojected streaming boundary because it lacks parent schemas.  Once
-        the lazy parents exist, their schemas are available without collecting
-        data, so common joins can be narrowed safely before the join executes.
-        If any requested output cannot be mapped mechanically to join inputs, we
-        keep the full-width boundary instead of guessing.
-        """
-        if any((parent_id, child_id) in edge_demands for parent_id in input_ids):
-            return {}
-        node = node_map[child_id]
-        if node.data.nodeType != NodeType.POLARS or len(input_ids) != 2:
-            return {}
-        projection = needed_cols.get(child_id)
-        if projection is None:
-            return {}
-        joins = projection_planner.simple_join_calls_for_parent_inputs(node, input_ids)
-        if len(joins) != 1:
-            return {}
-        join = joins[0]
-        if {join.left_parent, join.right_parent} != set(input_ids):
-            return {}
-
-        frame_by_parent = dict(zip(input_ids, input_lfs, strict=True))
-        # Same suffix-aware routing the static EdgeJoinFanInRule uses — shared so
-        # the two cannot drift. ``None`` → keep the full-width boundary.
-        routed = narrow_join_parent_demand(
-            projection,
-            left_keys={left_key for left_key, _right_key in join.key_pairs},
-            right_keys={right_key for _left_key, right_key in join.key_pairs},
-            left_schema=set(_schema_names_of(frame_by_parent[join.left_parent])),
-            right_schema=set(_schema_names_of(frame_by_parent[join.right_parent])),
-            how=join.how,
-            suffix=join.suffix,
+        return _runtime_join_demands(
+            node_map[child_id],
+            input_ids,
+            input_lfs,
+            needed_cols.get(child_id),
+            edge_demands,
         )
-        if routed is None:
-            return {}
-        left_demand, right_demand = routed
-        return {
-            join.left_parent: left_demand,
-            join.right_parent: right_demand,
-        }
 
     def _build_lazy_node(nid: str) -> tuple[_Frame, bool, GraphNode]:
         # May actually return ``(dict[str, _Frame], bool, GraphNode)`` for
@@ -1119,7 +1170,7 @@ def _execute_lazy(
 
             projected_input_lfs: list[_Frame] = []
             projected_input_columns: list[frozenset[str] | None] = []
-            runtime_edge_demands = _runtime_simple_join_edge_demands(
+            runtime_edge_demands = _runtime_join_edge_demands(
                 nid,
                 input_ids,
                 input_lfs,
@@ -1133,10 +1184,23 @@ def _execute_lazy(
                     public_projection_plan,
                     child_id=nid,
                     demands_by_parent=runtime_edge_demands,
+                    resolved_parent_ids=_runtime_projectable_source_ids(
+                        runtime_edge_demands,
+                        node_map,
+                    ),
                 )
-                public_strategy_result = projection_planner.ExecutionStrategyResult(
-                    projection_plan=public_projection_plan,
-                    diagnostic=public_strategy_result.diagnostic,
+                previous_diagnostic = public_strategy_result.diagnostic
+                public_strategy_result = projection_planner.build_execution_strategy_result(
+                    public_projection_plan,
+                    profile=execution_context.profile,
+                    order=order,
+                    children_of=children_of,
+                    node_map=node_map,
+                    has_projection_seed=bool(normalised_required_columns),
+                    required_columns_by_node=normalised_required_columns,
+                    estimated_peak_bytes=previous_diagnostic.estimated_peak_bytes,
+                    headroom_bytes=previous_diagnostic.headroom_bytes,
+                    assumptions=previous_diagnostic.assumptions,
                 )
                 execution_context.projection_plan = public_strategy_result
             for input_id, input_lf in zip(input_ids, input_lfs, strict=True):
@@ -1900,6 +1964,56 @@ def _execute_eager_core(
                     raise ValueError(
                         f"No input data available for node '{nid}'",
                     )
+
+                runtime_edge_demands = _runtime_join_demands(
+                    node,
+                    input_ids,
+                    input_lfs,
+                    needed_cols.get(nid),
+                    projection_plan.edge_demands if projection_plan is not None else {},
+                )
+                if runtime_edge_demands:
+                    projected_inputs: list[pl.LazyFrame] = []
+                    for input_id, input_lf in zip(input_ids, input_lfs, strict=True):
+                        demand = runtime_edge_demands[input_id]
+                        schema_names = input_lf.collect_schema().names()
+                        projected_inputs.append(
+                            input_lf.select([column for column in schema_names if column in demand])
+                        )
+                    input_lfs = projected_inputs
+
+                    current_strategy = (
+                        execution_context.projection_plan if execution_context is not None else None
+                    )
+                    if isinstance(
+                        current_strategy,
+                        projection_planner.ExecutionStrategyResult,
+                    ):
+                        assert execution_context is not None
+                        refined_plan = projection_planner.with_runtime_inferred_streaming_edges(
+                            current_strategy.projection_plan,
+                            child_id=nid,
+                            demands_by_parent=runtime_edge_demands,
+                            resolved_parent_ids=_runtime_projectable_source_ids(
+                                runtime_edge_demands,
+                                node_map,
+                            ),
+                        )
+                        previous_diagnostic = current_strategy.diagnostic
+                        execution_context.projection_plan = (
+                            projection_planner.build_execution_strategy_result(
+                                refined_plan,
+                                profile=execution_context.profile,
+                                order=order,
+                                children_of=children_of,
+                                node_map=node_map,
+                                has_projection_seed=bool(normalised_required_columns),
+                                required_columns_by_node=normalised_required_columns,
+                                estimated_peak_bytes=(previous_diagnostic.estimated_peak_bytes),
+                                headroom_bytes=previous_diagnostic.headroom_bytes,
+                                assumptions=previous_diagnostic.assumptions,
+                            )
+                        )
 
                 # Input-side contract check: every column the node's
                 # contract says it reads must be present upstream.

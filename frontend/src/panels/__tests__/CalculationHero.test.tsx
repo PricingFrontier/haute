@@ -35,8 +35,6 @@ function makeProps(overrides: Partial<CalculationHeroProps> = {}): CalculationHe
     column: "premium",
     expression: makeExpression(),
     calculation: makeCalculation(),
-    executionMs: 4.2,
-    stepCount: 3,
     nodeName: "Rating Engine",
     ...overrides,
   }
@@ -59,7 +57,7 @@ describe("CalculationHero \u2014 Basic Rendering", () => {
     const frame = screen.getByTestId("trace-calculation-frame")
     expect(frame).toHaveTextContent("Rating")
     expect(frame).toHaveTextContent("premium")
-    expect(frame).toHaveTextContent("369.60")
+    expect(frame).toHaveTextContent("369.6")
   })
 
   it("does not render a duplicate copy action inside the calculation frame", () => {
@@ -70,7 +68,7 @@ describe("CalculationHero \u2014 Basic Rendering", () => {
   it("renders the frame result as compact inline text rather than a large value pill", () => {
     render(<CalculationHero {...makeProps()} />)
     const result = screen.getByTestId("trace-calculation-result")
-    expect(result).toHaveTextContent("= 369.60")
+    expect(result).toHaveTextContent("= 369.6")
     expect(result).not.toHaveStyle({ background: "var(--text-accent-soft)" })
     expect(result).not.toHaveStyle({ border: "1px solid var(--text-accent-border)" })
   })
@@ -109,23 +107,11 @@ describe("CalculationHero \u2014 Basic Rendering", () => {
 
   it("renders result_value in accent styling", () => {
     const { container } = render(<CalculationHero {...makeProps()} />)
-    const resultEls = screen.getAllByText("369.60")
+    const resultEls = screen.getAllByText("369.6")
     expect(resultEls.length).toBeGreaterThanOrEqual(1)
     // Result should be rendered with an accent class or data attribute
     const accentEl = container.querySelector("[data-accent], .accent, [class*='accent'], [class*='result']")
     expect(accentEl).toBeTruthy()
-  })
-
-  it("hides execution time from hero display (developer telemetry)", () => {
-    render(<CalculationHero {...makeProps({ executionMs: 4.2 })} />)
-    // Timing is hidden from the hero (Fix 7)
-    expect(screen.queryByText(/4\.2\s*ms/)).not.toBeInTheDocument()
-  })
-
-  it("hides step count from hero display (developer telemetry)", () => {
-    render(<CalculationHero {...makeProps({ stepCount: 3 })} />)
-    // Step count is hidden from the hero (Fix 7)
-    expect(screen.queryByText(/3 steps/)).not.toBeInTheDocument()
   })
 
   it("renders node name when provided", () => {
@@ -162,15 +148,6 @@ describe("CalculationHero \u2014 Basic Rendering", () => {
     expect(screen.getByText(/source data/i)).toBeInTheDocument()
   })
 
-  it("does not render execution time when not provided", () => {
-    render(<CalculationHero {...makeProps({ executionMs: undefined })} />)
-    expect(screen.queryByText(/ms/)).not.toBeInTheDocument()
-  })
-
-  it("does not render step count when not provided", () => {
-    render(<CalculationHero {...makeProps({ stepCount: undefined })} />)
-    expect(screen.queryByText(/steps/)).not.toBeInTheDocument()
-  })
 })
 
 // ---------------------------------------------------------------------------
@@ -200,7 +177,7 @@ describe("CalculationHero \u2014 Formula Modes", () => {
     // Substituted line
     expect(screen.getByText(/528 \u00d7 0\.7/)).toBeInTheDocument()
     // Result shown in line 1 AND inside the unified box (appears twice)
-    expect(screen.getAllByText("369.60").length).toBeGreaterThanOrEqual(1)
+    expect(screen.getAllByText("369.6").length).toBeGreaterThanOrEqual(1)
   })
 
   it("conditional mode: shows when/then/otherwise text", () => {
@@ -493,7 +470,7 @@ describe("CalculationHero \u2014 Value Formatting", () => {
     expect(screen.queryByText("100.00")).not.toBeInTheDocument()
   })
 
-  it("NULL result: shows 'null' in muted styling", () => {
+  it("NULL result: shows the trace null marker in muted styling", () => {
     render(
       <CalculationHero
         {...makeProps({
@@ -504,7 +481,7 @@ describe("CalculationHero \u2014 Value Formatting", () => {
         })}
       />,
     )
-    const nullEls = screen.getAllByText("null")
+    const nullEls = screen.getAllByText("\u2014")
     expect(nullEls.length).toBeGreaterThanOrEqual(1)
     // Should have muted styling on at least one element
     const hasMuted = nullEls.some(el => {
@@ -571,7 +548,7 @@ describe("CalculationHero \u2014 Value Formatting", () => {
     expect(screen.getAllByText("1,547,832").length).toBeGreaterThanOrEqual(1)
   })
 
-  it("very small number: 0.0023 displayed as 0 at 2dp, full precision on hover", () => {
+  it("very small number: preserves a meaningful non-zero value", () => {
     const { container } = render(
       <CalculationHero
         {...makeProps({
@@ -742,6 +719,7 @@ describe("CalculationHero \u2014 Conditional Branch Display", () => {
             substituted_text: "when 30 > 25 then 100 \u00d7 1.2 otherwise 100",
             result_value: 120,
             input_values: { age: 30, premium: 100 },
+            taken_branch_index: 0,
           }),
         })}
       />,
@@ -768,6 +746,7 @@ describe("CalculationHero \u2014 Conditional Branch Display", () => {
               "when 75 > 90 then 'critical' when 75 > 70 then 'high' when 75 > 40 then 'medium' otherwise 'low'",
             result_value: "high",
             input_values: { risk_score: 75 },
+            taken_branch_index: 1,
           }),
         })}
       />,
@@ -812,6 +791,32 @@ describe("CalculationHero \u2014 Conditional Branch Display", () => {
       "false",
     ])
     expect(branches[1]).toHaveTextContent("tier = 'B'")
+  })
+
+  it("does not guess a taken branch when typed backend selection is absent", () => {
+    const { container } = render(
+      <CalculationHero
+        {...makeProps({
+          expression: makeExpression({
+            expression_text: "when tier = 'A' then 0 when tier = 'B' then 0 otherwise 1",
+            expression_type: "conditional",
+            referenced_columns: ["tier"],
+          }),
+          calculation: makeCalculation({
+            substituted_text: "when 'B' = 'A' then 0 when 'B' = 'B' then 0 otherwise 1",
+            result_value: 0,
+            input_values: { tier: "B" },
+          }),
+        })}
+      />,
+    )
+
+    const branches = Array.from(
+      container.querySelectorAll<HTMLElement>(".conditional-display .branch"),
+    )
+    expect(branches).toHaveLength(3)
+    expect(branches.every((branch) => branch.dataset.matched === undefined)).toBe(true)
+    expect(branches.every((branch) => !branch.classList.contains("inactive"))).toBe(true)
   })
 
   it("otherwise branch taken: shows 'otherwise' as the matched path", () => {
@@ -1033,7 +1038,7 @@ describe("CalculationHero \u2014 Edge Cases", () => {
       />,
     )
     // Should render the JSON representation
-    expect(screen.getByText(/\{"a":1,"b":2\}/)).toBeInTheDocument()
+    expect(screen.getAllByText(/\{"a":1,"b":2\}/).length).toBeGreaterThanOrEqual(1)
   })
 })
 

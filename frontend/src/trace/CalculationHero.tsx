@@ -43,12 +43,9 @@ export interface CalculationHeroProps {
     expression_chain?: ExpressionChainEntry[] | null
     input_sources?: Record<string, InputSourceEntry> | null
   } | null
-  executionMs?: number
-  stepCount?: number
   nodeName?: string
   nodeType?: string
   isSourceOrigin?: boolean
-  takenBranchIndex?: number | null
   frame?: boolean
   // Backend emits either a successful entries list or a structured error
   // (e.g. "row had 2+ passes — waterfall not well-defined").  Pass both
@@ -106,7 +103,7 @@ function parseBranches(text: string): Branch[] {
 // ---------------------------------------------------------------------------
 
 const CalculationHero: React.FC<CalculationHeroProps> = (props) => {
-  const { column, expression, calculation, nodeName, nodeType, isSourceOrigin, takenBranchIndex, frame = true } = props
+  const { column, expression, calculation, nodeName, nodeType, isSourceOrigin, frame = true } = props
 
   const isNullBoth = !expression && !calculation
   const isOpaque = expression?.expression_type === "opaque"
@@ -456,45 +453,35 @@ const CalculationHero: React.FC<CalculationHeroProps> = (props) => {
     // Conditional mode
     if (isConditional && expression && calculation) {
       const branches = parseBranches(expression.expression_text)
-      const subBranches = parseBranches(calculation.substituted_text)
-      const resolvedTakenBranchIndex = calculation.taken_branch_index ?? takenBranchIndex
-      const backendTakenBranchIndex = Number.isInteger(resolvedTakenBranchIndex)
-        ? resolvedTakenBranchIndex
+      const rawTakenBranchIndex = calculation.taken_branch_index
+      const backendTakenBranchIndex = (
+        typeof rawTakenBranchIndex === "number" && Number.isInteger(rawTakenBranchIndex)
+      )
+        ? rawTakenBranchIndex
         : null
-      const resultStr =
-        typeof calculation.result_value === "string"
-          ? calculation.result_value
-          : String(calculation.result_value)
-
-      function isBranchMatched(idx: number): boolean {
-        const sub = subBranches[idx]
-        if (!sub?.result) return false
-        return sub.result.includes(resultStr)
-      }
-
-      const anyNonOtherwiseMatched = branches.some(
-        (b, i) => !b.isOtherwise && isBranchMatched(i),
+      const hasTypedSelection = (
+        backendTakenBranchIndex !== null
+        && backendTakenBranchIndex >= 0
+        && backendTakenBranchIndex < branches.length
       )
 
       return (
         <div className="conditional-display" style={{ marginTop: 4 }}>
           {branches.map((branch, idx) => {
-            const matched = backendTakenBranchIndex !== null
-              ? idx === backendTakenBranchIndex
-              : branch.isOtherwise
-                ? !anyNonOtherwiseMatched
-                : isBranchMatched(idx)
+            const matched = hasTypedSelection && idx === backendTakenBranchIndex
 
             return (
               <div
                 key={idx}
-                className={
-                  matched
-                    ? "branch taken matched-branch"
-                    : "branch dimmed inactive"
-                }
-                data-matched={matched ? "true" : "false"}
-                style={!matched ? { opacity: 0.5 } : undefined}
+                className={`branch ${
+                  !hasTypedSelection
+                    ? ""
+                    : matched
+                    ? "taken matched-branch"
+                    : "dimmed inactive"
+                }`}
+                data-matched={hasTypedSelection ? (matched ? "true" : "false") : undefined}
+                style={hasTypedSelection && !matched ? { opacity: 0.5 } : undefined}
               >
                 {branch.isOtherwise ? (
                   <span>
@@ -509,25 +496,6 @@ const CalculationHero: React.FC<CalculationHeroProps> = (props) => {
               </div>
             )
           })}
-          {(() => {
-            const branchTexts = branches.map(b => b.result ?? "").join(" ")
-            const resultInBranch = branchTexts.includes(resultStr)
-            if (resultInBranch) {
-              return (
-                <span
-                  className={resultIsNull ? "result-value muted null-value" : "result-value accent"}
-                  data-accent={!resultIsNull || undefined}
-                  data-muted={resultIsNull || undefined}
-                  aria-hidden="true"
-                  style={{ position: "absolute", width: 1, height: 1, overflow: "hidden", clip: "rect(0,0,0,0)" }}
-                />
-              )
-            }
-            // Not applicable — result value wasn't found verbatim inside any
-            // branch text (e.g. numeric result vs textual branch labels), so
-            // the hidden a11y sentinel is intentionally skipped.
-            return null
-          })()}
         </div>
       )
     }
@@ -535,7 +503,12 @@ const CalculationHero: React.FC<CalculationHeroProps> = (props) => {
     // Waterfall build failed on the backend — surface the error loudly
     // rather than rendering a silently-empty trace.
     if (waterfallError) {
-      return <WaterfallErrorAlert error={waterfallError.error} />
+      return (
+        <WaterfallErrorAlert
+          error={waterfallError.error}
+          errorType={waterfallError.error_type}
+        />
+      )
     }
 
     // Waterfall mode: takes precedence for 3+ multiplicative factors

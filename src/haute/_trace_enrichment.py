@@ -30,6 +30,7 @@ and simplified test configs (from the TDD test suite).
 
 from __future__ import annotations
 
+import ast
 import copy
 import dataclasses
 import json
@@ -46,6 +47,7 @@ from haute._graph_utils import _sanitize_func_name
 from haute._json_safe import to_json_safe
 from haute._logging import get_logger
 from haute._rating import (
+    SUPPORTED_BANDING_OPERATORS,
     _breakpoints_to_rules,
     _normalise_combined_outputs,
     normalise_rating_key,
@@ -103,6 +105,8 @@ def _enrich_single_table(
     table: dict[str, Any],
     input_row: dict[str, Any],
     output_row: dict[str, Any],
+    *,
+    post_code_present: bool = False,
 ) -> dict[str, Any]:
     """Enrich a single rate table lookup within a rating step."""
     table_name = str(table.get("name", "") or "")
@@ -115,8 +119,7 @@ def _enrich_single_table(
     lookup_keys = {f: input_row.get(f) for f in factors}
     factor_details = [{"column": f, "value": input_row.get(f)} for f in factors]
 
-    # The output value for this table
-    rate_value = output_row.get(output_col)
+    observed_output_value = output_row.get(output_col)
 
     # Determine if matched: check if value is the default
     has_default = default_raw is not None and str(default_raw).strip()
@@ -134,7 +137,7 @@ def _enrich_single_table(
     # the string key "25").  Null keys never match the join, so a null
     # input key skips entry matching entirely.
     matched_entry: dict[str, Any] | None = None
-    if rate_value is not None:
+    if entries:
         input_keys = {f: normalise_rating_key(input_row.get(f)) for f in factors}
         if all(key is not None for key in input_keys.values()):
             # Runtime rating lookup deduplicates with keep="last" before joining.
@@ -145,8 +148,19 @@ def _enrich_single_table(
                     matched_entry = dict(entry)
                     break
 
+    selected_raw = (
+        matched_entry.get("value", matched_entry.get(output_col))
+        if matched_entry is not None
+        else default_val
+    )
+    try:
+        rate_value = float(selected_raw) if selected_raw is not None else None
+    except (ValueError, TypeError):
+        rate_value = None
+    if rate_value is not None and not math.isfinite(rate_value):
+        rate_value = None
     matched = rate_value is not None
-    default_used = False
+    default_used = matched_entry is None and default_val is not None
     if rate_value is not None and matched_entry is None and default_val is not None:
         # Value exists but no entry matched — default was used
         try:
@@ -162,7 +176,7 @@ def _enrich_single_table(
     else:
         status = "unmatched_value"
 
-    return {
+    detail = {
         "name": table_name,
         "output_column": output_col,
         "factors": factor_details,
@@ -175,6 +189,9 @@ def _enrich_single_table(
         "matched_entry": matched_entry,
         "default_value": default_val,
     }
+    if post_code_present and observed_output_value != rate_value:
+        detail["post_code_output_value"] = observed_output_value
+    return detail
 
 
 def enrich_rating_step(
@@ -192,7 +209,11 @@ def enrich_rating_step(
     has_combined_outputs = "combinedOutputs" in config
 
     if tables or combined_col or has_combined_outputs:
-        table_details = [_enrich_single_table(t, input_row, output_row) for t in tables]
+        post_code_present = bool(str(config.get("code", "") or "").strip())
+        table_details = [
+            _enrich_single_table(t, input_row, output_row, post_code_present=post_code_present)
+            for t in tables
+        ]
         table_output_columns = [t["output_column"] for t in table_details if t.get("output_column")]
 
         normalised_combined_outputs = _normalise_combined_outputs(config)
@@ -323,17 +344,6 @@ def _match_continuous_rule(
     except (ValueError, TypeError):
         return False
 
-    op_fn = {
-        "<": lambda v, t: v < t,
-        "<=": lambda v, t: v <= t,
-        ">": lambda v, t: v > t,
-        ">=": lambda v, t: v >= t,
-        "=": lambda v, t: v == t,
-        "==": lambda v, t: v == t,
-        "!=": lambda v, t: v != t,
-        "<>": lambda v, t: v != t,
-    }
-
     for suffix in ("1", "2"):
         op = str(rule.get(f"op{suffix}", "") or "").strip()
         threshold = rule.get(f"val{suffix}")
@@ -341,11 +351,15 @@ def _match_continuous_rule(
             continue
         try:
             threshold_num = float(threshold)
-        except (ValueError, TypeError):
-            continue
-        fn = op_fn.get(op)
+        except (ValueError, TypeError) as exc:
+            raise ValueError(
+                f"Banding rule has non-numeric threshold {threshold!r} for val{suffix}"
+            ) from exc
+        if not math.isfinite(threshold_num):
+            raise ValueError(f"Banding rule has non-finite threshold {threshold!r} for val{suffix}")
+        fn = SUPPORTED_BANDING_OPERATORS.get(op)
         if fn is None:
-            continue
+            raise ValueError(f"Banding rule has unsupported operator '{op}' for op{suffix}")
         cmp_val, cmp_threshold = _coerce_pair_through_dtype(val, threshold_num, input_dtype)
         if not fn(cmp_val, cmp_threshold):
             return False
@@ -717,9 +731,8 @@ def enrich_model_score(
             "task": config.get("task", "regression"),
         }
 
-        # Feature columns. Prefer explicit config, then the node contract,
-        # then inference from the row. The contract keeps technical columns
-        # such as quote IDs out of the model explanation.
+        # Feature metadata must be authoritative: trace inputs include
+        # technical and pass-through columns, which are not model features.
         feature_columns = config.get("feature_columns", None)
         if feature_columns is None:
             contract = config.get("contract")
@@ -729,18 +742,15 @@ def enrich_model_score(
                 else None
             )
             feature_columns = contract_inputs
-        if feature_columns is None:
-            # Infer: input columns minus the prediction column
-            feature_columns = [k for k in input_row if k != prediction_column]
-
         detail = {
             "detail_type": "model_score",
             "prediction_value": prediction_value,
             "prediction_column": prediction_column,
-            "feature_columns": list(feature_columns),
-            "feature_values": {f: input_row.get(f) for f in feature_columns},
             "model_identity": model_identity,
         }
+        if feature_columns is not None:
+            detail["feature_columns"] = list(feature_columns)
+            detail["feature_values"] = {f: input_row.get(f) for f in feature_columns}
 
         from haute import _model_explainability
 
@@ -763,6 +773,21 @@ def enrich_model_score(
             }
         if explanation is not None:
             detail["explanation"] = explanation
+            if feature_columns is None and isinstance(explanation, dict):
+                names: list[str] = []
+                for item in explanation.get("contributions", []):
+                    if not isinstance(item, dict):
+                        continue
+                    feature = item.get("feature")
+                    if isinstance(feature, str) and feature:
+                        names.append(feature)
+                if names:
+                    detail["feature_columns"] = names
+                    detail["feature_values"] = {name: input_row.get(name) for name in names}
+        if feature_columns is None and "feature_columns" not in detail:
+            detail["feature_metadata_unavailable"] = (
+                "No authoritative feature metadata is available."
+            )
 
         return detail
     except Exception as exc:
@@ -972,7 +997,11 @@ def detect_row_lineage_type(
             return "sorted"
 
         if op in ("filter",):
-            return "filtered"
+            # A filter call alone is not proof that rows were removed.
+            # Preserve actual observed cardinality in the trace.
+            if input_row_count is not None and output_row_count < input_row_count:
+                return "filtered"
+            return "passthrough"
 
         if op in ("cross_join", "explode", "scenario_expand"):
             return "expanded"
@@ -1026,97 +1055,6 @@ def _wrap_node_code(raw_code: str) -> str:
     if not stripped.startswith("df") and "=" not in raw_code.split("\n")[0].split("(")[0]:
         return f"df = (\n{raw_code}\n)"
     return raw_code
-
-
-def _fix_upstream_values(
-    input_sources: dict[str, Any],
-    steps: list[TraceStep],
-    eager_outputs: dict[str, pl.DataFrame],
-) -> None:
-    """Fix upstream step output_values using known-good values from input_sources.
-
-    When the row correlator matched the wrong row in a source node (due to
-    non-deterministic join ordering or value changes through scenario
-    expansion), the step's output_values shows null for columns that
-    actually have values.  This function uses the known-good values from
-    expression evaluation to find the correct row in the source DataFrame
-    and update the step's output_values.
-    """
-    from haute._trace_correlation import _jsonify_row
-
-    for col_name, src_info in input_sources.items():
-        if not isinstance(src_info, dict):
-            continue
-        src_node_id = src_info.get("node_id")
-        src_node_name = src_info.get("node_name")
-        known_value = src_info.get("result_value")
-        if (src_node_id is None and src_node_name is None) or known_value is None:
-            continue
-
-        # Find the step for this source node.  Match on node_id — the
-        # stable identity — so two nodes that happen to share a display
-        # name don't cross-write each other's output_values.  Only fall
-        # back to name matching for legacy sources that carry no id.
-        for s in steps:
-            if src_node_id is not None:
-                if s.node_id != src_node_id:
-                    continue
-            elif s.node_name != src_node_name:
-                continue
-            current_val = s.output_values.get(col_name)
-            if current_val is not None:
-                break  # value is already correct
-
-            # Step has null but we know the correct value — try to find
-            # the right row in the source DataFrame using the known value.
-            df = eager_outputs.get(s.node_id)
-            if not isinstance(df, pl.DataFrame) or col_name not in df.columns:
-                break
-            try:
-                # Filter to rows where this column matches the known value.
-                # Floats use a SCALE-RELATIVE tolerance (a fixed 1e-6
-                # absolute window collides distinct small-magnitude
-                # factors — e.g. 1.0000001 vs 1.0000004 — and .row(0)
-                # would then overwrite the displayed value with the wrong
-                # row).  The match must also be UNIQUE: if several rows
-                # satisfy it we cannot tell which one produced the value,
-                # so we log and leave the existing row untouched rather
-                # than guessing (fail loud, never a wrong attribution).
-                if isinstance(known_value, float):
-                    tol = abs(known_value) * 1e-9 + 1e-12
-                    matched = df.filter((pl.col(col_name) - known_value).abs() <= tol)
-                else:
-                    matched = df.filter(pl.col(col_name) == known_value)
-                if len(matched) == 1:
-                    new_row = _jsonify_row(matched.row(0, named=True))
-                    s.output_values[col_name] = new_row.get(col_name)
-                elif len(matched) > 1:
-                    logger.warning(
-                        "fix_upstream_row_ambiguous",
-                        node_id=s.node_id,
-                        column=col_name,
-                        match_count=len(matched),
-                    )
-            except Exception as exc:
-                # Row-fixup is opportunistic — it patches upstream rows
-                # that the post-hoc correlator got wrong.  If the filter
-                # itself errors (type mismatch, non-comparable value),
-                # log visibly so the user can see the fixup was skipped
-                # rather than silently leaving the wrong row in place.
-                logger.warning(
-                    "fix_upstream_row_failed",
-                    node_id=s.node_id,
-                    column=col_name,
-                    error=str(exc),
-                    error_type=type(exc).__name__,
-                    exc_info=True,
-                )
-            break
-
-        # Recurse into nested input_sources
-        nested = src_info.get("input_sources")
-        if isinstance(nested, dict):
-            _fix_upstream_values(nested, steps, eager_outputs)
 
 
 def _build_input_sources(
@@ -1356,7 +1294,6 @@ def _attach_banding_lineage(
         )
         if input_sources:
             calculation["input_sources"] = input_sources
-            _fix_upstream_values(input_sources, steps, eager_outputs)
 
     step.expression = expression
     step.calculation = calculation
@@ -1506,12 +1443,24 @@ _OPERATION_TYPE_TABLE: tuple[tuple[tuple[str, ...], str], ...] = (
 
 
 def _sniff_operation_type(code: str) -> str:
-    """Classify a node's row-lineage operation from its code string."""
-    low = code.lower()
-    return next(
-        (label for subs, label in _OPERATION_TYPE_TABLE if any(s in low for s in subs)),
-        "",
-    )
+    """Classify genuine method calls, never comments or string literals."""
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return ""
+    calls: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+            continue
+        name = node.func.attr.lower()
+        if name == "join" and isinstance(node.func.value, ast.Attribute):
+            if node.func.value.attr.lower() in {"list", "str"}:
+                continue
+        calls.add(name)
+    for fragments, label in _OPERATION_TYPE_TABLE:
+        if any(fragment.strip(".()") in calls for fragment in fragments):
+            return label
+    return ""
 
 
 def enrich_steps(
@@ -1864,17 +1813,6 @@ def enrich_steps(
                                 step.calculation = {}
                             step.calculation["input_sources"] = input_sources
 
-                            # Fix upstream steps that have wrong row data.
-                            # When input_sources found the correct value
-                            # for a column via expression evaluation, but
-                            # the upstream step's output_values shows null
-                            # (from a row correlation failure), re-correlate
-                            # using the known-good value.
-                            _fix_upstream_values(
-                                input_sources,
-                                steps,
-                                eager_outputs,
-                            )
                 except Exception as exc:
                     logger.warning(
                         "input_sources_failed",

@@ -426,6 +426,24 @@ class TestComputeSchemaDiff:
         assert diff.columns_passed == ["a"]
         assert diff.columns_modified == []
 
+    def test_qualified_parent_variants_are_not_removed_from_unqualified_child(self):
+        diff = _compute_schema_diff(
+            {"left.score": 1, "right.score": 2},
+            {"score": 3},
+            provenance_aliases={"left.score": "score", "right.score": "score"},
+        )
+        assert diff.columns_removed == []
+        assert diff.columns_added == []
+        assert diff.columns_modified == ["score"]
+
+    def test_real_dotted_column_is_not_treated_as_a_provenance_alias(self):
+        diff = _compute_schema_diff(
+            {"profile.score": 1},
+            {"profile.score": 1, "score": 2},
+        )
+        assert diff.columns_added == ["score"]
+        assert diff.columns_passed == ["profile.score"]
+
 
 # ---------------------------------------------------------------------------
 # execute_trace
@@ -905,7 +923,6 @@ class TestTraceResultToDict:
                     ),
                     input_values={},
                     output_values={"x": 1},
-                    execution_ms=1.5,
                 ),
             ],
             total_nodes_in_pipeline=1,
@@ -916,4 +933,5 @@ class TestTraceResultToDict:
         assert d["target_node_id"] == "t"
         assert len(d["steps"]) == 1
         assert d["steps"][0]["schema_diff"]["columns_added"] == ["x"]
+        assert "execution_ms" not in d["steps"][0]
         assert d["execution_ms"] == 2.0

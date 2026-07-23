@@ -3,12 +3,15 @@ import { renderHook, cleanup, act, waitFor } from "@testing-library/react"
 import type { Node, Edge } from "@xyflow/react"
 import useTracing, {
   TRACE_MOTION_GRAPH_SIZE_LIMIT,
+  TRACE_PROGRESS_DELAY_MS,
   buildEdgeAdjacency,
 } from "../useTracing"
 import useToastStore from "../../stores/useToastStore"
 import useSettingsStore from "../../stores/useSettingsStore"
+import useGraphStore from "../../stores/useGraphStore"
 import { makeNode, makeEdge } from "../../test-utils/factories"
 import { NODE_TYPES } from "../../utils/nodeTypes"
+import type { TraceResult } from "../../types/trace"
 
 vi.mock("@xyflow/react", async () => {
   const actual = await vi.importActual("@xyflow/react")
@@ -84,17 +87,33 @@ function makeParams(overrides: Partial<Parameters<typeof useTracing>[0]> = {}) {
   }
 }
 
-function makeTrace(nodeIds: string[]) {
+type TraceFixture = Omit<
+  TraceResult,
+  "omissions" | "correlation_diagnostics" | "generated_at" | "pipeline_source" | "execution_origin"
+>
+
+function completeTrace(trace: TraceFixture): TraceResult {
   return {
-    steps: nodeIds.map((nodeId) => ({
+    ...trace,
+    omissions: [],
+    correlation_diagnostics: [],
+    generated_at: "2026-07-23T12:00:00+00:00",
+    pipeline_source: null,
+    execution_origin: "fresh_execution",
+  }
+}
+
+function makeTrace(nodeIds: string[]): TraceResult {
+  return completeTrace({
+    steps: nodeIds.map((nodeId, topologicalRank) => ({
       node_id: nodeId,
       node_name: nodeId,
       node_type: "polars",
       schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] },
       input_values: {},
       output_values: {},
+      topological_rank: topologicalRank,
       column_relevant: true,
-      execution_ms: 5,
     })),
     target_node_id: nodeIds.at(-1) ?? "",
     row_index: 0,
@@ -105,7 +124,7 @@ function makeTrace(nodeIds: string[]) {
     execution_ms: 10,
     row_id_column: null,
     row_id_value: null,
-  }
+  })
 }
 
 describe("useTracing", () => {
@@ -130,7 +149,7 @@ describe("useTracing", () => {
   it("clearTrace resets traceResult and tracedCell", async () => {
     mockTraceCell.mockResolvedValue({
       status: "ok",
-      trace: { steps: [], target_node_id: "n2", row_index: 0, column: "price", output_value: 1, total_nodes_in_pipeline: 2, nodes_in_trace: 1, execution_ms: 10, row_id_column: null, row_id_value: null },
+      trace: completeTrace({ steps: [], target_node_id: "n2", row_index: 0, column: "price", output_value: 1, total_nodes_in_pipeline: 2, nodes_in_trace: 1, execution_ms: 10, row_id_column: null, row_id_value: null }),
     })
     const { result } = renderHook(() => useTracing(makeParams()))
     await act(async () => {
@@ -155,7 +174,7 @@ describe("useTracing", () => {
 
   it("handleCellClick calls traceCell and sets result on success", async () => {
     const trace = {
-      steps: [{ node_id: "n1", node_name: "N1", node_type: "polars", schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] }, input_values: {}, output_values: {}, column_relevant: true, execution_ms: 5 }],
+      steps: [{ node_id: "n1", node_name: "N1", node_type: "polars", schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] }, input_values: {}, output_values: {}, topological_rank: 0, column_relevant: true }],
       target_node_id: "n2",
       row_index: 0,
       column: "price",
@@ -166,7 +185,7 @@ describe("useTracing", () => {
       row_id_column: null,
       row_id_value: null,
     }
-    mockTraceCell.mockResolvedValue({ status: "ok", trace })
+    mockTraceCell.mockResolvedValue({ status: "ok", trace: completeTrace(trace) })
     const { result } = renderHook(() => useTracing(makeParams()))
     await act(async () => {
       result.current.handleCellClick(0, "price")
@@ -209,12 +228,12 @@ describe("useTracing", () => {
     expect(result.current.tracedCell).toEqual({ rowIndex: 1, column: "new_price" })
   })
 
-  it("handleCellClick shows toast on a non-ok trace envelope", async () => {
+  it("keeps an in-band trace failure as persistent retryable state", async () => {
     // The backend always returns a `trace`; a non-"ok" status is the only
     // in-band failure signal (real failures arrive as rejected ApiErrors).
     mockTraceCell.mockResolvedValue({
       status: "error",
-      trace: {
+      trace: completeTrace({
         steps: [],
         target_node_id: "n2",
         row_index: 0,
@@ -225,46 +244,158 @@ describe("useTracing", () => {
         execution_ms: 0,
         row_id_column: null,
         row_id_value: null,
-      },
+      }),
     })
     const { result } = renderHook(() => useTracing(makeParams()))
     await act(async () => {
       result.current.handleCellClick(0, "col")
     })
-    await waitFor(() => {
-      const toasts = useToastStore.getState().toasts
-      expect(toasts.some((t) => t.type === "error")).toBe(true)
-    })
+    await waitFor(() => expect(result.current.traceState.status).toBe("error"))
+    expect(result.current.traceState).toMatchObject({ retryable: true })
     expect(result.current.traceResult).toBeNull()
   })
 
-  it("handleCellClick shows toast on network error", async () => {
+  it("keeps a network error as persistent state with raw detail", async () => {
     mockTraceCell.mockRejectedValue(new Error("Network error"))
     const { result } = renderHook(() => useTracing(makeParams()))
     await act(async () => {
       result.current.handleCellClick(0, "col")
     })
-    await waitFor(() => {
-      const toasts = useToastStore.getState().toasts
-      expect(toasts.some((t) => t.text.includes("Network error"))).toBe(true)
-    })
+    await waitFor(() => expect(result.current.traceState).toMatchObject({ status: "error", detail: "Network error", retryable: true }))
   })
 
-  it("handleCellClick shows API error detail when present", async () => {
+  it("handles a row-identity 409 by requiring a fresh row selection", async () => {
     const err = Object.assign(new Error("HTTP 409"), {
+      status: 409,
       detail: "Trace data does not match the preview row.",
     })
     mockTraceCell.mockRejectedValue(err)
-    const { result } = renderHook(() => useTracing(makeParams()))
+    const refreshPreview = vi.fn()
+    const { result } = renderHook(() => useTracing(makeParams({ refreshPreview })))
     await act(async () => {
       result.current.handleCellClick(0, "col")
     })
-    await waitFor(() => {
-      const toasts = useToastStore.getState().toasts
-      expect(
-        toasts.some((t) => t.text.includes("Trace data does not match the preview row.")),
-      ).toBe(true)
+    await waitFor(() => expect(result.current.traceState).toMatchObject({ status: "error", retryable: false }))
+    expect(refreshPreview).toHaveBeenCalledWith(expect.objectContaining({ id: "n2" }))
+    expect(result.current.tracedCell).toBeNull()
+    expect(mockTraceCell).toHaveBeenCalledTimes(1)
+  })
+
+  it("does not expose progress for a trace that finishes before the delay", async () => {
+    mockTraceCell.mockResolvedValue({ status: "ok", trace: makeTrace(["n1", "n2"]) })
+    const { result } = renderHook(() => useTracing(makeParams()))
+    await act(async () => { result.current.handleCellClick(0, "price") })
+    await waitFor(() => expect(result.current.traceState.status).toBe("ready"))
+    expect(result.current.traceState.status).toBe("ready")
+  })
+
+  it("shows delayed progress and cancellation returns to idle", () => {
+    vi.useFakeTimers()
+    mockTraceCell.mockReturnValue(new Promise(() => {}))
+    const { result } = renderHook(() => useTracing(makeParams()))
+    act(() => result.current.handleCellClick(0, "price"))
+    expect(result.current.traceState).toEqual({ status: "loading", progressVisible: false })
+    act(() => vi.advanceTimersByTime(TRACE_PROGRESS_DELAY_MS))
+    expect(result.current.traceState).toEqual({ status: "loading", progressVisible: true })
+    expect(result.current.tracedCell).toEqual({ rowIndex: 0, column: "price" })
+    act(() => result.current.cancelTrace())
+    expect(result.current.traceState).toEqual({ status: "idle" })
+    expect(result.current.tracedCell).toBeNull()
+    vi.useRealTimers()
+  })
+
+  it("clears and rejects a late result when structural context changes", async () => {
+    let resolve!: (value: Awaited<ReturnType<typeof traceCell>>) => void
+    mockTraceCell.mockReturnValue(new Promise((done) => { resolve = done }))
+    const { result } = renderHook(() => useTracing(makeParams()))
+    act(() => result.current.handleCellClick(0, "price"))
+    act(() => useGraphStore.setState((state) => ({ structuralVersion: state.structuralVersion + 1 })))
+    expect(result.current.traceState.status).toBe("idle")
+    await act(async () => { resolve({ status: "ok", trace: makeTrace(["n1", "n2"]) }) })
+    expect(result.current.traceResult).toBeNull()
+  })
+
+  it("invalidates a ready trace when its source or row limit changes", async () => {
+    mockTraceCell.mockResolvedValue({ status: "ok", trace: makeTrace(["n1", "n2"]) })
+    const { result } = renderHook(() => useTracing(makeParams()))
+    await act(async () => { result.current.handleCellClick(0, "price") })
+    await waitFor(() => expect(result.current.traceState.status).toBe("ready"))
+    act(() => useSettingsStore.setState({ rowLimit: 99 }))
+    expect(result.current.traceState.status).toBe("idle")
+    expect(result.current.traceResult).toBeNull()
+    useSettingsStore.setState({ rowLimit: 1000 })
+  })
+
+  it("does not resurrect a trace when semantic settings return to their old values", async () => {
+    mockTraceCell.mockResolvedValue({ status: "ok", trace: makeTrace(["n1", "n2"]) })
+    const { result } = renderHook(() => useTracing(makeParams()))
+    await act(async () => { result.current.handleCellClick(0, "price") })
+    await waitFor(() => expect(result.current.traceState.status).toBe("ready"))
+
+    act(() => useSettingsStore.setState({ rowLimit: 99 }))
+    expect(result.current.traceState.status).toBe("idle")
+    act(() => useSettingsStore.setState({ rowLimit: 1000 }))
+
+    expect(result.current.traceState.status).toBe("idle")
+    expect(result.current.traceResult).toBeNull()
+  })
+
+  it("retries the captured row only while its semantic context remains current", async () => {
+    mockTraceCell
+      .mockRejectedValueOnce(new Error("temporary failure"))
+      .mockResolvedValueOnce({ status: "ok", trace: makeTrace(["n1", "n2"]) })
+    const rowValues = { quote_id: "Q-7", premium: 123 }
+    const { result } = renderHook(() => useTracing(makeParams()))
+
+    await act(async () => {
+      result.current.handleCellClick(7, "premium", rowValues)
     })
+    await waitFor(() => expect(result.current.traceState.status).toBe("error"))
+
+    act(() => result.current.retryTrace())
+    await waitFor(() => expect(result.current.traceState.status).toBe("ready"))
+    expect(mockTraceCell).toHaveBeenCalledTimes(2)
+    expect(mockTraceCell).toHaveBeenLastCalledWith(expect.objectContaining({
+      row_index: 7,
+      column: "premium",
+      row_values: rowValues,
+    }))
+
+    act(() => useSettingsStore.setState({ activeSource: "snapshot" }))
+    expect(result.current.traceState.status).toBe("idle")
+    act(() => result.current.retryTrace())
+    expect(mockTraceCell).toHaveBeenCalledTimes(2)
+  })
+
+  it("preserves a ready trace across position-only node changes", async () => {
+    mockTraceCell.mockResolvedValue({ status: "ok", trace: makeTrace(["n1", "n2"]) })
+    const initialNodes = [
+      { ...makeNode("n1"), position: { x: 0, y: 0 } },
+      { ...makeNode("n2"), position: { x: 100, y: 0 } },
+    ] as Node[]
+    const params = makeParams({
+      nodes: initialNodes,
+      selectedNode: initialNodes[1],
+    })
+    const { result, rerender } = renderHook((props) => useTracing(props), {
+      initialProps: params,
+    })
+
+    await act(async () => {
+      result.current.handleCellClick(0, "price")
+    })
+    await waitFor(() => expect(result.current.traceState.status).toBe("ready"))
+    const readyTrace = result.current.traceResult
+
+    const movedNodes = [
+      { ...initialNodes[0], position: { x: 40, y: 20 } },
+      { ...initialNodes[1], position: { x: 220, y: 90 } },
+    ] as Node[]
+    rerender({ ...params, nodes: movedNodes, selectedNode: movedNodes[1] })
+
+    expect(result.current.traceState.status).toBe("ready")
+    expect(result.current.traceResult).toBe(readyTrace)
+    expect(mockTraceCell).toHaveBeenCalledTimes(1)
   })
 
   it("nodesWithStatus applies status from nodeStatuses", () => {
@@ -279,7 +410,7 @@ describe("useTracing", () => {
 
   it("nodesWithStatus dims nodes not in trace via _traceDimmed data flag only", async () => {
     const trace = {
-      steps: [{ node_id: "n1", node_name: "N1", node_type: "polars", schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] }, input_values: {}, output_values: {}, column_relevant: true, execution_ms: 5 }],
+      steps: [{ node_id: "n1", node_name: "N1", node_type: "polars", schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] }, input_values: {}, output_values: {}, topological_rank: 0, column_relevant: true }],
       target_node_id: "n2",
       row_index: 0,
       column: "price",
@@ -290,7 +421,7 @@ describe("useTracing", () => {
       row_id_column: null,
       row_id_value: null,
     }
-    mockTraceCell.mockResolvedValue({ status: "ok", trace })
+    mockTraceCell.mockResolvedValue({ status: "ok", trace: completeTrace(trace) })
     const { result } = renderHook(() => useTracing(makeParams()))
     await act(async () => {
       result.current.handleCellClick(0, "price")
@@ -306,8 +437,8 @@ describe("useTracing", () => {
   it("nodesWithStatus does not set style.opacity on traced nodes either", async () => {
     const trace = {
       steps: [
-        { node_id: "n1", node_name: "N1", node_type: "polars", schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] }, input_values: {}, output_values: {}, column_relevant: true, execution_ms: 5 },
-        { node_id: "n2", node_name: "N2", node_type: "polars", schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] }, input_values: {}, output_values: {}, column_relevant: true, execution_ms: 5 },
+        { node_id: "n1", node_name: "N1", node_type: "polars", schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] }, input_values: {}, output_values: {}, topological_rank: 0, column_relevant: true },
+        { node_id: "n2", node_name: "N2", node_type: "polars", schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] }, input_values: {}, output_values: {}, topological_rank: 1, column_relevant: true },
       ],
       target_node_id: "n2",
       row_index: 0,
@@ -319,7 +450,7 @@ describe("useTracing", () => {
       row_id_column: null,
       row_id_value: null,
     }
-    mockTraceCell.mockResolvedValue({ status: "ok", trace })
+    mockTraceCell.mockResolvedValue({ status: "ok", trace: completeTrace(trace) })
     const { result } = renderHook(() => useTracing(makeParams()))
     await act(async () => {
       result.current.handleCellClick(0, "price")
@@ -333,7 +464,7 @@ describe("useTracing", () => {
 
   it("nodesWithStatus preserves transition on style", async () => {
     const trace = {
-      steps: [{ node_id: "n1", node_name: "N1", node_type: "polars", schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] }, input_values: {}, output_values: {}, column_relevant: true, execution_ms: 5 }],
+      steps: [{ node_id: "n1", node_name: "N1", node_type: "polars", schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] }, input_values: {}, output_values: {}, topological_rank: 0, column_relevant: true }],
       target_node_id: "n2",
       row_index: 0,
       column: "price",
@@ -344,7 +475,7 @@ describe("useTracing", () => {
       row_id_column: null,
       row_id_value: null,
     }
-    mockTraceCell.mockResolvedValue({ status: "ok", trace })
+    mockTraceCell.mockResolvedValue({ status: "ok", trace: completeTrace(trace) })
     const { result } = renderHook(() => useTracing(makeParams()))
     await act(async () => {
       result.current.handleCellClick(0, "price")
@@ -359,8 +490,8 @@ describe("useTracing", () => {
   it("edgesWithTrace highlights edges between traced nodes", async () => {
     const trace = {
       steps: [
-        { node_id: "n1", node_name: "N1", node_type: "polars", schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] }, input_values: {}, output_values: {}, column_relevant: true, execution_ms: 5 },
-        { node_id: "n2", node_name: "N2", node_type: "polars", schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] }, input_values: {}, output_values: {}, column_relevant: true, execution_ms: 5 },
+        { node_id: "n1", node_name: "N1", node_type: "polars", schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] }, input_values: {}, output_values: {}, topological_rank: 0, column_relevant: true },
+        { node_id: "n2", node_name: "N2", node_type: "polars", schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] }, input_values: {}, output_values: {}, topological_rank: 1, column_relevant: true },
       ],
       target_node_id: "n2",
       row_index: 0,
@@ -372,7 +503,7 @@ describe("useTracing", () => {
       row_id_column: null,
       row_id_value: null,
     }
-    mockTraceCell.mockResolvedValue({ status: "ok", trace })
+    mockTraceCell.mockResolvedValue({ status: "ok", trace: completeTrace(trace) })
     const { result } = renderHook(() => useTracing(makeParams()))
     await act(async () => {
       result.current.handleCellClick(0, "price")
@@ -564,7 +695,7 @@ describe("useTracing", () => {
 
   it("_hoverDimmed is false when trace is active (trace takes priority)", async () => {
     const trace = {
-      steps: [{ node_id: "n1", node_name: "N1", node_type: "polars", schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] }, input_values: {}, output_values: {}, column_relevant: true, execution_ms: 5 }],
+      steps: [{ node_id: "n1", node_name: "N1", node_type: "polars", schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] }, input_values: {}, output_values: {}, topological_rank: 0, column_relevant: true }],
       target_node_id: "n2",
       row_index: 0,
       column: "price",
@@ -575,7 +706,7 @@ describe("useTracing", () => {
       row_id_column: null,
       row_id_value: null,
     }
-    mockTraceCell.mockResolvedValue({ status: "ok", trace })
+    mockTraceCell.mockResolvedValue({ status: "ok", trace: completeTrace(trace) })
     const params = makeParams({ hoveredNodeId: "n1" })
     const { result } = renderHook(() => useTracing(params))
     await act(async () => {

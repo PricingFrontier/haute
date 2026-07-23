@@ -205,7 +205,9 @@ export function buildExecutionDiagnostic(
   options: ExecutionDiagnosticOptions = {},
 ): ExecutionDiagnostic | null {
   const strategyDiagnostic = buildExecutionStrategyDiagnostic(metrics)
-  if (strategyDiagnostic) return strategyDiagnostic
+  if (metrics?.execution_strategy?.status === "rejected" && strategyDiagnostic) {
+    return strategyDiagnostic
+  }
   if (!shouldShowMemoryPressureDiagnostic(metrics, options) || !metrics) return null
   const event = highestPressureEvent(metrics)
   if (!event) return null

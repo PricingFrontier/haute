@@ -1,5 +1,5 @@
 import type { ModelScoreNodeDetail } from "../types/trace"
-import { formatValue as _formatValue } from "../utils/formatValue"
+import { formatTraceValue } from "./traceFormatting"
 import {
   TraceDetailAlert,
   TraceDetailChip,
@@ -14,7 +14,7 @@ import {
   resolveContributionFeatureValue,
 } from "./modelScoreHelpers"
 
-const formatValue = (v: unknown) => _formatValue(v, 2)
+const formatValue = formatTraceValue
 const traceDetailLabelStyle = { color: "var(--text-muted)", fontSize: 10 }
 
 export function ModelScoreDetailBlock({ detail }: {
@@ -79,6 +79,11 @@ export function ModelScoreDetailBlock({ detail }: {
             })}
           </div>
         </TraceDetailSection>
+      )}
+      {featureColumns.length === 0 && modelDetail.feature_metadata_unavailable && (
+        <TraceDetailAlert>
+          Feature details unavailable: {modelDetail.feature_metadata_unavailable}
+        </TraceDetailAlert>
       )}
       {explanation?.status === "error" && (
         <TraceDetailAlert>

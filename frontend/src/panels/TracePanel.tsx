@@ -1,9 +1,10 @@
 import { useState, useMemo } from "react"
-import { AlertTriangle, X, Scan } from "lucide-react"
-import type { TraceResult } from "../types/trace"
-import { formatValue as _formatValue } from "../utils/formatValue"
+import { AlertTriangle, Copy, Download, Printer, X, Scan } from "lucide-react"
+import type { TraceRequestState } from "../hooks/useTracing"
+import type { TraceOmission, TraceResult } from "../types/trace"
 import PanelShell from "./PanelShell"
 import { StepCard } from "../trace/StepCard"
+import { formatTraceValue, traceValuePresentation } from "../trace/traceFormatting"
 import {
   defaultExpandedStepIds,
   traceStoryKey,
@@ -15,17 +16,97 @@ import {
   type CollapsedEntry,
 } from "./trace/traceGrouping"
 
-const formatValue = (v: unknown) => _formatValue(v, 2)
-
 interface TracePanelProps {
   trace: TraceResult
   onClose: () => void
 }
 
+function isTraceOmission(value: CollapsedEntry | TraceOmission): value is TraceOmission {
+  return "reason" in value
+}
+
+function evidenceRank(value: CollapsedEntry | TraceOmission): number {
+  if (isTraceOmission(value)) return value.topological_rank
+  if ("collapsed" in value) {
+    return Math.min(...value.collapsed.map((step) => step.topological_rank))
+  }
+  return value.topological_rank
+}
+
+function downloadText(filename: string, content: string, type: string): void {
+  const url = URL.createObjectURL(new Blob([content], { type }))
+  const link = document.createElement("a")
+  link.href = url
+  link.download = filename
+  link.click()
+  URL.revokeObjectURL(url)
+}
+
+function loadTraceExport() {
+  return import("../trace/traceExport")
+}
+
+function omissionSummary(reason: string): string {
+  if (reason.includes("ambiguous") || reason.includes("duplicate")) {
+    return "One upstream row could not be identified unambiguously."
+  }
+  if (reason.includes("unsupported")) {
+    return "This upstream row uses a key type that tracing cannot compare safely."
+  }
+  if (reason.includes("source_frame")) {
+    return "The contributing source frame could not be identified safely."
+  }
+  return "This upstream row could not be correlated safely."
+}
+
+interface TraceStatePanelProps {
+  state: Exclude<TraceRequestState, { status: "idle" } | { status: "ready" }>
+  onCancel: () => void
+  onRetry: () => void
+  onClose: () => void
+}
+
+/** Compact exceptional-latency and persistent failure surface for tracing. */
+export function TraceStatePanel({ state, onCancel, onRetry, onClose }: TraceStatePanelProps) {
+  if (state.status === "loading" && !state.progressVisible) return null
+  const loading = state.status === "loading"
+  return (
+    <PanelShell testId="trace-state-panel">
+      <div className="p-4 space-y-3">
+        <div className="flex items-center gap-2" style={{ color: loading ? "var(--text-primary)" : "var(--danger)" }}>
+          {loading ? <Scan size={16} className="animate-pulse" /> : <AlertTriangle size={16} />}
+          <span className="text-sm font-semibold">{loading ? "Tracing this value…" : state.message}</span>
+        </div>
+        {loading ? (
+          <button type="button" className="text-xs underline" onClick={onCancel}>Cancel</button>
+        ) : (
+          <>
+            <details className="text-xs" style={{ color: "var(--text-muted)" }}>
+              <summary>Technical details</summary>
+              <pre className="mt-2 whitespace-pre-wrap font-mono">{state.detail}</pre>
+            </details>
+            <div className="flex gap-3">
+              {state.retryable && <button type="button" className="text-xs underline" onClick={onRetry}>Retry</button>}
+              <button type="button" className="text-xs underline" onClick={onClose}>Close</button>
+            </div>
+          </>
+        )}
+      </div>
+    </PanelShell>
+  )
+}
+
 export default function TracePanel({ trace, onClose }: TracePanelProps) {
   const storyKey = traceStoryKey(trace)
   const [showHidden, setShowHidden] = useState(false)
-  const correlationDiagnostics = trace.correlation_diagnostics ?? []
+  const [exportStatus, setExportStatus] = useState<"idle" | "copied" | "error">("idle")
+  const omittedDiagnosticIndices = useMemo(
+    () => new Set(trace.omissions.map((omission) => omission.diagnostic_index)),
+    [trace.omissions],
+  )
+  const correlationDiagnostics = trace.correlation_diagnostics.filter(
+    (_diagnostic, index) => !omittedDiagnosticIndices.has(index),
+  )
 
   const targetStep = useMemo(() => findTargetStep(trace.steps, trace.column), [trace.steps, trace.column])
   const preserveStepIds = useMemo(
@@ -56,6 +137,57 @@ export default function TracePanel({ trace, onClose }: TracePanelProps) {
     }
     return focusedStoryEntries
   }, [focusedStoryEntries, showHidden, targetStep, trace.steps])
+  const evidenceEntries = useMemo<Array<CollapsedEntry | TraceOmission>>(
+    () => [...storyEntries, ...trace.omissions].sort(
+      (left, right) => evidenceRank(left) - evidenceRank(right),
+    ),
+    [storyEntries, trace.omissions],
+  )
+  const stepIndexById = useMemo(
+    () => new Map(trace.steps.map((step, index) => [step.node_id, index])),
+    [trace.steps],
+  )
+  const outputPresentation = traceValuePresentation(trace.output_value, trace.column ?? "result")
+  const rowIdPresentation = traceValuePresentation(trace.row_id_value, trace.row_id_column ?? "row")
+
+  const copyTrace = async () => {
+    try {
+      const { copyTraceMarkdown } = await loadTraceExport()
+      await copyTraceMarkdown(trace, (value) => navigator.clipboard.writeText(value))
+      setExportStatus("copied")
+    } catch {
+      setExportStatus("error")
+    }
+  }
+
+  const downloadTrace = async (extension: "md" | "csv") => {
+    try {
+      const exporter = await loadTraceExport()
+      const markdown = extension === "md"
+      downloadText(
+        exporter.traceExportFilename(trace, extension),
+        markdown ? exporter.traceToMarkdown(trace) : exporter.traceToCsv(trace),
+        markdown ? "text/markdown;charset=utf-8" : "text/csv;charset=utf-8",
+      )
+    } catch {
+      setExportStatus("error")
+    }
+  }
+
+  const printTrace = async () => {
+    const printWindow = window.open("", "haute-trace-print", "width=900,height=700")
+    if (!printWindow) {
+      setExportStatus("error")
+      return
+    }
+    try {
+      const { printTraceReport } = await loadTraceExport()
+      printTraceReport(trace, () => printWindow)
+    } catch {
+      printWindow.close()
+      setExportStatus("error")
+    }
+  }
 
   return (
     <PanelShell testId="trace-panel">
@@ -72,15 +204,17 @@ export default function TracePanel({ trace, onClose }: TracePanelProps) {
               <span
                 className="font-mono text-[11px] font-semibold"
                 data-testid="trace-target-summary"
+                title={outputPresentation.title}
+                aria-label={outputPresentation.ariaLabel}
                 style={{ color: "var(--accent)", fontVariantNumeric: "tabular-nums" }}
               >
-                = {formatValue(trace.output_value)}
+                = {outputPresentation.display}
               </span>
             )}
           </div>
           <div className="text-[11px]" style={{ color: "var(--text-muted)" }}>
             {trace.row_id_column && trace.row_id_value != null ? (
-              <><span className="font-mono">{trace.row_id_column}</span> = <span className="font-mono font-medium" style={{ color: "var(--text-secondary)" }}>{formatValue(trace.row_id_value)}</span></>
+              <><span className="font-mono">{trace.row_id_column}</span> = <span className="font-mono font-medium" title={rowIdPresentation.title} aria-label={rowIdPresentation.ariaLabel} style={{ color: "var(--text-secondary)" }}>{rowIdPresentation.display}</span></>
             ) : (
               <>Row {trace.row_index}</>
             )}
@@ -106,6 +240,53 @@ export default function TracePanel({ trace, onClose }: TracePanelProps) {
             )}
           </div>
         </div>
+        <div
+          className="trace-export-actions flex items-center gap-0.5"
+          aria-label="Export trace"
+          onPointerEnter={() => { void loadTraceExport() }}
+          onFocus={() => { void loadTraceExport() }}
+        >
+          <button
+            type="button"
+            onClick={() => { void copyTrace() }}
+            aria-label="Copy trace as Markdown"
+            title="Copy Markdown"
+            className="p-1 rounded transition-colors hover:bg-[var(--bg-hover)]"
+            style={{ color: "var(--text-muted)" }}
+          >
+            <Copy size={13} />
+          </button>
+          <button
+            type="button"
+            onClick={() => { void downloadTrace("md") }}
+            aria-label="Download trace as Markdown"
+            title="Download Markdown"
+            className="p-1 rounded transition-colors hover:bg-[var(--bg-hover)]"
+            style={{ color: "var(--text-muted)" }}
+          >
+            <Download size={13} />
+          </button>
+          <button
+            type="button"
+            onClick={() => { void downloadTrace("csv") }}
+            aria-label="Download trace as CSV"
+            title="Download CSV"
+            className="px-1 py-0.5 rounded text-[9px] font-semibold transition-colors hover:bg-[var(--bg-hover)]"
+            style={{ color: "var(--text-muted)" }}
+          >
+            CSV
+          </button>
+          <button
+            type="button"
+            onClick={() => { void printTrace() }}
+            aria-label="Print trace"
+            title="Print"
+            className="p-1 rounded transition-colors hover:bg-[var(--bg-hover)]"
+            style={{ color: "var(--text-muted)" }}
+          >
+            <Printer size={13} />
+          </button>
+        </div>
         <button
           onClick={onClose}
           aria-label="Close trace"
@@ -121,6 +302,16 @@ export default function TracePanel({ trace, onClose }: TracePanelProps) {
         data-testid="trace-story"
         style={{ background: "var(--bg-panel)" }}
       >
+        {exportStatus === "copied" && (
+          <div role="status" className="text-[11px]" style={{ color: "var(--success-hover)" }}>
+            Trace copied as Markdown.
+          </div>
+        )}
+        {exportStatus === "error" && (
+          <div role="alert" className="text-[11px]" style={{ color: "var(--danger-text)" }}>
+            The trace could not be exported. Check browser permissions and try again.
+          </div>
+        )}
         {correlationDiagnostics.length > 0 && (
           <div
             role="alert"
@@ -156,12 +347,50 @@ export default function TracePanel({ trace, onClose }: TracePanelProps) {
           <div className="flex items-center gap-2 rounded px-2 py-1.5 text-[11px]" style={{ background: "var(--bg-elevated)", color: "var(--text-muted)" }}>
             <span>Result</span>
             <span className="font-mono font-semibold" style={{ color: "var(--accent)" }}>
-              {formatValue(trace.output_value)}
+              {formatTraceValue(trace.output_value)}
             </span>
           </div>
         )}
 
-        {storyEntries.map((entry, entryIndex) => {
+        {evidenceEntries.map((entry, entryIndex) => {
+          if (isTraceOmission(entry)) {
+            const diagnostic = trace.correlation_diagnostics[entry.diagnostic_index]
+            return (
+              <div
+                key={`omission-${entry.node_id}-${entry.topological_rank}`}
+                role="alert"
+                data-testid={`trace-omission-${entry.node_id}`}
+                className="rounded-lg px-3 py-2 text-[11px]"
+                style={{
+                  border: "1px dashed var(--warning-border-strong)",
+                  background: "var(--warning-soft)",
+                  color: "var(--text-secondary)",
+                }}
+              >
+                <div className="flex items-center gap-2">
+                  <AlertTriangle size={13} aria-hidden="true" style={{ color: "var(--warning-strong)" }} />
+                  <span className="font-mono" style={{ color: "var(--text-muted)" }}>
+                    {entry.topological_rank + 1}
+                  </span>
+                  <span className="font-semibold" style={{ color: "var(--text-primary)" }}>
+                    {entry.node_name}
+                  </span>
+                  <span className="text-[9px] uppercase tracking-wide" style={{ color: "var(--warning-strong)" }}>
+                    trace gap
+                  </span>
+                </div>
+                <div className="mt-1">{omissionSummary(entry.reason)}</div>
+                {diagnostic && (
+                  <details className="mt-1">
+                    <summary>Technical details</summary>
+                    <div className="mt-1 whitespace-pre-wrap break-words font-mono">
+                      {diagnostic.message}
+                    </div>
+                  </details>
+                )}
+              </div>
+            )
+          }
           if ("collapsed" in entry) {
             const hiddenCount = entry.collapsed.length
             return (
@@ -182,7 +411,7 @@ export default function TracePanel({ trace, onClose }: TracePanelProps) {
             <StepCard
               key={`${storyKey}-${entry.node_id}`}
               step={entry}
-              index={trace.steps.indexOf(entry)}
+              index={stepIndexById.get(entry.node_id) ?? entryIndex}
               tracedColumn={trace.column}
               isTargetStep={isTargetStep}
               defaultExpanded={expandedStepIds.has(entry.node_id)}

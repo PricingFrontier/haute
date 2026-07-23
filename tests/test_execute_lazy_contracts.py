@@ -8,8 +8,9 @@ from unittest.mock import patch
 import polars as pl
 import pytest
 
+import haute.execution as execution_facade
 from haute._contracts import Contract
-from haute._execute_lazy import _effective_contract, _execute_lazy
+from haute._execute_lazy import _effective_contract, _execute_eager_core, _execute_lazy
 from haute._execution_context import ExecutionContext, ExecutionProfile
 from haute._types import GraphNode, NodeData, NodeType, PipelineGraph
 from haute.errors import (
@@ -364,7 +365,7 @@ def test_bounded_lazy_execution_context_carries_projection_plan() -> None:
     assert context.projection_plan.needed_by_node["source"] == frozenset({"quote_id"})
 
 
-def test_bounded_lazy_execution_runs_unowned_fan_in_as_streaming_boundary() -> None:
+def test_bounded_lazy_execution_refines_unowned_fan_in_from_parent_schemas() -> None:
     graph = make_graph(
         {
             "nodes": [
@@ -429,8 +430,9 @@ def test_bounded_lazy_execution_runs_unowned_fan_in_as_streaming_boundary() -> N
 
     assert outputs["out"].collect().to_dict(as_series=False) == {"quote_id": ["q1"]}
     assert context.projection_plan is not None
-    assert context.projection_plan.needed_by_node["left"] is None
-    assert context.projection_plan.needed_by_node["right"] is None
+    assert context.projection_plan.needed_by_node["left"] == frozenset({"quote_id"})
+    assert context.projection_plan.needed_by_node["right"] == frozenset({"quote_id"})
+    assert context.projection_plan.status.value == "projected"
 
 
 def test_bounded_lazy_execution_runtime_projects_simple_contract_free_join() -> None:
@@ -528,11 +530,186 @@ def test_bounded_lazy_execution_runtime_projects_simple_contract_free_join() -> 
         "columns": ("quote_id", "right_value"),
     }
     assert diagnostics["strategy_summary"]["profile"] == "lazy_sink"
-    assert (
-        diagnostics["strategy_summary"]["node_strategy_counts"]["unprojected_streaming_boundary"]
-        >= 1
-    )
+    assert diagnostics["strategy_summary"]["node_strategy_counts"] == {"projected": 4}
     json.dumps(diagnostics)
+
+
+def test_bounded_lazy_execution_runtime_projects_builtin_edge_join_and_final_diagnostic() -> None:
+    graph = make_graph(
+        {
+            "nodes": [
+                {"id": "base", "data": {"label": "base", "nodeType": "dataSource", "config": {}}},
+                {
+                    "id": "competitor",
+                    "data": {"label": "competitor", "nodeType": "dataSource", "config": {}},
+                },
+                {
+                    "id": "joined",
+                    "data": {
+                        "label": "joined",
+                        "nodeType": "edgeJoin",
+                        "config": {
+                            "baseInput": "base",
+                            "joinInput": "competitor",
+                            "how": "left",
+                            "on": ["quote_id"],
+                            "suffix": "_right",
+                            "contract": "opaque",
+                        },
+                    },
+                },
+            ],
+            "edges": [
+                make_edge("base", "joined").model_dump(),
+                make_edge("competitor", "joined").model_dump(),
+            ],
+        }
+    )
+    seen_join_schemas: list[tuple[list[str], list[str]]] = []
+
+    def build_node_fn(node: GraphNode, **_kwargs):
+        if node.id == "base":
+            return (
+                node.id,
+                lambda: pl.DataFrame(
+                    {"quote_id": ["q1"], "base_value": [1], "base_unused": [100]}
+                ).lazy(),
+                True,
+            )
+        if node.id == "competitor":
+            return (
+                node.id,
+                lambda: pl.DataFrame(
+                    {
+                        "quote_id": ["q1"],
+                        "competitor_premium": [2.0],
+                        "competitor_unused": [200],
+                    }
+                ).lazy(),
+                True,
+            )
+
+        def join(base: pl.LazyFrame, competitor: pl.LazyFrame) -> pl.LazyFrame:
+            seen_join_schemas.append(
+                (base.collect_schema().names(), competitor.collect_schema().names())
+            )
+            return base.join(competitor, on="quote_id", how="left", suffix="_right")
+
+        return node.id, join, False
+
+    context = ExecutionContext(
+        operation="test_runtime_builtin_edge_join_projection",
+        profile=ExecutionProfile.LAZY_SINK,
+    )
+    outputs, *_ = _execute_lazy(
+        graph,
+        build_node_fn,
+        target_node_id="joined",
+        required_columns_by_node={"joined": {"quote_id", "competitor_premium"}},
+        execution_context=context,
+    )
+
+    assert seen_join_schemas == [(["quote_id"], ["quote_id", "competitor_premium"])]
+    assert outputs["joined"].collect().to_dict(as_series=False) == {
+        "quote_id": ["q1"],
+        "competitor_premium": [2.0],
+    }
+    metrics = context.metrics_payload(status="completed")
+    strategy = metrics["execution_strategy"]
+    assert strategy is not None
+    assert strategy["status"] == "projected"
+    assert strategy["strategy"] == "projected"
+    assert strategy.get("blocking_node_id") is None
+
+
+def test_eager_preview_runtime_projects_builtin_edge_join_and_final_diagnostic() -> None:
+    graph = make_graph(
+        {
+            "nodes": [
+                {"id": "base", "data": {"label": "base", "nodeType": "dataSource", "config": {}}},
+                {
+                    "id": "competitor",
+                    "data": {"label": "competitor", "nodeType": "dataSource", "config": {}},
+                },
+                {
+                    "id": "joined",
+                    "data": {
+                        "label": "joined",
+                        "nodeType": "edgeJoin",
+                        "config": {
+                            "baseInput": "base",
+                            "joinInput": "competitor",
+                            "how": "left",
+                            "on": ["quote_id"],
+                            "suffix": "_right",
+                            "contract": "opaque",
+                        },
+                    },
+                },
+            ],
+            "edges": [
+                make_edge("base", "joined").model_dump(),
+                make_edge("competitor", "joined").model_dump(),
+            ],
+        }
+    )
+    seen_join_schemas: list[tuple[list[str], list[str]]] = []
+
+    def build_node_fn(node: GraphNode, **_kwargs):
+        if node.id == "base":
+            return node.id, lambda: pl.LazyFrame({"quote_id": ["q1"], "base_unused": [1]}), True
+        if node.id == "competitor":
+            return (
+                node.id,
+                lambda: pl.LazyFrame(
+                    {"quote_id": ["q1"], "competitor_premium": [2.0], "unused": [3]}
+                ),
+                True,
+            )
+
+        def join(base: pl.LazyFrame, competitor: pl.LazyFrame) -> pl.LazyFrame:
+            seen_join_schemas.append(
+                (base.collect_schema().names(), competitor.collect_schema().names())
+            )
+            return base.join(competitor, on="quote_id", how="left")
+
+        return node.id, join, False
+
+    required = {"joined": {"quote_id", "competitor_premium"}}
+    context = ExecutionContext(
+        operation="test_eager_runtime_builtin_edge_join_projection",
+        profile=ExecutionProfile.PREVIEW_EAGER,
+    )
+    execution_facade.plan_execution_strategy(
+        execution_facade.ProjectionRequest(
+            graph=graph,
+            target_node_id="joined",
+            profile=ExecutionProfile.PREVIEW_EAGER,
+            required_columns_by_node=required,
+        ),
+        execution_context=context,
+    )
+
+    result = _execute_eager_core(
+        graph,
+        build_node_fn,
+        target_node_id="joined",
+        required_columns_by_node=required,
+        materialize_node_ids={"joined"},
+        execution_context=context,
+    )
+
+    assert seen_join_schemas == [(["quote_id"], ["quote_id", "competitor_premium"])]
+    joined_output = result.outputs["joined"]
+    assert isinstance(joined_output, pl.DataFrame)
+    assert joined_output.to_dict(as_series=False) == {
+        "quote_id": ["q1"],
+        "competitor_premium": [2.0],
+    }
+    strategy = context.metrics_payload(status="completed")["execution_strategy"]
+    assert strategy is not None
+    assert strategy["status"] == "projected"
+    assert strategy["strategy"] == "projected"
 
 
 @pytest.mark.parametrize(

@@ -494,6 +494,16 @@ high-level approved contract.
   `full-width-admitted-eager` to `admitted_eager`; `unprojected-streaming-boundary` and
   `materialisation-boundary` to `boundary`; `unsupported` to `rejected`; and `not-planned`
   to `not_planned`.
+- Static planning may conservatively leave a contract-free join boundary when parent schemas are
+  unavailable. Before either eager target-preview or lazy execution invokes a mechanically
+  supported two-parent `polars` join or built-in `edgeJoin`, the executor obtains both lazy parent
+  schemas with `collect_schema()` (never row collection), applies the shared key/suffix-aware join
+  ownership rule, and projects each input when every requested output can be routed safely. A
+  successful refinement replaces the affected source demands and opaque boundaries in the public
+  plan. The final version-1 diagnostic is rebuilt from that refined plan; it must not retain a
+  preliminary `unprojected-streaming-boundary` after the physical plan has become projected.
+  Unsupported join modes, ambiguous ownership, opaque post-source user code, or an unroutable
+  output keep the conservative boundary rather than guessing.
 - Extend `src/haute/chunking.py` and its callers with the following authoritative version-1
   group-by profile matrix:
 

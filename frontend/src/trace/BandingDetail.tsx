@@ -1,5 +1,5 @@
 import type { BandingNodeDetail } from "../types/trace"
-import { formatValue as _formatValue } from "../utils/formatValue"
+import { formatTraceValue } from "./traceFormatting"
 import {
   TraceDetailChip,
   TraceDetailPanel,
@@ -12,7 +12,7 @@ import {
   formatBandingTransform,
 } from "./bandingRows"
 
-const formatValue = (v: unknown) => _formatValue(v, 2)
+const formatValue = formatTraceValue
 
 export function BandingDetailBlock({
   detail,

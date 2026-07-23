@@ -306,11 +306,16 @@ class TestResponseShape:
             "column",
             "output_value",
             "steps",
+            "omissions",
             "row_id_column",
             "row_id_value",
             "total_nodes_in_pipeline",
             "nodes_in_trace",
             "execution_ms",
+            "correlation_diagnostics",
+            "generated_at",
+            "pipeline_source",
+            "execution_origin",
         ]
         for field in required_fields:
             assert field in trace, f"Missing field: {field}"
@@ -331,12 +336,13 @@ class TestResponseShape:
             "schema_diff",
             "input_values",
             "output_values",
+            "topological_rank",
             "column_relevant",
-            "execution_ms",
         ]
         for step in trace["steps"]:
             for field in step_fields:
                 assert field in step, f"Step missing field: {field}"
+            assert "execution_ms" not in step
 
     def test_schema_diff_has_required_fields(self, trace_response):
         """schema_diff has columns_added, columns_removed, columns_modified, columns_passed."""
@@ -378,6 +384,32 @@ class TestResponseShape:
         assert ov["x"] == 1
         assert ov["y"] == 10
         assert ov["z"] == 11
+
+    def test_route_rejects_an_invalid_internal_trace_payload(
+        self,
+        client,
+        tmp_path,
+        monkeypatch,
+    ):
+        """Explicit JSONResponse encoding must not bypass the typed contract."""
+        import haute.routes.pipeline as pipeline_route
+
+        p = _simple_parquet(tmp_path)
+        graph = _simple_graph(p)
+        monkeypatch.setattr(
+            pipeline_route,
+            "trace_result_to_dict",
+            lambda _result: {
+                "target_node_id": "t",
+                "row_index": 0,
+                "steps": [],
+            },
+        )
+
+        resp = _trace_post(client, graph, row_index=0, target_node_id="t")
+
+        assert resp.status_code == 500
+        assert resp.json()["detail"] == "Operation failed. Check the server logs for details."
 
 
 # ===========================================================================

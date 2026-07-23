@@ -2,7 +2,7 @@ import { memo, useState, useCallback, useRef, useEffect, useMemo, type MouseEven
 import { X, AlertCircle, CheckCircle2, Table2, Search, Layers } from "lucide-react"
 import { getDtypeColor } from "../utils/dtypeColors"
 import { formatValue } from "../utils/formatValue"
-import ExecutionDiagnosticsSummary from "../components/ExecutionDiagnosticsSummary"
+import ExecutionDiagnosticsIndicator from "../components/ExecutionDiagnosticsIndicator"
 import type { ColumnInfo } from "../types/node"
 import type { SchemaWarning, NodeTiming, NodeMemory, ExecutionMetrics } from "../api/types"
 import PreviewPanelFrame from "./PreviewPanelFrame"
@@ -479,6 +479,7 @@ export default function DataPreview({ data, onCellClick, tracedCell, embedded = 
             <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
               {data.row_count.toLocaleString()} rows{" \u00b7 "}{data.column_count || columns.length} cols
             </span>
+            <ExecutionDiagnosticsIndicator metrics={data.execution_metrics} />
           </>
         )}
         {data.status === "error" && (
@@ -499,7 +500,6 @@ export default function DataPreview({ data, onCellClick, tracedCell, embedded = 
           {columnSearchControl}
         </div>
       </div>
-      <ExecutionDiagnosticsSummary metrics={data.execution_metrics} />
       {previewContent}
     </>
   )

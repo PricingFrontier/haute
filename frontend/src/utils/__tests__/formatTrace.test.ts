@@ -22,7 +22,7 @@ describe("formatTraceValue", () => {
   })
 
   it("preserves meaningful precision", () => {
-    expect(formatTraceValue(3.14159)).toBe("3.14159")
+    expect(formatTraceValue(3.14159)).toBe("3.1416")
   })
 
   it("formats float with trailing zeros trimmed", () => {
@@ -43,12 +43,12 @@ describe("formatTraceValue", () => {
   })
 
   // --- NULL / NaN / Infinity ---
-  it("formats null as null", () => {
-    expect(formatTraceValue(null)).toBe("null")
+  it("formats null as an em dash", () => {
+    expect(formatTraceValue(null)).toBe("\u2014")
   })
 
-  it("formats undefined as null", () => {
-    expect(formatTraceValue(undefined)).toBe("null")
+  it("formats undefined as an em dash", () => {
+    expect(formatTraceValue(undefined)).toBe("\u2014")
   })
 
   it("formats NaN", () => {
@@ -56,20 +56,20 @@ describe("formatTraceValue", () => {
   })
 
   it("formats Infinity", () => {
-    expect(formatTraceValue(Infinity)).toBe("\u221e")
+    expect(formatTraceValue(Infinity)).toBe("Infinity")
   })
 
   it("formats -Infinity", () => {
-    expect(formatTraceValue(-Infinity)).toBe("-\u221e")
+    expect(formatTraceValue(-Infinity)).toBe("-Infinity")
   })
 
   // --- Strings ---
-  it("formats a string with quotes", () => {
-    expect(formatTraceValue("hello")).toBe('"hello"')
+  it("formats a string without presentation-only quotes", () => {
+    expect(formatTraceValue("hello")).toBe("hello")
   })
 
-  it("formats an empty string with quotes", () => {
-    expect(formatTraceValue("")).toBe('""')
+  it("formats an empty string without presentation-only quotes", () => {
+    expect(formatTraceValue("")).toBe("")
   })
 
   it("formats a date-like string without extra quotes", () => {
@@ -259,15 +259,15 @@ describe("formatCalculation", () => {
     expect(result).toBe("100 \u00f7 4 = 25")
   })
 
-  it("shows null when an input value is null", () => {
+  it("shows the trace null marker when an input value is null", () => {
     const result = formatCalculation({
       expression: "premium * 0.7",
       values: { premium: null },
       result: null,
     })
-    expect(result).toContain("null")
+    expect(result).toContain("\u2014")
     expect(result).toContain("0.7")
-    expect(result).toMatch(/= null$/)
+    expect(result).toMatch(/= \u2014$/)
   })
 
   it("shows column name when value is missing from values map", () => {
@@ -491,7 +491,7 @@ describe("formatCalculation edge cases", () => {
       values: { a: 1, b: 0 },
       result: Infinity,
     })
-    expect(result).toContain("= \u221e")
+    expect(result).toContain("= Infinity")
   })
 
   it("formats negative values with multiplication", () => {

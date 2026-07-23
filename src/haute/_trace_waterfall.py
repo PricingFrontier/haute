@@ -61,6 +61,7 @@ class WaterfallEntry:
     value: float
     delta: float
     cumulative: float
+    default_used: bool = False
 
 
 @dataclass
@@ -371,6 +372,7 @@ def build_waterfall(steps: list[dict[str, Any]]) -> WaterfallResult | None:
                 value=value,
                 delta=delta,
                 cumulative=cumulative,
+                default_used=bool(step.get("default_used", False)),
             )
         )
 
@@ -431,6 +433,21 @@ def _step_targets_column(
     if not isinstance(code, str) or not code:
         return False
     return bool(re.search(rf"\b{re.escape(column)}\s*=", code))
+
+
+def _detail_uses_default(value: Any) -> bool:
+    """Return whether specialised trace evidence says a default was used."""
+    if isinstance(value, dict):
+        if (
+            value.get("default_used") is True
+            or value.get("is_default") is True
+            or value.get("status") == "default"
+        ):
+            return True
+        return any(_detail_uses_default(item) for item in value.values())
+    if isinstance(value, (list, tuple)):
+        return any(_detail_uses_default(item) for item in value)
+    return False
 
 
 def _classify_contribution(
@@ -543,6 +560,7 @@ def build_waterfall_from_steps(
                             "operation": "base",
                             "value": observed,
                             "cumulative": observed,
+                            "default_used": _detail_uses_default(step.node_detail),
                         }
                     )
                     value_before = observed
@@ -560,6 +578,7 @@ def build_waterfall_from_steps(
                         "operation": operation,
                         "value": display_value,
                         "cumulative": observed,
+                        "default_used": _detail_uses_default(step.node_detail),
                     }
                 )
                 value_before = observed
@@ -587,6 +606,7 @@ def build_waterfall_from_steps(
                 "value": e.value,
                 "delta": e.delta,
                 "cumulative": e.cumulative,
+                "default_used": e.default_used,
             }
             for e in wf_result.entries
         ]

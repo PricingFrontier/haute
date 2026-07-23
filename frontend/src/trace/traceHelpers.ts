@@ -20,6 +20,7 @@ export interface WaterfallStep {
   runningValue: number
   prevValue: number
   direction: "positive" | "negative" | "neutral"
+  defaultUsed?: boolean
 }
 
 export interface WaterfallEntryProp {
@@ -28,6 +29,7 @@ export interface WaterfallEntryProp {
   value: number
   delta: number
   cumulative: number
+  default_used?: boolean
 }
 
 export interface WaterfallErrorProp {
@@ -115,6 +117,7 @@ export function resolveWaterfallProp(
         : entry.delta < 0
           ? "negative"
           : "neutral") as "positive" | "negative" | "neutral",
+      defaultUsed: entry.default_used,
     }
   })
   return { steps, error: null }

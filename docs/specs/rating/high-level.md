@@ -59,10 +59,10 @@ Out of scope (owned by neighbouring components):
   (`op1`/`val1`, `op2`/`val2` — one of `< <= > >= = ==`); rules are evaluated
   in order and the first matching rule wins (`when/then` chain semantics), the
   rest fall to an explicit `default`.
-  > NOTE: an unrecognised operator is currently ignored rather than rejected.
-  > A rule with no remaining valid operator/value pair contributes no branch;
-  > if every rule is skipped, the factor is a pass-through and does not create
-  > its configured output column.
+  An unrecognised operator is rejected before a banding expression is
+  published. Runtime banding and trace enrichment consume the same immutable
+  supported-operator contract, so a trace cannot credit a rule the engine
+  skipped.
 - `categorical` rules are an exact-match remap from input value to assignment.
 - `breakpoints` rules are converted internally into `continuous` rules: an
   ordered list of numeric boundaries with labels, closed on the right by default
@@ -124,10 +124,9 @@ Out of scope (owned by neighbouring components):
   breakpoint raises rather than silently keeping only the last; duplicate
   breakpoint boundaries raise rather than producing an empty interval.
   `onMissing: "neutral"` is the explicit rating-miss opt-out, and it logs
-  each materialised batch containing misses. Banding has two separate
-  fail-soft behaviours documented above/below: unknown operators are ignored,
-  and a malformed non-list top-level `factors` value normalises to an empty
-  no-op list.
+  each materialised batch containing misses. Banding rejects unknown operators;
+  its remaining documented fail-soft behaviour is that a malformed non-list
+  top-level `factors` value normalises to an empty no-op list.
 - **One canonical key form, shared everywhere.** `normalise_rating_key` (the
   Python mirror) and `_rating_key_expr` (its Polars-expression twin, applied
   to both join sides) are the single source of truth for "does this input

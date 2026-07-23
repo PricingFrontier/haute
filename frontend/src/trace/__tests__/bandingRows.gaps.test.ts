@@ -223,8 +223,8 @@ describe("formatBandingTransform", () => {
     )
   })
 
-  it("renders null sentinels for missing values", () => {
-    expect(formatBandingTransform({ key: "k" })).toBe("null -> null")
+  it("renders the trace missing-value marker", () => {
+    expect(formatBandingTransform({ key: "k" })).toBe("\u2014 -> \u2014")
   })
 })
 

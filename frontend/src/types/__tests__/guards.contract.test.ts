@@ -423,11 +423,92 @@ describe("API response guards", () => {
     const parsed = parseTraceResponse(loadUiContractFixture("trace_response"))
 
     expect(Array.isArray(parsed.trace?.waterfall)).toBe(true)
+    expect(parsed.trace?.omissions).toEqual([])
     expect(parsed.trace?.correlation_diagnostics).toEqual([])
+    expect(parsed.trace?.generated_at).toBe("2026-07-23T12:00:00+00:00")
+    expect(parsed.trace?.execution_origin).toBe("fresh_execution")
   })
 
   it("rejects a trace response with no trace (backend always returns one)", () => {
     expect(() => parseTraceResponse({ status: "ok" })).toThrow(/trace/i)
+  })
+
+  it("requires trace omissions, provenance, and typed waterfall evidence", () => {
+    const fixture = loadUiContractFixture<Record<string, unknown>>("trace_response")
+    const trace = fixture.trace as Record<string, unknown>
+    const withoutOmissions = { ...trace }
+    delete withoutOmissions.omissions
+
+    expect(() => parseTraceResponse({ ...fixture, trace: withoutOmissions }))
+      .toThrow(/omissions/i)
+    expect(() => parseTraceResponse({
+      ...fixture,
+      trace: { ...trace, generated_at: "2026-07-23T12:00:00+01:00" },
+    })).toThrow(/UTC/i)
+    expect(() => parseTraceResponse({
+      ...fixture,
+      trace: { ...trace, execution_origin: "unknown_cache" },
+    })).toThrow(/execution_origin/i)
+    expect(() => parseTraceResponse({
+      ...fixture,
+      trace: {
+        ...trace,
+        waterfall: [{
+          label: "base",
+          operation: "set",
+          value: 10,
+          delta: 10,
+          cumulative: 10,
+        }],
+      },
+    })).toThrow(/default_used/i)
+    expect(() => parseTraceResponse({
+      ...fixture,
+      trace: { ...trace, waterfall: { error: "cannot reconcile" } },
+    })).toThrow(/error_type/i)
+    expect(() => parseTraceResponse({
+      ...fixture,
+      trace: {
+        ...trace,
+        omissions: [{
+          node_id: "source",
+          node_name: "Source",
+          node_type: "dataSource",
+          topological_rank: 0,
+          reason: "duplicate_exact_match",
+          diagnostic_index: 0,
+        }],
+        correlation_diagnostics: [],
+      },
+    })).toThrow(/references missing diagnostic/i)
+  })
+
+  it("drops retired top-level step presentation fields", () => {
+    const fixture = loadUiContractFixture<Record<string, unknown>>("trace_response")
+    const trace = fixture.trace as Record<string, unknown>
+    const steps = trace.steps as Array<Record<string, unknown>>
+    const parsed = parseTraceResponse({
+      ...fixture,
+      trace: {
+        ...trace,
+        steps: [{
+          ...steps[0],
+          execution_ms: 0,
+          taken_branch: "then",
+          taken_branch_index: 0,
+          null_explanation: "legacy",
+          expression_chain: [],
+          rename_info: {},
+        }],
+      },
+    })
+
+    expect(parsed.trace?.steps[0]).not.toHaveProperty("execution_ms")
+    expect(parsed.trace?.steps[0]).not.toHaveProperty("taken_branch")
+    expect(parsed.trace?.steps[0]).not.toHaveProperty("taken_branch_index")
+    expect(parsed.trace?.steps[0]).not.toHaveProperty("null_explanation")
+    expect(parsed.trace?.steps[0]).not.toHaveProperty("expression_chain")
+    expect(parsed.trace?.steps[0]).not.toHaveProperty("rename_info")
   })
 
   it("parses trace correlation diagnostics", () => {

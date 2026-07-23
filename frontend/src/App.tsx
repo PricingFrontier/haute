@@ -24,7 +24,7 @@ import ExplorePreview from "./panels/ExplorePreview"
 import OptimiserDataPreview from "./panels/OptimiserDataPreview"
 import { ModellingPreview } from "./panels/ModellingPreview"
 
-import TracePanel from "./panels/TracePanel"
+import TracePanel, { TraceStatePanel } from "./panels/TracePanel"
 import ToastContainer from "./components/Toast"
 import { ErrorBoundary } from "./components/ErrorBoundary"
 import ContextMenu from "./components/ContextMenu"
@@ -491,8 +491,8 @@ function FlowEditor() {
   useEffect(() => { setPreviewDataRef.current = setPreviewData }, [setPreviewData])
 
   const {
-    traceResult, tracedCell,
-    handleCellClick, clearTrace,
+    traceResult, tracedCell, traceState,
+    handleCellClick, clearTrace, cancelTrace, retryTrace,
     nodesWithStatus, edgesWithTrace,
   } = useTracing({
     nodes, edges, selectedNode,
@@ -500,6 +500,7 @@ function FlowEditor() {
     preambleRef,
     nodeStatuses,
     hoveredNodeId,
+    refreshPreview,
   })
 
   const {
@@ -1148,6 +1149,8 @@ function FlowEditor() {
               </ErrorBoundary>
             ) : traceResult ? (
               <TracePanel trace={traceResult} onClose={clearTrace} />
+            ) : traceState.status === "error" || (traceState.status === "loading" && traceState.progressVisible) ? (
+              <TraceStatePanel state={traceState} onCancel={cancelTrace} onRetry={retryTrace} onClose={clearTrace} />
             ) : (
               <GraphProvider
                 allNodes={panelGraph.allNodes}

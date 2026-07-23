@@ -33,11 +33,11 @@ the targeted cell trace.
 > Also never built: `JoinInfo` / `AggregationInfo` dataclasses for join/
 > aggregation provenance, a `branches` dict on `TraceResult`, the
 > `/api/pipeline/trace/column` and `/api/pipeline/trace/compare` endpoints,
-> and a `haute trace export` regulatory-report CLI command (`export_trace()`
-> exists only as a Python report-shaping helper; no production API or CLI call
-> site invokes it). The current `TraceResult` is a flat,
-> linear list of `TraceStep`s plus a `waterfall` summary and a
-> `correlation_diagnostics` list.
+> and a `haute trace export` regulatory-report CLI command. The current
+> `TraceResult` carries successful `TraceStep`s, typed omissions for relevant
+> nodes whose rows could not be correlated, a `waterfall` summary, correlation
+> diagnostics, and generation provenance. Export is a deterministic projection
+> of that exact returned snapshot in the frontend; it never re-executes the graph.
 
 ## Scope
 
@@ -62,10 +62,10 @@ In scope:
   recursively deriving upstream "input sources," and detecting column renames.
 - Waterfall assembly for sequential multiplicative/additive rating chains, with an
   arithmetic-reconciliation invariant against the traced output value.
-- Serialising a trace to a JSON-safe API response shape (`trace_result_to_dict`)
-  and to a report-shape dict (`export_trace`) suitable for markdown/PDF generation.
-  The report helper currently has test/direct-library callers only; it is not wired
-  to a production route or CLI command.
+- Serialising a trace to a JSON-safe API response shape (`trace_result_to_dict`),
+  including typed omissions and generation provenance. Markdown/CSV/copy/print
+  export projects the validated response snapshot in the frontend so the
+  artifact cannot diverge from the panel through a second execution.
 - A fingerprint-keyed, byte-bounded cache of materialized per-node DataFrames so
   repeated trace clicks against the same graph structure reuse execution.
 
@@ -132,10 +132,11 @@ Out of scope (owned elsewhere, linked where relevant):
   candidate frame against the resolved child row — rather than assuming one frame
   per (source, target) pair, which would silently correlate against whichever
   edge happened to be listed last. When several frames match, the frame carrying
-  the traced column wins; a remaining tie is broken by edge order and recorded as
-  a non-fatal `ambiguous_source_frame` diagnostic. Tracing the multi-frame node
-  itself (rather than a node downstream of a specific frame) raises a `ValueError`
-  naming the problem instead of crashing on a bare `dict`.
+  the traced column wins; a remaining tie stays unresolved, records an
+  `ambiguous_source_frame` diagnostic, and becomes a linked omission when it is
+  relevant. Tracing the multi-frame node itself (rather than a node downstream
+  of a specific frame) raises a `ValueError` naming the problem instead of
+  crashing on a bare `dict`.
 - **Self-referential assignments substitute the pre-assignment value.** When a
   step's expression reassigns a column from itself (`premium = premium * factor`),
   showing the substitution requires the value the RHS actually read — the
@@ -157,6 +158,16 @@ Out of scope (owned elsewhere, linked where relevant):
   never aborts the trace or drops the step — it surfaces as a structured `error`
   / `error_type` field on the relevant enrichment field (`expression`,
   `calculation`, `node_detail`, or `row_lineage_type`) plus a WARNING log.
+- **Enrichment observes; it never repairs rows.** Rating, banding, model-score,
+  lineage, and schema-diff detail is derived from the complete rows selected by
+  correlation and the same immutable runtime contracts the engine consumes.
+  Enrichment never patches an individual output cell or invents model features.
+  A row that cannot be selected atomically remains unresolved.
+- **Relevant correlation gaps remain first-class evidence.** A node on the
+  retained path whose row cannot be correlated is represented by a typed
+  omission carrying its node identity, topological rank, reason, and diagnostic
+  reference. It is not represented as a `TraceStep` with fabricated empty rows.
+  Ordinary column-relevance pruning produces no omission.
 - **Waterfall values are strictly value-derived.** When a `column` is traced, the
   waterfall walks the traced path and derives each step's contribution from
   *consecutive observed output values* — never from re-applying expression text.
@@ -179,6 +190,11 @@ Out of scope (owned elsewhere, linked where relevant):
   field — including non-finite floats, out-of-JS-safe-integer-range integers, and
   arbitrary Python values captured during enrichment — into a shape safe to
   serialise and send to the frontend.
+- **Generation provenance is explicit and narrow.** Every response carries a UTC
+  `generated_at`, the pipeline/source identity available to the server, and an
+  `execution_origin` of `fresh_execution`, `preview_cache`, or `trace_cache`.
+  These fields describe how the trace snapshot was assembled; they do not claim
+  that an external data source is fresh.
 
 ## Design rationale
 
@@ -296,16 +312,14 @@ Out of scope (owned elsewhere, linked where relevant):
   usable preview cache) fails — a bad node config, a contract mismatch — the
   original exception (including `ContractMismatchError`) propagates out of
   `execute_trace` unmodified. Nothing catches and reinterprets it.
-- **Row correlation failures are non-fatal but visible.** An unresolved node is
-  simply absent from `TraceResult.steps`; the fact that it was ambiguous (rather
-  than just "not on the path") is recorded in `correlation_diagnostics` with a
-  `code`, `severity`, `reason`, human-readable `message`, and the specific
-  matched-row indices — enough for a caller to explain the gap to a user rather
-  than silently showing an incomplete trace. Multi-frame source resolution adds
+- **Row correlation failures are non-fatal but visible.** An unresolved relevant
+  node is absent from `TraceResult.steps` and present in `TraceResult.omissions`,
+  linked to the corresponding `correlation_diagnostics` entry by a stable
+  diagnostic index. Multi-frame source resolution adds
   two diagnostic codes to the same list: `unresolved_source_frame` when no
   candidate frame yields any match, and `ambiguous_source_frame` (`severity:
-  "warning"`) when more than one frame matches equally well and the tie is
-  broken by edge order.
+  "warning"`) when more than one frame matches equally well and no frame can be
+  selected safely.
 - **Per-step enrichment failures are caught, logged, and surfaced as an `error`
   field**, never raised out of `execute_trace`. This applies uniformly across
   expression parsing/evaluation, chain analysis, input-source derivation, rename

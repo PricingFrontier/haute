@@ -225,8 +225,17 @@ def test_unique_relaxed_match_emits_explicit_low_confidence_diagnostic() -> None
             "code": "low_confidence_relaxed_match",
             "severity": "warning",
             "reason": "strict_keys_no_match_best_subset",
+            "message": (
+                "Row correlation for node 'parent' used a relaxed match "
+                "on columns ['id']; omitted columns ['label']."
+            ),
             "node_id": "parent",
             "child_node_id": "child",
+            "match_strategy": "relaxed",
+            "match_columns": ["id"],
+            "ignored_columns": ["label"],
+            "matched_row_count": 1,
+            "matched_row_indices": [0],
             "strict_key_columns": ["id", "label"],
             "effective_key_columns": ["id"],
             "omitted_key_columns": ["label"],

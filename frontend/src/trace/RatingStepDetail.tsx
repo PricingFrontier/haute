@@ -1,5 +1,5 @@
 import type { TraceNodeDetail } from "../types/trace"
-import { formatValue as _formatValue } from "../utils/formatValue"
+import { formatTraceValue } from "./traceFormatting"
 import {
   TraceDetailChip,
   TraceDetailPanel,
@@ -12,7 +12,8 @@ import {
   ratingTableStatus,
 } from "./ratingStepHelpers"
 
-const formatValue = (v: unknown) => _formatValue(v, 2)
+const formatValue = formatTraceValue
+
 const traceDetailValueStyle = {
   color: "var(--text-secondary)",
   fontSize: 11,
@@ -66,6 +67,11 @@ export function RatingStepDetailBlock({
                   )}
                   {table.selected_value !== undefined && (
                     <TraceDetailChip tone="accent">selected: {formatValue(table.selected_value)}</TraceDetailChip>
+                  )}
+                  {table.post_code_output_value !== undefined && (
+                    <TraceDetailChip tone="warning">
+                      after node code: {formatValue(table.post_code_output_value)}
+                    </TraceDetailChip>
                   )}
                   {table.default_value !== undefined && (
                     <TraceDetailChip tone="muted">default: {formatValue(table.default_value)}</TraceDetailChip>

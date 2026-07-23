@@ -14,8 +14,8 @@ import pytest
 
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute.executor import _preview_cache, execute_graph
-from haute.schemas import NodeResult
-from haute.trace import TraceResult, execute_trace
+from haute.schemas import NodeResult, TraceResponse
+from haute.trace import TraceResult, execute_trace, trace_result_to_dict
 from haute.trace import _cache as _trace_cache
 
 pytestmark = pytest.mark.perf
@@ -131,6 +131,53 @@ df = df.with_columns(
     )
 
 
+def _linear_trace_graph(tmp_path: Path) -> tuple[PipelineGraph, str, str]:
+    source_path = _write_preview_trace_source(tmp_path)
+    nodes = [
+        _node(
+            "source",
+            NodeType.DATA_SOURCE,
+            {"path": str(source_path)},
+        )
+    ]
+    edges: list[GraphEdge] = []
+    parent = "source"
+    input_column = "base"
+    for index in range(8):
+        node_id = f"linear_{index}"
+        output_column = f"derived_{index}"
+        nodes.append(
+            _node(
+                node_id,
+                NodeType.POLARS,
+                {
+                    "code": (
+                        "df = df.with_columns("
+                        f'{output_column}=pl.col("{input_column}") * 1.01 + {index}'
+                        ")"
+                    )
+                },
+            )
+        )
+        edges.append(_edge(parent, node_id))
+        parent = node_id
+        input_column = output_column
+    return PipelineGraph(nodes=nodes, edges=edges), parent, input_column
+
+
+def _record_perf_evidence(
+    request: pytest.FixtureRequest,
+    **evidence: object,
+) -> None:
+    request.node.user_properties.append(("haute_perf_evidence", evidence))
+
+
+def _serialize_and_validate_trace(result: TraceResult) -> dict[str, Any]:
+    payload = trace_result_to_dict(result)
+    TraceResponse.model_validate({"status": "ok", "trace": payload})
+    return payload
+
+
 def _single_node_graph_payload() -> dict[str, Any]:
     graph = PipelineGraph(
         nodes=[
@@ -171,6 +218,7 @@ def _count_executor_node_calls(monkeypatch: pytest.MonkeyPatch) -> Counter[str]:
 def test_preview_warm_cache_avoids_reexecuting_representative_dag(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    request: pytest.FixtureRequest,
 ) -> None:
     graph = _preview_trace_graph(tmp_path)
     node_calls = _count_executor_node_calls(monkeypatch)
@@ -211,14 +259,86 @@ def test_preview_warm_cache_avoids_reexecuting_representative_dag(
     assert set(cache_entry["eager_outputs"]) == {_TARGET_NODE}
     assert _preview_cache.stats()["bytes"] > 0
 
+    _record_perf_evidence(
+        request,
+        graph_shape="join",
+        rows=_ROW_LIMIT,
+        cold_execution_ms=round(cold_seconds * 1000, 3),
+        preview_cache_hit_ms=round(warm_seconds * 1000, 3),
+    )
+
     assert warm_seconds < 0.5, (
         f"warm preview took {warm_seconds:.3f}s after a {cold_seconds:.3f}s cold run"
+    )
+
+
+@pytest.mark.parametrize("graph_shape", ["linear", "join"])
+def test_trace_cold_execution_records_stage_costs(
+    graph_shape: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    request: pytest.FixtureRequest,
+) -> None:
+    import haute.trace as trace_mod
+
+    if graph_shape == "linear":
+        graph, target_node_id, column = _linear_trace_graph(tmp_path)
+    else:
+        graph = _preview_trace_graph(tmp_path)
+        target_node_id = _TARGET_NODE
+        column = "premium"
+
+    correlation_seconds = 0.0
+    original_correlate = trace_mod._correlate_rows_posthoc
+
+    def timed_correlate(*args: Any, **kwargs: Any) -> Any:
+        nonlocal correlation_seconds
+        start = time.perf_counter()
+        try:
+            return original_correlate(*args, **kwargs)
+        finally:
+            correlation_seconds += time.perf_counter() - start
+
+    monkeypatch.setattr(trace_mod, "_correlate_rows_posthoc", timed_correlate)
+
+    start = time.perf_counter()
+    result = execute_trace(
+        graph,
+        row_index=37,
+        target_node_id=target_node_id,
+        column=column,
+        row_limit=_ROW_LIMIT,
+    )
+    total_seconds = time.perf_counter() - start
+
+    start = time.perf_counter()
+    payload = _serialize_and_validate_trace(result)
+    serialization_seconds = time.perf_counter() - start
+
+    assert result.execution_origin == "fresh_execution"
+    assert payload["output_value"] == result.output_value
+    assert result.steps
+    _record_perf_evidence(
+        request,
+        graph_shape=graph_shape,
+        rows=_ROW_LIMIT,
+        cold_trace_ms=round(total_seconds * 1000, 3),
+        correlation_ms=round(correlation_seconds * 1000, 3),
+        serialization_ms=round(serialization_seconds * 1000, 3),
+        steps=len(result.steps),
+    )
+
+    assert total_seconds < 2.0, f"{graph_shape} cold trace took {total_seconds:.3f}s"
+    assert correlation_seconds < 0.5, f"{graph_shape} correlation took {correlation_seconds:.3f}s"
+    assert serialization_seconds < 0.2, (
+        f"{graph_shape} serialization took {serialization_seconds:.3f}s"
     )
 
 
 def test_trace_reuses_preview_cache_then_hits_trace_cache(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    request: pytest.FixtureRequest,
 ) -> None:
     import haute.trace as trace_mod
 
@@ -230,9 +350,19 @@ def test_trace_reuses_preview_cache_then_hits_trace_cache(
         max_preview_rows=_MAX_PREVIEW_ROWS,
     )
     assert preview[_TARGET_NODE].status == "ok"
+    preview_lookups: list[str] = []
+
+    class RecordingPreview:
+        def try_get(self, fingerprint: str) -> dict[str, Any] | None:
+            preview_lookups.append(fingerprint)
+            return _preview_cache.try_get(fingerprint)
+
+    preview_reader = RecordingPreview()
 
     calls = {"materialize": 0, "cold_execute": 0}
+    correlation_seconds: list[float] = []
     original_materialize = trace_mod._materialize_eager_outputs
+    original_correlate = trace_mod._correlate_rows_posthoc
 
     def counting_materialize(*args: Any, **kwargs: Any) -> Any:
         calls["materialize"] += 1
@@ -242,8 +372,16 @@ def test_trace_reuses_preview_cache_then_hits_trace_cache(
         calls["cold_execute"] += 1
         raise AssertionError("trace should reuse preview outputs, not execute the DAG")
 
+    def timed_correlate(*args: Any, **kwargs: Any) -> Any:
+        start = time.perf_counter()
+        try:
+            return original_correlate(*args, **kwargs)
+        finally:
+            correlation_seconds.append(time.perf_counter() - start)
+
     monkeypatch.setattr(trace_mod, "_materialize_eager_outputs", counting_materialize)
     monkeypatch.setattr(trace_mod, "_execute_eager_core", forbidden_cold_execute)
+    monkeypatch.setattr(trace_mod, "_correlate_rows_posthoc", timed_correlate)
 
     start = time.perf_counter()
     first = execute_trace(
@@ -252,9 +390,13 @@ def test_trace_reuses_preview_cache_then_hits_trace_cache(
         target_node_id=_TARGET_NODE,
         column="premium",
         row_limit=_ROW_LIMIT,
-        preview=_preview_cache,
+        row_values=preview[_TARGET_NODE].preview[7],
+        preview=preview_reader,
     )
     first_seconds = time.perf_counter() - start
+    start = time.perf_counter()
+    first_payload = _serialize_and_validate_trace(first)
+    first_serialization_seconds = time.perf_counter() - start
 
     start = time.perf_counter()
     second = execute_trace(
@@ -263,20 +405,104 @@ def test_trace_reuses_preview_cache_then_hits_trace_cache(
         target_node_id=_TARGET_NODE,
         column="risk_bucket",
         row_limit=_ROW_LIMIT,
-        preview=_preview_cache,
+        row_values=preview[_TARGET_NODE].preview[19],
+        preview=preview_reader,
     )
     second_seconds = time.perf_counter() - start
+    start = time.perf_counter()
+    second_payload = _serialize_and_validate_trace(second)
+    second_serialization_seconds = time.perf_counter() - start
 
     assert calls == {"materialize": 1, "cold_execute": 0}
+    assert len(preview_lookups) == 1
+    assert len(correlation_seconds) == 2
     assert first.output_value == preview[_TARGET_NODE].preview[7]["premium"]
     assert second.output_value == preview[_TARGET_NODE].preview[19]["risk_bucket"]
+    assert first_payload["output_value"] == first.output_value
+    assert second_payload["output_value"] == second.output_value
+    assert first.execution_origin == "preview_cache"
+    assert second.execution_origin == "trace_cache"
     assert {"source", "features", "freq", "sev", "join", "premium"}.issubset(
         {step.node_id for step in first.steps}
     )
     assert _trace_cache.stats()["entries"] == 1
 
+    _record_perf_evidence(
+        request,
+        graph_shape="join",
+        rows=_ROW_LIMIT,
+        preview_reuse_ms=round(first_seconds * 1000, 3),
+        preview_reuse_correlation_ms=round(correlation_seconds[0] * 1000, 3),
+        preview_reuse_serialization_ms=round(first_serialization_seconds * 1000, 3),
+        trace_cache_hit_ms=round(second_seconds * 1000, 3),
+        trace_cache_correlation_ms=round(correlation_seconds[1] * 1000, 3),
+        trace_cache_serialization_ms=round(second_serialization_seconds * 1000, 3),
+    )
+
     assert first_seconds < 0.8, f"preview-backed first trace took {first_seconds:.3f}s"
     assert second_seconds < 0.3, f"trace-cache hit took {second_seconds:.3f}s"
+
+
+def test_multi_frame_correlation_records_cost(
+    request: pytest.FixtureRequest,
+) -> None:
+    from haute._trace_correlation import _correlate_rows_posthoc
+
+    policies = pl.DataFrame(
+        {
+            "policy_id": list(range(_ROW_LIMIT)),
+            "premium": [100.0 + index / 10 for index in range(_ROW_LIMIT)],
+        }
+    )
+    drivers = pl.DataFrame(
+        {
+            "policy_id": list(range(_ROW_LIMIT)),
+            "driver_id": [f"D{index}" for index in range(_ROW_LIMIT)],
+        }
+    )
+    target = policies.with_columns(
+        traced_premium=pl.col("premium") * 1.1,
+    )
+    eager_outputs: dict[str, Any] = {
+        "api": {"policies": policies, "drivers": drivers},
+        "target": target,
+    }
+    node_map = {
+        "api": _node("api", NodeType.API_INPUT, {}),
+        "target": _node("target", NodeType.POLARS, {}),
+    }
+    diagnostics: list[dict[str, Any]] = []
+    unresolved: dict[str, tuple[str, int]] = {}
+
+    start = time.perf_counter()
+    rows = _correlate_rows_posthoc(
+        eager_outputs,
+        ["api", "target"],
+        {"api": [], "target": ["api"]},
+        "target",
+        1777,
+        node_map=node_map,
+        diagnostics=diagnostics,
+        unresolved=unresolved,
+        source_frames_of={("api", "target"): ["policies"]},
+        traced_column="premium",
+    )
+    correlation_seconds = time.perf_counter() - start
+
+    assert rows["api"] == {
+        "policy_id": 1777,
+        "premium": policies[1777, "premium"],
+    }
+    assert diagnostics == []
+    assert unresolved == {}
+    _record_perf_evidence(
+        request,
+        graph_shape="multi-frame",
+        rows=_ROW_LIMIT,
+        frames=2,
+        correlation_ms=round(correlation_seconds * 1000, 3),
+    )
+    assert correlation_seconds < 0.5, f"multi-frame correlation took {correlation_seconds:.3f}s"
 
 
 async def _wait_for_thread_event(event: threading.Event, label: str) -> None:

@@ -4,10 +4,9 @@
 
 | File | Responsibility |
 | --- | --- |
-| `src/haute/trace.py` | Public facade and orchestrator. `execute_trace()` entry point, `PreviewReader` protocol, `TraceStep`/`TraceResult` dataclasses, the trace execution cache (`_cache`, `TRACE_CACHE_MAX_BYTES`), row/step assembly (`_assemble_steps`), column-relevance pruning, and JSON serialisation (`trace_result_to_dict`). Re-imports and re-exports expression-parser and node-type enricher names so `monkeypatch.setattr("haute.trace.<name>", ...)` in tests reaches the dispatch code in `_trace_enrichment.py`. |
+| `src/haute/trace.py` | Public facade and orchestrator. `execute_trace()` entry point, `PreviewReader` protocol, `TraceStep`/`TraceOmission`/`TraceResult` dataclasses, the trace execution cache (`_cache`, `TRACE_CACHE_MAX_BYTES`), row/omission assembly, column-relevance pruning, provenance, and JSON serialisation (`trace_result_to_dict`). Re-imports and re-exports expression-parser and node-type enricher names so `monkeypatch.setattr("haute.trace.<name>", ...)` in tests reaches the dispatch code in `_trace_enrichment.py`. |
 | `src/haute/_trace_correlation.py` | Post-hoc row correlation and schema diff. Value predicates/coercion (`_trace_values_match`, `_jsonify_row`), `SchemaDiff` computation, dtype-robust Polars match-expression construction, exact/relaxed row matching with ambiguity diagnostics, edge-join provenance-aware parent-row projection, per-frame row matching (`_match_parent_row`, shared by the single-frame and multi-frame paths), multi-frame per-edge parent resolution (`_resolve_multi_frame_parent`), and the backward-walk driver `_correlate_rows_posthoc`. |
 | `src/haute/_trace_enrichment.py` | Node-type enrichers (`enrich_rating_step`, `enrich_banding`, `enrich_model_score`, `enrich_scenario_expansion`, `enrich_live_switch`, `enrich_optimiser_apply`), row-lineage-type detection (`detect_row_lineage_type`, backed by `_node_output_row_count` for multi-frame-safe row counting), and the per-step dispatch walk (`enrich_steps`) that drives expression parsing/evaluation (with a pre-assignment-value guard for self-referential columns), intra-node chain analysis, recursive upstream input-source derivation, rename detection, and node-type dispatch for every `TraceStep`. |
-| `src/haute/_trace_export.py` | `export_trace()` — converts a `TraceResult` into a report-shape dict (`header`, `formula`, `sources`, `data_flow`, `metadata`) suitable for markdown/PDF report generation. It currently has test/direct-library callers only; no production API or CLI path invokes it. |
 | `src/haute/_trace_waterfall.py` | Waterfall assembly for sequential multiplicative/additive rating chains. `WaterfallEntry`/`WaterfallResult` dataclasses, the generic `build_waterfall()` API (hand-authored factor lists), the value-derived `build_waterfall_from_steps()` (traced-path driver), and the C8 arithmetic-reconciliation guards. |
 
 ## Key types and data structures
@@ -17,26 +16,30 @@
   satisfies it by construction.
 - **`TraceStep`** (`trace.py`, dataclass) — one node's contribution: `node_id`,
   `node_name`, `node_type`, `schema_diff: SchemaDiff`, `input_values` /
-  `output_values` (column → value dicts), `column_relevant: bool` (default
-  `True`), `execution_ms: float`, and enrichment fields populated by
+  `output_values` (column → value dicts), `topological_rank`,
+  `column_relevant: bool` (default `True`), and enrichment fields populated by
   `_enrich_steps`: `expression`, `calculation`, `node_detail`,
-  `row_lineage_type`. `row_data` is a read-only property aliasing
-  `output_values`, used by export/display layers.
+  `row_lineage_type`.
+- **`TraceOmission`** (`trace.py`, frozen dataclass) — one relevant graph node
+  whose row could not be correlated: `node_id`, `node_name`, `node_type`,
+  `topological_rank`, `reason`, and `diagnostic_index`. It never carries
+  fabricated row or schema values.
 - **`TraceResult`** (`trace.py`, dataclass) — the full per-row trace:
   `target_node_id`, `row_index`, `column`, `output_value`, `steps: list[TraceStep]`,
+  `omissions: list[TraceOmission]`,
   `row_id_column`/`row_id_value` (from an `apiInput` node's `row_id_column`
   config, if set), summary counts (`total_nodes_in_pipeline`, `nodes_in_trace`,
   `execution_ms`), `waterfall` (list of entry dicts, a structured error dict, or
   `None`), and `correlation_diagnostics: list[dict[str, Any]]` (never `None`,
-  defaults to an empty list).
+  defaults to an empty list). Provenance fields are UTC `generated_at`,
+  `pipeline_source`, and `execution_origin` (`fresh_execution`,
+  `preview_cache`, or `trace_cache`).
 - **`SchemaDiff`** (`_trace_correlation.py`, dataclass) — `columns_added`,
   `columns_removed`, `columns_modified`, `columns_passed`, each a `list[str]`.
-- **`_RowMatchCandidate`** (`_trace_correlation.py`, frozen dataclass) — an
-  internal grouping of `(columns, row_indices)` used only inside relaxed-match
-  ambiguity reporting.
 - **`WaterfallEntry`** / **`WaterfallResult`** (`_trace_waterfall.py`, dataclasses)
   — `label`, `operation` (`"base"` / `"multiply"` / `"add"`), `value`, `delta`,
-  `cumulative` per entry; `WaterfallResult` wraps `entries` plus `final_value`.
+  `cumulative`, and `default_used` per entry; `WaterfallResult` wraps `entries`
+  plus `final_value`.
 - **`WaterfallReconciliationError`** / **`WaterfallUnavailableError`**
   (`_trace_waterfall.py`, both `ValueError` subclasses) — the former means the
   arithmetic contradicts observed values (an invariant violation); the latter
@@ -115,27 +118,31 @@
    multi-frame `dict`.
 8. `_assemble_steps()` builds `TraceStep`s from the correlated rows: source nodes
    get `input_values = {}`; other nodes' `input_values` merge each parent's
-   correlated row (namespacing a colliding key as `f"{pid}.{k}"` on collision).
-   Nodes whose row correlation returned `None` are skipped entirely.
+   correlated row (namespacing every parent's copy as `f"{pid}.{k}"` whenever
+   more than one parent supplies the key). Nodes whose row correlation returned
+   `None` are skipped entirely.
 9. `_enrich_steps()` (from `_trace_enrichment.py`, passed `source_frames_of`)
    enriches every step in place.
 10. If `column` is set, `_prune_to_column_relevance()` tags and filters steps.
-11. Resolve `output_value` from the target row (whole row dict if `column` is
+11. `_build_trace_omissions()` turns attempted, unresolved correlations on the
+    retained value path into diagnostic-linked `TraceOmission` entries; benign
+    graph/column pruning remains absent.
+12. Resolve `output_value` from the target row (whole row dict if `column` is
     `None`, else the single value). Resolve `row_id_column`/`row_id_value` by
     scanning `nodes` for an `apiInput` node with a `row_id_column` config entry.
-12. If `column` is set, compute `integer_output_node_ids` (which steps' output
+13. If `column` is set, compute `integer_output_node_ids` (which steps' output
     column is an integer dtype, via `_is_integer_output_column`; a multi-frame
     `dict` output resolves to `False` rather than raising on the missing
     `.schema` attribute) and call `build_waterfall_from_steps()`.
-13. Return the assembled `TraceResult`, logging a single `trace_executed` info
+14. Return the assembled `TraceResult`, logging a single `trace_executed` info
     event with cache-hit status and duration.
 
 ### `_materialize_eager_outputs()` (`trace.py`)
 
 1. Normalise the `preview` argument via `_resolve_preview_snapshot()`: `None` →
-   no reuse; a reader → try each candidate preview fingerprint (a
-   column-projected key first, then the unsuffixed full-preview key) and use the
-   first hit; a raw dict → used verbatim.
+   no reuse; a reader → consult the exact full-lineage preview fingerprint; a
+   raw dict → used verbatim. Trace does not attempt the target-only projected
+   key because that cache shape cannot contain the required ancestor evidence.
 2. If the preview data has a materialized output for `target_node_id` **and**
    every node in the trace's topological order (built via `_prepare_graph`) has a
    non-`None` output in that preview snapshot, reuse those DataFrames directly —
@@ -201,9 +208,8 @@ per edge between that pair, in edge order:
 4. Disambiguate the surviving matches in order: (a) if `traced_column` is set
    and any matched frame's `DataFrame` has that column, narrow to those frames;
    (b) narrow further to the frame(s) with the widest `match_width`; (c) if more
-   than one frame still survives, pick the first by edge order and record an
-   `ambiguous_source_frame` diagnostic (`severity: "warning"`) naming the
-   candidates and the chosen frame.
+   than one frame still survives, record an `ambiguous_source_frame` diagnostic
+   (`severity: "warning"`) naming the candidates and return `(None, -1)`.
 5. Return the winning frame's `(row_dict, positional_index)`.
 
 ### `_correlate_rows_posthoc()` (`_trace_correlation.py`)
@@ -266,15 +272,9 @@ one step's unforeseen failure cannot abort the whole enrichment pass) and:
    upstream step that created/modified it, parses/evaluates its formula (with a
    banding-specific branch that reuses `enrich_banding`'s factor detail instead
    of generic expression parsing), and recurses into *its* references.
-5. Runs `_fix_upstream_values()`: when an input-source derivation found a
-   known-good value that disagrees with a `None` in an upstream step's
-   `output_values` (typically because post-hoc correlation matched the wrong row
-   for that node), it re-filters that node's DataFrame for a uniquely-matching
-   row and patches `output_values` in place — but only when the match is unique;
-   an ambiguous match is logged and left untouched rather than guessed.
-6. Detects renames (`.rename({...})` or a pure `.with_columns(new=pl.col(old))`)
+5. Detects renames (`.rename({...})` or a pure `.with_columns(new=pl.col(old))`)
    and builds a rename chain by walking backward through prior steps.
-7. Dispatches node-type enrichment by `node_type` (`ratingStep`, `banding`,
+6. Dispatches node-type enrichment by `node_type` (`ratingStep`, `banding`,
    `modelScore`, `scenarioExpander`, `liveSwitch`, `optimiserApply`) into
    `step.node_detail`; for `banding`, additionally attaches lineage
    (`_attach_banding_lineage`) directly into `step.expression`/`step.calculation`
@@ -285,7 +285,7 @@ one step's unforeseen failure cannot abort the whole enrichment pass) and:
    than merged across every frame the source emits — a column name recurring
    across frames with a different dtype must resolve in the *consumed* frame's
    dtype, not by dict-iteration order over frames the node never sees.
-8. Classifies `step.row_lineage_type` via `detect_row_lineage_type()`, using the
+7. Classifies `step.row_lineage_type` via `detect_row_lineage_type()`, using the
    node type first (source nodes → `"created"`, `liveSwitch` → `"selected"`,
    `edgeJoin` → `"joined"` — checked before any code-sniffing because a join's
    config-driven code carries no literal `.join(` token), then a code-sniffed
@@ -340,14 +340,11 @@ one step's unforeseen failure cannot abort the whole enrichment pass) and:
 ### Serialisation
 
 `trace_result_to_dict()` (`trace.py`) builds a plain dict mirroring
-`TraceResult`/`TraceStep` field-for-field (unpacking `schema_diff` into its four
-list fields) and runs it through `haute._json_safe.to_json_safe()` for a final
-JSON-safety pass. `export_trace()` (`_trace_export.py`) instead reduces a
-`TraceResult` to a report-oriented shape: it finds the step that created/modified
-the traced column (`formula`), derives each referenced column's true upstream
-origin — the *first* step whose schema diff records it as added/modified, falling
-back to the first step that merely carries it — for the `sources` list, and
-produces an ordered `data_flow` summary plus `metadata` counts.
+`TraceResult`/`TraceStep`/`TraceOmission` field-for-field (unpacking
+`schema_diff` into its four list fields) and runs it through
+`haute._json_safe.to_json_safe()` for a final JSON-safety pass. Report export is
+not a second backend interpretation; the frontend projects this validated
+snapshot deterministically.
 
 ## Edge cases and invariants
 
@@ -414,12 +411,11 @@ produces an ordered `data_flow` summary plus `metadata` counts.
   order — and `_resolve_multi_frame_parent` matches every distinct candidate
   frame against the resolved child row independently rather than assuming a
   single frame per pair.
-- **Multi-frame disambiguation order is deterministic, not a first-match
-  guess.** When several frames of one source all confidently match the child
-  row, the traced column (if any) wins first, then the widest `match_width`
-  (most specific match), and only then edge order — and that final tie-break is
-  always recorded as an `ambiguous_source_frame` diagnostic so a caller can see
-  the resolution was not unique, even though the trace itself proceeds.
+- **Multi-frame disambiguation never guesses.** When several frames of one
+  source all confidently match the child row, the traced column (if any) wins
+  first, then the widest `match_width` (most specific match). A surviving tie
+  remains unresolved and emits an `ambiguous_source_frame` diagnostic linked to
+  the resulting omission.
 - **A duplicate row match during target-row relocation fails loud.**
   `_find_target_row_index` (`trace.py`) collects *every* row index matching the
   clicked values on the shared columns; more than one match raises `ValueError`
@@ -530,8 +526,8 @@ integration/regression suites:
   fallback), expression-parser integration, calculation accuracy, serialisation,
   and cache/concurrency edge cases.
 - **`tests/test_trace_coverage.py`** — coverage-directed tests
-  targeting paths in `trace.py`, `_trace_waterfall.py`, and `_trace_export.py`
-  identified by coverage analysis rather than by feature.
+  targeting paths in `trace.py` and `_trace_waterfall.py` identified by coverage
+  analysis rather than by feature.
 - **`tests/test_trace_cache_byte_awareness.py`** — the byte-aware
   trace-cache eviction remediation: bounded by bytes AND entry count, LRU
   eviction, deterministic reject-at-store for an oversized single entry. Twin
