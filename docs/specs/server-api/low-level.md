@@ -101,7 +101,7 @@ when a path/query/body fails model validation):
 | `POST /api/pipeline/save` | `SavePipelineRequest {name="main", description="", graph={}, preamble=null, preserved_blocks=[], source_file="", sources=["live"], active_source="live"}` | `SavePipelineResponse {status="saved", file, pipeline_name, warnings=[], git_sha=null}` |
 | `POST /api/pipeline/read-json` | `ReadJsonRequest {path}` | `ReadJsonResponse`, a root JSON object (arrays/scalars are rejected) |
 | `POST /api/pipeline/preview` | `PreviewNodeRequest {graph, node_id, row_limit=100 (1..10000), source="live", requested_preview_columns=null (non-empty when present), streaming_chunk_size=null (1..10000000, bool rejected), port_label=null}` | `PreviewNodeResponse`, extending `NodeResult` with `node_id`, timings/memory, per-node schemas/statuses, and optional execution metrics |
-| `POST /api/pipeline/trace` | `TraceRequest {graph, row_index=0 (>=0), target_node_id=null, column=null, row_limit=100 (1..10000), source="live", row_values=null, streaming_chunk_size=null}` | Explicit JSON `TraceResponse {status, trace}`; the declared response model documents OpenAPI but the returned `JSONResponse` skips a second validation pass |
+| `POST /api/pipeline/trace` | `TraceRequest {graph, row_index=0 (>=0), target_node_id=null, column=null, row_limit=100 (1..10000), source="live", row_values=null, streaming_chunk_size=null}` | Explicit JSON `TraceResponse {status, trace}`. `trace` includes successful steps, typed omissions, correlation/waterfall evidence, UTC `generated_at`, source identity, and `execution_origin: fresh_execution|preview_cache|trace_cache`; the payload is serialized and `TraceResponse`-validated in the worker, then the returned `JSONResponse` skips a second event-loop validation pass |
 | `POST /api/pipeline/sink` | `SinkRequest {graph, node_id, source="live", streaming_chunk_size=null}` | `SinkResponse {status, message="", row_count=0, path="", format="parquet", execution_metrics=null}` |
 | `GET /api/files` | Query `dir="."`, `extensions=".parquet,.csv,.json,.xml"` | `BrowseFilesResponse {dir, items:[{name,path,type,size?}]}` |
 | `GET /api/formats` | No body | `IoFormatsResponse {formats:[IoFormatCapability...]}` from the runtime I/O registry |
@@ -113,6 +113,14 @@ when a path/query/body fails model validation):
 | `PUT /api/utility/{module}` | `UtilityWriteRequest {content}` | `UtilityWriteResponse` |
 | `DELETE /api/utility/{module}` | Module path | `UtilityDeleteResponse {status="ok", module}` |
 | `POST /api/output-assemble/dry-run` | Route-local `OutputAssembleDryRunRequest {graph, node_id, output_mapping=[], output_format="json", row_limit=100 (1..10000), source="live"}` | Route-local `OutputAssembleDryRunResponse {status, document=[], row_count=0, error=null}` |
+
+`TraceResultResponse` requires `omissions`, `correlation_diagnostics`, `generated_at`, and
+`execution_origin`; these are not compatibility defaults. Each successful step requires a
+non-negative `topological_rank` and carries no per-step timing. A successful waterfall entry is
+the typed `{label, operation, value, delta, cumulative, default_used}` shape, while a failed
+waterfall is the typed `{error, error_type}` shape. This keeps omission links, default evidence,
+and reconciliation failures enforceable at the HTTP boundary rather than accepting arbitrary
+trace dictionaries.
 
 **WebSocket contract.** `GET /ws/sync` upgrades only after local Origin/token validation.
 The client may send `{"type":"resync","source_file":str,"graph_fingerprint":str|null}`;

@@ -20,8 +20,8 @@ function makeStep(overrides: Partial<TraceStep> = {}): TraceStep {
     },
     input_values: { age: 25 },
     output_values: { age: 25, premium: 100 },
+    topological_rank: 0,
     column_relevant: true,
-    execution_ms: 5.2,
     ...overrides,
   }
 }
@@ -53,6 +53,11 @@ function makeTrace(overrides: Partial<TraceResult> = {}): TraceResult {
     nodes_in_trace: 2,
     execution_ms: 12.3,
     ...overrides,
+    omissions: overrides.omissions ?? [],
+    correlation_diagnostics: overrides.correlation_diagnostics ?? [],
+    generated_at: overrides.generated_at ?? "2026-07-23T12:00:00+00:00",
+    pipeline_source: overrides.pipeline_source ?? null,
+    execution_origin: overrides.execution_origin ?? "fresh_execution",
   }
 }
 
@@ -328,9 +333,9 @@ describe("groupTraceSteps", () => {
 
   it("keeps execution order within groups", () => {
     const steps = [
-      makeStep({ node_id: "t1", node_name: "First", node_type: "polars", execution_ms: 1 }),
-      makeStep({ node_id: "t2", node_name: "Second", node_type: "polars", execution_ms: 2 }),
-      makeStep({ node_id: "t3", node_name: "Third", node_type: "polars", execution_ms: 3 }),
+      makeStep({ node_id: "t1", node_name: "First", node_type: "polars" }),
+      makeStep({ node_id: "t2", node_name: "Second", node_type: "polars" }),
+      makeStep({ node_id: "t3", node_name: "Third", node_type: "polars" }),
     ]
     const groups = groupTraceSteps(steps, "premium")
 

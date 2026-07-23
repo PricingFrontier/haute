@@ -197,8 +197,8 @@ def _make_estimate_projection_impossible_graph(left_path: str, right_path: str) 
     return graph.model_dump()
 
 
-def _make_auto_range_projection_impossible_graph(left_path: str, right_path: str) -> dict:
-    """Build a fan-in base before expansion without parent column ownership."""
+def _make_auto_range_runtime_projectable_graph(left_path: str, right_path: str) -> dict:
+    """Build a fan-in whose parent ownership is resolved from runtime schemas."""
     graph = make_graph(
         {
             "nodes": [
@@ -4076,7 +4076,7 @@ class TestEstimateRoute:
         assert "auto_range_partition_count must be a positive integer" in resp.json()["detail"]
 
     @pytest.mark.usefixtures("_widen_sandbox_root")
-    def test_frontier_auto_range_allows_contract_free_fan_in_boundary(
+    def test_frontier_auto_range_runtime_projects_contract_free_fan_in(
         self,
         client,
         tmp_path,
@@ -4091,7 +4091,7 @@ class TestEstimateRoute:
             }
         ).write_parquet(left_path)
         pl.DataFrame({"quote_id": ["q1", "q2"], "factor": [2.0, 3.0]}).write_parquet(right_path)
-        graph = _make_auto_range_projection_impossible_graph(
+        graph = _make_auto_range_runtime_projectable_graph(
             str(left_path),
             str(right_path),
         )
@@ -4109,7 +4109,7 @@ class TestEstimateRoute:
         }
 
     @pytest.mark.usefixtures("_widen_sandbox_root")
-    def test_frontier_auto_range_start_records_unprojected_boundary_diagnostics(
+    def test_frontier_auto_range_start_records_runtime_projection_diagnostics(
         self,
         client,
         tmp_path,
@@ -4124,7 +4124,7 @@ class TestEstimateRoute:
             }
         ).write_parquet(left_path)
         pl.DataFrame({"quote_id": ["q1", "q2"], "factor": [2.0, 3.0]}).write_parquet(right_path)
-        graph = _make_auto_range_projection_impossible_graph(
+        graph = _make_auto_range_runtime_projectable_graph(
             str(left_path),
             str(right_path),
         )
@@ -4144,7 +4144,9 @@ class TestEstimateRoute:
         }
         diagnostics = status["execution_metrics"]["projection_plan_diagnostics"]
         assert diagnostics["strategy_summary"]["profile"] == "auto_range"
-        assert diagnostics["strategy_summary"]["opaque_boundary_count"] >= 1
+        assert diagnostics["strategy_summary"]["opaque_boundary_count"] == 0
+        assert diagnostics["edge_reasons"]["left->joined"]["rule"] == "runtime_inferred_streaming"
+        assert diagnostics["edge_reasons"]["right->joined"]["rule"] == "runtime_inferred_streaming"
 
     @pytest.mark.usefixtures("_widen_sandbox_root")
     def test_frontier_auto_range_rejects_null_quote_id_in_chunked_estimator(

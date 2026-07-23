@@ -197,6 +197,11 @@ async function installTraceRoute(page: Page): Promise<void> {
           nodes_in_trace: 1,
           execution_ms: 1,
           waterfall: null,
+          omissions: [],
+          correlation_diagnostics: [],
+          generated_at: "2026-07-23T12:00:00+00:00",
+          pipeline_source: null,
+          execution_origin: "fresh_execution",
           steps: [
             {
               node_id: API_NODE_ID,
@@ -210,8 +215,8 @@ async function installTraceRoute(page: Page): Promise<void> {
               },
               input_values: {},
               output_values: { quote_id: TRACE_VALUE },
+              topological_rank: 0,
               column_relevant: true,
-              execution_ms: 1,
             },
           ],
         },

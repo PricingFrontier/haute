@@ -8,7 +8,7 @@
 | `frontend/src/panels/PreviewPanelFrame.tsx`, `frontend/src/panels/PreviewPanelTabs.tsx` | Resizable/collapsible frame and generic ARIA tab strip. |
 | `frontend/src/panels/previewPanelLayout.ts` | Shared preview-panel dimensions and header/action layout constants. |
 | `frontend/src/components/ColumnTable.tsx`, `frontend/src/components/BreakdownDropdown.tsx` | Reusable preview-adjacent column table and sorted visual breakdown dropdown. |
-| `frontend/src/components/CacheFetchButton.tsx`, `frontend/src/components/ExecutionDiagnosticsSummary.tsx` | Generic cache fetch/poll/cancel/delete control and execution-diagnostic banner. |
+| `frontend/src/components/CacheFetchButton.tsx`, `frontend/src/components/ExecutionDiagnosticsSummary.tsx`, `frontend/src/components/ExecutionDiagnosticsIndicator.tsx` | Generic cache fetch/poll/cancel/delete control, execution-diagnostic banner, and compact preview-header diagnostic indicator. |
 | `frontend/src/panels/ExplorePreview.tsx` | Explore run/cancel/store lifecycle and Preview/Overview tab composition. |
 | `frontend/src/panels/UtilityPanel.tsx` | Utility-module list/read/create/delete/editor UI with debounced, flushable saves and syntax-error display. |
 | `frontend/src/panels/explore/cacheIdentity.ts` | Upstream-lineage/config identity for an Explore cache request. |

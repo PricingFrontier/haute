@@ -2,7 +2,7 @@ import type {
   OptimiserApplyNodeDetail,
   OptimiserApplyRatebookFactorDetail,
 } from "../types/trace"
-import { formatValue as _formatValue } from "../utils/formatValue"
+import { formatTraceValue } from "./traceFormatting"
 import { CHART_COLORS } from "../theme/colors"
 import {
   TraceDetailAlert,
@@ -28,7 +28,7 @@ import {
   optimiserSelectedCandidate,
 } from "./optimiserApplyHelpers"
 
-const formatValue = (v: unknown) => _formatValue(v, 2)
+const formatValue = formatTraceValue
 
 export function OptimiserOnlineDetail({ detail }: {
   detail: Extract<OptimiserApplyNodeDetail, { mode: "online" }>

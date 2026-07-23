@@ -182,8 +182,8 @@ describe("CalculationHero \u2014 error-silent null branches must surface visible
 //     Not an error — column is upstream source data.
 //   - isOpaque WITH a valid calculation: the backend chose to obscure the
 //     expression but a result exists. "computed" label is the intended UX.
-//   - The IIFE a11y sentinel at line 469: returns null when result value
-//     is not found verbatim in any branch's text. Legit "not applicable".
+//   - A conditional without typed branch evidence: the branches remain
+//     visible, but none is guessed from result text.
 // ---------------------------------------------------------------------------
 
 describe("CalculationHero \u2014 legitimate-empty null branches must stay legit-empty", () => {
@@ -234,11 +234,10 @@ describe("CalculationHero \u2014 legitimate-empty null branches must stay legit-
     expect(screen.getAllByText(/42\.5/).length).toBeGreaterThanOrEqual(1)
   })
 
-  it("F: conditional branch result not found verbatim (a11y sentinel IIFE) \u2014 stays legit-empty", () => {
-    // Conditional expression whose textual branches do NOT contain the
-    // numeric result value verbatim. This exercises the `return null`
-    // inside the IIFE that skips the hidden a11y sentinel — a legitimate
-    // "not applicable" branch that must not regress into an error alert.
+  it("F: conditional without typed branch evidence stays valid and unselected", () => {
+    // Conditional expression whose textual branches do not establish the
+    // selected path. Absence of typed backend evidence is not itself an
+    // enrichment error, and the UI must not guess.
     const { container } = render(
       <CalculationHero
         {...makeProps({
@@ -260,8 +259,7 @@ describe("CalculationHero \u2014 legitimate-empty null branches must stay legit-
       />,
     )
 
-    // No error alert — the IIFE's null return is about the a11y sentinel
-    // being not-applicable, not about missing data.
+    // No error alert — missing branch-selection evidence is not a failure.
     expect(screen.queryByRole("alert")).not.toBeInTheDocument()
 
     // The conditional branches themselves must still render.
@@ -276,9 +274,7 @@ describe("CalculationHero \u2014 legitimate-empty null branches must stay legit-
 // ---------------------------------------------------------------------------
 // WaterfallErrorAlert component — minimal error UI that must exist.
 //
-// The production code already imports this symbol but it is currently not
-// exported from `WaterfallChart.tsx`. The dev task is to add it. These
-// tests pin the minimum contract: renders the passed message, uses an
+// Tests pin the minimum contract: renders the passed message, uses an
 // accessible role, and does not collapse empty strings silently.
 // ---------------------------------------------------------------------------
 

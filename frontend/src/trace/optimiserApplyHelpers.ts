@@ -1,7 +1,7 @@
 import type { OptimiserApplyOnlineCandidateDetail } from "../types/trace"
-import { formatValue as _formatValue } from "../utils/formatValue"
+import { formatTraceValue } from "./traceFormatting"
 
-const formatValue = (v: unknown) => _formatValue(v, 2)
+const formatValue = formatTraceValue
 
 export function isFiniteNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value)

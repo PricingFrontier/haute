@@ -26,7 +26,6 @@ orchestrator.  Heavy lifting lives in sibling modules:
     model score, scenario expansion, live switch, row lineage).
   * ``_trace_waterfall``    — sequential multiplicative / additive
     waterfall assembly.
-  * ``_trace_export``       — TraceResult → report-shape dict.
 
 This module re-imports a handful of names (``parse_expression``,
 ``evaluate_expression``, ``parse_expression_chain``, the node-type
@@ -41,6 +40,7 @@ from __future__ import annotations
 import re
 import time
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any, Protocol, cast, runtime_checkable
 
 import polars as pl
@@ -99,6 +99,7 @@ logger = get_logger(component="trace")
 __all__ = [
     "PreviewReader",
     "SchemaDiff",
+    "TraceOmission",
     "TraceResult",
     "TraceStep",
     "detect_row_lineage_type",
@@ -161,11 +162,11 @@ class TraceStep:
     input_values: dict[str, Any]
     output_values: dict[str, Any]
 
+    # Stable position in the target ancestor graph's topological order.
+    topological_rank: int = 0
+
     # True if this node adds/modifies/passes the traced column
     column_relevant: bool = True
-
-    # Execution time for this node (ms)
-    execution_ms: float = 0.0
 
     # Expression parsing and enrichment, populated by _enrich_steps.
     expression: dict[str, Any] | None = None
@@ -179,6 +180,22 @@ class TraceStep:
         return self.output_values
 
 
+@dataclass(frozen=True)
+class TraceOmission:
+    """A relevant node whose row could not be correlated truthfully."""
+
+    node_id: str
+    node_name: str
+    node_type: str
+    topological_rank: int
+    reason: str
+    diagnostic_index: int
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(UTC).isoformat()
+
+
 @dataclass
 class TraceResult:
     """Full trace for one row through the pipeline."""
@@ -189,6 +206,7 @@ class TraceResult:
     output_value: Any
 
     steps: list[TraceStep]
+    omissions: list[TraceOmission] = field(default_factory=list)
 
     # Row identity (from apiInput node's row_id_column config)
     row_id_column: str | None = None
@@ -208,6 +226,12 @@ class TraceResult:
     # Non-fatal row-correlation diagnostics. These explain why an upstream
     # row was left unresolved instead of selecting an ambiguous candidate.
     correlation_diagnostics: list[dict[str, Any]] = field(default_factory=list)
+
+    # Assembly provenance. This describes how the trace was built; it is not
+    # a claim that cached source data is current.
+    generated_at: str = field(default_factory=_utc_now_iso)
+    pipeline_source: str | None = None
+    execution_origin: str = "fresh_execution"
 
 
 # ---------------------------------------------------------------------------
@@ -464,6 +488,7 @@ def execute_trace(
     cached = _cache.try_get(fp)
     if cached is not None:
         cache_hit = True
+        execution_origin = "trace_cache"
         logger.debug(
             "trace_cache_hit",
             fingerprint=fp[:8],
@@ -484,34 +509,26 @@ def execute_trace(
             prev_fingerprint=(_cache.fingerprint or "")[:8],
         )
 
-        requested_preview_columns = requested_columns
-        preview_fps: list[str] = []
-        if requested_preview_columns is not None:
-            preview_fps.append(
-                execution_facade.preview_lineage_cache_key(
-                    graph,
-                    target_node_id=target_node_id,
-                    source=source,
-                    requested_columns=requested_preview_columns,
-                    initial_column_limit=None,
-                    row_limit=row_limit,
-                    port_label=None,
-                    enforce_contracts=ENFORCE_CONTRACTS,
-                    materialisation_scope="target_only",
-                    memo=fingerprint_memo,
-                )
-            )
-        preview_fps.append(fp)
+        # A target-only preview deliberately retains only the selected node,
+        # so it can never satisfy a trace's full-ancestor evidence invariant.
+        # Consult only the exact full-lineage key; projected target previews
+        # otherwise add a guaranteed miss before every first trace click.
+        preview_fps = [fp]
 
-        eager_outputs, order, parents_of, node_map, source_ids = _materialize_eager_outputs(
+        (
+            eager_outputs,
+            order,
+            parents_of,
+            node_map,
+            source_ids,
+            execution_origin,
+        ) = _materialize_eager_outputs(
             graph=graph,
             target_node_id=target_node_id,
             row_limit=row_limit,
             source=source,
             row_values=row_values,
             preamble_ns=preamble_ns,
-            # Try the clicked row's projected target-only preview first, then
-            # the exact shared key for a full-lineage preview.
             preview_fps=preview_fps,
             fp=fp,
             preview=preview,
@@ -591,6 +608,7 @@ def execute_trace(
                 )
 
     correlation_diagnostics: list[dict[str, Any]] = []
+    unresolved_rows: dict[str, tuple[str, int]] = {}
 
     # Extract correct row from each node via post-hoc correlation
     # (only if target node has output data)
@@ -603,6 +621,7 @@ def execute_trace(
             row_index,
             node_map=node_map,
             diagnostics=correlation_diagnostics,
+            unresolved=unresolved_rows,
             source_frames_of=source_frames_of,
             traced_column=column,
         )
@@ -643,6 +662,15 @@ def execute_trace(
     # ---------- Column relevance: tag then prune irrelevant ancestors ----------
     if column:
         steps = _prune_to_column_relevance(steps, column, parents_of, node_map)
+
+    omissions = _build_trace_omissions(
+        unresolved_rows=unresolved_rows,
+        order=order,
+        node_map=node_map,
+        eager_outputs=eager_outputs,
+        steps=steps,
+        column=column,
+    )
 
     # ---------- Output value (already in cache from batch collect) ----------
     target_row = cached_rows.get(target_node_id) or {}
@@ -696,13 +724,17 @@ def execute_trace(
         column=column,
         output_value=output_value,
         steps=steps,
+        omissions=omissions,
         row_id_column=row_id_column,
         row_id_value=row_id_value,
         total_nodes_in_pipeline=len(nodes),
-        nodes_in_trace=len(steps),
+        nodes_in_trace=len(steps) + len(omissions),
         execution_ms=total_ms,
         waterfall=waterfall_data,
         correlation_diagnostics=correlation_diagnostics,
+        generated_at=_utc_now_iso(),
+        pipeline_source=graph.source_file or None,
+        execution_origin=execution_origin,
     )
 
 
@@ -776,10 +808,12 @@ def _materialize_eager_outputs(
     dict[str, list[str]],
     dict[str, Any],
     set[str],
+    str,
 ]:
     """Populate the trace cache: reuse preview outputs if available, else execute.
 
-    Returns ``(eager_outputs, order, parents_of, node_map, source_ids)``.
+    Returns ``(eager_outputs, order, parents_of, node_map, source_ids,
+    execution_origin)``.
 
     The *preview* parameter is the sole source of preview-cache data.
     Passing ``None`` forces a cold execution; passing a reader or a
@@ -833,7 +867,14 @@ def _materialize_eager_outputs(
                     target=target_node_id,
                     reused_nodes=len(eager_outputs),
                 )
-                return eager_outputs, order, parents_of, node_map, source_ids
+                return (
+                    eager_outputs,
+                    order,
+                    parents_of,
+                    node_map,
+                    source_ids,
+                    "preview_cache",
+                )
 
     # No usable preview cache. Execute fresh; if the frontend supplied
     # clicked row values, execute_trace verifies or relocates the target
@@ -869,7 +910,7 @@ def _materialize_eager_outputs(
     parents_of = result.parents_of
     node_map = result.node_map
     source_ids = {nid for nid in order if not parents_of.get(nid)}
-    return eager_outputs, order, parents_of, node_map, source_ids
+    return eager_outputs, order, parents_of, node_map, source_ids, "fresh_execution"
 
 
 def _assemble_steps(
@@ -887,7 +928,7 @@ def _assemble_steps(
     """
     steps: list[TraceStep] = []
 
-    for nid in order:
+    for topological_rank, nid in enumerate(order):
         is_source = nid in source_ids
         node_data = node_map[nid].data
         node_name = node_data.label
@@ -904,23 +945,43 @@ def _assemble_steps(
         input_row: dict[str, Any] | None
         if is_source:
             input_row = None
+            provenance_aliases: dict[str, str] = {}
         else:
             input_ids = parents_of.get(nid, [])
+            provenance_aliases = {}
             if input_ids:
                 input_row = {}
+                parent_rows = {
+                    pid: cached_rows.get(pid)
+                    for pid in input_ids
+                    if cached_rows.get(pid) is not None
+                }
+                key_counts: dict[str, int] = {}
+                for parent_row in parent_rows.values():
+                    assert parent_row is not None
+                    for key in parent_row:
+                        key_counts[key] = key_counts.get(key, 0) + 1
                 for pid in input_ids:
-                    parent_row = cached_rows.get(pid)
+                    parent_row = parent_rows.get(pid)
                     if parent_row is None:
                         # Parent row correlation failed — skip this parent
                         continue
                     for k, v in parent_row.items():
-                        # Namespace-prefix on collision to avoid overwriting
-                        key = f"{pid}.{k}" if k in input_row else k
+                        # Namespace every collision, irrespective of parent
+                        # order: an unqualified first value would make the
+                        # trace's provenance depend on graph ordering.
+                        key = f"{pid}.{k}" if key_counts[k] > 1 else k
+                        if key != k:
+                            provenance_aliases[key] = k
                         input_row[key] = v
             else:
                 input_row = {}
 
-        schema_diff = _compute_schema_diff(input_row, output_row)
+        schema_diff = _compute_schema_diff(
+            input_row,
+            output_row,
+            provenance_aliases=provenance_aliases,
+        )
 
         steps.append(
             TraceStep(
@@ -930,10 +991,93 @@ def _assemble_steps(
                 schema_diff=schema_diff,
                 input_values=input_row if input_row is not None else {},
                 output_values=output_row,
+                topological_rank=topological_rank,
             )
         )
 
     return steps
+
+
+def _materialized_output_columns(output: Any) -> set[str]:
+    if isinstance(output, pl.DataFrame):
+        return set(output.columns)
+    if isinstance(output, dict):
+        return {
+            column
+            for frame in output.values()
+            if isinstance(frame, pl.DataFrame)
+            for column in frame.columns
+        }
+    return set()
+
+
+def _build_trace_omissions(
+    *,
+    unresolved_rows: dict[str, tuple[str, int]],
+    order: list[str],
+    node_map: dict[str, Any],
+    eager_outputs: dict[str, Any],
+    steps: list[TraceStep],
+    column: str | None,
+) -> list[TraceOmission]:
+    """Build evidence entries only for unresolved nodes relevant to the trace.
+
+    Successful column pruning is deliberately not represented as a gap. For a
+    column trace, observed output schemas and authoritative expression
+    references identify which failed ancestors could have contributed. When an
+    assigning expression cannot identify its inputs, the existing conservative
+    relevance fallback keeps all attempted unresolved ancestors.
+    """
+    if not unresolved_rows:
+        return []
+
+    relevant_node_ids = set(unresolved_rows)
+    if column is not None:
+        referenced_columns: set[str] = set()
+        origin_without_references = False
+        for step in steps:
+            diff = step.schema_diff
+            is_origin = column in diff.columns_added or column in diff.columns_modified
+            if not is_origin:
+                continue
+            references = (
+                step.expression.get("referenced_columns", [])
+                if isinstance(step.expression, dict)
+                else []
+            )
+            if references:
+                referenced_columns.update(str(name) for name in references)
+            else:
+                origin_without_references = True
+
+        if not origin_without_references:
+            relevant_columns = {column, *referenced_columns}
+            relevant_node_ids = {
+                node_id
+                for node_id in unresolved_rows
+                if _materialized_output_columns(eager_outputs.get(node_id)) & relevant_columns
+            }
+
+    ranks = {node_id: rank for rank, node_id in enumerate(order)}
+    omissions: list[TraceOmission] = []
+    for node_id in sorted(relevant_node_ids, key=lambda value: ranks.get(value, len(order))):
+        reason, diagnostic_index = unresolved_rows[node_id]
+        if diagnostic_index < 0:
+            # execute_trace always supplies a diagnostics list; fail clearly if
+            # a future call path violates the linkable-evidence invariant.
+            raise ValueError(f"Trace omission for node {node_id!r} has no correlation diagnostic")
+        node = node_map[node_id]
+        omissions.append(
+            TraceOmission(
+                node_id=node_id,
+                node_name=node.data.label,
+                node_type=node.data.nodeType,
+                topological_rank=ranks[node_id],
+                reason=reason,
+                diagnostic_index=diagnostic_index,
+            )
+        )
+    return omissions
 
 
 def _prune_to_column_relevance(
@@ -1075,14 +1219,25 @@ def trace_result_to_dict(result: TraceResult) -> dict[str, Any]:
                 },
                 "input_values": s.input_values,
                 "output_values": s.output_values,
+                "topological_rank": s.topological_rank,
                 "column_relevant": s.column_relevant,
-                "execution_ms": s.execution_ms,
                 "expression": s.expression,
                 "calculation": s.calculation,
                 "node_detail": s.node_detail,
                 "row_lineage_type": s.row_lineage_type,
             }
             for s in result.steps
+        ],
+        "omissions": [
+            {
+                "node_id": omission.node_id,
+                "node_name": omission.node_name,
+                "node_type": omission.node_type,
+                "topological_rank": omission.topological_rank,
+                "reason": omission.reason,
+                "diagnostic_index": omission.diagnostic_index,
+            }
+            for omission in result.omissions
         ],
         "row_id_column": result.row_id_column,
         "row_id_value": result.row_id_value,
@@ -1091,5 +1246,8 @@ def trace_result_to_dict(result: TraceResult) -> dict[str, Any]:
         "execution_ms": result.execution_ms,
         "waterfall": result.waterfall,
         "correlation_diagnostics": result.correlation_diagnostics,
+        "generated_at": result.generated_at,
+        "pipeline_source": result.pipeline_source,
+        "execution_origin": result.execution_origin,
     }
     return cast(dict[str, Any], to_json_safe(payload))

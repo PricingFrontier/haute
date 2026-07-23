@@ -203,6 +203,8 @@ def _trace_values_match(actual: Any, expected: Any) -> bool:
 def _compute_schema_diff(
     input_row: dict[str, Any] | None,
     output_row: dict[str, Any],
+    *,
+    provenance_aliases: Mapping[str, str] | None = None,
 ) -> SchemaDiff:
     """Compare input and output row dicts to classify columns."""
     if input_row is None:
@@ -217,8 +219,24 @@ def _compute_schema_diff(
     in_cols = set(input_row.keys())
     out_cols = set(output_row.keys())
 
-    added = sorted(out_cols - in_cols)
-    removed = sorted(in_cols - out_cols)
+    # Multi-parent trace assembly namespaces collisions as ``parent.column``.
+    # A consuming node sees the unqualified column, so this representation
+    # change is not a removal/addition in the node's schema.
+    qualified_inputs: dict[str, list[str]] = {}
+    for alias, base in (provenance_aliases or {}).items():
+        if alias in in_cols:
+            qualified_inputs.setdefault(base, []).append(alias)
+    aliased_outputs = {
+        column for column in out_cols if column in qualified_inputs and column not in in_cols
+    }
+    aliased_inputs = {
+        column
+        for base, columns in qualified_inputs.items()
+        if base in out_cols
+        for column in columns
+    }
+    added = sorted((out_cols - in_cols) - aliased_outputs)
+    removed = sorted((in_cols - out_cols) - aliased_inputs)
 
     modified = []
     passed = []
@@ -230,6 +248,15 @@ def _compute_schema_diff(
             modified.append(col)
         else:
             passed.append(col)
+    for col in sorted(aliased_outputs):
+        input_values = [input_row[key] for key in qualified_inputs[col]]
+        if any(
+            value == output_row[col] or (_is_nan(value) and _is_nan(output_row[col]))
+            for value in input_values
+        ):
+            passed.append(col)
+        else:
+            modified.append(col)
 
     return SchemaDiff(
         columns_added=added,
@@ -791,16 +818,26 @@ def _find_matching_row(
         idx = match.candidate_indices[0]
         if match.status is _RowMatchStatus.UNIQUE_RELAXED and diagnostics is not None:
             effective = list(match.effective_key_columns)
+            omitted = list(match.omitted_key_columns)
             diagnostics.append(
                 {
                     "code": "low_confidence_relaxed_match",
                     "severity": "warning",
                     "reason": match.relaxation_reason,
+                    "message": (
+                        f"Row correlation for node {node_id!r} used a relaxed "
+                        f"match on columns {effective}; omitted columns {omitted}."
+                    ),
                     "node_id": node_id,
                     "child_node_id": child_node_id,
+                    "match_strategy": "relaxed",
+                    "match_columns": effective,
+                    "ignored_columns": omitted,
+                    "matched_row_count": match.candidate_count,
+                    "matched_row_indices": list(match.candidate_indices),
                     "strict_key_columns": list(match.strict_key_columns),
                     "effective_key_columns": effective,
-                    "omitted_key_columns": list(match.omitted_key_columns),
+                    "omitted_key_columns": omitted,
                     "candidate_count": match.candidate_count,
                     "candidate_indices": list(match.candidate_indices),
                     "candidate_indices_state": match.candidate_indices_state.value,
@@ -826,14 +863,24 @@ def _find_matching_row(
 
     if match.status is _RowMatchStatus.UNSUPPORTED_DTYPE:
         if diagnostics is not None:
+            key_columns = list(match.strict_key_columns[:16])
             diagnostics.append(
                 {
                     "code": "unsupported_dtype",
                     "severity": "warning",
                     "reason": match.reason_code,
+                    "message": (
+                        f"Row correlation for node {node_id!r} could not compare "
+                        f"the selected key columns {key_columns}."
+                    ),
                     "node_id": node_id,
                     "child_node_id": child_node_id,
-                    "key_columns": list(match.strict_key_columns[:16]),
+                    "match_strategy": "typed",
+                    "match_columns": key_columns,
+                    "ignored_columns": [],
+                    "matched_row_count": 0,
+                    "matched_row_indices": [],
+                    "key_columns": key_columns,
                     "dtypes": list(match.dtypes[:16]),
                     "candidate_count": None,
                     "candidate_indices": [],
@@ -850,6 +897,25 @@ def _find_matching_row(
         df_rows=len(df),
         relaxed_matching=allow_relaxed,
     )
+    if diagnostics is not None:
+        diagnostics.append(
+            {
+                "code": "row_match_not_found",
+                "severity": "warning",
+                "reason": "no_matching_row",
+                "message": (
+                    f"Row correlation for node {node_id!r} found no matching "
+                    f"parent row on columns {shared}."
+                ),
+                "node_id": node_id,
+                "child_node_id": child_node_id,
+                "match_strategy": "relaxed" if allow_relaxed else "exact",
+                "match_columns": list(shared),
+                "ignored_columns": [],
+                "matched_row_count": 0,
+                "matched_row_indices": [],
+            }
+        )
     return None, -1
 
 
@@ -1158,8 +1224,8 @@ def _resolve_multi_frame_parent(
     an actual, confident row match makes a frame the correlated one.
     When several frames match, the frame carrying the traced column is
     preferred, then the most specific match (widest projected-column
-    set); a surviving tie is broken by edge order and recorded as a
-    diagnostic rather than silently guessing between frames.
+    set). A surviving tie remains unresolved and is recorded as a
+    diagnostic rather than guessing between frames.
     """
     seen: set[str] = set()
     candidates: list[tuple[str, pl.DataFrame]] = []
@@ -1176,8 +1242,19 @@ def _resolve_multi_frame_parent(
             diagnostics.append(
                 {
                     "code": "unresolved_source_frame",
+                    "severity": "warning",
+                    "reason": "source_frame_unavailable",
+                    "message": (
+                        f"Row correlation for multi-frame node {parent_id!r} "
+                        f"could not resolve a source frame for child {child_id!r}."
+                    ),
                     "node_id": parent_id,
-                    "child_id": child_id,
+                    "child_node_id": child_id,
+                    "match_strategy": "source_frame",
+                    "match_columns": [],
+                    "ignored_columns": [],
+                    "matched_row_count": 0,
+                    "matched_row_indices": [],
                     "source_handles": sorted(seen),
                     "frames": sorted(frames.keys()),
                 }
@@ -1222,8 +1299,19 @@ def _resolve_multi_frame_parent(
             diagnostics.append(
                 {
                     "code": "unresolved_source_frame",
+                    "severity": "warning",
+                    "reason": "source_frame_row_not_correlated",
+                    "message": (
+                        f"Row correlation for multi-frame node {parent_id!r} "
+                        f"found no source frame matching child {child_id!r}."
+                    ),
                     "node_id": parent_id,
-                    "child_id": child_id,
+                    "child_node_id": child_id,
+                    "match_strategy": "source_frame",
+                    "match_columns": [],
+                    "ignored_columns": [],
+                    "matched_row_count": 0,
+                    "matched_row_indices": [],
                     "source_handles": [handle for handle, _ in candidates],
                     "frames": sorted(frames.keys()),
                 }
@@ -1238,24 +1326,71 @@ def _resolve_multi_frame_parent(
     if len(picked) > 1:
         best_width = max(m[4] for m in picked)
         picked = [m for m in picked if m[4] == best_width]
-    if len(picked) > 1 and diagnostics is not None:
-        diagnostics.append(
-            {
-                "code": "ambiguous_source_frame",
-                "severity": "warning",
-                "message": (
-                    f"Row correlation for multi-frame node {parent_id!r} for child "
-                    f"{child_id!r} matched several frames "
-                    f"({[m[0] for m in picked]}); using {picked[0][0]!r}."
-                ),
-                "node_id": parent_id,
-                "child_id": child_id,
-                "candidates": [m[0] for m in picked],
-                "chosen": picked[0][0],
-            }
-        )
+    if len(picked) > 1:
+        if diagnostics is not None:
+            diagnostics.append(
+                {
+                    "code": "ambiguous_source_frame",
+                    "severity": "warning",
+                    "reason": "multiple_source_frames_matched",
+                    "message": (
+                        f"Row correlation for multi-frame node {parent_id!r} for child "
+                        f"{child_id!r} matched several frames "
+                        f"({[m[0] for m in picked]}); no frame was selected."
+                    ),
+                    "node_id": parent_id,
+                    "child_node_id": child_id,
+                    "match_strategy": "source_frame",
+                    "match_columns": [],
+                    "ignored_columns": [],
+                    "matched_row_count": len(picked),
+                    "matched_row_indices": [],
+                    "candidates": [m[0] for m in picked],
+                }
+            )
+        return None, -1
     _, _, row_dict, idx, _ = picked[0]
     return row_dict, idx
+
+
+def _ensure_unresolved_diagnostic(
+    diagnostics: list[dict[str, Any]] | None,
+    *,
+    diagnostic_start: int,
+    node_id: str,
+    child_node_id: str,
+) -> int:
+    """Return the diagnostic linked to a failed correlation attempt.
+
+    Every omitted node must point at concrete evidence. Match helpers normally
+    append that evidence themselves; this final guard supplies a stable generic
+    diagnostic if a future matching path returns ``None`` without doing so.
+    """
+    if diagnostics is None:
+        return -1
+    for index in range(diagnostic_start, len(diagnostics)):
+        diagnostic = diagnostics[index]
+        if diagnostic.get("node_id") == node_id:
+            return index
+    diagnostics.append(
+        {
+            "code": "row_correlation_failed",
+            "severity": "warning",
+            "reason": "row_correlation_failed",
+            "message": (
+                f"Row correlation for node {node_id!r} could not establish "
+                f"the parent row for child {child_node_id!r}."
+            ),
+            "node_id": node_id,
+            "child_node_id": child_node_id,
+            "match_strategy": "unknown",
+            "match_columns": [],
+            "ignored_columns": [],
+            "matched_row_count": 0,
+            "matched_row_indices": [],
+        }
+    )
+    return len(diagnostics) - 1
 
 
 def _correlate_rows_posthoc(
@@ -1267,6 +1402,7 @@ def _correlate_rows_posthoc(
     *,
     node_map: Mapping[str, GraphNode],
     diagnostics: list[dict[str, Any]] | None = None,
+    unresolved: dict[str, tuple[str, int]] | None = None,
     source_frames_of: Mapping[tuple[str, str], Sequence[str | None]] | None = None,
     traced_column: str | None = None,
 ) -> dict[str, dict[str, Any] | None]:
@@ -1351,6 +1487,7 @@ def _correlate_rows_posthoc(
         # through distinct edges, so the frame is resolved against the
         # child row rather than assumed unique per (source, target) pair.
         if isinstance(parent_df, dict):
+            diagnostic_start = len(diagnostics) if diagnostics is not None else 0
             row_dict, idx = _resolve_multi_frame_parent(
                 parent_df,
                 parent_id=nid,
@@ -1366,6 +1503,22 @@ def _correlate_rows_posthoc(
             )
             result[nid] = row_dict  # may be None if no frame resolved
             row_indices[nid] = idx
+            if row_dict is None and unresolved is not None:
+                diagnostic_index = _ensure_unresolved_diagnostic(
+                    diagnostics,
+                    diagnostic_start=diagnostic_start,
+                    node_id=nid,
+                    child_node_id=resolved_child_id,
+                )
+                diagnostic = diagnostics[diagnostic_index] if diagnostics is not None else {}
+                unresolved[nid] = (
+                    str(
+                        diagnostic.get("reason")
+                        or diagnostic.get("code")
+                        or "row_correlation_failed"
+                    ),
+                    diagnostic_index,
+                )
             continue
 
         # Build a filtered child_row for matching: only include columns
@@ -1374,6 +1527,7 @@ def _correlate_rows_posthoc(
         # they actually came from.  This prevents columns brought in by
         # a *different* parent (via a join) from confusing the value
         # matcher.  (Both steps live in _match_parent_row.)
+        diagnostic_start = len(diagnostics) if diagnostics is not None else 0
         row_dict, idx, _ = _match_parent_row(
             parent_df,
             parent_id=nid,
@@ -1387,5 +1541,17 @@ def _correlate_rows_posthoc(
         )
         result[nid] = row_dict  # may be None if no match found
         row_indices[nid] = idx
+        if row_dict is None and unresolved is not None:
+            diagnostic_index = _ensure_unresolved_diagnostic(
+                diagnostics,
+                diagnostic_start=diagnostic_start,
+                node_id=nid,
+                child_node_id=resolved_child_id,
+            )
+            diagnostic = diagnostics[diagnostic_index] if diagnostics is not None else {}
+            unresolved[nid] = (
+                str(diagnostic.get("reason") or diagnostic.get("code") or "row_correlation_failed"),
+                diagnostic_index,
+            )
 
     return result

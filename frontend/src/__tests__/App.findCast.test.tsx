@@ -84,7 +84,8 @@ vi.mock("../hooks/usePipelineAPI", () => ({
 vi.mock("../hooks/useTracing", () => ({
   default: () => ({
     traceResult: null, tracedCell: null,
-    handleCellClick: vi.fn(), clearTrace: vi.fn(),
+    traceState: { status: "idle" },
+    handleCellClick: vi.fn(), clearTrace: vi.fn(), cancelTrace: vi.fn(), retryTrace: vi.fn(),
     nodesWithStatus: mockNodes, edgesWithTrace: [],
   }),
 }))

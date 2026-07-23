@@ -1,25 +1,38 @@
 /** Trace formatting utilities for the enhanced trace panel. */
 
-const DATE_RE = /^\d{4}-\d{2}-\d{2}(T[\d:.Z+-]+)?$/
+import { formatJsonSpecialValue } from "./formatValue"
 
-export function formatTraceValue(v: unknown): string {
-  if (v === null || v === undefined) return "null"
+const DATE_RE = /^\d{4}-\d{2}-\d{2}(T[\d:.Z+-]+)?$/
+export const TRACE_NUMBER_LOCALE = "en-GB"
+export const TRACE_MAX_FRACTION_DIGITS = 4
+
+export function formatTraceValue(
+  v: unknown,
+  maxFractionDigits = TRACE_MAX_FRACTION_DIGITS,
+): string {
+  const special = formatJsonSpecialValue(v)
+  if (special !== null) return special
+  if (v === null || v === undefined) return "—"
   if (typeof v === "boolean") return String(v)
   if (typeof v === "number") {
     if (Number.isNaN(v)) return "NaN"
-    if (v === Infinity) return "\u221e"
-    if (v === -Infinity) return "-\u221e"
-    if (Number.isInteger(v)) return v.toLocaleString()
-    // Smart-round to avoid IEEE 754 artifacts
-    // Use toPrecision(12) then parseFloat to strip trailing noise
-    const rounded = parseFloat(v.toPrecision(12))
-    return String(rounded)
+    if (v === Infinity) return "Infinity"
+    if (v === -Infinity) return "-Infinity"
+    const formatted = v.toLocaleString(TRACE_NUMBER_LOCALE, {
+      maximumFractionDigits: maxFractionDigits,
+    })
+    // Avoid making a small but meaningful non-zero value look like zero.
+    return v !== 0 && Number(formatted.replace(/,/g, "")) === 0
+      ? String(v)
+      : formatted
   }
   if (typeof v === "string") {
     if (DATE_RE.test(v)) return v
-    return `"${v}"`
+    return v
   }
-  if (typeof v === "object") return JSON.stringify(v)
+  if (typeof v === "object") {
+    return JSON.stringify(v, (_key, value: unknown) => formatJsonSpecialValue(value) ?? value)
+  }
   return String(v)
 }
 

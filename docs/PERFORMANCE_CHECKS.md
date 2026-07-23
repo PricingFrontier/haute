@@ -93,6 +93,7 @@ Current benchmark specs:
 - `data-preview-scroll.benchmark.spec.ts`
 - `job-progress-render.benchmark.spec.ts`
 - `large-graph-drag.benchmark.spec.ts`
+- `trace-render.benchmark.spec.ts`
 
 Build and bundle checks:
 

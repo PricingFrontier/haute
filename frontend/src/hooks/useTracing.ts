@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState, useSyncExternalStore } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react"
 import type { Node, Edge } from "@xyflow/react"
 import { MarkerType, useStore } from "@xyflow/react"
 import type { TraceResult } from "../types/trace"
@@ -10,12 +10,14 @@ import {
   GRAPH_EFFECTS_LITE_GRAPH_SIZE_LIMIT,
   shouldUseLiteGraphEffects,
 } from "../utils/graphPerformance"
-import useToastStore from "../stores/useToastStore"
 import useSettingsStore from "../stores/useSettingsStore"
+import useGraphStore from "../stores/useGraphStore"
 
 export const TRACE_MOTION_GRAPH_SIZE_LIMIT = GRAPH_EFFECTS_LITE_GRAPH_SIZE_LIMIT
 const REDUCED_MOTION_QUERY = "(prefers-reduced-motion: reduce)"
 const TRACE_MOTION_LITE_CLASS = "trace-motion-lite"
+/** Delay before exceptional trace latency replaces the current node panel. */
+export const TRACE_PROGRESS_DELAY_MS = 500
 
 interface TracingParams {
   nodes: Node[]
@@ -27,13 +29,23 @@ interface TracingParams {
   preambleRef: React.MutableRefObject<string>
   nodeStatuses: Record<string, "ok" | "error" | "running">
   hoveredNodeId: string | null
+  refreshPreview?: (node: Node) => void
 }
+
+export type TraceRequestState =
+  | { status: "idle" }
+  | { status: "loading"; progressVisible: boolean }
+  | { status: "ready" }
+  | { status: "error"; message: string; detail: string; retryable: boolean }
 
 export interface TracingReturn {
   traceResult: TraceResult | null
   tracedCell: { rowIndex: number; column: string } | null
+  traceState: TraceRequestState
   handleCellClick: (rowIndex: number, column: string, rowValues?: Record<string, unknown>) => void
   clearTrace: () => void
+  cancelTrace: () => void
+  retryTrace: () => void
   nodesWithStatus: Node[]
   edgesWithTrace: Edge[]
 }
@@ -175,25 +187,52 @@ function usePrefersReducedMotion(): boolean {
   )
 }
 
+function stableValue(value: unknown): string {
+  if (value === undefined) return "undefined"
+  if (typeof value === "bigint") return `${value}n`
+  if (value === null || typeof value !== "object") return JSON.stringify(value)
+  if (Array.isArray(value)) return `[${value.map(stableValue).join(",")}]`
+  return `{${Object.entries(value as Record<string, unknown>).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([key, item]) => `${JSON.stringify(key)}:${stableValue(item)}`).join(",")}}`
+}
+
+function errorDetail(err: unknown): string {
+  const detail = (err as { detail?: unknown; rawDetail?: unknown })?.rawDetail ?? (err as { detail?: unknown })?.detail
+  if (typeof detail === "string") return detail
+  if (detail !== undefined) return stableValue(detail)
+  return err instanceof Error ? err.message : String(err)
+}
+
 export default function useTracing({
   nodes, edges, selectedNode,
   graphRef, parentGraphRef, submodelsRef,
   preambleRef,
   nodeStatuses,
   hoveredNodeId,
+  refreshPreview,
 }: TracingParams): TracingReturn {
-  const addToast = useToastStore((s) => s.addToast)
   const rowLimit = useSettingsStore((s) => s.rowLimit)
   const streamingChunkSize = useSettingsStore((s) => s.streamingChunkSize)
   const activeSource = useSettingsStore((s) => s.activeSource)
+  const structuralVersion = useGraphStore((s) => s.structuralVersion)
   // Boost edge contrast at low zoom — only re-renders on threshold change
   const zoomedOut = useStore((s) => s.transform[2] < 0.45)
   const prefersReducedMotion = usePrefersReducedMotion()
   const traceMotionLite = prefersReducedMotion || shouldUseLiteGraphEffects(nodes.length, edges.length)
-  const [traceResult, setTraceResult] = useState<TraceResult | null>(null)
-  const [tracedCell, setTracedCell] = useState<{ rowIndex: number; column: string } | null>(null)
+  const [storedTraceResult, setStoredTraceResult] = useState<TraceResult | null>(null)
+  const [storedTracedCell, setStoredTracedCell] = useState<{ rowIndex: number; column: string } | null>(null)
+  const [storedTraceState, setStoredTraceState] = useState<TraceRequestState>({ status: "idle" })
+  const [storedSemanticContextToken, setStoredSemanticContextToken] = useState<object | null>(null)
   const traceRequestSeq = useRef(0)
   const traceAbort = useRef<AbortController | null>(null)
+  const progressTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const retryRequest = useRef<{
+    rowIndex: number
+    column: string
+    rowValues?: Record<string, unknown>
+    semanticContextToken: object
+  } | null>(null)
+  const activeSemanticContextToken = useRef<object | null>(null)
+  const activeRequestContext = useRef<string | null>(null)
   const edgeAdjacency = useMemo(() => buildEdgeAdjacency(edges), [edges])
   const [edgeProjectionCache] = useState<Map<string, CachedEdgeProjection>>(() => new Map())
 
@@ -205,19 +244,94 @@ export default function useTracing({
     traceRequestSeq.current += 1
     traceAbort.current?.abort()
     traceAbort.current = null
-    setTraceResult(null)
-    setTracedCell(null)
+    if (progressTimer.current) clearTimeout(progressTimer.current)
+    progressTimer.current = null
+    activeSemanticContextToken.current = null
+    activeRequestContext.current = null
+    retryRequest.current = null
+    setStoredSemanticContextToken(null)
+    setStoredTraceResult(null)
+    setStoredTracedCell(null)
+    setStoredTraceState({ status: "idle" })
   }, [])
 
-  const handleCellClick = useCallback((rowIndex: number, column: string, rowValues?: Record<string, unknown>) => {
+  const semanticContext = stableValue({
+    structuralVersion,
+    activeSource,
+    rowLimit,
+    streamingChunkSize,
+    targetNodeId: selectedNode?.id ?? null,
+  })
+  // The token is renewed on every context transition, including A → B → A,
+  // so evidence invalidated by an intermediate change can never reappear.
+  const semanticContextToken = useMemo<object>(
+    () => ({ semanticContext }),
+    [semanticContext],
+  )
+
+  // Visibility is derived during render, so a semantic change cannot paint
+  // stale evidence while this effect performs the transport-side cleanup.
+  const traceContextIsCurrent = (
+    storedTraceState.status === "idle"
+    || storedSemanticContextToken === semanticContextToken
+  )
+  const traceResult = traceContextIsCurrent ? storedTraceResult : null
+  const tracedCell = traceContextIsCurrent ? storedTracedCell : null
+  const traceState: TraceRequestState = traceContextIsCurrent
+    ? storedTraceState
+    : { status: "idle" }
+
+  useEffect(() => {
+    if (
+      activeSemanticContextToken.current !== null &&
+      activeSemanticContextToken.current !== semanticContextToken
+    ) {
+      traceRequestSeq.current += 1
+      traceAbort.current?.abort()
+      traceAbort.current = null
+      if (progressTimer.current) clearTimeout(progressTimer.current)
+      progressTimer.current = null
+      activeSemanticContextToken.current = null
+      activeRequestContext.current = null
+      retryRequest.current = null
+    }
+  }, [semanticContextToken])
+
+  useEffect(() => () => {
+    traceAbort.current?.abort()
+    if (progressTimer.current) clearTimeout(progressTimer.current)
+  }, [])
+
+  const startTrace = useCallback((rowIndex: number, column: string, rowValues?: Record<string, unknown>) => {
     if (!selectedNode) return
     const graph = resolveGraphFromRefs(graphRef, parentGraphRef, submodelsRef, preambleRef)
     const requestId = traceRequestSeq.current + 1
     traceRequestSeq.current = requestId
     traceAbort.current?.abort()
+    if (progressTimer.current) clearTimeout(progressTimer.current)
     const controller = new AbortController()
     traceAbort.current = controller
-    setTracedCell({ rowIndex, column })
+    const requestContext = stableValue({
+      semanticContext,
+      rowIndex,
+      column,
+      rowValues,
+    })
+    activeSemanticContextToken.current = semanticContextToken
+    activeRequestContext.current = requestContext
+    retryRequest.current = { rowIndex, column, rowValues, semanticContextToken }
+    setStoredSemanticContextToken(semanticContextToken)
+    setStoredTraceResult(null)
+    setStoredTracedCell({ rowIndex, column })
+    setStoredTraceState({ status: "loading", progressVisible: false })
+    progressTimer.current = setTimeout(() => {
+      if (
+        traceRequestSeq.current === requestId &&
+        activeRequestContext.current === requestContext
+      ) {
+        setStoredTraceState({ status: "loading", progressVisible: true })
+      }
+    }, TRACE_PROGRESS_DELAY_MS)
     traceCell({
       graph,
       row_index: rowIndex,
@@ -230,32 +344,51 @@ export default function useTracing({
       signal: controller.signal,
     })
       .then((data) => {
-        if (traceRequestSeq.current !== requestId) return
+        if (
+          traceRequestSeq.current !== requestId ||
+          activeRequestContext.current !== requestContext
+        ) return
+        if (progressTimer.current) clearTimeout(progressTimer.current)
+        progressTimer.current = null
         if (data.status === "ok") {
-          setTraceResult(data.trace)
+          setStoredTraceResult(data.trace)
+          setStoredTraceState({ status: "ready" })
         } else {
-          addToast("error", "Trace failed")
-          clearTrace()
+          setStoredTraceState({ status: "error", message: "Unable to trace this value.", detail: "The trace service returned an unsuccessful response.", retryable: true })
         }
       })
       .catch((err) => {
         if (traceRequestSeq.current !== requestId) return
-        const detail = (err as { detail?: unknown })?.detail
-        const message =
-          typeof detail === "string"
-            ? detail
-            : err instanceof Error
-              ? err.message
-              : String(err)
-        addToast("error", `Trace error: ${message}`)
-        clearTrace()
+        if (controller.signal.aborted) return
+        if (progressTimer.current) clearTimeout(progressTimer.current)
+        progressTimer.current = null
+        if ((err as { status?: unknown })?.status === 409) {
+          refreshPreview?.(selectedNode)
+          retryRequest.current = null
+          activeRequestContext.current = null
+          setStoredTraceResult(null)
+          setStoredTracedCell(null)
+          setStoredTraceState({ status: "error", message: "This row changed before it could be traced. The preview is being refreshed — select the intended row again when it is ready.", detail: errorDetail(err), retryable: false })
+          return
+        }
+        setStoredTraceResult(null)
+        setStoredTraceState({ status: "error", message: "Unable to trace this value. Check the details and try again.", detail: errorDetail(err), retryable: true })
       })
       .finally(() => {
         if (traceRequestSeq.current === requestId) {
           traceAbort.current = null
         }
       })
-  }, [selectedNode, graphRef, parentGraphRef, submodelsRef, preambleRef, rowLimit, streamingChunkSize, activeSource, addToast, clearTrace])
+  }, [selectedNode, graphRef, parentGraphRef, submodelsRef, preambleRef, rowLimit, streamingChunkSize, activeSource, semanticContext, semanticContextToken, refreshPreview])
+
+  const handleCellClick = startTrace
+  const cancelTrace = clearTrace
+  const retryTrace = useCallback(() => {
+    const request = retryRequest.current
+    if (request && request.semanticContextToken === semanticContextToken) {
+      startTrace(request.rowIndex, request.column, request.rowValues)
+    }
+  }, [semanticContextToken, startTrace])
 
   // Map child node IDs → submodel placeholder node IDs
   const childToSubmodelId = useMemo(() => {
@@ -551,8 +684,8 @@ export default function useTracing({
   }, [edges, nodes, edgeAdjacency, edgeProjectionCache, traceResult, traceConnectedEdgeIds, hoveredNodeId, hoverConnectedEdgeIds, zoomedOut, traceMotionLite])
 
   return {
-    traceResult, tracedCell,
-    handleCellClick, clearTrace,
+    traceResult, tracedCell, traceState,
+    handleCellClick, clearTrace, cancelTrace, retryTrace,
     nodesWithStatus, edgesWithTrace,
   }
 }

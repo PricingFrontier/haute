@@ -1,6 +1,6 @@
 # Engineering roadmap
 
-**Current as of:** 2026-07-20
+**Current as of:** 2026-07-23
 
 This is Haute's active engineering delivery roadmap. It records the remaining
 outcomes after the implementation and specification audit; it is intentionally
@@ -24,6 +24,11 @@ roadmap item is implemented and verified.
 
 The Price Contour ratebook factor-context work is implemented and retired. It
 has no active roadmap because it no longer has remaining delivery work.
+
+[Tracing reliability and explainability](tracing-reliability-and-explainability.md) is implemented
+and retired. Durable behaviour now lives in the tracing, frontend trace UI, rating, and server API
+specifications; its [dated performance baseline](tracing-performance-baseline-2026-07-23.md)
+records the delivered measurements and remaining performance hypotheses.
 
 ## Working issue notes
 
@@ -58,6 +63,10 @@ The execution tracks must preserve their boundary of ownership:
    planner or lifecycle policy.
 6. Add scale gates after the strategy and metrics contracts are stable; then
    use those gates to protect the completed route migrations and hardening.
+7. Tracing reliability owns trace-specific lifecycle, fidelity, evidence, and
+   export behaviour. It consumes the Frontend UI quality browser conventions,
+   the Test-suite hardening evidence policy, and the shared Polars/cache
+   contracts without creating a second graph fingerprint or row matcher.
 
 When a change spans tracks, its tests must make the ownership split explicit
 rather than quietly adding a second planner, lifecycle path, or worker

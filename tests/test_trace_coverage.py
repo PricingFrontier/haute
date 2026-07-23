@@ -1,4 +1,4 @@
-"""Coverage-focused tests for trace.py, _trace_waterfall.py, and _trace_export.py.
+"""Coverage-focused tests for trace.py and _trace_waterfall.py.
 
 Targets uncovered paths identified by coverage analysis.
 """
@@ -7,14 +7,12 @@ from __future__ import annotations
 
 import json
 import math
-from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Any
 
 import polars as pl
 import pytest
 
-from haute._trace_export import export_trace
 from haute._trace_waterfall import WaterfallEntry, WaterfallResult, build_waterfall
 from haute.trace import (
     SchemaDiff,
@@ -249,7 +247,6 @@ class TestTraceResultToDictCoverage:
                     ),
                     input_values={},
                     output_values={"x": 1, "y": 2},
-                    execution_ms=0.5,
                     expression={"expression_text": "x + y"},
                     calculation={"substituted_text": "1 + 2", "result_value": 3},
                     node_detail={"detail_type": "rating_step"},
@@ -267,7 +264,6 @@ class TestTraceResultToDictCoverage:
                     ),
                     input_values={"x": 1, "y": 2},
                     output_values={"x": 10, "premium": 100.5},
-                    execution_ms=1.5,
                 ),
             ],
             row_id_column="policy_id",
@@ -299,7 +295,7 @@ class TestTraceResultToDictCoverage:
         assert s0["schema_diff"]["columns_added"] == ["x", "y"]
         assert s0["input_values"] == {}
         assert s0["output_values"] == {"x": 1, "y": 2}
-        assert s0["execution_ms"] == 0.5
+        assert "execution_ms" not in s0
         assert s0["expression"] == {"expression_text": "x + y"}
         assert s0["calculation"]["result_value"] == 3
         assert s0["node_detail"]["detail_type"] == "rating_step"
@@ -823,334 +819,6 @@ class TestBuildWaterfall:
         result = build_waterfall(steps)
         assert result is not None
         assert result.final_value == pytest.approx(160.0)
-
-
-# ===========================================================================
-# export_trace — comprehensive coverage
-# ===========================================================================
-
-
-class TestExportTrace:
-    """Cover all paths in _trace_export.export_trace."""
-
-    def _make_trace_result(
-        self,
-        column="premium",
-        steps=None,
-        execution_ms=5.0,
-        total_nodes=3,
-    ):
-        """Helper to build a mock TraceResult for export_trace."""
-        if steps is None:
-            steps = []
-
-        @dataclass
-        class MockSchemaDiff:
-            columns_added: list[str]
-            columns_removed: list[str]
-            columns_modified: list[str]
-            columns_passed: list[str]
-
-        @dataclass
-        class MockTraceStep:
-            node_id: str
-            node_name: str
-            node_type: str
-            schema_diff: Any
-            input_values: dict[str, Any]
-            output_values: dict[str, Any]
-            expression: dict[str, Any] | None = None
-            calculation: dict[str, Any] | None = None
-
-        @dataclass
-        class MockTraceResult:
-            column: str | None
-            output_value: Any
-            target_node_id: str
-            row_index: int
-            steps: list
-            execution_ms: float
-            total_nodes_in_pipeline: int
-
-        mock_steps = []
-        for s in steps:
-            sd = MockSchemaDiff(
-                columns_added=s.get("added", []),
-                columns_removed=s.get("removed", []),
-                columns_modified=s.get("modified", []),
-                columns_passed=s.get("passed", []),
-            )
-            mock_steps.append(
-                MockTraceStep(
-                    node_id=s.get("node_id", "n"),
-                    node_name=s.get("node_name", "Node"),
-                    node_type=s.get("node_type", "polars"),
-                    schema_diff=sd,
-                    input_values=s.get("input_values", {}),
-                    output_values=s.get("output_values", {}),
-                    expression=s.get("expression"),
-                    calculation=s.get("calculation"),
-                )
-            )
-
-        return MockTraceResult(
-            column=column,
-            output_value=100.5,
-            target_node_id="target",
-            row_index=0,
-            steps=mock_steps,
-            execution_ms=execution_ms,
-            total_nodes_in_pipeline=total_nodes,
-        )
-
-    def test_header_extraction(self):
-        tr = self._make_trace_result(column="premium")
-        result = export_trace(tr)
-        assert result["header"]["column"] == "premium"
-        assert result["header"]["output_value"] == 100.5
-        assert result["header"]["target_node_id"] == "target"
-        assert result["header"]["row_index"] == 0
-
-    def test_formula_from_expression(self):
-        tr = self._make_trace_result(
-            column="premium",
-            steps=[
-                {
-                    "node_id": "t",
-                    "added": ["premium"],
-                    "expression": {
-                        "expression_text": "base * factor",
-                        "referenced_columns": ["base", "factor"],
-                    },
-                    "calculation": None,
-                }
-            ],
-        )
-        result = export_trace(tr)
-        assert result["formula"]["expression"] == "base * factor"
-        assert result["formula"]["substituted"] == ""
-
-    def test_formula_from_calculation(self):
-        tr = self._make_trace_result(
-            column="premium",
-            steps=[
-                {
-                    "node_id": "t",
-                    "added": ["premium"],
-                    "expression": None,
-                    "calculation": {
-                        "expression_text": "base * factor",
-                        "substituted_text": "100 * 1.5",
-                    },
-                }
-            ],
-        )
-        result = export_trace(tr)
-        assert result["formula"]["expression"] == "base * factor"
-        assert result["formula"]["substituted"] == "100 * 1.5"
-
-    def test_formula_with_both_expression_and_calculation(self):
-        tr = self._make_trace_result(
-            column="premium",
-            steps=[
-                {
-                    "node_id": "t",
-                    "added": ["premium"],
-                    "expression": {"expression_text": "x + y"},
-                    "calculation": {"substituted_text": "1 + 2", "expression_text": "x + y"},
-                }
-            ],
-        )
-        result = export_trace(tr)
-        assert result["formula"]["expression"] == "x + y"
-        assert result["formula"]["substituted"] == "1 + 2"
-
-    def test_formula_with_no_expression_or_calculation(self):
-        tr = self._make_trace_result(
-            column="premium",
-            steps=[
-                {
-                    "node_id": "t",
-                    "added": ["premium"],
-                    "expression": None,
-                    "calculation": None,
-                }
-            ],
-        )
-        result = export_trace(tr)
-        assert result["formula"]["expression"] == ""
-        assert result["formula"]["substituted"] == ""
-
-    def test_missing_target_step(self):
-        """When no step adds/modifies the target column, formula is empty."""
-        tr = self._make_trace_result(
-            column="premium",
-            steps=[
-                {
-                    "node_id": "t",
-                    "added": ["other_col"],  # not premium
-                    "expression": {"expression_text": "something"},
-                }
-            ],
-        )
-        result = export_trace(tr)
-        assert result["formula"]["expression"] == ""
-        assert result["formula"]["substituted"] == ""
-
-    def test_formula_from_modified_column(self):
-        """Target step found via columns_modified."""
-        tr = self._make_trace_result(
-            column="premium",
-            steps=[
-                {
-                    "node_id": "t",
-                    "modified": ["premium"],
-                    "expression": {"expression_text": "old_val * 2"},
-                    "calculation": {"substituted_text": "50 * 2"},
-                }
-            ],
-        )
-        result = export_trace(tr)
-        assert result["formula"]["expression"] == "old_val * 2"
-
-    def test_sources_with_referenced_columns(self):
-        tr = self._make_trace_result(
-            column="premium",
-            steps=[
-                {
-                    "node_id": "src",
-                    "node_name": "Source",
-                    "added": ["base", "factor"],
-                    "output_values": {"base": 100, "factor": 1.5},
-                },
-                {
-                    "node_id": "t",
-                    "node_name": "Calc",
-                    "added": ["premium"],
-                    "input_values": {"base": 100, "factor": 1.5},
-                    "output_values": {"premium": 150},
-                    "expression": {
-                        "expression_text": "base * factor",
-                        "referenced_columns": ["base", "factor"],
-                    },
-                },
-            ],
-        )
-        result = export_trace(tr)
-        sources = result["sources"]
-        assert len(sources) == 2
-        col_names = [s["column"] for s in sources]
-        assert "base" in col_names
-        assert "factor" in col_names
-
-        base_src = next(s for s in sources if s["column"] == "base")
-        assert base_src["value"] == 100
-        assert base_src["origin"] == "Source"
-
-    def test_sources_from_calculation_referenced_columns(self):
-        tr = self._make_trace_result(
-            column="premium",
-            steps=[
-                {
-                    "node_id": "src",
-                    "node_name": "Source",
-                    "added": ["x"],
-                    "output_values": {"x": 5},
-                },
-                {
-                    "node_id": "t",
-                    "added": ["premium"],
-                    "input_values": {"x": 5},
-                    "output_values": {"premium": 10},
-                    "expression": None,
-                    "calculation": {
-                        "expression_text": "x * 2",
-                        "referenced_columns": ["x"],
-                    },
-                },
-            ],
-        )
-        result = export_trace(tr)
-        assert len(result["sources"]) == 1
-        assert result["sources"][0]["column"] == "x"
-
-    def test_sources_empty_when_no_target_step(self):
-        tr = self._make_trace_result(
-            column="premium",
-            steps=[{"node_id": "t", "added": ["other"]}],
-        )
-        result = export_trace(tr)
-        assert result["sources"] == []
-
-    def test_data_flow_step_summaries(self):
-        tr = self._make_trace_result(
-            column="premium",
-            steps=[
-                {
-                    "node_id": "src",
-                    "node_name": "Source",
-                    "node_type": "dataSource",
-                    "added": ["x", "y"],
-                    "removed": [],
-                },
-                {
-                    "node_id": "t",
-                    "node_name": "Transform",
-                    "node_type": "polars",
-                    "added": ["premium"],
-                    "removed": ["y"],
-                },
-            ],
-        )
-        result = export_trace(tr)
-        flow = result["data_flow"]
-        assert len(flow) == 2
-
-        assert flow[0]["node_id"] == "src"
-        assert flow[0]["node_name"] == "Source"
-        assert flow[0]["node_type"] == "dataSource"
-        assert flow[0]["columns_added"] == ["x", "y"]
-        assert flow[0]["columns_removed"] == []
-
-        assert flow[1]["columns_added"] == ["premium"]
-        assert flow[1]["columns_removed"] == ["y"]
-
-    def test_metadata(self):
-        tr = self._make_trace_result(
-            execution_ms=42.5,
-            total_nodes=7,
-            steps=[{"node_id": "t", "added": ["x"]}],
-        )
-        result = export_trace(tr)
-        meta = result["metadata"]
-        assert meta["step_count"] == 1
-        assert meta["execution_ms"] == 42.5
-        assert meta["total_nodes_in_pipeline"] == 7
-
-    def test_full_export_structure(self):
-        """Verify all top-level keys are present."""
-        tr = self._make_trace_result(steps=[])
-        result = export_trace(tr)
-        assert set(result.keys()) == {"header", "formula", "sources", "data_flow", "metadata"}
-
-    def test_no_column_set(self):
-        """When column is None, no target_step is found."""
-        tr = self._make_trace_result(
-            column=None,
-            steps=[
-                {"node_id": "t", "added": ["x"]},
-            ],
-        )
-        result = export_trace(tr)
-        assert result["formula"]["expression"] == ""
-        assert result["sources"] == []
-
-    def test_empty_steps(self):
-        tr = self._make_trace_result(steps=[])
-        result = export_trace(tr)
-        assert result["data_flow"] == []
-        assert result["metadata"]["step_count"] == 0
-        assert result["sources"] == []
 
 
 # ===========================================================================

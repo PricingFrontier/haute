@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from "react"
-import { formatResultValue2dp, formatResultValueFull, tabularNums } from "./traceFormatting"
+import { formatResultValueFull, formatSmartValue, tabularNums } from "./traceFormatting"
 import type { WaterfallStep } from "./traceHelpers"
 
 // ---------------------------------------------------------------------------
@@ -23,7 +23,7 @@ const WaterfallChart: React.FC<WaterfallChartProps> = ({ steps, resultValue }) =
     ...steps.map((s) => Math.abs(s.runningValue)),
     1,
   )
-  const formatted = formatResultValue2dp(resultValue)
+  const formatted = formatSmartValue(resultValue)
   const formattedFull = formatResultValueFull(resultValue)
   const isNull = resultValue === null || resultValue === undefined
 
@@ -69,14 +69,23 @@ const WaterfallChart: React.FC<WaterfallChartProps> = ({ steps, resultValue }) =
               style={{ minWidth: 120, fontSize: 12 }}
             >
               {step.name}
+              {step.defaultUsed && (
+                <span
+                  className="ml-1 rounded px-1 py-0.5 text-[9px] font-semibold"
+                  style={{ color: "var(--warning-strong)", background: "var(--warning-soft)" }}
+                >
+                  default
+                </span>
+              )}
             </span>
             <span
               className="waterfall-factor"
+              title={formatResultValueFull(step.factor)}
               style={{ minWidth: 50, fontSize: 12, ...tabularNums }}
             >
               {idx === 0
-                ? String(step.factor)
-                : `\u00d7${step.factor}`}
+                ? formatSmartValue(step.factor)
+                : `\u00d7${formatSmartValue(step.factor)}`}
             </span>
             <div
               style={{
@@ -95,10 +104,11 @@ const WaterfallChart: React.FC<WaterfallChartProps> = ({ steps, resultValue }) =
               }}
             />
             {!isLast && (
-              <span style={{ marginLeft: 4, fontSize: 12, ...tabularNums }}>
-                {typeof step.runningValue === "number"
-                  ? step.runningValue.toFixed(1)
-                  : String(step.runningValue)}
+              <span
+                title={formatResultValueFull(step.runningValue)}
+                style={{ marginLeft: 4, fontSize: 12, ...tabularNums }}
+              >
+                {formatSmartValue(step.runningValue)}
               </span>
             )}
           </div>

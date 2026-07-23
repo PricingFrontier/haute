@@ -9,9 +9,11 @@ module itself, keeping the dependency graph acyclic.
 from __future__ import annotations
 
 import math
+import operator
 from collections.abc import Iterable
 from os import PathLike
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 
 import polars as pl
@@ -31,7 +33,16 @@ logger = get_logger(component="rating")
 # Banding
 # ---------------------------------------------------------------------------
 
-_OP_MAP: dict[str, str] = {"<": "lt", "<=": "le", ">": "gt", ">=": "ge", "=": "eq", "==": "eq"}
+SUPPORTED_BANDING_OPERATORS = MappingProxyType(
+    {
+        "<": operator.lt,
+        "<=": operator.le,
+        ">": operator.gt,
+        ">=": operator.ge,
+        "=": operator.eq,
+        "==": operator.eq,
+    }
+)
 
 
 def _banding_condition(col: pl.Expr, rule: dict[str, Any]) -> pl.Expr | None:
@@ -42,16 +53,16 @@ def _banding_condition(col: pl.Expr, rule: dict[str, Any]) -> pl.Expr | None:
         val = rule.get(f"val{suffix}")
         if not op or val is None or val == "":
             continue
+        evaluator = SUPPORTED_BANDING_OPERATORS.get(op)
+        if evaluator is None:
+            raise ValueError(f"Banding rule has unsupported operator '{op}' for op{suffix}")
         try:
             num = float(val)
         except (ValueError, TypeError):
             raise ValueError(f"Banding rule has non-numeric value '{val}' for op{suffix}")
         if not math.isfinite(num):
             raise ValueError(f"Banding rule has non-finite value '{val}' for op{suffix}")
-        method = _OP_MAP.get(op)
-        if method is None:
-            continue
-        parts.append(getattr(col, method)(num))
+        parts.append(evaluator(col, num))
     if not parts:
         return None
     result = parts[0]

@@ -121,7 +121,8 @@ with parse status; `GET /api/pipeline` / `GET /api/pipeline/{name}` return one g
 per-node config JSON sidecars, and its `.haute.json` position sidecar — described in detail
 below. `POST /api/pipeline/preview` runs the graph up to one node and returns its schema,
 sample rows, and per-node timing/memory; `POST /api/pipeline/trace` follows one row's values
-through every node it passed through; `POST /api/pipeline/sink` materialises a `dataSink` /
+through every node it passed through and returns typed correlation omissions plus generation
+provenance; `POST /api/pipeline/sink` materialises a `dataSink` /
 `dataOutput` node to disk. Preview and trace are keyed on (graph fingerprint, source, node,
 row/column selectors): a newer request for the *same* key supersedes the older request's
 response and waits for its active slot to clear, so same-key workers never overlap. Preview

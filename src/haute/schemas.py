@@ -8,11 +8,13 @@ with API-friendly aliases so that FastAPI endpoint signatures stay clean.
 from __future__ import annotations
 
 import math
+from datetime import datetime
 from typing import Annotated, Any, Literal
 
 from pydantic import (
     BaseModel,
     BeforeValidator,
+    ConfigDict,
     Field,
     RootModel,
     field_validator,
@@ -714,26 +716,51 @@ class TraceStepResponse(BaseModel):
     schema_diff: SchemaDiffResponse
     input_values: dict[str, Any] = Field(default_factory=dict)
     output_values: dict[str, Any] = Field(default_factory=dict)
+    topological_rank: int = Field(ge=0)
     column_relevant: bool = True
-    execution_ms: float = 0.0
     expression: dict[str, Any] | None = None
     calculation: dict[str, Any] | None = None
     node_detail: dict[str, Any] | None = None
     row_lineage_type: str | None = None
 
 
+class TraceOmissionResponse(BaseModel):
+    node_id: str
+    node_name: str
+    node_type: str
+    topological_rank: int = Field(ge=0)
+    reason: str = Field(min_length=1)
+    diagnostic_index: int = Field(ge=0)
+
+
 class TraceCorrelationDiagnosticResponse(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
     code: str
     severity: str
     reason: str
     message: str
     node_id: str | None = None
     child_node_id: str | None = None
-    match_strategy: str
+    match_strategy: str | None = None
     match_columns: list[str] = Field(default_factory=list)
     ignored_columns: list[str] = Field(default_factory=list)
-    matched_row_count: int
+    matched_row_count: int | None = None
     matched_row_indices: list[int] = Field(default_factory=list)
+
+
+class TraceWaterfallEntryResponse(BaseModel):
+    label: str
+    operation: str
+    value: float
+    delta: float
+    cumulative: float
+    default_used: bool
+
+
+class TraceWaterfallErrorResponse(BaseModel):
+    error: str
+    error_type: str
 
 
 class TraceResultResponse(BaseModel):
@@ -742,13 +769,45 @@ class TraceResultResponse(BaseModel):
     column: str | None = None
     output_value: Any = None
     steps: list[TraceStepResponse] = Field(default_factory=list)
+    omissions: list[TraceOmissionResponse]
     row_id_column: str | None = None
     row_id_value: Any = None
     total_nodes_in_pipeline: int = 0
     nodes_in_trace: int = 0
     execution_ms: float = 0.0
-    waterfall: list[dict[str, Any]] | dict[str, Any] | None = None
-    correlation_diagnostics: list[TraceCorrelationDiagnosticResponse] = Field(default_factory=list)
+    waterfall: list[TraceWaterfallEntryResponse] | TraceWaterfallErrorResponse | None = None
+    correlation_diagnostics: list[TraceCorrelationDiagnosticResponse]
+    generated_at: str
+    pipeline_source: str | None = None
+    execution_origin: Literal["fresh_execution", "preview_cache", "trace_cache"]
+
+    @field_validator("generated_at")
+    @classmethod
+    def _generated_at_must_be_utc(cls, value: str) -> str:
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise ValueError("generated_at must be an ISO-8601 timestamp") from exc
+        utc_offset = parsed.utcoffset()
+        if utc_offset is None or utc_offset.total_seconds() != 0:
+            raise ValueError("generated_at must include a UTC offset")
+        return value
+
+    @model_validator(mode="after")
+    def _omissions_must_link_to_their_diagnostic(self) -> TraceResultResponse:
+        for omission in self.omissions:
+            if omission.diagnostic_index >= len(self.correlation_diagnostics):
+                raise ValueError(
+                    f"omission for {omission.node_id!r} references missing "
+                    f"diagnostic {omission.diagnostic_index}"
+                )
+            diagnostic = self.correlation_diagnostics[omission.diagnostic_index]
+            if diagnostic.node_id != omission.node_id:
+                raise ValueError(
+                    f"omission for {omission.node_id!r} references a diagnostic "
+                    f"for {diagnostic.node_id!r}"
+                )
+        return self
 
 
 class TraceResponse(BaseModel):

@@ -182,7 +182,6 @@ _EXPECTED_DEBT_IDS = {
     "a0586ee7829416ad",
     "3eb3f0ad4363cea2",
     "a24ee0d08a0d008e",
-    "87a3c0f6afc4c08e",
     "87cf9927840facbd",
     "3924f620a5f73980",
     "36389904372edffb",

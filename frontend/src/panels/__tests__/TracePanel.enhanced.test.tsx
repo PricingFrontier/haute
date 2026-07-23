@@ -43,8 +43,8 @@ function makeStep(overrides: Partial<EnhancedTraceStep> = {}): EnhancedTraceStep
     },
     input_values: { age: 25 },
     output_values: { age: 25, premium: 100 },
+    topological_rank: 0,
     column_relevant: true,
-    execution_ms: 5.2,
     ...overrides,
   }
 }
@@ -75,6 +75,11 @@ function makeTrace(overrides: Partial<TraceResult> = {}): TraceResult {
     nodes_in_trace: 2,
     execution_ms: 12.3,
     ...overrides,
+    omissions: overrides.omissions ?? [],
+    correlation_diagnostics: overrides.correlation_diagnostics ?? [],
+    generated_at: overrides.generated_at ?? "2026-07-23T12:00:00+00:00",
+    pipeline_source: overrides.pipeline_source ?? null,
+    execution_origin: overrides.execution_origin ?? "fresh_execution",
   }
 }
 
@@ -1313,10 +1318,10 @@ describe("TracePanel — Node Detail", () => {
     )
 
     expect(screen.getByText("status: default")).toBeInTheDocument()
-    expect(screen.getByText("default used")).toBeInTheDocument()
+    expect(screen.getAllByText("default used").length).toBeGreaterThan(0)
     expect(screen.getByText(/default:.*1/)).toBeInTheDocument()
     expect(screen.getByText("status: no match")).toBeInTheDocument()
-    expect(screen.getByText(/selected.*null/)).toBeInTheDocument()
+    expect(screen.getByText(/selected.*\u2014/)).toBeInTheDocument()
   })
 
   it("renders banding detail with edge boundary value", () => {
@@ -1487,9 +1492,9 @@ describe("TracePanel — Waterfall View Concepts", () => {
       <TracePanel
         trace={makeTrace({
           steps: [
-            makeStep({ node_id: "n1", node_name: "Step A", execution_ms: 2.0, schema_diff: { columns_added: ["premium"], columns_removed: [], columns_modified: [], columns_passed: [] } }),
-            makeStep({ node_id: "n2", node_name: "Step B", execution_ms: 3.0, schema_diff: { columns_added: [], columns_removed: [], columns_modified: ["premium"], columns_passed: [] } }),
-            makeStep({ node_id: "n3", node_name: "Step C", execution_ms: 1.5, schema_diff: { columns_added: [], columns_removed: [], columns_modified: ["premium"], columns_passed: [] } }),
+            makeStep({ node_id: "n1", node_name: "Step A", schema_diff: { columns_added: ["premium"], columns_removed: [], columns_modified: [], columns_passed: [] } }),
+            makeStep({ node_id: "n2", node_name: "Step B", schema_diff: { columns_added: [], columns_removed: [], columns_modified: ["premium"], columns_passed: [] } }),
+            makeStep({ node_id: "n3", node_name: "Step C", schema_diff: { columns_added: [], columns_removed: [], columns_modified: ["premium"], columns_passed: [] } }),
           ] as TraceStep[],
         })}
         onClose={vi.fn()}

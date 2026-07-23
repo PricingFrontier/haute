@@ -497,7 +497,14 @@ async def trace_row(body: TraceRequest) -> JSONResponse:
                     # Serialise to a JSON-safe dict here, still in the
                     # worker thread, so the event loop never walks the
                     # full trace payload.
-                    return trace_result_to_dict(result)
+                    trace_payload = trace_result_to_dict(result)
+                    # JSONResponse bypasses FastAPI's response-model
+                    # validation. Validate explicitly in this worker so the
+                    # typed omission, waterfall and provenance contract is a
+                    # real HTTP boundary without moving payload work back onto
+                    # the event loop.
+                    TraceResponse.model_validate({"status": "ok", "trace": trace_payload})
+                    return trace_payload
 
             return await run_blocking_with_response_timeout(
                 _execute_trace_with_chunk_size,
@@ -511,11 +518,9 @@ async def trace_row(body: TraceRequest) -> JSONResponse:
             limiter=_trace_work_slots,
             superseded_message="Trace request superseded by a newer request",
         )
-        # ``trace_dict`` is already JSON-safe (``trace_result_to_dict``
-        # ends in ``to_json_safe``).  Encode it directly instead of
-        # re-validating through the ``TraceResponse`` model and encoding
-        # again — ``response_model`` is kept for the OpenAPI schema, and
-        # FastAPI skips model validation for explicit ``Response``s.
+        # ``trace_dict`` is already JSON-safe and was validated against
+        # ``TraceResponse`` in the worker. Encode it directly so the event
+        # loop does not walk the full payload again.
         return JSONResponse({"status": "ok", "trace": trace_dict})
     except ExecutionAdmissionError as e:
         raise _memory_limit_http_exception(e) from None

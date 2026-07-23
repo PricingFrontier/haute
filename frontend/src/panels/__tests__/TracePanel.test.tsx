@@ -16,8 +16,8 @@ function makeStep(overrides: Partial<TraceStep> = {}): TraceStep {
     },
     input_values: { age: 25 },
     output_values: { age: 25, premium: 100 },
+    topological_rank: 0,
     column_relevant: true,
-    execution_ms: 5.2,
     ...overrides,
   }
 }
@@ -43,6 +43,11 @@ function makeTrace(overrides: Partial<TraceResult> = {}): TraceResult {
     nodes_in_trace: 2,
     execution_ms: 12.3,
     ...overrides,
+    omissions: overrides.omissions ?? [],
+    correlation_diagnostics: overrides.correlation_diagnostics ?? [],
+    generated_at: overrides.generated_at ?? "2026-07-23T12:00:00+00:00",
+    pipeline_source: overrides.pipeline_source ?? null,
+    execution_origin: overrides.execution_origin ?? "fresh_execution",
   }
 }
 
@@ -123,6 +128,116 @@ describe("TracePanel", () => {
     expect(alert).toHaveTextContent("aggregate")
   })
 
+  it("interleaves a trace omission between surrounding successful steps", () => {
+    render(
+      <TracePanel
+        trace={makeTrace({
+          column: null,
+          steps: [
+            makeStep({ node_id: "source", node_name: "Source", topological_rank: 0 }),
+            makeStep({ node_id: "target", node_name: "Target", topological_rank: 2 }),
+          ],
+          omissions: [{
+            node_id: "lookup",
+            node_name: "Lookup",
+            node_type: "polars",
+            topological_rank: 1,
+            reason: "duplicate_exact_match",
+            diagnostic_index: 0,
+          }],
+          correlation_diagnostics: [{
+            code: "ambiguous_row_match",
+            severity: "warning",
+            reason: "duplicate_exact_match",
+            message: "Two lookup rows matched.",
+            node_id: "lookup",
+            child_node_id: "target",
+            match_columns: ["policy_id"],
+            ignored_columns: [],
+            matched_row_indices: [0, 1],
+          }],
+          nodes_in_trace: 3,
+        })}
+        onClose={vi.fn()}
+      />,
+    )
+
+    const evidence = screen.getByTestId("trace-story").querySelectorAll(
+      "[data-testid^='trace-step-card-'], [data-testid^='trace-omission-']",
+    )
+    expect(Array.from(evidence, (item) => item.getAttribute("data-testid"))).toEqual([
+      "trace-step-card-source",
+      "trace-omission-lookup",
+      "trace-step-card-target",
+    ])
+    expect(screen.getByTestId("trace-omission-lookup")).toHaveTextContent("trace gap")
+    expect(screen.queryByTestId("trace-correlation-diagnostics")).not.toBeInTheDocument()
+  })
+
+  it.each([
+    {
+      name: "rich rating",
+      step: makeStep({
+        node_id: "target",
+        node_name: "Rating",
+        node_type: "ratingStep",
+        schema_diff: {
+          columns_added: ["premium"],
+          columns_removed: [],
+          columns_modified: [],
+          columns_passed: [],
+        },
+        node_detail: {
+          detail_type: "rating_step",
+          tables: [{ name: "rate", selected_value: 1.1, default_used: false }],
+        },
+      }),
+    },
+    {
+      name: "generic calculation",
+      step: makeStep({
+        node_id: "target",
+        node_name: "Calculation",
+        schema_diff: {
+          columns_added: ["premium"],
+          columns_removed: [],
+          columns_modified: [],
+          columns_passed: [],
+        },
+        expression: {
+          expression_text: "base * factor",
+          expression_type: "arithmetic",
+          referenced_columns: ["base", "factor"],
+        },
+        calculation: {
+          substituted_text: "100 * 1.2",
+          result_value: 120,
+          input_values: { base: 100, factor: 1.2 },
+        },
+      }),
+    },
+  ])("renders a reconciliation error for a $name target", ({ step }) => {
+    render(
+      <TracePanel
+        trace={makeTrace({
+          target_node_id: "target",
+          output_value: 120,
+          steps: [step],
+          waterfall: {
+            error: "expected 120 but accumulated 119",
+            error_type: "WaterfallReconciliationError",
+          },
+        })}
+        onClose={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "The calculation breakdown does not match the traced result.",
+    )
+    expect(screen.getByText("Technical details")).toBeInTheDocument()
+  })
+
   it("close button calls onClose", () => {
     const onClose = vi.fn()
     render(<TracePanel trace={makeTrace()} onClose={onClose} />)
@@ -171,18 +286,18 @@ describe("TracePanel", () => {
     expect(screen.getByText("2")).toBeInTheDocument()
   })
 
-  it("renders per-step execution time", () => {
+  it("does not render fabricated per-step execution time", () => {
     render(
       <TracePanel
         trace={makeTrace({
           steps: [
-            makeStep({ node_id: "n1", node_name: "Only Step", execution_ms: 7.3 }),
+            makeStep({ node_id: "n1", node_name: "Only Step" }),
           ],
         })}
         onClose={vi.fn()}
       />,
     )
-    expect(screen.getByText("7.3ms")).toBeInTheDocument()
+    expect(screen.queryByText(/ms$/)).not.toBeInTheDocument()
   })
 
   it("renders banding-created fields with the source value instead of computed", () => {
@@ -915,7 +1030,7 @@ describe("TracePanel", () => {
     expect(screen.getAllByText("age_factor").length).toBeGreaterThan(0)
     expect(screen.getAllByText("1.2").length).toBeGreaterThan(0)
     expect(screen.getAllByText("channel_factor").length).toBeGreaterThan(0)
-    expect(screen.getByText("default used")).toBeInTheDocument()
+    expect(screen.getAllByText("default used").length).toBeGreaterThan(0)
     expect(screen.queryByText("Base value")).not.toBeInTheDocument()
   })
 
@@ -1173,9 +1288,9 @@ describe("TracePanel", () => {
 
     const card = screen.getByTestId("trace-step-card-n1")
 
-    expect(within(card).getByText("1.23")).toHaveAttribute("title", "score output: 1.23456789")
-    expect(within(card).getByText("9.88")).toHaveAttribute("title", "risk input: 9.87654321")
-    expect(within(card).getByText("8.77")).toHaveAttribute("title", "risk output: 8.76543219")
+    expect(within(card).getByText("1.2346")).toHaveAttribute("title", "score output: 1.23456789")
+    expect(within(card).getByText("9.8765")).toHaveAttribute("title", "risk input: 9.87654321")
+    expect(within(card).getByText("8.7654")).toHaveAttribute("title", "risk output: 8.76543219")
   })
 
   it("does not label string step values as full precision", () => {
@@ -1344,20 +1459,19 @@ describe("TracePanel", () => {
     ])
   })
 
-  it("shows per-step execution times for multiple story steps", () => {
+  it("keeps per-step timing out of the story", () => {
     render(
       <TracePanel
         trace={makeTrace({
           steps: [
-            makeStep({ node_id: "n1", node_name: "Step A", execution_ms: 3.1, schema_diff: { columns_added: ["premium"], columns_removed: [], columns_modified: [], columns_passed: [] } }),
-            makeStep({ node_id: "n2", node_name: "Step B", execution_ms: 9.8, schema_diff: { columns_added: [], columns_removed: [], columns_modified: ["premium"], columns_passed: ["age"] } }),
+            makeStep({ node_id: "n1", node_name: "Step A", schema_diff: { columns_added: ["premium"], columns_removed: [], columns_modified: [], columns_passed: [] } }),
+            makeStep({ node_id: "n2", node_name: "Step B", schema_diff: { columns_added: [], columns_removed: [], columns_modified: ["premium"], columns_passed: ["age"] } }),
           ],
         })}
         onClose={vi.fn()}
       />,
     )
-    expect(screen.getByText("3.1ms")).toBeInTheDocument()
-    expect(screen.getByText("9.8ms")).toBeInTheDocument()
+    expect(screen.queryByText(/ms$/)).not.toBeInTheDocument()
   })
 
   it("collapse then expand restores expanded content", () => {

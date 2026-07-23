@@ -64,8 +64,9 @@ class TestBandingCondition:
     def test_none_val_returns_none(self) -> None:
         assert _banding_condition(pl.col("x"), {"op1": "<", "val1": None}) is None
 
-    def test_invalid_op_ignored(self) -> None:
-        assert _banding_condition(pl.col("x"), {"op1": "!=", "val1": 5}) is None
+    def test_invalid_op_raises(self) -> None:
+        with pytest.raises(ValueError, match="unsupported operator"):
+            _banding_condition(pl.col("x"), {"op1": "!=", "val1": 5})
 
     def test_string_val_coerced_to_float(self) -> None:
         cond = _banding_condition(pl.col("x"), {"op1": ">", "val1": "100"})
@@ -781,15 +782,15 @@ class TestApplyBanding:
         result = _apply_banding(lf, "x", "band", "categorical", []).collect()
         assert "band" not in result.columns
 
-    def test_continuous_rules_all_invalid_returns_unchanged(self) -> None:
+    def test_continuous_rules_all_invalid_raise(self) -> None:
         """Rules where all operators are invalid should not add a column.
 
         Catches: a when/then chain built from zero valid conditions would crash.
         """
         lf = pl.DataFrame({"x": [1]}).lazy()
         rules = [{"op1": "!=", "val1": 5, "assignment": "bad"}]
-        result = _apply_banding(lf, "x", "band", "continuous", rules).collect()
-        assert "band" not in result.columns
+        with pytest.raises(ValueError, match="unsupported operator"):
+            _apply_banding(lf, "x", "band", "continuous", rules)
 
     def test_categorical_numeric_column_cast_to_string(self) -> None:
         """Categorical banding on a numeric column casts to Utf8 for matching.

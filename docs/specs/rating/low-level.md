@@ -26,9 +26,10 @@
 2. `_normalise_banding_factors(config)` → `_banding_config.normalise_banding_factors` → expands sidecar rule maps to row-array shape via `expand_banding_config_from_sidecar`.
 3. `_apply_banding_factors(lf, factors)` loops factors in order, calling `_apply_banding` per factor; each factor's output column is added via `lf.with_columns(...)`, so later factors can already see earlier factors' output columns.
 4. Inside `_apply_banding`: `breakpoints` rules are converted to `continuous` rules first (`_breakpoints_to_rules`); float input columns are NaN/Infinity-sanitised to null (`when(is_nan|is_infinite).then(null).otherwise(col)` — built as a *local* expression, never aliased back onto the source column, so it cannot corrupt other nodes' view of that column); then a `pl.when/then` chain is built rule-by-rule (`_banding_condition` turns each rule's `op1/val1[,op2/val2]` into a boolean expression, ANDed together) and finished with `.otherwise(default)`.
-   Unknown operators are ignored; if that leaves a rule with no condition it
-   is skipped, and if every rule is skipped `_apply_banding` returns the input
-   frame without creating `outputColumn`.
+   Operators are resolved through the exported immutable
+   `SUPPORTED_BANDING_OPERATORS` contract. An unknown operator raises before a
+   `when` branch or output frame is published; trace enrichment imports the same
+   contract and cannot interpret a broader operator set.
 5. `categorical` bypasses the when/then chain entirely and uses `col.cast(Utf8).replace_strict(remap, default=...)`.
 
 **Rating** — `apply_rating_step_from_config(lf, config, base_dir=None)`:
@@ -65,10 +66,9 @@
 - **`Decimal` factor columns** fall through to a plain `Utf8` cast at the column's declared scale — a `Decimal` factor level must be authored at that same scale (`"25.50"` for a scale-2 column); `"25.5"` and `"25.50"` are distinct string keys and will not match each other.
 - **String factor levels never collapse:** a string label that happens to spell an int-like float (e.g. the literal string `"25.0"`) is kept verbatim by `normalise_rating_key` — only a genuine Python `float`/`int` collapses. The *sidecar* key canonicaliser (`_canonical_sidecar_key`) is stricter: a string label containing `.`/`e`/`E` that parses as a finite float is deliberately collapsed to the canonical numeric form too, because a compact JSON object key cannot otherwise distinguish the number `25.0` from the label `"25.0"` — leaving them distinct there would let two logically-identical entries compact to different keys and then be silently unrecoverable on expand.
 - **Duplicate breakpoint boundaries / multiple open-ended breakpoints / a sole open-ended breakpoint with no bounded anchor** all raise `ValueError` in `_breakpoints_to_rules` rather than silently producing an empty interval or dropping data (see high-level Failure model).
-- **Unknown continuous-band operators are ignored:** `_banding_condition`
-  skips any operator absent from `_OP_MAP`; a wholly invalid rule returns
-  `None`, and a factor with no usable rule becomes a silent pass-through. This
-  behaviour is pinned by `tests/test_rating.py::TestBandingCondition.test_invalid_op_ignored`.
+- **Unknown continuous-band operators fail loudly:** `_banding_condition`
+  raises for any operator absent from `SUPPORTED_BANDING_OPERATORS`; neither
+  eager/lazy execution nor trace enrichment may silently skip or reinterpret it.
 - **B15 entry-column pollution guard:** `_apply_rating_table` selects only `[*factors, "value"]` from the entries `DataFrame` before joining, so stray extra keys left in an entry dict (e.g. leftover UI state) never leak into the main frame as spurious columns.
 - **B14 fan-out guard:** the lookup side is deduplicated on `factors` with `keep="last"` before the join, so a config with two entries for the same factor combination can never fan out (multiply) rows in the output — the last-authored entry wins, matching trace enrichment's own reverse-walk resolution of "the winning row" for the same duplicate-key case.
 - **Bug #1/#2 (naming collision):** the joined lookup value is renamed to an internal sentinel (`__haute_lookup_val__`) before merging with the main frame, specifically so a table whose *input* frame happens to already have a column literally named `"value"` cannot collide with the lookup's own `"value"` column.
@@ -95,8 +95,7 @@
 
 No exception raised by these helpers is caught and swallowed internally: every
 raise propagates to the caller. Non-raising exceptional/config-gap behaviour is
-not limited to structured logs: unknown continuous-band operators are ignored,
-and `normalise_banding_factors` turns a non-list `factors` value into an empty
+not limited to structured logs: `normalise_banding_factors` turns a non-list `factors` value into an empty
 no-op list (see Edge cases). Rating misses/skipped tables and missing ratebook
 factor groups use the `rating_table_lookup_misses` /
 `rating_table_skipped_incomplete` / `ratebook_entries_missing_factor_group`
@@ -126,10 +125,11 @@ factor/table shapes, breakpoint closure controls, factor-level ordering, one-/tw
 three-way table editing, combined outputs, and invalid/incomplete status display;
 the corresponding production modules remain owned by the frontend editor spec.
 
-The known fail-soft banding behaviours are pinned directly:
-`tests/test_rating.py::TestBandingCondition.test_invalid_op_ignored` covers an
-unknown operator and `TestNormaliseBandingFactors.test_non_list_returns_empty`
-covers the malformed top-level shape. The one area flagged as under-tested by
+The remaining fail-soft top-level banding behaviour is pinned directly:
+`tests/test_rating.py::TestNormaliseBandingFactors.test_non_list_returns_empty`
+covers the malformed top-level shape. Unknown operators and invalid thresholds
+are fail-loud and share runtime/trace contract coverage in
+`tests/test_trace_fidelity_contract.py`. The one area flagged as under-tested by
 design (rather than by a missing test case) is the F084 dedup-ordering behaviour
 in `_apply_rating_table`, which cannot be distinguished by any currently
 constructible input (see [Edge cases](#edge-cases-and-invariants)).

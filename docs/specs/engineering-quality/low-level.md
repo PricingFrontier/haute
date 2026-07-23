@@ -26,6 +26,7 @@
 | `frontend/e2e/git-sidebar-regression.spec.ts` | Playwright regression coverage for the Git sidebar. |
 | `frontend/e2e/job-progress-render.benchmark.spec.ts` | `@benchmark` Playwright coverage for job-progress rendering. |
 | `frontend/e2e/large-graph-drag.benchmark.spec.ts` | `@benchmark` Playwright coverage for dragging large graphs. |
+| `frontend/e2e/trace-render.benchmark.spec.ts` | `@benchmark` Playwright coverage for linear and multi-frame trace rendering latency. |
 | `frontend/e2e/migration/v1-to-v2-node-continuity.spec.ts` | Playwright coverage for node-continuity migration behaviour. |
 | `frontend/e2e/persistence/api-input-frame-alignment.spec.ts` | Playwright geometry coverage for API-input frame-row/handle alignment and downstream frame naming. |
 | `frontend/e2e/persistence/api-input-render-gate.spec.ts` | Playwright persistence/render-gate coverage for API input. |

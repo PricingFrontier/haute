@@ -24,14 +24,15 @@
         "output_values": {
           "base_rate": 10.0
         },
+        "topological_rank": 0,
         "column_relevant": true,
-        "execution_ms": 1.2,
         "expression": null,
         "calculation": null,
         "node_detail": null,
         "row_lineage_type": "direct"
       }
     ],
+    "omissions": [],
     "row_id_column": "quote_id",
     "row_id_value": "q_001",
     "total_nodes_in_pipeline": 2,
@@ -43,9 +44,13 @@
         "operation": "set",
         "value": 10.0,
         "delta": 10.0,
-        "cumulative": 10.0
+        "cumulative": 10.0,
+        "default_used": false
       }
     ],
-    "correlation_diagnostics": []
+    "correlation_diagnostics": [],
+    "generated_at": "2026-07-23T12:00:00+00:00",
+    "pipeline_source": "pricing/example.py",
+    "execution_origin": "fresh_execution"
   }
 }

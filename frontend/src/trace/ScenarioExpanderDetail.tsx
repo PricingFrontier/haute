@@ -1,12 +1,10 @@
 import type { ScenarioExpanderNodeDetail } from "../types/trace"
-import { formatValue as _formatValue } from "../utils/formatValue"
+import { formatTraceValue } from "./traceFormatting"
 import {
   TraceDetailAlert,
   TraceDetailChip,
   TraceDetailPanel,
 } from "./TraceDetail"
-
-const formatValue = (v: unknown) => _formatValue(v, 2)
 
 export function ScenarioExpanderDetailBlock({ detail }: {
   detail: ScenarioExpanderNodeDetail
@@ -26,10 +24,10 @@ export function ScenarioExpanderDetailBlock({ detail }: {
       summary={(
         <>
         {scenarioValue !== undefined && (
-          <TraceDetailChip>{scenarioColumn}: {formatValue(scenarioValue)}</TraceDetailChip>
+          <TraceDetailChip>{scenarioColumn}: {formatTraceValue(scenarioValue)}</TraceDetailChip>
         )}
         {scenarioIndex !== undefined && (
-          <TraceDetailChip tone="muted">index: {formatValue(scenarioIndex)}</TraceDetailChip>
+          <TraceDetailChip tone="muted">index: {formatTraceValue(scenarioIndex)}</TraceDetailChip>
         )}
         </>
       )}
@@ -37,13 +35,13 @@ export function ScenarioExpanderDetailBlock({ detail }: {
       {hasGridSettings && (
         <div className="flex flex-wrap gap-1">
           {minValue !== undefined && (
-            <TraceDetailChip tone="muted">min: {formatValue(minValue)}</TraceDetailChip>
+            <TraceDetailChip tone="muted">min: {formatTraceValue(minValue)}</TraceDetailChip>
           )}
           {maxValue !== undefined && (
-            <TraceDetailChip tone="muted">max: {formatValue(maxValue)}</TraceDetailChip>
+            <TraceDetailChip tone="muted">max: {formatTraceValue(maxValue)}</TraceDetailChip>
           )}
           {stepCount !== undefined && (
-            <TraceDetailChip tone="muted">steps: {formatValue(stepCount)}</TraceDetailChip>
+            <TraceDetailChip tone="muted">steps: {formatTraceValue(stepCount)}</TraceDetailChip>
           )}
         </div>
       )}
