@@ -203,6 +203,32 @@ def test_ambiguous_source_frame_is_unresolved_instead_of_guessing() -> None:
     assert diagnostics[unresolved["source"][1]]["code"] == "ambiguous_source_frame"
 
 
+@pytest.mark.parametrize(
+    ("generated_at", "message"),
+    [
+        ("not-a-timestamp", "ISO-8601"),
+        ("2026-07-23T12:00:00", "UTC offset"),
+        ("2026-07-23T13:00:00+01:00", "UTC offset"),
+    ],
+)
+def test_trace_result_schema_requires_a_valid_utc_timestamp(
+    generated_at: str,
+    message: str,
+) -> None:
+    with pytest.raises(ValidationError, match=message):
+        TraceResultResponse.model_validate(
+            {
+                "target_node_id": "target",
+                "row_index": 0,
+                "steps": [],
+                "omissions": [],
+                "correlation_diagnostics": [],
+                "generated_at": generated_at,
+                "execution_origin": "fresh_execution",
+            }
+        )
+
+
 def test_trace_result_schema_requires_omissions_and_typed_waterfall_errors() -> None:
     payload = {
         "target_node_id": "target",
@@ -221,7 +247,7 @@ def test_trace_result_schema_requires_omissions_and_typed_waterfall_errors() -> 
             {**payload, "omissions": [], "waterfall": {"error": "cannot reconcile"}}
         )
 
-    with pytest.raises(ValidationError, match="references missing diagnostic"):
+    with pytest.raises(ValidationError, match="references a diagnostic"):
         TraceResultResponse.model_validate(
             {
                 **payload,
@@ -233,6 +259,15 @@ def test_trace_result_schema_requires_omissions_and_typed_waterfall_errors() -> 
                         "topological_rank": 0,
                         "reason": "duplicate_exact_match",
                         "diagnostic_index": 0,
+                    }
+                ],
+                "correlation_diagnostics": [
+                    {
+                        "code": "ambiguous_match",
+                        "severity": "warning",
+                        "reason": "duplicate_exact_match",
+                        "message": "multiple rows matched",
+                        "node_id": "different-source",
                     }
                 ],
             }
