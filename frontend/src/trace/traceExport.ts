@@ -3,6 +3,7 @@ import type {
   TraceResult,
   TraceStep,
 } from "../types/trace"
+import { sanitiseLabelForFilesystem } from "../utils/apiInputPorts"
 
 export interface TraceExportRow {
   section: "provenance" | "trace" | "step" | "omission" | "waterfall" | "diagnostic"
@@ -209,9 +210,9 @@ export async function copyTraceMarkdown(
 }
 
 export function traceExportFilename(trace: TraceResult, extension: "md" | "csv"): string {
-  const identity = `${trace.target_node_id}-${trace.column ?? `row-${trace.row_index}`}`
-    .replace(/[^a-zA-Z0-9._-]+/g, "-")
-    .replace(/^-+|-+$/g, "")
+  const identity = sanitiseLabelForFilesystem(
+    `${trace.target_node_id}-${trace.column ?? `row-${trace.row_index}`}`,
+  )
   const timestamp = trace.generated_at.replace(/[:.]/g, "-")
   return `trace-${identity || "result"}-${timestamp}.${extension}`
 }

@@ -168,7 +168,19 @@ describe("trace export projection", () => {
 
   it("uses a deterministic filesystem-safe download name", () => {
     expect(traceExportFilename(traceFixture(), "md")).toBe(
-      "trace-premium-target-technical_premium-2026-07-23T12-34-56+00-00.md",
+      "trace-premium_target-technical_premium-2026-07-23T12-34-56+00-00.md",
+    )
+  })
+
+  it("routes unsafe identity characters through the shared filesystem sanitizer", () => {
+    const trace = {
+      ...traceFixture(),
+      target_node_id: "premium/target",
+      column: "technical premium😀",
+    }
+
+    expect(traceExportFilename(trace, "csv")).toBe(
+      "trace-premium_target-technical_premium_-2026-07-23T12-34-56+00-00.csv",
     )
   })
 })
