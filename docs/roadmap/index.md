@@ -36,7 +36,7 @@ architecture choice before implementation.
 | Component | Primary improvement surface | Suggested starting package |
 |---|---|---|
 | [Background jobs & API lifecycle](components/background-jobs-api/README.md) | Terminal states, worker artifacts/events, route lifecycle, cleanup | `ROAD-WORKER-01` |
-| [Caching](components/caching/README.md) | Key completeness, cache lifecycle, concurrency, invalidation | `AUD-C03` |
+| [Caching](components/caching/README.md) | Key completeness, cache lifecycle, concurrency, invalidation | `AUD-CACHE-01` |
 | [Deploy & platform](components/deploy-platform/README.md) | Validate/serve parity, packaging paths, platform boundaries | `AUD-C04` |
 | [Edge Join](components/edge-join/README.md) | Discoverable insertion, browser workflow, documentation | `ROAD-EDGE-01` |
 | [Engineering quality](components/engineering-quality/README.md) | Invariants, oracles, fixtures, CI, types, documentation truth | `ROAD-TEST-01` |

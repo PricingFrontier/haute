@@ -184,8 +184,9 @@ def test_component_improvement_backlogs_are_complete_and_source_linked() -> None
                 f"{path.relative_to(ROOT)} links to missing {local_target}"
             )
 
+    retired_audit_packages = {"AUD-C02", "AUD-C03", "AUD-C11"}
     expected_source_packages = (
-        {f"AUD-C{number:02d}" for number in range(1, 21)}
+        ({f"AUD-C{number:02d}" for number in range(1, 21)} - retired_audit_packages)
         | {f"EDA-E{number:02d}" for number in range(1, 14)}
         | {f"GIT-G{number:02d}" for number in range(1, 17)}
         | {f"IO-IO{number:02d}" for number in range(1, 13)}
@@ -200,6 +201,10 @@ def test_component_improvement_backlogs_are_complete_and_source_linked() -> None
     assert expected_source_packages <= set(package_owners), (
         f"component catalogue is missing source packages: "
         f"{sorted(expected_source_packages - set(package_owners))}"
+    )
+    assert retired_audit_packages.isdisjoint(package_owners), (
+        "fully implemented audit packages must not remain in active component queues: "
+        f"{sorted(retired_audit_packages & set(package_owners))}"
     )
 
 
