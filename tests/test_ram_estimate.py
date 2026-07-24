@@ -2001,6 +2001,17 @@ class TestCountSourceRowsForNode:
         result = _count_source_rows_for_node(node)
         assert result == 77
 
+    def test_data_input_ndjson(self, tmp_path) -> None:
+        """Data Input with NDJSON counts physical record lines."""
+        path = tmp_path / "data.ndjson"
+        path.write_text('{"a":1}\n{"a":2}\n{"a":3}\n', encoding="utf-8")
+        node = _make_source_node(
+            node_type="dataInput",
+            config=_file_input_config(str(path)),
+        )
+
+        assert _count_source_rows_for_node(node) == 3
+
     def test_data_input_existing_unsupported_file_returns_none(self, tmp_path) -> None:
         """Existing flat files only provide row estimates for known tabular formats."""
         path = tmp_path / "notes.txt"

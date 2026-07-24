@@ -179,6 +179,47 @@ class TestExecuteSinkDataOutput:
         with pytest.raises(PolarsIoConfigError, match="Supported formats"):
             write_data_output(graph, "dout")
 
+    def test_non_output_node_is_rejected_before_execution(self) -> None:
+        graph = PipelineGraph(
+            nodes=[_data_input_node("din", {})],
+            edges=[],
+        )
+
+        with pytest.raises(ValueError, match="is not a Data Output"):
+            write_data_output(graph, "din")
+
+    @pytest.mark.parametrize(
+        ("selected_columns", "message"),
+        [
+            ("id", "must be a list"),
+            (["id", ""], "must contain non-empty string names"),
+        ],
+    )
+    def test_selected_columns_shape_is_validated_before_execution(
+        self,
+        haute_scratch: Path,
+        selected_columns: object,
+        message: str,
+    ) -> None:
+        graph = PipelineGraph(
+            nodes=[
+                _data_output_node(
+                    "dout",
+                    {
+                        "outputType": "file",
+                        "format": "parquet",
+                        "path": str(haute_scratch / "out.parquet"),
+                        "arguments": {},
+                        "selected_columns": selected_columns,
+                    },
+                )
+            ],
+            edges=[],
+        )
+
+        with pytest.raises(ValueError, match=message):
+            write_data_output(graph, "dout")
+
     def test_failed_file_write_preserves_existing_target(
         self,
         haute_scratch,
@@ -395,6 +436,15 @@ class TestResolveDataOutputPath:
                 project_root=haute_scratch,
             )
 
+    def test_empty_file_path_is_rejected_by_low_level_resolver(self) -> None:
+        graph = PipelineGraph(nodes=[], edges=[])
+
+        with pytest.raises(ValueError, match="no output path configured"):
+            resolve_data_output_path(
+                graph,
+                {"outputType": "file", "format": "parquet", "path": ""},
+            )
+
     def test_staging_path_must_be_a_contained_sibling(
         self,
         haute_scratch: Path,
@@ -409,6 +459,47 @@ class TestResolveDataOutputPath:
                 outside_stage,
                 project_root=haute_scratch,
             )
+
+    def test_staging_path_must_preserve_final_extension(self, tmp_path: Path) -> None:
+        final_path = tmp_path / "result.parquet"
+        wrong_extension = tmp_path / ".result.haute-stage-token.csv"
+
+        with pytest.raises(ValueError, match="preserve the final target extension"):
+            executor_module._validate_output_publish_paths(
+                final_path,
+                wrong_extension,
+                project_root=tmp_path,
+            )
+
+    def test_publish_paths_must_remain_inside_project_root(self, tmp_path: Path) -> None:
+        project_root = tmp_path / "project"
+        outside = tmp_path / "outside"
+        project_root.mkdir()
+        outside.mkdir()
+        final_path = outside / "result.parquet"
+        outside_stage = outside / ".result.haute-stage-token.parquet"
+
+        with pytest.raises(ValueError, match="outside the project root"):
+            executor_module._validate_output_publish_paths(
+                final_path,
+                outside_stage,
+                project_root=project_root,
+            )
+
+    def test_cleanup_refuses_staging_path_outside_project_root(self, tmp_path: Path) -> None:
+        project_root = tmp_path / "project"
+        outside = tmp_path / "outside"
+        project_root.mkdir()
+        outside.mkdir()
+        outside_stage = outside / ".result.haute-stage-token.parquet"
+        outside_stage.write_bytes(b"preserve")
+
+        executor_module._cleanup_output_staging_path(
+            outside_stage,
+            project_root=project_root,
+        )
+
+        assert outside_stage.read_bytes() == b"preserve"
 
 
 class TestDataInputBuilder:
