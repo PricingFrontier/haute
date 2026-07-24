@@ -296,6 +296,10 @@ accommodation.
 collect_eager=False)`: normalises both frames to `LazyFrame`, calls
 `base_lf.join(join_lf, **build_edge_join_kwargs(config))`, and only `.collect()`s
 if both original inputs were eager *and* `collect_eager` is set.
+`build_edge_join_kwargs` accepts exactly `inner`, `left`, `right`, `full`,
+`semi`, `anti`, and `cross`. `cross` rejects `on`, `leftOn`, and `rightOn`;
+every other mode requires either a non-empty `on` value or non-empty,
+equal-length `leftOn`/`rightOn` values, and rejects mixing the two forms.
 
 ## Edge cases and invariants
 
@@ -474,7 +478,8 @@ the dry-run route wires them together before execution.
 Edge join (`_edge_join.py`):
 
 - `tests/test_edge_join.py` — backend contracts for `edgeJoin` node config
-  validation and codegen decorator round-tripping.
+  validation (including the exact seven-mode set and same-name/paired/cross
+  key invariants) and codegen decorator round-tripping.
 - `tests/test_trace_edge_join.py` — lineage/trace correlation specifically for
   join-role columns (base vs. join, suffix-renamed duplicates).
 - `tests/test_preview_json_serialization.py` — regression coverage for

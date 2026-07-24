@@ -17,7 +17,6 @@ is covered by current specifications and ordinary regression tests.
 | [Background jobs and API lifecycle](background-jobs-api.md) | Worker terminal states, artifacts, events, cleanup | `ROAD-WORKER-01` |
 | [Caching](caching.md) | Fingerprint completeness, invalidation, lifetime, concurrency | `AUD-CACHE-01` |
 | [Deploy and platform](deploy-platform.md) | Deployment paths, scaffolding, platform/resource boundaries | `AUD-DEPLOY-01` |
-| [Edge Join](edge-join.md) | Discoverability, browser workflow, supported join geometry | `ROAD-EDGE-01` |
 | [Engineering quality](engineering-quality.md) | Invariants, oracles, fixtures, CI, types, documentation truth | `ROAD-TEST-01` |
 | [Execution engine](execution-engine.md) | Execution boundary, projection, memory, faults, metrics | `ROAD-EXEC-01` |
 | [Explore and EDA](explore-eda.md) | Report correctness, scale, UX, analysis, export | `EDA-E01` |

@@ -64,6 +64,52 @@ type InsertEdgeJoinNodeFromSourcesParams = {
   idFactory: () => string
 }
 
+/**
+ * Checks whether dropping a source connection onto an existing edge can create
+ * an Edge Join. This deliberately mirrors the eventual edge rewrite so drag
+ * feedback and the release action agree exactly.
+ */
+export function validateEdgeJoinInsertionCandidate(
+  {
+    nodes,
+    edges,
+    targetEdgeId,
+    connection,
+  }: Pick<
+    InsertEdgeJoinNodeParams,
+    "nodes" | "edges" | "targetEdgeId" | "connection"
+  >,
+): { ok: true } | { ok: false; reason: EdgeJoinFailureReason } {
+  const targetEdge = edges.find((edge) => edge.id === targetEdgeId)
+  const source = connection.source
+  if (!targetEdge) return { ok: false, reason: "target-edge-not-found" }
+  if (!source) return { ok: false, reason: "source-node-not-found" }
+
+  const nodeIds = new Set(nodes.map((node) => node.id))
+  if (!nodeIds.has(source)) return { ok: false, reason: "source-node-not-found" }
+  if (!nodeIds.has(targetEdge.source) || !nodeIds.has(targetEdge.target)) {
+    return { ok: false, reason: "target-edge-node-not-found" }
+  }
+  if (source === targetEdge.source) return { ok: false, reason: "self-join" }
+
+  let candidateNodeId = "__edge_join_insertion_candidate__"
+  while (nodeIds.has(candidateNodeId)) candidateNodeId += "_"
+  const candidateNode = buildEdgeJoinNode({
+    id: candidateNodeId,
+    position: { x: 0, y: 0 },
+    baseInput: targetEdge.source,
+    joinInput: source,
+  })
+  const nextEdges = [
+    ...edges.filter((edge) => edge.id !== targetEdgeId),
+    ...edgeJoinReplacementEdges(targetEdge, candidateNodeId, { ...connection, source }),
+  ]
+  if (hasDirectedCycle([...nodes, candidateNode], nextEdges)) {
+    return { ok: false, reason: "cycle" }
+  }
+  return { ok: true }
+}
+
 export function insertEdgeJoinNode({
   nodes,
   edges,
@@ -73,25 +119,45 @@ export function insertEdgeJoinNode({
   idFactory,
 }: InsertEdgeJoinNodeParams): EdgeJoinInsertResult {
   const targetEdge = edges.find((edge) => edge.id === targetEdgeId)
-  if (!targetEdge) return { ok: false, reason: "target-edge-not-found" }
-  if (!connection.source) return { ok: false, reason: "source-node-not-found" }
-
-  const nodeIds = new Set(nodes.map((node) => node.id))
-  if (!nodeIds.has(connection.source)) return { ok: false, reason: "source-node-not-found" }
-  if (!nodeIds.has(targetEdge.source) || !nodeIds.has(targetEdge.target)) {
-    return { ok: false, reason: "target-edge-node-not-found" }
+  const source = connection.source
+  const validation = validateEdgeJoinInsertionCandidate({ nodes, edges, targetEdgeId, connection })
+  if (!validation.ok) return validation
+  // The validator above establishes this invariant without allocating an id.
+  if (!targetEdge || !source) {
+    throw new Error("Validated Edge Join candidate was unavailable")
   }
-  if (connection.source === targetEdge.source) return { ok: false, reason: "self-join" }
 
   const newNodeId = idFactory()
   const newNode = buildEdgeJoinNode({
     id: newNodeId,
     position,
     baseInput: targetEdge.source,
-    joinInput: connection.source,
+    joinInput: source,
   })
 
-  const replacementEdges: Edge[] = [
+  const replacementEdges = edgeJoinReplacementEdges(targetEdge, newNodeId, { ...connection, source })
+
+  const nextEdges = [
+    ...edges.filter((edge) => edge.id !== targetEdgeId),
+    ...replacementEdges,
+  ]
+  return {
+    ok: true,
+    nodes: selectOnlyNode([
+      ...nodes.map((node) => rewriteDownstreamSplitTargetNode(node, targetEdge, newNodeId)),
+      newNode,
+    ], newNodeId),
+    edges: nextEdges,
+    newNodeId,
+  }
+}
+
+function edgeJoinReplacementEdges(
+  targetEdge: Edge,
+  newNodeId: string,
+  connection: SourceEndpoint & { source: string },
+): Edge[] {
+  return [
     appEdge({
       source: targetEdge.source,
       target: newNodeId,
@@ -110,23 +176,6 @@ export function insertEdgeJoinNode({
       targetHandle: EDGE_JOIN_JOIN_HANDLE,
     }),
   ]
-
-  const nextEdges = [
-    ...edges.filter((edge) => edge.id !== targetEdgeId),
-    ...replacementEdges,
-  ]
-  if (hasDirectedCycle([...nodes, newNode], nextEdges)) {
-    return { ok: false, reason: "cycle" }
-  }
-  return {
-    ok: true,
-    nodes: selectOnlyNode([
-      ...nodes.map((node) => rewriteDownstreamSplitTargetNode(node, targetEdge, newNodeId)),
-      newNode,
-    ], newNodeId),
-    edges: nextEdges,
-    newNodeId,
-  }
 }
 
 export function insertEdgeJoinNodeFromSources({

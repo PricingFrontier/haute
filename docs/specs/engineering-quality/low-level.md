@@ -21,6 +21,7 @@
 | `frontend/playwright.config.ts` | Configures serial browser E2E projects, retries, artifacts, and readiness-managed local E2E server. |
 | `frontend/e2e/core-flows.spec.ts` | Playwright coverage for core browser flows. |
 | `frontend/e2e/data-io-nodes.spec.ts` | Playwright coverage for data-I/O node browser flows. |
+| `frontend/e2e/edge-join.spec.ts` | Deterministic full-browser Edge Join workflow: compatible-edge feedback and insertion, configuration/preview, save/reload topology, repeated joins, named API-input source-handle preservation, and downstream trace highlighting. |
 | `frontend/e2e/data-preview-scroll.benchmark.spec.ts` | `@benchmark` Playwright coverage for data-preview scrolling. |
 | `frontend/e2e/git-graph.spec.ts` | Playwright coverage for the Git graph. |
 | `frontend/e2e/git-sidebar-regression.spec.ts` | Playwright regression coverage for the Git sidebar. |
@@ -94,6 +95,12 @@
   Chromium is the normal project and Firefox is restricted to `@smoke` tests.
   CI retries twice, recording traces on first retry and screenshots/video on
   failure.
+- **Edge Join E2E fixture** is a project-isolated, generated pipeline with
+  deterministic small frames and one API-input frame whose raw label is the
+  persisted source handle. The workflow targets nodes, handles, and rendered
+  edge ids through stable locators and derives drag coordinates from live
+  handle bounds and rendered SVG path geometry; it does not use production
+  data, fixed sleeps, or hard-coded canvas coordinates.
 - **Pytest configuration** constrains collection to `tests/`, has strict
   markers/configuration/xfails, excludes `perf` by default, and recognises
   `slow`, `perf`, and `sandbox_strict` markers.
@@ -189,6 +196,12 @@
   other exact frontend test-group directories listed in the module map, run by
   `npm run test` or `npm run test:coverage`. Browser coverage lives in `frontend/e2e/`, run by
   `npm run test:e2e`, `npm run test:e2e:smoke`, or the benchmark command.
+- `frontend/e2e/edge-join.spec.ts` asserts user-observable outcomes across the
+  real canvas and backend: pre-release candidate feedback, insertion and role
+  handles, same-name-key configuration, joined preview columns/rows, persisted
+  split topology/config after reload, two joins on one branch after a second
+  reload, exact named API-input `sourceHandle`, and an Edge Join retained and
+  highlighted in a downstream trace. Private React state is not an oracle.
 - `tests/test_check_critical_coverage.py`, `tests/test_mutation_suite_runner.py`,
   `tests/test_run_perf_suite.py`, `tests/test_perf_suite_script.py`,
   `tests/test_memory_smoke_script.py`, `tests/test_frontend_bundle_budget_ci.py`,
