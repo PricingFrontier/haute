@@ -421,19 +421,29 @@ def _count_source_rows_for_node(node: GraphNode) -> int | None:
                 return rows
             return None
 
-        if node_type == NodeType.DATA_SOURCE:
-            source_type = config.get("sourceType", "flat_file")
-            if source_type == "databricks":
+        if node_type == NodeType.DATA_INPUT:
+            if config.get("cacheMode") == "snapshot":
+                from haute._input_providers import source_cache_identity
+                from haute._sandbox import _get_project_root
+                from haute._source_cache import SourceCacheStore
+
+                identity = source_cache_identity(config, base_dir=_get_project_root())
+                generation = SourceCacheStore(_get_project_root()).open_generation(identity)
+                return generation.metadata.row_count
+            if config.get("inputType") not in {"file", "lakehouse"}:
                 return None
             path = config.get("path", "")
             if path and Path(path).exists():
-                if path.endswith(".parquet"):
+                fmt = config.get("format")
+                if fmt == "parquet":
                     rows, _ = _parquet_metadata(path)
                     return rows
-                if path.endswith(".csv"):
+                if fmt == "csv":
                     return _csv_row_count(path)
+                if fmt == "ndjson":
+                    return _jsonl_row_count(path)
             return None
-    except OSError as exc:
+    except (OSError, TypeError, ValueError) as exc:
         logger.warning("source_row_count_failed", node_id=node.id, error=str(exc))
         return None
 
@@ -455,10 +465,10 @@ def _detailed_source_metadata_for_node(node: GraphNode) -> _DetailedSourceMetada
 
     try:
         path = config.get("path", "")
-        if not path:
-            return None
 
         if node_type == NodeType.API_INPUT:
+            if not path:
+                return None
             if path.endswith((".json", ".jsonl")):
                 # v2 per-frame caches are one parquet per emit-true table,
                 # so there's no single (row_count, column_count) summary
@@ -469,13 +479,26 @@ def _detailed_source_metadata_for_node(node: GraphNode) -> _DetailedSourceMetada
                 return _source_scoped_metadata(_detailed_parquet_metadata(path), node.id)
             return None
 
-        if node_type == NodeType.DATA_SOURCE:
-            if config.get("sourceType", "flat_file") == "databricks":
-                return None
-            if Path(path).exists() and path.endswith(".parquet"):
+        if node_type == NodeType.DATA_INPUT:
+            if config.get("cacheMode") == "snapshot":
+                from haute._input_providers import source_cache_identity
+                from haute._sandbox import _get_project_root
+                from haute._source_cache import SourceCacheStore
+
+                identity = source_cache_identity(config, base_dir=_get_project_root())
+                generation = SourceCacheStore(_get_project_root()).open_generation(identity)
+                return _source_scoped_metadata(
+                    _detailed_parquet_metadata(str(generation.data_path)),
+                    node.id,
+                )
+            if (
+                config.get("inputType") in {"file", "lakehouse"}
+                and Path(path).exists()
+                and config.get("format") == "parquet"
+            ):
                 return _source_scoped_metadata(_detailed_parquet_metadata(path), node.id)
             return None
-    except OSError as exc:
+    except (OSError, TypeError, ValueError) as exc:
         logger.warning("source_metadata_failed", node_id=node.id, error=str(exc))
         return None
 
@@ -539,7 +562,7 @@ def _detailed_ancestor_source_metadata(
         node = index.node_map.get(nid)
         if node is None:
             continue
-        if node.data.nodeType not in (NodeType.API_INPUT, NodeType.DATA_SOURCE):
+        if node.data.nodeType not in (NodeType.API_INPUT, NodeType.DATA_INPUT):
             continue
         meta = index.source_metadata(node)
         if meta is not None:
@@ -560,7 +583,7 @@ def estimate_source_rows(graph: PipelineGraph) -> int | None:
     """
     max_rows: int | None = None
     for node in graph.nodes:
-        if node.data.nodeType in (NodeType.API_INPUT, NodeType.DATA_SOURCE):
+        if node.data.nodeType in (NodeType.API_INPUT, NodeType.DATA_INPUT):
             count = _count_source_rows_for_node(node)
             if count is not None:
                 max_rows = max(max_rows or 0, count)
@@ -851,7 +874,7 @@ def _resolve_target_columns_from_index(
                     return _filter_resolved_columns(parent_columns, selected_columns)
             return _resolved_from_columns(selected_columns)
 
-        if node.data.nodeType in (NodeType.API_INPUT, NodeType.DATA_SOURCE):
+        if node.data.nodeType in (NodeType.API_INPUT, NodeType.DATA_INPUT):
             meta = index.source_metadata(node)
             if meta is not None:
                 return _resolved_from_source_metadata(meta)

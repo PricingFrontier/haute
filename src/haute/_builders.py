@@ -5,7 +5,7 @@ Each builder receives a ``NodeBuildContext`` and returns
 ``_execute_eager_core`` / ``_execute_lazy`` in ``graph_utils.py``.
 
 Extracted from ``executor.py`` to keep the orchestration module focused
-on ``execute_graph``, ``_eager_execute``, and ``execute_sink``.
+on ``execute_graph``, ``_eager_execute``, and ``write_data_output``.
 
 Exec-side registrations write into :data:`haute._registry.NODE_REGISTRY` —
 the single source of truth shared with ``_codegen_builders.py``.
@@ -351,7 +351,7 @@ def _resolve_runtime_data_path(data_path: str) -> str:
 
     Shared by every in-process node builder that consumes a user-facing data
     path at execute time: the v2 apiInput source (``_make_api_source_v2`` →
-    ``load_v2_api_source``), the flat-file ``DATA_SOURCE`` reads (via
+    ``load_v2_api_source``), the flat-file ``API_INPUT`` reads (via
     :func:`_config_with_resolved_data_path` → ``read_data_source``), and the
     ``EXTERNAL_FILE`` object load (``load_external_object``).
 
@@ -361,13 +361,13 @@ def _resolve_runtime_data_path(data_path: str) -> str:
     same way.  These in-process executor paths used to consume the RAW relative
     string, so downstream resolution happened against ``cwd`` —
     :func:`haute._json_flatten._path_hash` for apiInput; ``Path(...).resolve()``
-    inside ``read_source`` (DATA_SOURCE) and ``content_hash`` /
+    inside ``read_source`` (API_INPUT) and ``content_hash`` /
     ``validate_project_path`` inside ``load_external_object`` (EXTERNAL_FILE).
     When the pipeline lived in a subdirectory and the server ran from the
     project root, the resolved location diverged from the pipeline-dir-anchored
     one the optional "Cache as Parquet" prewarm wrote / the nested data file
     actually sits at — producing a wrong cache key or raw-file miss (apiInput), or a
-    file-not-found / wrong-file read (DATA_SOURCE, EXTERNAL_FILE) that only
+    file-not-found / wrong-file read (API_INPUT, EXTERNAL_FILE) that only
     agreed when cwd == the pipeline dir.
 
     Resolving here — at each call site, exactly as codegen resolves in its
@@ -421,12 +421,12 @@ def _resolve_runtime_data_path(data_path: str) -> str:
 def _config_with_resolved_data_path(config: Mapping[str, Any]) -> Mapping[str, Any]:
     """Return *config* with a relative flat-file ``path`` anchored to the pipeline dir.
 
-    ``DATA_SOURCE`` (and the flat, non-JSON ``API_INPUT``) carry the runtime
+    Flat, non-JSON ``API_INPUT`` nodes carry the runtime
     data path inside ``config["path"]``, consumed by
     :func:`haute._io.read_data_source` → ``build_data_source_adapter`` →
     ``read_source``.  That read resolves a relative path against ``cwd``, so the
     same nested-pipeline / project-root launch that broke the v2 apiInput cache
-    lookup also made a relative ``DATA_SOURCE`` path read the wrong (or a
+    lookup also made a relative ``API_INPUT`` path read the wrong (or a
     missing) file.  Anchor it the same way :func:`_resolve_runtime_data_path`
     anchors the apiInput closure path, at execute time.
 
@@ -531,7 +531,7 @@ def _build_api_input(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
             )
             # Anchor a relative flat-file path to the pipeline dir before the
             # read — the flat (CSV/parquet) apiInput codec is the third sibling
-            # of the DATA_SOURCE sites above: the JSON apiInput fix (09a5500f)
+            # of the API_INPUT sites above: the JSON apiInput fix (09a5500f)
             # only anchored _make_api_source_v2, so a flat apiInput feeding an
             # OUTPUT via the empty-source_file dry-run route still resolved
             # config["path"] against cwd.
@@ -547,151 +547,61 @@ def _build_api_input(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     return ctx.func_name, api_source_fn, True
 
 
-@_register(NodeType.DATA_SOURCE, opaque=True)
-def _build_data_source(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
-    config = ctx.config
-    path = config.get("path", "")
-    source_type = config.get("sourceType", "flat_file")
-    code = _strip_generated_boilerplate_from_code(
-        config.get("code") or "",
-        kind="data_source",
-    )
-    code_preserves_projection = projection.source_user_code_preserves_column_projection(code)
-    _preamble = dict(ctx.preamble_ns) if ctx.preamble_ns else None
-
-    base_fn: Callable[..., _Frame]
-    if not code:
-
-        def plain_source_fn(
-            _config: Mapping[str, Any] = config,
-            _profile: str | None = ctx.execution_profile,
-            _columns: frozenset[str] | set[str] | None = ctx.required_output_columns,
-            _node_id: str = ctx.node.id,
-        ) -> _Frame:
-            if source_type != "databricks" and not path and _allow_empty_source_path(_profile):
-                return pl.LazyFrame()
-            projected = _source_scan_projection(
-                _profile,
-                _columns,
-                _config,
-                node_id=_node_id,
-            )
-            # Anchor a relative flat-file path to the pipeline dir before the
-            # read (same fix as the v2 apiInput closure): a nested-pipeline
-            # relative ``path`` served from the project root must resolve
-            # against the pipeline dir, not process cwd.
-            return read_data_source(
-                _config_with_resolved_data_path(_config),
-                profile=_profile,
-                columns=projected.columns,
-                validate_columns=projected.validate_columns,
-            )
-
-        return ctx.func_name, plain_source_fn, True
-
-    if source_type == "databricks":
-        table = config.get("table", "")
-
-        def _databricks_source(
-            _table: str = table,
-            _profile: str | None = ctx.execution_profile,
-            _columns: frozenset[str] | set[str] | None = ctx.required_output_columns,
-            _config: dict[str, Any] = config,
-            _node_id: str = ctx.node.id,
-        ) -> _Frame:
-            from haute._databricks_io import read_cached_table
-
-            lf = read_cached_table(_table)
-            demanded_columns = _columns if code_preserves_projection else None
-            projected = projection.source_scan_projection(
-                _config,
-                demanded_columns,
-            )
-            _record_source_scan_projection_evidence(
-                _node_id,
-                demanded_columns,
-                projected,
-            )
-            if projected.validate_columns:
-                source_columns = set(lf.collect_schema().names())
-                missing = projected.validate_columns - source_columns
-                if missing:
-                    raise ValueError(
-                        "source selected_columns references columns missing from "
-                        f"the source schema: {sorted(missing)!r}"
-                    )
-            if projected.columns is not None:
-                return lf.select(list(projected.columns))
-            return lf
-
-        base_fn = _databricks_source
-    else:
-
-        def source_fn(
-            _config: Mapping[str, Any] = config,
-            _profile: str | None = ctx.execution_profile,
-            _columns: frozenset[str] | set[str] | None = ctx.required_output_columns,
-            _node_id: str = ctx.node.id,
-        ) -> _Frame:
-            if not path and _allow_empty_source_path(_profile):
-                return pl.LazyFrame()
-            projected = _source_scan_projection(
-                _profile,
-                _columns if code_preserves_projection else None,
-                _config,
-                node_id=_node_id,
-            )
-            # Anchor a relative flat-file path to the pipeline dir before the
-            # read — see _config_with_resolved_data_path / the plain_source_fn
-            # branch above.
-            return read_data_source(
-                _config_with_resolved_data_path(_config),
-                profile=_profile,
-                columns=projected.columns,
-                validate_columns=projected.validate_columns,
-            )
-
-        base_fn = source_fn
-
-    def source_with_code() -> _Frame:
-        raw = base_fn()
-        return _exec_user_code(code, ["df"], (raw,), extra_ns=_preamble)
-
-    return ctx.func_name, source_with_code, True
-
-
 @_register(NodeType.DATA_INPUT, opaque=True)
 def _build_data_input(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
+    code = _strip_generated_boilerplate_from_code(
+        config.get("code") or "",
+        kind="data_input",
+    )
+    code_preserves_projection = projection.source_user_code_preserves_column_projection(code)
+    preamble = dict(ctx.preamble_ns) if ctx.preamble_ns else None
 
     def data_input_fn(
         _config: Mapping[str, Any] = config,
         _profile: str | None = ctx.execution_profile,
+        _columns: frozenset[str] | set[str] | None = ctx.required_output_columns,
+        _node_id: str = ctx.node.id,
     ) -> _Frame:
-        from haute._polars_io_registry import read_polars_input
+        from haute._input_providers import resolve_data_input
 
-        has_source = bool(
-            _config.get("path") or _config.get("uri") or _config.get("records") is not None
-        )
-        if not has_source and _allow_empty_source_path(_profile):
-            # A freshly-dropped node with no source yet previews as an empty
-            # frame instead of erroring (mirrors the dataSource behaviour).
+        if not _config.get("inputType") and _allow_empty_source_path(_profile):
+            # An unsaved, freshly-dropped editor node may preview empty. Strict
+            # persisted validation still rejects this shape on save.
             return pl.LazyFrame()
-        # Anchor a relative file path to the pipeline dir at execute time,
-        # exactly like the DATA_SOURCE closures above; database/inline
-        # sources carry no path and pass through unchanged.
-        resolved = (
-            dict(_config_with_resolved_data_path(_config)) if _config.get("path") else dict(_config)
+        demanded_columns = _columns if code_preserves_projection else None
+        projected = _source_scan_projection(
+            _profile,
+            demanded_columns,
+            _config,
+            node_id=_node_id,
         )
-        return read_polars_input(resolved, profile=_profile)
+        frame = resolve_data_input(
+            _config,
+            base_dir=_configured_pipeline_dir(),
+            profile=_profile,
+        )
+        if projected.validate_columns:
+            source_columns = set(frame.collect_schema().names())
+            missing = projected.validate_columns - source_columns
+            if missing:
+                raise ValueError(
+                    "Data Input selected_columns references columns missing from "
+                    f"the source schema: {sorted(missing)!r}"
+                )
+        if projected.columns is not None:
+            frame = frame.select(list(projected.columns))
+        if code:
+            return _exec_user_code(code, ["df"], (frame,), extra_ns=preamble)
+        return frame
 
     return ctx.func_name, data_input_fn, True
 
 
 @_register(NodeType.DATA_OUTPUT, columns=_passthrough_columns)
 def _build_data_output(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
-    # During normal run/preview, dataOutput is a pass-through (like dataSink).
-    # The actual write happens via execute_sink() on explicit user action.
+    # During normal run/preview, dataOutput is a pass-through.
+    # The actual write happens via write_data_output() on explicit user action.
     return ctx.func_name, _passthrough_fn, False
 
 
@@ -758,13 +668,6 @@ def _build_live_switch(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
         )
 
     return ctx.func_name, switch_fn, False
-
-
-@_register(NodeType.DATA_SINK, columns=_passthrough_columns)
-def _build_data_sink(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
-    # During normal run/preview, dataSink is a pass-through.
-    # Actual writing happens via execute_sink() on explicit user action.
-    return ctx.func_name, _passthrough_fn, False
 
 
 @_register(NodeType.EXPLORE, columns=_explore_columns)

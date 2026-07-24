@@ -951,7 +951,7 @@ class TestHandleLintCallable:
             nodes=[
                 GraphNode(
                     id="a",
-                    data=NodeData(label="a", nodeType="dataSource", config={"path": "d.parquet"}),
+                    data=NodeData(label="a", nodeType="dataInput", config={"path": "d.parquet"}),
                 ),
                 GraphNode(
                     id="b",
@@ -983,11 +983,11 @@ class TestHandleLintCallable:
             nodes=[
                 GraphNode(
                     id="a",
-                    data=NodeData(label="a", nodeType="dataSource", config={"path": "d.parquet"}),
+                    data=NodeData(label="a", nodeType="dataInput", config={"path": "d.parquet"}),
                 ),
                 GraphNode(
                     id="b",
-                    data=NodeData(label="b", nodeType="dataSource", config={"path": "d.parquet"}),
+                    data=NodeData(label="b", nodeType="dataInput", config={"path": "d.parquet"}),
                 ),
             ],
             edges=[],
@@ -1050,7 +1050,7 @@ class TestHandleRunCallable:
             nodes=[
                 GraphNode(
                     id="a",
-                    data=NodeData(label="a", nodeType="dataSource", config={"path": "d.parquet"}),
+                    data=NodeData(label="a", nodeType="dataInput", config={"path": "d.parquet"}),
                 ),
             ],
             edges=[],
@@ -1448,7 +1448,7 @@ class TestCliAutoDiscoveryEndToEnd:
                     id="a",
                     data=NodeData(
                         label="a",
-                        nodeType="dataSource",
+                        nodeType="dataInput",
                         config={"path": "d.parquet"},
                     ),
                 ),
@@ -1497,7 +1497,7 @@ class TestCliAutoDiscoveryEndToEnd:
                     id="a",
                     data=NodeData(
                         label="a",
-                        nodeType="dataSource",
+                        nodeType="dataInput",
                         config={"path": "d.parquet"},
                     ),
                 ),

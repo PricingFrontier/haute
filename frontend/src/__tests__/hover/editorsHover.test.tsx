@@ -31,10 +31,10 @@
  * -----------------------------------------------------
  *   frontend/src/panels/editors/_shared.tsx
  *   frontend/src/panels/editors/RatingStepEditor.tsx
- *   frontend/src/panels/editors/SinkEditor.tsx
+ *   frontend/src/panels/editors/DataOutputEditor.tsx
  *   frontend/src/panels/editors/GroupedColumnsTab.tsx
  *   frontend/src/panels/editors/ConstantEditor.tsx
- *   frontend/src/panels/editors/DataSourceEditor.tsx
+ *   frontend/src/panels/editors/DataInputEditor.tsx
  *   frontend/src/panels/editors/_DatabricksSelector.tsx
  *
  * Inventory taken at test-write time (2026-04-19):
@@ -48,7 +48,7 @@
  *     ~L228-229  factor remove-X color toggle
  *     ~L270-271  "↻ Rebuild"     borderColor + color toggle
  *
- *   SinkEditor.tsx              — 4 sites (2 pairs):
+ *   DataOutputEditor.tsx        — output controls:
  *     ~L78-79    path input       focus-ring borderColor + boxShadow
  *     ~L88-89    Write button     opacity toggle on hover
  *
@@ -60,7 +60,7 @@
  *     ~L69-70    remove-row-X     color toggle
  *     ~L87-88    "Add value" btn  background toggle
  *
- *   DataSourceEditor.tsx        — 2 sites (1 pair):
+ *   DataInputEditor.tsx        — 2 sites (1 pair):
  *     ~L104-105  SQL textarea     focus-ring borderColor + boxShadow
  *
  *   _DatabricksSelector.tsx     — 2 sites (1 pair):
@@ -135,10 +135,10 @@ const EDITORS_DIR = path.join(SRC_ROOT, "panels", "editors")
 const TARGET_FILES = [
   "_shared.tsx",
   "RatingStepEditor.tsx",
-  "SinkEditor.tsx",
+  "DataOutputEditor.tsx",
   "GroupedColumnsTab.tsx",
   "ConstantEditor.tsx",
-  "DataSourceEditor.tsx",
+  "DataInputEditor.tsx",
   "_DatabricksSelector.tsx",
 ] as const
 

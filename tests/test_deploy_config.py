@@ -436,8 +436,14 @@ class TestValidateDeploy:
         inp = _make_node("input1")
         db_src = _make_node(
             "db_src",
-            node_type=NodeType.DATA_SOURCE,
-            config={"sourceType": "databricks"},
+            node_type=NodeType.DATA_INPUT,
+            config={
+                "inputType": "databricks",
+                "cacheMode": "snapshot",
+                "http_path": "/sql/1.0/warehouses/test",
+                "table": "catalog.schema.table",
+                "arguments": {},
+            },
         )
         out = _make_node("output1")
         edges = [
@@ -453,7 +459,7 @@ class TestValidateDeploy:
         with pytest.raises(DeployError) as exc_info:
             validate_deploy(resolved)
         assert any(
-            "db_src" in e and "Databricks dataSource" in e
+            "db_src" in e and "ready, valid matching snapshot" in e
             for e in exc_info.value.context["structural_errors"]
         )
 
@@ -462,8 +468,14 @@ class TestValidateDeploy:
 
         db_src = _make_node(
             "db_src",
-            node_type=NodeType.DATA_SOURCE,
-            config={"sourceType": "databricks"},
+            node_type=NodeType.DATA_INPUT,
+            config={
+                "inputType": "databricks",
+                "cacheMode": "snapshot",
+                "http_path": "/sql/1.0/warehouses/test",
+                "table": "catalog.schema.table",
+                "arguments": {},
+            },
         )
         out = _make_node("output1")
         missing_artifact = tmp_path / "missing.pkl"

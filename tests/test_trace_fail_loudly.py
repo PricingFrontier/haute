@@ -341,7 +341,7 @@ class TestItem3SilentEnrichmentExcepts:
                     id="live_src",
                     data=NodeData(
                         label="live_src",
-                        nodeType="dataSource",
+                        nodeType="dataInput",
                         config={"path": str(p_live)},
                     ),
                 ),
@@ -349,7 +349,7 @@ class TestItem3SilentEnrichmentExcepts:
                     id="batch_src",
                     data=NodeData(
                         label="batch_src",
-                        nodeType="dataSource",
+                        nodeType="dataInput",
                         config={"path": str(p_batch)},
                     ),
                 ),

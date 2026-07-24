@@ -109,7 +109,7 @@ function isPassthrough(step: TraceStep, column: string): boolean {
 }
 
 export function isSourceLikeTraceStep(step: Pick<TraceStep, "node_type">): boolean {
-  return step.node_type === "source" || step.node_type === "dataSource" || step.node_type === "apiInput"
+  return step.node_type === "source" || step.node_type === "dataInput" || step.node_type === "apiInput"
 }
 
 /**

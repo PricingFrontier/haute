@@ -71,7 +71,7 @@ def _explore_graph(
                     "id": "source",
                     "data": {
                         "label": "source",
-                        "nodeType": "dataSource",
+                        "nodeType": "dataInput",
                         "config": {"path": data_path},
                     },
                 },

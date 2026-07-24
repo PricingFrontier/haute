@@ -14,7 +14,7 @@ from haute.schemas import ColumnInfo, NodeResult
 def _source_node(nid: str, path: str) -> GraphNode:
     return GraphNode(
         id=nid,
-        data=NodeData(label=nid, nodeType="dataSource", config={"path": path}),
+        data=NodeData(label=nid, nodeType="dataInput", config={"path": path}),
     )
 
 

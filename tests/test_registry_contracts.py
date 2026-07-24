@@ -116,16 +116,16 @@ def test_register_exec_stores_builder_and_column_contract(
     monkeypatch.setattr(registry, "NODE_REGISTRY", {})
 
     registered = registry.register_exec(
-        NodeType.DATA_SOURCE,
+        NodeType.DATA_INPUT,
         column_contract=_column_contract,
     )(_exec_builder)
 
-    entry = registry.NODE_REGISTRY[NodeType.DATA_SOURCE]
+    entry = registry.NODE_REGISTRY[NodeType.DATA_INPUT]
     config = {"path": "input.csv"}
 
     assert registered is _exec_builder
     assert entry.exec is _exec_builder
-    assert registry.get_exec(NodeType.DATA_SOURCE) is _exec_builder
+    assert registry.get_exec(NodeType.DATA_INPUT) is _exec_builder
     assert entry.column_contract is _column_contract
     assert entry.column_contract(config) == ("contract", config)
 

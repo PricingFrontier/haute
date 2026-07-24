@@ -145,7 +145,7 @@ _ERROR_CASES = [
     # --- 400: empty graph on sink ---
     pytest.param(
         "post",
-        "/api/pipeline/sink",
+        "/api/pipeline/write-output",
         {"graph": {"nodes": [], "edges": []}, "node_id": "x"},
         400,
         id="sink-empty-graph",
@@ -202,14 +202,6 @@ _ERROR_CASES = [
         None,
         404,
         id="browse-missing-dir",
-    ),
-    # --- 400: bad table name format on databricks schema ---
-    pytest.param(
-        "get",
-        "/api/schema/databricks?table=not_qualified",
-        None,
-        400,
-        id="databricks-schema-bad-table",
     ),
     # --- 400: update missing utility file ---
     pytest.param(

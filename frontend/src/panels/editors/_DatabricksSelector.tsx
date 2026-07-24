@@ -1,17 +1,6 @@
 import { useState, useRef, useEffect } from "react"
 import { Check, ChevronDown, Loader2 } from "lucide-react"
-import {
-  getWarehouses,
-  getCatalogs,
-  getSchemas,
-  getTables,
-  getCacheStatus,
-  getFetchProgress,
-  fetchDatabricksData,
-  deleteCache,
-  ApiError,
-} from "../../api/client"
-import { CacheFetchButton } from "../../components/CacheFetchButton"
+import { getWarehouses, getCatalogs, getSchemas, getTables, ApiError } from "../../api/client"
 import { CommittedTextField } from "../../components/form"
 
 // ─── WarehousePicker ──────────────────────────────────────────────
@@ -302,53 +291,5 @@ export function CatalogTablePicker({
         </div>
       )}
     </div>
-  )
-}
-
-// ─── DatabricksFetchButton ────────────────────────────────────────
-
-type CacheStatus = {
-  cached: boolean
-  path?: string
-  table: string
-  row_count: number
-  column_count: number
-  size_bytes: number
-  fetched_at: number
-}
-
-export function DatabricksFetchButton({
-  table,
-  httpPath,
-  query,
-  onFetched,
-}: {
-  table: string
-  httpPath: string
-  query: string
-  onFetched?: (info: CacheStatus) => void
-}) {
-  return (
-    <CacheFetchButton<CacheStatus>
-      resourceKey={table}
-      getStatus={(key) => getCacheStatus(key)}
-      startFetch={(key) =>
-        fetchDatabricksData({
-          table: key,
-          http_path: httpPath || undefined,
-          query: query || undefined,
-        }).then((data) => ({ cached: true, ...data }) as CacheStatus)
-      }
-      getProgress={(key) => getFetchProgress(key)}
-      deleteCache={(key) => deleteCache(key)}
-      timestampField="fetched_at"
-      labels={{
-        fetchLabel: "Fetch Data",
-        refreshLabel: "Refresh Data",
-        notCachedHint: "Not fetched yet \u2014 click to download from Databricks",
-        pendingLabel: "Connecting...",
-      }}
-      onCacheReady={onFetched}
-    />
   )
 }

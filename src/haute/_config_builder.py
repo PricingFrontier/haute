@@ -21,7 +21,7 @@ from haute._code_extraction import (
     _extract_user_code,
 )
 from haute._config_io import NODE_TYPE_TO_FOLDER, has_config_folder, load_node_config
-from haute._config_validation import warn_unrecognized_config_keys
+from haute._config_validation import validate_node_config, warn_unrecognized_config_keys
 from haute._contracts import Contract, get_column_contract
 from haute._edge_join import normalise_edge_join_decorator_kwargs
 from haute._explore_overview import validate_explore_overview
@@ -45,14 +45,6 @@ __all__ = [
 ]
 
 logger = get_logger(component="parser_helpers.config")
-
-SOURCE_DTYPE_CONFIG_KEYS: tuple[str, ...] = (
-    "schema_overrides",
-    "dtypes",
-    "column_dtypes",
-    "schema",
-    "categorical_levels",
-)
 
 
 def _copy_config_keys(
@@ -92,18 +84,6 @@ def _build_node_config(
             config["tables"] = decorator_kwargs["tables"]
         if isinstance(decorator_kwargs.get("contract"), str):
             config["contract"] = decorator_kwargs["contract"]
-    elif node_type == NodeType.DATA_SOURCE:
-        config["path"] = decorator_kwargs.get("path", "")
-        if "table" in decorator_kwargs:
-            config["sourceType"] = "databricks"
-            config["table"] = decorator_kwargs["table"]
-            if "http_path" in decorator_kwargs:
-                config["http_path"] = decorator_kwargs["http_path"]
-            if "query" in decorator_kwargs:
-                config["query"] = decorator_kwargs["query"]
-        else:
-            config["sourceType"] = "flat_file"
-        _copy_config_keys(config, decorator_kwargs, SOURCE_DTYPE_CONFIG_KEYS)
     elif node_type == NodeType.LIVE_SWITCH:
         config["input_scenario_map"] = decorator_kwargs.get("input_scenario_map", {})
         config["inputs"] = param_names
@@ -197,9 +177,6 @@ def _build_node_config(
             {"name": v.get("name", ""), "value": str(v.get("value", ""))}
             for v in (raw_values if isinstance(raw_values, list) else [])
         ]
-    elif node_type == NodeType.DATA_SINK:
-        config["path"] = decorator_kwargs.get("path", decorator_kwargs.get("sink", ""))
-        config["format"] = decorator_kwargs.get("format", "parquet")
     elif node_type in (NodeType.DATA_INPUT, NodeType.DATA_OUTPUT):
         # Config-folder nodes: format/mode/source fields/arguments live in the
         # JSON sidecar loaded via config= *before* this builder runs, so this
@@ -262,7 +239,7 @@ def _attach_code_from_body(
         config["code"] = _extract_external_user_code(body, param_names) if body else ""
     elif node_type == NodeType.POLARS:
         config["code"] = _extract_user_code(body, param_names) if body else ""
-    elif node_type == NodeType.DATA_SOURCE:
+    elif node_type == NodeType.DATA_INPUT:
         config["code"] = _extract_source_user_code(body) if body else ""
     elif node_type == NodeType.SCENARIO_EXPANDER:
         config["code"] = _extract_scenario_expander_user_code(body, param_names) if body else ""
@@ -475,6 +452,16 @@ def _resolve_node_config(
         raise _sidecar_required_error(node_type, func_name)
     else:
         config = _build_node_config(node_type, decorator_kwargs, body, param_names)
+
+    if node_type in {NodeType.DATA_INPUT, NodeType.DATA_OUTPUT}:
+        try:
+            config = validate_node_config(node_type, config)
+        except ValueError as exc:
+            raise ConfigError(
+                str(exc),
+                func_name=func_name,
+                node_type=node_type.value,
+            ) from exc
 
     # Cross-check a user-declared contract against the builder's.  A
     # mismatch raises ``ContractMismatchError`` — a typo in the

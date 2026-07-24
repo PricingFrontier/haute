@@ -64,7 +64,7 @@ def _graph_with_submodel() -> dict:
         "nodes": [
             {
                 "id": "load",
-                "data": {"label": "load", "nodeType": "dataSource", "config": {"path": "d.csv"}},
+                "data": {"label": "load", "nodeType": "dataInput", "config": {"path": "d.csv"}},
             },
             {
                 "id": "submodel__pricing",

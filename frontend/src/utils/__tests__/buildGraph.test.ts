@@ -37,12 +37,12 @@ describe("buildGraph", () => {
     // Catches: if the fallback `n.type || n.data.nodeType` is changed
     // to just `n.type`, nodes without an explicit type field would be
     // serialized with type=undefined, causing the backend to reject them.
-    const nodes = [makeSimpleNode("n1", "data_source")]
+    const nodes = [makeSimpleNode("n1", "dataInput")]
     // makeSimpleNode doesn't set .type by default, only data.nodeType
 
     const result = buildGraph(nodes, [])
 
-    expect(result.nodes[0].type).toBe("data_source")
+    expect(result.nodes[0].type).toBe("dataInput")
   })
 
   it("uses explicit node.type over data.nodeType", () => {

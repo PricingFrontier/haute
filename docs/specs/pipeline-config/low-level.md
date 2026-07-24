@@ -68,7 +68,6 @@
   | Node type | Sidecar folder |
   |---|---|
   | `apiInput` | `config/quote_input/` |
-  | `dataSource` | `config/data_source/` |
   | `dataInput` | `config/data_input/` |
   | `dataOutput` | `config/data_output/` |
   | `liveSwitch` | `config/source_switch/` |
@@ -76,7 +75,6 @@
   | `banding` | `config/banding/` |
   | `ratingStep` | `config/rating_step/` |
   | `output` | `config/quote_response/` |
-  | `dataSink` | `config/data_sink/` |
   | `externalFile` | `config/load_file/` |
   | `modelling` | `config/model_training/` |
   | `optimiser` | `config/optimisation/` |
@@ -108,7 +106,7 @@ through `_resolve_output_node`: an explicit `@pipeline.output` node wins if ther
 otherwise the single node with no outgoing edge; otherwise raise, naming every candidate node.
 `Pipeline.to_graph()` independently converts the same live objects into a React-Flow-shaped
 plain `dict`, inferring each node's display type from `config["_node_type"]` if present, else
-`DATA_SOURCE` for a source node, else `OUTPUT` for the last-registered node, else `POLARS`, and
+`DATA_INPUT` for an input node, else `OUTPUT` for the last-registered node, else `POLARS`, and
 serialising exactly the registered edges without parameter-name inference.
 
 **2. Static source graph (`_graph_builders.py` + `_config_builder.py`).** Given an
@@ -364,3 +362,31 @@ mappings missing the active scenario, including exact exception inheritance/code
 HTTP/background translation. The 0.6 pre-1.0 migration note documents the newly loud configured
 mapping miss. Non-goals: implicit wiring inference, additional variadic forms, changes to
 successful mapped live-switch selection, or removal of unconfigured default-source fallback.
+
+## Approved change contract — 0.7.0 canonical data I/O node types
+
+The implementation plan is
+[`F_0.7.0_data-io-convergence.plan.md`](../../trip/plans/F_0.7.0_data-io-convergence.plan.md).
+
+- In `src/haute/_types.py`, delete `NodeType.DATA_SOURCE`, `NodeType.DATA_SINK`,
+  `DataSourceConfig`, and `DataSinkConfig`; extend `DataInputConfig`/`DataOutputConfig` with the
+  exact discriminated fields in the I/O low-level contract. Remove `"data_source"` and
+  `"data_sink"` from `DECORATOR_TO_NODE_TYPE`.
+- In `src/haute/pipeline.py`, remove `NodeRegistry.data_source()` and `.data_sink()`. Keep
+  `.data_input()`/`.data_output()` as ordinary registration wrappers; the live API may register
+  multiple instances. Preserve `_resolve_output_node` semantics: multiple terminal Data Outputs
+  without one explicit `NodeType.OUTPUT` remain an actionable ambiguous-leaf error.
+- In `src/haute/_config_io.py`, delete the two legacy folder mappings and retain
+  `config/data_input/` and `config/data_output/`. In `_config_validation.py`, derive strict
+  branch-aware validation from the retained TypedDict/validator rather than accepting the union
+  of every possible branch key.
+- `_config_builder.py` extracts the generated `dataInput` post-read Polars body into `code` and
+  validates it as part of the input config. Output body scaffolding never becomes config code.
+  `_graph_builders.py` and parser decorator recognition reject removed decorators normally.
+- `_scaffold.py`, checked-in rating/reference projects, examples, assistant assets, and every
+  pipeline fixture containing a removed decorator are reset to their standard blank-pipeline
+  representation. Do not inspect or translate their removed node configs.
+- Tests pin the exact enum/decorator/folder/key sets, branch-specific rejection, no inactive-key
+  leakage, multiple-node registration, explicit-output and ambiguous-leaf standalone execution,
+  config JSON round trips, blank scaffold/reference reset, and source search proving there is no
+  executable legacy mapping or alias.

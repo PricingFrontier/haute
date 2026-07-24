@@ -35,8 +35,15 @@ def _graph():
                     "id": "source",
                     "data": {
                         "label": "source",
-                        "nodeType": "dataSource",
-                        "config": {"path": "input.parquet", "sourceType": "flat_file"},
+                        "nodeType": "dataInput",
+                        "config": {
+                            "inputType": "file",
+                            "format": "parquet",
+                            "mode": "scan",
+                            "cacheMode": "direct",
+                            "path": "input.parquet",
+                            "arguments": {},
+                        },
                     },
                 },
                 {
@@ -278,8 +285,15 @@ def test_preview_consumer_ignores_disconnected_runtime_input_changes(
     disconnected = graph.node_map["disconnected"]
     disconnected_data = disconnected.data.model_copy(
         update={
-            "nodeType": "dataSource",
-            "config": {"path": str(unrelated_path), "sourceType": "flat_file"},
+            "nodeType": "dataInput",
+            "config": {
+                "inputType": "file",
+                "format": "parquet",
+                "mode": "scan",
+                "cacheMode": "direct",
+                "path": str(unrelated_path),
+                "arguments": {},
+            },
         }
     )
     graph = graph.model_copy(

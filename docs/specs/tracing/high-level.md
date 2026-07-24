@@ -455,3 +455,25 @@ ascending original physical indices and the `available`, `truncated`, and
 `unavailable` states. The public unsupported error's exact code, fields,
 HTTP-422/background mappings, deterministic order, and 16-entry array caps are
 also contract tests.
+
+## Approved change contract — 0.7.0 data-input tracing
+
+Implementation follows
+[`F_0.7.0_data-io-convergence.plan.md`](../../trip/plans/F_0.7.0_data-io-convergence.plan.md).
+
+- Trace source classification recognises `dataInput` provider/cache identity and no
+  `dataSource`. Direct and cached inputs expose the same row-correlation surface after the
+  optional input Polars body has run.
+- Trace provenance records input type, format, direct versus snapshot execution, safe source
+  identity digest, and selected cache generation. It may report the cache component's external
+  freshness state verbatim but never infers freshness from a cache hit, execution origin, or
+  fetch timestamp.
+- An input config/code or cache-generation change participates in the shared trace fingerprint.
+  A refresh cannot reuse a trace from the preceding generation. Provenance and exported
+  diagnostics contain no locator credentials or raw connection URI.
+- Out-of-band re-export/source handling is rewritten around direct local-file `dataInput` and
+  `externalFile`; cached remote inputs remain attributable to their source identity rather than
+  being mislabeled as an ordinary Parquet file.
+
+Acceptance covers direct/cached correlation parity, post-input code, generation invalidation,
+freshness-unknown presentation, safe export/redaction, and absence of the removed source type.

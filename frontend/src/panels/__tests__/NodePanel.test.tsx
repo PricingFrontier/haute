@@ -21,7 +21,6 @@ vi.mock("../LazyNodeEditors", async () => {
   )
   return {
   LazyEditorBoundary: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-  DataSourceEditor: () => <div data-testid="DataSourceEditor" />,
   TransformEditor: (props: Record<string, unknown>) => {
     transformEditorProps.push(props)
     return (
@@ -59,7 +58,6 @@ vi.mock("../LazyNodeEditors", async () => {
   ExternalFileEditor: () => <div data-testid="ExternalFileEditor" />,
   ApiInputEditor: () => <div data-testid="ApiInputEditor" />,
   LiveSwitchEditor: () => <div data-testid="LiveSwitchEditor" />,
-  SinkEditor: () => <div data-testid="SinkEditor" />,
   DataInputEditor: () => <div data-testid="DataInputEditor" />,
   DataOutputEditor: () => <div data-testid="DataOutputEditor" />,
   ScenarioExpanderEditor: () => <div data-testid="ScenarioExpanderEditor" />,
@@ -267,19 +265,9 @@ describe("NodePanel", () => {
     expect(screen.getByTestId("ColumnsTab")).toBeInTheDocument()
   })
 
-  it("renders DataSourceEditor for dataSource nodes", () => {
-    renderPanel({ node: makeNode({ data: { label: "DS", description: "", nodeType: "dataSource", config: {} } }) })
-    expect(screen.getByTestId("DataSourceEditor")).toBeInTheDocument()
-  })
-
   it("renders ApiInputEditor for apiInput nodes", () => {
     renderPanel({ node: makeNode({ data: { label: "API", description: "", nodeType: "apiInput", config: {} } }) })
     expect(screen.getByTestId("ApiInputEditor")).toBeInTheDocument()
-  })
-
-  it("renders SinkEditor for dataSink nodes", () => {
-    renderPanel({ node: makeNode({ data: { label: "Sink", description: "", nodeType: "dataSink", config: {} } }) })
-    expect(screen.getByTestId("SinkEditor")).toBeInTheDocument()
   })
 
   it("renders DataInputEditor for dataInput nodes", () => {
@@ -389,7 +377,7 @@ describe("NodePanel", () => {
       data: {
         label: "Claims Source",
         description: "",
-        nodeType: "dataSource",
+        nodeType: "dataInput",
         config: {},
         _columns: [{ name: "premium", dtype: "Int64" }],
       },
@@ -550,7 +538,7 @@ describe("NodePanel", () => {
       })
       const ordinary = makeNode({
         id: "ordinary",
-        data: { label: "Claims Source", description: "", nodeType: "dataSource", config: {} },
+        data: { label: "Claims Source", description: "", nodeType: "dataInput", config: {} },
       })
       const edges: SimpleEdge[] = [
         {
@@ -1337,11 +1325,11 @@ describe("NodePanel", () => {
       })
       const upstreamOrigNode = makeNode({
         id: "up_orig",
-        data: { label: "Upstream Orig", description: "", nodeType: "dataSource", config: {} },
+        data: { label: "Upstream Orig", description: "", nodeType: "dataInput", config: {} },
       })
       const upstreamInstNode = makeNode({
         id: "up_inst",
-        data: { label: "Upstream Inst", description: "", nodeType: "dataSource", config: {} },
+        data: { label: "Upstream Inst", description: "", nodeType: "dataInput", config: {} },
       })
       const instanceNode = makeNode({
         id: "inst_1",
@@ -1424,11 +1412,11 @@ describe("NodePanel", () => {
       })
       const upOrig = makeNode({
         id: "up_orig",
-        data: { label: "Source A", description: "", nodeType: "dataSource", config: {} },
+        data: { label: "Source A", description: "", nodeType: "dataInput", config: {} },
       })
       const upInst = makeNode({
         id: "up_inst",
-        data: { label: "Source B", description: "", nodeType: "dataSource", config: {} },
+        data: { label: "Source B", description: "", nodeType: "dataInput", config: {} },
       })
       const instanceNode = makeNode({
         id: "inst_1",
@@ -1575,11 +1563,11 @@ describe("NodePanel", () => {
       })
       const upOrig = makeNode({
         id: "up_orig",
-        data: { label: "Source A", description: "", nodeType: "dataSource", config: {} },
+        data: { label: "Source A", description: "", nodeType: "dataInput", config: {} },
       })
       const upInst = makeNode({
         id: "up_inst",
-        data: { label: "Source B", description: "", nodeType: "dataSource", config: {} },
+        data: { label: "Source B", description: "", nodeType: "dataInput", config: {} },
       })
 
       // Initial render: instance with no inputMapping
@@ -1682,7 +1670,7 @@ describe("NodePanel", () => {
         data: {
           label: "Source",
           description: "",
-          nodeType: "dataSource",
+          nodeType: "dataInput",
           config: {},
           _columns: [
             { name: "channel", dtype: "String" },
@@ -1721,7 +1709,7 @@ describe("NodePanel", () => {
         data: {
           label: "Source",
           description: "",
-          nodeType: "dataSource",
+          nodeType: "dataInput",
           config: {},
           _columns: [{ name: "age", dtype: "Int64" }],
         },
@@ -1769,7 +1757,7 @@ describe("NodePanel", () => {
         data: {
           label: "Source",
           description: "",
-          nodeType: "dataSource",
+          nodeType: "dataInput",
           config: {},
           _columns: [{ name: "age", dtype: "Int64" }],
         },
@@ -1824,7 +1812,7 @@ describe("NodePanel", () => {
         data: {
           label: "Source",
           description: "",
-          nodeType: "dataSource",
+          nodeType: "dataInput",
           config: {},
           _columns: [{ name: "age", dtype: "Int64" }],
         },
@@ -1834,7 +1822,7 @@ describe("NodePanel", () => {
         data: {
           label: "Source",
           description: "",
-          nodeType: "dataSource",
+          nodeType: "dataInput",
           config: {},
           _columns: [
             { name: "age", dtype: "Int64" },
@@ -1884,7 +1872,7 @@ describe("NodePanel", () => {
         data: {
           label: "Source A",
           description: "",
-          nodeType: "dataSource",
+          nodeType: "dataInput",
           config: {},
           _columns: [
             { name: "age", dtype: "Int64" },
@@ -1897,7 +1885,7 @@ describe("NodePanel", () => {
         data: {
           label: "Source B",
           description: "",
-          nodeType: "dataSource",
+          nodeType: "dataInput",
           config: {},
           _columns: [
             { name: "income", dtype: "Decimal" },
@@ -1933,7 +1921,7 @@ describe("NodePanel", () => {
         data: {
           label: "Source",
           description: "",
-          nodeType: "dataSource",
+          nodeType: "dataInput",
           config: {},
           _columns: [
             { name: "age", dtype: "Int64" },

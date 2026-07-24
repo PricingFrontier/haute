@@ -87,15 +87,19 @@ class TestRegistrySchemaCompleteness:
 
     def test_registry_capabilities_payload_shape(self) -> None:
         payload = registry_capabilities()
-        assert {e["name"] for e in payload} == set(FORMATS_BY_NAME)
-        csv = next(e for e in payload if e["name"] == "csv")
-        assert csv["input_modes"] == ["scan", "read"]
-        assert "schema_overrides" in csv["input_arguments"]["scan"]
-        assert csv["read_engines_missing"] == []
-        delta = next(e for e in payload if e["name"] == "delta")
+        assert payload["schema_version"] == 1
+        formats = {
+            entry["name"]: entry for group in payload["groups"] for entry in group["formats"]
+        }
+        assert set(formats) == set(FORMATS_BY_NAME)
+        csv = formats["csv"]
+        assert csv["input"]["modes"] == ["scan", "read"]
+        assert "schema_overrides" in csv["input"]["arguments"]["scan"]
+        assert csv["input"]["engines_missing"] == []
+        delta = formats["delta"]
         # Core haute ships no deltalake engine: the capability payload must
         # say so rather than pretending delta is runnable.
-        assert delta["read_engines_missing"] == ["deltalake"]
+        assert delta["input"]["engines_missing"] == ["deltalake"]
 
 
 class TestDtypeCodec:

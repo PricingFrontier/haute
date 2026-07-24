@@ -252,20 +252,20 @@ class TestNoCyclicImports:
 
 
 # Representative bodies pulled from real tests / fixtures:
-# - dataSource / scenario_expander
+# - dataInput / scenario_expander
 # - modelScore
 # - externalFile
 # - polars (transform)
 
 
-DATA_SOURCE_BODY_NO_SENTINEL = (
+DATA_INPUT_BODY_NO_SENTINEL = (
     '    """load britsure policies"""\n'
     '    df = pl.scan_parquet("data/britsure.parquet")\n'
     '    df = df.filter(pl.col("year") >= 2020)\n'
     "    return df"
 )
 
-DATA_SOURCE_BODY_IMPORT_PREFIX = (
+DATA_INPUT_BODY_IMPORT_PREFIX = (
     '    """data source"""\n'
     "    from pathlib import Path\n"
     '    df = pl.scan_parquet("d.parquet")\n'
@@ -273,11 +273,11 @@ DATA_SOURCE_BODY_IMPORT_PREFIX = (
     "    return df"
 )
 
-DATA_SOURCE_BODY_JUST_LOAD = (
+DATA_INPUT_BODY_JUST_LOAD = (
     '    """just loads"""\n    df = pl.scan_parquet("d.parquet")\n    return df'
 )
 
-DATA_SOURCE_BODY_CHAIN = (
+DATA_INPUT_BODY_CHAIN = (
     '    """chain-style"""\n'
     '    df = pl.scan_parquet("d.parquet")\n'
     "    df = (\n"
@@ -368,11 +368,11 @@ POLARS_BODY_EXPLICIT_ASSIGN = (
 )
 
 
-DATA_SOURCE_CASES = [
-    pytest.param(DATA_SOURCE_BODY_NO_SENTINEL, id="source-no-sentinel"),
-    pytest.param(DATA_SOURCE_BODY_IMPORT_PREFIX, id="source-import-prefix"),
-    pytest.param(DATA_SOURCE_BODY_JUST_LOAD, id="source-just-load"),
-    pytest.param(DATA_SOURCE_BODY_CHAIN, id="source-chain"),
+DATA_INPUT_CASES = [
+    pytest.param(DATA_INPUT_BODY_NO_SENTINEL, id="input-no-sentinel"),
+    pytest.param(DATA_INPUT_BODY_IMPORT_PREFIX, id="input-import-prefix"),
+    pytest.param(DATA_INPUT_BODY_JUST_LOAD, id="input-just-load"),
+    pytest.param(DATA_INPUT_BODY_CHAIN, id="input-chain"),
 ]
 
 MODEL_SCORE_CASES = [
@@ -404,9 +404,9 @@ class TestExtractorCorrectOutputs:
     def test_source_strips_first_load_statement(self):
         from haute._code_extraction import _extract_source_user_code
 
-        result = _extract_source_user_code(DATA_SOURCE_BODY_NO_SENTINEL)
+        result = _extract_source_user_code(DATA_INPUT_BODY_NO_SENTINEL)
         assert "scan_parquet" not in result, (
-            "dataSource extraction must strip the auto-generated scan_parquet call"
+            "dataInput extraction must strip the auto-generated scan_parquet call"
         )
         assert 'filter(pl.col("year") >= 2020)' in result
         assert "return df" not in result
@@ -414,7 +414,7 @@ class TestExtractorCorrectOutputs:
     def test_source_only_load_returns_empty(self):
         from haute._code_extraction import _extract_source_user_code
 
-        assert _extract_source_user_code(DATA_SOURCE_BODY_JUST_LOAD) == ""
+        assert _extract_source_user_code(DATA_INPUT_BODY_JUST_LOAD) == ""
 
     def test_model_score_thin_body_is_empty(self):
         from haute._code_extraction import _extract_model_score_user_code
@@ -514,7 +514,7 @@ class TestConsolidatedEngineContract:
         found = [n for n in candidate_registry_names if hasattr(mod, n)]
         assert found, (
             "Expected a matcher registry on _code_extraction exposing the "
-            "four boilerplate shapes (dataSource, modelScore, externalFile, "
+            "four boilerplate shapes (dataInput, modelScore, externalFile, "
             "polars).  Candidate names: "
             f"{candidate_registry_names!r}.  The engine must dispatch via a "
             "registry, not a hardcoded if/elif in the engine body."
@@ -525,7 +525,7 @@ class TestConsolidatedEngineContract:
         if isinstance(registry, dict):
             assert len(registry) >= 4, (
                 f"Matcher registry has {len(registry)} entries; expected "
-                ">= 4 (dataSource, modelScore, externalFile, polars)."
+                ">= 4 (dataInput, modelScore, externalFile, polars)."
             )
         else:
             # Tuple / list / set — must be iterable with >= 4 members
@@ -576,7 +576,7 @@ class TestConsolidatedEngineContract:
 
         # Map kind names to the wrapper + parameters it needs.
         kind_aliases = {
-            "source": ("dataSource", "data_source", "source"),
+            "source": ("dataInput", "data_input", "source"),
             "model_score": ("modelScore", "model_score"),
             "external": ("externalFile", "external_file", "external"),
             "polars": ("polars", "transform"),
@@ -585,9 +585,9 @@ class TestConsolidatedEngineContract:
         samples = [
             (
                 "source",
-                DATA_SOURCE_BODY_NO_SENTINEL,
+                DATA_INPUT_BODY_NO_SENTINEL,
                 None,
-                facade._extract_source_user_code(DATA_SOURCE_BODY_NO_SENTINEL),
+                facade._extract_source_user_code(DATA_INPUT_BODY_NO_SENTINEL),
             ),
             (
                 "model_score",

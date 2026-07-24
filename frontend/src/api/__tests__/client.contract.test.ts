@@ -15,8 +15,9 @@ import {
   estimateOptimiserSolve,
   estimateTrainingRam,
   commitMilestone,
-  executeSink,
-  fetchDatabricksData,
+  writeOutput,
+  fetchIoCapabilities,
+  buildInputCache,
   fetchSchema,
   getExploreStatus,
   getGitStatus,
@@ -97,21 +98,31 @@ describe("client runtime contracts", () => {
     await expect(previewNode({ graph: dummyGraph, nodeId: "n1", rowLimit: 10 })).rejects.toThrow(/parsePreviewNodeResponse/i)
   })
 
-  it("executeSink rejects malformed sink payloads", async () => {
+  it("writeOutput rejects malformed output payloads", async () => {
     mockFetch.mockReturnValue(jsonResponse({ message: "done" }))
 
-    await expect(executeSink({ graph: dummyGraph, nodeId: "sink1" })).rejects.toThrow(/parseSinkResponse/i)
+    await expect(writeOutput({ graph: dummyGraph, nodeId: "sink1" })).rejects.toThrow(/parseWriteOutputResponse/i)
   })
 
-  it("executeSink validates and returns a well-formed sink payload", async () => {
+  it("writeOutput validates and returns a well-formed output payload", async () => {
     mockFetch.mockReturnValue(
       jsonResponse({ status: "ok", message: "Wrote 3 rows", row_count: 3, path: "out.parquet", format: "parquet" }),
     )
 
-    const result = await executeSink({ graph: dummyGraph, nodeId: "sink1" })
+    const result = await writeOutput({ graph: dummyGraph, nodeId: "sink1" })
     expect(result.status).toBe("ok")
     expect(result.row_count).toBe(3)
     expect(result.path).toBe("out.parquet")
+  })
+
+  it("fetchIoCapabilities rejects unknown V1 discriminants", async () => {
+    mockFetch.mockReturnValue(jsonResponse({ schema_version: 1, groups: [{ name: "file", label: "Files", input_available: true, output_available: true, cache_modes: ["unknown"], input_fields: [], output_fields: [], formats: [] }] }))
+    await expect(fetchIoCapabilities()).rejects.toThrow(/parseIoCapabilitiesResponse/i)
+  })
+
+  it("input-cache build rejects a malformed V1 response", async () => {
+    mockFetch.mockReturnValue(jsonResponse({ schema_version: 2, job_id: "job", identity_digest: "digest", status: "running", joined: false }))
+    await expect(buildInputCache({ schema_version: 1, config: {}, refresh: false, profile: "lazy_sink" })).rejects.toThrow(/parseInputCacheBuildResponse/i)
   })
 
   it("previewNode sends requested preview columns when provided", async () => {
@@ -501,12 +512,6 @@ describe("client runtime contracts", () => {
     await expect(buildJsonCache({ path: "/data/input.json" })).rejects.toThrow(/parseJsonCacheBuildResponse/i)
   })
 
-  it("fetchDatabricksData rejects malformed fetch payloads", async () => {
-    const fixture = loadUiContractFixture<Record<string, unknown>>("fetch_table_response")
-    mockFetch.mockReturnValue(jsonResponse({ ...fixture, column_count: undefined }))
-
-    await expect(fetchDatabricksData({ table: "cat.sch.tbl" })).rejects.toThrow(/parseFetchTableResponse/i)
-  })
 })
 
 describe("next-wave client runtime contracts", () => {

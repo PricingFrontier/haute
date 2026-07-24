@@ -44,7 +44,7 @@ def _training_execution_context() -> ExecutionContext:
 
 
 def _source_only_request(path: str = "x.parquet"):
-    """Build a TrainRequest whose graph is a single dataSource node."""
+    """Build a TrainRequest whose graph is a single dataInput node."""
     from haute.schemas import TrainRequest
 
     graph = make_graph(
@@ -54,7 +54,7 @@ def _source_only_request(path: str = "x.parquet"):
                     "id": "n",
                     "data": {
                         "label": "n",
-                        "nodeType": "dataSource",
+                        "nodeType": "dataInput",
                         "config": {"path": path},
                     },
                 }
@@ -349,7 +349,7 @@ class TestStartGlmMergeAndKeepColumns:
                         "id": "source",
                         "data": {
                             "label": "source",
-                            "nodeType": "dataSource",
+                            "nodeType": "dataInput",
                             "config": {"path": "data.parquet"},
                         },
                     },
@@ -881,7 +881,7 @@ class TestStartExecutionContextLifecycle:
                         "id": "source",
                         "data": {
                             "label": "source",
-                            "nodeType": "dataSource",
+                            "nodeType": "dataInput",
                             "config": {"path": "data.parquet"},
                         },
                     },
@@ -1131,7 +1131,7 @@ class TestStartCategoricalLevelsMerge:
                         "id": "source",
                         "data": {
                             "label": "source",
-                            "nodeType": "dataSource",
+                            "nodeType": "dataInput",
                             "config": {"path": "data.parquet"},
                         },
                     },

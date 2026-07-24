@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from haute.parser import parse_pipeline_file
-from tests.conftest import write_data_source_config
+from tests.conftest import write_data_input_config
 
 
 def _write(path: Path, content: str) -> None:
@@ -22,7 +22,7 @@ def test_nested_pipeline_uses_file_relative_configs_and_project_relative_submode
         encoding="utf-8",
     )
 
-    source_config = write_data_source_config(tmp_path / "rating", "raw_rows", "data/sample.parquet")
+    source_config = write_data_input_config(tmp_path / "rating", "raw_rows", "data/sample.parquet")
     _write(
         tmp_path / "modules" / "scoring.py",
         """\
@@ -46,7 +46,7 @@ import haute
 pipeline = haute.Pipeline("nested_paths")
 
 
-@pipeline.data_source(config="{source_config}")
+@pipeline.data_input(config="{source_config}")
 def raw_rows() -> pl.LazyFrame:
     return pl.scan_parquet("data/sample.parquet")
 
@@ -96,14 +96,15 @@ import haute
 submodel = haute.Submodel("rating_scoring")
 
 
-@submodel.data_source(config="config/data_source/rating_source.json")
+@submodel.data_input(config="config/data_input/rating_source.json")
 def rating_score() -> pl.LazyFrame:
     return pl.scan_parquet("rating-data.parquet")
 """,
     )
-    _write(
-        tmp_path / "rating" / "config" / "data_source" / "rating_source.json",
-        '{"path": "rating-data.parquet"}',
+    write_data_input_config(
+        tmp_path / "rating",
+        "rating_source",
+        "rating-data.parquet",
     )
     _write(
         tmp_path / "rating" / "main.py",
@@ -172,13 +173,15 @@ def test_project_root_prefixed_pipeline_local_submodel_uses_pipeline_config_base
         encoding="utf-8",
     )
 
-    _write(
-        tmp_path / "config" / "data_source" / "source.json",
-        '{"path": "root-data.parquet"}',
+    write_data_input_config(
+        tmp_path,
+        "source",
+        "root-data.parquet",
     )
-    _write(
-        tmp_path / "rating" / "config" / "data_source" / "source.json",
-        '{"path": "rating-data.parquet"}',
+    write_data_input_config(
+        tmp_path / "rating",
+        "source",
+        "rating-data.parquet",
     )
     _write(
         tmp_path / "rating" / "modules" / "scoring.py",
@@ -189,7 +192,7 @@ import haute
 submodel = haute.Submodel("scoring")
 
 
-@submodel.data_source(config="config/data_source/source.json")
+@submodel.data_input(config="config/data_input/source.json")
 def source() -> pl.LazyFrame:
     return pl.scan_parquet("rating-data.parquet")
 """,

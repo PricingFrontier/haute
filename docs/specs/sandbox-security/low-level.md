@@ -371,3 +371,23 @@ of `_FORMAT_METHOD_NAMES`. Receiver shapes:
 > elsewhere in the codebase that forgets to use `haute._env`'s helpers (or
 > forgets a corresponding entry here) would not be caught by this test file
 > itself — the regression protection is only as complete as the table's upkeep.
+
+## Approved change contract — 0.7.0 unified data-I/O security
+
+The implementation plan is
+[`F_0.7.0_data-io-convergence.plan.md`](../../trip/plans/F_0.7.0_data-io-convergence.plan.md).
+
+- `_builders._build_data_input` invokes `_user_exec._exec_user_code` exactly once for non-empty
+  input code, after provider dispatch and before returning the frame. No provider-specific
+  `exec()` or expanded `safe_globals` path is added. Config validation rejects a `code` key on
+  `DataOutputConfig`.
+- File/lakehouse provider adapters validate direct locators against the project root before
+  open. Credential-free raw SQLite input/output URIs resolve relative to the pipeline and are
+  subject to the same project-root containment; named connection values stay provider-owned.
+  `SourceCacheStore` derives paths only beneath its validated project cache root from a checked
+  digest/generation id. Unified output execution validates the final destination and unique
+  sibling staging path before writer invocation and rechecks containment before replace.
+- Add caller-level tests in the I/O/cache/executor suites for project escape, symlink swaps,
+  malformed digest/generation ids, staging-path containment, and secret-free user namespaces.
+  Extend sandbox tests only for the retained input-code entry point; the underlying AST/global
+  allow-list contract does not fork by provider.

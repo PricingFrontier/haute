@@ -26,13 +26,29 @@ def _isolated_cwd(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _data_input_config(path: str) -> dict[str, object]:
+    suffix = Path(path).suffix.casefold()
+    return {
+        "inputType": "file",
+        "format": "csv" if suffix == ".csv" else "parquet",
+        "mode": "scan",
+        "cacheMode": "direct",
+        "path": path,
+        "arguments": {},
+    }
+
+
 def _simple_graph() -> dict:
     """A minimal graph dict with two nodes and an edge."""
     return {
         "nodes": [
             {
                 "id": "load",
-                "data": {"label": "load", "nodeType": "dataSource", "config": {"path": "data.csv"}},
+                "data": {
+                    "label": "load",
+                    "nodeType": "dataInput",
+                    "config": _data_input_config("data.csv"),
+                },
             },
             {
                 "id": "calc",
@@ -49,7 +65,11 @@ def _graph_with_submodel() -> dict:
         "nodes": [
             {
                 "id": "load",
-                "data": {"label": "load", "nodeType": "dataSource", "config": {"path": "d.csv"}},
+                "data": {
+                    "label": "load",
+                    "nodeType": "dataInput",
+                    "config": _data_input_config("d.csv"),
+                },
             },
             {
                 "id": "submodel__pricing",
@@ -226,8 +246,8 @@ class TestCreateSubmodel:
             "id": "child_source",
             "data": {
                 "label": "Child Source",
-                "nodeType": "dataSource",
-                "config": {"path": "data.parquet"},
+                "nodeType": "dataInput",
+                "config": _data_input_config("data.parquet"),
             },
         }
         mock_result = MagicMock()
@@ -262,7 +282,7 @@ class TestCreateSubmodel:
 
         assert resp.status_code == 200
         child_config_path = config_path_for_node(
-            NodeType.DATA_SOURCE,
+            NodeType.DATA_INPUT,
             _sanitize_func_name(child["data"]["label"]),
         )
         assert (rating_root / "modules" / "pricing.py").exists()
@@ -316,9 +336,12 @@ def base_rate(df: pl.LazyFrame) -> pl.LazyFrame:
     ) -> None:
         """Submodel drill-down reads rating/modules and rating/config."""
         rating_root = _write_nested_project(tmp_path)
-        config_dir = rating_root / "config" / "data_source"
+        config_dir = rating_root / "config" / "data_input"
         config_dir.mkdir(parents=True)
-        (config_dir / "source.json").write_text('{"path": "rating-data.parquet"}')
+        (config_dir / "source.json").write_text(
+            '{"inputType":"file","format":"parquet","mode":"scan",'
+            '"cacheMode":"direct","path":"rating-data.parquet","arguments":{}}'
+        )
         modules_dir = rating_root / "modules"
         modules_dir.mkdir()
         (modules_dir / "pricing.py").write_text(
@@ -329,7 +352,7 @@ import haute
 submodel = haute.Submodel("pricing")
 
 
-@submodel.data_source(config="config/data_source/source.json")
+@submodel.data_input(config="config/data_input/source.json")
 def source() -> pl.LazyFrame:
     return pl.scan_parquet("rating-data.parquet")
 """,
@@ -343,16 +366,19 @@ def source() -> pl.LazyFrame:
         node = data["graph"]["nodes"][0]
         assert node["data"]["config"]["path"] == "rating-data.parquet"
 
-    def test_get_falls_back_to_legacy_project_root_module(
+    def test_get_falls_back_to_project_root_module(
         self,
         client: TestClient,
         tmp_path: Path,
     ) -> None:
         """Drill-down matches parser compatibility for root modules."""
         _write_nested_project(tmp_path)
-        config_dir = tmp_path / "config" / "data_source"
+        config_dir = tmp_path / "config" / "data_input"
         config_dir.mkdir(parents=True)
-        (config_dir / "source.json").write_text('{"path": "root-data.parquet"}')
+        (config_dir / "source.json").write_text(
+            '{"inputType":"file","format":"parquet","mode":"scan",'
+            '"cacheMode":"direct","path":"root-data.parquet","arguments":{}}'
+        )
         modules_dir = tmp_path / "modules"
         modules_dir.mkdir()
         (modules_dir / "pricing.py").write_text(
@@ -363,7 +389,7 @@ import haute
 submodel = haute.Submodel("pricing")
 
 
-@submodel.data_source(config="config/data_source/source.json")
+@submodel.data_input(config="config/data_input/source.json")
 def source() -> pl.LazyFrame:
     return pl.scan_parquet("root-data.parquet")
 """,

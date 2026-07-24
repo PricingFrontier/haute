@@ -107,19 +107,18 @@ Specs are organised by owning subsystem, not one-per-node-type. Two blanket rule
 every node type: its generated-code template (`_gen_*`) is specced in
 [codegen](codegen/high-level.md), and its config-editor UI in
 [frontend-node-editors](frontend-node-editors/high-level.md). The table below covers all
-21 node types and gives the components owning each node's core behaviour beyond those two.
+19 node types and gives the components owning each node's core behaviour beyond those two.
 
 | Node type | Core behaviour specced in |
 |---|---|
 | `apiInput` | [json-shredding](json-shredding/high-level.md) (v2 input codec and JSON→frames shredding); [caching](caching/high-level.md) owns the JSON-cache HTTP route |
-| `dataSource` | [io-layer](io-layer/high-level.md); [databricks-io](databricks-io/high-level.md) when fed from a Databricks fetch |
-| `dataInput` / `dataOutput` | [io-layer](io-layer/high-level.md) (Polars IO registry) |
+| `dataInput` | [io-layer](io-layer/high-level.md) (file, database, lakehouse, Databricks, inline, cache lifecycle, chunking, and optional Polars transform); [databricks-io](databricks-io/high-level.md) for Databricks browsing |
+| `dataOutput` | [io-layer](io-layer/high-level.md) (registry-backed writers and explicit write action) |
 | `polars` | [execution-engine](execution-engine/high-level.md) (execution), [sandbox-security](sandbox-security/high-level.md) (user-code validation), [expression-parsing](expression-parsing/high-level.md) (trace formulae) |
 | `edgeJoin` | [json-shredding](json-shredding/high-level.md) (`_edge_join.py` join core) |
 | `modelScore` | [mlflow-model-registry](mlflow-model-registry/high-level.md) (loading/scoring/explainability) |
 | `banding` / `ratingStep` | [rating](rating/high-level.md) |
 | `output` | [json-shredding](json-shredding/high-level.md) (output mapping and assembly), [server-api](server-api/high-level.md) (editor dry-run route), [deploy](deploy/high-level.md) (served response) |
-| `dataSink` | [execution-engine](execution-engine/high-level.md) (lazy sink execution), [io-layer](io-layer/high-level.md) (writers) |
 | `explore` | [explore-eda](explore-eda/high-level.md) (backend), [frontend-preview-explore](frontend-preview-explore/high-level.md) (UI) |
 | `externalFile` | [pipeline-config](pipeline-config/high-level.md) (config/builders), [io-layer](io-layer/high-level.md) (reading), [deploy](deploy/high-level.md) (bundling) |
 | `liveSwitch` | [execution-engine](execution-engine/high-level.md) (`_node_apply.py`), [deploy](deploy/high-level.md) (live-branch collapse at deploy time) |
@@ -177,3 +176,14 @@ every node type: its generated-code template (`_gen_*`) is specced in
 | [build-and-distribution](build-and-distribution/high-level.md) | Python package metadata and Hatch hook, frontend production build, bundled static assets, dependency locks, typed-package marker, and MkDocs publication |
 | [engineering-quality](engineering-quality/high-level.md) | CI workflows, pre-commit/lint/type/test gates, critical coverage, mutation/performance suites, browser E2E, developer scripts, and non-normative engineering evidence |
 | [reference-pipeline](reference-pipeline/high-level.md) | The checked-in non-runnable `rating/` layout/example snapshot: generated graph code, available sidecars, utilities, and model artefacts, with missing referenced data/sidecar and no dedicated end-to-end tests |
+
+## Approved change contract — 0.7.0 data I/O node convergence
+
+The approved target is specified in the
+[I/O layer](io-layer/high-level.md#approved-change-contract-070-data-io-convergence) and ordered
+by [`F_0.7.0_data-io-convergence.plan.md`](../trip/plans/F_0.7.0_data-io-convergence.plan.md).
+The canonical node set has 19 types: `dataInput` owns all file, database,
+lakehouse, Databricks, and inline tabular sources; `dataOutput` owns all supported tabular
+persistence. `dataSource` and `dataSink` are removed with no compatibility path. This is
+node-type convergence, not graph cardinality: pipelines may contain multiple data inputs and
+outputs.

@@ -35,6 +35,7 @@ import importlib.util
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Literal, cast
+from urllib.parse import urlsplit
 
 import polars as pl
 
@@ -46,6 +47,26 @@ from haute.errors import BoundedMemoryUnsupportedError
 SourceKind = Literal["path", "database", "inline"]
 InputMode = Literal["read", "scan"]
 OutputMode = Literal["write", "sink"]
+IoGroup = Literal["file", "database", "lakehouse", "inline"]
+_IO_UNIVERSAL_KEYS = {
+    "instanceOf",
+    "inputMapping",
+    "selected_columns",
+    "column_renames",
+    "categorical_levels",
+    "contract",
+}
+
+
+def format_group(fmt: IoFormat) -> IoGroup:
+    """Return the editor group that owns a registered format."""
+    if fmt.name in {"delta", "iceberg"}:
+        return "lakehouse"
+    if fmt.source_kind == "database":
+        return "database"
+    if fmt.source_kind == "inline":
+        return "inline"
+    return "file"
 
 
 @dataclass(frozen=True, slots=True)
@@ -261,6 +282,195 @@ _DTYPE_MAPPING_ARGUMENTS: frozenset[str] = frozenset(
 
 class PolarsIoConfigError(ValueError):
     """A dataInput/dataOutput config does not describe a valid invocation."""
+
+
+def _require_nonempty_string(config: Mapping[str, Any], field: str, *, subject: str) -> None:
+    value = config.get(field)
+    if not isinstance(value, str) or not value.strip():
+        raise PolarsIoConfigError(f"{subject} requires a non-empty {field!r}.")
+
+
+def _validate_raw_uri(uri: str) -> None:
+    if urlsplit(uri).username is not None or urlsplit(uri).password is not None:
+        raise PolarsIoConfigError("Raw database 'uri' must not contain credentials.")
+
+
+def _validate_exactly_one_locator(config: Mapping[str, Any], *, subject: str) -> None:
+    connection = config.get("connection")
+    uri = config.get("uri")
+    has_connection = isinstance(connection, str) and bool(connection.strip())
+    has_uri = isinstance(uri, str) and bool(uri.strip())
+    if has_connection == has_uri:
+        raise PolarsIoConfigError(
+            f"{subject} requires exactly one non-empty 'connection' or 'uri'."
+        )
+    if has_uri:
+        _validate_raw_uri(cast(str, uri))
+
+
+def _reject_inactive_fields(
+    config: Mapping[str, Any], *, allowed: set[str], discriminant: str, value: str
+) -> None:
+    for field in config:
+        if field not in allowed:
+            raise PolarsIoConfigError(f"Field {field!r} is not valid for {discriminant} {value!r}.")
+
+
+def validate_data_input_config(config: Mapping[str, Any]) -> dict[str, Any]:
+    """Strictly validate one persisted canonical ``dataInput`` config."""
+    result = dict(config)
+    input_type = result.get("inputType")
+    if input_type not in {"file", "database", "lakehouse", "databricks", "inline"}:
+        raise PolarsIoConfigError(f"Unknown inputType {input_type!r}.")
+
+    common = {
+        "inputType",
+        "format",
+        "cacheMode",
+        "arguments",
+        "code",
+    } | _IO_UNIVERSAL_KEYS
+    polars_common = common | {"mode"}
+    if input_type == "databricks":
+        _reject_inactive_fields(
+            result,
+            allowed={
+                "inputType",
+                "cacheMode",
+                "http_path",
+                "table",
+                "query",
+                "arguments",
+                "code",
+            }
+            | _IO_UNIVERSAL_KEYS,
+            discriminant="inputType",
+            value=input_type,
+        )
+        if result.get("cacheMode") != "snapshot":
+            raise PolarsIoConfigError("Databricks input requires cacheMode 'snapshot'.")
+        _require_nonempty_string(result, "http_path", subject="Databricks input")
+        _require_nonempty_string(result, "table", subject="Databricks input")
+        query = result.get("query")
+        if query is not None and (not isinstance(query, str) or not query.strip()):
+            raise PolarsIoConfigError(
+                "Databricks input 'query' must be a non-empty string when set."
+            )
+        arguments = result.get("arguments", {})
+        if not isinstance(arguments, Mapping):
+            raise PolarsIoConfigError("Databricks input 'arguments' must be an object.")
+        unknown = set(arguments) - {"batch_size"}
+        if unknown:
+            raise PolarsIoConfigError(
+                f"Databricks input does not support arguments {sorted(unknown)}."
+            )
+        if "batch_size" in arguments and (
+            isinstance(arguments["batch_size"], bool)
+            or not isinstance(arguments["batch_size"], int)
+            or arguments["batch_size"] <= 0
+        ):
+            raise PolarsIoConfigError("Databricks input 'batch_size' must be a positive integer.")
+        return result
+
+    fmt = format_for_config(result)
+    group = format_group(fmt)
+    if input_type != group:
+        raise PolarsIoConfigError(
+            f"Format {fmt.name!r} belongs to group {group!r}, not inputType {input_type!r}."
+        )
+    if input_type == "file":
+        _reject_inactive_fields(
+            result, allowed=polars_common | {"path"}, discriminant="inputType", value=input_type
+        )
+        _require_nonempty_string(result, "path", subject=f"Format {fmt.name!r}")
+        if result.get("cacheMode") not in {"direct", "snapshot"}:
+            raise PolarsIoConfigError("File input requires cacheMode 'direct' or 'snapshot'.")
+    elif input_type == "lakehouse":
+        _reject_inactive_fields(
+            result, allowed=polars_common | {"path"}, discriminant="inputType", value=input_type
+        )
+        _require_nonempty_string(result, "path", subject=f"Format {fmt.name!r}")
+        if result.get("cacheMode") not in {"direct", "snapshot"}:
+            raise PolarsIoConfigError("Lakehouse input requires cacheMode 'direct' or 'snapshot'.")
+    elif input_type == "database":
+        _reject_inactive_fields(
+            result,
+            allowed=common | {"connection", "uri", "query"},
+            discriminant="inputType",
+            value=input_type,
+        )
+        if result.get("cacheMode") != "snapshot":
+            raise PolarsIoConfigError("Database input requires cacheMode 'snapshot'.")
+        _validate_exactly_one_locator(result, subject="Database input")
+        _require_nonempty_string(result, "query", subject="Database input")
+        arguments = result.get("arguments", {})
+        if not isinstance(arguments, Mapping):
+            raise PolarsIoConfigError("Database input 'arguments' must be an object.")
+        unknown = set(arguments) - {"batch_size"}
+        if unknown:
+            raise PolarsIoConfigError(
+                f"Database input does not support arguments {sorted(unknown)}."
+            )
+        if "batch_size" in arguments and (
+            isinstance(arguments["batch_size"], bool)
+            or not isinstance(arguments["batch_size"], int)
+            or arguments["batch_size"] <= 0
+        ):
+            raise PolarsIoConfigError("Database input 'batch_size' must be a positive integer.")
+    else:
+        _reject_inactive_fields(
+            result,
+            allowed=polars_common | {"records"},
+            discriminant="inputType",
+            value=input_type,
+        )
+        if result.get("cacheMode") != "direct":
+            raise PolarsIoConfigError("Inline input requires cacheMode 'direct'.")
+        if not isinstance(result.get("records"), list):
+            raise PolarsIoConfigError("Inline input requires 'records' as a list.")
+        if not all(isinstance(record, Mapping) for record in result["records"]):
+            raise PolarsIoConfigError("Inline input 'records' must contain objects.")
+
+    if input_type != "database":
+        mode = resolve_input_mode(fmt, result)
+        owner, callable_name = input_callable_key(fmt, mode)
+        validate_arguments(fmt, owner, callable_name, result.get("arguments") or {})
+    return result
+
+
+def validate_data_output_config(config: Mapping[str, Any]) -> dict[str, Any]:
+    """Strictly validate one persisted canonical ``dataOutput`` config."""
+    result = dict(config)
+    output_type = result.get("outputType")
+    if output_type not in {"file", "database", "lakehouse"}:
+        raise PolarsIoConfigError(f"Unknown outputType {output_type!r}.")
+    fmt = format_for_config(result)
+    group = format_group(fmt)
+    if output_type != group:
+        raise PolarsIoConfigError(
+            f"Format {fmt.name!r} belongs to group {group!r}, not outputType {output_type!r}."
+        )
+    if fmt.writer is None and fmt.sinker is None:
+        raise PolarsIoConfigError(f"Format {fmt.name!r} has no output capability.")
+    common = {"outputType", "format", "mode", "arguments"} | _IO_UNIVERSAL_KEYS
+    if output_type == "database":
+        _reject_inactive_fields(
+            result,
+            allowed=common | {"connection", "uri", "table"},
+            discriminant="outputType",
+            value=output_type,
+        )
+        _validate_exactly_one_locator(result, subject="Database output")
+        _require_nonempty_string(result, "table", subject="Database output")
+    else:
+        _reject_inactive_fields(
+            result, allowed=common | {"path"}, discriminant="outputType", value=output_type
+        )
+        _require_nonempty_string(result, "path", subject=f"Format {fmt.name!r} output")
+    mode = resolve_output_mode(fmt, result)
+    owner, callable_name = output_callable_key(fmt, mode)
+    validate_arguments(fmt, owner, callable_name, result.get("arguments") or {})
+    return result
 
 
 def format_for_config(config: Mapping[str, Any]) -> IoFormat:
@@ -501,13 +711,12 @@ def read_polars_input(
 def _resolve_output_target(fmt: IoFormat, config: Mapping[str, Any]) -> dict[str, Any]:
     """Target fields for an output invocation (validated, not resolved to disk)."""
     if fmt.source_kind == "database":
+        from haute._database_io import resolve_connection_uri
+
         table = config.get("table")
-        uri = config.get("uri")
         if not isinstance(table, str) or not table.strip():
             raise PolarsIoConfigError("Database output requires a non-empty 'table'.")
-        if not isinstance(uri, str) or not uri.strip():
-            raise PolarsIoConfigError("Database output requires a non-empty 'uri'.")
-        return {"table": table, "uri": uri}
+        return {"table": table, "uri": resolve_connection_uri(config)}
     path = config.get("path")
     if not isinstance(path, str) or not path.strip():
         raise PolarsIoConfigError(f"Format {fmt.name!r} requires a non-empty output 'path'.")
@@ -644,44 +853,160 @@ def default_output_extension(fmt: IoFormat) -> str | None:
     return fmt.extensions[0] if fmt.extensions else None
 
 
-def registry_capabilities() -> list[dict[str, Any]]:
-    """Registry view for the capability endpoint: formats + argument surfaces."""
-    payload: list[dict[str, Any]] = []
+def _snapshot_build(fmt: IoFormat) -> Literal["bounded", "admitted_eager", "unsupported"]:
+    if fmt.source_kind == "inline":
+        return "unsupported"
+    if fmt.source_kind == "database":
+        return "bounded"
+    return "bounded" if fmt.bounded_read else "admitted_eager"
+
+
+def registry_capabilities() -> dict[str, Any]:
+    """Canonical, ordered I/O editor capabilities derived from the registry."""
+    groups: dict[str, dict[str, Any]] = {
+        "file": {
+            "name": "file",
+            "label": "File",
+            "input_available": True,
+            "output_available": True,
+            "cache_modes": ["direct", "snapshot"],
+            "input_fields": [{"name": "path", "label": "Path", "kind": "path", "required": True}],
+            "output_fields": [{"name": "path", "label": "Path", "kind": "path", "required": True}],
+            "formats": [],
+        },
+        "database": {
+            "name": "database",
+            "label": "Database",
+            "input_available": True,
+            "output_available": True,
+            "cache_modes": ["snapshot"],
+            "input_fields": [
+                {
+                    "name": "connection",
+                    "label": "Connection environment reference",
+                    "kind": "connection",
+                    "required": False,
+                },
+                {"name": "uri", "label": "Credential-free URI", "kind": "text", "required": False},
+                {"name": "query", "label": "Query", "kind": "query", "required": True},
+            ],
+            "output_fields": [
+                {
+                    "name": "connection",
+                    "label": "Connection environment reference",
+                    "kind": "connection",
+                    "required": False,
+                },
+                {"name": "uri", "label": "Credential-free URI", "kind": "text", "required": False},
+                {"name": "table", "label": "Table", "kind": "text", "required": True},
+            ],
+            "formats": [],
+        },
+        "lakehouse": {
+            "name": "lakehouse",
+            "label": "Lakehouse",
+            "input_available": True,
+            "output_available": True,
+            "cache_modes": ["direct", "snapshot"],
+            "input_fields": [
+                {"name": "path", "label": "Table locator", "kind": "path", "required": True}
+            ],
+            "output_fields": [
+                {"name": "path", "label": "Table locator", "kind": "path", "required": True}
+            ],
+            "formats": [],
+        },
+        "databricks": {
+            "name": "databricks",
+            "label": "Databricks",
+            "input_available": True,
+            "output_available": False,
+            "cache_modes": ["snapshot"],
+            "input_fields": [
+                {
+                    "name": "http_path",
+                    "label": "SQL warehouse HTTP path",
+                    "kind": "text",
+                    "required": True,
+                },
+                {"name": "table", "label": "Table", "kind": "table", "required": True},
+                {"name": "query", "label": "SELECT clause", "kind": "query", "required": False},
+            ],
+            "output_fields": [],
+            "formats": [],
+        },
+        "inline": {
+            "name": "inline",
+            "label": "Inline",
+            "input_available": True,
+            "output_available": False,
+            "cache_modes": ["direct"],
+            "input_fields": [
+                {"name": "records", "label": "Records", "kind": "records", "required": True}
+            ],
+            "output_fields": [],
+            "formats": [],
+        },
+    }
     for fmt in FORMATS:
-        entry: dict[str, Any] = {
-            "name": fmt.name,
-            "label": fmt.label,
-            "source_kind": fmt.source_kind,
-            "extensions": list(fmt.extensions),
-            "unstable": fmt.unstable,
-            "bounded_read": fmt.bounded_read,
+        input_modes = [
+            mode for mode, available in (("scan", fmt.scanner), ("read", fmt.reader)) if available
+        ]
+        output_modes = [
+            mode for mode, available in (("sink", fmt.sinker), ("write", fmt.writer)) if available
+        ]
+        if fmt.source_kind == "database":
+            input_modes = []
+            output_modes = ["write"] if fmt.writer is not None else []
+        input_arguments = {
+            mode: sorted(allowed_arguments(fmt, *input_callable_key(fmt, cast(InputMode, mode))))
+            for mode in input_modes
+        }
+        if fmt.source_kind == "database":
+            input_arguments = {"snapshot": ["batch_size"]}
+        output_arguments = {
+            mode: sorted(allowed_arguments(fmt, *output_callable_key(fmt, cast(OutputMode, mode))))
+            for mode in output_modes
+        }
+        input = {
+            "modes": input_modes,
+            "arguments": input_arguments,
+            # Database Data Input is acquired by the bounded provider adapter
+            # rather than Polars' eager read_database_uri callable. Its engine
+            # requirements therefore belong to that adapter, not this legacy
+            # Polars format metadata.
+            "engines_missing": (
+                []
+                if fmt.source_kind == "database"
+                else (missing_engines(fmt.read_engines) if (fmt.reader or fmt.scanner) else [])
+            ),
+            "direct_bounded": fmt.bounded_read,
             "needs_schema_when_bounded": fmt.needs_schema_when_bounded,
-            "read_available": fmt.reader is not None or fmt.scanner is not None,
-            "write_available": fmt.writer is not None or fmt.sinker is not None,
-            "read_engines_missing": missing_engines(fmt.read_engines)
-            if (fmt.reader or fmt.scanner)
-            else [],
-            "write_engines_missing": missing_engines(fmt.write_engines)
-            if (fmt.writer or fmt.sinker)
-            else [],
-            "input_modes": [
-                mode
-                for mode, available in (("scan", fmt.scanner), ("read", fmt.reader))
-                if available
-            ],
-            "output_modes": [
-                mode
-                for mode, available in (("sink", fmt.sinker), ("write", fmt.writer))
-                if available
-            ],
+            "snapshot_build": _snapshot_build(fmt),
+            "cached_read": fmt.source_kind != "inline",
         }
-        entry["input_arguments"] = {
-            mode: sorted(allowed_arguments(fmt, *input_callable_key(fmt, mode)))
-            for mode in entry["input_modes"]
-        }
-        entry["output_arguments"] = {
-            mode: sorted(allowed_arguments(fmt, *output_callable_key(fmt, mode)))
-            for mode in entry["output_modes"]
-        }
-        payload.append(entry)
-    return payload
+        output = None
+        if output_modes:
+            publication = "transactional" if format_group(fmt) == "lakehouse" else "atomic_file"
+            if fmt.source_kind == "database":
+                publication = "transactional"
+            output = {
+                "modes": output_modes,
+                "arguments": output_arguments,
+                "engines_missing": missing_engines(fmt.write_engines),
+                "native_sink": fmt.sinker is not None,
+                "eager_writer": fmt.writer is not None,
+                "publication": publication,
+            }
+        groups[format_group(fmt)]["formats"].append(
+            {
+                "name": fmt.name,
+                "label": fmt.label,
+                "group": format_group(fmt),
+                "extensions": list(fmt.extensions),
+                "unstable": fmt.unstable,
+                "input": input,
+                "output": output,
+            }
+        )
+    return {"schema_version": 1, "groups": list(groups.values())}

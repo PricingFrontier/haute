@@ -29,7 +29,7 @@ function makeTrace(overrides: Partial<TraceResult> = {}): TraceResult {
     column: "premium",
     output_value: 42.5,
     steps: [
-      makeStep({ node_id: "n1", node_name: "Source", node_type: "dataSource" }),
+      makeStep({ node_id: "n1", node_name: "Source", node_type: "dataInput" }),
       makeStep({
         node_id: "n2",
         node_name: "Calc",
@@ -311,7 +311,7 @@ describe("TracePanel", () => {
             makeStep({
               node_id: "data",
               node_name: "data",
-              node_type: "dataSource",
+              node_type: "dataInput",
               schema_diff: {
                 columns_added: ["driver_age"],
                 columns_removed: [],
@@ -539,7 +539,7 @@ describe("TracePanel", () => {
             makeStep({
               node_id: "optimiser_inputs",
               node_name: "optimiser_inputs",
-              node_type: "dataSource",
+              node_type: "dataInput",
               schema_diff: {
                 columns_added: ["quote_id", "unused_objective", "unused_constraint"],
                 columns_removed: [],
@@ -692,7 +692,7 @@ describe("TracePanel", () => {
             makeStep({
               node_id: "batch_quotes",
               node_name: "batch_quotes",
-              node_type: "dataSource",
+              node_type: "dataInput",
               schema_diff: {
                 columns_added: [
                   "quote_id",
@@ -758,7 +758,7 @@ describe("TracePanel", () => {
             makeStep({
               node_id: "policies",
               node_name: "Policy Source",
-              node_type: "dataSource",
+              node_type: "dataInput",
               schema_diff: {
                 columns_added: ["premium"],
                 columns_removed: [],
@@ -1405,7 +1405,7 @@ describe("TracePanel", () => {
             makeStep({
               node_id: "source",
               node_name: "Source",
-              node_type: "dataSource",
+              node_type: "dataInput",
               schema_diff: {
                 columns_added: ["tier"],
                 columns_removed: [],

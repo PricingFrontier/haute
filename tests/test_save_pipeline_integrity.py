@@ -150,7 +150,7 @@ class TestWatcherLongSaveRace:
                     id="src",
                     data=NodeData(
                         label="src",
-                        nodeType="dataSource",
+                        nodeType="dataInput",
                         config={"path": "data.parquet"},
                     ),
                 ),
@@ -220,7 +220,7 @@ class TestWatcherLongSaveRace:
                     id="src",
                     data=NodeData(
                         label="src",
-                        nodeType="dataSource",
+                        nodeType="dataInput",
                         config={"path": "d.parquet"},
                     ),
                 ),
@@ -358,7 +358,7 @@ class TestGraphToCodeMultiPathTraversal:
                                 "id": "a",
                                 "data": {
                                     "label": "a",
-                                    "nodeType": "dataSource",
+                                    "nodeType": "dataInput",
                                     "config": {"path": "data.parquet"},
                                 },
                             },
@@ -583,7 +583,7 @@ class TestSaveServiceTransaction:
                     id="a",
                     data=NodeData(
                         label="a",
-                        nodeType="dataSource",
+                        nodeType="dataInput",
                         config={"path": "data.parquet"},
                     ),
                     position={"x": 0.0, "y": 0.0},

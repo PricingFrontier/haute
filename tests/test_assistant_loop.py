@@ -707,9 +707,9 @@ class TestSystemPromptSummary:
         prompt = build_system_prompt(
             pipeline_name="main",
             source_file="main.py",
-            node_summary="3 nodes (2× polars, 1× dataSource)",
+            node_summary="3 nodes (2× polars, 1× dataInput)",
         )
-        assert "3 nodes (2× polars, 1× dataSource)" in prompt
+        assert "3 nodes (2× polars, 1× dataInput)" in prompt
 
     def test_summarise_graph_nodes_counts_by_type(self):
         from types import SimpleNamespace
@@ -720,10 +720,10 @@ class TestSystemPromptSummary:
             nodes=[
                 SimpleNamespace(data=SimpleNamespace(nodeType="polars")),
                 SimpleNamespace(data=SimpleNamespace(nodeType="polars")),
-                SimpleNamespace(data=SimpleNamespace(nodeType="dataSource")),
+                SimpleNamespace(data=SimpleNamespace(nodeType="dataInput")),
             ]
         )
-        assert summarise_graph_nodes(graph) == "3 nodes (1× dataSource, 2× polars)"
+        assert summarise_graph_nodes(graph) == "3 nodes (1× dataInput, 2× polars)"
 
 
 class TestProviderStreamTeardown:

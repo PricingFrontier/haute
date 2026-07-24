@@ -132,7 +132,7 @@ def _make_expander_optimiser_graph(data_path: str) -> dict:
                     "id": "source",
                     "data": {
                         "label": "source",
-                        "nodeType": "dataSource",
+                        "nodeType": "dataInput",
                         "config": {"path": data_path},
                     },
                 },
@@ -292,7 +292,7 @@ def test_ratebook_solve_preserves_non_source_banding_input_after_target_checkpoi
                     "id": "scored",
                     "data": {
                         "label": "scored",
-                        "nodeType": "dataSource",
+                        "nodeType": "dataInput",
                         "config": {"path": str(scored_path)},
                     },
                 },
@@ -300,7 +300,7 @@ def test_ratebook_solve_preserves_non_source_banding_input_after_target_checkpoi
                     "id": "banding_source",
                     "data": {
                         "label": "banding source",
-                        "nodeType": "dataSource",
+                        "nodeType": "dataInput",
                         "config": {"path": str(banding_path)},
                     },
                 },
@@ -577,7 +577,7 @@ def test_solve_rejects_null_quote_id_instead_of_dropping_rows(
                     "id": "source",
                     "data": {
                         "label": "source",
-                        "nodeType": "dataSource",
+                        "nodeType": "dataInput",
                         "config": {"path": str(source_path)},
                     },
                 },
@@ -738,7 +738,7 @@ def test_real_solve_apply_totals_match_selected_rows(
                     "id": "source",
                     "data": {
                         "label": "source",
-                        "nodeType": "dataSource",
+                        "nodeType": "dataInput",
                         "config": {"path": str(source_path)},
                     },
                 },

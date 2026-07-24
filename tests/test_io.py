@@ -527,26 +527,6 @@ class TestDataSourceAdapterFlatFile:
             build_data_source_adapter({"sourceType": "flat_file", "path": ""})
 
 
-class TestDataSourceAdapterDatabricks:
-    def test_databricks_delegates_to_cached_table_reader(self) -> None:
-        sentinel = pl.DataFrame({"x": [1]}).lazy()
-
-        with patch("haute._databricks_io.read_cached_table", return_value=sentinel) as read_cached:
-            adapter = build_data_source_adapter(
-                {"sourceType": "databricks", "table": "cat.sch.policies"}
-            )
-            result = adapter.read()
-
-        assert adapter.source_type == "databricks"
-        assert adapter.location == "cat.sch.policies"
-        assert result is sentinel
-        read_cached.assert_called_once_with("cat.sch.policies")
-
-    def test_databricks_requires_table(self) -> None:
-        with pytest.raises(ValueError, match="databricks.*table"):
-            build_data_source_adapter({"sourceType": "databricks", "table": ""})
-
-
 class TestDataSourceAdapterErrors:
     def test_unknown_source_type_fails_loudly(self) -> None:
         with pytest.raises(ValueError, match="Unsupported data source type"):

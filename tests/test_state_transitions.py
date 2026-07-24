@@ -68,7 +68,7 @@ class TestDoubleStartTraining:
                         "id": "src",
                         "data": {
                             "label": "src",
-                            "nodeType": "dataSource",
+                            "nodeType": "dataInput",
                             "config": {"path": "fake.parquet"},
                         },
                     },
@@ -106,7 +106,7 @@ class TestDoubleStartTraining:
                         "id": "src",
                         "data": {
                             "label": "src",
-                            "nodeType": "dataSource",
+                            "nodeType": "dataInput",
                             "config": {"path": "fake.parquet"},
                         },
                     },
@@ -255,7 +255,7 @@ class TestExportScript:
                         "id": "src",
                         "data": {
                             "label": "src",
-                            "nodeType": "dataSource",
+                            "nodeType": "dataInput",
                             "config": {"path": "data.parquet"},
                         },
                     },

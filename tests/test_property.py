@@ -280,7 +280,7 @@ class TestBandingProperties:
 def _pipeline_graph_strategy():
     """Generate a random DAG-based pipeline graph.
 
-    Builds a chain: dataSource → N transforms → output.
+    Builds a chain: dataInput → N transforms → output.
     Uses valid Python identifiers as labels to survive codegen roundtrip.
     """
 
@@ -308,7 +308,7 @@ def _pipeline_graph_strategy():
                 id="source",
                 data=NodeData(
                     label="Source",
-                    nodeType=NodeType.DATA_SOURCE,
+                    nodeType=NodeType.DATA_INPUT,
                     config={"path": "data/input.parquet"},
                 ),
             )

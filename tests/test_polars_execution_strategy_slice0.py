@@ -71,7 +71,7 @@ def _make_avg_top_5_competitor_join_graph(
                     "id": "policies",
                     "data": {
                         "label": "policies",
-                        "nodeType": "dataSource",
+                        "nodeType": "dataInput",
                         "config": {"path": policies_path},
                     },
                 },
@@ -79,7 +79,7 @@ def _make_avg_top_5_competitor_join_graph(
                     "id": "competitor_insights",
                     "data": {
                         "label": "competitor_insights",
-                        "nodeType": "dataSource",
+                        "nodeType": "dataInput",
                         "config": {"path": competitor_path},
                     },
                 },
@@ -205,7 +205,7 @@ def _make_optimiser_estimate_graph(
             "id": "optimiser_input",
             "data": {
                 "label": "optimiser_input",
-                "nodeType": "dataSource",
+                "nodeType": "dataInput",
                 "config": {
                     "path": optimiser_input_path,
                     "contract": "opaque",
@@ -234,7 +234,7 @@ def _make_optimiser_estimate_graph(
                 "id": "age_veh_banding",
                 "data": {
                     "label": "age_veh_banding",
-                    "nodeType": "dataSource",
+                    "nodeType": "dataInput",
                     "config": {"path": banding_path},
                 },
             },

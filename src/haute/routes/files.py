@@ -11,13 +11,7 @@ from fastapi.concurrency import run_in_threadpool
 from haute._json_safe import rows_to_json_safe
 from haute._logging import get_logger
 from haute.routes._helpers import _INTERNAL_ERROR_DETAIL, validate_safe_path
-from haute.schemas import (
-    BrowseFilesResponse,
-    FileItem,
-    IoFormatCapability,
-    IoFormatsResponse,
-    SchemaResponse,
-)
+from haute.schemas import BrowseFilesResponse, FileItem, SchemaResponse
 
 if TYPE_CHECKING:
     import polars as pl
@@ -144,20 +138,6 @@ def _read_schema_blocking(path: str, target: Path) -> SchemaResponse:
     )
 
 
-@router.get("/formats", response_model=IoFormatsResponse)
-async def list_io_formats() -> IoFormatsResponse:
-    """Format capabilities for the dataInput/dataOutput node editors.
-
-    Everything derives from the backend format registry — the frontend never
-    hard-codes format names, argument lists, or engine availability.
-    """
-    from haute._polars_io_registry import registry_capabilities
-
-    return IoFormatsResponse(
-        formats=[IoFormatCapability(**entry) for entry in registry_capabilities()]
-    )
-
-
 @router.get("/schema", response_model=SchemaResponse)
 async def get_schema(path: str) -> SchemaResponse:
     """Read a data file and return its schema + preview.
@@ -208,71 +188,4 @@ async def get_schema(path: str) -> SchemaResponse:
             error_message=str(exc),
             exc_info=True,
         )
-        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL) from None
-
-
-def _validate_table_param(table: str) -> None:
-    """Reject table names that don't match catalog.schema.table format."""
-    from haute._databricks_io import _TABLE_NAME_RE
-
-    if not _TABLE_NAME_RE.match(table):
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid table name: {table!r}. "
-            "Expected fully-qualified name like 'catalog.schema.table'.",
-        )
-
-
-def _read_databricks_schema_blocking(table: str, p: Path) -> SchemaResponse:
-    """Synchronous Databricks cached-parquet schema + preview reader."""
-    import polars as pl
-
-    from haute._polars_utils import read_parquet_metadata
-    from haute.schemas import ColumnInfo
-
-    lf = pl.scan_parquet(p)
-    schema = lf.collect_schema()
-    columns = [ColumnInfo(name=c, dtype=str(d)) for c, d in schema.items()]
-    preview_df = _collect_file_preview(lf.head(5))
-    meta = read_parquet_metadata(p)
-    row_count = meta["row_count"]
-
-    return SchemaResponse(
-        path=table,
-        columns=columns,
-        row_count=row_count,
-        column_count=len(columns),
-        preview=rows_to_json_safe(preview_df.to_dicts()),
-    )
-
-
-@router.get("/schema/databricks", response_model=SchemaResponse)
-async def get_databricks_schema(table: str) -> SchemaResponse:
-    """Return schema + preview from the local parquet cache of a Databricks table.
-
-    Parquet metadata + preview materialisation are offloaded to
-    ``run_in_threadpool`` so the async event loop is not blocked on disk I/O.
-    """
-    _validate_table_param(table)
-
-    from haute._databricks_io import cached_path
-
-    p = cached_path(table)
-    if p is None:
-        raise HTTPException(
-            status_code=404,
-            detail=f'Table "{table}" has not been fetched yet. '
-            f"Click Fetch Data on the data source node to download it.",
-        )
-
-    try:
-        return await run_in_threadpool(_read_databricks_schema_blocking, table, p)
-    except HTTPException:
-        raise
-    except Exception:  # noqa: BLE001
-        # Fail loudly server-side with the full stack trace (filesystem
-        # error, corrupt parquet, etc.) and return a sanitized 500 so
-        # cache paths and parquet internals never surface in the HTTP
-        # body.
-        logger.error("databricks_schema_read_failed", table=table, exc_info=True)
         raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL) from None

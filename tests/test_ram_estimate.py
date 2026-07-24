@@ -47,6 +47,36 @@ from haute.graph_utils import GraphEdge, GraphNode, NodeData, PipelineGraph
 # ---------------------------------------------------------------------------
 
 
+def _file_input_config(path: object, *, format: str | None = None) -> dict[str, object]:
+    path_string = str(path)
+    if format is None:
+        suffix = path_string.lower().rsplit(".", 1)[-1] if "." in path_string else ""
+        format = {
+            "parquet": "parquet",
+            "csv": "csv",
+            "jsonl": "ndjson",
+            "ndjson": "ndjson",
+        }.get(suffix, "parquet")
+    return {
+        "inputType": "file",
+        "format": format,
+        "mode": "scan",
+        "cacheMode": "direct",
+        "path": path_string,
+        "arguments": {},
+    }
+
+
+def _databricks_input_config(table: str) -> dict[str, object]:
+    return {
+        "inputType": "databricks",
+        "cacheMode": "snapshot",
+        "http_path": "/sql/1.0/warehouses/test",
+        "table": table,
+        "arguments": {},
+    }
+
+
 def _make_source_node(
     node_id: str = "src1",
     label: str = "quotes",
@@ -135,7 +165,7 @@ def test_source_metadata_propagates_programming_errors_but_marks_os_errors_unava
 ) -> None:
     path = tmp_path / "source.parquet"
     path.touch()
-    node = _make_source_node(node_type="dataSource", config={"path": str(path)})
+    node = _make_source_node(node_type="dataInput", config=_file_input_config(str(path)))
 
     with patch("haute._ram_estimate._detailed_parquet_metadata", side_effect=KeyError("bug")):
         with pytest.raises(KeyError, match="bug"):
@@ -149,7 +179,7 @@ def test_low_cardinality_wide_strings_use_expanded_probe_width(tmp_path) -> None
     path = tmp_path / "wide_dictionary.parquet"
     wide_value = "x" * 2048
     pl.DataFrame({"category": [wide_value] * 256}).write_parquet(path)
-    node = _make_source_node(node_type="dataSource", config={"path": str(path)})
+    node = _make_source_node(node_type="dataInput", config=_file_input_config(str(path)))
 
     metadata = _detailed_source_metadata_for_node(node)
 
@@ -161,7 +191,7 @@ def test_low_cardinality_wide_strings_use_expanded_probe_width(tmp_path) -> None
 def test_materialisation_estimate_reports_known_empty_parquet_as_available_zero(tmp_path) -> None:
     path = tmp_path / "empty.parquet"
     pl.DataFrame(schema={"x": pl.Int64}).write_parquet(path)
-    source = _make_source_node(node_type="dataSource", config={"path": str(path)})
+    source = _make_source_node(node_type="dataInput", config=_file_input_config(str(path)))
     graph = PipelineGraph(nodes=[source], edges=[])
 
     estimate = estimate_materialisation_boundary(graph, source.id)
@@ -173,7 +203,7 @@ def test_materialisation_estimate_reports_known_empty_parquet_as_available_zero(
 def test_materialisation_estimate_reads_each_source_metadata_once(tmp_path) -> None:
     path = tmp_path / "source.parquet"
     pl.DataFrame({"x": [1, 2, 3]}).write_parquet(path)
-    source = _make_source_node(node_type="dataSource", config={"path": str(path)})
+    source = _make_source_node(node_type="dataInput", config=_file_input_config(str(path)))
     target = _make_modelling_node()
     graph = PipelineGraph(
         nodes=[source, target],
@@ -304,29 +334,29 @@ class TestRowCounts:
 
 
 class TestEstimateSourceRows:
-    def test_parquet_datasource(self, tmp_path) -> None:
+    def test_parquet_data_input(self, tmp_path) -> None:
         path = tmp_path / "data.parquet"
         pl.DataFrame({"a": range(1000)}).write_parquet(str(path))
 
         node = _make_source_node(
-            node_type="dataSource",
-            config={"path": str(path), "sourceType": "flat_file"},
+            node_type="dataInput",
+            config=_file_input_config(str(path)),
         )
         graph = PipelineGraph(nodes=[node], edges=[])
         assert estimate_source_rows(graph) == 1000
 
     def test_returns_none_for_databricks(self) -> None:
         node = _make_source_node(
-            node_type="dataSource",
-            config={"sourceType": "databricks", "table": "cat.schema.tbl"},
+            node_type="dataInput",
+            config=_databricks_input_config("cat.schema.tbl"),
         )
         graph = PipelineGraph(nodes=[node], edges=[])
         assert estimate_source_rows(graph) is None
 
     def test_returns_none_for_missing_file(self) -> None:
         node = _make_source_node(
-            node_type="dataSource",
-            config={"path": "/nonexistent/file.parquet", "sourceType": "flat_file"},
+            node_type="dataInput",
+            config=_file_input_config("/nonexistent/file.parquet"),
         )
         graph = PipelineGraph(nodes=[node], edges=[])
         assert estimate_source_rows(graph) is None
@@ -340,14 +370,14 @@ class TestEstimateSourceRows:
         n1 = _make_source_node(
             node_id="s1",
             label="small",
-            node_type="dataSource",
-            config={"path": str(p1), "sourceType": "flat_file"},
+            node_type="dataInput",
+            config=_file_input_config(str(p1)),
         )
         n2 = _make_source_node(
             node_id="s2",
             label="big",
-            node_type="dataSource",
-            config={"path": str(p2), "sourceType": "flat_file"},
+            node_type="dataInput",
+            config=_file_input_config(str(p2)),
         )
         graph = PipelineGraph(nodes=[n1, n2], edges=[])
         assert estimate_source_rows(graph) == 5000
@@ -373,7 +403,7 @@ def _build_dummy_node_fn(
     label = node.data.label
     nt = node.data.nodeType
 
-    if nt in ("dataSource", "apiInput"):
+    if nt in ("dataInput", "apiInput"):
         n_rows = row_limit or 10_000
 
         def source_fn():
@@ -396,7 +426,8 @@ def _build_dummy_node_fn(
 class TestEstimateSafeTrainingRows:
     def _make_graph(self) -> PipelineGraph:
         src = _make_source_node(
-            config={"path": "data/test.parquet", "sourceType": "flat_file"},
+            node_type="dataInput",
+            config=_file_input_config("data/test.parquet"),
         )
         target = _make_modelling_node()
         edge = GraphEdge(id="e1", source=src.id, target=target.id)
@@ -408,8 +439,8 @@ class TestEstimateSafeTrainingRows:
         pl.DataFrame({"a": range(100)}).write_parquet(str(path))
 
         src = _make_source_node(
-            node_type="dataSource",
-            config={"path": str(path), "sourceType": "flat_file"},
+            node_type="dataInput",
+            config=_file_input_config(str(path)),
         )
         target = _make_modelling_node()
         edge = GraphEdge(id="e1", source=src.id, target=target.id)
@@ -431,8 +462,8 @@ class TestEstimateSafeTrainingRows:
         pl.DataFrame({"a": range(1000)}).write_parquet(str(path))
 
         src = _make_source_node(
-            node_type="dataSource",
-            config={"path": str(path), "sourceType": "flat_file"},
+            node_type="dataInput",
+            config=_file_input_config(str(path)),
         )
         target = _make_modelling_node()
         edge = GraphEdge(id="e1", source=src.id, target=target.id)
@@ -455,8 +486,8 @@ class TestEstimateSafeTrainingRows:
     def test_returns_no_limit_when_source_rows_unknown(self) -> None:
         # Databricks source — no row count available
         src = _make_source_node(
-            node_type="dataSource",
-            config={"sourceType": "databricks", "table": "cat.schema.tbl"},
+            node_type="dataInput",
+            config=_databricks_input_config("cat.schema.tbl"),
         )
         target = _make_modelling_node()
         edge = GraphEdge(id="e1", source=src.id, target=target.id)
@@ -476,8 +507,8 @@ class TestEstimateSafeTrainingRows:
         pl.DataFrame({"a": range(50_000)}).write_parquet(str(path))
 
         src = _make_source_node(
-            node_type="dataSource",
-            config={"path": str(path), "sourceType": "flat_file"},
+            node_type="dataInput",
+            config=_file_input_config(str(path)),
         )
         target = _make_modelling_node()
         edge = GraphEdge(id="e1", source=src.id, target=target.id)
@@ -499,8 +530,8 @@ class TestEstimateSafeTrainingRows:
         pl.DataFrame({"a": range(10_000)}).write_parquet(str(path))
 
         src = _make_source_node(
-            node_type="dataSource",
-            config={"path": str(path), "sourceType": "flat_file"},
+            node_type="dataInput",
+            config=_file_input_config(str(path)),
         )
         target = _make_modelling_node()
         edge = GraphEdge(id="e1", source=src.id, target=target.id)
@@ -522,8 +553,8 @@ class TestEstimateSafeTrainingRows:
         pl.DataFrame({"a": range(100), "b": range(100)}).write_parquet(str(path))
 
         src = _make_source_node(
-            node_type="dataSource",
-            config={"path": str(path), "sourceType": "flat_file"},
+            node_type="dataInput",
+            config=_file_input_config(str(path)),
         )
         target = _make_modelling_node()
         edge = GraphEdge(id="e1", source=src.id, target=target.id)
@@ -549,8 +580,8 @@ class TestEstimateSafeTrainingRows:
         ).write_parquet(str(path))
 
         src = _make_source_node(
-            node_type="dataSource",
-            config={"path": str(path), "sourceType": "flat_file"},
+            node_type="dataInput",
+            config=_file_input_config(str(path)),
         )
         target = _make_modelling_node()
         edge = GraphEdge(id="e1", source=src.id, target=target.id)
@@ -583,13 +614,13 @@ class TestEstimateSafeTrainingRows:
 
         base = _make_source_node(
             node_id="base",
-            node_type="dataSource",
-            config={"path": str(base_path), "sourceType": "flat_file"},
+            node_type="dataInput",
+            config=_file_input_config(str(base_path)),
         )
         join = _make_source_node(
             node_id="join",
-            node_type="dataSource",
-            config={"path": str(join_path), "sourceType": "flat_file"},
+            node_type="dataInput",
+            config=_file_input_config(str(join_path)),
         )
         joined = _make_transform_node(
             node_id="joined",
@@ -624,8 +655,8 @@ class TestEstimateSafeTrainingRows:
         path = tmp_path / "cols.parquet"
         pl.DataFrame({"a": range(20), "b": range(20)}).write_parquet(str(path))
         src = _make_source_node(
-            node_type="dataSource",
-            config={"path": str(path), "sourceType": "flat_file"},
+            node_type="dataInput",
+            config=_file_input_config(str(path)),
         )
         target = _make_modelling_node(config={"exclude": "a"})
         graph = PipelineGraph(
@@ -650,8 +681,8 @@ class TestEstimateSafeTrainingRows:
             }
         ).write_parquet(str(path))
         src = _make_source_node(
-            node_type="dataSource",
-            config={"path": str(path), "sourceType": "flat_file"},
+            node_type="dataInput",
+            config=_file_input_config(str(path)),
         )
         target = _make_modelling_node(config={"exclude": ["a", "b"]})
         graph = PipelineGraph(
@@ -692,13 +723,13 @@ class TestEstimateSafeTrainingRows:
 
         base = _make_source_node(
             node_id="base",
-            node_type="dataSource",
-            config={"path": str(base_path), "sourceType": "flat_file"},
+            node_type="dataInput",
+            config=_file_input_config(str(base_path)),
         )
         join = _make_source_node(
             node_id="join",
-            node_type="dataSource",
-            config={"path": str(join_path), "sourceType": "flat_file"},
+            node_type="dataInput",
+            config=_file_input_config(str(join_path)),
         )
         joined = _make_transform_node(
             node_id="joined",
@@ -748,13 +779,13 @@ class TestEstimateSafeTrainingRows:
 
         base = _make_source_node(
             node_id="base",
-            node_type="dataSource",
-            config={"path": str(base_path), "sourceType": "flat_file"},
+            node_type="dataInput",
+            config=_file_input_config(str(base_path)),
         )
         join = _make_source_node(
             node_id="join",
-            node_type="dataSource",
-            config={"path": str(join_path), "sourceType": "flat_file"},
+            node_type="dataInput",
+            config=_file_input_config(str(join_path)),
         )
         joined = _make_transform_node(
             node_id="joined",
@@ -808,13 +839,13 @@ class TestEstimateSafeTrainingRows:
 
         base = _make_source_node(
             node_id="base",
-            node_type="dataSource",
-            config={"path": str(base_path), "sourceType": "flat_file"},
+            node_type="dataInput",
+            config=_file_input_config(str(base_path)),
         )
         join = _make_source_node(
             node_id="join",
-            node_type="dataSource",
-            config={"path": str(join_path), "sourceType": "flat_file"},
+            node_type="dataInput",
+            config=_file_input_config(str(join_path)),
         )
         joined = _make_transform_node(
             node_id="joined",
@@ -868,13 +899,13 @@ class TestEstimateSafeTrainingRows:
 
         base = _make_source_node(
             node_id="base",
-            node_type="dataSource",
-            config={"path": str(base_path), "sourceType": "flat_file"},
+            node_type="dataInput",
+            config=_file_input_config(str(base_path)),
         )
         join = _make_source_node(
             node_id="join",
-            node_type="dataSource",
-            config={"path": str(join_path), "sourceType": "flat_file"},
+            node_type="dataInput",
+            config=_file_input_config(str(join_path)),
         )
         joined = _make_transform_node(
             node_id="joined",
@@ -928,13 +959,13 @@ class TestEstimateSafeTrainingRows:
 
         base = _make_source_node(
             node_id="base",
-            node_type="dataSource",
-            config={"path": str(base_path), "sourceType": "flat_file"},
+            node_type="dataInput",
+            config=_file_input_config(str(base_path)),
         )
         join = _make_source_node(
             node_id="join",
-            node_type="dataSource",
-            config={"path": str(join_path), "sourceType": "flat_file"},
+            node_type="dataInput",
+            config=_file_input_config(str(join_path)),
         )
         joined = _make_transform_node(
             node_id="joined",
@@ -987,13 +1018,13 @@ class TestEstimateSafeTrainingRows:
 
         base = _make_source_node(
             node_id="base",
-            node_type="dataSource",
-            config={"path": str(base_path), "sourceType": "flat_file"},
+            node_type="dataInput",
+            config=_file_input_config(str(base_path)),
         )
         join = _make_source_node(
             node_id="join",
-            node_type="dataSource",
-            config={"path": str(join_path), "sourceType": "flat_file"},
+            node_type="dataInput",
+            config=_file_input_config(str(join_path)),
         )
         joined = _make_transform_node(
             node_id="joined",
@@ -1072,8 +1103,8 @@ class TestDetailedColumnResolution:
         ).write_parquet(str(path))
         src = _make_source_node(
             node_id="source",
-            node_type="dataSource",
-            config={"path": str(path), "sourceType": "flat_file"},
+            node_type="dataInput",
+            config=_file_input_config(str(path)),
         )
         projection = _make_transform_node(
             node_id="projection",
@@ -1126,8 +1157,8 @@ class TestDetailedColumnResolution:
         pl.DataFrame({"a": [1], "b": [2]}).write_parquet(str(path))
         src = _make_source_node(
             node_id="source",
-            node_type="dataSource",
-            config={"path": str(path), "sourceType": "flat_file"},
+            node_type="dataInput",
+            config=_file_input_config(str(path)),
         )
         graph = PipelineGraph(nodes=[src], edges=[])
 
@@ -1153,8 +1184,8 @@ class TestDetailedColumnResolution:
     def test_source_without_detail_metadata_returns_none(self) -> None:
         src = _make_source_node(
             node_id="source",
-            node_type="dataSource",
-            config={"path": "/missing/source.parquet", "sourceType": "flat_file"},
+            node_type="dataInput",
+            config=_file_input_config("/missing/source.parquet"),
         )
         graph = PipelineGraph(nodes=[src], edges=[])
 
@@ -1217,13 +1248,13 @@ class TestDetailedEdgeJoinColumnResolution:
         pl.DataFrame({"quote_id": [1, 2], "premium": [10.0, 20.0]}).write_parquet(str(base_path))
         base = _make_source_node(
             node_id="base",
-            node_type="dataSource",
-            config={"path": str(base_path), "sourceType": "flat_file"},
+            node_type="dataInput",
+            config=_file_input_config(str(base_path)),
         )
         join = _make_source_node(
             node_id="join",
-            node_type="dataSource",
-            config={"path": "/missing/join.parquet", "sourceType": "flat_file"},
+            node_type="dataInput",
+            config=_file_input_config("/missing/join.parquet"),
         )
         joined = _make_edge_join_node(
             config={
@@ -1265,7 +1296,7 @@ class TestDetailedEdgeJoinColumnResolution:
 class TestEdgeJoinKeyColumnsOnPath:
     def test_malformed_edge_join_roles_preserve_both_key_names(self) -> None:
         """Without role metadata, excluded join keys are preserved conservatively."""
-        base = _make_source_node(node_id="base", node_type="dataSource")
+        base = _make_source_node(node_id="base", node_type="dataInput")
         joined = _make_edge_join_node(
             config={
                 "baseInput": "base",
@@ -1294,13 +1325,13 @@ class TestEdgeJoinKeyColumnsOnPath:
         pl.DataFrame({"quote_id": [1, 2], "premium": [10.0, 20.0]}).write_parquet(str(base_path))
         base = _make_source_node(
             node_id="base",
-            node_type="dataSource",
-            config={"path": str(base_path), "sourceType": "flat_file"},
+            node_type="dataInput",
+            config=_file_input_config(str(base_path)),
         )
         join = _make_source_node(
             node_id="join",
-            node_type="dataSource",
-            config={"path": "/missing/join.parquet", "sourceType": "flat_file"},
+            node_type="dataInput",
+            config=_file_input_config("/missing/join.parquet"),
         )
         joined = _make_edge_join_node(
             config={
@@ -1583,16 +1614,16 @@ class TestParquetMetadataEdgeCases:
 class TestEstimateSourceRowsEdgeCases:
     def test_returns_none_for_databricks(self) -> None:
         node = _make_source_node(
-            node_type="dataSource",
-            config={"sourceType": "databricks", "table": "db.schema.tbl"},
+            node_type="dataInput",
+            config=_databricks_input_config("db.schema.tbl"),
         )
         graph = PipelineGraph(nodes=[node], edges=[])
         assert estimate_source_rows(graph) is None
 
     def test_returns_none_for_missing_file(self) -> None:
         node = _make_source_node(
-            node_type="dataSource",
-            config={"path": "/no/such/file.parquet", "sourceType": "flat_file"},
+            node_type="dataInput",
+            config=_file_input_config("/no/such/file.parquet"),
         )
         graph = PipelineGraph(nodes=[node], edges=[])
         assert estimate_source_rows(graph) is None
@@ -1605,13 +1636,13 @@ class TestEstimateSourceRowsEdgeCases:
 
         n1 = _make_source_node(
             node_id="s1",
-            node_type="dataSource",
-            config={"path": str(p1), "sourceType": "flat_file"},
+            node_type="dataInput",
+            config=_file_input_config(str(p1)),
         )
         n2 = _make_source_node(
             node_id="s2",
-            node_type="dataSource",
-            config={"path": str(p2), "sourceType": "flat_file"},
+            node_type="dataInput",
+            config=_file_input_config(str(p2)),
         )
         graph = PipelineGraph(nodes=[n1, n2], edges=[])
         assert estimate_source_rows(graph) == 3000
@@ -1627,13 +1658,13 @@ class TestEstimateSourceRowsEdgeCases:
         graph = PipelineGraph(nodes=[node], edges=[])
         assert estimate_source_rows(graph) == 3
 
-    def test_csv_datasource(self, tmp_path) -> None:
+    def test_csv_data_input(self, tmp_path) -> None:
         path = tmp_path / "data.csv"
         pl.DataFrame({"a": range(42)}).write_csv(str(path))
 
         node = _make_source_node(
-            node_type="dataSource",
-            config={"path": str(path), "sourceType": "flat_file"},
+            node_type="dataInput",
+            config=_file_input_config(str(path)),
         )
         graph = PipelineGraph(nodes=[node], edges=[])
         assert estimate_source_rows(graph) == 42
@@ -1656,8 +1687,8 @@ class TestEstimateSafeTrainingRowsEdgeCases:
         pl.DataFrame({"a": range(50), "b": range(50)}).write_parquet(str(path))
 
         src = _make_source_node(
-            node_type="dataSource",
-            config={"path": str(path), "sourceType": "flat_file"},
+            node_type="dataInput",
+            config=_file_input_config(str(path)),
         )
         target = _make_modelling_node()
         edge = GraphEdge(id="e1", source=src.id, target=target.id)
@@ -1673,8 +1704,8 @@ class TestEstimateSafeTrainingRowsEdgeCases:
         pl.DataFrame({"a": range(5000), "b": range(5000)}).write_parquet(str(path))
 
         src = _make_source_node(
-            node_type="dataSource",
-            config={"path": str(path), "sourceType": "flat_file"},
+            node_type="dataInput",
+            config=_file_input_config(str(path)),
         )
         target = _make_modelling_node()
         edge = GraphEdge(id="e1", source=src.id, target=target.id)
@@ -1689,8 +1720,8 @@ class TestEstimateSafeTrainingRowsEdgeCases:
 
     def test_returns_none_limit_when_source_rows_unknown(self) -> None:
         src = _make_source_node(
-            node_type="dataSource",
-            config={"sourceType": "databricks", "table": "cat.schema.tbl"},
+            node_type="dataInput",
+            config=_databricks_input_config("cat.schema.tbl"),
         )
         target = _make_modelling_node()
         edge = GraphEdge(id="e1", source=src.id, target=target.id)
@@ -1706,8 +1737,8 @@ class TestEstimateSafeTrainingRowsEdgeCases:
         pl.DataFrame({"a": range(10_000)}).write_parquet(str(path))
 
         src = _make_source_node(
-            node_type="dataSource",
-            config={"path": str(path), "sourceType": "flat_file"},
+            node_type="dataInput",
+            config=_file_input_config(str(path)),
         )
         target = _make_modelling_node()
         edge = GraphEdge(id="e1", source=src.id, target=target.id)
@@ -1723,8 +1754,8 @@ class TestEstimateSafeTrainingRowsEdgeCases:
         pl.DataFrame({"a": [1], "b": [2], "c": [3]}).write_parquet(str(path))
 
         src = _make_source_node(
-            node_type="dataSource",
-            config={"path": str(path), "sourceType": "flat_file"},
+            node_type="dataInput",
+            config=_file_input_config(str(path)),
         )
         target = _make_modelling_node()
         edge = GraphEdge(id="e1", source=src.id, target=target.id)
@@ -1950,33 +1981,33 @@ class TestCountSourceRowsForNode:
         result = _count_source_rows_for_node(node)
         assert result is None
 
-    def test_datasource_databricks_returns_none(self) -> None:
-        """DATA_SOURCE with databricks sourceType returns None."""
+    def test_data_input_databricks_returns_none(self) -> None:
+        """Data Input with a Databricks configuration returns None."""
         node = _make_source_node(
-            node_type="dataSource",
-            config={"sourceType": "databricks", "table": "db.tbl"},
+            node_type="dataInput",
+            config=_databricks_input_config("db.tbl"),
         )
         result = _count_source_rows_for_node(node)
         assert result is None
 
-    def test_datasource_csv(self, tmp_path) -> None:
-        """DATA_SOURCE with CSV file counts lines."""
+    def test_data_input_csv(self, tmp_path) -> None:
+        """Data Input with CSV file counts lines."""
         path = tmp_path / "data.csv"
         pl.DataFrame({"a": range(77)}).write_csv(str(path))
         node = _make_source_node(
-            node_type="dataSource",
-            config={"path": str(path), "sourceType": "flat_file"},
+            node_type="dataInput",
+            config=_file_input_config(str(path)),
         )
         result = _count_source_rows_for_node(node)
         assert result == 77
 
-    def test_datasource_existing_unsupported_file_returns_none(self, tmp_path) -> None:
+    def test_data_input_existing_unsupported_file_returns_none(self, tmp_path) -> None:
         """Existing flat files only provide row estimates for known tabular formats."""
         path = tmp_path / "notes.txt"
         path.write_text("not,a,supported,table\n", encoding="utf-8")
         node = _make_source_node(
-            node_type="dataSource",
-            config={"path": str(path), "sourceType": "flat_file"},
+            node_type="dataInput",
+            config=_file_input_config(str(path)),
         )
 
         assert _count_source_rows_for_node(node) is None
@@ -1994,7 +2025,7 @@ class TestCountSourceRowsForNode:
                 _count_source_rows_for_node(node)
 
     def test_unknown_node_type_returns_none(self) -> None:
-        """A node type that's neither API_INPUT nor DATA_SOURCE returns None."""
+        """A node type that's neither API_INPUT nor Data Input returns None."""
         node = _make_source_node(
             node_type="polars",
             config={"path": "/some/file.parquet"},
@@ -2047,33 +2078,33 @@ class TestSourceMetadataForNode:
         result = _source_metadata_for_node(node)
         assert result is None
 
-    def test_datasource_databricks_returns_none(self) -> None:
-        """DATA_SOURCE databricks returns None."""
+    def test_data_input_databricks_returns_none(self) -> None:
+        """Data Input databricks returns None."""
         node = _make_source_node(
-            node_type="dataSource",
-            config={"path": "/some/path", "sourceType": "databricks"},
+            node_type="dataInput",
+            config=_databricks_input_config("catalog.schema.table"),
         )
         result = _source_metadata_for_node(node)
         assert result is None
 
-    def test_datasource_parquet(self, tmp_path) -> None:
-        """DATA_SOURCE with parquet returns metadata."""
+    def test_data_input_parquet(self, tmp_path) -> None:
+        """Data Input with parquet returns metadata."""
         path = tmp_path / "data.parquet"
         pl.DataFrame({"x": [1], "y": [2], "z": [3]}).write_parquet(str(path))
         node = _make_source_node(
-            node_type="dataSource",
-            config={"path": str(path), "sourceType": "flat_file"},
+            node_type="dataInput",
+            config=_file_input_config(str(path)),
         )
         result = _source_metadata_for_node(node)
         assert result == (1, 3)
 
-    def test_datasource_non_parquet_returns_none(self, tmp_path) -> None:
-        """DATA_SOURCE with CSV file returns None (metadata only for parquet)."""
+    def test_data_input_non_parquet_returns_none(self, tmp_path) -> None:
+        """Data Input with CSV file returns None (metadata only for parquet)."""
         path = tmp_path / "data.csv"
         path.write_text("a,b\n1,2\n")
         node = _make_source_node(
-            node_type="dataSource",
-            config={"path": str(path), "sourceType": "flat_file"},
+            node_type="dataInput",
+            config=_file_input_config(str(path)),
         )
         result = _source_metadata_for_node(node)
         assert result is None
@@ -2123,13 +2154,13 @@ class TestAncestorSourceMetadata:
 
         s1 = _make_source_node(
             node_id="s1",
-            node_type="dataSource",
-            config={"path": str(p1), "sourceType": "flat_file"},
+            node_type="dataInput",
+            config=_file_input_config(str(p1)),
         )
         s2 = _make_source_node(
             node_id="s2",
-            node_type="dataSource",
-            config={"path": str(p2), "sourceType": "flat_file"},
+            node_type="dataInput",
+            config=_file_input_config(str(p2)),
         )
         target = _make_modelling_node(node_id="m1")
         edges = [
@@ -2150,13 +2181,13 @@ class TestAncestorSourceMetadata:
 
         s1 = _make_source_node(
             node_id="s1",
-            node_type="dataSource",
-            config={"path": str(p1), "sourceType": "flat_file"},
+            node_type="dataInput",
+            config=_file_input_config(str(p1)),
         )
         s2 = _make_source_node(
             node_id="s2",
-            node_type="dataSource",
-            config={"path": str(p2), "sourceType": "flat_file"},
+            node_type="dataInput",
+            config=_file_input_config(str(p2)),
         )
         target = _make_modelling_node(node_id="m1")
         graph = PipelineGraph(
@@ -2189,8 +2220,8 @@ class TestAncestorSourceMetadata:
 
         src = _make_source_node(
             node_id="s1",
-            node_type="dataSource",
-            config={"path": str(path), "sourceType": "flat_file"},
+            node_type="dataInput",
+            config=_file_input_config(str(path)),
         )
         m1 = _make_modelling_node(node_id="m1")
         edges = [GraphEdge(id="e1", source="s1", target="m1")]
@@ -2212,8 +2243,8 @@ class TestAncestorSourceMetadata:
 
         src = _make_source_node(
             node_id="s1",
-            node_type="dataSource",
-            config={"path": str(path), "sourceType": "flat_file"},
+            node_type="dataInput",
+            config=_file_input_config(str(path)),
         )
         t1 = _make_transform_node(node_id="t1")
         m1 = _make_modelling_node(node_id="m1")
@@ -2262,8 +2293,8 @@ class TestResolveTargetColumns:
 
         src = _make_source_node(
             node_id="s1",
-            node_type="dataSource",
-            config={"path": str(path), "sourceType": "flat_file"},
+            node_type="dataInput",
+            config=_file_input_config(str(path)),
         )
         m1 = _make_modelling_node(node_id="m1")
         edges = [GraphEdge(id="e1", source="s1", target="m1")]
@@ -2282,8 +2313,8 @@ class TestResolveTargetColumns:
         """A source node with no metadata is treated like an unknown column source."""
         src = _make_source_node(
             node_id="s1",
-            node_type="dataSource",
-            config={"path": "/missing/source.parquet", "sourceType": "flat_file"},
+            node_type="dataInput",
+            config=_file_input_config("/missing/source.parquet"),
         )
         m1 = _make_modelling_node(node_id="m1")
         graph = PipelineGraph(
@@ -2388,8 +2419,8 @@ class TestEstimateSafeTrainingRowsSchemaUnavailable:
         pl.DataFrame({"a": range(100)}).write_parquet(str(path))
 
         src = _make_source_node(
-            node_type="dataSource",
-            config={"path": str(path), "sourceType": "flat_file"},
+            node_type="dataInput",
+            config=_file_input_config(str(path)),
         )
         target = _make_modelling_node()
         edge = GraphEdge(id="e1", source=src.id, target=target.id)

@@ -1562,7 +1562,7 @@ class TestNodeDetailEnrichment:
                     id="live_src",
                     data=NodeData(
                         label="live_src",
-                        nodeType="dataSource",
+                        nodeType="dataInput",
                         config={"path": str(p_live)},
                     ),
                 ),
@@ -1570,7 +1570,7 @@ class TestNodeDetailEnrichment:
                     id="batch_src",
                     data=NodeData(
                         label="batch_src",
-                        nodeType="dataSource",
+                        nodeType="dataInput",
                         config={"path": str(p_batch)},
                     ),
                 ),
@@ -1621,7 +1621,7 @@ class TestNodeDetailEnrichment:
         result = execute_trace(graph, row_index=0, target_node_id="src")
         step = _step_by_id(result, "src")
 
-        # dataSource nodes don't have node_detail enrichment by default
+        # dataInput nodes don't have node_detail enrichment by default
         assert step.node_detail is None
 
     def test_detail_type_present_when_node_detail_populated(self, tmp_path):
@@ -1637,7 +1637,7 @@ class TestNodeDetailEnrichment:
                     id="live_src",
                     data=NodeData(
                         label="live_src",
-                        nodeType="dataSource",
+                        nodeType="dataInput",
                         config={"path": str(p_live)},
                     ),
                 ),
@@ -1645,7 +1645,7 @@ class TestNodeDetailEnrichment:
                     id="batch_src",
                     data=NodeData(
                         label="batch_src",
-                        nodeType="dataSource",
+                        nodeType="dataInput",
                         config={"path": str(p_batch)},
                     ),
                 ),

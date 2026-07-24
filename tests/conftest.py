@@ -217,10 +217,21 @@ def _restore_project_root():
 
 
 def make_source_node(nid: str, path: str = "data.parquet") -> GraphNode:
-    """Build a minimal dataSource node."""
+    """Build a minimal dataInput node."""
     return GraphNode(
         id=nid,
-        data=NodeData(label=nid, nodeType="dataSource", config={"path": path}),
+        data=NodeData(
+            label=nid,
+            nodeType="dataInput",
+            config={
+                "inputType": "file",
+                "format": "parquet",
+                "mode": "scan",
+                "cacheMode": "direct",
+                "path": path,
+                "arguments": {},
+            },
+        ),
     )
 
 
@@ -240,19 +251,40 @@ def write_node_config(
     return rel_path.as_posix()
 
 
-def write_data_source_config(
+def write_data_input_config(
     base_dir: Path,
     func_name: str,
     path: str,
-    *,
-    source_type: str = "flat_file",
 ) -> str:
-    """Write the canonical sidecar for a ``dataSource`` node."""
+    """Write the canonical sidecar for a ``dataInput`` node."""
+    suffix = Path(path).suffix.lower()
+    format_name, mode = {
+        ".csv": ("csv", "scan"),
+        ".json": ("json", "read"),
+        ".jsonl": ("ndjson", "scan"),
+        ".ndjson": ("ndjson", "scan"),
+        ".parquet": ("parquet", "scan"),
+        ".arrow": ("ipc", "scan"),
+        ".feather": ("ipc", "scan"),
+        ".ipc": ("ipc", "scan"),
+        ".avro": ("avro", "read"),
+        ".xlsx": ("excel", "read"),
+        ".ods": ("ods", "read"),
+        ".txt": ("lines", "scan"),
+        ".log": ("lines", "scan"),
+    }.get(suffix, ("parquet", "scan"))
     return write_node_config(
         base_dir,
-        NodeType.DATA_SOURCE,
+        NodeType.DATA_INPUT,
         func_name,
-        {"path": path, "sourceType": source_type},
+        {
+            "inputType": "file",
+            "format": format_name,
+            "mode": mode,
+            "cacheMode": "direct",
+            "path": path,
+            "arguments": {},
+        },
     )
 
 

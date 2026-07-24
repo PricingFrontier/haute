@@ -620,7 +620,7 @@ def test_lazy_batch_model_score_uses_downstream_required_output_projection(tmp_p
                 id="source",
                 data=NodeData(
                     label="source",
-                    nodeType="dataSource",
+                    nodeType="dataInput",
                     config={"path": str(data_path)},
                 ),
             ),
@@ -709,7 +709,7 @@ def test_lazy_batch_model_score_uses_declared_transform_contract_for_projection(
                 id="source",
                 data=NodeData(
                     label="source",
-                    nodeType="dataSource",
+                    nodeType="dataInput",
                     config={"path": str(data_path)},
                 ),
             ),
@@ -849,7 +849,7 @@ def test_lazy_batch_model_score_applies_stale_selected_columns_after_scoring(
                 id="source",
                 data=NodeData(
                     label="source",
-                    nodeType="dataSource",
+                    nodeType="dataInput",
                     config={"path": str(data_path)},
                 ),
             ),

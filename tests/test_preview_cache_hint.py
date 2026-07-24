@@ -56,7 +56,7 @@ from haute.trace import _cache as _trace_cache
 
 
 def _source_node(nid: str, path: str) -> GraphNode:
-    return GraphNode(id=nid, data=NodeData(label=nid, nodeType="dataSource", config={"path": path}))
+    return GraphNode(id=nid, data=NodeData(label=nid, nodeType="dataInput", config={"path": path}))
 
 
 def _transform_node(nid: str, code: str) -> GraphNode:
@@ -141,7 +141,7 @@ class TestDiamondSourceReadOnce:
         _write_source_parquet(p)
         graph = _diamond_graph(str(p))
 
-        # Spy on the read_source wrapper used by the dataSource builder.
+        # Spy on the read_source wrapper used by the dataInput builder.
         # The wrapper returns the actual LazyFrame so the graph still
         # executes normally — we just count invocations.
         from haute._builders import read_data_source as real_read_data_source

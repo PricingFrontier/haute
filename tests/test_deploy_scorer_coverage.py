@@ -9,7 +9,7 @@ tests/test_deploy_contract_integrity.py:
 * ``_assert_runtime_contract_matches`` — the matching path for each
   canonical dtype, plus the MISSING-feature placeholder branch.
 * score_graph builders: the modelScore contract-only short-circuit
-  (no model bundled, just a contract) and the static dataSource remap.
+  (no model bundled, just a contract) and the static dataInput remap.
 """
 
 from __future__ import annotations
@@ -328,12 +328,12 @@ class TestScoreGraphModelScoreContractOnly:
 
 
 # ===========================================================================
-# score_graph — static dataSource remap
+# score_graph — static dataInput remap
 # ===========================================================================
 
 
 class TestScoreGraphStaticDataSourceRemap:
-    """A static dataSource (non-apiInput) node with a remapped artifact path
+    """A static dataInput (non-apiInput) node with a remapped artifact path
     reads from the local bundled file at runtime.
     """
 
@@ -359,7 +359,7 @@ class TestScoreGraphStaticDataSourceRemap:
                         "id": "static_ds",
                         "data": {
                             "label": "static_ds",
-                            "nodeType": "dataSource",
+                            "nodeType": "dataInput",
                             "config": {"path": "original/factors.parquet"},
                         },
                     },
@@ -406,7 +406,7 @@ class TestScoreGraphStaticDataSourceRemap:
             artifact_paths=remap,
         )
 
-        # The output node sees the static source's rows (the dataSource
+        # The output node sees the static source's rows (the dataInput
         # intercept replaced the file read with the remapped local path).
         assert isinstance(result, pl.DataFrame)
         assert set(result.columns) >= {"area", "factor"}

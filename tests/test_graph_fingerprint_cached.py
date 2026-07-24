@@ -563,7 +563,7 @@ class TestFingerprintRecomputeSpy:
                     id="src",
                     data=NodeData(
                         label="src",
-                        nodeType=NodeType.DATA_SOURCE,
+                        nodeType=NodeType.DATA_INPUT,
                         config={"path": str(parquet)},
                     ),
                 ),

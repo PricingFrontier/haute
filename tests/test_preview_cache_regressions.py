@@ -30,7 +30,7 @@ def _make_graph(data_path: Path, artifact_path: Path) -> PipelineGraph:
                 id="source",
                 data=NodeData(
                     label="source",
-                    nodeType=NodeType.DATA_SOURCE,
+                    nodeType=NodeType.DATA_INPUT,
                     config={"path": str(data_path)},
                 ),
             ),

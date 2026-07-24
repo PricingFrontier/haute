@@ -25,7 +25,7 @@ def _make_trace_result() -> TraceResult:
             TraceStep(
                 node_id="source",
                 node_name="Source",
-                node_type="data_source",
+                node_type="dataInput",
                 schema_diff=SchemaDiff(
                     columns_added=["base_rate"],
                     columns_removed=[],

@@ -7,6 +7,7 @@ verify the generated code compiles and contains expected fragments.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import polars as pl
@@ -775,7 +776,7 @@ class TestGraphToCodeWithBuilders:
                         "id": "src",
                         "data": {
                             "label": "Source",
-                            "nodeType": "dataSource",
+                            "nodeType": "dataInput",
                             "config": {"path": "data.parquet"},
                         },
                     },
@@ -822,7 +823,7 @@ class TestGraphToCodeWithBuilders:
                         "id": "src",
                         "data": {
                             "label": "Data",
-                            "nodeType": "dataSource",
+                            "nodeType": "dataInput",
                             "config": {"path": "data.parquet"},
                         },
                     },
@@ -856,7 +857,7 @@ class TestGraphToCodeWithBuilders:
                         "id": "src",
                         "data": {
                             "label": "Data",
-                            "nodeType": "dataSource",
+                            "nodeType": "dataInput",
                             "config": {"path": "data.parquet"},
                         },
                     },
@@ -888,7 +889,7 @@ class TestGraphToCodeWithBuilders:
                         "id": "src",
                         "data": {
                             "label": "Claims",
-                            "nodeType": "dataSource",
+                            "nodeType": "dataInput",
                             "config": {"path": "claims.parquet"},
                         },
                     },
@@ -1004,7 +1005,7 @@ class TestGraphToCodeWithBuilders:
                         "id": "s",
                         "data": {
                             "label": "Source",
-                            "nodeType": "dataSource",
+                            "nodeType": "dataInput",
                             "config": {"path": "d.parquet"},
                         },
                     },
@@ -1120,15 +1121,34 @@ class TestCodegenExecValidation:
             return fn(input_df)
         return fn()
 
-    def test_data_source_exec_produces_lazyframe(self) -> None:
-        """dataSource code that references a real parquet file executes."""
+    def test_data_source_exec_produces_lazyframe(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """dataInput code that references a real parquet file executes."""
         import polars as pl
 
+        monkeypatch.chdir(tmp_path)
+        data_dir = tmp_path / "data"
+        data_dir.mkdir()
+        pl.DataFrame({"policy_id": [1, 2]}).write_parquet(data_dir / "policies.parquet")
+        config = {
+            "inputType": "file",
+            "format": "parquet",
+            "mode": "scan",
+            "cacheMode": "direct",
+            "path": "data/policies.parquet",
+            "arguments": {},
+        }
         node = _make_codegen_node(
-            "dataSource",
-            {"path": "tests/fixtures/data/policies.parquet", "sourceType": "flat_file"},
+            "dataInput",
+            config,
             label="load_policies",
         )
+        config_dir = tmp_path / "config" / "data_input"
+        config_dir.mkdir(parents=True)
+        (config_dir / "load_policies.json").write_text(json.dumps(config))
         code = _node_to_code(node)
         result = self._exec_generated(code)
         assert isinstance(result, pl.LazyFrame)
@@ -1139,26 +1159,34 @@ class TestCodegenExecValidation:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Generated dataSource code should honour shared source schema config."""
+        """Generated dataInput code should honour shared source schema config."""
         monkeypatch.chdir(tmp_path)
         data_dir = tmp_path / "data"
         data_dir.mkdir()
         csv_path = data_dir / "quotes.csv"
         csv_path.write_text("quote_id,premium\n001,10.5\n", encoding="utf-8")
 
-        node = _make_codegen_node(
-            "dataSource",
-            {
-                "path": "data/quotes.csv",
-                "sourceType": "flat_file",
-                "schema_overrides": {"quote_id": "String", "premium": "Float64"},
+        config = {
+            "inputType": "file",
+            "format": "csv",
+            "mode": "scan",
+            "cacheMode": "direct",
+            "path": "data/quotes.csv",
+            "arguments": {
+                "schema_overrides": {
+                    "quote_id": "String",
+                    "premium": "Float64",
+                }
             },
-            label="load_quotes",
-        )
+        }
+        node = _make_codegen_node("dataInput", config, label="load_quotes")
+        config_dir = tmp_path / "config" / "data_input"
+        config_dir.mkdir(parents=True)
+        (config_dir / "load_quotes.json").write_text(json.dumps(config))
 
         code = _node_to_code(node)
 
-        assert "read_data_source" in code
+        assert "resolve_data_input_from_config" in code
         assert "scan_csv" not in code
         result = self._exec_generated(code)
         assert isinstance(result, pl.LazyFrame)
@@ -1442,59 +1470,78 @@ class TestCodegenExecValidation:
 
 
 # ---------------------------------------------------------------------------
-# B19: Sink templates use bounded_sink instead of hardcoded collect+write
+# Data Output codegen is side-effect free; writes are explicit API actions
 # ---------------------------------------------------------------------------
 
 
-class TestGenDataSink:
-    """Tests for data sink code generation - must delegate to bounded_sink."""
+class TestGenDataOutput:
+    """Data Output codegen carries config but never writes during graph execution."""
 
-    def test_parquet_sink_uses_bounded_sink(self) -> None:
-        """Parquet sink template should import and call bounded_sink."""
+    def test_parquet_output_is_a_passthrough(self) -> None:
         node = _make_codegen_node(
-            "dataSink",
-            {"path": "output/results.parquet", "format": "parquet"},
+            "dataOutput",
+            {
+                "outputType": "file",
+                "path": "output/results.parquet",
+                "format": "parquet",
+                "mode": "sink",
+                "arguments": {},
+            },
             label="WriteResults",
         )
         code = _node_to_code(node, source_names=["scored"])
-        assert "from haute._polars_utils import bounded_sink" in code
-        assert 'bounded_sink(scored, Path(__file__).parent / "output/results.parquet")' in code
-        # Must NOT contain the old hardcoded pattern
-        assert ".collect(engine=" not in code
-        assert ".write_parquet(" not in code
+        assert '@pipeline.data_output(config="config/data_output/WriteResults.json"' in code
+        assert "return scored" in code
+        assert "bounded_sink" not in code
+        assert ".write_" not in code
         _compile_node_code(code)
 
-    def test_csv_sink_uses_bounded_sink(self) -> None:
-        """CSV sink template should import and call bounded_sink with fmt='csv'."""
+    def test_csv_output_is_a_passthrough(self) -> None:
         node = _make_codegen_node(
-            "dataSink",
-            {"path": "output/report.csv", "format": "csv"},
+            "dataOutput",
+            {
+                "outputType": "file",
+                "path": "output/report.csv",
+                "format": "csv",
+                "mode": "sink",
+                "arguments": {},
+            },
             label="WriteCSV",
         )
         code = _node_to_code(node, source_names=["data"])
-        assert "from haute._polars_utils import bounded_sink" in code
-        assert 'bounded_sink(data, Path(__file__).parent / "output/report.csv", fmt="csv")' in code
-        assert ".write_csv(" not in code
+        assert '@pipeline.data_output(config="config/data_output/WriteCSV.json"' in code
+        assert "return data" in code
+        assert "bounded_sink" not in code
         _compile_node_code(code)
 
-    def test_sink_default_format_is_parquet(self) -> None:
-        """When no format is specified, default to parquet bounded_sink call."""
+    def test_output_config_is_referenced_without_embedding_destination(self) -> None:
         node = _make_codegen_node(
-            "dataSink",
-            {"path": "out.parquet"},
+            "dataOutput",
+            {
+                "outputType": "file",
+                "path": "out.parquet",
+                "format": "parquet",
+                "mode": "sink",
+                "arguments": {},
+            },
             label="DefaultSink",
         )
         code = _node_to_code(node, source_names=["df"])
-        assert "bounded_sink" in code
-        # Default parquet call should not have fmt= kwarg
-        assert 'fmt="csv"' not in code
+        assert 'config="config/data_output/DefaultSink.json"' in code
+        assert "out.parquet" not in code
         _compile_node_code(code)
 
     def test_sink_returns_first_source(self) -> None:
         """Sink should return the input LazyFrame for downstream chaining."""
         node = _make_codegen_node(
-            "dataSink",
-            {"path": "out.parquet", "format": "parquet"},
+            "dataOutput",
+            {
+                "outputType": "file",
+                "path": "out.parquet",
+                "format": "parquet",
+                "mode": "sink",
+                "arguments": {},
+            },
             label="SinkNode",
         )
         code = _node_to_code(node, source_names=["input_df"])
@@ -1503,11 +1550,17 @@ class TestGenDataSink:
     def test_sink_with_multiple_sources(self) -> None:
         """Sink with multiple sources uses the first one."""
         node = _make_codegen_node(
-            "dataSink",
-            {"path": "combined.parquet", "format": "parquet"},
+            "dataOutput",
+            {
+                "outputType": "file",
+                "path": "combined.parquet",
+                "format": "parquet",
+                "mode": "sink",
+                "arguments": {},
+            },
             label="MultiSink",
         )
         code = _node_to_code(node, source_names=["a", "b", "c"])
-        assert "bounded_sink(a," in code
+        assert "bounded_sink" not in code
         assert "return a" in code
         _compile_node_code(code)

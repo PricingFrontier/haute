@@ -11,9 +11,13 @@ import {
   previewNode,
   savePipeline,
   traceCell,
-  executeSink,
+  writeOutput,
+  buildInputCache,
+  getInputCacheJob,
+  cancelInputCacheJob,
+  getInputCacheStatus,
+  clearInputCache,
   fetchSchema,
-  fetchDatabricksSchema,
   trainModel,
   solveOptimiser,
   listFiles,
@@ -444,7 +448,7 @@ describe("endpoint contracts", () => {
     mockFetch.mockImplementation((url: string) => {
       if (url === "/api/pipeline/preview") return jsonResponse(makePreviewResponse())
       if (url === "/api/pipeline/save") return jsonResponse(makeSavePipelineResponse())
-      if (url === "/api/pipeline/sink") return jsonResponse({ status: "ok", message: "Written", row_count: 3, path: "out.parquet", format: "parquet" })
+      if (url === "/api/pipeline/write-output") return jsonResponse({ status: "ok", message: "Written", row_count: 3, path: "out.parquet", format: "parquet" })
       if (url === "/api/pipeline/trace") return jsonResponse(makeTraceResponse())
       if (url.startsWith("/api/schema")) return jsonResponse(makeSchemaResponse())
       if (url === "/api/modelling/train") return jsonResponse(makeTrainResponse())
@@ -499,10 +503,11 @@ describe("endpoint contracts", () => {
     expect(body.target_node_id).toBe("n1")
   })
 
-  it("executeSink posts to /api/pipeline/sink", async () => {
-    await executeSink({ graph: dummyGraph, nodeId: "sink1" })
+  it("writeOutput posts to /api/pipeline/write-output", async () => {
+    mockFetch.mockReturnValue(jsonResponse({ status: "ok" }))
+    await writeOutput({ graph: dummyGraph, nodeId: "sink1" })
     const [url, opts] = mockFetch.mock.calls[0]
-    expect(url).toBe("/api/pipeline/sink")
+    expect(url).toBe("/api/pipeline/write-output")
     const body = JSON.parse(opts.body)
     expect(body.node_id).toBe("sink1")
     expect(body.source).toBe("live")
@@ -512,12 +517,6 @@ describe("endpoint contracts", () => {
     await fetchSchema("data/test file.csv")
     const [url] = mockFetch.mock.calls[0]
     expect(url).toBe("/api/schema?path=data%2Ftest%20file.csv")
-  })
-
-  it("fetchDatabricksSchema GETs /api/schema/databricks with encoded table", async () => {
-    await fetchDatabricksSchema("catalog.schema.table")
-    const [url] = mockFetch.mock.calls[0]
-    expect(url).toBe("/api/schema/databricks?table=catalog.schema.table")
   })
 
   it("trainModel posts to /api/modelling/train with default source", async () => {
@@ -1337,7 +1336,7 @@ describe("streaming_chunk_size in request bodies", () => {
     mockFetch.mockImplementation((url: string) => {
       if (url === "/api/pipeline/preview") return jsonResponse(makePreviewResponse())
       if (url === "/api/pipeline/trace") return jsonResponse(makeTraceResponse())
-      if (url === "/api/pipeline/sink") return jsonResponse({ status: "ok" })
+      if (url === "/api/pipeline/write-output") return jsonResponse({ status: "ok" })
       if (url === "/api/modelling/train") return jsonResponse(makeTrainResponse())
       if (url === "/api/optimiser/solve") return jsonResponse(makeSolveOptimiserResponse())
       if (url === "/api/optimiser/estimate") return jsonResponse({})
@@ -1375,16 +1374,45 @@ describe("streaming_chunk_size in request bodies", () => {
     expect(JSON.parse(opts.body)).not.toHaveProperty("streaming_chunk_size")
   })
 
-  it("executeSink body includes streaming_chunk_size when supplied", async () => {
-    await executeSink({ graph: dummyGraph, nodeId: "sink1", source: "live", streamingChunkSize: 42 })
+  it("writeOutput body includes streaming_chunk_size when supplied", async () => {
+    mockFetch.mockReturnValue(jsonResponse({ status: "ok" }))
+    await writeOutput({ graph: dummyGraph, nodeId: "sink1", source: "live", streamingChunkSize: 42 })
     const [, opts] = mockFetch.mock.calls[0]
     expect(JSON.parse(opts.body).streaming_chunk_size).toBe(42)
   })
 
-  it("executeSink body omits streaming_chunk_size when not supplied", async () => {
-    await executeSink({ graph: dummyGraph, nodeId: "sink1", source: "live" })
+  it("writeOutput body omits streaming_chunk_size when not supplied", async () => {
+    mockFetch.mockReturnValue(jsonResponse({ status: "ok" }))
+    await writeOutput({ graph: dummyGraph, nodeId: "sink1", source: "live" })
     const [, opts] = mockFetch.mock.calls[0]
     expect(JSON.parse(opts.body)).not.toHaveProperty("streaming_chunk_size")
+  })
+
+  it("uses the exact input-cache V1 paths, methods, and request bodies", async () => {
+    const source = { schema_version: 1 as const, config: { path: "data.csv" } }
+    mockFetch.mockReturnValueOnce(jsonResponse({ schema_version: 1, job_id: "job / 1", identity_digest: "digest", status: "running", joined: false }))
+    await buildInputCache({ ...source, refresh: true, profile: "preview_eager" })
+    expect(mockFetch.mock.calls[0][0]).toBe("/api/input-cache/build")
+    expect(JSON.parse(mockFetch.mock.calls[0][1].body)).toEqual({ ...source, refresh: true, profile: "preview_eager" })
+
+    mockFetch.mockReturnValueOnce(jsonResponse({ schema_version: 1, job_id: "job / 1", identity_digest: "digest", status: "running", terminal_reason: null, message: "", refresh: false, build_class: "bounded", progress: { phase: "queued", rows: 0, batches: 0, bytes: 0, elapsed_seconds: 0 }, snapshot: null, error_code: null }))
+    await getInputCacheJob("job / 1")
+    expect(mockFetch.mock.calls[1][0]).toBe("/api/input-cache/jobs/job%20%2F%201")
+
+    mockFetch.mockReturnValueOnce(jsonResponse({ schema_version: 1, job_id: "job / 1", cancellation_requested: true, status: "running" }))
+    await cancelInputCacheJob("job / 1")
+    expect(mockFetch.mock.calls[2][0]).toBe("/api/input-cache/jobs/job%20%2F%201")
+    expect(mockFetch.mock.calls[2][1].method).toBe("DELETE")
+
+    const snapshot = { schema_version: 1, identity_digest: "digest", state: "missing", freshness: "unknown", generation: null }
+    mockFetch.mockReturnValueOnce(jsonResponse(snapshot))
+    await getInputCacheStatus(source)
+    expect(mockFetch.mock.calls[3][0]).toBe("/api/input-cache/status")
+    expect(JSON.parse(mockFetch.mock.calls[3][1].body)).toEqual(source)
+    mockFetch.mockReturnValueOnce(jsonResponse(snapshot))
+    await clearInputCache(source)
+    expect(mockFetch.mock.calls[4][0]).toBe("/api/input-cache/clear")
+    expect(JSON.parse(mockFetch.mock.calls[4][1].body)).toEqual(source)
   })
 
   it("trainModel body includes streaming_chunk_size when supplied", async () => {

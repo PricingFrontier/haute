@@ -1,7 +1,7 @@
 """Fixture pipeline for tests — self-contained, no external model dependencies.
 
 This pipeline mirrors the structure of a real pricing pipeline (apiInput,
-dataSource, liveSwitch, polars, externalFile, output, dataSink) but uses
+dataInput, liveSwitch, polars, externalFile, output, dataOutput) but uses
 only simple Polars expressions and a JSON lookup file so tests don't depend
 on CatBoost or the user's main.py.
 """
@@ -19,7 +19,7 @@ def quotes() -> pl.LazyFrame:
     return pl.read_json("tests/fixtures/data/api_input.json").lazy()
 
 
-@pipeline.data_source(config="config/data_source/batch_quotes.json")
+@pipeline.data_input(config="config/data_input/batch_quotes.json")
 def batch_quotes() -> pl.LazyFrame:
     """Batch data source."""
     return pl.scan_parquet("tests/fixtures/data/policies.parquet")
@@ -68,7 +68,7 @@ def output(calculate_premium: pl.LazyFrame) -> pl.LazyFrame:
     return calculate_premium
 
 
-@pipeline.data_sink(config="config/data_sink/results_write.json")
+@pipeline.data_output(config="config/data_output/results_write.json")
 def results_write(calculate_premium: pl.LazyFrame) -> pl.LazyFrame:
     """Sink node."""
     return calculate_premium

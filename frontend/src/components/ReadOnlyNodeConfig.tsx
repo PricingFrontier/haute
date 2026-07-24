@@ -14,7 +14,6 @@
  * an unmapped type degrades gracefully rather than rendering nothing.
  */
 import {
-  DataSourceEditor,
   TransformEditor,
   ModelScoreEditor,
   BandingEditor,
@@ -23,7 +22,8 @@ import {
   ExternalFileEditor,
   ApiInputEditor,
   LiveSwitchEditor,
-  SinkEditor,
+  DataInputEditor,
+  DataOutputEditor,
   ScenarioExpanderEditor,
   OptimiserApplyEditor,
   ConstantEditor,
@@ -62,10 +62,10 @@ export default function ReadOnlyNodeConfig({ nodeType, config, nodeId }: ReadOnl
             accentColor={accentColor}
           />
         )
-      case NODE_TYPES.DATA_SOURCE:
-        return <DataSourceEditor config={config} onUpdate={noop} accentColor={accentColor} errorLine={null} />
-      case NODE_TYPES.DATA_SINK:
-        return <SinkEditor config={config} onUpdate={noop} nodeId={nodeId} accentColor={accentColor} />
+      case NODE_TYPES.DATA_INPUT:
+        return <DataInputEditor config={config} onUpdate={noop} onReplaceConfig={noop} accentColor={accentColor} errorLine={null} />
+      case NODE_TYPES.DATA_OUTPUT:
+        return <DataOutputEditor config={config} onUpdate={noop} onReplaceConfig={noop} nodeId={nodeId} accentColor={accentColor} />
       case NODE_TYPES.EXTERNAL_FILE:
         return (
           <ExternalFileEditor

@@ -55,7 +55,7 @@ def _port_edge(src: str, tgt: str, port: str) -> GraphEdge:
 def _source_node(nid: str, label: str | None = None) -> GraphNode:
     return GraphNode(
         id=nid,
-        data=NodeData(label=label or nid, nodeType=NodeType.DATA_SOURCE),
+        data=NodeData(label=label or nid, nodeType=NodeType.DATA_INPUT),
     )
 
 
@@ -89,7 +89,7 @@ def _simple_build_fn(node: GraphNode, source_names=None, **kwargs):
     nid = node.id
     nt = node.data.nodeType
 
-    if nt == NodeType.DATA_SOURCE:
+    if nt == NodeType.DATA_INPUT:
         return nid, lambda: pl.DataFrame({"x": [1, 2, 3]}).lazy(), True
     else:
         return nid, lambda *dfs: dfs[0].with_columns(y=pl.col("x") * 2), False
@@ -268,7 +268,7 @@ class TestPrepareGraph:
     def test_id_to_name_sanitizes_labels(self):
         g = PipelineGraph(
             nodes=[
-                GraphNode(id="n1", data=NodeData(label="My Node", nodeType=NodeType.DATA_SOURCE)),
+                GraphNode(id="n1", data=NodeData(label="My Node", nodeType=NodeType.DATA_INPUT)),
             ],
             edges=[],
         )
@@ -295,7 +295,7 @@ class TestExecuteLazy:
 
     def test_dataframe_auto_converted_to_lazy(self):
         def build_fn(node, **kwargs):
-            if node.data.nodeType == NodeType.DATA_SOURCE:
+            if node.data.nodeType == NodeType.DATA_INPUT:
                 return node.id, lambda: pl.DataFrame({"x": [1]}), True
             return node.id, lambda *dfs: dfs[0], False
 
@@ -332,7 +332,7 @@ class TestExecuteLazy:
 
         def build_fn(node, **kwargs):
             captured.update(kwargs)
-            if node.data.nodeType == NodeType.DATA_SOURCE:
+            if node.data.nodeType == NodeType.DATA_INPUT:
                 return node.id, lambda: pl.DataFrame({"x": [1]}).lazy(), True
             return node.id, lambda *dfs: dfs[0], False
 
@@ -456,7 +456,7 @@ class TestExecuteEagerCore:
         """With swallow_errors=True, errors are captured, not raised."""
 
         def build_fn(node, **kwargs):
-            if node.data.nodeType == NodeType.DATA_SOURCE:
+            if node.data.nodeType == NodeType.DATA_INPUT:
                 return node.id, lambda: pl.DataFrame({"x": [1]}).lazy(), True
 
             def failing_fn(*dfs):
@@ -477,7 +477,7 @@ class TestExecuteEagerCore:
         """With swallow_errors=False (default), errors are raised."""
 
         def build_fn(node, **kwargs):
-            if node.data.nodeType == NodeType.DATA_SOURCE:
+            if node.data.nodeType == NodeType.DATA_INPUT:
                 return node.id, lambda: pl.DataFrame({"x": [1]}).lazy(), True
 
             def failing_fn(*dfs):
@@ -554,7 +554,7 @@ class TestExecuteEagerCore:
         """Multiple node failures are all captured."""
 
         def build_fn(node, **kwargs):
-            if node.data.nodeType == NodeType.DATA_SOURCE:
+            if node.data.nodeType == NodeType.DATA_INPUT:
                 return node.id, lambda: pl.DataFrame({"x": [1]}).lazy(), True
 
             def fail(*dfs):
@@ -621,7 +621,7 @@ class TestEagerCoreErrorLines:
 
     def test_syntax_error_populates_error_lines(self):
         def build_fn(node, **kwargs):
-            if node.data.nodeType == NodeType.DATA_SOURCE:
+            if node.data.nodeType == NodeType.DATA_INPUT:
                 return node.id, lambda: pl.DataFrame({"x": [1]}).lazy(), True
 
             def bad_syntax(*dfs):
@@ -640,7 +640,7 @@ class TestEagerCoreErrorLines:
 
     def test_runtime_error_with_line_populates_error_lines(self):
         def build_fn(node, **kwargs):
-            if node.data.nodeType == NodeType.DATA_SOURCE:
+            if node.data.nodeType == NodeType.DATA_INPUT:
                 return node.id, lambda: pl.DataFrame({"x": [1]}).lazy(), True
 
             def bad_runtime(*dfs):
@@ -657,7 +657,7 @@ class TestEagerCoreErrorLines:
 
     def test_error_without_line_not_in_error_lines(self):
         def build_fn(node, **kwargs):
-            if node.data.nodeType == NodeType.DATA_SOURCE:
+            if node.data.nodeType == NodeType.DATA_INPUT:
                 return node.id, lambda: pl.DataFrame({"x": [1]}).lazy(), True
 
             def no_line(*dfs):
@@ -689,7 +689,7 @@ class TestEagerCoreErrorLines:
 def _join_build_fn(node: GraphNode, source_names=None, **kwargs):
     """Build function that supports multi-input (join) nodes."""
     nid = node.id
-    if node.data.nodeType == NodeType.DATA_SOURCE:
+    if node.data.nodeType == NodeType.DATA_INPUT:
         data = {
             "s1": {"key": [1, 2], "a": [10, 20]},
             "s2": {"key": [1, 2], "b": [30, 40]},
@@ -911,7 +911,7 @@ class TestCheckpointing:
         """
 
         def build_fn(node, **kwargs):
-            if node.data.nodeType == NodeType.DATA_SOURCE:
+            if node.data.nodeType == NodeType.DATA_INPUT:
                 return node.id, lambda: pl.DataFrame({"x": [1, 2]}).lazy(), True
             return node.id, lambda *dfs: dfs[0], False
 
@@ -932,7 +932,7 @@ class TestCheckpointing:
         """live_switch with 1 parent and 1 child — NOT checkpointed."""
 
         def build_fn(node, **kwargs):
-            if node.data.nodeType == NodeType.DATA_SOURCE:
+            if node.data.nodeType == NodeType.DATA_INPUT:
                 return node.id, lambda: pl.DataFrame({"x": [1, 2]}).lazy(), True
             return node.id, lambda *dfs: dfs[0], False
 
@@ -1164,7 +1164,7 @@ class TestExecuteLazyDelegatesToBuildFuncs:
 
         def build_fn(node, **kwargs):
             captured[node.id] = kwargs
-            if node.data.nodeType == NodeType.DATA_SOURCE:
+            if node.data.nodeType == NodeType.DATA_INPUT:
                 return node.id, lambda: pl.DataFrame({"x": [1]}).lazy(), True
             return node.id, lambda *dfs: dfs[0], False
 
@@ -1182,7 +1182,7 @@ class TestExecuteLazyDelegatesToBuildFuncs:
 
         def build_fn(node, **kwargs):
             captured[node.id] = kwargs
-            if node.data.nodeType == NodeType.DATA_SOURCE:
+            if node.data.nodeType == NodeType.DATA_INPUT:
                 return node.id, lambda: pl.DataFrame({"x": [1]}).lazy(), True
             return node.id, lambda *dfs: dfs[0], False
 

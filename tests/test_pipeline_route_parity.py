@@ -48,7 +48,7 @@ def _sink_graph(data_path: Path) -> dict:
                     "id": "sink",
                     "data": {
                         "label": "sink",
-                        "nodeType": "dataSink",
+                        "nodeType": "dataOutput",
                         "config": {"path": "out.parquet", "format": "parquet"},
                     },
                 },
@@ -76,7 +76,7 @@ def _post_payload(endpoint: str, graph: dict, lookup_id: str) -> dict:
     [
         ("/api/pipeline/preview", "bad\nnode", "node_id contains control characters"),
         ("/api/pipeline/trace", "bad\nnode", "target_node_id contains control characters"),
-        ("/api/pipeline/sink", "bad\nnode", "node_id contains control characters"),
+        ("/api/pipeline/write-output", "bad\nnode", "node_id contains control characters"),
     ],
 )
 def test_preview_trace_sink_reject_control_char_lookup_ids_consistently(
@@ -106,7 +106,7 @@ def test_preview_trace_sink_reject_control_char_lookup_ids_consistently(
     [
         "/api/pipeline/preview",
         "/api/pipeline/trace",
-        "/api/pipeline/sink",
+        "/api/pipeline/write-output",
     ],
 )
 def test_preview_trace_sink_reject_same_traversal_graph_consistently(
@@ -122,7 +122,7 @@ def test_preview_trace_sink_reject_same_traversal_graph_consistently(
                         "id": "sink",
                         "data": {
                             "label": "sink",
-                            "nodeType": "dataSink",
+                            "nodeType": "dataOutput",
                             "config": {"path": "out.parquet", "format": "parquet"},
                         },
                     },

@@ -74,7 +74,7 @@ class TestTrainingCategoricalLevelDeclarations:
                         "id": "src",
                         "data": {
                             "label": "src",
-                            "nodeType": "dataSource",
+                            "nodeType": "dataInput",
                             "config": {
                                 "path": "quotes.csv",
                                 "categorical_levels": {"region": ["north", "south"]},
@@ -122,7 +122,7 @@ def _make_modelling_graph(
     task: str = "regression",
     params: dict | None = None,
 ) -> dict:
-    """Build a simple 2-node graph: dataSource → modelling."""
+    """Build a simple 2-node graph: dataInput → modelling."""
     config: dict = {
         "target": target,
         "algorithm": algorithm,
@@ -143,7 +143,7 @@ def _make_modelling_graph(
                     "id": "source",
                     "data": {
                         "label": "source",
-                        "nodeType": "dataSource",
+                        "nodeType": "dataInput",
                         "config": {"path": data_path},
                     },
                 },
@@ -1457,7 +1457,7 @@ class TestExecuteAndSinkCheckpointCleanup:
                         "id": "n",
                         "data": {
                             "label": "n",
-                            "nodeType": "dataSource",
+                            "nodeType": "dataInput",
                             "config": {"path": "x.parquet"},
                         },
                     }
@@ -1783,7 +1783,7 @@ def _make_negbinomial_graph(data_path: str, **config_overrides: object) -> dict:
                     "id": "source",
                     "data": {
                         "label": "source",
-                        "nodeType": "dataSource",
+                        "nodeType": "dataInput",
                         "config": {"path": data_path},
                     },
                 },
@@ -2307,7 +2307,7 @@ class TestTrainModelDirect:
                         "id": "source",
                         "data": {
                             "label": "source",
-                            "nodeType": "dataSource",
+                            "nodeType": "dataInput",
                             "config": {"path": "data.parquet"},
                         },
                     },
@@ -2420,7 +2420,7 @@ class TestExportScriptDirect:
                         "id": "source",
                         "data": {
                             "label": "source",
-                            "nodeType": "dataSource",
+                            "nodeType": "dataInput",
                             "config": {"path": "data.parquet"},
                         },
                     },

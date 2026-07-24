@@ -298,7 +298,7 @@ def _group_by_graph():
                     "id": "source",
                     "data": {
                         "label": "source",
-                        "nodeType": "dataSource",
+                        "nodeType": "dataInput",
                         "config": {"path": "missing.parquet"},
                     },
                 },
@@ -349,7 +349,7 @@ def _opaque_fan_out_graph():
                     "id": "source",
                     "data": {
                         "label": "source",
-                        "nodeType": "dataSource",
+                        "nodeType": "dataInput",
                         "config": {"path": "missing.parquet"},
                     },
                 },
@@ -716,7 +716,7 @@ def _single_source_graph(path: Path):
                     "id": "source",
                     "data": {
                         "label": "source",
-                        "nodeType": "dataSource",
+                        "nodeType": "dataInput",
                         "config": {"path": str(path)},
                     },
                 }

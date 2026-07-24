@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from unittest.mock import patch
 
 import polars as pl
 import pytest
@@ -315,88 +314,6 @@ class TestGetSchemaNonExistentFile:
 # ───────────────────────────── get_databricks_schema ─────────────────────────────
 
 
-class TestGetDatabricksSchemaNotCached:
-    def test_returns_404_when_not_cached(self, client: TestClient, work_dir: Path):
-        with patch("haute._databricks_io.cached_path", return_value=None):
-            resp = client.get(
-                "/api/schema/databricks",
-                params={"table": "catalog.schema.table"},
-            )
-        assert resp.status_code == 404
-        assert "not been fetched" in resp.json()["detail"]
-
-
-class TestGetDatabricksSchemaCached:
-    def test_returns_schema_for_cached_table(self, client: TestClient, work_dir: Path):
-        cache_file = work_dir / "cached_table.parquet"
-        df = pl.DataFrame({"id": [1, 2, 3], "value": [10.0, 20.0, 30.0]})
-        df.write_parquet(cache_file)
-
-        with patch("haute._databricks_io.cached_path", return_value=cache_file):
-            resp = client.get(
-                "/api/schema/databricks",
-                params={"table": "catalog.schema.table"},
-            )
-        assert resp.status_code == 200
-        body = resp.json()
-        assert body["path"] == "catalog.schema.table"
-        col_names = [c["name"] for c in body["columns"]]
-        assert "id" in col_names
-        assert "value" in col_names
-        assert body["row_count"] == 3
-        assert len(body["preview"]) == 3
-
-    def test_cached_parquet_schema_collects_only_preview_sample(
-        self,
-        work_dir: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ):
-        from haute.routes.files import _read_databricks_schema_blocking
-
-        cache_file = work_dir / "cached_table.parquet"
-        pl.DataFrame(
-            {
-                "id": list(range(20)),
-                "value": [float(i) for i in range(20)],
-            }
-        ).write_parquet(cache_file)
-
-        original_head = pl.LazyFrame.head
-        original_collect = pl.LazyFrame.collect
-        limit_by_frame_id: dict[int, int] = {}
-        collected_frames: list[tuple[tuple[str, ...], int, int | None]] = []
-
-        def guarded_collect(self: pl.LazyFrame, *args, **kwargs):
-            collected = original_collect(self, *args, **kwargs)
-            columns = tuple(collected.columns)
-            preview_limit = limit_by_frame_id.get(id(self))
-            collected_frames.append((columns, collected.height, preview_limit))
-            if columns == ("len",):
-                raise AssertionError(
-                    "Cached parquet schema must use parquet metadata for row count"
-                )
-            if columns == ("id", "value") and collected.height > 5:
-                raise AssertionError(
-                    "Cached parquet schema must not collect a large sample for dtypes"
-                )
-            return collected
-
-        def tracked_head(self: pl.LazyFrame, n: int = 5, *args, **kwargs):
-            limited = original_head(self, n, *args, **kwargs)
-            limit_by_frame_id[id(limited)] = n
-            return limited
-
-        monkeypatch.setattr(pl.LazyFrame, "head", tracked_head)
-        monkeypatch.setattr(pl.LazyFrame, "collect", guarded_collect)
-
-        response = _read_databricks_schema_blocking("catalog.schema.table", cache_file)
-
-        assert response.row_count == 20
-        assert response.column_count == 2
-        assert len(response.preview) == 5
-        assert collected_frames == [(("id", "value"), 5, 5)]
-
-
 # ───────────────────────────── edge cases ─────────────────────────────
 
 
@@ -522,13 +439,3 @@ class TestBrowseFilesExtensionFilterNoMatch:
         assert resp.status_code == 200
         items = resp.json()["items"]
         assert items == []
-
-
-class TestGetDatabricksSchemaInvalidTable:
-    def test_invalid_table_name_returns_400(self, client: TestClient, work_dir: Path):
-        resp = client.get(
-            "/api/schema/databricks",
-            params={"table": "not_valid"},
-        )
-        assert resp.status_code == 400
-        assert "Invalid table name" in resp.json()["detail"]

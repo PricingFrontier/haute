@@ -253,3 +253,23 @@ Out of scope (owned elsewhere, linked where relevant):
   `NumpyUnpickler.find_class` in a `finally` block, so a raised
   `pickle.UnpicklingError` (or any other exception) during a load never leaves the
   process-wide patch installed for subsequent unrelated `joblib.load()` calls.
+
+## Approved change contract — 0.7.0 unified data-I/O security
+
+Implementation follows
+[`F_0.7.0_data-io-convergence.plan.md`](../../trip/plans/F_0.7.0_data-io-convergence.plan.md).
+
+- Optional `dataInput` Polars code uses the existing validated `_exec_user_code` path after its
+  direct source or snapshot is opened. It receives `df` and the ordinary restricted Polars
+  namespace; provider clients, cache-store objects, connection resolvers, credentials, and
+  filesystem handles are never injected. `dataOutput` has no executable code field.
+- Direct local input paths, source-cache roots/artifacts, and local output destinations remain
+  project-contained through `validate_project_path` at their owning request/execution
+  boundaries. A cache identity or generation id is not accepted as an arbitrary path.
+- Named connection/secret resolution is owned by the I/O providers, but the sandbox boundary
+  requires resolved values never to enter user-code globals, exceptions returned to code, or
+  persisted node/cache metadata.
+
+Acceptance reuses the unsafe-code corpus for `dataInput`, proves output code is rejected before
+execution, covers traversal/symlink/null-byte cases on direct and staged paths, and scans
+user-visible failures/namespaces for resolved secrets.

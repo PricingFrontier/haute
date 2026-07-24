@@ -26,7 +26,7 @@ def _make_model_score_graph(
     code: str = "",
     data_path: str = "",
 ) -> PipelineGraph:
-    """Build a 2-node graph: dataSource → modelScore."""
+    """Build a 2-node graph: dataInput → modelScore."""
     config = {
         "sourceType": source_type,
         "run_id": run_id,
@@ -44,7 +44,7 @@ def _make_model_score_graph(
                     "id": "source",
                     "data": {
                         "label": "source",
-                        "nodeType": "dataSource",
+                        "nodeType": "dataInput",
                         "config": {"path": data_path},
                     },
                 },
@@ -169,7 +169,7 @@ class TestModelScorePassthrough:
                         "id": "source",
                         "data": {
                             "label": "source",
-                            "nodeType": "dataSource",
+                            "nodeType": "dataInput",
                             "config": {"path": sample_data},
                         },
                     },

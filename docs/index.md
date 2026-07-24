@@ -78,14 +78,21 @@ Teams looking to keep in line with data science and engineering best practices a
 A pricing pipeline is a Python file. Each step is a function - load data, join sources, score a model, calculate a premium. Haute connects them into a graph.
 
 ```python
+from pathlib import Path
+
 import haute
 import polars as pl
 
 pipeline = haute.Pipeline("motor_pricing")
 
-@pipeline.data_source(config="config/data_source/policies.json")
+@pipeline.data_input(config="config/data_input/policies.json")
 def policies() -> pl.LazyFrame:
-    return pl.scan_parquet("data/policies.parquet")
+    from haute.graph_utils import resolve_data_input_from_config
+
+    return resolve_data_input_from_config(
+        "config/data_input/policies.json",
+        base_dir=Path(__file__).parent,
+    )
 
 @pipeline.model_score(config="config/model_scoring/frequency.json")
 def frequency(policies: pl.LazyFrame) -> pl.LazyFrame:
@@ -103,7 +110,7 @@ pipeline.connect("policies", "frequency")
 pipeline.connect("frequency", "premium")
 ```
 
-That same file is also a visual graph. Run `haute serve` and your pipeline appears in a browser-based editor - nodes for data sources, models, transforms, and outputs, connected by edges showing how data flows through the rating structure.
+That same file is also a visual graph. Run `haute serve` and your pipeline appears in a browser-based editor - nodes for data inputs, models, transforms, and outputs, connected by edges showing how data flows through the rating structure.
 
 Rating step nodes support spreadsheet-style pricing work: many factor tables, raw string factors as well as banded factors, Excel-style paste/copy, optional combined outputs, and optional Polars code that runs after the table lookups. Their sidecar config files keep factor tables concise with nested factor-value maps, while the editor and runtime use canonical row entries. Banding nodes use compact boxed rule cells with range paste, whole-factor copy, and breakpoint ordering flags. Compact edge-join nodes let users join another dataframe into an existing connection while keeping the saved pipeline as ordinary Python. When you trace a rating-step, banding, model, optimiser, or join output, Haute focuses the story on the values that actually drive the clicked result, with the full upstream trace still available for audit.
 

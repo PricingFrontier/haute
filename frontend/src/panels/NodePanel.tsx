@@ -5,7 +5,6 @@ import type { NodeTypeValue } from "../utils/nodeTypes"
 import { sanitizeName } from "../utils/sanitizeName"
 import { apiInputFrameLabels, edgeInputName } from "../utils/apiInputPorts"
 import {
-  DataSourceEditor,
   TransformEditor,
   EdgeJoinEditor,
   ExploreCodeEditor,
@@ -17,7 +16,6 @@ import {
   ExternalFileEditor,
   ApiInputEditor,
   LiveSwitchEditor,
-  SinkEditor,
   DataInputEditor,
   DataOutputEditor,
   ScenarioExpanderEditor,
@@ -30,7 +28,7 @@ import {
   OptimiserConfig,
   LazyEditorBoundary,
 } from "./LazyNodeEditors"
-import type { InputSource, SimpleNode, SimpleEdge, OnUpdateConfig, OnUpdateConfigResult } from "./editors"
+import type { InputSource, SimpleNode, SimpleEdge, OnUpdateConfig, OnUpdateConfigResult, OnReplaceConfig } from "./editors"
 import { effectiveNodeType, type HauteNodeData } from "../types/node"
 import useUIStore, { type ExplorePane } from "../stores/useUIStore"
 import PanelShell from "./PanelShell"
@@ -703,6 +701,12 @@ export default function NodePanel({
     return onUpdateNode(currentNode.id, clearCachedResultShape({ ...currentNode.data, config: newConfig }))
   }, [onUpdateNode])
 
+  const handleConfigReplace = useCallback<OnReplaceConfig>((nextConfig) => {
+    const currentNode = nodeRef.current
+    if (!currentNode || !onUpdateNode) return { ok: false, error: "Node update handler is unavailable." }
+    return onUpdateNode(currentNode.id, clearCachedResultShape({ ...currentNode.data, config: nextConfig }))
+  }, [onUpdateNode])
+
   const configWithNodeId = useMemo(
     () => ({ ...config, _nodeId: node?.id ?? "" }),
     [config, node?.id]
@@ -792,17 +796,11 @@ export default function NodePanel({
       case NODE_TYPES.LIVE_SWITCH:
         return <LiveSwitchEditor config={config} onUpdate={handleConfigUpdate} inputSources={inputSources} accentColor={accentColor} />
 
-      case NODE_TYPES.DATA_SOURCE:
-        return <DataSourceEditor config={config} onUpdate={handleConfigUpdate} onRefreshPreview={onRefreshPreview} accentColor={accentColor} errorLine={errorLine} />
-
-      case NODE_TYPES.DATA_SINK:
-        return <SinkEditor config={config} onUpdate={handleConfigUpdate} nodeId={node.id} accentColor={accentColor} />
-
       case NODE_TYPES.DATA_INPUT:
-        return <DataInputEditor config={config} onUpdate={handleConfigUpdate} accentColor={accentColor} />
+        return <DataInputEditor config={config} onUpdate={handleConfigUpdate} onReplaceConfig={handleConfigReplace} accentColor={accentColor} errorLine={errorLine} />
 
       case NODE_TYPES.DATA_OUTPUT:
-        return <DataOutputEditor config={config} onUpdate={handleConfigUpdate} accentColor={accentColor} />
+        return <DataOutputEditor config={config} onUpdate={handleConfigUpdate} onReplaceConfig={handleConfigReplace} nodeId={node.id} accentColor={accentColor} />
 
       case NODE_TYPES.EXPLORE:
         if (activeExplorePane === "code") {

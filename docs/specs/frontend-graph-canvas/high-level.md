@@ -530,3 +530,27 @@ Out of scope (owned by neighbouring components, linked where they exist):
 > always calls it with `[]`/`[]` and the real graph arrives later via
 > `setNodesRaw`/`setEdgesRaw` from `usePipelineAPI`, so this reset is
 > effectively a one-time clear, not a load path.
+
+## Approved change contract — 0.7.0 canonical data-I/O canvas nodes
+
+Implementation follows
+[`F_0.7.0_data-io-convergence.plan.md`](../../trip/plans/F_0.7.0_data-io-convergence.plan.md).
+
+- Canvas node metadata, the React Flow registry, palette ordering, derived source/sink sets,
+  node-search results, comparison inspector dispatch, and factories contain **Data Input** and
+  **Data Output**, never Data Source/Data Sink. The exact frontend node set becomes 19 and must
+  match the backend enum.
+- `dataInput` is source-only and `dataOutput` is sink-only with one upstream input; neither is a
+  singleton, so a graph may contain multiple instances. Data Output remains previewable as a
+  side-effect-free pass-through; preview never invokes its explicit Write action.
+- New-node defaults contain only one active discriminated branch. Required values not yet chosen
+  are visibly incomplete and block save/execution; metadata never copies inactive fields or
+  invents a provider/format after capability loading fails.
+- Loading a graph containing a removed node fails at the guarded API/parser boundary. The canvas,
+  comparison view, WebSocket sync, undo history, and graph factories provide no hidden legacy
+  renderer or migration. Repository-owned affected graphs are reset to the standard blank graph
+  before they reach this layer.
+
+Acceptance pins 19-type registry parity, palette/search/derived-set membership, source/sink
+handles, multiple input/output creation and save/reload, side-effect-free Data Output preview,
+strict default branch shape, comparison dispatch, and legacy graph rejection.

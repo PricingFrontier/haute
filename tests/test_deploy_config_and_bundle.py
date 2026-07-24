@@ -9,7 +9,7 @@ Covers two items:
   Explicit patch pins (``python:3.11.9-slim``) and digest pins
   (``python@sha256:...``) are deterministic and accepted.
 
-* **#48** — Static ``dataSource`` paths re-resolved at deploy.  The current
+* **#48** — Static ``dataInput`` paths re-resolved at deploy.  The current
   ``_resolve_path`` tries CWD first, then the pipeline directory, and returns
   a path that depends on the bundling process's working directory.  That same
   path then flows through ``build_manifest`` into the deployed container,
@@ -187,19 +187,19 @@ base_image = "python:3.11.9-slim"
 
 
 # ---------------------------------------------------------------------------
-# Item #48 — dataSource paths resolved absolutely at bundle time
+# Item #48 — dataInput paths resolved absolutely at bundle time
 # ---------------------------------------------------------------------------
 
 
 def _make_datasource_graph(node_id: str, raw_path: str):
-    """Build a PipelineGraph with a single static dataSource node."""
+    """Build a PipelineGraph with a single static dataInput node."""
     return _g(
         {
             "nodes": [
                 {
                     "id": node_id,
                     "data": {
-                        "nodeType": "dataSource",
+                        "nodeType": "dataInput",
                         "config": {"path": raw_path},
                     },
                 },

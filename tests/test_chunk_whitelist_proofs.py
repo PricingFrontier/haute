@@ -54,12 +54,28 @@ from tests.conftest import make_edge, make_graph, make_output_config
 
 
 def _node(node_id: str, node_type: str, config: dict[str, object] | None = None):
+    config = dict(config or {})
+    if node_type == "dataInput" and "path" in config:
+        suffix = Path(str(config["path"])).suffix.lower().lstrip(".")
+        formats = {
+            "jsonl": "ndjson",
+            "ndjson": "ndjson",
+            "arrow": "ipc",
+            "feather": "ipc",
+            "ipc": "ipc",
+        }
+        config = {
+            **config,
+            "inputType": "file",
+            "format": formats.get(suffix, suffix),
+            "cacheMode": "direct",
+        }
     return {
         "id": node_id,
         "data": {
             "label": node_id,
             "nodeType": node_type,
-            "config": config or {},
+            "config": config,
         },
     }
 
@@ -78,7 +94,7 @@ def _xform_graph(
     return make_graph(
         {
             "nodes": [
-                _node("source", "dataSource", {"path": str(source_path)}),
+                _node("source", "dataInput", {"path": str(source_path)}),
                 _node("xform", "polars", xform_config),
                 _node("out", "output", make_output_config(output_fields)),
             ],

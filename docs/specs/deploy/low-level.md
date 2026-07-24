@@ -177,7 +177,7 @@ directory before re-raising.
    model artefact present → score; contract bundled but no model artefact → validate
    contract then raise `RuntimeError`; neither present and no usable model source
    configured → raise `DeployError` immediately, never a silent passthrough); static
-   `dataSource` with a remapped bundled path.
+   file-backed `dataInput` with a remapped bundled path.
 3. Compile the graph's preamble once so transform-node user code has access to the same
    namespace as at dev time.
 4. For non-`DEPLOY_LIVE` profiles, build a `dataframe_cache_request` — the deployed
@@ -281,7 +281,7 @@ JSON have separate structured payloads. A body exactly at the configured limit i
   returns at most 1,000 rows. NDJSON is the explicit all-rows streaming response.
 
 > NOTE: `_pruner.py::find_deploy_input_nodes` only returns `apiInput` nodes even though
-> `find_source_nodes` also recognises `dataSource` and `constant` node types as sources;
+> `find_source_nodes` also recognises `dataInput` and `constant` node types as sources;
 > `resolve_config`'s fallback-to-single-source-node path is the only way a non-`apiInput`
 > source becomes a deploy input, and it only fires when there is exactly one such source.
 
@@ -398,3 +398,27 @@ facade and propagate its typed diagnostics. Their score, schema, ordering, and o
 envelope contracts remain unchanged. No deploy module decides execution strategy;
 execution-engine owns that policy. See the
 [remediation plan](../../trip/plans/F_0.6.0_polars-backend-remediation.plan.md).
+
+## Approved change contract — 0.7.0 unified data-input deployment
+
+The implementation plan is
+[`F_0.7.0_data-io-convergence.plan.md`](../../trip/plans/F_0.7.0_data-io-convergence.plan.md).
+
+- `find_source_nodes` in `src/haute/deploy/_pruner.py` substitutes
+  `NodeType.DATA_INPUT` for the removed source type and retains api-input/constant semantics.
+- `src/haute/deploy/_bundler.py` dispatches retained static inputs by provider/cache mode.
+  Direct local path formats contribute their source artifact; snapshot inputs acquire a cache
+  generation lease, verify signed metadata/identity/schema, and bundle both data and metadata
+  under an immutable artifact name. The manifest records provider, identity digest, generation
+  id, and remap.
+- `src/haute/deploy/_scorer.py` remaps `DATA_INPUT` direct paths or snapshot roots through shared
+  provider dispatch. Remove static-data-source hooks and direct Databricks rejection. Secret
+  references resolve through target configuration only for explicitly supported direct remote
+  lakehouse execution.
+- `_schema.py` infers through the unified provider/snapshot reader; `_validators.py` checks
+  snapshot readiness, identity, corruption, direct-remote policy, and format engines. No deploy
+  module calls a cache builder.
+- Tests update pruner roots, artifact collection, schema drift, remap, scorer hooks, dry-run,
+  manifest, package contents, and offline execution. Concurrency tests pin one leased generation
+  while refresh publishes another. Negative tests assert no removed-node recognition and no
+  write invocation for `DATA_OUTPUT`.

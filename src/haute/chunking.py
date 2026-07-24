@@ -21,9 +21,16 @@ from typing import Any, Protocol
 import polars as pl
 
 from haute._builders import _DEFAULT_SCENARIO_STEPS
+from haute._code_extraction import _strip_generated_boilerplate_from_code
 from haute._execution_context import ExecutionProfile
-from haute._io import read_data_source
+from haute._input_providers import resolve_data_input
 from haute._logging import get_logger
+from haute._polars_io_registry import (
+    PolarsIoConfigError,
+    format_for_config,
+    resolve_input_mode,
+    validate_data_input_config,
+)
 from haute._polars_utils import DEFAULT_STREAMING_CHUNK_SIZE, streaming_collect
 from haute._types import GraphEdge, GraphNode, NodeType, PipelineGraph
 from haute.errors import ChunkPlanUnsupportedError, ContractMismatchError
@@ -167,7 +174,7 @@ class BoundedChunkReducer(Protocol):
         """Return the reduced result."""
 
 
-_DIRECT_FILE_SCAN_RULE_NAME = "direct_file_scan"
+_PROVIDER_INPUT_BATCH_RULE_NAME = "provider_input_batches"
 _ROW_LOCAL_POLARS_RULE_NAME = "row_local_polars"
 _SINGLE_PARENT_SUFFIX_RULE_NAME = "single_parent_suffix"
 _NO_RATING_STEP_CODE_RULE_NAME = "rating_step_without_user_code"
@@ -224,11 +231,6 @@ _CHUNK_CAPABILITY_DECLARATIONS: Mapping[NodeType, ChunkCapabilityDeclaration] = 
                 "request-payload sources are bounded by admission, not the file-scan chunk runner"
             ),
         ),
-        NodeType.DATA_SOURCE: _chunk_declaration(
-            NodeType.DATA_SOURCE,
-            ChunkCapabilityStatus.CONDITIONAL,
-            _DIRECT_FILE_SCAN_RULE_NAME,
-        ),
         NodeType.POLARS: _chunk_declaration(
             NodeType.POLARS,
             ChunkCapabilityStatus.CONDITIONAL,
@@ -262,12 +264,6 @@ _CHUNK_CAPABILITY_DECLARATIONS: Mapping[NodeType, ChunkCapabilityDeclaration] = 
             NodeType.OUTPUT,
             ChunkCapabilityStatus.SUPPORTED,
             _MAP_ONLY_RULE_NAME,
-        ),
-        NodeType.DATA_SINK: _chunk_declaration(
-            NodeType.DATA_SINK,
-            ChunkCapabilityStatus.UNSUPPORTED,
-            _UNSUPPORTED_V1_RULE_NAME,
-            note=("sink writes use bounded sink contracts rather than the map-reduce chunk runner"),
         ),
         NodeType.EXPLORE: _chunk_declaration(
             NodeType.EXPLORE,
@@ -320,12 +316,9 @@ _CHUNK_CAPABILITY_DECLARATIONS: Mapping[NodeType, ChunkCapabilityDeclaration] = 
         ),
         NodeType.DATA_INPUT: _chunk_declaration(
             NodeType.DATA_INPUT,
-            ChunkCapabilityStatus.UNSUPPORTED,
-            _UNSUPPORTED_V1_RULE_NAME,
-            note=(
-                "chunkability is opt-in by design (io-nodes review R3); the "
-                "registry-driven input formats have not declared chunk-scan semantics"
-            ),
+            ChunkCapabilityStatus.CONDITIONAL,
+            _PROVIDER_INPUT_BATCH_RULE_NAME,
+            _ROW_LOCAL_POLARS_RULE_NAME,
         ),
         NodeType.DATA_OUTPUT: _chunk_declaration(
             NodeType.DATA_OUTPUT,
@@ -815,7 +808,7 @@ def _source_projected_column_widths(
     node: GraphNode,
     projected_columns: frozenset[str],
 ) -> dict[str, int]:
-    if node.data.nodeType != NodeType.DATA_SOURCE:
+    if node.data.nodeType != NodeType.DATA_INPUT:
         return {}
 
     try:
@@ -891,12 +884,12 @@ def chunk_plan(request: ChunkPlanRequest) -> ChunkPlan:
     source_node_ids: list[str] = []
     for node_id in prepared.order:
         node = prepared.node_map[node_id]
-        if node.data.nodeType == NodeType.DATA_SOURCE:
+        if node.data.nodeType == NodeType.DATA_INPUT:
             source_node_ids.append(node_id)
 
     if request.chunk_start_node_id is None and len(source_node_ids) != 1:
         raise ChunkPlanUnsupportedError(
-            "Chunked execution currently requires exactly one dataSource root.",
+            "Chunked execution currently requires exactly one Data Input root.",
             source_node_ids=source_node_ids,
             target_node_id=request.target_node_id,
         )
@@ -904,7 +897,7 @@ def chunk_plan(request: ChunkPlanRequest) -> ChunkPlan:
     chunk_start_node_id = request.chunk_start_node_id or source_node_id
     if chunk_start_node_id is None:
         raise ChunkPlanUnsupportedError(
-            "chunk_start_node_id is required when a target has multiple dataSource roots.",
+            "chunk_start_node_id is required when a target has multiple Data Input roots.",
             source_node_ids=source_node_ids,
             target_node_id=request.target_node_id,
         )
@@ -927,8 +920,8 @@ def chunk_plan(request: ChunkPlanRequest) -> ChunkPlan:
         if node_id in pre_chunk_node_id_set or (
             node_id == chunk_start_node_id and chunk_start_node_id != source_node_id
         ):
-            if node.data.nodeType == NodeType.DATA_SOURCE:
-                _validate_chunkable_source(node)
+            if node.data.nodeType == NodeType.DATA_INPUT:
+                _validate_chunkable_input(node)
             capability = ChunkCapability(
                 kind=ChunkCapabilityKind.BOUNDED_STATE,
                 preserves_row_order=True,
@@ -1056,6 +1049,18 @@ def iter_chunked_frames(request: ChunkRunnerRequest) -> Iterator[ChunkBatch]:
                 source_node_id=plan.source_node_id,
             )
         source_lf = _source_lazy_frame(source_node)
+        source_code = _data_input_code(source_node)
+        if source_code:
+            from haute._user_exec import _exec_user_code
+
+            source_lf = _normalise_lazy_frame(
+                _exec_user_code(
+                    source_code,
+                    ["df"],
+                    (source_lf,),
+                    extra_ns=request.preamble_ns,
+                )
+            )
         source_lf = _normalise_lazy_frame(
             _apply_selected_columns(source_lf, source_node.data.config)
         )
@@ -1316,8 +1321,8 @@ def _capability_for_node(
             note=declaration.note,
         )
 
-    if node_type == NodeType.DATA_SOURCE:
-        _validate_chunkable_source(node)
+    if node_type == NodeType.DATA_INPUT:
+        _validate_chunkable_input(node)
         return ChunkCapability(
             kind=ChunkCapabilityKind.MAP_ONLY,
             preserves_row_order=True,
@@ -1555,37 +1560,59 @@ def _row_local_stmt_is_supported(
     return False
 
 
-def _validate_chunkable_source(node: GraphNode) -> None:
-    config = node.data.config
-    source_type = config.get("sourceType", "flat_file")
-    if source_type != "flat_file":
+def _data_input_code(node: GraphNode) -> str:
+    return _strip_generated_boilerplate_from_code(
+        node.data.config.get("code") or "",
+        kind="data_input",
+    )
+
+
+def _validate_chunkable_input(node: GraphNode) -> None:
+    """Prove that a canonical Data Input can feed bounded record batches."""
+    try:
+        config = validate_data_input_config(node.data.config)
+        code = _data_input_code(node)
+        if code and not is_chunk_local_polars_code(code, frame_names=("df",)):
+            raise ChunkPlanUnsupportedError(
+                "Chunked Data Input editor code must be row-local.",
+                node_id=node.id,
+                node_type=node.data.nodeType.value,
+            )
+
+        # Every published snapshot has the same immutable Parquet execution
+        # shape, regardless of the provider or original source format.
+        if config["cacheMode"] == "snapshot":
+            return
+
+        fmt = format_for_config(config)
+        mode = resolve_input_mode(fmt, config)
+        if fmt.source_kind == "inline":
+            return
+        if mode != "scan" or not fmt.bounded_read:
+            raise ChunkPlanUnsupportedError(
+                "Direct chunked Data Input requires a bounded lazy scan; "
+                "build a snapshot for eager-only formats.",
+                node_id=node.id,
+                node_type=node.data.nodeType.value,
+                format=fmt.name,
+                mode=mode,
+            )
+        arguments = config.get("arguments") or {}
+        if fmt.needs_schema_when_bounded and "schema" not in arguments:
+            raise ChunkPlanUnsupportedError(
+                "Direct chunked Data Input requires a full declared schema for this format.",
+                node_id=node.id,
+                node_type=node.data.nodeType.value,
+                format=fmt.name,
+            )
+    except ChunkPlanUnsupportedError:
+        raise
+    except (PolarsIoConfigError, TypeError, ValueError) as exc:
         raise ChunkPlanUnsupportedError(
-            "Chunked dataSource supports flat_file sources only.",
+            "Data Input configuration is not valid for bounded chunk execution.",
             node_id=node.id,
             node_type=node.data.nodeType.value,
-            sourceType=source_type,
-        )
-    if (config.get("code") or "").strip():
-        raise ChunkPlanUnsupportedError(
-            "Chunked dataSource code is not supported; sources must be direct scans.",
-            node_id=node.id,
-            node_type=node.data.nodeType.value,
-        )
-    raw_path = node.data.config.get("path")
-    if not isinstance(raw_path, str) or not raw_path:
-        raise ChunkPlanUnsupportedError(
-            "Chunked dataSource requires a file path.",
-            node_id=node.id,
-            node_type=node.data.nodeType.value,
-        )
-    suffix = Path(raw_path).suffix.lower()
-    if suffix not in {".parquet", ".csv"}:
-        raise ChunkPlanUnsupportedError(
-            "Chunked dataSource supports parquet or csv sources only.",
-            node_id=node.id,
-            node_type=node.data.nodeType.value,
-            path=raw_path,
-        )
+        ) from exc
 
 
 def _scenario_row_multiplier(node: GraphNode) -> int:
@@ -1640,11 +1667,11 @@ def _assert_runner_shape(
     chunk_node_set = set(plan.chunk_node_ids)
     for node_id in plan.chunk_node_ids:
         node = node_map[node_id]
-        if node.data.nodeType == NodeType.DATA_SOURCE:
+        if node.data.nodeType == NodeType.DATA_INPUT:
             source_count += 1
             if node_id != plan.chunk_start_node_id:
                 raise ChunkPlanUnsupportedError(
-                    "Chunk runner encountered a non-root dataSource node.",
+                    "Chunk runner encountered a non-root Data Input node.",
                     node_id=node_id,
                     chunk_start_node_id=plan.chunk_start_node_id,
                 )
@@ -1662,32 +1689,26 @@ def _assert_runner_shape(
             )
     if plan.chunk_start_node_id == plan.source_node_id and source_count != 1:
         raise ChunkPlanUnsupportedError(
-            "Chunk runner requires exactly one dataSource root.",
+            "Chunk runner requires exactly one Data Input root.",
             source_node_id=plan.source_node_id,
             source_count=source_count,
         )
 
 
 def _source_lazy_frame(node: GraphNode) -> pl.LazyFrame:
-    raw_path = node.data.config.get("path")
-    if not isinstance(raw_path, str) or not raw_path:
-        raise ChunkPlanUnsupportedError(
-            "Chunked dataSource requires a file path.",
-            node_id=node.id,
-            node_type=node.data.nodeType.value,
-        )
-    suffix = Path(raw_path).suffix.lower()
-    if suffix in {".parquet", ".csv"}:
-        return read_data_source(
+    _validate_chunkable_input(node)
+    try:
+        return resolve_data_input(
             node.data.config,
+            base_dir=Path.cwd(),
             profile=ExecutionProfile.CHUNKED_MAP_REDUCE,
         )
-    raise ChunkPlanUnsupportedError(
-        "Chunked dataSource supports parquet or csv sources only.",
-        node_id=node.id,
-        node_type=node.data.nodeType.value,
-        path=raw_path,
-    )
+    except (PolarsIoConfigError, TypeError, ValueError) as exc:
+        raise ChunkPlanUnsupportedError(
+            "Data Input could not be resolved as a bounded chunk source.",
+            node_id=node.id,
+            node_type=node.data.nodeType.value,
+        ) from exc
 
 
 def _normalise_lazy_frame(frame: pl.LazyFrame | pl.DataFrame | Any) -> pl.LazyFrame:

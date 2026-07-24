@@ -41,7 +41,7 @@ function buildLargeGraphSource(nodeCount: number): string {
     'pipeline = haute.Pipeline("large_drag_benchmark")',
     "",
     "",
-    '@pipeline.data_source(config="config/data_source/raw_rows.json")',
+    '@pipeline.data_input(config="config/data_input/raw_rows.json")',
     "def raw_rows() -> pl.LazyFrame:",
     '    return pl.scan_parquet(Path(__file__).parent.parent / "data" / "sample.parquet")',
     "",

@@ -102,7 +102,7 @@ def _source_to_optimiser_graph(source_path: str, opt_config: dict) -> dict:
                     "id": "source",
                     "data": {
                         "label": "source",
-                        "nodeType": "dataSource",
+                        "nodeType": "dataInput",
                         "config": {"path": source_path},
                     },
                 },

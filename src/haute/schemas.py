@@ -816,24 +816,98 @@ class TraceResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# /api/pipeline/sink
+# /api/pipeline/write-output
 # ---------------------------------------------------------------------------
 
 
-class SinkRequest(BaseModel):
+class WriteOutputRequest(BaseModel):
     graph: Graph
     node_id: str
     source: str = "live"
     streaming_chunk_size: StreamingChunkSize = None
 
 
-class SinkResponse(BaseModel):
+class WriteOutputResponse(BaseModel):
     status: str
     message: str = ""
     row_count: int = 0
     path: str = ""
     format: str = "parquet"
     execution_metrics: ExecutionMetricsPayload | None = None
+
+
+# ---------------------------------------------------------------------------
+# /api/input-cache
+# ---------------------------------------------------------------------------
+
+
+class _StrictInputCacheModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class InputCacheSourceRequest(_StrictInputCacheModel):
+    schema_version: Literal[1] = 1
+    config: dict[str, Any]
+
+
+class InputCacheBuildRequest(InputCacheSourceRequest):
+    refresh: bool = False
+    profile: Literal["preview_eager", "lazy_sink"] = "lazy_sink"
+
+
+class InputCacheBuildResponse(_StrictInputCacheModel):
+    schema_version: Literal[1] = 1
+    job_id: str
+    identity_digest: str
+    status: Literal["running"]
+    joined: bool
+
+
+class InputCacheProgress(_StrictInputCacheModel):
+    phase: Literal["queued", "building", "publishing", "completed", "failed", "cancelled"]
+    rows: int = Field(default=0, ge=0)
+    batches: int = Field(default=0, ge=0)
+    bytes: int = Field(default=0, ge=0)
+    elapsed_seconds: float = Field(default=0.0, ge=0)
+
+
+class InputCacheGenerationPayload(_StrictInputCacheModel):
+    generation_id: str
+    row_count: int = Field(ge=0)
+    column_count: int = Field(ge=0)
+    columns: dict[str, str]
+    size_bytes: int = Field(ge=0)
+    created_at: float
+    build_class: Literal["bounded", "admitted_eager", "unsupported"]
+
+
+class InputCacheSnapshotStatusResponse(_StrictInputCacheModel):
+    schema_version: Literal[1] = 1
+    identity_digest: str
+    state: Literal["missing", "building", "ready", "corrupt", "failed"]
+    freshness: Literal["fresh", "stale", "unknown"]
+    generation: InputCacheGenerationPayload | None = None
+
+
+class InputCacheJobStatusResponse(_StrictInputCacheModel):
+    schema_version: Literal[1] = 1
+    job_id: str
+    identity_digest: str
+    status: JobStatus
+    terminal_reason: str | None = None
+    message: str = ""
+    refresh: bool
+    build_class: Literal["bounded", "admitted_eager", "unsupported"]
+    progress: InputCacheProgress
+    snapshot: InputCacheSnapshotStatusResponse | None = None
+    error_code: str | None = None
+
+
+class InputCacheCancelResponse(_StrictInputCacheModel):
+    schema_version: Literal[1] = 1
+    job_id: str
+    cancellation_requested: bool
+    status: JobStatus
 
 
 # ---------------------------------------------------------------------------
@@ -1048,41 +1122,6 @@ class TableItem(BaseModel):
 
 class TableListResponse(BaseModel):
     tables: list[TableItem]
-
-
-class FetchTableRequest(BaseModel):
-    table: str
-    http_path: str | None = None
-    query: str | None = None
-
-
-class FetchTableResponse(BaseModel):
-    path: str
-    table: str
-    row_count: int
-    column_count: int
-    columns: dict[str, str]
-    size_bytes: int
-    fetched_at: float
-    fetch_seconds: float
-
-
-class FetchProgressResponse(BaseModel):
-    active: bool
-    rows: int = 0
-    batches: int = 0
-    elapsed: float = 0.0
-
-
-class CacheStatusResponse(BaseModel):
-    cached: bool
-    path: str | None = None
-    table: str = ""
-    row_count: int = 0
-    column_count: int = 0
-    columns: dict[str, str] = Field(default_factory=dict)
-    size_bytes: int = 0
-    fetched_at: float = 0
 
 
 # ---------------------------------------------------------------------------
@@ -2288,33 +2327,57 @@ class GitPushRejection(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class IoFormatCapability(BaseModel):
-    """One format's capabilities from the dataInput/dataOutput registry.
+class _StrictIoCapabilitiesModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
 
-    Mirrors ``haute._polars_io_registry.registry_capabilities()`` so the
-    frontend never hard-codes format knowledge: which formats exist, which
-    are read/write capable, which polars arguments each mode accepts, and
-    which engine packages are missing in this install (empty = runnable).
-    """
 
+class IoInputCapability(_StrictIoCapabilitiesModel):
+    modes: list[Literal["scan", "read"]]
+    arguments: dict[str, list[str]]
+    engines_missing: list[str]
+    direct_bounded: bool
+    needs_schema_when_bounded: bool
+    snapshot_build: Literal["bounded", "admitted_eager", "unsupported"]
+    cached_read: bool
+
+
+class IoOutputCapability(_StrictIoCapabilitiesModel):
+    modes: list[Literal["sink", "write"]]
+    arguments: dict[str, list[str]]
+    engines_missing: list[str]
+    native_sink: bool
+    eager_writer: bool
+    publication: Literal["atomic_file", "transactional"]
+
+
+class IoFormatCapability(_StrictIoCapabilitiesModel):
     name: str
     label: str
-    source_kind: Literal["path", "database", "inline"]
+    group: Literal["file", "database", "lakehouse", "inline"]
     extensions: list[str]
     unstable: bool
-    bounded_read: bool
-    needs_schema_when_bounded: bool
-    read_available: bool
-    write_available: bool
-    read_engines_missing: list[str]
-    write_engines_missing: list[str]
-    input_modes: list[str]
-    output_modes: list[str]
-    input_arguments: dict[str, list[str]]
-    output_arguments: dict[str, list[str]]
+    input: IoInputCapability | None = None
+    output: IoOutputCapability | None = None
 
 
-class IoFormatsResponse(BaseModel):
-    """Response for ``GET /api/formats``."""
+class IoFieldCapability(_StrictIoCapabilitiesModel):
+    name: str
+    label: str
+    kind: Literal["path", "connection", "text", "query", "table", "records"]
+    required: bool
 
+
+class IoCapabilityGroup(_StrictIoCapabilitiesModel):
+    name: Literal["file", "database", "lakehouse", "databricks", "inline"]
+    label: str
+    input_available: bool
+    output_available: bool
+    cache_modes: list[Literal["direct", "snapshot"]]
+    input_fields: list[IoFieldCapability]
+    output_fields: list[IoFieldCapability]
     formats: list[IoFormatCapability]
+
+
+class IoCapabilitiesResponse(_StrictIoCapabilitiesModel):
+    schema_version: Literal[1]
+    groups: list[IoCapabilityGroup]

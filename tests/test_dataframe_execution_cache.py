@@ -63,7 +63,7 @@ def _port_wired_graph(target_handle: str) -> PipelineGraph:
 def _graph(*, mid_multiplier: int = 2, downstream_label: str = "downstream") -> PipelineGraph:
     return PipelineGraph(
         nodes=[
-            _node("source", NodeType.DATA_SOURCE, path="data/input.parquet"),
+            _node("source", NodeType.DATA_INPUT, path="data/input.parquet"),
             _node("mid", NodeType.POLARS, multiplier=mid_multiplier),
             _node("target", NodeType.POLARS, output="premium"),
             _node("downstream", NodeType.OUTPUT, label=downstream_label),
@@ -475,7 +475,7 @@ def test_dataframe_graph_input_fingerprint_tracks_file_backed_runtime_artifacts(
     artifact.write_text("v1")
     graph = PipelineGraph(
         nodes=[
-            _node("source", NodeType.DATA_SOURCE, path="data/input.parquet"),
+            _node("source", NodeType.DATA_INPUT, path="data/input.parquet"),
             _node(
                 "apply",
                 NodeType.OPTIMISER_APPLY,
@@ -507,7 +507,7 @@ def test_dataframe_graph_input_fingerprint_reuses_same_stat_gate_after_content_c
     source.write_text("a,b\n1,2\n")
     graph = PipelineGraph(
         nodes=[
-            _node("source", NodeType.DATA_SOURCE, path=str(source)),
+            _node("source", NodeType.DATA_INPUT, path=str(source)),
             _node("target", NodeType.POLARS),
         ],
         edges=[_edge("source", "target")],

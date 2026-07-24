@@ -75,7 +75,7 @@ def _start_training(client: TestClient, graph: dict, node_id: str = "train") -> 
 
 
 def _modelling_graph(data_path: str, config: dict[str, Any]) -> dict:
-    """dataSource → modelling graph with a fully caller-controlled config."""
+    """dataInput → modelling graph with a fully caller-controlled config."""
     graph = make_graph(
         {
             "nodes": [
@@ -83,7 +83,7 @@ def _modelling_graph(data_path: str, config: dict[str, Any]) -> dict:
                     "id": "source",
                     "data": {
                         "label": "source",
-                        "nodeType": "dataSource",
+                        "nodeType": "dataInput",
                         "config": {"path": data_path},
                     },
                 },

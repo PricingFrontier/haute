@@ -81,7 +81,7 @@ def test_estimate_returns_input_metrics_when_metadata_lookup_fails(client, tmp_p
                     "id": "source",
                     "data": {
                         "label": "source",
-                        "nodeType": "dataSource",
+                        "nodeType": "dataInput",
                         "config": {"path": str(data_path)},
                     },
                 },

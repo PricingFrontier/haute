@@ -104,7 +104,7 @@ def _scenario_graph(
         nodes=[
             _node(
                 "base",
-                NodeType.DATA_SOURCE,
+                NodeType.DATA_INPUT,
                 {
                     "path": str(base_path),
                     "contract": {"inputs": [], "outputs": base_columns},
@@ -112,7 +112,7 @@ def _scenario_graph(
             ),
             _node(
                 "lookup",
-                NodeType.DATA_SOURCE,
+                NodeType.DATA_INPUT,
                 {
                     "path": str(lookup_path),
                     "contract": {"inputs": [], "outputs": lookup_columns},

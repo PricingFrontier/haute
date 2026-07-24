@@ -89,7 +89,7 @@ def scored_data(tmp_path) -> str:
 
 
 def _make_optimiser_graph(data_path: str, config: dict | None = None) -> dict:
-    """Build a 2-node graph: dataSource → optimiser."""
+    """Build a 2-node graph: dataInput → optimiser."""
     default_config: dict = {
         "mode": "online",
         "objective": "expected_income",
@@ -110,7 +110,7 @@ def _make_optimiser_graph(data_path: str, config: dict | None = None) -> dict:
                     "id": "source",
                     "data": {
                         "label": "source",
-                        "nodeType": "dataSource",
+                        "nodeType": "dataInput",
                         "config": {"path": data_path},
                     },
                 },
@@ -138,7 +138,7 @@ def _make_estimate_projection_impossible_graph(left_path: str, right_path: str) 
                     "id": "left",
                     "data": {
                         "label": "left",
-                        "nodeType": "dataSource",
+                        "nodeType": "dataInput",
                         "config": {"path": left_path},
                     },
                 },
@@ -146,7 +146,7 @@ def _make_estimate_projection_impossible_graph(left_path: str, right_path: str) 
                     "id": "right",
                     "data": {
                         "label": "right",
-                        "nodeType": "dataSource",
+                        "nodeType": "dataInput",
                         "config": {"path": right_path},
                     },
                 },
@@ -206,7 +206,7 @@ def _make_auto_range_runtime_projectable_graph(left_path: str, right_path: str) 
                     "id": "left",
                     "data": {
                         "label": "left",
-                        "nodeType": "dataSource",
+                        "nodeType": "dataInput",
                         "config": {"path": left_path},
                     },
                 },
@@ -214,7 +214,7 @@ def _make_auto_range_runtime_projectable_graph(left_path: str, right_path: str) 
                     "id": "right",
                     "data": {
                         "label": "right",
-                        "nodeType": "dataSource",
+                        "nodeType": "dataInput",
                         "config": {"path": right_path},
                     },
                 },
@@ -912,7 +912,7 @@ class TestSolveRoute:
                         "id": "source",
                         "data": {
                             "label": "source",
-                            "nodeType": "dataSource",
+                            "nodeType": "dataInput",
                             "config": {"path": scored_data},
                         },
                     },
@@ -1810,7 +1810,7 @@ class TestEstimateRoute:
                         "id": "source",
                         "data": {
                             "label": "source",
-                            "nodeType": "dataSource",
+                            "nodeType": "dataInput",
                             "config": {"path": str(scored_path)},
                         },
                     },
@@ -1829,7 +1829,7 @@ class TestEstimateRoute:
                         "id": "unused_parent",
                         "data": {
                             "label": "unused_parent",
-                            "nodeType": "dataSource",
+                            "nodeType": "dataInput",
                             "config": {"path": str(extra_path)},
                         },
                     },
@@ -2278,7 +2278,7 @@ class TestEstimateRoute:
                         "id": "source",
                         "data": {
                             "label": "source",
-                            "nodeType": "dataSource",
+                            "nodeType": "dataInput",
                             "config": {"path": str(source_path), "contract": "opaque"},
                         },
                     },
@@ -2448,7 +2448,7 @@ class TestEstimateRoute:
                         "id": "source",
                         "data": {
                             "label": "source",
-                            "nodeType": "dataSource",
+                            "nodeType": "dataInput",
                             "config": {"path": str(source_path)},
                         },
                     },
@@ -2580,7 +2580,7 @@ class TestEstimateRoute:
                         "id": "source",
                         "data": {
                             "label": "source",
-                            "nodeType": "dataSource",
+                            "nodeType": "dataInput",
                             "config": {"path": str(source_path)},
                         },
                     },
@@ -2709,7 +2709,7 @@ class TestEstimateRoute:
                         "id": "source",
                         "data": {
                             "label": "source",
-                            "nodeType": "dataSource",
+                            "nodeType": "dataInput",
                             "config": {"path": str(source_path), "contract": "opaque"},
                         },
                     },
@@ -2801,7 +2801,7 @@ class TestEstimateRoute:
                         "id": "source",
                         "data": {
                             "label": "source",
-                            "nodeType": "dataSource",
+                            "nodeType": "dataInput",
                             "config": {"path": str(source_path), "contract": "opaque"},
                         },
                     },
@@ -3042,7 +3042,7 @@ class TestEstimateRoute:
                         "id": "source",
                         "data": {
                             "label": "source",
-                            "nodeType": "dataSource",
+                            "nodeType": "dataInput",
                             "config": {"path": str(source_path), "contract": "opaque"},
                         },
                     },
@@ -3141,7 +3141,7 @@ class TestEstimateRoute:
                         "id": "source",
                         "data": {
                             "label": "source",
-                            "nodeType": "dataSource",
+                            "nodeType": "dataInput",
                             "config": {"path": str(source_path)},
                         },
                     },
@@ -3240,7 +3240,7 @@ class TestEstimateRoute:
                         "id": "source",
                         "data": {
                             "label": "source",
-                            "nodeType": "dataSource",
+                            "nodeType": "dataInput",
                             "config": {"path": str(source_path)},
                         },
                     },
@@ -3332,7 +3332,7 @@ class TestEstimateRoute:
                         "id": "source",
                         "data": {
                             "label": "source",
-                            "nodeType": "dataSource",
+                            "nodeType": "dataInput",
                             "config": {"path": str(source_path)},
                         },
                     },
@@ -3416,7 +3416,7 @@ class TestEstimateRoute:
                         "id": "source",
                         "data": {
                             "label": "source",
-                            "nodeType": "dataSource",
+                            "nodeType": "dataInput",
                             "config": {"path": str(source_path)},
                         },
                     },
@@ -3516,7 +3516,7 @@ class TestEstimateRoute:
                         "id": "source",
                         "data": {
                             "label": "source",
-                            "nodeType": "dataSource",
+                            "nodeType": "dataInput",
                             "config": {"path": str(source_path)},
                         },
                     },
@@ -3615,7 +3615,7 @@ class TestEstimateRoute:
                         "id": "source",
                         "data": {
                             "label": "source",
-                            "nodeType": "dataSource",
+                            "nodeType": "dataInput",
                             "config": {"path": str(source_path)},
                         },
                     },
@@ -3730,7 +3730,7 @@ class TestEstimateRoute:
                         "id": "left",
                         "data": {
                             "label": "left",
-                            "nodeType": "dataSource",
+                            "nodeType": "dataInput",
                             "config": {"path": str(left_path)},
                         },
                     },
@@ -3738,7 +3738,7 @@ class TestEstimateRoute:
                         "id": "right",
                         "data": {
                             "label": "right",
-                            "nodeType": "dataSource",
+                            "nodeType": "dataInput",
                             "config": {"path": str(right_path)},
                         },
                     },
@@ -3956,7 +3956,7 @@ class TestEstimateRoute:
                         "id": "source",
                         "data": {
                             "label": "source",
-                            "nodeType": "dataSource",
+                            "nodeType": "dataInput",
                             "config": {"path": str(source_path)},
                         },
                     },
@@ -4282,7 +4282,7 @@ class TestEstimateRoute:
                         "id": "source",
                         "data": {
                             "label": "source",
-                            "nodeType": "dataSource",
+                            "nodeType": "dataInput",
                             "config": {"path": str(source_path)},
                         },
                     },
@@ -4304,7 +4304,7 @@ class TestEstimateRoute:
                         "id": "banding",
                         "data": {
                             "label": "banding",
-                            "nodeType": "dataSource",
+                            "nodeType": "dataInput",
                             "config": {"path": str(banding_path)},
                         },
                     },
@@ -4356,7 +4356,7 @@ class TestEstimateRoute:
                         "id": "scored",
                         "data": {
                             "label": "scored",
-                            "nodeType": "dataSource",
+                            "nodeType": "dataInput",
                             "config": {},
                         },
                     },
@@ -4364,7 +4364,7 @@ class TestEstimateRoute:
                         "id": "banding",
                         "data": {
                             "label": "banding",
-                            "nodeType": "dataSource",
+                            "nodeType": "dataInput",
                             "config": {},
                         },
                     },
@@ -4450,7 +4450,7 @@ class TestEstimateRoute:
                         "id": "source",
                         "data": {
                             "label": "source",
-                            "nodeType": "dataSource",
+                            "nodeType": "dataInput",
                             "config": {"path": str(source_path)},
                         },
                     },
@@ -4659,7 +4659,7 @@ def _make_ratebook_data(tmp_path, n_quotes: int = 50, n_steps: int = 5):
 
 
 def _make_ratebook_graph(data_path: str, banding_data_path: str) -> dict:
-    """Build a 3-node graph: dataSource → optimiser ← banding."""
+    """Build a 3-node graph: dataInput → optimiser ← banding."""
     graph = make_graph(
         {
             "nodes": [
@@ -4667,7 +4667,7 @@ def _make_ratebook_graph(data_path: str, banding_data_path: str) -> dict:
                     "id": "source",
                     "data": {
                         "label": "source",
-                        "nodeType": "dataSource",
+                        "nodeType": "dataInput",
                         "config": {"path": data_path},
                     },
                 },
@@ -4675,7 +4675,7 @@ def _make_ratebook_graph(data_path: str, banding_data_path: str) -> dict:
                     "id": "banding",
                     "data": {
                         "label": "banding",
-                        "nodeType": "dataSource",
+                        "nodeType": "dataInput",
                         "config": {"path": banding_data_path},
                     },
                 },
@@ -4720,7 +4720,7 @@ def _make_ratebook_intermediate_graph(data_path: str, banding_data_path: str) ->
                     "id": "source",
                     "data": {
                         "label": "source",
-                        "nodeType": "dataSource",
+                        "nodeType": "dataInput",
                         "config": {"path": data_path},
                     },
                 },
@@ -4739,7 +4739,7 @@ def _make_ratebook_intermediate_graph(data_path: str, banding_data_path: str) ->
                     "id": "banding",
                     "data": {
                         "label": "banding",
-                        "nodeType": "dataSource",
+                        "nodeType": "dataInput",
                         "config": {"path": banding_data_path},
                     },
                 },
@@ -5126,7 +5126,7 @@ def _make_base_data(tmp_path, n_quotes: int = 50) -> str:
 
 
 def _make_expander_graph(data_path: str) -> dict:
-    """Build a 4-node graph: dataSource → expander → transform → optimiser.
+    """Build a 4-node graph: dataInput → expander → transform → optimiser.
 
     The expander cross-joins scenario_value and scenario_index columns.
     The transform computes objective and constraint columns.
@@ -5138,7 +5138,7 @@ def _make_expander_graph(data_path: str) -> dict:
                     "id": "source",
                     "data": {
                         "label": "source",
-                        "nodeType": "dataSource",
+                        "nodeType": "dataInput",
                         "config": {"path": data_path},
                     },
                 },
@@ -6265,7 +6265,7 @@ class TestExecutePipelineArgs:
                         "id": "source",
                         "data": {
                             "label": "source",
-                            "nodeType": "dataSource",
+                            "nodeType": "dataInput",
                             "config": {"path": scored_data},
                         },
                     },
@@ -6273,7 +6273,7 @@ class TestExecutePipelineArgs:
                         "id": "side_source",
                         "data": {
                             "label": "side source",
-                            "nodeType": "dataSource",
+                            "nodeType": "dataInput",
                             "config": {"path": scored_data},
                         },
                     },
@@ -6380,7 +6380,7 @@ class TestExecutePipelineArgs:
                         "id": "source",
                         "data": {
                             "label": "source",
-                            "nodeType": "dataSource",
+                            "nodeType": "dataInput",
                             "config": {"path": scored_data},
                         },
                     },
@@ -6388,7 +6388,7 @@ class TestExecutePipelineArgs:
                         "id": "side_source",
                         "data": {
                             "label": "side source",
-                            "nodeType": "dataSource",
+                            "nodeType": "dataInput",
                             "config": {"path": scored_data},
                         },
                     },
@@ -6472,7 +6472,7 @@ class TestExecutePipelineArgs:
                         "id": "source",
                         "data": {
                             "label": "source",
-                            "nodeType": "dataSource",
+                            "nodeType": "dataInput",
                             "config": {"path": scored_data},
                         },
                     },
@@ -6547,7 +6547,7 @@ class TestExecutePipelineArgs:
                         "id": "source",
                         "data": {
                             "label": "source",
-                            "nodeType": "dataSource",
+                            "nodeType": "dataInput",
                             "config": {"path": scored_data},
                         },
                     },
@@ -6852,7 +6852,7 @@ class TestExecutePipelineArgs:
                         "id": "source",
                         "data": {
                             "label": "source",
-                            "nodeType": "dataSource",
+                            "nodeType": "dataInput",
                             "config": {"path": str(source_path)},
                         },
                     },
@@ -6871,7 +6871,7 @@ class TestExecutePipelineArgs:
                         "id": "banding",
                         "data": {
                             "label": "banding",
-                            "nodeType": "dataSource",
+                            "nodeType": "dataInput",
                             "config": {"path": str(banding_path)},
                         },
                     },
@@ -11950,7 +11950,7 @@ class TestExecutePipelineExtended:
                         "id": "source",
                         "data": {
                             "label": "source",
-                            "nodeType": "dataSource",
+                            "nodeType": "dataInput",
                             "config": {},
                         },
                     },
@@ -12074,7 +12074,7 @@ class TestExecutePipelineExtended:
                         "id": "source",
                         "data": {
                             "label": "source",
-                            "nodeType": "dataSource",
+                            "nodeType": "dataInput",
                             "config": {},
                         },
                     },

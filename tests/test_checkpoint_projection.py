@@ -47,7 +47,7 @@ def _node(nid: str, node_type: NodeType, **config) -> GraphNode:
 
 
 def _source_node(nid: str) -> GraphNode:
-    return _node(nid, NodeType.DATA_SOURCE)
+    return _node(nid, NodeType.DATA_INPUT)
 
 
 def _output_node(nid: str, fields: list[str] | None = None) -> GraphNode:
@@ -444,7 +444,7 @@ class TestGetColumnContract:
         "node_type",
         [
             NodeType.OUTPUT,
-            NodeType.DATA_SINK,
+            NodeType.DATA_OUTPUT,
             NodeType.LIVE_SWITCH,
             NodeType.MODELLING,
             NodeType.OPTIMISER,
@@ -474,7 +474,7 @@ class TestGetColumnContract:
 
     @pytest.mark.parametrize(
         "node_type",
-        [NodeType.POLARS, NodeType.EXTERNAL_FILE, NodeType.API_INPUT, NodeType.DATA_SOURCE],
+        [NodeType.POLARS, NodeType.EXTERNAL_FILE, NodeType.API_INPUT, NodeType.DATA_INPUT],
     )
     def test_opaque_types(self, node_type: NodeType):
         produced, referenced = get_column_contract(node_type, {})
@@ -680,8 +680,8 @@ class TestComputeNeededColumns:
         assert needed["src"] == {"a", "b"}
 
     def test_terminal_non_output_returns_none(self):
-        """A terminal DATA_SINK (not OUTPUT) → needed is None."""
-        nodes = [_source_node("src"), _node("sink", NodeType.DATA_SINK)]
+        """A terminal DATA_OUTPUT (not quote OUTPUT) → needed is None."""
+        nodes = [_source_node("src"), _node("sink", NodeType.DATA_OUTPUT)]
         node_map = {n.id: n for n in nodes}
         order = ["src", "sink"]
         parents_of = {"src": [], "sink": ["src"]}
@@ -996,7 +996,7 @@ def _wide_build_fn(node: GraphNode, source_names=None, **kwargs):
     nid = node.id
     nt = node.data.nodeType
 
-    if nt == NodeType.DATA_SOURCE:
+    if nt == NodeType.DATA_INPUT:
         # Source with 10 columns: key, a, b, c, d, e, f, g, h, extra
         data = {
             "key": [1, 2, 3],
@@ -1070,7 +1070,7 @@ class TestCheckpointProjection:
         g = PipelineGraph(nodes=nodes, edges=edges)
 
         def build_fn(node, **kw):
-            if node.data.nodeType == NodeType.DATA_SOURCE:
+            if node.data.nodeType == NodeType.DATA_INPUT:
                 data = {"a": [1], "b": [2], "c": [3], "d": [4], "extra": [5]}
                 return node.id, lambda: pl.DataFrame(data).lazy(), True
             if node.data.nodeType == NodeType.OUTPUT:
@@ -1117,7 +1117,7 @@ class TestCheckpointProjection:
         g = PipelineGraph(nodes=nodes, edges=edges)
 
         def build_fn(node, **kw):
-            if node.data.nodeType == NodeType.DATA_SOURCE:
+            if node.data.nodeType == NodeType.DATA_INPUT:
                 data = {"a": [1], "b": [2], "c": [3]}
                 return node.id, lambda: pl.DataFrame(data).lazy(), True
             return node.id, lambda *dfs: dfs[0], False
@@ -1177,7 +1177,7 @@ class TestCheckpointProjection:
         g = PipelineGraph(nodes=nodes, edges=[_e("src", "out")])
 
         def build_fn(node, **kw):
-            if node.data.nodeType == NodeType.DATA_SOURCE:
+            if node.data.nodeType == NodeType.DATA_INPUT:
                 return node.id, lambda: pl.DataFrame({"a": [1], "b": [2]}).lazy(), True
             return node.id, lambda *dfs: dfs[0], False
 
@@ -1199,7 +1199,7 @@ class TestCheckpointProjection:
         g = PipelineGraph(nodes=nodes, edges=edges)
 
         def build_fn(node, **kw):
-            if node.data.nodeType == NodeType.DATA_SOURCE:
+            if node.data.nodeType == NodeType.DATA_INPUT:
                 data = {"a": [1], "b": [2], "c": [3]}
                 return node.id, lambda: pl.DataFrame(data).lazy(), True
             return node.id, lambda *dfs: dfs[0], False
@@ -1236,7 +1236,7 @@ class TestCheckpointProjection:
         g = PipelineGraph(nodes=nodes, edges=edges)
 
         def build_fn(node, **kw):
-            if node.data.nodeType == NodeType.DATA_SOURCE:
+            if node.data.nodeType == NodeType.DATA_INPUT:
                 data = {"a": [1], "b": [2], "c": [3], "d": [4]}
                 return node.id, lambda: pl.DataFrame(data).lazy(), True
             return node.id, lambda *dfs: dfs[0], False

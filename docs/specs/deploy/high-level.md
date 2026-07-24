@@ -281,3 +281,31 @@ Batch deployment and seedless live scoring will use the universal execution-plan
 This adds strategy/provenance diagnostics and consistent bounded execution decisions
 without changing established input-to-output scoring semantics. Execution-engine owns
 plan selection; see the [remediation plan](../../trip/plans/F_0.6.0_polars-backend-remediation.plan.md).
+
+## Approved change contract — 0.7.0 unified data-input deployment
+
+Implementation follows
+[`F_0.7.0_data-io-convergence.plan.md`](../../trip/plans/F_0.7.0_data-io-convergence.plan.md).
+
+- Deploy source discovery recognises `dataInput`, `apiInput`, and `constant`; `dataSource` no
+  longer exists. Direct local-file inputs retained in the pruned graph are bundled and remapped
+  according to their registry format. Snapshot-mode inputs bundle the exact validated Parquet
+  generation and signed metadata selected at build time.
+- Database and Databricks inputs require a ready matching snapshot before bundle construction.
+  Deploy never fetches or refreshes remote data. Lakehouse direct mode is allowed only when the
+  deploy target explicitly supports the required network and named-secret contract; otherwise a
+  snapshot is required and the validator says so before packaging.
+- The deployed scorer opens bundled direct files/snapshots through the same provider dispatch and
+  applies the retained `dataInput` Polars body. Bundle identity, schema verification, path
+  remapping, and generated-code execution cannot select a different generation from the one
+  validated.
+- `dataOutput` is a pass-through node during scoring and deployment never invokes its explicit
+  writer. Persistence-only branches not ancestral to the served `output` are pruned normally.
+  A pipeline cannot cause file/database writes merely by being scored.
+- Removed node types, legacy sidecars, and provider-specific Databricks cache paths are not
+  recognised as deploy artefacts or inputs.
+
+Acceptance covers static files across supported formats, each remote snapshot provider, corrupt
+or identity-mismatched metadata, generation pinning during concurrent refresh, secret/network
+policy, offline scorer execution, post-input code, and proof that deploy validation/scoring
+performs no cache build, remote fetch, or data-output write.

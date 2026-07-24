@@ -42,12 +42,28 @@ DEFAULT_OUTPUT_FIELDS = [
 
 
 def _node(node_id: str, node_type: str, config: dict[str, object] | None = None):
+    config = dict(config or {})
+    if node_type == "dataInput" and "path" in config:
+        suffix = Path(str(config["path"])).suffix.lower().lstrip(".")
+        formats = {
+            "jsonl": "ndjson",
+            "ndjson": "ndjson",
+            "arrow": "ipc",
+            "feather": "ipc",
+            "ipc": "ipc",
+        }
+        config = {
+            **config,
+            "inputType": "file",
+            "format": formats.get(suffix, suffix),
+            "cacheMode": "direct",
+        }
     return {
         "id": node_id,
         "data": {
             "label": node_id,
             "nodeType": node_type,
-            "config": config or {},
+            "config": config,
         },
     }
 
@@ -69,7 +85,7 @@ def _chunk_safe_graph(path: Path, *, output_fields: list[str] | None = None):
     return make_graph(
         {
             "nodes": [
-                _node("source", "dataSource", {"path": str(path)}),
+                _node("source", "dataInput", {"path": str(path)}),
                 _node(
                     "age_band",
                     "banding",
@@ -384,8 +400,8 @@ def test_chunk_plan_allows_multi_source_prefix_when_start_frame_is_supplied() ->
     graph = make_graph(
         {
             "nodes": [
-                _node("left", "dataSource", {"path": "left.parquet"}),
-                _node("right", "dataSource", {"path": "right.parquet"}),
+                _node("left", "dataInput", {"path": "left.parquet"}),
+                _node("right", "dataInput", {"path": "right.parquet"}),
                 _node(
                     "joined",
                     "polars",
@@ -458,8 +474,8 @@ def test_chunk_runner_ignores_nested_prefix_edge_demands_with_start_frame() -> N
     graph = make_graph(
         {
             "nodes": [
-                _node("left", "dataSource", {"path": "left.parquet"}),
-                _node("right", "dataSource", {"path": "right.parquet"}),
+                _node("left", "dataInput", {"path": "left.parquet"}),
+                _node("right", "dataInput", {"path": "right.parquet"}),
                 _node(
                     "joined",
                     "polars",
@@ -561,7 +577,7 @@ def test_chunk_runner_supports_row_local_polars_transform(tmp_path: Path) -> Non
     graph = make_graph(
         {
             "nodes": [
-                _node("source", "dataSource", {"path": str(source_path)}),
+                _node("source", "dataInput", {"path": str(source_path)}),
                 _node(
                     "scenario",
                     "scenarioExpander",
@@ -635,7 +651,7 @@ def test_chunk_runner_reuses_model_score_model_across_chunks(tmp_path: Path) -> 
     graph = make_graph(
         {
             "nodes": [
-                _node("source", "dataSource", {"path": str(source_path)}),
+                _node("source", "dataInput", {"path": str(source_path)}),
                 _node(
                     "score",
                     "modelScore",
@@ -692,7 +708,7 @@ def test_chunk_plan_rejects_global_polars_transform(tmp_path: Path) -> None:
     graph = make_graph(
         {
             "nodes": [
-                _node("source", "dataSource", {"path": str(source_path)}),
+                _node("source", "dataInput", {"path": str(source_path)}),
                 _node(
                     "global",
                     "polars",
@@ -751,21 +767,21 @@ def test_chunk_local_polars_guard_accepts_row_local_and_rejects_global() -> None
             lambda tmp_path: make_graph(
                 {
                     "nodes": [
-                        _node("source", "dataSource", {"path": str(tmp_path / "data.json")}),
+                        _node("source", "dataInput", {"path": str(tmp_path / "data.json")}),
                         _node("out", "output", make_output_config(["quote_id"])),
                     ],
                     "edges": [make_edge("source", "out").model_dump()],
                 }
             ),
-            "parquet or csv",
-            {"node_id": "source", "node_type": "dataSource"},
+            "bounded lazy scan",
+            {"node_id": "source", "node_type": "dataInput"},
             id="unsupported-source",
         ),
         pytest.param(
             lambda tmp_path: make_graph(
                 {
                     "nodes": [
-                        _node("source", "dataSource", {"path": str(tmp_path / "data.parquet")}),
+                        _node("source", "dataInput", {"path": str(tmp_path / "data.parquet")}),
                         _node(
                             "left",
                             "banding",

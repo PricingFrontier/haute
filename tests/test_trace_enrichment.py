@@ -1672,7 +1672,7 @@ class TestLiveSwitch:
                     id="live_src",
                     data=NodeData(
                         label="live_src",
-                        nodeType="dataSource",
+                        nodeType="dataInput",
                         config={"path": str(p_live)},
                     ),
                 ),
@@ -1680,7 +1680,7 @@ class TestLiveSwitch:
                     id="batch_src",
                     data=NodeData(
                         label="batch_src",
-                        nodeType="dataSource",
+                        nodeType="dataInput",
                         config={"path": str(p_batch)},
                     ),
                 ),
@@ -1754,15 +1754,15 @@ class TestLiveSwitch:
             nodes=[
                 GraphNode(
                     id="a",
-                    data=NodeData(label="a", nodeType="dataSource", config={"path": str(p_a)}),
+                    data=NodeData(label="a", nodeType="dataInput", config={"path": str(p_a)}),
                 ),
                 GraphNode(
                     id="b",
-                    data=NodeData(label="b", nodeType="dataSource", config={"path": str(p_b)}),
+                    data=NodeData(label="b", nodeType="dataInput", config={"path": str(p_b)}),
                 ),
                 GraphNode(
                     id="c",
-                    data=NodeData(label="c", nodeType="dataSource", config={"path": str(p_c)}),
+                    data=NodeData(label="c", nodeType="dataInput", config={"path": str(p_c)}),
                 ),
                 GraphNode(
                     id="sw",
@@ -1893,7 +1893,7 @@ class TestDataSourceMetadata:
 
         result = execute_trace(graph, row_index=0, target_node_id="src")
         step = _step_by_id(result, "src")
-        assert step.node_type == "dataSource"
+        assert step.node_type == "dataInput"
 
 
 # ===========================================================================
@@ -2521,7 +2521,7 @@ class TestEnrichRowLineageType:
         result = detect_row_lineage_type(
             input_row_count=0,
             output_row_count=10,
-            node_type="dataSource",
+            node_type="dataInput",
             operation_type="load",
         )
         assert result == "created"

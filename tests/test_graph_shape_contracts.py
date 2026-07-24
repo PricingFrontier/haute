@@ -130,7 +130,7 @@ class TestSingleNodeVariants:
                             "id": "src",
                             "data": {
                                 "label": "src",
-                                "nodeType": "dataSource",
+                                "nodeType": "dataInput",
                                 "config": {"path": "data/input.parquet"},
                             },
                         }
@@ -161,7 +161,7 @@ class TestSingleNodeVariants:
                             "id": "sink",
                             "data": {
                                 "label": "sink",
-                                "nodeType": "dataSink",
+                                "nodeType": "dataOutput",
                                 "config": {"path": "outputs/result", "format": "parquet"},
                             },
                         }
@@ -187,7 +187,7 @@ class TestExploreGraphShape:
                             "id": "Source",
                             "data": {
                                 "label": "Source",
-                                "nodeType": "dataSource",
+                                "nodeType": "dataInput",
                                 "config": {"path": "data/input.parquet"},
                             },
                         }
@@ -234,7 +234,7 @@ class TestExploreGraphShape:
                             "id": "a",
                             "data": {
                                 "label": "A",
-                                "nodeType": "dataSource",
+                                "nodeType": "dataInput",
                                 "config": {"path": "a.parquet"},
                             },
                         }
@@ -244,7 +244,7 @@ class TestExploreGraphShape:
                             "id": "b",
                             "data": {
                                 "label": "B",
-                                "nodeType": "dataSource",
+                                "nodeType": "dataInput",
                                 "config": {"path": "b.parquet"},
                             },
                         }
@@ -272,7 +272,7 @@ class TestExploreGraphShape:
                             "id": "src",
                             "data": {
                                 "label": "Source",
-                                "nodeType": "dataSource",
+                                "nodeType": "dataInput",
                                 "config": {"path": "data.parquet"},
                             },
                         }
@@ -313,7 +313,7 @@ class TestExploreGraphShape:
                             "id": "src",
                             "data": {
                                 "label": "Source",
-                                "nodeType": "dataSource",
+                                "nodeType": "dataInput",
                                 "config": {"path": str(path)},
                             },
                         }
@@ -374,7 +374,7 @@ class TestExploreGraphShape:
                             "id": "src",
                             "data": {
                                 "label": "Source",
-                                "nodeType": "dataSource",
+                                "nodeType": "dataInput",
                                 "config": {"path": str(data_path)},
                             },
                         }
@@ -426,7 +426,7 @@ class TestExploreGraphShape:
                             "id": "first",
                             "data": {
                                 "label": "First",
-                                "nodeType": "dataSource",
+                                "nodeType": "dataInput",
                                 "config": {"path": str(first)},
                             },
                         }
@@ -436,7 +436,7 @@ class TestExploreGraphShape:
                             "id": "second",
                             "data": {
                                 "label": "Second",
-                                "nodeType": "dataSource",
+                                "nodeType": "dataInput",
                                 "config": {"path": str(second)},
                             },
                         }
@@ -501,7 +501,7 @@ class TestRoundTripDrift:
                             "id": "src",
                             "data": {
                                 "label": "src",
-                                "nodeType": "dataSource",
+                                "nodeType": "dataInput",
                                 "config": {"path": "data/input.parquet"},
                             },
                         }

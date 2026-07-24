@@ -141,7 +141,7 @@ def _online_graph(data_path: str, config: dict | None = None) -> dict:
                     "id": "source",
                     "data": {
                         "label": "source",
-                        "nodeType": "dataSource",
+                        "nodeType": "dataInput",
                         "config": {"path": data_path},
                     },
                 },
@@ -186,7 +186,7 @@ def _ratebook_graph(scored_path: str, banding_path: str) -> dict:
                     "id": "source",
                     "data": {
                         "label": "source",
-                        "nodeType": "dataSource",
+                        "nodeType": "dataInput",
                         "config": {"path": scored_path},
                     },
                 },
@@ -194,7 +194,7 @@ def _ratebook_graph(scored_path: str, banding_path: str) -> dict:
                     "id": "banding",
                     "data": {
                         "label": "banding",
-                        "nodeType": "dataSource",
+                        "nodeType": "dataInput",
                         "config": {"path": banding_path},
                     },
                 },

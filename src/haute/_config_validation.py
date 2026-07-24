@@ -11,13 +11,11 @@ from typing import Any
 
 from haute._logging import get_logger
 from haute._types import (
+    DATA_INPUT_CONFIG_TYPES,
+    DATA_OUTPUT_CONFIG_TYPES,
     ApiInputConfig,
     BandingConfig,
     ConstantConfig,
-    DataInputConfig,
-    DataOutputConfig,
-    DataSinkConfig,
-    DataSourceConfig,
     EdgeJoinConfig,
     ExploreConfig,
     ExternalFileConfig,
@@ -44,16 +42,12 @@ logger = get_logger(component="config_validation")
 
 _TYPED_DICT_BY_NODE_TYPE: dict[NodeType, type] = {
     NodeType.API_INPUT: ApiInputConfig,
-    NodeType.DATA_SOURCE: DataSourceConfig,
-    NodeType.DATA_INPUT: DataInputConfig,
-    NodeType.DATA_OUTPUT: DataOutputConfig,
     NodeType.POLARS: TransformConfig,
     NodeType.EDGE_JOIN: EdgeJoinConfig,
     NodeType.MODEL_SCORE: ModelScoreConfig,
     NodeType.BANDING: BandingConfig,
     NodeType.RATING_STEP: RatingStepConfig,
     NodeType.OUTPUT: OutputConfig,
-    NodeType.DATA_SINK: DataSinkConfig,
     NodeType.EXPLORE: ExploreConfig,
     NodeType.EXTERNAL_FILE: ExternalFileConfig,
     NodeType.LIVE_SWITCH: LiveSwitchConfig,
@@ -83,6 +77,16 @@ _UNIVERSAL_KEYS: frozenset[str] = frozenset(
 
 def _valid_keys_for(node_type: NodeType) -> frozenset[str] | None:
     """Return the set of recognised config keys for *node_type*, or None if unknown."""
+    if node_type == NodeType.DATA_INPUT:
+        return (
+            frozenset().union(*(td.__annotations__ for td in DATA_INPUT_CONFIG_TYPES))
+            | _UNIVERSAL_KEYS
+        )
+    if node_type == NodeType.DATA_OUTPUT:
+        return (
+            frozenset().union(*(td.__annotations__ for td in DATA_OUTPUT_CONFIG_TYPES))
+            | _UNIVERSAL_KEYS
+        )
     td = _TYPED_DICT_BY_NODE_TYPE.get(node_type)
     if td is None:
         return None
@@ -131,3 +135,23 @@ def warn_unrecognized_config_keys(
             keys=bad,
         )
     return bad
+
+
+def validate_node_config(node_type: NodeType | str, config: dict[str, Any]) -> dict[str, Any]:
+    """Strictly validate configs whose runtime contract is discriminated.
+
+    Most historical node configs still use the warning-only key registry.
+    The retained Data Input/Output types are intentionally stricter: their
+    provider branch controls which keys and capabilities are legal, so an
+    inactive key cannot be silently persisted and ignored.
+    """
+    nt = NodeType(node_type) if not isinstance(node_type, NodeType) else node_type
+    if nt == NodeType.DATA_INPUT:
+        from haute._polars_io_registry import validate_data_input_config
+
+        return validate_data_input_config(config)
+    if nt == NodeType.DATA_OUTPUT:
+        from haute._polars_io_registry import validate_data_output_config
+
+        return validate_data_output_config(config)
+    return dict(config)

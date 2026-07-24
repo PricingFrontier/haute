@@ -296,15 +296,32 @@ def validate_deploy(resolved: ResolvedDeploy) -> None:
         if not path.is_file():
             errors.append(f"Artifact '{name}' not found: {path}")
 
-    # 5. No unresolved nodes (e.g. Databricks source stubs)
+    # 5. Canonical Data Inputs must resolve to a valid direct provider or a
+    # ready immutable snapshot. Provider exceptions are deliberately redacted.
     for node in resolved.pruned_graph.nodes:
-        if (
-            node.data.nodeType == NodeType.DATA_SOURCE
-            and node.data.config.get("sourceType") == "databricks"
-        ):
+        if node.data.nodeType != NodeType.DATA_INPUT:
+            continue
+        try:
+            from haute._input_providers import source_cache_identity
+            from haute._polars_io_registry import validate_data_input_config
+            from haute._sandbox import _get_project_root
+            from haute._source_cache import SourceCacheStore
+
+            config = validate_data_input_config(node.data.config)
+            if config["cacheMode"] == "snapshot":
+                identity = source_cache_identity(
+                    config, base_dir=resolved.config.pipeline_file.parent
+                )
+                SourceCacheStore(_get_project_root()).open_generation(identity)
+            elif config["inputType"] not in {"file", "lakehouse", "inline"}:
+                errors.append(
+                    f"Data Input node '{node.id}' cannot execute directly for deploy; "
+                    "a ready snapshot is required."
+                )
+        except Exception:
             errors.append(
-                f"Node '{node.id}' is a Databricks dataSource (not yet implemented "
-                "for deploy). Use an apiInput node for live API data."
+                f"Data Input node '{node.id}' requires a ready, valid matching snapshot "
+                "or a supported direct engine before packaging."
             )
 
     # 6. Input schema is non-empty

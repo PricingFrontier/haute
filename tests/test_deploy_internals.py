@@ -1521,7 +1521,7 @@ class TestScoreGraphOutputFields:
 
 class TestScoreGraphStaticDataSourceRemap:
     def test_static_data_source_remap_uses_declared_schema(self, tmp_path):
-        """Static source artifact remaps should preserve dataSource schema config."""
+        """Static source artifact remaps should preserve dataInput schema config."""
         from haute.deploy._scorer import score_graph
 
         source_path = tmp_path / "lookup.csv"
@@ -1533,7 +1533,7 @@ class TestScoreGraphStaticDataSourceRemap:
                         "id": "lookup",
                         "data": {
                             "label": "lookup",
-                            "nodeType": "dataSource",
+                            "nodeType": "dataInput",
                             "config": {
                                 "path": "lookup.csv",
                                 "schema_overrides": {
@@ -1578,7 +1578,7 @@ class TestScoreGraphStaticDataSourceRemap:
                         "id": "lookup",
                         "data": {
                             "label": "lookup",
-                            "nodeType": "dataSource",
+                            "nodeType": "dataInput",
                             "config": {"path": "lookup.parquet"},
                         },
                     },

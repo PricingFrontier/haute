@@ -21,7 +21,7 @@ class TestModelScoreCodegen:
                         "id": "source",
                         "data": {
                             "label": "source",
-                            "nodeType": "dataSource",
+                            "nodeType": "dataInput",
                             "config": {"path": "data.parquet"},
                         },
                     },
@@ -68,7 +68,7 @@ class TestModelScoreCodegen:
                         "id": "source",
                         "data": {
                             "label": "source",
-                            "nodeType": "dataSource",
+                            "nodeType": "dataInput",
                             "config": {"path": "data.parquet"},
                         },
                     },
@@ -105,7 +105,7 @@ class TestModelScoreCodegen:
                         "id": "source",
                         "data": {
                             "label": "source",
-                            "nodeType": "dataSource",
+                            "nodeType": "dataInput",
                             "config": {"path": "data.parquet"},
                         },
                     },
@@ -143,7 +143,7 @@ class TestModelScoreCodegen:
                         "id": "source",
                         "data": {
                             "label": "source",
-                            "nodeType": "dataSource",
+                            "nodeType": "dataInput",
                             "config": {"path": "data.parquet"},
                         },
                     },
@@ -179,7 +179,7 @@ class TestModelScoreCodegen:
                         "id": "source",
                         "data": {
                             "label": "source",
-                            "nodeType": "dataSource",
+                            "nodeType": "dataInput",
                             "config": {"path": "data.parquet"},
                         },
                     },
@@ -275,7 +275,7 @@ class TestParserRoundTrip:
                         "id": "source",
                         "data": {
                             "label": "source",
-                            "nodeType": "dataSource",
+                            "nodeType": "dataInput",
                             "config": {"path": "data.parquet"},
                         },
                     },
@@ -329,7 +329,7 @@ class TestParserRoundTrip:
                         "id": "source",
                         "data": {
                             "label": "source",
-                            "nodeType": "dataSource",
+                            "nodeType": "dataInput",
                             "config": {"path": "data.parquet"},
                         },
                     },

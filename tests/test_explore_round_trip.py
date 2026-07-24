@@ -1,6 +1,6 @@
 """Round-trip tests for the Explore node's ``overview`` config block.
 
-Builds a minimal graph containing a ``dataSource`` and an ``explore`` node
+Builds a minimal graph containing a ``dataInput`` and an ``explore`` node
 carrying ``config={"overview": {"dataset_snapshot": True}}``, runs it through
 ``graph_to_code`` and back through the real ``parse_pipeline_source``, and
 asserts the overview config survives end-to-end.
@@ -35,8 +35,15 @@ def _explore_graph(overview: dict) -> PipelineGraph:
                 id="source",
                 data=NodeData(
                     label="source",
-                    nodeType="dataSource",
-                    config={"path": "data.parquet", "sourceType": "flat_file"},
+                    nodeType="dataInput",
+                    config={
+                        "inputType": "file",
+                        "format": "parquet",
+                        "mode": "scan",
+                        "cacheMode": "direct",
+                        "path": "data.parquet",
+                        "arguments": {},
+                    },
                 ),
             ),
             GraphNode(

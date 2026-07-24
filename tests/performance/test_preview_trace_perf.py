@@ -58,7 +58,7 @@ def _preview_trace_graph(tmp_path: Path) -> PipelineGraph:
         nodes=[
             _node(
                 "source",
-                NodeType.DATA_SOURCE,
+                NodeType.DATA_INPUT,
                 {"path": str(source_path)},
             ),
             _node(
@@ -136,7 +136,7 @@ def _linear_trace_graph(tmp_path: Path) -> tuple[PipelineGraph, str, str]:
     nodes = [
         _node(
             "source",
-            NodeType.DATA_SOURCE,
+            NodeType.DATA_INPUT,
             {"path": str(source_path)},
         )
     ]

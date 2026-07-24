@@ -40,10 +40,15 @@ def browser_model(raw_rows: pl.LazyFrame) -> pl.LazyFrame:
 _BROWSER_OPTIMISER_BLOCK = """
 
 
-@pipeline.data_source(config="config/data_source/browser_optimiser_rows.json")
+@pipeline.data_input(config="config/data_input/browser_optimiser_rows.json")
 def browser_optimiser_rows() -> pl.LazyFrame:
     \"\"\"Browser E2E scored rows for optimiser flows.\"\"\"
-    df = pl.scan_parquet(Path(__file__).parent.parent / "data" / "optimiser_sample.parquet")
+    from haute.graph_utils import resolve_data_input_from_config
+
+    df = resolve_data_input_from_config(
+        "config/data_input/browser_optimiser_rows.json",
+        base_dir=Path(__file__).parent,
+    )
     return df
 
 
@@ -242,16 +247,30 @@ def _augment_starter_pipeline() -> None:
         source = source.rstrip() + _QUOTES_API_INPUT_BLOCK
     main_path.write_text(source, encoding="utf-8")
 
-    raw_rows_config_path = E2E_PROJECT_DIR / "rating" / "config" / "data_source" / "raw_rows.json"
+    raw_rows_config_path = E2E_PROJECT_DIR / "rating" / "config" / "data_input" / "raw_rows.json"
     raw_rows_config_path.write_text(
-        '{\n  "path": "data/sample.parquet",\n  "sourceType": "flat_file"\n}\n',
+        "{\n"
+        '  "inputType": "file",\n'
+        '  "format": "parquet",\n'
+        '  "mode": "scan",\n'
+        '  "cacheMode": "direct",\n'
+        '  "path": "data/sample.parquet",\n'
+        '  "arguments": {}\n'
+        "}\n",
         encoding="utf-8",
     )
     optimiser_rows_config_path = (
-        E2E_PROJECT_DIR / "rating" / "config" / "data_source" / "browser_optimiser_rows.json"
+        E2E_PROJECT_DIR / "rating" / "config" / "data_input" / "browser_optimiser_rows.json"
     )
     optimiser_rows_config_path.write_text(
-        '{\n  "path": "data/optimiser_sample.parquet",\n  "sourceType": "flat_file"\n}\n',
+        "{\n"
+        '  "inputType": "file",\n'
+        '  "format": "parquet",\n'
+        '  "mode": "scan",\n'
+        '  "cacheMode": "direct",\n'
+        '  "path": "data/optimiser_sample.parquet",\n'
+        '  "arguments": {}\n'
+        "}\n",
         encoding="utf-8",
     )
 

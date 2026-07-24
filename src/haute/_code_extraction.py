@@ -474,16 +474,16 @@ _SOURCE_LOAD_PREFIXES: tuple[str, ...] = (
     "df=pl.scan_csv(",
     "df=pl.scan_ndjson(",
     "df=pl.read_json(",
-    "df=read_cached_table(",
     "df=read_source(",
     "df=read_data_source(",
+    "df=resolve_data_input_from_config(",
     "returnpl.scan_parquet(",
     "returnpl.scan_csv(",
     "returnpl.scan_ndjson(",
     "returnpl.read_json(",
-    "returnread_cached_table(",
     "returnread_source(",
     "returnread_data_source(",
+    "returnresolve_data_input_from_config(",
 )
 
 
@@ -523,7 +523,7 @@ def _source_load_boilerplate_end_index(cleaned: list[str]) -> int:
 
 
 def _match_source(cleaned: list[str], param_names: tuple[str, ...]) -> MatcherResult:
-    """DataSource / scenarioExpander nodes: skip generated source-load blocks.
+    """Data Input nodes: skip generated source-load blocks.
 
     The code editor for these nodes contains only optional transforms that run
     after ``df`` has already been loaded. Codegen emits import/load scaffolding
@@ -739,13 +739,13 @@ def _match_external(cleaned: list[str], param_names: tuple[str, ...]) -> Matcher
 # Registry of boilerplate matchers, keyed by *kind*.  The kind string
 # is the public key callers use to select a matcher; aliases for the
 # same matcher are allowed so callers can use either the NodeType style
-# ("dataSource") or the Python-snake style ("data_source", "source").
+# ("dataInput") or the Python-snake style ("data_input", "source").
 BOILERPLATE_MATCHERS: dict[str, BoilerplateMatcher] = {
     "polars": _match_polars,
     "transform": _match_polars,
     "source": _match_source,
-    "dataSource": _match_source,
-    "data_source": _match_source,
+    "dataInput": _match_source,
+    "data_input": _match_source,
     "scenario_expander": _match_scenario_expander,
     "scenarioExpander": _match_scenario_expander,
     "model_score": _match_model_score,
@@ -937,8 +937,8 @@ _FINALISERS: dict[str, Callable[[str, tuple[str, ...]], str]] = {
     "polars": _finalise_polars,
     "transform": _finalise_polars,
     "source": _finalise_source,
-    "dataSource": _finalise_source,
-    "data_source": _finalise_source,
+    "dataInput": _finalise_source,
+    "data_input": _finalise_source,
     "scenario_expander": _finalise_polars,
     "scenarioExpander": _finalise_polars,
     "model_score": _finalise_model_score,
@@ -970,7 +970,7 @@ def _strip_generated_boilerplate_from_code(
         return ""
 
     params = tuple(param_names or ())
-    if kind in {"source", "dataSource", "data_source"}:
+    if kind in {"source", "dataInput", "data_input"}:
         return _strip_source_load_boilerplate_from_code(stripped)
     if kind in {"scenario_expander", "scenarioExpander"}:
         if "expand_scenarios_from_config(" in stripped:
@@ -1095,7 +1095,7 @@ def _extract_user_code(body_source: str, param_names: list[str]) -> str:
 
 
 def _extract_source_user_code(body_source: str) -> str:
-    """Extract user code from a DATA_SOURCE or SCENARIO_EXPANDER body.
+    """Extract user code from a Data Input body.
 
     The auto-generated boilerplate is a single assignment line at the
     top (e.g. ``df = pl.scan_parquet("...")``).  Everything after that

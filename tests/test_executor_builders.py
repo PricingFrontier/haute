@@ -83,7 +83,14 @@ class TestNodeBuildContextProperties:
         assert ctx.func_name.isidentifier()
 
     def test_config_returns_node_config_dict(self) -> None:
-        cfg = {"path": "data.csv", "sourceType": "flat_file"}
+        cfg = {
+            "inputType": "file",
+            "format": "csv",
+            "mode": "scan",
+            "cacheMode": "direct",
+            "path": "data.csv",
+            "arguments": {},
+        }
         ctx = self._make_ctx(config=cfg)
         assert ctx.config is ctx.node.data.config
         assert ctx.config == cfg
@@ -910,7 +917,7 @@ class TestBuildDataSink:
 
     def test_passthrough(self) -> None:
         _, fn, is_source = _build(
-            "dataSink",
+            "dataOutput",
             {"path": "out.parquet", "format": "parquet"},
             source_names=["upstream"],
         )

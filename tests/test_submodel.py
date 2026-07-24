@@ -12,7 +12,7 @@ from haute.codegen import graph_to_code, graph_to_code_multi
 from haute.graph_utils import flatten_graph
 from haute.parser import parse_pipeline_file
 from tests.conftest import make_graph as _g
-from tests.conftest import make_output_config, write_data_source_config
+from tests.conftest import make_output_config, write_data_input_config
 
 if TYPE_CHECKING:
     from haute.graph_utils import PipelineGraph
@@ -42,11 +42,11 @@ def flat_graph() -> PipelineGraph:
             "nodes": [
                 {
                     "id": "src",
-                    "type": "dataSource",
+                    "type": "dataInput",
                     "position": {"x": 0, "y": 0},
                     "data": {
                         "label": "Source",
-                        "nodeType": "dataSource",
+                        "nodeType": "dataInput",
                         "config": {"path": "data/in.parquet"},
                     },
                 },
@@ -87,11 +87,11 @@ def submodel_graph() -> PipelineGraph:
             "nodes": [
                 {
                     "id": "src",
-                    "type": "dataSource",
+                    "type": "dataInput",
                     "position": {"x": 0, "y": 0},
                     "data": {
                         "label": "Source",
-                        "nodeType": "dataSource",
+                        "nodeType": "dataInput",
                         "config": {"path": "data/in.parquet"},
                     },
                 },
@@ -246,7 +246,7 @@ class TestCodegenMultiFile:
 class TestParserSubmodel:
     def test_parse_main_with_submodel(self, tmp_path):
         """Parser should detect pipeline.submodel() calls."""
-        source_config = write_data_source_config(tmp_path, "Source", "data/in.parquet")
+        source_config = write_data_input_config(tmp_path, "Source", "data/in.parquet")
         _write(
             tmp_path,
             "modules/scoring.py",
@@ -271,7 +271,7 @@ class TestParserSubmodel:
 
             pipeline = haute.Pipeline("test")
 
-            @pipeline.data_source(config="{source_config}")
+            @pipeline.data_input(config="{source_config}")
             def Source() -> pl.LazyFrame:
                 return pl.scan_parquet("data/in.parquet")
 
@@ -290,7 +290,7 @@ class TestParserSubmodel:
 
     def test_parse_flat_pipeline(self, tmp_path):
         """A pipeline without submodels should parse normally."""
-        source_config = write_data_source_config(tmp_path, "Source", "data/in.parquet")
+        source_config = write_data_input_config(tmp_path, "Source", "data/in.parquet")
         _write(
             tmp_path,
             "main.py",
@@ -300,7 +300,7 @@ class TestParserSubmodel:
 
             pipeline = haute.Pipeline("basic")
 
-            @pipeline.data_source(config="{source_config}")
+            @pipeline.data_input(config="{source_config}")
             def Source() -> pl.LazyFrame:
                 return pl.scan_parquet("data/in.parquet")
 

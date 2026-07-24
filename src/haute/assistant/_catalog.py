@@ -80,13 +80,9 @@ _USAGE_NOTES: dict[NodeType, str] = {
         "Declare the request contract and its input tables; use this as the "
         "pipeline's external quote boundary."
     ),
-    NodeType.DATA_SOURCE: (
-        "Read a project file or a configured Databricks source; place it near "
-        "the start of a graph and verify its available columns before wiring downstream."
-    ),
     NodeType.DATA_INPUT: (
-        "Read a native Polars-supported source with an explicit format and "
-        "arguments; use this for inputs that are not Haute data-source configs."
+        "Read a file, database, lakehouse, Databricks table, or inline records through "
+        "an explicit provider and format; use a snapshot for remote or eager-only inputs."
     ),
     NodeType.DATA_OUTPUT: (
         "Write or sink a Polars frame to a file or database target; keep it at "
@@ -115,10 +111,6 @@ _USAGE_NOTES: dict[NodeType, str] = {
     NodeType.OUTPUT: (
         "Assemble the top-level JSON response from selected upstream columns; "
         "use outputMapping rather than the retired fields shape."
-    ),
-    NodeType.DATA_SINK: (
-        "Persist a pipeline frame as a simple sink; use this for operational "
-        "outputs that should not become the quote response."
     ),
     NodeType.EXPLORE: (
         "Request exploratory summaries or apply an exploration code block; "

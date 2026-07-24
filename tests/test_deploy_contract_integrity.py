@@ -2,7 +2,7 @@
 
 TDD suite covering:
 
-* #14 — Static dataSource column-order drift must raise at prune/bundle time
+* #14 — Static dataInput column-order drift must raise at prune/bundle time
 * #16 — ``validate_deploy`` must raise ``DeployError`` when test quotes fail
 * #17 — Bundle includes ``feature_contract.json``; scorer verifies at load
 
@@ -95,7 +95,7 @@ def _make_resolved(
 
 
 class TestStaticDataSourceSchemaDrift:
-    """A static dataSource (non-apiInput) bundled at deploy time must have
+    """A static dataInput (non-apiInput) bundled at deploy time must have
     its column order match what the training-time pipeline saw.  Silent
     reorder turns into positional-join bugs.
     """
@@ -122,7 +122,7 @@ class TestStaticDataSourceSchemaDrift:
                         "id": "static_ds",
                         "data": {
                             "label": "static_ds",
-                            "nodeType": "dataSource",
+                            "nodeType": "dataInput",
                             "config": {
                                 "path": str(bad_csv),
                                 "expected_columns": ["area", "factor"],
@@ -171,7 +171,7 @@ class TestStaticDataSourceSchemaDrift:
                         "id": "static_ds",
                         "data": {
                             "label": "static_ds",
-                            "nodeType": "dataSource",
+                            "nodeType": "dataInput",
                             "config": {
                                 "path": str(source_path),
                                 "schema_overrides": {"missing": "String"},
@@ -202,7 +202,7 @@ class TestStaticDataSourceSchemaDrift:
                         "id": "static_ds",
                         "data": {
                             "label": "static_ds",
-                            "nodeType": "dataSource",
+                            "nodeType": "dataInput",
                             "config": {
                                 "path": str(source_path),
                                 "expected_columns": ["quote_id"],

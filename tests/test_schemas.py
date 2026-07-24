@@ -21,9 +21,9 @@ from haute.schemas import (
     OptimiserSolveRequest,
     PreviewNodeRequest,
     SavePipelineRequest,
-    SinkRequest,
     TraceRequest,
     TrainRequest,
+    WriteOutputRequest,
 )
 
 
@@ -36,7 +36,7 @@ class TestValidation:
 
     def test_sink_request_requires_node_id(self):
         with pytest.raises(ValidationError):
-            SinkRequest(graph=Graph())
+            WriteOutputRequest(graph=Graph())
 
     def test_save_pipeline_accepts_minimal(self):
         r = SavePipelineRequest(graph=Graph())
@@ -80,7 +80,7 @@ class TestModelDumpRoundtrip:
                     id="src",
                     data=GraphNodeData(
                         label="Source",
-                        nodeType="dataSource",
+                        nodeType="dataInput",
                         config={"path": "d.parquet"},
                     ),
                 ),
@@ -151,7 +151,7 @@ class TestSavePipelineRequestDefaults:
 _SCHEMA_CASES_WITH_NODE_ID = [
     PreviewNodeRequest,
     TraceRequest,
-    SinkRequest,
+    WriteOutputRequest,
     TrainRequest,
     OptimiserSolveRequest,
     OptimiserEstimateRequest,

@@ -5,7 +5,7 @@ import type { SchemaInfo } from "../panels/editors/_shared"
 /**
  * Shared hook for fetching file schema (columns, preview, row count).
  *
- * Used by DataSourceEditor and ApiInputEditor to avoid duplicating
+ * Used by data-input and API-input editors to avoid duplicating
  * the same fetch-schema-on-mount + fetch-on-select pattern.
  */
 export function useSchemaFetch(initialPath?: string) {

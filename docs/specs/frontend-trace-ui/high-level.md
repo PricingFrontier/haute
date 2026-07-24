@@ -51,3 +51,22 @@ Backend-reported request/node/waterfall/calculation problems and typed omissions
 visible alerts or omission cards. Missing data required to explain a non-opaque calculation also
 renders an alert. Unknown detail shapes use the generic fallback; helper type guards avoid silently
 treating malformed optional values as valid numbers.
+
+## Approved change contract — 0.7.0 data-input trace presentation
+
+Implementation follows
+[`F_0.7.0_data-io-convergence.plan.md`](../../trip/plans/F_0.7.0_data-io-convergence.plan.md).
+
+- Source-like trace grouping recognises `dataInput` and `apiInput`; it has no `dataSource`
+  compatibility value. A retained Data Input is never collapsed as an ordinary pass-through,
+  including when its optional Polars body leaves the selected value unchanged.
+- Input provenance may show provider/group, format, direct versus snapshot mode, safe identity
+  digest, generation, and the backend-reported external freshness state. It never displays raw
+  credentials/URIs or infers that a cache hit is fresh.
+- A source config/code/generation change invalidates the request through the shared structural
+  and trace identity. The UI clears the preceding result rather than relabelling it as belonging
+  to the new snapshot.
+
+Acceptance covers every provider group, direct/cached grouping parity, optional input code,
+generation refresh invalidation, freshness-unknown copy, redaction, exports, and absence of
+legacy source steps.
