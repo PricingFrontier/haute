@@ -254,7 +254,7 @@ def _augment_starter_pipeline() -> None:
         '  "format": "parquet",\n'
         '  "mode": "scan",\n'
         '  "cacheMode": "direct",\n'
-        '  "path": "../data/sample.parquet",\n'
+        '  "path": "data/sample.parquet",\n'
         '  "arguments": {}\n'
         "}\n",
         encoding="utf-8",
@@ -268,7 +268,7 @@ def _augment_starter_pipeline() -> None:
         '  "format": "parquet",\n'
         '  "mode": "scan",\n'
         '  "cacheMode": "direct",\n'
-        '  "path": "../data/optimiser_sample.parquet",\n'
+        '  "path": "data/optimiser_sample.parquet",\n'
         '  "arguments": {}\n'
         "}\n",
         encoding="utf-8",
@@ -320,6 +320,9 @@ def _scaffold_e2e_project() -> None:
     data_dir = E2E_PROJECT_DIR / "data"
     data_dir.mkdir(exist_ok=True)
     sample.write_parquet(data_dir / "sample.parquet")
+    pipeline_data_dir = E2E_PROJECT_DIR / "rating" / "data"
+    pipeline_data_dir.mkdir(exist_ok=True)
+    sample.write_parquet(pipeline_data_dir / "sample.parquet")
 
     scenario_values = [0.8, 0.9, 1.0, 1.1, 1.2]
     optimiser_rows: list[dict[str, object]] = []
@@ -343,7 +346,7 @@ def _scaffold_e2e_project() -> None:
         pl.col("expected_income").cast(pl.Float32),
         pl.col("volume").cast(pl.Float32),
     )
-    optimiser_sample.write_parquet(data_dir / "optimiser_sample.parquet")
+    optimiser_sample.write_parquet(pipeline_data_dir / "optimiser_sample.parquet")
 
 
 def _run_git(*args: str) -> None:
@@ -366,8 +369,9 @@ def _init_git_repo() -> None:
         "add",
         "-f",
         "data/sample.parquet",
-        "data/optimiser_sample.parquet",
         "data/quotes/sample_quote.json",
+        "rating/data/sample.parquet",
+        "rating/data/optimiser_sample.parquet",
     )
     _run_git("commit", "-m", "Initial scaffold")
 

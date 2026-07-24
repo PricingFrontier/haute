@@ -42,7 +42,7 @@ test.describe("data input/output nodes", () => {
               format: "parquet",
               mode: "scan",
               cacheMode: "direct",
-              path: "../data/sample.parquet",
+              path: "data/sample.parquet",
               arguments: {},
             },
           },
@@ -83,13 +83,17 @@ test.describe("data input/output nodes", () => {
     await page.reload()
     await expect(page.getByRole("toolbar", { name: /pipeline toolbar/i })).toBeVisible()
 
-    // The registry regression pin: both nodes must render through the custom
-    // card component (typed React Flow class), not the default box.
-    await expect(page.locator(".react-flow__node-dataInput")).toHaveCount(1)
-    await expect(page.locator(".react-flow__node-dataOutput")).toHaveCount(1)
+    // The registry regression pin: the two nodes created above must render
+    // through their custom card components, irrespective of other seeded
+    // Data Input nodes in the shared browser fixture.
+    const wideIn = page.getByRole("button", { name: /Data Input node: wide_in/i })
+    const wideOut = page.getByRole("button", { name: /Data Output node: wide_out/i })
+    await expect(page.locator(".react-flow__node-dataInput").filter({ has: wideIn })).toHaveCount(1)
+    await expect(page.locator(".react-flow__node-dataOutput").filter({ has: wideOut })).toHaveCount(
+      1,
+    )
     await expect(page.locator(".react-flow__node-default")).toHaveCount(0)
 
-    const wideIn = page.getByRole("button", { name: /Data Input node: wide_in/i })
     await expect(wideIn).toBeVisible()
     await expect(async () => {
       await wideIn.click({ force: true })
@@ -106,6 +110,6 @@ test.describe("data input/output nodes", () => {
     expect(optionLabels.some((t) => /Text lines \(unstable\)/.test(t))).toBe(true)
 
     // The saved path round-tripped through sidecar + codegen + parse.
-    await expect(page.getByLabel(/path/i).first()).toHaveValue("../data/sample.parquet")
+    await expect(page.getByLabel(/path/i).first()).toHaveValue("data/sample.parquet")
   })
 })

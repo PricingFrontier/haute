@@ -160,6 +160,9 @@ configured path, so a typo never silently falls through to auto-discovery); a ro
 template function is parameterised by `target`/`ci` and looks up per-target facts through
 `TARGETS`/`_get_target` rather than branching on the target string directly, so adding a
 target means adding one registry entry, not touching every template function.
+The starter Data Input sidecar uses the traversal-free pipeline-relative path
+`data/sample.parquet`, and `handle_init` creates the matching `rating/data/` directory.
+It never writes a `..` segment that direct generated-function execution would reject.
 `haute_toml()` assembles `[project]`/`[deploy]`/`[test_quotes]`/`[safety]`/`[safety.approval]`
 (`min_approvers` hardcoded to 2 in the template — solo users lower it by hand)/`[ci]`/
 `[ci.staging]` sections, splicing in `_target_section()`'s `[deploy.<target>]` block.
