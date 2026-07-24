@@ -26,6 +26,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import uuid
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -73,7 +74,7 @@ from haute.schemas import (
     ExecutionMetricsPayload,
     NodeResult,
     SchemaWarning,
-    SinkResponse,
+    WriteOutputResponse,
 )
 
 logger = get_logger(component="executor")
@@ -1611,6 +1612,47 @@ def _contain_output_path(
     return out
 
 
+def _validate_output_publish_paths(
+    final_path: Path,
+    staging_path: Path,
+    *,
+    project_root: str | Path,
+) -> None:
+    """Validate both sides of an atomic output publish against the project root.
+
+    This check is intentionally called immediately before the writer and again
+    immediately before ``Path.replace``. Resolving both paths each time catches
+    a parent-directory symlink swap between initial request validation and
+    publication.
+    """
+    root = Path(project_root).resolve()
+    final = Path(final_path)
+    staging = Path(staging_path)
+    if staging.parent != final.parent:
+        raise ValueError("Data output staging path must be a sibling of the final target")
+    if staging.suffix != final.suffix:
+        raise ValueError("Data output staging path must preserve the final target extension")
+
+    resolved_final = final.resolve()
+    resolved_staging = staging.resolve()
+    if not resolved_final.is_relative_to(root) or not resolved_staging.is_relative_to(root):
+        raise ValueError("Data output path resolves outside the project root")
+
+
+def _cleanup_output_staging_path(
+    staging_path: Path,
+    *,
+    project_root: str | Path | None,
+) -> None:
+    """Remove a failed staging artefact without following a swapped path outside the project."""
+    if project_root is not None:
+        root = Path(project_root).resolve()
+        if not staging_path.resolve().is_relative_to(root):
+            logger.warning("data_output_stage_cleanup_blocked", path=str(staging_path))
+            return
+    staging_path.unlink(missing_ok=True)
+
+
 def resolve_data_output_path(
     graph: PipelineGraph,
     config: Mapping[str, Any],
@@ -1620,15 +1662,24 @@ def resolve_data_output_path(
     """Resolve a dataOutput node's write target.
 
     Returns ``(filesystem_path, display_path)``; the filesystem path is
-    ``None`` for database targets (which have no local file). Path
-    normalisation mirrors the dataSink convention (bare filenames land under
-    ``outputs/``) but keys the default extension off the format registry
+    ``None`` for database targets (which have no local file). Bare filenames
+    land under ``outputs/``, and the default extension comes from the format registry
     instead of the csv/parquet ternary — a ``.jsonl`` target stays ``.jsonl``.
     """
     from haute._polars_io_registry import default_output_extension, format_for_config
 
     fmt_entry = format_for_config(config)
     if fmt_entry.source_kind == "database":
+        raw_uri = config.get("uri")
+        if project_root is not None and isinstance(raw_uri, str) and raw_uri:
+            from haute._database_io import validate_sqlite_project_path
+
+            root = Path(project_root).resolve()
+            validate_sqlite_project_path(
+                raw_uri,
+                base_dir=_pipeline_dir(graph) or root,
+                project_root=root,
+            )
         return None, str(config.get("table", ""))
     raw = config.get("path", "")
     if not isinstance(raw, str) or not raw:
@@ -1642,18 +1693,18 @@ def resolve_data_output_path(
     return _contain_output_path(graph, path, project_root=project_root), path
 
 
-def execute_sink(
+def write_data_output(
     graph: PipelineGraph,
-    sink_node_id: str,
+    output_node_id: str,
     source: str = "live",
     *,
     execution_context: ExecutionContext | None = None,  # pragma: no mutate
     streaming_chunk_size: int | None = None,  # pragma: no mutate
     project_root: str | Path | None = None,  # pragma: no mutate
-) -> SinkResponse:
-    """Execute the pipeline up to a sink node and write its input to disk.
+) -> WriteOutputResponse:
+    """Execute the pipeline up to a Data Output and publish its target.
 
-    Sinks are batch-only — they always run with a non-``"live"`` source
+    Output writes are batch-only — they always run with a non-``"live"`` source
     so that model scoring uses the disk-batched path, keeping memory bounded.
     The *source* parameter is still accepted (and passed through for
     source-switch routing) but is coerced away from ``"live"`` for scoring.
@@ -1664,54 +1715,45 @@ def execute_sink(
     broadening to an eager collect.
 
     This is called on-demand (not during normal run/preview).
-    Returns a ``SinkResponse`` with row count and output path.
+    Returns a ``WriteOutputResponse`` with row count and output path.
     """
-    sink_node = graph.node_map.get(sink_node_id)
-    if not sink_node:
-        raise ValueError(f"Sink node '{sink_node_id}' not found")
+    output_node = graph.node_map.get(output_node_id)
+    if output_node is None:
+        raise ValueError(f"Data Output node '{output_node_id}' not found")
+    if output_node.data.nodeType != NodeType.DATA_OUTPUT:
+        raise ValueError(f"Node '{output_node_id}' is not a Data Output")
 
-    config = sink_node.data.config
-    is_data_output = sink_node.data.nodeType == NodeType.DATA_OUTPUT
-    path = config.get("path", "")
-    fmt = config.get("format", "parquet")
+    from haute._polars_io_registry import validate_data_output_config
+
+    config = validate_data_output_config(output_node.data.config)
     selected_columns = config.get("selected_columns")
 
-    if not path and not is_data_output:
-        raise ValueError("Sink node has no output path configured")
     if execution_context is None:
         execution_context = ExecutionContext(
-            operation="pipeline_sink",
+            operation="pipeline_write_output",
             profile=ExecutionProfile.LAZY_SINK,
         )
 
     required_columns_by_node: dict[str, frozenset[str]] | None = None
     if selected_columns:
         if isinstance(selected_columns, str | bytes):
-            raise ValueError("Sink selected_columns must be a list of column names")
+            raise ValueError("Data Output selected_columns must be a list of column names")
         selected_seed: set[str] = set()
         for column in selected_columns:
             if not isinstance(column, str) or not column:
-                raise ValueError("Sink selected_columns must contain non-empty string names")
+                raise ValueError("Data Output selected_columns must contain non-empty string names")
             selected_seed.add(column)
-        required_columns_by_node = {sink_node_id: frozenset(selected_seed)}
+        required_columns_by_node = {output_node_id: frozenset(selected_seed)}
 
     out: Path | None
-    if is_data_output:
-        # dataOutput targets resolve through the format registry: the default
-        # extension follows the configured format (never the csv/parquet
-        # ternary) and database targets have no filesystem path at all.
-        out, path = resolve_data_output_path(graph, config, project_root=project_root)
-        if out is not None:
-            out.parent.mkdir(parents=True, exist_ok=True)
-    else:
-        path = _resolve_sink_path(path, fmt)
-        out = resolve_sink_output_path(
-            graph,
-            path,
-            fmt,
-            project_root=project_root,
-        )
+    staging_out: Path | None = None
+    out, path = resolve_data_output_path(graph, config, project_root=project_root)
+    if out is not None:
         out.parent.mkdir(parents=True, exist_ok=True)
+        from haute._polars_io_registry import format_for_config, format_group
+
+        if format_group(format_for_config(config)) == "file":
+            staging_out = out.with_name(f".{out.stem}.haute-stage-{uuid.uuid4().hex}{out.suffix}")
 
     # Sinks are never used in live serving — model scoring must use the
     # disk-batched path (any scenario != "live").  But the scenario name
@@ -1719,14 +1761,13 @@ def execute_sink(
     # to the correct branch.  Resolve the first non-live ISM value from
     # the graph; fall back to "batch" if there are no live_switch nodes.
     if source == "live":
-        sink_scenario = _resolve_batch_scenario(graph) or "batch"
+        output_scenario = _resolve_batch_scenario(graph) or "batch"
     else:
-        sink_scenario = source
+        output_scenario = source
 
     from haute._polars_utils import (
         DEFAULT_STREAMING_CHUNK_SIZE,
         _malloc_trim,
-        bounded_sink,
         streaming_collect,
     )
 
@@ -1751,16 +1792,16 @@ def execute_sink(
 
             dataframe_cache_request = execution_facade.build_dataframe_execution_cache_request(
                 graph,
-                node_ids=[sink_node_id],
-                namespace="sink",
-                source=sink_scenario,
+                node_ids=[output_node_id],
+                namespace="data_output",
+                source=output_scenario,
                 profile=execution_context.profile,
                 input_fingerprint=execution_facade.dataframe_graph_input_fingerprint(
                     graph,
-                    target_node_id=sink_node_id,
-                    source=sink_scenario,
+                    target_node_id=output_node_id,
+                    source=output_scenario,
                 ),
-                target_node_id=sink_node_id,
+                target_node_id=output_node_id,
                 required_columns_by_node=required_columns_by_node,
                 enforce_contracts=ENFORCE_CONTRACTS,
                 preamble_ns_supplied=bool(preamble_ns),
@@ -1769,18 +1810,18 @@ def execute_sink(
             lazy_outputs, _order, _parents, _names = _execute_lazy(
                 graph,
                 _build_node_fn,
-                target_node_id=sink_node_id,
+                target_node_id=output_node_id,
                 preamble_ns=preamble_ns or None,
-                source=sink_scenario,
+                source=output_scenario,
                 checkpoint_dir=checkpoint_path,
                 enforce_contracts=ENFORCE_CONTRACTS,
                 required_columns_by_node=required_columns_by_node,
                 execution_context=execution_context,
                 dataframe_cache_request=dataframe_cache_request,
             )
-            lf = lazy_outputs.get(sink_node_id)
+            lf = lazy_outputs.get(output_node_id)
             if lf is None:
-                raise RuntimeError("Failed to compute sink input")
+                raise RuntimeError("Failed to compute Data Output input")
             return lf
 
         lf = _run_lazy()
@@ -1796,38 +1837,36 @@ def execute_sink(
 
         def _write(frame: pl.LazyFrame) -> None:
             nonlocal data_output_rows
-            if is_data_output:
-                from haute._polars_io_registry import write_polars_output
+            from haute._polars_io_registry import write_polars_output
 
-                data_output_rows = write_polars_output(frame, config, resolved_path=out)
-            else:
-                if out is None:  # unreachable: dataSink always resolves a path  # pragma: no mutate
-                    raise RuntimeError("Sink resolved no output path")
-                bounded_sink(
-                    frame,
+            if staging_out is not None and out is not None and project_root is not None:
+                _validate_output_publish_paths(
                     out,
-                    fmt=fmt,
-                    streaming_chunk_size=streaming_chunk_size or DEFAULT_STREAMING_CHUNK_SIZE,
+                    staging_out,
+                    project_root=project_root,
                 )
+            data_output_rows = write_polars_output(
+                frame,
+                config,
+                resolved_path=staging_out or out,
+            )
 
         if execution_context is not None:
-            execution_context.checkpoint(label="before_sink_write", node_id=sink_node_id)
-            with execution_context.stage("sink_write", node_id=sink_node_id):
+            execution_context.checkpoint(label="before_output_write", node_id=output_node_id)
+            with execution_context.stage("output_write", node_id=output_node_id):
                 _write(lf)
-            execution_context.checkpoint(label="after_sink_write", node_id=sink_node_id)
         else:
             _write(lf)
-        logger.info("sink_written", path=path, format=config.get("format", fmt))
         del lf
         gc.collect()
         _malloc_trim()
 
-        execution_context.checkpoint(label="before_sink_row_count", node_id=sink_node_id)
-        with execution_context.stage("sink_row_count", node_id=sink_node_id):
-            if is_data_output and data_output_rows is not None:
+        execution_context.checkpoint(label="before_output_row_count", node_id=output_node_id)
+        with execution_context.stage("output_row_count", node_id=output_node_id):
+            if data_output_rows is not None:
                 # Eager writes and database writes report their own count.
                 row_count = data_output_rows
-            elif is_data_output:
+            else:
                 # Streaming sink: re-scan the written artefact through the
                 # format's own scanner (every sinker-bearing format has one).
                 from haute._polars_io_registry import format_for_config
@@ -1836,36 +1875,37 @@ def execute_sink(
                 # Registry invariants: sink implies scanner; only database
                 # targets have no filesystem path, and they report their own
                 # row count above.
-                if scanner_name is None or out is None:  # pragma: no mutate
+                count_path = staging_out or out
+                if scanner_name is None or count_path is None:  # pragma: no mutate
                     raise RuntimeError(
                         f"Format {config.get('format')!r} wrote via a streaming sink but "
                         "cannot be re-scanned to count rows"
                     )
-                count_lf = getattr(pl, scanner_name)(out).select(pl.len())
+                count_lf = getattr(pl, scanner_name)(count_path).select(pl.len())
                 row_count = streaming_collect(
                     count_lf,
                     profile=execution_context.profile,
                 ).item()
-            else:
-                if out is None:  # unreachable: dataSink always resolves a path  # pragma: no mutate
-                    raise RuntimeError("Sink resolved no output path")
-                count_lf = (
-                    pl.scan_csv(out).select(pl.len())
-                    if fmt == "csv"
-                    else pl.scan_parquet(out).select(pl.len())
+        execution_context.checkpoint(label="after_output_row_count", node_id=output_node_id)
+        execution_context.checkpoint(label="before_output_publish", node_id=output_node_id)
+        if staging_out is not None:
+            if out is None:  # pragma: no mutate - staging implies a file target
+                raise RuntimeError("Data output staging resolved no final target")
+            if project_root is not None:
+                _validate_output_publish_paths(
+                    out,
+                    staging_out,
+                    project_root=project_root,
                 )
-                row_count = streaming_collect(
-                    count_lf,
-                    profile=execution_context.profile,
-                ).item()
-        execution_context.checkpoint(label="after_sink_row_count", node_id=sink_node_id)
+            staging_out.replace(out)
+        logger.info("data_output_written", path=path, format=config["format"])
 
-        return SinkResponse(
+        return WriteOutputResponse(
             status="ok",
             message=f"Wrote {row_count:,} rows to {path}",
             row_count=row_count,
             path=path,
-            format=str(config.get("format", fmt)) if is_data_output else fmt,
+            format=str(config["format"]),
             execution_metrics=(
                 ExecutionMetricsPayload.model_validate(
                     execution_context.metrics_payload(status="completed")
@@ -1875,4 +1915,9 @@ def execute_sink(
             ),
         )
     finally:
+        if staging_out is not None:
+            _cleanup_output_staging_path(
+                staging_out,
+                project_root=project_root,
+            )
         shutil.rmtree(tmp_dir, ignore_errors=True)

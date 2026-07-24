@@ -29,12 +29,35 @@ from tests.conftest import make_output_config
 # ---------------------------------------------------------------------------
 
 
+def _file_input_config(path: str) -> dict:
+    format_name, mode = {
+        ".csv": ("csv", "scan"),
+        ".parquet": ("parquet", "scan"),
+        ".json": ("json", "read"),
+        ".jsonl": ("ndjson", "scan"),
+        ".ndjson": ("ndjson", "scan"),
+        ".arrow": ("ipc", "scan"),
+        ".feather": ("ipc", "scan"),
+        ".ipc": ("ipc", "scan"),
+    }[Path(path).suffix.lower()]
+    return {
+        "inputType": "file",
+        "format": format_name,
+        "mode": mode,
+        "cacheMode": "direct",
+        "path": path,
+        "arguments": {},
+    }
+
+
 def _make_node(
     nid: str,
     label: str,
     node_type: str = "polars",
     config: dict | None = None,
 ) -> GraphNode:
+    if node_type == "dataInput" and config and set(config) == {"path"}:
+        config = _file_input_config(config["path"])
     return GraphNode(
         id=nid,
         data=NodeData(label=label, nodeType=node_type, config=config or {}),
@@ -196,7 +219,7 @@ class TestValidateUniqueSanitizedNames:
         """Collision detection works across different node types."""
         graph = _make_graph(
             _make_node("a", "transform", "polars"),
-            _make_node("b", "transform", "dataSource"),
+            _make_node("b", "transform", "dataInput"),
         )
         with pytest.raises(HTTPException) as exc_info:
             SavePipelineService._validate_unique_sanitized_names(graph)
@@ -397,7 +420,7 @@ class TestSaveSimpleGraph:
         """save() generates code, writes .py and .haute.json sidecar."""
         svc = SavePipelineService(tmp_path)
         graph = _make_graph(
-            _make_node("src", "Source", "dataSource", {"path": "data.parquet"}),
+            _make_node("src", "Source", "dataInput", {"path": "data.parquet"}),
             _make_node("t1", "Transform", "polars", {"code": "return source"}),
             edges=[_make_edge("src", "t1")],
         )
@@ -446,7 +469,7 @@ class TestSaveSimpleGraph:
             _make_node(
                 "edgeJoin_10",
                 "join_premiums",
-                "dataSource",
+                "dataInput",
                 {"path": "premiums.parquet"},
             ),
             _make_node(
@@ -495,7 +518,7 @@ class TestSaveSimpleGraph:
         """The returned file path should be relative to project root."""
         svc = SavePipelineService(tmp_path)
         graph = _make_graph(
-            _make_node("src", "Source", "dataSource", {"path": "data.parquet"}),
+            _make_node("src", "Source", "dataInput", {"path": "data.parquet"}),
         )
         body = SavePipelineRequest(
             name="test_pipe",
@@ -515,7 +538,7 @@ class TestSaveSimpleGraph:
         py_file = tmp_path / "broken.py"
         py_file.write_text("# original broken source\n")
         graph = _make_graph(
-            _make_node("src", "Source", "dataSource", {"path": "data.parquet"}),
+            _make_node("src", "Source", "dataInput", {"path": "data.parquet"}),
             _make_node(
                 "bad",
                 "Broken Transform",
@@ -584,7 +607,7 @@ class TestWriteCodeMultiFile:
         """Without submodels, _write_code generates a single file via real codegen."""
         svc = SavePipelineService(tmp_path)
         graph = _make_graph(
-            _make_node("src", "Source", "dataSource", {"path": "data.parquet"}),
+            _make_node("src", "Source", "dataInput", {"path": "data.parquet"}),
         )
         body = SavePipelineRequest(
             name="pipe",
@@ -645,7 +668,7 @@ class TestWriteConfigFiles:
         """Submodel route saves still need child-node configs materialised."""
         svc = SavePipelineService(tmp_path)
         graph = _make_graph(
-            _make_node("src", "source", "dataSource", {"path": "data.parquet"}),
+            _make_node("src", "source", "dataInput", {"path": "data.parquet"}),
         )
         child = _make_node("banding", "child_banding", "banding", {"bands": []})
         graph.submodels = {
@@ -657,7 +680,7 @@ class TestWriteConfigFiles:
 
         svc._write_config_files(graph)
 
-        assert (tmp_path / "config" / "data_source" / "source.json").exists()
+        assert (tmp_path / "config" / "data_input" / "source.json").exists()
         assert (tmp_path / "config" / "banding" / "child_banding.json").exists()
 
     def test_writes_config_files_from_nested_submodel_graph(self, tmp_path: Path) -> None:
@@ -692,9 +715,9 @@ class TestWriteConfigFiles:
         """Parent and embedded submodels must not race for one sidecar path."""
         svc = SavePipelineService(tmp_path)
         graph = _make_graph(
-            _make_node("parent", "Shared", "dataSource", {"path": "parent.csv"}),
+            _make_node("parent", "Shared", "dataInput", {"path": "parent.csv"}),
         )
-        child = _make_node("child", "Shared", "dataSource", {"path": "child.csv"})
+        child = _make_node("child", "Shared", "dataInput", {"path": "child.csv"})
         graph.submodels = {
             "pricing": {
                 "file": "modules/pricing.py",
@@ -707,7 +730,7 @@ class TestWriteConfigFiles:
 
         assert exc_info.value.status_code == 400
         assert "Duplicate config sidecar path" in exc_info.value.detail
-        assert not (tmp_path / "config" / "data_source" / "Shared.json").exists()
+        assert not (tmp_path / "config" / "data_input" / "Shared.json").exists()
 
     def test_duplicate_config_path_inside_one_submodel_fails_before_write(
         self,
@@ -715,8 +738,8 @@ class TestWriteConfigFiles:
     ) -> None:
         svc = SavePipelineService(tmp_path)
         graph = _make_graph()
-        child_a = _make_node("child_a", "Shared", "dataSource", {"path": "a.csv"})
-        child_b = _make_node("child_b", "Shared", "dataSource", {"path": "b.csv"})
+        child_a = _make_node("child_a", "Shared", "dataInput", {"path": "a.csv"})
+        child_b = _make_node("child_b", "Shared", "dataInput", {"path": "b.csv"})
         graph.submodels = {
             "pricing": {
                 "file": "modules/pricing.py",
@@ -735,20 +758,20 @@ class TestWriteConfigFiles:
 
         assert exc_info.value.status_code == 400
         assert "Duplicate config sidecar path" in exc_info.value.detail
-        assert not (tmp_path / "config" / "data_source" / "Shared.json").exists()
+        assert not (tmp_path / "config" / "data_input" / "Shared.json").exists()
 
     def test_writable_config_conflicting_with_load_error_fails_before_write(
         self,
         tmp_path: Path,
     ) -> None:
         svc = SavePipelineService(tmp_path)
-        config_path = tmp_path / "config" / "data_source" / "Shared.json"
+        config_path = tmp_path / "config" / "data_input" / "Shared.json"
         config_path.parent.mkdir(parents=True)
         config_path.write_text("{ broken json")
         graph = _make_graph(
-            _make_node("parent", "Shared", "dataSource", {"path": "parent.csv"}),
+            _make_node("parent", "Shared", "dataInput", {"path": "parent.csv"}),
         )
-        child = _make_node("child", "Shared", "dataSource", {"_load_error": "duplicate key"})
+        child = _make_node("child", "Shared", "dataInput", {"_load_error": "duplicate key"})
         graph.submodels = {
             "pricing": {
                 "file": "modules/pricing.py",
@@ -813,8 +836,8 @@ class TestWriteConfigFiles:
         svc = SavePipelineService(tmp_path)
         py_path = tmp_path / "pipeline.py"
         py_path.write_text("# parsed by patched helper\n")
-        parent = _make_node("parent", "Shared", "dataSource", {"path": "parent.csv"})
-        child = _make_node("child", "Shared", "dataSource", {"path": "child.csv"})
+        parent = _make_node("parent", "Shared", "dataInput", {"path": "parent.csv"})
+        child = _make_node("child", "Shared", "dataInput", {"path": "child.csv"})
         disk_graph = _make_graph(parent)
         disk_graph.submodels = {
             "pricing": {
@@ -1012,8 +1035,8 @@ class TestSaveEndpointIntegration:
                     "position": {"x": 0, "y": 0},
                     "data": {
                         "label": "Source",
-                        "nodeType": "dataSource",
-                        "config": {"path": "data.parquet"},
+                        "nodeType": "dataInput",
+                        "config": _file_input_config("data.parquet"),
                     },
                 },
                 {
@@ -1054,7 +1077,7 @@ class TestSaveEndpointIntegration:
                     "data": {
                         "label": "Api1",
                         "nodeType": "apiInput",
-                        "config": {"path": "d.parquet"},
+                        "config": _file_input_config("d.parquet"),
                     },
                 },
                 {
@@ -1092,8 +1115,8 @@ class TestSaveEndpointIntegration:
                     "position": {"x": 0, "y": 0},
                     "data": {
                         "label": "S",
-                        "nodeType": "dataSource",
-                        "config": {"path": "d.parquet"},
+                        "nodeType": "dataInput",
+                        "config": _file_input_config("d.parquet"),
                     },
                 },
             ],
@@ -1205,8 +1228,8 @@ class TestSaveEndpointIntegration:
                     "position": {"x": 111.0, "y": 222.0},
                     "data": {
                         "label": "My Source",
-                        "nodeType": "dataSource",
-                        "config": {"path": "data.parquet"},
+                        "nodeType": "dataInput",
+                        "config": _file_input_config("data.parquet"),
                     },
                 },
                 {
@@ -1451,7 +1474,7 @@ class TestWriteSidecar:
     def test_writes_sidecar_with_sources(self, tmp_path: Path) -> None:
         """_write_sidecar persists source state to .haute.json."""
         graph = _make_graph(
-            _make_node("src", "Source", "dataSource", {"path": "data.parquet"}),
+            _make_node("src", "Source", "dataInput", {"path": "data.parquet"}),
         )
         py_path = tmp_path / "pipe.py"
         py_path.write_text("# placeholder")
@@ -1468,7 +1491,7 @@ class TestWriteSidecar:
     def test_graph_sources_updated(self, tmp_path: Path) -> None:
         """_write_sidecar sets graph.sources and graph.active_source before saving."""
         graph = _make_graph(
-            _make_node("src", "Source", "dataSource", {"path": "data.parquet"}),
+            _make_node("src", "Source", "dataInput", {"path": "data.parquet"}),
         )
         py_path = tmp_path / "pipe.py"
         py_path.write_text("# placeholder")
@@ -1489,7 +1512,7 @@ class TestWriteCodeOptions:
         """preamble is forwarded to graph_to_code."""
         svc = SavePipelineService(tmp_path)
         graph = _make_graph(
-            _make_node("src", "Source", "dataSource", {"path": "data.parquet"}),
+            _make_node("src", "Source", "dataInput", {"path": "data.parquet"}),
         )
         body = SavePipelineRequest(
             name="pipe",
@@ -1510,7 +1533,7 @@ class TestWriteCodeOptions:
         """When preamble is None, it defaults to empty string."""
         svc = SavePipelineService(tmp_path)
         graph = _make_graph(
-            _make_node("src", "Source", "dataSource", {"path": "data.parquet"}),
+            _make_node("src", "Source", "dataInput", {"path": "data.parquet"}),
         )
         body = SavePipelineRequest(
             name="pipe",

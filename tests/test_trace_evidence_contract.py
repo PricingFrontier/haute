@@ -65,7 +65,7 @@ def test_ambiguous_relevant_parent_is_preserved_as_an_omission(tmp_path) -> None
         {
             "node_id": "source",
             "node_name": "source",
-            "node_type": "dataSource",
+            "node_type": "dataInput",
             "topological_rank": 0,
             "reason": "relaxed_match_ambiguous",
             "diagnostic_index": omission.diagnostic_index,
@@ -122,7 +122,7 @@ def test_trace_omission_schema_requires_linkable_evidence() -> None:
             {
                 "node_id": "source",
                 "node_name": "Source",
-                "node_type": "dataSource",
+                "node_type": "dataInput",
             }
         )
 
@@ -147,9 +147,7 @@ def test_benign_column_pruning_does_not_create_an_omission() -> None:
         },
     )
     node_map = {
-        "unrelated": SimpleNamespace(
-            data=SimpleNamespace(label="Unrelated", nodeType="dataSource")
-        ),
+        "unrelated": SimpleNamespace(data=SimpleNamespace(label="Unrelated", nodeType="dataInput")),
         "target": SimpleNamespace(data=SimpleNamespace(label="Target", nodeType="polars")),
     }
 
@@ -255,7 +253,7 @@ def test_trace_result_schema_requires_omissions_and_typed_waterfall_errors() -> 
                     {
                         "node_id": "source",
                         "node_name": "Source",
-                        "node_type": "dataSource",
+                        "node_type": "dataInput",
                         "topological_rank": 0,
                         "reason": "duplicate_exact_match",
                         "diagnostic_index": 0,
@@ -281,7 +279,7 @@ def test_trace_result_schema_requires_omissions_and_typed_waterfall_errors() -> 
                     {
                         "node_id": "source",
                         "node_name": "Source",
-                        "node_type": "dataSource",
+                        "node_type": "dataInput",
                         "topological_rank": 0,
                         "reason": "duplicate_exact_match",
                         "diagnostic_index": 0,

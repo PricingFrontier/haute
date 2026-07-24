@@ -5,11 +5,13 @@ import { GraphProvider } from "../GraphContext"
 import type { SimpleNode, SimpleEdge } from "../editors"
 import useUIStore from "../../stores/useUIStore"
 
-const { transformEditorProps, edgeJoinEditorProps, exploreCodeEditorProps, bandingEditorProps, modellingConfigProps, optimiserConfigProps } = vi.hoisted(() => ({
+const { transformEditorProps, edgeJoinEditorProps, exploreCodeEditorProps, bandingEditorProps, dataInputEditorProps, dataOutputEditorProps, modellingConfigProps, optimiserConfigProps } = vi.hoisted(() => ({
   transformEditorProps: [] as Record<string, unknown>[],
   edgeJoinEditorProps: [] as Record<string, unknown>[],
   exploreCodeEditorProps: [] as Record<string, unknown>[],
   bandingEditorProps: [] as Record<string, unknown>[],
+  dataInputEditorProps: [] as Record<string, unknown>[],
+  dataOutputEditorProps: [] as Record<string, unknown>[],
   modellingConfigProps: [] as Record<string, unknown>[],
   optimiserConfigProps: [] as Record<string, unknown>[],
 }))
@@ -21,7 +23,6 @@ vi.mock("../LazyNodeEditors", async () => {
   )
   return {
   LazyEditorBoundary: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-  DataSourceEditor: () => <div data-testid="DataSourceEditor" />,
   TransformEditor: (props: Record<string, unknown>) => {
     transformEditorProps.push(props)
     return (
@@ -59,9 +60,14 @@ vi.mock("../LazyNodeEditors", async () => {
   ExternalFileEditor: () => <div data-testid="ExternalFileEditor" />,
   ApiInputEditor: () => <div data-testid="ApiInputEditor" />,
   LiveSwitchEditor: () => <div data-testid="LiveSwitchEditor" />,
-  SinkEditor: () => <div data-testid="SinkEditor" />,
-  DataInputEditor: () => <div data-testid="DataInputEditor" />,
-  DataOutputEditor: () => <div data-testid="DataOutputEditor" />,
+  DataInputEditor: (props: Record<string, unknown>) => {
+    dataInputEditorProps.push(props)
+    return <div data-testid="DataInputEditor" />
+  },
+  DataOutputEditor: (props: Record<string, unknown>) => {
+    dataOutputEditorProps.push(props)
+    return <div data-testid="DataOutputEditor" />
+  },
   ScenarioExpanderEditor: () => <div data-testid="ScenarioExpanderEditor" />,
   OptimiserApplyEditor: () => <div data-testid="OptimiserApplyEditor" />,
   ConstantEditor: () => <div data-testid="ConstantEditor" />,
@@ -152,6 +158,8 @@ describe("NodePanel", () => {
     edgeJoinEditorProps.length = 0
     exploreCodeEditorProps.length = 0
     bandingEditorProps.length = 0
+    dataInputEditorProps.length = 0
+    dataOutputEditorProps.length = 0
     modellingConfigProps.length = 0
     optimiserConfigProps.length = 0
   })
@@ -267,19 +275,9 @@ describe("NodePanel", () => {
     expect(screen.getByTestId("ColumnsTab")).toBeInTheDocument()
   })
 
-  it("renders DataSourceEditor for dataSource nodes", () => {
-    renderPanel({ node: makeNode({ data: { label: "DS", description: "", nodeType: "dataSource", config: {} } }) })
-    expect(screen.getByTestId("DataSourceEditor")).toBeInTheDocument()
-  })
-
   it("renders ApiInputEditor for apiInput nodes", () => {
     renderPanel({ node: makeNode({ data: { label: "API", description: "", nodeType: "apiInput", config: {} } }) })
     expect(screen.getByTestId("ApiInputEditor")).toBeInTheDocument()
-  })
-
-  it("renders SinkEditor for dataSink nodes", () => {
-    renderPanel({ node: makeNode({ data: { label: "Sink", description: "", nodeType: "dataSink", config: {} } }) })
-    expect(screen.getByTestId("SinkEditor")).toBeInTheDocument()
   })
 
   it("renders DataInputEditor for dataInput nodes", () => {
@@ -290,6 +288,55 @@ describe("NodePanel", () => {
   it("renders DataOutputEditor for dataOutput nodes", () => {
     renderPanel({ node: makeNode({ data: { label: "Out", description: "", nodeType: "dataOutput", config: {} } }) })
     expect(screen.getByTestId("DataOutputEditor")).toBeInTheDocument()
+  })
+
+  it.each([
+    ["dataInput", dataInputEditorProps],
+    ["dataOutput", dataOutputEditorProps],
+  ] as const)("replaces the complete config for %s nodes and clears cached result shape", (nodeType, editorProps) => {
+    const node = makeNode({
+      id: "io_node",
+      data: {
+        label: "I/O",
+        description: "",
+        nodeType,
+        config: { stale: true },
+        _columns: [{ name: "old_output", dtype: "f64" }],
+        _availableColumns: [{ name: "old_output", dtype: "f64" }],
+        _schemaWarnings: [{ column: "old_output", status: "stale" }],
+        _columnsSource: "preview",
+      },
+    })
+    const onUpdateNode = vi.fn(() => ({ ok: true as const }))
+    renderPanel({ node, onUpdateNode })
+    const onReplaceConfig = editorProps.at(-1)?.onReplaceConfig as (
+      config: Record<string, unknown>,
+    ) => { ok: boolean }
+
+    expect(onReplaceConfig({ format: "parquet" })).toEqual({ ok: true })
+    expect(onUpdateNode).toHaveBeenCalledWith("io_node", {
+      label: "I/O",
+      description: "",
+      nodeType,
+      config: { format: "parquet" },
+    })
+  })
+
+  it("reports when a complete config replacement has no node update handler", () => {
+    renderPanel({
+      node: makeNode({
+        data: { label: "In", description: "", nodeType: "dataInput", config: {} },
+      }),
+      onUpdateNode: undefined,
+    })
+    const onReplaceConfig = dataInputEditorProps.at(-1)?.onReplaceConfig as (
+      config: Record<string, unknown>,
+    ) => { ok: boolean; error?: string }
+
+    expect(onReplaceConfig({ format: "parquet" })).toEqual({
+      ok: false,
+      error: "Node update handler is unavailable.",
+    })
   })
 
   it("renders OutputEditor for output nodes", () => {
@@ -389,7 +436,7 @@ describe("NodePanel", () => {
       data: {
         label: "Claims Source",
         description: "",
-        nodeType: "dataSource",
+        nodeType: "dataInput",
         config: {},
         _columns: [{ name: "premium", dtype: "Int64" }],
       },
@@ -550,7 +597,7 @@ describe("NodePanel", () => {
       })
       const ordinary = makeNode({
         id: "ordinary",
-        data: { label: "Claims Source", description: "", nodeType: "dataSource", config: {} },
+        data: { label: "Claims Source", description: "", nodeType: "dataInput", config: {} },
       })
       const edges: SimpleEdge[] = [
         {
@@ -1337,11 +1384,11 @@ describe("NodePanel", () => {
       })
       const upstreamOrigNode = makeNode({
         id: "up_orig",
-        data: { label: "Upstream Orig", description: "", nodeType: "dataSource", config: {} },
+        data: { label: "Upstream Orig", description: "", nodeType: "dataInput", config: {} },
       })
       const upstreamInstNode = makeNode({
         id: "up_inst",
-        data: { label: "Upstream Inst", description: "", nodeType: "dataSource", config: {} },
+        data: { label: "Upstream Inst", description: "", nodeType: "dataInput", config: {} },
       })
       const instanceNode = makeNode({
         id: "inst_1",
@@ -1424,11 +1471,11 @@ describe("NodePanel", () => {
       })
       const upOrig = makeNode({
         id: "up_orig",
-        data: { label: "Source A", description: "", nodeType: "dataSource", config: {} },
+        data: { label: "Source A", description: "", nodeType: "dataInput", config: {} },
       })
       const upInst = makeNode({
         id: "up_inst",
-        data: { label: "Source B", description: "", nodeType: "dataSource", config: {} },
+        data: { label: "Source B", description: "", nodeType: "dataInput", config: {} },
       })
       const instanceNode = makeNode({
         id: "inst_1",
@@ -1575,11 +1622,11 @@ describe("NodePanel", () => {
       })
       const upOrig = makeNode({
         id: "up_orig",
-        data: { label: "Source A", description: "", nodeType: "dataSource", config: {} },
+        data: { label: "Source A", description: "", nodeType: "dataInput", config: {} },
       })
       const upInst = makeNode({
         id: "up_inst",
-        data: { label: "Source B", description: "", nodeType: "dataSource", config: {} },
+        data: { label: "Source B", description: "", nodeType: "dataInput", config: {} },
       })
 
       // Initial render: instance with no inputMapping
@@ -1682,7 +1729,7 @@ describe("NodePanel", () => {
         data: {
           label: "Source",
           description: "",
-          nodeType: "dataSource",
+          nodeType: "dataInput",
           config: {},
           _columns: [
             { name: "channel", dtype: "String" },
@@ -1721,7 +1768,7 @@ describe("NodePanel", () => {
         data: {
           label: "Source",
           description: "",
-          nodeType: "dataSource",
+          nodeType: "dataInput",
           config: {},
           _columns: [{ name: "age", dtype: "Int64" }],
         },
@@ -1769,7 +1816,7 @@ describe("NodePanel", () => {
         data: {
           label: "Source",
           description: "",
-          nodeType: "dataSource",
+          nodeType: "dataInput",
           config: {},
           _columns: [{ name: "age", dtype: "Int64" }],
         },
@@ -1824,7 +1871,7 @@ describe("NodePanel", () => {
         data: {
           label: "Source",
           description: "",
-          nodeType: "dataSource",
+          nodeType: "dataInput",
           config: {},
           _columns: [{ name: "age", dtype: "Int64" }],
         },
@@ -1834,7 +1881,7 @@ describe("NodePanel", () => {
         data: {
           label: "Source",
           description: "",
-          nodeType: "dataSource",
+          nodeType: "dataInput",
           config: {},
           _columns: [
             { name: "age", dtype: "Int64" },
@@ -1884,7 +1931,7 @@ describe("NodePanel", () => {
         data: {
           label: "Source A",
           description: "",
-          nodeType: "dataSource",
+          nodeType: "dataInput",
           config: {},
           _columns: [
             { name: "age", dtype: "Int64" },
@@ -1897,7 +1944,7 @@ describe("NodePanel", () => {
         data: {
           label: "Source B",
           description: "",
-          nodeType: "dataSource",
+          nodeType: "dataInput",
           config: {},
           _columns: [
             { name: "income", dtype: "Decimal" },
@@ -1933,7 +1980,7 @@ describe("NodePanel", () => {
         data: {
           label: "Source",
           description: "",
-          nodeType: "dataSource",
+          nodeType: "dataInput",
           config: {},
           _columns: [
             { name: "age", dtype: "Int64" },

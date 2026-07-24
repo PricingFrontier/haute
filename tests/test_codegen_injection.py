@@ -15,6 +15,7 @@ Every test verifies the generated code is syntactically valid via ``ast.parse``.
 from __future__ import annotations
 
 import ast
+import json
 from pathlib import Path
 
 import pytest
@@ -51,6 +52,51 @@ def _make_node(
     if description is not None:
         data["description"] = description
     return _n({"id": "test_id", "data": data})
+
+
+def _file_input_config(path: str) -> dict:
+    """Build an explicit canonical file Data Input config."""
+    format_name, mode = {
+        ".csv": ("csv", "scan"),
+        ".parquet": ("parquet", "scan"),
+    }.get(Path(path).suffix.lower(), ("parquet", "scan"))
+    return {
+        "inputType": "file",
+        "format": format_name,
+        "mode": mode,
+        "cacheMode": "direct",
+        "path": path,
+        "arguments": {},
+    }
+
+
+def _file_output_config(path: str, format_name: str) -> dict:
+    """Build an explicit canonical file Data Output config."""
+    return {
+        "outputType": "file",
+        "format": format_name,
+        "mode": "sink" if format_name in {"csv", "parquet"} else "write",
+        "path": path,
+        "arguments": {},
+    }
+
+
+def _assert_sidecar_value(node_type: str, config: dict, key: str, value: str) -> None:
+    """Assert a user-controlled config value survives in the JSON sidecar."""
+    graph = _g(
+        {
+            "nodes": [
+                {
+                    "id": "test_id",
+                    "data": {"label": "TestNode", "nodeType": node_type, "config": config},
+                }
+            ],
+            "edges": [],
+        }
+    )
+    sidecars = collect_node_configs(graph)
+    assert len(sidecars) == 1
+    assert json.loads(next(iter(sidecars.values())))[key] == value
 
 
 # ---------------------------------------------------------------------------
@@ -193,9 +239,9 @@ class TestTripleQuoteInjection:
     @pytest.mark.parametrize(
         "node_type,config",
         [
-            ("dataSource", {"path": "data.parquet"}),
+            ("dataInput", _file_input_config("data.parquet")),
             ("polars", {"code": "df = df.drop_nulls()"}),
-            ("dataSink", {"path": "out.parquet", "format": "parquet"}),
+            ("dataOutput", _file_output_config("out.parquet", "parquet")),
             (
                 "banding",
                 {
@@ -260,11 +306,11 @@ class TestTripleQuoteInjection:
         _compile_node_code(code)
         assert "premium" in code
 
-    def test_triple_quote_in_data_source_description(self):
-        """Data source with triple-quote description compiles."""
+    def test_triple_quote_in_data_input_description(self):
+        """Data Input with triple-quote description compiles."""
         node = _make_node(
-            "dataSource",
-            {"path": "data.parquet"},
+            "dataInput",
+            _file_input_config("data.parquet"),
             description='Source for """raw""" data',
         )
         code = _node_to_code(node)
@@ -389,8 +435,8 @@ class TestTripleQuoteInjection:
                         "id": "a",
                         "data": {
                             "label": "A",
-                            "nodeType": "dataSource",
-                            "config": {"path": "d.parquet"},
+                            "nodeType": "dataInput",
+                            "config": _file_input_config("d.parquet"),
                             "description": 'Load """raw""" data',
                         },
                     }
@@ -438,8 +484,8 @@ class TestTripleQuoteInjection:
     def test_trailing_two_double_quotes_in_description(self):
         """Description ending with two double-quotes."""
         node = _make_node(
-            "dataSource",
-            {"path": "data.parquet"},
+            "dataInput",
+            _file_input_config("data.parquet"),
             description='double trouble""',
         )
         code = _node_to_code(node)
@@ -460,9 +506,9 @@ class TestTripleQuoteInjection:
     @pytest.mark.parametrize(
         "node_type,config",
         [
-            ("dataSource", {"path": "data.parquet"}),
+            ("dataInput", _file_input_config("data.parquet")),
             ("polars", {"code": ""}),
-            ("dataSink", {"path": "out.parquet", "format": "parquet"}),
+            ("dataOutput", _file_output_config("out.parquet", "parquet")),
             ("output", make_output_config(["a"])),
             ("constant", {"values": [{"name": "v", "value": "1"}]}),
         ],
@@ -494,25 +540,27 @@ class TestCurlyBracesInValues:
     tests document this behavior as a safety net.
     """
 
-    def test_path_with_braces_data_source_parquet(self):
-        """Parquet data source with {braces} in path."""
+    def test_path_with_braces_data_input_parquet(self):
+        """Parquet Data Input with {braces} in path."""
+        path = "data/{year}/input.parquet"
         node = _make_node(
-            "dataSource",
-            {"path": "data/{year}/input.parquet"},
+            "dataInput",
+            _file_input_config(path),
         )
         code = _node_to_code(node)
         _compile_node_code(code)
-        assert "{year}" in code
+        _assert_sidecar_value("dataInput", _file_input_config(path), "path", path)
 
-    def test_path_with_braces_data_source_csv(self):
-        """CSV data source with {braces} in path."""
+    def test_path_with_braces_data_input_csv(self):
+        """CSV Data Input with {braces} in path."""
+        path = "data/{year}/input.csv"
         node = _make_node(
-            "dataSource",
-            {"path": "data/{year}/input.csv"},
+            "dataInput",
+            _file_input_config(path),
         )
         code = _node_to_code(node)
         _compile_node_code(code)
-        assert "{year}" in code
+        _assert_sidecar_value("dataInput", _file_input_config(path), "path", path)
 
     def test_path_with_braces_api_input(self):
         """API input with {braces} in path."""
@@ -534,25 +582,27 @@ class TestCurlyBracesInValues:
         _compile_node_code(code)
         assert "{region}" in code
 
-    def test_path_with_braces_data_sink(self):
-        """Data sink with {braces} in path."""
+    def test_path_with_braces_data_output(self):
+        """Data Output with {braces} in path."""
+        path = "output/{date}/results.parquet"
         node = _make_node(
-            "dataSink",
-            {"path": "output/{date}/results.parquet", "format": "parquet"},
+            "dataOutput",
+            _file_output_config(path, "parquet"),
         )
         code = _node_to_code(node, source_names=["src"])
         _compile_node_code(code)
-        assert "{date}" in code
+        _assert_sidecar_value("dataOutput", _file_output_config(path, "parquet"), "path", path)
 
-    def test_path_with_braces_data_sink_csv(self):
-        """CSV sink with {braces} in path."""
+    def test_path_with_braces_data_output_csv(self):
+        """CSV Data Output with {braces} in path."""
+        path = "output/{date}/results.csv"
         node = _make_node(
-            "dataSink",
-            {"path": "output/{date}/results.csv", "format": "csv"},
+            "dataOutput",
+            _file_output_config(path, "csv"),
         )
         code = _node_to_code(node, source_names=["src"])
         _compile_node_code(code)
-        assert "{date}" in code
+        _assert_sidecar_value("dataOutput", _file_output_config(path, "csv"), "path", path)
 
     def test_path_with_braces_external_file(self):
         """External file with {braces} in path."""
@@ -566,32 +616,36 @@ class TestCurlyBracesInValues:
 
     def test_path_with_nested_double_braces(self):
         """Path with already-doubled {{braces}} — pass through as-is."""
+        path = "data/{{year}}/input.parquet"
         node = _make_node(
-            "dataSource",
-            {"path": "data/{{year}}/input.parquet"},
+            "dataInput",
+            _file_input_config(path),
         )
         code = _node_to_code(node)
         _compile_node_code(code)
-        assert "{{year}}" in code
+        _assert_sidecar_value("dataInput", _file_input_config(path), "path", path)
 
     def test_databricks_table_with_braces(self):
         """Databricks table name with {braces}."""
         node = _make_node(
-            "dataSource",
+            "dataInput",
             {
-                "sourceType": "databricks",
+                "inputType": "databricks",
+                "cacheMode": "snapshot",
+                "http_path": "/sql/1.0/warehouses/test",
                 "table": "catalog.{env}.table",
+                "arguments": {},
             },
         )
         code = _node_to_code(node)
         _compile_node_code(code)
-        assert "{env}" in code
+        _assert_sidecar_value("dataInput", node.data.config, "table", "catalog.{env}.table")
 
     def test_description_with_braces(self):
         """Description containing {braces} in .format() templates."""
         node = _make_node(
-            "dataSource",
-            {"path": "data.parquet"},
+            "dataInput",
+            _file_input_config("data.parquet"),
             description="Loads data for {region} pricing",
         )
         code = _node_to_code(node)
@@ -611,25 +665,25 @@ class TestCurlyBracesInValues:
 
     def test_empty_braces_in_path(self):
         """Path with empty {} braces."""
+        path = "data/{}/input.parquet"
         node = _make_node(
-            "dataSource",
-            {"path": "data/{}/input.parquet"},
+            "dataInput",
+            _file_input_config(path),
         )
         code = _node_to_code(node)
         _compile_node_code(code)
-        assert "{}" in code
+        _assert_sidecar_value("dataInput", _file_input_config(path), "path", path)
 
     def test_multiple_brace_patterns_in_path(self):
         """Path with multiple brace patterns."""
+        path = "data/{year}/{month}/{day}/input.parquet"
         node = _make_node(
-            "dataSource",
-            {"path": "data/{year}/{month}/{day}/input.parquet"},
+            "dataInput",
+            _file_input_config(path),
         )
         code = _node_to_code(node)
         _compile_node_code(code)
-        assert "{year}" in code
-        assert "{month}" in code
-        assert "{day}" in code
+        _assert_sidecar_value("dataInput", _file_input_config(path), "path", path)
 
     def test_external_file_body_with_braces(self):
         """External file user code with braces should not be mangled."""
@@ -646,7 +700,8 @@ class TestCurlyBracesInValues:
         assert '{"key"' in code
 
     def test_graph_with_braces_in_path(self):
-        """Full graph with braces in source path."""
+        """Full graph with braces in Data Input path."""
+        path = "data/{env}/input.parquet"
         graph = _g(
             {
                 "nodes": [
@@ -654,8 +709,8 @@ class TestCurlyBracesInValues:
                         "id": "a",
                         "data": {
                             "label": "A",
-                            "nodeType": "dataSource",
-                            "config": {"path": "data/{env}/input.parquet"},
+                            "nodeType": "dataInput",
+                            "config": _file_input_config(path),
                         },
                     }
                 ],
@@ -664,7 +719,8 @@ class TestCurlyBracesInValues:
         )
         code = graph_to_code(graph)
         compile(code, "<test>", "exec")
-        assert "{env}" in code
+        sidecars = collect_node_configs(graph).values()
+        assert any(json.loads(content)["path"] == path for content in sidecars)
 
 
 # ---------------------------------------------------------------------------
@@ -677,22 +733,23 @@ class TestCombinedInjection:
 
     def test_triple_quote_description_and_brace_path(self):
         """Node with triple-quote description AND brace-containing path."""
+        path = "data/{year}/input.parquet"
         node = _make_node(
-            "dataSource",
-            {"path": "data/{year}/input.parquet"},
+            "dataInput",
+            _file_input_config(path),
             description='Load """raw""" data for {region}',
         )
         code = _node_to_code(node)
         _compile_node_code(code)
         _ast_parse_node_code(code)
-        assert "{year}" in code
+        _assert_sidecar_value("dataInput", _file_input_config(path), "path", path)
         assert "{region}" in code
 
     def test_triple_quote_and_braces_in_sink(self):
-        """Sink with both dangerous chars."""
+        """Data Output with both dangerous chars."""
         node = _make_node(
-            "dataSink",
-            {"path": "output/{date}/results.parquet", "format": "parquet"},
+            "dataOutput",
+            _file_output_config("output/{date}/results.parquet", "parquet"),
             description='Write """final""" output',
         )
         code = _node_to_code(node, source_names=["src"])
@@ -719,8 +776,8 @@ class TestCombinedInjection:
                         "id": "src",
                         "data": {
                             "label": "Source",
-                            "nodeType": "dataSource",
-                            "config": {"path": "data/{env}/input.parquet"},
+                            "nodeType": "dataInput",
+                            "config": _file_input_config("data/{env}/input.parquet"),
                             "description": 'Load """raw""" {env} data',
                         },
                     },
@@ -737,8 +794,8 @@ class TestCombinedInjection:
                         "id": "sink",
                         "data": {
                             "label": "Write",
-                            "nodeType": "dataSink",
-                            "config": {"path": "output/{date}/out.parquet", "format": "parquet"},
+                            "nodeType": "dataOutput",
+                            "config": _file_output_config("output/{date}/out.parquet", "parquet"),
                             "description": 'Write to """storage"""',
                         },
                     },
@@ -752,6 +809,9 @@ class TestCombinedInjection:
         code = graph_to_code(graph)
         compile(code, "<test>", "exec")
         ast.parse(code)
+        sidecars = [json.loads(content) for content in collect_node_configs(graph).values()]
+        assert any(config.get("path") == "data/{env}/input.parquet" for config in sidecars)
+        assert any(config.get("path") == "output/{date}/out.parquet" for config in sidecars)
 
 
 # ---------------------------------------------------------------------------
@@ -877,10 +937,10 @@ class TestBraceDescriptionRoundTrip:
 
     @pytest.mark.parametrize("description", _BRACE_DESCRIPTIONS)
     def test_braces_roundtrip_via_format_template_path(self, description: str) -> None:
-        """dataSink builder (``str.format`` template path)."""
+        """dataOutput builder (``str.format`` template path)."""
         node = _make_node(
-            "dataSink",
-            {"path": "out.parquet", "format": "parquet"},
+            "dataOutput",
+            _file_output_config("out.parquet", "parquet"),
             description=description,
         )
         code = _node_to_code(node, source_names=["upstream"])
@@ -915,8 +975,8 @@ class TestBraceDescriptionRoundTrip:
                         "id": "src",
                         "data": {
                             "label": "Src",
-                            "nodeType": "dataSource",
-                            "config": {"path": "d.parquet"},
+                            "nodeType": "dataInput",
+                            "config": _file_input_config("d.parquet"),
                             "description": src_desc,
                         },
                     },
@@ -1031,8 +1091,8 @@ class TestParenInsideStringDecoratorKwargs:
                         "id": "src",
                         "data": {
                             "label": "Src",
-                            "nodeType": "dataSource",
-                            "config": {"path": "d.parquet"},
+                            "nodeType": "dataInput",
+                            "config": _file_input_config("d.parquet"),
                         },
                     },
                     {

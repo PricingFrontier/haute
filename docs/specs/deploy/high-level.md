@@ -227,8 +227,9 @@ most: a silent wrong answer here mis-prices real policies.
   build) starts. `deploy()` explicitly validates the target *before* resolving the config,
   so an unknown target never gets misreported as "no output node found".
 - **Missing or drifted artefacts** raise `FileNotFoundError` (bundler: artefact file
-  absent on disk) or `haute.errors.DeployError` (bundler: static data source's actual
-  columns disagree with its declared `expected_columns`; scorer:
+  absent on disk) or `haute.errors.DeployError` (bundler: a retained Data Input has an
+  invalid provider config, cannot satisfy its canonical `arguments.schema` declaration,
+  or cannot complete a bounded one-row readability probe; scorer:
   `FeatureMismatchError` when a live request schema disagrees with a bundled training-time
   feature contract).
 - **Structural graph errors** split across the two stages: no/multiple output nodes and an
@@ -280,4 +281,33 @@ most: a silent wrong answer here mis-prices real policies.
 Batch deployment and seedless live scoring will use the universal execution-plan facade.
 This adds strategy/provenance diagnostics and consistent bounded execution decisions
 without changing established input-to-output scoring semantics. Execution-engine owns
-plan selection; see the [remediation plan](../../trip/plans/F_0.6.0_polars-backend-remediation.plan.md).
+plan selection. Remaining deployment improvement work is tracked in the
+[deploy and platform roadmap](../../roadmap/deploy-platform.md).
+
+## Approved change contract — 0.7.0 unified data-input deployment
+
+Remaining deployment improvement work is tracked in the
+[deploy and platform roadmap](../../roadmap/deploy-platform.md).
+
+- Deploy source discovery recognises `dataInput`, `apiInput`, and `constant`; `dataSource` no
+  longer exists. Direct local-file inputs retained in the pruned graph are bundled and remapped
+  according to their registry format. Snapshot-mode inputs bundle the exact validated Parquet
+  generation and signed metadata selected at build time.
+- Database and Databricks inputs require a ready matching snapshot before bundle construction.
+  Deploy never fetches or refreshes remote data. Lakehouse direct mode is allowed only when the
+  deploy target explicitly supports the required network and named-secret contract; otherwise a
+  snapshot is required and the validator says so before packaging.
+- The deployed scorer opens bundled direct files/snapshots through the same provider dispatch and
+  applies the retained `dataInput` Polars body. Bundle identity, schema verification, path
+  remapping, and generated-code execution cannot select a different generation from the one
+  validated.
+- `dataOutput` is a pass-through node during scoring and deployment never invokes its explicit
+  writer. Persistence-only branches not ancestral to the served `output` are pruned normally.
+  A pipeline cannot cause file/database writes merely by being scored.
+- Removed node types, legacy sidecars, and provider-specific Databricks cache paths are not
+  recognised as deploy artefacts or inputs.
+
+Acceptance covers static files across supported formats, each remote snapshot provider, corrupt
+or identity-mismatched metadata, generation pinning during concurrent refresh, secret/network
+policy, offline scorer execution, post-input code, and proof that deploy validation/scoring
+performs no cache build, remote fetch, or data-output write.

@@ -62,7 +62,7 @@ def _frontier_job(*, artifact_handles: object | None = None) -> dict:
 
 
 def test_estimate_returns_input_metrics_when_metadata_lookup_fails(client, tmp_path: Path):
-    from tests.conftest import make_edge, make_graph
+    from tests.conftest import make_edge, make_file_input_config, make_graph
 
     data_path = tmp_path / "scored.parquet"
     pl.DataFrame(
@@ -81,8 +81,8 @@ def test_estimate_returns_input_metrics_when_metadata_lookup_fails(client, tmp_p
                     "id": "source",
                     "data": {
                         "label": "source",
-                        "nodeType": "dataSource",
-                        "config": {"path": str(data_path)},
+                        "nodeType": "dataInput",
+                        "config": make_file_input_config(data_path),
                     },
                 },
                 {

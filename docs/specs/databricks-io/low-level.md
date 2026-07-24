@@ -5,12 +5,11 @@
 | File | Responsibility |
 |---|---|
 | `src/haute/_databricks_io.py` | Credential resolution, SQL/table-name validation, cache path management, streaming fetch-and-cache, cached-table read-back, in-memory fetch-progress tracking. |
-| `src/haute/routes/databricks.py` | FastAPI router (`/api/databricks/*`) exposing Unity Catalog browsing (warehouses/catalogs/schemas/tables) and wrapping the above module's fetch/cache/progress functions as HTTP endpoints. |
+| `src/haute/routes/databricks.py` | FastAPI router (`/api/databricks/*`) exposing Unity Catalog browsing (warehouses/catalogs/schemas/tables). |
 
-Related but external to this component: `src/haute/routes/files.py` defines
-`/api/schema/databricks`, which calls `haute._databricks_io.cache_info`
-directly to preview a cached table's schema — see
-[server-api](../server-api/high-level.md).
+Related but external to this component: `src/haute/routes/input_cache.py` owns the
+provider-neutral build/status/cancel/clear lifecycle and published-generation metadata used
+for Databricks snapshots — see [server-api](../server-api/high-level.md).
 
 ## Key types and data structures
 
@@ -300,10 +299,8 @@ connection is exercised.
   round-trips; fetch-progress active/inactive; table-name validation
   rejecting two-part and four-part names on route params; and
   `_get_databricks_client`'s three failure modes (SDK not installed, host
-  missing, token missing) each surfacing as `503`. Also covers the
-  neighbouring `/api/schema/databricks` endpoint's not-cached (`404`) and
-  cached-with-preview (`200`) paths, even though that route itself lives
-  in `routes/files.py`.
+  missing, token missing) each surfacing as `503`. Shared cache lifecycle and
+  published-generation coverage lives in `tests/test_input_cache_route.py`.
 - `frontend/src/panels/editors/__tests__/_DatabricksSelector.test.tsx` owns
   the UI-adjacent contract: cascading picker loading/error states, cache
   status and clear flows, fetch payload construction, polling lifecycle,
@@ -353,3 +350,33 @@ the other's visible progress as described under Edge cases.
 > clause (e.g. `SELECT * FROM (SELECT ... FROM other_table)`) passes
 > validation unmodified, and that test's `pytest.xfail` branch is the one
 > actually reached.
+
+## Approved change contract — 0.7.0 unified Databricks input
+
+Remaining Databricks I/O improvement work is tracked in the
+[I/O layer roadmap](../../roadmap/io-layer.md).
+
+- Refactor `src/haute/_databricks_io.py` into a provider adapter and bounded cache builder.
+  Preserve credential resolution, table canonicalisation, query validation, SDK browsing, and
+  Arrow-batch acquisition. Delete `CACHE_DIR`, `_cache_path_for`, `cached_path`, `cache_info`,
+  `clear_cache`, module-global progress slots, and direct publication after all callers use
+  `src/haute/_source_cache.py`.
+- The builder implements the shared `SourceCacheBuilder` protocol. It yields connector batches,
+  reports row/batch/byte progress through `SourceCacheBuildContext`, checks cancellation and
+  deadline between batches, and returns provider revision/snapshot metadata when available. It
+  never chooses the destination path or replaces the current generation itself.
+- Canonical identity input is a redacted structure containing provider `"databricks"`,
+  canonical table, validated complete query, HTTP-path/warehouse reference, and safe options.
+  Resolved host/token values are not serialisable identity fields. Query parsing/normalisation is
+  deterministic and rejects ambiguous nested-source constructs before a build begins.
+- Replace `src/haute/routes/databricks.py` fetch/progress/cache/delete handlers with the shared
+  `src/haute/routes/input_cache.py` calls. Retain only workspace browsing endpoints under the
+  Databricks router. `_DatabricksSelector.tsx` consumes the common build/status controls while
+  retaining the Databricks pickers.
+- Delete `read_cached_table`; `dataInput` provider dispatch asks the common cache store for a
+  leased `pl.scan_parquet` generation. The adapter is never imported by normal cached execution.
+
+Tests retain all table/query/credential/browse coverage and add provider-protocol conformance,
+query-identity separation, no-secret serialisation, consistent-snapshot metadata, cancellation
+checkpoints, retry ambiguity, shared-store fault injection, and an assertion that cached
+execution imports/invokes no Databricks connector.

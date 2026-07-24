@@ -173,8 +173,15 @@ class TestPruner:
                         "id": "batch_src",
                         "data": {
                             "label": "batch_src",
-                            "nodeType": "dataSource",
-                            "config": {"path": "d.parquet"},
+                            "nodeType": "dataInput",
+                            "config": {
+                                "inputType": "file",
+                                "format": "parquet",
+                                "mode": "scan",
+                                "cacheMode": "direct",
+                                "path": "d.parquet",
+                                "arguments": {},
+                            },
                         },
                     },
                     {
@@ -315,8 +322,15 @@ class TestPruner:
                         "id": "connected_source",
                         "data": {
                             "label": "connected_source",
-                            "nodeType": "dataSource",
-                            "config": {},
+                            "nodeType": "dataInput",
+                            "config": {
+                                "inputType": "file",
+                                "format": "parquet",
+                                "mode": "scan",
+                                "cacheMode": "direct",
+                                "path": "d.parquet",
+                                "arguments": {},
+                            },
                         },
                     },
                     {
@@ -371,7 +385,20 @@ class TestPruner:
         graph = _g(
             {
                 "nodes": [
-                    {"id": "a", "data": {"nodeType": "dataSource", "config": {}}},
+                    {
+                        "id": "a",
+                        "data": {
+                            "nodeType": "dataInput",
+                            "config": {
+                                "inputType": "file",
+                                "format": "parquet",
+                                "mode": "scan",
+                                "cacheMode": "direct",
+                                "path": "d.parquet",
+                                "arguments": {},
+                            },
+                        },
+                    },
                 ]
             }
         )
@@ -494,11 +521,11 @@ class TestBundler:
         assert len(artifacts) == 0
 
     def test_datasource_not_input_collects_artifact(self, tmp_path):
-        """dataSource node NOT listed as input should be collected as an artifact."""
+        """dataInput node NOT listed as input should be collected as an artifact."""
         from haute.deploy._bundler import collect_artifacts
 
-        data_file = tmp_path / "lookup.csv"
-        data_file.write_text("a,b\n1,2\n")
+        data_file = tmp_path / "lookup.parquet"
+        pl.DataFrame({"a": [1], "b": [2]}).write_parquet(data_file)
 
         graph = _g(
             {
@@ -506,8 +533,15 @@ class TestBundler:
                     {
                         "id": "static_ds",
                         "data": {
-                            "nodeType": "dataSource",
-                            "config": {"path": str(data_file)},
+                            "nodeType": "dataInput",
+                            "config": {
+                                "inputType": "file",
+                                "format": "parquet",
+                                "mode": "scan",
+                                "cacheMode": "direct",
+                                "path": str(data_file),
+                                "arguments": {},
+                            },
                         },
                     },
                 ],
@@ -518,7 +552,7 @@ class TestBundler:
         artifacts = collect_artifacts(graph, [], tmp_path)
         assert len(artifacts) == 1
         name = next(iter(artifacts))
-        assert name == "static_ds__lookup.csv"
+        assert name == "static_ds__lookup.parquet"
         assert artifacts[name].is_file()
 
     # -- Registered model tests (B1 fix) ------------------------------------

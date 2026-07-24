@@ -35,6 +35,7 @@ import pytest
 
 from haute._parser_regex import _parse_decorator_kwargs_regex, fallback_parse
 from haute.errors import ParseError
+from tests.conftest import write_data_input_config
 
 # ---------------------------------------------------------------------------
 # Part 1: Regression — kwarg shapes that currently work (must stay green)
@@ -339,13 +340,11 @@ class TestFallbackParseSmoke:
         Returning a partial graph here would let the next save silently
         delete the malformed node from disk.
         """
-        cfg_dir = tmp_path / "config" / "data_source"
-        cfg_dir.mkdir(parents=True)
-        (cfg_dir / "load.json").write_text('{"path": "input.csv", "sourceType": "flat_file"}')
+        write_data_input_config(tmp_path, "load", "input.csv")
         source = (
             'pipeline = haute.Pipeline("smoke_test")\n'
             "\n"
-            '@pipeline.data_source(config="config/data_source/load.json")\n'
+            '@pipeline.data_input(config="config/data_input/load.json")\n'
             "def load():\n"
             '    return pl.scan_csv("input.csv")\n'
             "\n"
@@ -380,7 +379,7 @@ class TestFallbackParseSmoke:
         multi-line decorator text to the kwarg parser (the call path
         inside fallback_parse).
         """
-        decorator_text = '@pipeline.data_source(\n    path="multi.csv",\n    table="t",\n)'
+        decorator_text = '@pipeline.data_input(\n    path="multi.csv",\n    table="t",\n)'
         result = _parse_decorator_kwargs_regex(decorator_text)
         assert result["path"] == "multi.csv"
         assert result["table"] == "t"

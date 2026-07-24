@@ -65,24 +65,6 @@ def test_schema_preview_serializes_non_finite_values_as_sentinels(
     ]
 
 
-def test_databricks_schema_preview_serializes_non_finite_values_as_sentinels(
-    client: TestClient,
-    project_root: Path,
-) -> None:
-    """PIN REVISION (W7): cached table previews use the same sentinel contract."""
-    cache_file = project_root / "cached.parquet"
-    pl.DataFrame({"value": [float("nan"), float("inf")]}).write_parquet(cache_file)
-
-    with patch("haute._databricks_io.cached_path", return_value=cache_file):
-        resp = client.get(
-            "/api/schema/databricks",
-            params={"table": "catalog.schema.table"},
-        )
-
-    assert resp.status_code == 200
-    assert [row["value"] for row in resp.json()["preview"]] == [NAN_SENTINEL, INF_SENTINEL]
-
-
 def test_preview_response_serializes_non_finite_values_as_sentinels(
     client: TestClient,
     project_root: Path,

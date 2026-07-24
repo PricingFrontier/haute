@@ -1,238 +1,337 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
-import { render, screen, fireEvent, cleanup, within } from "@testing-library/react"
-import { useState } from "react"
-
-// ---------------------------------------------------------------------------
-// Mocks — network mocked only at the fetch-function boundary
-// ---------------------------------------------------------------------------
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react"
+import type { IoCapabilityGroup } from "../../../api/types"
 
 vi.mock("../../../api/client", () => ({
-  fetchIoFormats: vi.fn(),
+  fetchIoCapabilities: vi.fn(),
   listFiles: vi.fn(() => Promise.resolve({ items: [] })),
+  writeOutput: vi.fn(),
 }))
 
-import { fetchIoFormats } from "../../../api/client"
-import type { IoFormatCapability } from "../../../api/types"
-import { resetIoFormatsCacheForTests } from "../_ioFormats"
-import type { OnUpdateConfig } from "../_shared"
+import { fetchIoCapabilities, writeOutput } from "../../../api/client"
+import { GraphProvider } from "../../GraphContext"
 import DataOutputEditor from "../DataOutputEditor"
+import { resetIoCapabilitiesCacheForTests } from "../_ioFormats"
 
-const mockFetchIoFormats = fetchIoFormats as ReturnType<typeof vi.fn>
-
-// ---------------------------------------------------------------------------
-// Fixture payload (tests may hard-code format names; components must not)
-// ---------------------------------------------------------------------------
-
-const base = {
-  extensions: [] as string[],
-  unstable: false,
-  bounded_read: false,
-  needs_schema_when_bounded: false,
-  read_available: true,
-  write_available: true,
-  read_engines_missing: [] as string[],
-  write_engines_missing: [] as string[],
-}
-
-const FORMATS: IoFormatCapability[] = [
+const groups: IoCapabilityGroup[] = [
   {
-    ...base,
-    name: "csv",
-    label: "CSV",
-    source_kind: "path",
-    extensions: [".csv"],
-    input_modes: ["scan", "read"],
-    output_modes: ["sink", "write"],
-    input_arguments: { scan: ["separator"], read: ["separator"] },
-    output_arguments: { sink: ["separator"], write: ["separator", "quote_style"] },
+    name: "file",
+    label: "File",
+    input_available: true,
+    output_available: true,
+    cache_modes: ["direct", "snapshot"],
+    input_fields: [],
+    output_fields: [
+      { name: "path", label: "Path", kind: "path", required: true },
+    ],
+    formats: [
+      {
+        name: "csv",
+        label: "CSV",
+        group: "file",
+        extensions: [".csv"],
+        unstable: false,
+        input: null,
+        output: {
+          modes: ["sink", "write"],
+          arguments: { sink: ["separator"], write: ["separator"] },
+          engines_missing: [],
+          native_sink: true,
+          eager_writer: true,
+          publication: "atomic_file",
+        },
+      },
+      {
+        name: "excel",
+        label: "Excel",
+        group: "file",
+        extensions: [".xlsx"],
+        unstable: false,
+        input: null,
+        output: {
+          modes: ["write"],
+          arguments: { write: [] },
+          engines_missing: ["xlsxwriter"],
+          native_sink: false,
+          eager_writer: true,
+          publication: "atomic_file",
+        },
+      },
+    ],
   },
   {
-    ...base,
-    name: "delta",
-    label: "Delta Lake",
-    source_kind: "path",
-    unstable: true,
-    write_engines_missing: ["deltalake"],
-    input_modes: ["scan"],
-    output_modes: ["write"],
-    input_arguments: { scan: [] },
-    output_arguments: { write: ["mode"] },
-  },
-  {
-    ...base,
     name: "database",
     label: "Database",
-    source_kind: "database",
-    input_modes: ["read"],
-    output_modes: ["write"],
-    input_arguments: { read: [] },
-    output_arguments: { write: [] },
+    input_available: true,
+    output_available: true,
+    cache_modes: ["snapshot"],
+    input_fields: [],
+    output_fields: [
+      {
+        name: "connection",
+        label: "Connection environment reference",
+        kind: "connection",
+        required: false,
+      },
+      {
+        name: "uri",
+        label: "Credential-free URI",
+        kind: "text",
+        required: false,
+      },
+      { name: "table", label: "Table", kind: "text", required: true },
+    ],
+    formats: [
+      {
+        name: "database",
+        label: "Database (URI)",
+        group: "database",
+        extensions: [],
+        unstable: false,
+        input: null,
+        output: {
+          modes: ["write"],
+          arguments: { write: ["if_table_exists"] },
+          engines_missing: [],
+          native_sink: false,
+          eager_writer: true,
+          publication: "transactional",
+        },
+      },
+    ],
   },
   {
-    ...base,
-    name: "records",
-    label: "Inline Records",
-    source_kind: "inline",
-    write_available: false,
-    input_modes: ["read"],
-    output_modes: [],
-    input_arguments: { read: [] },
-    output_arguments: {},
+    name: "lakehouse",
+    label: "Lakehouse",
+    input_available: true,
+    output_available: true,
+    cache_modes: ["direct", "snapshot"],
+    input_fields: [],
+    output_fields: [
+      {
+        name: "path",
+        label: "Table locator",
+        kind: "path",
+        required: true,
+      },
+    ],
+    formats: [
+      {
+        name: "delta",
+        label: "Delta Lake",
+        group: "lakehouse",
+        extensions: [],
+        unstable: false,
+        input: null,
+        output: {
+          modes: ["sink", "write"],
+          arguments: { sink: [], write: [] },
+          engines_missing: [],
+          native_sink: true,
+          eager_writer: true,
+          publication: "transactional",
+        },
+      },
+    ],
+  },
+  {
+    name: "databricks",
+    label: "Databricks",
+    input_available: true,
+    output_available: false,
+    cache_modes: ["snapshot"],
+    input_fields: [],
+    output_fields: [],
+    formats: [],
+  },
+  {
+    name: "inline",
+    label: "Inline",
+    input_available: true,
+    output_available: false,
+    cache_modes: ["direct"],
+    input_fields: [],
+    output_fields: [],
+    formats: [],
   },
 ]
 
-const defaultProps = () => ({
-  config: {} as Record<string, unknown>,
-  onUpdate: vi.fn(),
-  accentColor: "#009e73",
-})
-
-// Non-mocked NodePanel.handleConfigUpdate equivalent: the same shallow
-// merge NodePanel performs (see NodePanel.tsx handleConfigUpdate), driven
-// through real state so tests can assert the exact merged config object
-// (read back from the rendered config-json probe).
-function Harness({ initial }: { initial: Record<string, unknown> }) {
-  const [config, setConfig] = useState(initial)
-  const onUpdate: OnUpdateConfig = (keyOrUpdates, value) => {
-    setConfig((current) =>
-      typeof keyOrUpdates === "string"
-        ? { ...current, [keyOrUpdates]: value }
-        : { ...current, ...keyOrUpdates },
-    )
-    return { ok: true }
+function renderEditor(
+  config: Record<string, unknown>,
+  onUpdate = vi.fn(),
+  onReplaceConfig = vi.fn(),
+) {
+  return {
+    ...render(
+      <GraphProvider allNodes={[]} edges={[]}>
+        <DataOutputEditor
+          config={config}
+          onUpdate={onUpdate}
+          onReplaceConfig={onReplaceConfig}
+          accentColor="#123456"
+          nodeId="output-node"
+        />
+      </GraphProvider>,
+    ),
+    onUpdate,
+    onReplaceConfig,
   }
-  return (
-    <>
-      <DataOutputEditor config={config} onUpdate={onUpdate} accentColor="#009e73" />
-      <pre data-testid="config-json">{JSON.stringify(config)}</pre>
-    </>
-  )
-}
-
-function harnessConfig(): Record<string, unknown> {
-  return JSON.parse(screen.getByTestId("config-json").textContent ?? "{}")
 }
 
 beforeEach(() => {
-  resetIoFormatsCacheForTests()
-  mockFetchIoFormats.mockReset()
-  mockFetchIoFormats.mockResolvedValue({ formats: FORMATS })
+  vi.clearAllMocks()
+  resetIoCapabilitiesCacheForTests()
+  vi.mocked(fetchIoCapabilities).mockResolvedValue({
+    schema_version: 1,
+    groups,
+  })
+  vi.mocked(writeOutput).mockResolvedValue({
+    status: "ok",
+    message: "Wrote output.",
+    row_count: 2,
+    path: "out.csv",
+    format: "csv",
+  })
 })
 
-afterEach(() => {
-  cleanup()
-})
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
+afterEach(cleanup)
 
 describe("DataOutputEditor", () => {
-  it("renders format options from the capability payload (write-available only)", async () => {
-    render(<DataOutputEditor {...defaultProps()} />)
-    const select = await screen.findByLabelText("Format")
-    const texts = within(select as HTMLElement)
-      .getAllByRole("option")
-      .map((o) => o.textContent)
-    expect(texts).toContain("CSV")
-    expect(texts).toContain("Database")
-    // write-side engines-missing formats stay selectable but flagged
-    expect(texts).toContain("Delta Lake (unstable) — needs one of: deltalake")
-    // read-only formats do not appear on the output side
-    expect(texts).not.toContain("Inline Records")
-  })
-
-  it("shows the engines-missing note for the selected format", async () => {
-    const props = defaultProps()
-    props.config = { format: "delta" }
-    render(<DataOutputEditor {...props} />)
-    await screen.findByLabelText("Format")
-    expect(screen.getByText(/Missing engine package — needs one of: deltalake/)).toBeInTheDocument()
-  })
-
-  it("mode selector uses output modes and persists only an explicit pick", async () => {
-    const props = defaultProps()
-    props.config = { format: "csv" }
-    render(<DataOutputEditor {...props} />)
-    const modeSelect = await screen.findByLabelText("Mode")
-    expect(modeSelect).toHaveValue("sink")
-    expect(props.onUpdate).not.toHaveBeenCalled()
-    fireEvent.change(modeSelect, { target: { value: "write" } })
-    expect(props.onUpdate).toHaveBeenCalledWith("mode", "write")
-  })
-
-  it("drives the real NodePanel merge and preserves unrelated keys exactly", async () => {
-    render(
-      <Harness
-        initial={{
-          format: "csv",
-          path: "out/old.csv",
-          arguments: { separator: "," },
-          extra_key: "keep",
-        }}
-      />,
-    )
-    const pathInput = await screen.findByLabelText("Path")
-    fireEvent.change(pathInput, { target: { value: "out/new.csv" } })
-    fireEvent.blur(pathInput)
-    expect(harnessConfig()).toEqual({
+  it("shows only output-capable groups and atomically replaces provider config", async () => {
+    const { onReplaceConfig } = renderEditor({
+      code: "must disappear",
+      path: "old.csv",
+      outputType: "file",
       format: "csv",
-      path: "out/new.csv",
-      arguments: { separator: "," },
-      extra_key: "keep",
+      mode: "sink",
+      arguments: {},
+    })
+
+    const provider = await screen.findByLabelText("Provider")
+    expect(
+      Array.from((provider as HTMLSelectElement).options).map(
+        (option) => option.text,
+      ),
+    ).toEqual([
+      "Select a provider...",
+      "File",
+      "Database",
+      "Lakehouse",
+    ])
+
+    fireEvent.change(provider, { target: { value: "database" } })
+    expect(onReplaceConfig).toHaveBeenCalledWith({
+      outputType: "database",
+      format: "database",
+      mode: "write",
+      arguments: {},
+      table: "",
     })
   })
 
-  it("surfaces off-spec keys in the unrecognised-keys section instead of dropping them", async () => {
-    const props = defaultProps()
-    // `records` is an input-side key: off-spec for a path-kind output config
-    props.config = { format: "csv", path: "out.csv", records: [{ a: 1 }], not_a_real_key: 123 }
-    render(<DataOutputEditor {...props} />)
-    await screen.findByLabelText("Format")
-    const section = screen.getByTestId("unrecognised-keys")
-    expect(within(section).getByText("not_a_real_key")).toBeInTheDocument()
-    expect(section.textContent).toContain("not_a_real_key: 123")
-    expect(section.textContent).toContain('records: [{"a":1}]')
-    // named absence: no editable control for the off-spec key
-    expect(screen.queryByLabelText("not_a_real_key")).not.toBeInTheDocument()
-    expect(screen.queryByDisplayValue("123")).not.toBeInTheDocument()
+  it("preserves the destination while resetting format-specific arguments", async () => {
+    const { onReplaceConfig } = renderEditor({
+      outputType: "file",
+      format: "csv",
+      mode: "sink",
+      path: "out.csv",
+      arguments: { separator: "|" },
+    })
+
+    fireEvent.change(await screen.findByLabelText("Format"), {
+      target: { value: "excel" },
+    })
+    expect(onReplaceConfig).toHaveBeenCalledWith({
+      outputType: "file",
+      format: "excel",
+      mode: "write",
+      arguments: {},
+      path: "out.csv",
+    })
   })
 
-  it("shows uri + table fields for database formats", async () => {
-    const props = defaultProps()
-    props.config = { format: "database" }
-    render(<DataOutputEditor {...props} />)
-    const uri = await screen.findByLabelText("Connection URI")
-    fireEvent.change(uri, { target: { value: "postgres://host/db" } })
-    expect(props.onUpdate).not.toHaveBeenCalled()
-    fireEvent.blur(uri)
-    expect(props.onUpdate).toHaveBeenCalledWith("uri", "postgres://host/db")
-    const table = screen.getByLabelText("Table")
-    fireEvent.change(table, { target: { value: "public.prices" } })
-    fireEvent.blur(table)
-    expect(props.onUpdate).toHaveBeenCalledWith("table", "public.prices")
-    // output side has no query field
-    expect(screen.queryByLabelText("Query")).not.toBeInTheDocument()
-  })
-
-  it("validates argument names against the output arguments for the effective mode", async () => {
-    const props = defaultProps()
-    props.config = { format: "csv", mode: "write", arguments: { quote_style: "necessary", bogus: 1 } }
-    render(<DataOutputEditor {...props} />)
-    await screen.findByLabelText("Format")
-    expect(screen.getByText(/bogus is not a recognised CSV write argument/)).toBeInTheDocument()
-    expect(screen.queryByText(/quote_style is not a recognised/)).not.toBeInTheDocument()
-  })
-
-  it("editing an argument value commits the exact merged arguments object", async () => {
-    render(<Harness initial={{ format: "csv", path: "out.csv", arguments: { separator: "," } }} />)
-    await screen.findByLabelText("Format")
-    fireEvent.change(screen.getByLabelText("Argument 1 value"), { target: { value: '";"' } })
-    fireEvent.blur(screen.getByLabelText("Argument 1 value"))
-    expect(harnessConfig()).toEqual({
+  it("gates explicit writes and sends the current graph context", async () => {
+    renderEditor({
+      outputType: "file",
       format: "csv",
       path: "out.csv",
-      arguments: { separator: ";" },
+      arguments: {},
     })
+
+    const write = await screen.findByRole("button", { name: "Write" })
+    expect(write).toBeEnabled()
+    fireEvent.click(write)
+
+    await waitFor(() =>
+      expect(writeOutput).toHaveBeenCalledWith(
+        expect.objectContaining({
+          nodeId: "output-node",
+          graph: expect.objectContaining({ nodes: [], edges: [] }),
+        }),
+      ),
+    )
+    expect(await screen.findByRole("status")).toHaveTextContent(
+      "Wrote output. | 2 rows | out.csv",
+    )
+  })
+
+  it("requires exactly one database locator and clears the other atomically", async () => {
+    const { onUpdate } = renderEditor({
+      outputType: "database",
+      format: "database",
+      mode: "write",
+      connection: "WAREHOUSE_URI",
+      table: "analytics.quotes",
+      arguments: {},
+    })
+
+    expect(await screen.findByRole("button", { name: "Write" })).toBeEnabled()
+    expect(screen.getByText(/transactional publication/i)).toBeInTheDocument()
+
+    const uri = screen.getByLabelText("Credential-free URI")
+    fireEvent.change(uri, { target: { value: "sqlite:///quotes.db" } })
+    fireEvent.blur(uri)
+    expect(onUpdate).toHaveBeenCalledWith({
+      uri: "sqlite:///quotes.db",
+      connection: "",
+    })
+  })
+
+  it("surfaces missing output engines and disables writes", async () => {
+    renderEditor({
+      outputType: "file",
+      format: "excel",
+      mode: "write",
+      path: "out.xlsx",
+      arguments: {},
+    })
+
+    expect(
+      await screen.findByText(/Missing engine package.*xlsxwriter/i),
+    ).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Write" })).toBeDisabled()
+    expect(screen.getByText(/eager writer.*atomic_file/i)).toBeInTheDocument()
+  })
+
+  it("has no Polars editor and blocks configs with inactive keys", async () => {
+    renderEditor({
+      outputType: "file",
+      format: "csv",
+      mode: "sink",
+      path: "out.csv",
+      arguments: {},
+      code: "df",
+    })
+
+    expect(await screen.findByText("Configuration errors")).toBeInTheDocument()
+    expect(screen.getByText(/Unexpected configuration keys: code/)).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Write" })).toBeDisabled()
+    expect(screen.queryByLabelText("Polars code")).not.toBeInTheDocument()
   })
 })

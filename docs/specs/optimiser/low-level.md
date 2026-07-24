@@ -700,5 +700,30 @@ tie-breaking logic beyond the specific fixture cases in
 The optimiser service boundary accepts the universal execution facade's single typed
 plan result for estimates, setup, solve, and auto-range. It forwards bounded diagnostics
 and final feature provenance unchanged to optimiser results and uses that same result
-for related admission decisions. Execution-engine defines the planner; see the
-[remediation plan](../../trip/plans/F_0.6.0_polars-backend-remediation.plan.md).
+for related admission decisions. Execution-engine defines the planner. Remaining optimiser
+improvement work is tracked in the [optimiser roadmap](../../roadmap/optimiser.md).
+
+## Approved change contract — 0.7.0 unified data-input consumption
+
+Remaining optimiser improvement work is tracked in the
+[optimiser roadmap](../../roadmap/optimiser.md).
+
+- In `routes/_optimiser_service.py`, replace `_source_node_schema_has_column`'s
+  `NodeType.DATA_SOURCE`/`read_data_source` special case with the shared retained-input
+  schema/projection contract. A direct local `dataInput` may inspect schema through provider
+  dispatch; a snapshot provider inspects only its validated generation. Missing remote snapshots
+  fail with the common typed cache error and never trigger acquisition.
+- `_execute_pipeline`, `_resolve_data_source` (rename to `_resolve_data_input_frame`), estimate,
+  solve setup, and auto-range consume the execution facade's resolved source metadata and keep
+  any cache generation lease for the full lazy read. They do not parse provider config or cache
+  paths themselves.
+- Optimiser request/job fingerprints include the execution result's safe input identity and
+  selected generation signature in addition to graph/config identity. A refresh cannot join,
+  supersede, or serve a result keyed to the prior generation as if it were current.
+- Preserve the configured-direct-parent validation and sole-direct-banding fallback; neither is
+  rewritten to select a global graph input. Remove only legacy node-type branches and fixtures.
+
+Focused route/service tests cover canonical data-input schema discovery, file and snapshot
+projection, missing/corrupt/stale generations, optional-code output columns, multiple direct
+parents, fingerprint changes across refresh, lease lifetime/cancellation, no provider calls on
+cache reads, and absence of `DATA_SOURCE`.

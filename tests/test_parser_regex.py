@@ -11,6 +11,7 @@ from haute._parser_regex import (
     fallback_parse,
 )
 from haute.errors import ConfigError, ParseError
+from tests.conftest import write_data_input_config
 
 # ---------------------------------------------------------------------------
 # _find_function_blocks
@@ -54,7 +55,7 @@ class TestFindFunctionBlocks:
         assert blocks[0]["param_names"] == ["df"]
 
     def test_no_params(self) -> None:
-        source = "@pipeline.data_source(path='input.csv')\ndef api_input():\n    pass\n"
+        source = "@pipeline.data_input(path='input.csv')\ndef api_input():\n    pass\n"
         blocks = _find_function_blocks(source)
         assert blocks[0]["param_names"] == []
 
@@ -90,7 +91,7 @@ class TestFindFunctionBlocks:
         assert _find_function_blocks(source) == []
 
     def test_decorator_with_kwargs(self) -> None:
-        source = '@pipeline.data_source(path="data.csv")\ndef load(df):\n    return df\n'
+        source = '@pipeline.data_input(path="data.csv")\ndef load(df):\n    return df\n'
         blocks = _find_function_blocks(source)
         assert len(blocks) == 1
         assert 'path="data.csv"' in blocks[0]["decorator_text"]
@@ -182,7 +183,7 @@ class TestFindFunctionBlocks:
 
 class TestParseDecoratorKwargsRegex:
     def test_string_kwargs(self) -> None:
-        text = '@pipeline.data_source(path="data.csv", name="load")'
+        text = '@pipeline.data_input(path="data.csv", name="load")'
         result = _parse_decorator_kwargs_regex(text)
         assert result["path"] == "data.csv"
         assert result["name"] == "load"
@@ -194,7 +195,7 @@ class TestParseDecoratorKwargsRegex:
         assert result["output"] is False
 
     def test_mixed_kwargs(self) -> None:
-        text = '@pipeline.data_source(path="x.csv", output=True)'
+        text = '@pipeline.data_input(path="x.csv", output=True)'
         result = _parse_decorator_kwargs_regex(text)
         assert result["path"] == "x.csv"
         assert result["output"] is True
@@ -210,7 +211,7 @@ class TestParseDecoratorKwargsRegex:
         assert result == {}
 
     def test_single_quoted_values(self) -> None:
-        text = "@pipeline.data_source(path='data.csv')"
+        text = "@pipeline.data_input(path='data.csv')"
         result = _parse_decorator_kwargs_regex(text)
         assert result["path"] == "data.csv"
 
@@ -222,7 +223,7 @@ class TestParseDecoratorKwargsRegex:
     def test_non_literal_expression_kwarg_rejected_loudly(self) -> None:
         """Computed decorator values would be re-emitted as strings on save."""
         with pytest.raises(ParseError, match="path"):
-            _parse_decorator_kwargs_regex('@pipeline.data_source(path=Path("data.csv"))')
+            _parse_decorator_kwargs_regex('@pipeline.data_input(path=Path("data.csv"))')
 
     def test_contract_constructor_kwarg_is_lowered(self) -> None:
         result = _parse_decorator_kwargs_regex(
@@ -567,14 +568,14 @@ pipeline.connect("a", "b")
     def test_config_backed_node_without_sidecar_fails_loudly(self, tmp_path) -> None:
         source = (
             'pipeline = haute.Pipeline("broken")\n'
-            '@pipeline.data_source(config="config/data_source/load.json")\n'
+            '@pipeline.data_input(config="config/data_input/load.json")\n'
             "def load():\n"
             '    return pl.scan_csv("input.csv")\n'
         )
         err = SyntaxError("broken")
         err.lineno = 2
 
-        with pytest.raises(ConfigError, match="config/data_source/") as excinfo:
+        with pytest.raises(ConfigError, match="config/data_input/") as excinfo:
             fallback_parse(source, str(tmp_path / "broken.py"), err)
         # The recovery path surfaces the same concrete-folder guidance as the
         # healthy parse path (F532): names the real folder + remediation.
@@ -583,16 +584,14 @@ pipeline.connect("a", "b")
         assert "haute init" in message
 
     def test_config_backed_node_preserves_body_code_from_fallback(self, tmp_path) -> None:
-        config_path = tmp_path / "config" / "data_source" / "load.json"
-        config_path.parent.mkdir(parents=True)
-        config_path.write_text('{"path": "data/input.csv", "sourceType": "flat_file"}')
+        write_data_input_config(tmp_path, "load", "data/input.csv")
         source = """\
 import polars as pl
 import haute
 
 pipeline = haute.Pipeline("broken")
 
-@pipeline.data_source(config="config/data_source/load.json")
+@pipeline.data_input(config="config/data_input/load.json")
 def load():
     df = pl.scan_csv("data/input.csv")
     df = df.with_columns(pl.col("premium").cast(pl.Float64))

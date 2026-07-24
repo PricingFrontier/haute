@@ -41,7 +41,7 @@ def _e(src: str, tgt: str) -> GraphEdge:
 def _source_node(nid: str, label: str | None = None) -> GraphNode:
     return GraphNode(
         id=nid,
-        data=NodeData(label=label or nid, nodeType=NodeType.DATA_SOURCE),
+        data=NodeData(label=label or nid, nodeType=NodeType.DATA_INPUT),
     )
 
 
@@ -80,7 +80,7 @@ def _scenario_tracking_build_fn(captured: dict):
     def build_fn(node, *, source="live", source_names=None, **kwargs):
         captured[node.id] = source
         nt = node.data.nodeType
-        if nt == NodeType.DATA_SOURCE:
+        if nt == NodeType.DATA_INPUT:
             return node.id, lambda: pl.DataFrame({"x": [1, 2, 3]}).lazy(), True
         return node.id, lambda *dfs: dfs[0] if dfs else pl.LazyFrame(), False
 
@@ -96,7 +96,7 @@ def _branching_build_fn(captured: dict):
         nid = node.id
         nt = node.data.nodeType
 
-        if nt == NodeType.DATA_SOURCE:
+        if nt == NodeType.DATA_INPUT:
             if nid == "live_source":
                 return nid, lambda: pl.DataFrame({"src": ["live"]}).lazy(), True
             elif nid == "batch_source":

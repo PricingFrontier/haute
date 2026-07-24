@@ -26,7 +26,7 @@ import pytest
 if TYPE_CHECKING:
     from fastapi.testclient import TestClient
 
-from tests.conftest import make_edge, make_graph
+from tests.conftest import make_edge, make_file_input_config, make_graph
 
 _TERMINAL_JOB_STATUSES = {
     "completed",
@@ -75,7 +75,7 @@ def _start_training(client: TestClient, graph: dict, node_id: str = "train") -> 
 
 
 def _modelling_graph(data_path: str, config: dict[str, Any]) -> dict:
-    """dataSource → modelling graph with a fully caller-controlled config."""
+    """dataInput → modelling graph with a fully caller-controlled config."""
     graph = make_graph(
         {
             "nodes": [
@@ -83,8 +83,8 @@ def _modelling_graph(data_path: str, config: dict[str, Any]) -> dict:
                     "id": "source",
                     "data": {
                         "label": "source",
-                        "nodeType": "dataSource",
-                        "config": {"path": data_path},
+                        "nodeType": "dataInput",
+                        "config": make_file_input_config(data_path),
                     },
                 },
                 {

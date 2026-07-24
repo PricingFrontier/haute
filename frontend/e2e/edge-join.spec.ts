@@ -7,8 +7,8 @@ import { e2eProjectRoot, resetE2eProject } from "./projectIsolation"
 
 const ratingDir = resolve(e2eProjectRoot, "rating")
 const pipelinePath = resolve(ratingDir, "main.py")
-const dataSourceDir = resolve(ratingDir, "config", "data_source")
-const lookupDataPath = resolve(e2eProjectRoot, "data", "lookup.csv")
+const dataInputDir = resolve(ratingDir, "config", "data_input")
+const lookupDataPath = resolve(ratingDir, "data", "lookup.csv")
 const quoteConfigPath = resolve(ratingDir, "config", "quote_input", "quotes.json")
 const quoteDataPath = resolve(e2eProjectRoot, "data", "quotes", "sample_quote.json")
 
@@ -55,15 +55,30 @@ function findEdgeJoin(graph: NormalizedGraph, joinSource: string): GraphNode {
 }
 
 function seedPipeline(): void {
-  mkdirSync(dataSourceDir, { recursive: true })
+  mkdirSync(dataInputDir, { recursive: true })
+  mkdirSync(resolve(ratingDir, "data"), { recursive: true })
   writeFileSync(
-    resolve(dataSourceDir, "raw_rows.json"),
-    `${JSON.stringify({ path: "../data/sample.parquet", sourceType: "flat_file" }, null, 2)}\n`,
+    resolve(dataInputDir, "raw_rows.json"),
+    `${JSON.stringify({
+      inputType: "file",
+      format: "parquet",
+      mode: "scan",
+      cacheMode: "direct",
+      path: "data/sample.parquet",
+      arguments: {},
+    }, null, 2)}\n`,
     "utf8",
   )
   writeFileSync(
-    resolve(dataSourceDir, "lookup_rows.json"),
-    `${JSON.stringify({ path: "../data/lookup.csv", sourceType: "flat_file" }, null, 2)}\n`,
+    resolve(dataInputDir, "lookup_rows.json"),
+    `${JSON.stringify({
+      inputType: "file",
+      format: "csv",
+      mode: "scan",
+      cacheMode: "direct",
+      path: "data/lookup.csv",
+      arguments: {},
+    }, null, 2)}\n`,
     "utf8",
   )
   writeFileSync(lookupDataPath, "id,lookup_value\n1,lookup\n2,lookup\n", "utf8")
@@ -104,13 +119,13 @@ function seedPipeline(): void {
       "",
       'pipeline = haute.Pipeline("edge_join_e2e")',
       "",
-      '@pipeline.data_source(config="config/data_source/raw_rows.json")',
+      '@pipeline.data_input(config="config/data_input/raw_rows.json")',
       "def raw_rows() -> pl.LazyFrame:",
-      '    return pl.scan_parquet(Path(__file__).parent.parent / "data" / "sample.parquet")',
+      '    return pl.scan_parquet(Path(__file__).parent / "data" / "sample.parquet")',
       "",
-      '@pipeline.data_source(config="config/data_source/lookup_rows.json")',
+      '@pipeline.data_input(config="config/data_input/lookup_rows.json")',
       "def lookup_rows() -> pl.LazyFrame:",
-      '    return pl.scan_csv(Path(__file__).parent.parent / "data" / "lookup.csv")',
+      '    return pl.scan_csv(Path(__file__).parent / "data" / "lookup.csv")',
       "",
       '@pipeline.api_input(config="config/quote_input/quotes.json")',
       "def quotes() -> pl.LazyFrame:",
@@ -328,13 +343,38 @@ test.describe("Edge Join insertion workflow", () => {
     await expect(enrichedPreview.getByText("value_doubled", { exact: true })).toBeVisible()
     const traceResponse = page.waitForResponse((response) => response.url().includes("/api/pipeline/trace"))
     await enrichedPreview.getByRole("cell", { name: "22" }).first().click()
-    await traceResponse
+    const response = await traceResponse
+    expect(response.status(), "trace request succeeds").toBe(200)
+    const tracePayload = await response.json() as {
+      trace?: { steps?: Array<{ node_id?: string }> }
+    }
+    const tracedNodeIds = tracePayload.trace?.steps?.map((step) => step.node_id) ?? []
+    expect(tracedNodeIds, "trace retains both Edge Join ancestors").toEqual(
+      expect.arrayContaining([finalFirstJoin.id, finalSecondJoin.id]),
+    )
     await expect(page.getByRole("complementary", { name: /node properties/i })).toContainText(/Trace:/)
     await expect(
-      page.getByTestId(`rf__node-${finalFirstJoin.id}`).getByLabel(/Edge Join node:.*trace active/i),
+      page.getByTestId("rf__node-enriched").getByLabel(/Polars node:.*trace active/i),
     ).toBeVisible()
-    await expect(
-      page.getByTestId(`rf__node-${finalSecondJoin.id}`).getByLabel(/Edge Join node:.*trace active/i),
-    ).toBeVisible()
+
+    for (const join of [finalFirstJoin, finalSecondJoin]) {
+      const tracedJoin = page.getByTestId(`rf__node-${join.id}`).getByLabel(/Edge Join node:/i)
+      await expect(tracedJoin, `${join.id} remains visible in the trace path`).toBeVisible()
+      await expect(tracedJoin, `${join.id} is not dimmed as unrelated`).toHaveCSS("opacity", "1")
+    }
+
+    for (const edge of [
+      findEdge(finalGraph, finalFirstJoin.id, finalSecondJoin.id),
+      findEdge(finalGraph, finalSecondJoin.id, "enriched"),
+    ]) {
+      const tracedPath = page
+        .getByTestId(`rf__edge-${edge.id}`)
+        .locator("path.react-flow__edge-path")
+        .first()
+      await expect(tracedPath, `${edge.id} is highlighted as part of the trace path`).toHaveAttribute(
+        "style",
+        /stroke-width:\s*2\.5/,
+      )
+    }
   })
 })

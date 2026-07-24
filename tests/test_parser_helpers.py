@@ -231,7 +231,7 @@ class TestGetDecoratorKwargs:
             _get_decorator_kwargs(dec)
 
     def test_call_kwarg_raises_naming_the_kwarg(self):
-        dec = self._parse_decorator('@pipeline.data_source(path=Path("x"))\ndef f(): pass')
+        dec = self._parse_decorator('@pipeline.data_input(path=Path("x"))\ndef f(): pass')
         with pytest.raises(ParseError, match="path"):
             _get_decorator_kwargs(dec)
 
@@ -293,7 +293,7 @@ class TestIsPipelineNodeDecorator:
 
     def test_call_with_kwargs(self):
         assert _is_pipeline_node_decorator(
-            self._dec('@pipeline.data_source(path="x")\ndef f(): pass')
+            self._dec('@pipeline.data_input(path="x")\ndef f(): pass')
         )
 
     def test_all_decorator_types(self):
@@ -321,9 +321,9 @@ class TestIsPipelineNodeDecorator:
         assert not _is_pipeline_node_decorator(self._dec("@submodel.polars\ndef f(): pass"))
 
     def test_submodel_call_does_not_match_pipeline(self):
-        """@submodel.data_source(...) should NOT match the pipeline checker."""
+        """@submodel.data_input(...) should NOT match the pipeline checker."""
         assert not _is_pipeline_node_decorator(
-            self._dec("@submodel.data_source(path='x')\ndef f(): pass")
+            self._dec("@submodel.data_input(path='x')\ndef f(): pass")
         )
 
     def test_plain_name_decorator(self):
@@ -341,9 +341,9 @@ class TestIsSubmodelNodeDecorator:
     def test_submodel_call(self):
         assert _is_submodel_node_decorator(self._dec("@submodel.polars()\ndef f(): pass"))
 
-    def test_submodel_data_source(self):
+    def test_submodel_data_input(self):
         assert _is_submodel_node_decorator(
-            self._dec("@submodel.data_source(path='x')\ndef f(): pass")
+            self._dec("@submodel.data_input(path='x')\ndef f(): pass")
         )
 
     def test_pipeline_transform_is_not_submodel(self):
@@ -646,7 +646,7 @@ class TestBuildEdges:
 class TestBuildRfNodes:
     def test_positions_and_labels(self):
         raw = [
-            {"func_name": "a", "node_type": "dataSource", "description": "desc A", "config": {}},
+            {"func_name": "a", "node_type": "dataInput", "description": "desc A", "config": {}},
             {
                 "func_name": "b",
                 "node_type": "polars",
@@ -659,7 +659,7 @@ class TestBuildRfNodes:
         assert nodes[0].id == "a"
         assert nodes[0].data.label == "a"
         assert nodes[0].data.description == "desc A"
-        assert nodes[0].data.nodeType == "dataSource"
+        assert nodes[0].data.nodeType == "dataInput"
         assert nodes[1].data.nodeType == "polars"
         assert nodes[0].position == {"x": 0, "y": 0}
         assert nodes[1].position == {"x": 300, "y": 0}
@@ -1055,20 +1055,36 @@ class TestBuildNodeConfigExtended:
         )
         assert config["instanceOf"] == "original_node"
 
-    def test_data_source_with_query(self):
+    def test_data_input_config_is_not_synthesised_without_its_sidecar(self):
         config = _build_node_config(
-            NodeType.DATA_SOURCE,
-            {"table": "catalog.schema.tbl", "http_path": "/sql/x", "query": "SELECT *"},
+            NodeType.DATA_INPUT,
+            {
+                "input_type": "file",
+                "format": "parquet",
+                "mode": "scan",
+                "cache_mode": "direct",
+                "path": "data.parquet",
+                "arguments": {},
+            },
             "",
             [],
         )
-        assert config["http_path"] == "/sql/x"
-        assert config["query"] == "SELECT *"
+        assert config == {}
 
-    def test_data_sink_defaults(self):
-        config = _build_node_config(NodeType.DATA_SINK, {"sink": ""}, "", [])
-        assert config["format"] == "parquet"
-        assert config["path"] == ""
+    def test_data_output_config_is_not_synthesised_without_its_sidecar(self):
+        config = _build_node_config(
+            NodeType.DATA_OUTPUT,
+            {
+                "output_type": "file",
+                "format": "parquet",
+                "mode": "sink",
+                "path": "",
+                "arguments": {},
+            },
+            "",
+            [],
+        )
+        assert config == {}
 
     def test_external_file_default_file_type(self):
         config = _build_node_config(NodeType.EXTERNAL_FILE, {"external": "m.pkl"}, "", [])
@@ -1116,12 +1132,19 @@ class TestResolveNodeConfig:
         with patch("haute._config_builder.warn_unrecognized_config_keys"):
             with pytest.raises(ConfigError):
                 _resolve_node_config(
-                    {"path": "data.parquet"},
+                    {
+                        "inputType": "file",
+                        "format": "parquet",
+                        "mode": "scan",
+                        "cacheMode": "direct",
+                        "path": "data.parquet",
+                        "arguments": {},
+                    },
                     "",
                     [],
                     0,
                     None,
-                    explicit_node_type=NodeType.DATA_SOURCE,
+                    explicit_node_type=NodeType.DATA_INPUT,
                 )
 
     def test_sidecar_required_error_names_folder_and_remediation(self):
@@ -1135,16 +1158,23 @@ class TestResolveNodeConfig:
         with patch("haute._config_builder.warn_unrecognized_config_keys"):
             with pytest.raises(ConfigError) as excinfo:
                 _resolve_node_config(
-                    {"path": "data.parquet"},
+                    {
+                        "inputType": "file",
+                        "format": "parquet",
+                        "mode": "scan",
+                        "cacheMode": "direct",
+                        "path": "data.parquet",
+                        "arguments": {},
+                    },
                     "",
                     [],
                     0,
                     None,
-                    explicit_node_type=NodeType.DATA_SOURCE,
+                    explicit_node_type=NodeType.DATA_INPUT,
                 )
         message = str(excinfo.value)
         # Concrete folder resolved from NODE_TYPE_TO_FOLDER, not a placeholder.
-        assert "config/data_source/" in message
+        assert "config/data_input/" in message
         assert "<type>" not in message
         # Names that inline kwargs are ignored + points at a generator.
         assert "ignored" in message
@@ -1161,7 +1191,7 @@ class TestResolveNodeConfig:
         """
         from haute.errors import ConfigError
 
-        cfg_dir = tmp_path / "config" / "data_source"
+        cfg_dir = tmp_path / "config" / "data_input"
         cfg_dir.mkdir(parents=True)
         cfg_file = cfg_dir / "my_source.json"
         # Valid JSON, but a list — not a config object. ``_load_json_object``
@@ -1171,12 +1201,12 @@ class TestResolveNodeConfig:
         with patch("haute._config_builder.warn_unrecognized_config_keys"):
             with pytest.raises(ConfigError) as excinfo:
                 _resolve_node_config(
-                    {"config": "config/data_source/my_source.json"},
+                    {"config": "config/data_input/my_source.json"},
                     "",
                     [],
                     0,
                     tmp_path,
-                    explicit_node_type=NodeType.DATA_SOURCE,
+                    explicit_node_type=NodeType.DATA_INPUT,
                 )
         message = str(excinfo.value)
         # Leads with the precise underlying validation message, not the generic
@@ -1184,7 +1214,7 @@ class TestResolveNodeConfig:
         assert "Node config JSON must contain an object" in message
         assert "check that the path exists" not in message
         # Still names the offending config path.
-        assert "config/data_source/my_source.json" in message
+        assert "config/data_input/my_source.json" in message
 
     def test_missing_file_keeps_generic_path_headline(self, tmp_path):
         """A missing/unreadable file keeps the path-focused headline (F526 split)."""
@@ -1193,16 +1223,16 @@ class TestResolveNodeConfig:
         with patch("haute._config_builder.warn_unrecognized_config_keys"):
             with pytest.raises(ConfigError) as excinfo:
                 _resolve_node_config(
-                    {"config": "config/data_source/missing.json"},
+                    {"config": "config/data_input/missing.json"},
                     "",
                     [],
                     0,
                     tmp_path,
-                    explicit_node_type=NodeType.DATA_SOURCE,
+                    explicit_node_type=NodeType.DATA_INPUT,
                 )
         message = str(excinfo.value)
         assert "check that the path exists" in message
-        assert "config/data_source/missing.json" in message
+        assert "config/data_input/missing.json" in message
 
     def test_polars_without_config_reference_builds_from_body(self):
         """Polars nodes keep code in the function body and need no sidecar."""
@@ -1220,28 +1250,42 @@ class TestResolveNodeConfig:
 
     def test_external_config_file(self, tmp_path):
         """With config= key, loads JSON from file."""
-        cfg = {"path": "data.csv", "sourceType": "flat_file"}
-        cfg_dir = tmp_path / "config" / "data_source"
+        cfg = {
+            "inputType": "file",
+            "format": "csv",
+            "mode": "scan",
+            "cacheMode": "direct",
+            "path": "data.csv",
+            "arguments": {},
+        }
+        cfg_dir = tmp_path / "config" / "data_input"
         cfg_dir.mkdir(parents=True)
         cfg_file = cfg_dir / "my_source.json"
         cfg_file.write_text(json.dumps(cfg))
 
         with patch("haute._config_builder.warn_unrecognized_config_keys"):
             node_type, loaded = _resolve_node_config(
-                {"config": "config/data_source/my_source.json"},
+                {"config": "config/data_input/my_source.json"},
                 "",
                 [],
                 0,
                 tmp_path,
-                explicit_node_type=NodeType.DATA_SOURCE,
+                explicit_node_type=NodeType.DATA_INPUT,
             )
-        assert node_type == NodeType.DATA_SOURCE
+        assert node_type == NodeType.DATA_INPUT
         assert loaded["path"] == "data.csv"
 
-    def test_data_source_extracts_code_after_boilerplate(self, tmp_path):
-        """DataSource extracts user code from the function body."""
-        cfg = {"path": "data.parquet", "sourceType": "flat_file"}
-        cfg_dir = tmp_path / "config" / "data_source"
+    def test_data_input_extracts_code_after_boilerplate(self, tmp_path):
+        """DataInput extracts user code from the function body."""
+        cfg = {
+            "inputType": "file",
+            "format": "parquet",
+            "mode": "scan",
+            "cacheMode": "direct",
+            "path": "data.parquet",
+            "arguments": {},
+        }
+        cfg_dir = tmp_path / "config" / "data_input"
         cfg_dir.mkdir(parents=True)
         cfg_file = cfg_dir / "my_source.json"
         cfg_file.write_text(json.dumps(cfg))
@@ -1254,20 +1298,27 @@ class TestResolveNodeConfig:
         )
         with patch("haute._config_builder.warn_unrecognized_config_keys"):
             node_type, loaded = _resolve_node_config(
-                {"config": "config/data_source/my_source.json"},
+                {"config": "config/data_input/my_source.json"},
                 body,
                 [],
                 0,
                 tmp_path,
-                explicit_node_type=NodeType.DATA_SOURCE,
+                explicit_node_type=NodeType.DATA_INPUT,
             )
-        assert node_type == NodeType.DATA_SOURCE
+        assert node_type == NodeType.DATA_INPUT
         assert "filter" in loaded.get("code", "")
 
-    def test_data_source_no_sentinel_gives_empty_code(self, tmp_path):
-        """DataSource without sentinel has empty code."""
-        cfg = {"path": "data.parquet", "sourceType": "flat_file"}
-        cfg_dir = tmp_path / "config" / "data_source"
+    def test_data_input_no_sentinel_gives_empty_code(self, tmp_path):
+        """DataInput without sentinel has empty code."""
+        cfg = {
+            "inputType": "file",
+            "format": "parquet",
+            "mode": "scan",
+            "cacheMode": "direct",
+            "path": "data.parquet",
+            "arguments": {},
+        }
+        cfg_dir = tmp_path / "config" / "data_input"
         cfg_dir.mkdir(parents=True)
         cfg_file = cfg_dir / "my_source.json"
         cfg_file.write_text(json.dumps(cfg))
@@ -1275,14 +1326,14 @@ class TestResolveNodeConfig:
         body = '    """Load data."""\n    return pl.scan_parquet("data.parquet")'
         with patch("haute._config_builder.warn_unrecognized_config_keys"):
             node_type, loaded = _resolve_node_config(
-                {"config": "config/data_source/my_source.json"},
+                {"config": "config/data_input/my_source.json"},
                 body,
                 [],
                 0,
                 tmp_path,
-                explicit_node_type=NodeType.DATA_SOURCE,
+                explicit_node_type=NodeType.DATA_INPUT,
             )
-        assert node_type == NodeType.DATA_SOURCE
+        assert node_type == NodeType.DATA_INPUT
         assert loaded.get("code", "") == ""
 
     def test_external_config_file_not_found(self, tmp_path):
@@ -1296,12 +1347,12 @@ class TestResolveNodeConfig:
         with patch("haute._config_builder.warn_unrecognized_config_keys"):
             with pytest.raises(ConfigError):
                 _resolve_node_config(
-                    {"config": "config/data_source/missing.json"},
+                    {"config": "config/data_input/missing.json"},
                     "",
                     [],
                     0,
                     tmp_path,
-                    explicit_node_type=NodeType.DATA_SOURCE,
+                    explicit_node_type=NodeType.DATA_INPUT,
                 )
 
     def test_banding_type_from_explicit_decorator(self, tmp_path):
@@ -1326,7 +1377,7 @@ class TestResolveNodeConfig:
 
     def test_does_not_mutate_decorator_kwargs(self):
         """_resolve_node_config must not modify the caller's dict (B21)."""
-        kwargs: dict[str, Any] = {"config": "config/data_source/x.json", "extra": True}
+        kwargs: dict[str, Any] = {"config": "config/data_input/x.json", "extra": True}
         original = dict(kwargs)
         with patch("haute._config_builder.warn_unrecognized_config_keys"):
             with patch("haute._config_builder.load_node_config", return_value={}):
@@ -1336,7 +1387,14 @@ class TestResolveNodeConfig:
 
     def test_no_mutation_polars_path(self):
         """The no-sidecar path must not mutate the input dict (B21)."""
-        kwargs: dict[str, Any] = {"path": "data.parquet"}
+        kwargs: dict[str, Any] = {
+            "inputType": "file",
+            "format": "parquet",
+            "mode": "scan",
+            "cacheMode": "direct",
+            "path": "data.parquet",
+            "arguments": {},
+        }
         original = dict(kwargs)
         with patch("haute._config_builder.warn_unrecognized_config_keys"):
             _resolve_node_config(kwargs, "", [], 0, None)
@@ -1517,17 +1575,26 @@ class TestExtractDecoratedNodes:
         return tree, func_bodies
 
     def test_extracts_pipeline_nodes(self, tmp_path):
-        cfg_dir = tmp_path / "config" / "data_source"
+        cfg_dir = tmp_path / "config" / "data_input"
         cfg_dir.mkdir(parents=True)
         (cfg_dir / "source.json").write_text(
-            json.dumps({"path": "data.parquet", "sourceType": "flat_file"})
+            json.dumps(
+                {
+                    "inputType": "file",
+                    "format": "parquet",
+                    "mode": "scan",
+                    "cacheMode": "direct",
+                    "path": "data.parquet",
+                    "arguments": {},
+                }
+            )
         )
         source = (
             "import polars as pl\n"
             "import haute\n"
             'pipeline = haute.Pipeline("test")\n'
             "\n"
-            '@pipeline.data_source(config="config/data_source/source.json")\n'
+            '@pipeline.data_input(config="config/data_input/source.json")\n'
             "def source():\n"
             '    """Load data."""\n'
             "    return pl.scan_parquet('data.parquet')\n"
@@ -1546,7 +1613,7 @@ class TestExtractDecoratedNodes:
             )
         assert len(nodes) == 2
         assert nodes[0]["func_name"] == "source"
-        assert nodes[0]["node_type"] == NodeType.DATA_SOURCE
+        assert nodes[0]["node_type"] == NodeType.DATA_INPUT
         assert nodes[1]["func_name"] == "transform"
 
     def test_extracts_submodel_nodes(self):
@@ -1757,17 +1824,16 @@ class TestExtractSourceUserCode:
         assert "scan_parquet" not in result
         assert result == "df = df.limit(10)"
 
-    def test_generated_read_data_source_load_is_not_user_code(self):
+    def test_generated_read_data_input_load_is_not_user_code(self):
         body = (
             "    from pathlib import Path\n"
-            "    from haute.graph_utils import read_data_source\n"
-            '    df = read_data_source({"sourceType": "flat_file", '
-            '"path": str(Path(__file__).parent / "data.csv")})\n'
+            "    from haute.graph_utils import read_data_input\n"
+            '    df = pl.scan_csv(Path(__file__).parent / "data.csv")\n'
             "    df = df.limit(10)\n"
             "    return df"
         )
         result = _extract_source_user_code(body)
-        assert "read_data_source" not in result
+        assert "scan_csv" not in result
         assert result == "df = df.limit(10)"
 
     def test_repeated_multiline_generated_loads_are_not_user_code(self):
@@ -2094,9 +2160,9 @@ class TestGetDecoratorNodeType:
         tree = ast.parse(source)
         return tree.body[0].decorator_list[0]
 
-    def test_pipeline_data_source(self):
-        result = _get_decorator_node_type(self._dec("@pipeline.data_source\ndef f(): pass"))
-        assert result == NodeType.DATA_SOURCE
+    def test_pipeline_data_input(self):
+        result = _get_decorator_node_type(self._dec("@pipeline.data_input\ndef f(): pass"))
+        assert result == NodeType.DATA_INPUT
 
     def test_pipeline_polars(self):
         result = _get_decorator_node_type(self._dec("@pipeline.polars\ndef f(): pass"))
@@ -2112,9 +2178,9 @@ class TestGetDecoratorNodeType:
 
     def test_call_style_decorator(self):
         result = _get_decorator_node_type(
-            self._dec("@pipeline.data_source(path='x')\ndef f(): pass")
+            self._dec("@pipeline.data_input(path='x')\ndef f(): pass")
         )
-        assert result == NodeType.DATA_SOURCE
+        assert result == NodeType.DATA_INPUT
 
     def test_plain_name_returns_none(self):
         result = _get_decorator_node_type(self._dec("@some_decorator\ndef f(): pass"))

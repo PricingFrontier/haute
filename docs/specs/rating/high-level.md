@@ -226,7 +226,9 @@ Out of scope (owned by neighbouring components):
 
 ## Polars backend contracts (0.6.0)
 
-Implementation is governed by the [Polars backend remediation plan](../../trip/plans/F_0.6.0_polars-backend-remediation.plan.md). The following rating changes are approved before code work begins:
+Remaining rating improvement work is tracked in the
+[rating roadmap](../../roadmap/rating.md). The following rating changes are approved before code
+work begins:
 
 - A `min` or `max` combined output whose participating values are all null for any row
   raises `RatingExtremaUndefinedError(ExecutionError)` at runtime materialisation. The

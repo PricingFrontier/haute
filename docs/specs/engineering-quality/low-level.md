@@ -75,10 +75,9 @@
 | `frontend/src/panels/editors/banding/__tests__/` and `frontend/src/panels/editors/rating/__tests__/` | Frontend banding/rating-editor test groups. |
 | `frontend/src/panels/explore/__tests__/`, `frontend/src/panels/gitgraph/__tests__/`, `frontend/src/panels/modelling/__tests__/`, `frontend/src/panels/optimiser/__tests__/`, and `frontend/src/panels/trace/__tests__/` | Specialised explore, Git graph, modelling, optimiser, and trace panel test groups. |
 | `frontend/src/stores/__tests__/`, `frontend/src/test-utils/__tests__/`, `frontend/src/trace/__tests__/`, `frontend/src/types/__tests__/`, and `frontend/src/utils/__tests__/` | Frontend store, test-helper, trace, type, and utility test groups. |
-| `docs/roadmap/` | Current non-normative engineering delivery roadmaps; not an active quality gate or product-behaviour specification. |
+| `docs/roadmap/README.md` | Entry point for the internal component improvement catalogue and its working/retirement protocol. |
+| `docs/roadmap/<component>.md` | One self-contained, non-normative improvement queue per component. Each package defines its problem, plan, acceptance criteria, dependencies, and current code/test evidence. |
 | `repro/` | Point-in-time benchmark/reproduction programs and metadata; not an automatically current product-behaviour contract. |
-| `docs/review/` | Historical engineering findings and runnable evidence excluded from normal Ruff and public MkDocs delivery. |
-| `docs/fable-Review/` | Historical review/audit material excluded from normal Ruff and public MkDocs delivery. |
 | `mlflow.db` | Checked-in SQLite MLflow tracking-store snapshot (experiments, runs, metrics, parameters, tags, and model-version metadata). It is repository data/local state, not an installed-package input or a runtime prerequisite; MLflow may instead use the configured tracking store. |
 
 ## Key types and data structures
@@ -105,6 +104,10 @@
 - **Pytest configuration** constrains collection to `tests/`, has strict
   markers/configuration/xfails, excludes `perf` by default, and recognises
   `slow`, `perf`, and `sandbox_strict` markers.
+- **Component improvement package** is a `### <package-id>` section in one
+  flat `docs/roadmap/<component>.md` file. It has a stable ID, priority/order,
+  problem, plan, acceptance criteria, dependencies, and current evidence. The
+  component file owns whether the package is queued, blocked, or retired.
 
 ## Control flow
 
@@ -143,16 +146,24 @@
   a time per runner. Separate CI runners provide the shard parallelism while
   serial execution avoids concurrent in-place mutation races; merge expects
   every selected mutant to contribute exactly once.
+- Mutation thresholds measure observable behaviour. Syntax-only mutants in
+  postponed annotations and keyword-only call markers are explicitly excluded
+  with `# pragma: no mutate`; executable expressions and branch decisions must
+  remain in scope and be killed by focused witnesses rather than hidden behind
+  a pragma or a relaxed survivor budget.
 - Frontend shuffled tests are a nightly monitor for within-file state leaks,
   not an ordinary PR requirement. A captured seed makes a failed ordering
   reproducible.
 - `tests/`, `frontend/src/__tests__/`, and the colocated frontend test
-  directories are active corpora. `docs/roadmap/`, `repro/`, review archives,
-  and generated output/reports must not be read as exhaustive or current
-  behaviour merely because they remain tracked or present locally.
-- The normal Ruff configuration excludes `rating/`, `modules/`, `outputs/`,
-  `docs/review/`, and `docs/fable-Review/`; that is a lint-target boundary, not
-  evidence that these paths are shipped runtime code.
+  directories are active corpora. `docs/roadmap/`, `repro/`, and generated
+  output/reports must not be read as exhaustive or current behaviour merely
+  because they remain tracked or present locally.
+- Every component roadmap has `Scope`, `Priorities`, and `Planned improvements`
+  sections. Every package supplies `Why`, `Plan`, `Acceptance`, `Dependencies`,
+  and `Evidence`; a package appears in exactly one owning component.
+- The normal Ruff configuration excludes `rating/`, `modules/`, and `outputs/`;
+  that is a lint-target boundary, not evidence that these paths are shipped
+  runtime code.
 
 ## Error handling
 
@@ -195,14 +206,18 @@
   `tests/test_run_perf_suite.py`, `tests/test_perf_suite_script.py`,
   `tests/test_memory_smoke_script.py`, `tests/test_frontend_bundle_budget_ci.py`,
   and `tests/test_docs_accuracy.py` cover important assurance tooling and
-  repository-policy contracts.
+  repository-policy contracts. The documentation-accuracy checks also validate
+  the flat component-roadmap inventory, required package shape, unique package
+  ownership, local links, and absence of superseded review/plan Markdown.
 - `mutation/` is tested as configuration/orchestration through its active
-  script/tests and CI workflow. `docs/roadmap/`, `repro/`, review archives, and
-  generated artifacts are intentionally not claimed as a current test suite.
+  script/tests and CI workflow. `docs/roadmap/`, `repro/`, and generated
+  artifacts are intentionally not claimed as a current test suite.
 
 ## Polars backend contracts (0.6.0)
 
-See [the remediation plan](../../trip/plans/F_0.6.0_polars-backend-remediation.plan.md).
+Residual delivery work is tracked in the
+[engineering-quality roadmap](../../roadmap/engineering-quality.md) and
+[execution-engine roadmap](../../roadmap/execution-engine.md).
 The existing performance-harness inputs will gain a deterministic CI-small semantic join-plus-
 training fixture and explicitly selected 1m and 10m variants. The fixture suite asserts exact
 output semantics, chosen strategy, source-width propagation, no unintended full collect, and

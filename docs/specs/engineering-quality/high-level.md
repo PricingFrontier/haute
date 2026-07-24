@@ -8,10 +8,10 @@ performance, mutation resistance, and selected dependency/order regressions
 observable before or after a change reaches `main`.
 
 The component also records the distinction between active gates and repository
-evidence. Tests and maintained automation define current verification behaviour;
-roadmaps, reproduction programs, review archives, generated reports, and runtime
-outputs may preserve valuable context but do not themselves define the current
-product contract.
+evidence. Tests and maintained automation define current verification
+behaviour; the component roadmaps, reproduction programs, generated reports,
+and runtime outputs may preserve valuable context but do not themselves define
+the current product contract.
 
 ## Scope
 
@@ -32,12 +32,12 @@ Out of scope:
 - Package composition, static-asset build policy, and documentation publication,
   owned by [build-and-distribution](../build-and-distribution/high-level.md).
 - Product behaviour described by individual component specs.
-- `docs/roadmap/`, `repro/`, `docs/review/`, `docs/fable-Review/`, and generated
-  directories such as `site/`, `dist/`, coverage reports, mutation run output,
-  test reports, caches, and local runtime/model outputs. Roadmaps record
-  intended delivery rather than a quality gate or product contract; none of
-  these paths promise current behaviour unless a live workflow, test, or
-  configuration explicitly consumes a named file.
+- `docs/roadmap/`, `repro/`, and generated directories such as `site/`,
+  `dist/`, coverage reports, mutation run output, test reports, caches, and
+  local runtime/model outputs. Roadmaps record intended delivery rather than a
+  quality gate or product contract; none of these paths promise current
+  behaviour unless a live workflow, test, or configuration explicitly consumes
+  a named file.
 
 ## Behaviour
 
@@ -62,6 +62,12 @@ Out of scope:
   monitoring checks: on eligible failures they create or update a labelled
   GitHub issue carrying diagnostic/reproduction context. Mutation and
   performance workflows likewise operate through maintained scripts/artifacts.
+- Internal improvement work is self-contained in one flat component catalogue:
+  `docs/roadmap/README.md` plus one `docs/roadmap/<component>.md` file per
+  component. Each package records its problem, implementation direction,
+  acceptance criteria, dependencies, and current code/test evidence. The
+  catalogue remains non-normative: an item must be re-verified against `HEAD`,
+  specified, and regression-tested before implementation.
 
 ## Design rationale
 
@@ -78,9 +84,12 @@ Out of scope:
 - Mutation targets are deliberately curated and sharded across isolated CI
   runners, avoiding an unbounded or environment-racy mutation gate while
   retaining threshold enforcement for selected high-value code.
-- Historical review and repro material is excluded from normal lint and public
-  docs because it is point-in-time evidence. Treating it as current product code
-  would create misleading failures and claims.
+- Point-in-time reproduction material is non-normative evidence. Treating it as
+  a current product contract would create misleading claims.
+- Component roadmaps preserve only the actionable conclusion and current
+  code/test evidence needed to reverify it. Each change therefore has one
+  visible owner, execution order, dependency boundary, and retirement decision
+  without depending on a second review or remediation Markdown tree.
 
 ## Interactions
 
@@ -116,7 +125,9 @@ Out of scope:
 
 ## Polars backend contracts (0.6.0)
 
-See [the remediation plan](../../trip/plans/F_0.6.0_polars-backend-remediation.plan.md).
+Residual delivery work is tracked in the
+[engineering-quality roadmap](../../roadmap/engineering-quality.md) and
+[execution-engine roadmap](../../roadmap/execution-engine.md).
 The assurance suite will add a deterministic CI-small semantic join-plus-training fixture and
 opt-in 1m/10m variants through the existing performance harness. It will assert output equivalence,
 strategy selection, source-width handling, absence of unintended full collection, and budgeted

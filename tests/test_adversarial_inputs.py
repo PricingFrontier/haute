@@ -15,7 +15,6 @@ from haute.schemas import (
     CreateSubmodelRequest,
     DissolveSubmodelRequest,
     ExportScriptRequest,
-    FetchTableRequest,
     Graph,
     JsonCacheBuildRequest,
     OptimiserApplyRequest,
@@ -25,11 +24,11 @@ from haute.schemas import (
     OptimiserSolveRequest,
     PreviewNodeRequest,
     SavePipelineRequest,
-    SinkRequest,
     TraceRequest,
     TrainRequest,
     UtilityCreateRequest,
     UtilityWriteRequest,
+    WriteOutputRequest,
 )
 
 # ── Fixtures ────────────────────────────────────────────────────────────
@@ -45,6 +44,17 @@ def client():
     return TestClient(app, raise_server_exceptions=False)
 
 
+def _file_input_config(path: str) -> dict[str, object]:
+    return {
+        "inputType": "file",
+        "format": "parquet",
+        "mode": "scan",
+        "cacheMode": "direct",
+        "path": path,
+        "arguments": {},
+    }
+
+
 def _minimal_graph_dict(**overrides):
     """Build a minimal valid graph dict, with optional overrides."""
     base = {
@@ -53,8 +63,8 @@ def _minimal_graph_dict(**overrides):
                 "id": "src",
                 "data": {
                     "label": "Source",
-                    "nodeType": "dataSource",
-                    "config": {"path": "data.parquet"},
+                    "nodeType": "dataInput",
+                    "config": _file_input_config("data.parquet"),
                 },
             },
         ],
@@ -99,7 +109,7 @@ class TestEmptyStrings:
             "graph": _minimal_graph_dict(),
             "node_id": "",
         }
-        resp = client.post("/api/pipeline/sink", json=body)
+        resp = client.post("/api/pipeline/write-output", json=body)
         assert resp.status_code == 404
 
     def test_non_sink_node_id_in_sink(self, client):
@@ -108,7 +118,7 @@ class TestEmptyStrings:
             "graph": _minimal_graph_dict(),
             "node_id": "src",
         }
-        resp = client.post("/api/pipeline/sink", json=body)
+        resp = client.post("/api/pipeline/write-output", json=body)
         assert resp.status_code == 400
 
     def test_empty_graph_in_preview(self, client):
@@ -154,7 +164,7 @@ class TestEmptyStrings:
         assert node.data.config["code"] == ""
 
     def test_empty_path_in_data_source(self, client):
-        """Empty path in dataSource config should not crash the server.
+        """Empty path in dataInput config should not crash the server.
 
         An empty path may produce an empty/ok result or an error depending
         on executor behavior — the key invariant is no 500 crash.
@@ -166,8 +176,8 @@ class TestEmptyStrings:
                         "id": "src",
                         "data": {
                             "label": "Source",
-                            "nodeType": "dataSource",
-                            "config": {"path": ""},
+                            "nodeType": "dataInput",
+                            "config": _file_input_config(""),
                         },
                     },
                 ],
@@ -205,7 +215,7 @@ class TestNullValues:
             "graph": _minimal_graph_dict(),
             "node_id": None,
         }
-        resp = client.post("/api/pipeline/sink", json=body)
+        resp = client.post("/api/pipeline/write-output", json=body)
         assert resp.status_code == 422
 
     def test_null_graph_in_preview(self, client):
@@ -905,7 +915,7 @@ class TestPathTraversalInPayloads:
         assert resp.status_code == 403
 
     def test_path_traversal_in_data_source_path(self, client):
-        """Traversal in dataSource config path should not read arbitrary files."""
+        """Traversal in dataInput config path should not read arbitrary files."""
         body = {
             "graph": {
                 "nodes": [
@@ -913,8 +923,8 @@ class TestPathTraversalInPayloads:
                         "id": "src",
                         "data": {
                             "label": "Evil",
-                            "nodeType": "dataSource",
-                            "config": {"path": "../../../etc/passwd"},
+                            "nodeType": "dataInput",
+                            "config": _file_input_config("../../../etc/passwd"),
                         },
                     },
                 ],
@@ -978,7 +988,7 @@ class TestRequiredFieldValidation:
 
     def test_sink_requires_graph_and_node_id(self):
         with pytest.raises(ValidationError):
-            SinkRequest()
+            WriteOutputRequest()
 
     def test_trace_requires_graph(self):
         with pytest.raises(ValidationError):
@@ -1019,10 +1029,6 @@ class TestRequiredFieldValidation:
     def test_frontier_select_requires_fields(self):
         with pytest.raises(ValidationError):
             OptimiserFrontierSelectRequest()
-
-    def test_fetch_table_requires_table(self):
-        with pytest.raises(ValidationError):
-            FetchTableRequest()
 
     def test_json_cache_build_requires_path(self):
         with pytest.raises(ValidationError):

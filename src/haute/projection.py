@@ -2030,7 +2030,7 @@ _OPAQUE_CONTRACT_RULE = OpaqueContractRule()
 _USER_CODE_NODE_TYPES = frozenset(
     {
         NodeType.API_INPUT,
-        NodeType.DATA_SOURCE,
+        NodeType.DATA_INPUT,
         NodeType.EXTERNAL_FILE,
         NodeType.MODEL_SCORE,
         NodeType.OPTIMISER_APPLY,
@@ -2058,7 +2058,7 @@ def _has_user_polars_code(node: GraphNode) -> bool:
 def _user_code_has_unbounded_projection_contract(node: GraphNode) -> bool:
     if not _has_projection_user_code(node):
         return False
-    if node.data.nodeType == NodeType.DATA_SOURCE and source_user_code_preserves_column_projection(
+    if node.data.nodeType == NodeType.DATA_INPUT and source_user_code_preserves_column_projection(
         str(node.data.config.get("code") or "")
     ):
         return False
@@ -2077,7 +2077,7 @@ def _must_run_source_user_code_unprojected(node: GraphNode) -> bool:
     """
     return node.data.nodeType in {
         NodeType.API_INPUT,
-        NodeType.DATA_SOURCE,
+        NodeType.DATA_INPUT,
         NodeType.EXTERNAL_FILE,
     } and _user_code_has_unbounded_projection_contract(node)
 
@@ -2353,7 +2353,7 @@ _PROJECTION_RULE_COVERAGE_BY_NODE_TYPE: Mapping[NodeType, ProjectionRuleCoverage
     MappingProxyType(
         {
             NodeType.API_INPUT: _coverage(NodeType.API_INPUT, _SOURCE_SCAN_RULE_NAME),
-            NodeType.DATA_SOURCE: _coverage(NodeType.DATA_SOURCE, _SOURCE_SCAN_RULE_NAME),
+            NodeType.DATA_INPUT: _coverage(NodeType.DATA_INPUT, _SOURCE_SCAN_RULE_NAME),
             NodeType.EXTERNAL_FILE: _coverage(NodeType.EXTERNAL_FILE, _SOURCE_SCAN_RULE_NAME),
             NodeType.CONSTANT: _coverage(NodeType.CONSTANT, _SOURCE_SCAN_RULE_NAME),
             NodeType.POLARS: _coverage(
@@ -2369,22 +2369,10 @@ _PROJECTION_RULE_COVERAGE_BY_NODE_TYPE: Mapping[NodeType, ProjectionRuleCoverage
                     "concretely via parent produced-column ownership"
                 ),
             ),
-            NodeType.DATA_INPUT: _coverage(
-                NodeType.DATA_INPUT,
-                _OPAQUE_CONTRACT_RULE.name,
-                opaque=True,
-                note=(
-                    "registry-driven source with an opaque column contract; lazy-scan "
-                    "formats get projection pushdown from downstream selects inside "
-                    "the polars plan, eager formats read full width (bounded profiles "
-                    "refuse them before parse)"
-                ),
-            ),
             NodeType.DATA_OUTPUT: _coverage(NodeType.DATA_OUTPUT, _GENERIC_CONTRACT_RULE_NAME),
             NodeType.BANDING: _coverage(NodeType.BANDING, _GENERIC_CONTRACT_RULE_NAME),
             NodeType.RATING_STEP: _coverage(NodeType.RATING_STEP, _GENERIC_CONTRACT_RULE_NAME),
             NodeType.OUTPUT: _coverage(NodeType.OUTPUT, _GENERIC_CONTRACT_RULE_NAME),
-            NodeType.DATA_SINK: _coverage(NodeType.DATA_SINK, _GENERIC_CONTRACT_RULE_NAME),
             NodeType.EXPLORE: _coverage(NodeType.EXPLORE, _GENERIC_CONTRACT_RULE_NAME),
             NodeType.MODELLING: _coverage(NodeType.MODELLING, _GENERIC_CONTRACT_RULE_NAME),
             NodeType.SCENARIO_EXPANDER: _coverage(

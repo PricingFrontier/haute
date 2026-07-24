@@ -47,12 +47,12 @@ function pipelineResponse(): string {
     nodes: [
       {
         id: "raw_rows",
-        type: "dataSource",
+        type: "dataInput",
         position: { x: 0, y: 0 },
         data: {
           label: "raw_rows",
           description: "",
-          nodeType: "dataSource",
+          nodeType: "dataInput",
           config: {},
         },
       },

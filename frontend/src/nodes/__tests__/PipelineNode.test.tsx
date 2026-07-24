@@ -139,7 +139,7 @@ function internalNode(
 function edgeJoinGeometry(joinSourceY: number, edgeJoinY = 100) {
   return {
     internalNodes: [
-      internalNode("join-source", joinSourceY, NODE_TYPES.DATA_SOURCE, 40),
+      internalNode("join-source", joinSourceY, NODE_TYPES.DATA_INPUT, 40),
       internalNode("test-node", edgeJoinY, NODE_TYPES.EDGE_JOIN, 34),
     ],
     edges: [
@@ -223,10 +223,10 @@ describe("PipelineNode", () => {
     expect(screen.getByText(nodeTypeLabels[NODE_TYPES.POLARS])).toBeInTheDocument()
   })
 
-  it("renders a dataSource node", () => {
-    renderNode({ label: "Load CSV", nodeType: NODE_TYPES.DATA_SOURCE })
+  it("renders a dataInput node", () => {
+    renderNode({ label: "Load CSV", nodeType: NODE_TYPES.DATA_INPUT })
     expect(screen.getByText("Load CSV")).toBeInTheDocument()
-    expect(screen.getByText(nodeTypeLabels[NODE_TYPES.DATA_SOURCE])).toBeInTheDocument()
+    expect(screen.getByText(nodeTypeLabels[NODE_TYPES.DATA_INPUT])).toBeInTheDocument()
   })
 
   it("renders an apiInput node with API badge", () => {
@@ -458,10 +458,10 @@ describe("PipelineNode", () => {
     expect(screen.getByText(nodeTypeLabels[NODE_TYPES.OUTPUT])).toBeInTheDocument()
   })
 
-  it("renders a dataSink node", () => {
-    renderNode({ label: "Write Parquet", nodeType: NODE_TYPES.DATA_SINK })
+  it("renders a dataOutput node", () => {
+    renderNode({ label: "Write Parquet", nodeType: NODE_TYPES.DATA_OUTPUT })
     expect(screen.getByText("Write Parquet")).toBeInTheDocument()
-    expect(screen.getByText(nodeTypeLabels[NODE_TYPES.DATA_SINK])).toBeInTheDocument()
+    expect(screen.getByText(nodeTypeLabels[NODE_TYPES.DATA_OUTPUT])).toBeInTheDocument()
   })
 
   it("renders an explore node", () => {
@@ -497,7 +497,7 @@ describe("PipelineNode", () => {
   // ── Handles (source/target) ────────────────────────────────────────
 
   it("source-only types do NOT render a target handle", () => {
-    const { container } = renderNode({ label: "Source", nodeType: NODE_TYPES.DATA_SOURCE })
+    const { container } = renderNode({ label: "Source", nodeType: NODE_TYPES.DATA_INPUT })
     // ReactFlow renders handles as div with class containing "target" or "source"
     const targetHandle = container.querySelector(".react-flow__handle-left")
     expect(targetHandle).toBeNull()

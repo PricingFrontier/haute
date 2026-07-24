@@ -30,11 +30,11 @@ class TestLintEdgeCases:
             nodes=[
                 GraphNode(
                     id="a",
-                    data=NodeData(label="a", nodeType="dataSource", config={"path": "d.parquet"}),
+                    data=NodeData(label="a", nodeType="dataInput", config={"path": "d.parquet"}),
                 ),
                 GraphNode(
                     id="b",
-                    data=NodeData(label="b", nodeType="dataSource", config={"path": "d.parquet"}),
+                    data=NodeData(label="b", nodeType="dataInput", config={"path": "d.parquet"}),
                 ),
             ],
             edges=[],
@@ -55,7 +55,7 @@ class TestLintEdgeCases:
                     id="a",
                     data=NodeData(
                         label="a",
-                        nodeType="dataSource",
+                        nodeType="dataInput",
                         config={"parseError": "bad syntax"},
                     ),
                 ),
@@ -78,7 +78,7 @@ class TestLintEdgeCases:
         """Edges pointing to non-existent nodes should be flagged."""
         graph = PipelineGraph(
             nodes=[
-                GraphNode(id="a", data=NodeData(label="a", nodeType="dataSource", config={})),
+                GraphNode(id="a", data=NodeData(label="a", nodeType="dataInput", config={})),
             ],
             edges=[GraphEdge(id="e1", source="a", target="nonexistent")],
         )

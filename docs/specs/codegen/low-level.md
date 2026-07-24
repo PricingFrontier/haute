@@ -357,3 +357,24 @@ writing a failing test before the fix.
 > the live `Pipeline.run()` API. That API only records `pipeline.submodel(...)` paths, so runtime
 > equivalence is intentionally established after static parse/flatten, not through live module
 > registration.
+
+## Approved change contract — 0.7.0 data I/O code generation
+
+Remaining code-generation improvement work is tracked in the
+[pipeline authoring roadmap](../../roadmap/pipeline-authoring.md).
+
+- Delete `_gen_data_source`, `_gen_data_sink`, `_SINK_CSV`, `_SINK_PARQUET`, legacy source/sink
+  decorator templates, and their registrations from `src/haute/_codegen_builders.py`.
+- Extend `_gen_data_input` so generated code loads the sidecar through the unified
+  graph/provider helper, assigns its `LazyFrame` to `df`, inserts the sanitised user `code`, and
+  returns `df`. Extend `_code_extraction.py` with one canonical `data_input` scaffold matcher;
+  remove the legacy data-source alias after all retained call sites use it.
+- Keep `_gen_data_output` a config-sidecar pass-through function. Explicit write execution uses
+  the executor/registry rather than embedding a write in the generated body, preventing imports
+  and `Pipeline.run()` from causing persistence.
+- `NODE_REGISTRY` validation checks one exec/codegen pair for every retained `NodeType`; removed
+  enum values cannot be dispatched. `collect_node_configs` writes only retained I/O folders.
+- Builder, extraction, injection, split-module, executable-equivalence, property-round-trip, and
+  parser fixtures are rewritten around the retained nodes. Add tests for cache-mode fields,
+  branch-specific configs, code-before-return placement, path anchoring, multiple I/O nodes, and
+  an exact search assertion that generated source never contains removed decorators.

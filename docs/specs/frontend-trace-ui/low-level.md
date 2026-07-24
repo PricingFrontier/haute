@@ -98,3 +98,19 @@ The browser-level preview-to-trace path is covered by
 trace-request-to-render latency for representative linear and multi-frame traces. The
 trace-specific component and helper suites do not provide browser coverage for every specialised
 detail renderer.
+
+## Approved change contract — 0.7.0 data-input trace presentation
+
+Remaining trace-UI improvement work is tracked in the
+[tracing and explainability roadmap](../../roadmap/tracing-explainability.md).
+
+- Change `traceGrouping.isSourceLikeTraceStep` to accept `dataInput`/`apiInput` (and only
+  backend-defined non-node source markers where still valid) and remove `dataSource`.
+- Extend guarded trace provenance types/rendering/export with safe provider, format, cache mode,
+  generation, and `fresh | stale | unknown` fields. Unknown additive fields remain inspectable,
+  but malformed known fields fail the guard rather than being coerced.
+- `useTracing` includes the backend source/generation identity in semantic request state so a
+  refresh aborts/clears stale trace presentation. No frontend cache-status lookup is used to
+  reinterpret a completed trace.
+- Update grouping, panel, export, hook-race, redaction, and browser tests for retained inputs and
+  assert no legacy node literal remains in production trace code.

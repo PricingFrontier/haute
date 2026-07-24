@@ -40,7 +40,7 @@
 | `frontend/src/hooks/useJobPolling.ts` | Generic background-job poller: exponential backoff, 24h max lifetime, per-job state via refs, consecutive-failure toast. |
 | `frontend/src/hooks/useBackgroundJobs.ts` | Wires `useJobPolling` to the optimiser/train/explore endpoints and `useNodeResultsStore` actions; mounted once in `App.tsx`. |
 | `frontend/src/hooks/useMlflowBrowser.ts` | Lazy-loads MLflow experiments/runs/models/versions for dropdown UIs; shared by `ModelScoreEditor` and `OptimiserApplyEditor` (node-editors). |
-| `frontend/src/hooks/useSchemaFetch.ts` | Fetch-schema-on-mount-and-on-path-change pattern shared by `DataSourceEditor`/`ApiInputEditor` (node-editors). |
+| `frontend/src/hooks/useSchemaFetch.ts` | Fetch-schema-on-mount-and-on-path-change pattern used by `ApiInputEditor` (node-editors). |
 | `frontend/src/hooks/useStaleConfigEstimate.ts` | Generic "estimate endpoint keyed by config hash + source + structural version, refetch when any of the three changes" pattern, built on `hashConfig`. Takes a required `context: {source, structuralVersion}` argument alongside the cached result. |
 | File | Responsibility |
 | --- | --- |
@@ -403,7 +403,8 @@ type-checking).
 
 ## Polars backend contracts (0.6.0)
 
-See [the remediation plan](../../trip/plans/F_0.6.0_polars-backend-remediation.plan.md).
+Remaining shared-frontend improvement work is tracked in the
+[frontend canvas roadmap](../../roadmap/frontend-canvas.md).
 The `api/` and `types/guards.ts` boundary will define one execution-strategy type and parser.
 Version 1 requires integer `schema_version=1`, `status`, `strategy`, `profile`, `boundedness`
 (`bounded|unbounded|unknown`), `reason_code`, `detail_state`
@@ -451,3 +452,13 @@ and named fields for accessible display, including `trace_correlation_unsupporte
 `node_id`, ordered `key_columns`/`dtypes` arrays capped at 16, and `reason_code`. The group-by
 error additionally retains `remediation` and nullable `estimated_peak_bytes`/
 `headroom_bytes`.
+
+## Approved change contract — 0.7.0 data I/O client contracts
+
+Remaining shared-frontend improvement work is tracked in the
+[frontend canvas roadmap](../../roadmap/frontend-canvas.md).
+Update `frontend/src/api/types.ts`, `client.ts`, and `types/guards.ts` with versioned capability,
+input-cache job/status, and output-write models; delete `fetchIoFormats` and legacy Databricks
+cache/sink clients. The settings/cache stores key remote work by safe identity digest and job id,
+not table spelling. Guard tests cover every union leg, order retention, unknown versions,
+readiness/freshness separation, error/redaction fields, and malformed payload rejection.

@@ -20,7 +20,7 @@ function traceFixture(): TraceResult {
       {
         node_id: "source",
         node_name: "Source",
-        node_type: "dataSource",
+        node_type: "dataInput",
         topological_rank: 0,
         schema_diff: {
           columns_added: ["base"],

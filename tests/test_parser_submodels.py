@@ -194,7 +194,7 @@ def _make_parent_graph() -> PipelineGraph:
     """Build a simple parent graph with 2 nodes."""
     n1 = GraphNode(
         id="load",
-        data=NodeData(label="load", nodeType="dataSource", config={"path": "data.csv"}),
+        data=NodeData(label="load", nodeType="dataInput", config={"path": "data.csv"}),
     )
     n2 = GraphNode(
         id="output",
@@ -432,7 +432,7 @@ class TestMergeSubmodelsCrossBoundaryEdges:
         """
         n1 = GraphNode(
             id="load",
-            data=NodeData(label="load", nodeType="dataSource", config={"path": "data.csv"}),
+            data=NodeData(label="load", nodeType="dataInput", config={"path": "data.csv"}),
         )
         n2 = GraphNode(
             id="output",
@@ -469,7 +469,7 @@ class TestMergeSubmodelsCrossBoundaryEdges:
         """
         n1 = GraphNode(
             id="load",
-            data=NodeData(label="load", nodeType="dataSource", config={"path": "data.csv"}),
+            data=NodeData(label="load", nodeType="dataInput", config={"path": "data.csv"}),
         )
         n2 = GraphNode(
             id="output",

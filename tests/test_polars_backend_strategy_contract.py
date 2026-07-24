@@ -34,7 +34,7 @@ from haute.schemas import (
     TrainingFeatureSelectionDiagnosticPayload,
 )
 from haute.trace import execute_trace
-from tests.conftest import make_edge, make_graph
+from tests.conftest import make_edge, make_file_input_config, make_graph
 
 _STATUS_BY_STRATEGY = {
     ExecutionStrategy.PROJECTED: ExecutionStrategyStatus.PROJECTED,
@@ -298,8 +298,8 @@ def _group_by_graph():
                     "id": "source",
                     "data": {
                         "label": "source",
-                        "nodeType": "dataSource",
-                        "config": {"path": "missing.parquet"},
+                        "nodeType": "dataInput",
+                        "config": make_file_input_config("missing.parquet"),
                     },
                 },
                 {
@@ -349,8 +349,8 @@ def _opaque_fan_out_graph():
                     "id": "source",
                     "data": {
                         "label": "source",
-                        "nodeType": "dataSource",
-                        "config": {"path": "missing.parquet"},
+                        "nodeType": "dataInput",
+                        "config": make_file_input_config("missing.parquet"),
                     },
                 },
                 {
@@ -716,8 +716,8 @@ def _single_source_graph(path: Path):
                     "id": "source",
                     "data": {
                         "label": "source",
-                        "nodeType": "dataSource",
-                        "config": {"path": str(path)},
+                        "nodeType": "dataInput",
+                        "config": make_file_input_config(path),
                     },
                 }
             ],

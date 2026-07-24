@@ -1,7 +1,7 @@
 """Tests for bugfixes: streaming chunk restore, source_file propagation, and config loading.
 
 Covers:
-  - Streaming chunk size restore in executor.execute_sink (ValueError on 0)
+  - Streaming chunk size restore in executor.write_data_output (ValueError on 0)
   - Streaming chunk size restore in optimiser service (ValueError on 0)
   - _ensure_source_file fills source_file from haute.toml for preview/trace/sink
   - _compile_preamble uses pipeline_dir to resolve utility imports
@@ -19,6 +19,7 @@ import pytest
 
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute.executor import PreambleError, _compile_preamble
+from tests.conftest import make_file_input_config, make_file_output_config
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -32,7 +33,7 @@ def _e(src: str, tgt: str) -> GraphEdge:
 def _source_node(nid: str, path: str = "data.parquet") -> GraphNode:
     return GraphNode(
         id=nid,
-        data=NodeData(label=nid, nodeType=NodeType.DATA_SOURCE, config={"path": path}),
+        data=NodeData(label=nid, nodeType=NodeType.DATA_INPUT, config=make_file_input_config(path)),
     )
 
 
@@ -41,8 +42,8 @@ def _sink_node(nid: str, path: str = "", fmt: str = "parquet") -> GraphNode:
         id=nid,
         data=NodeData(
             label=nid,
-            nodeType=NodeType.DATA_SINK,
-            config={"path": path, "format": fmt},
+            nodeType=NodeType.DATA_OUTPUT,
+            config=make_file_output_config(path, format_name=fmt),
         ),
     )
 
@@ -74,17 +75,17 @@ def _make_graph(
 
 
 # ---------------------------------------------------------------------------
-# Streaming chunk size restore — executor.execute_sink
+# Streaming chunk size restore — executor.write_data_output
 # ---------------------------------------------------------------------------
 
 
 class TestStreamingChunkRestoreExecutor:
-    """Verify execute_sink doesn't crash when restoring streaming chunk size."""
+    """Verify write_data_output doesn't crash when restoring streaming chunk size."""
 
     def test_sink_succeeds_when_no_prior_chunk_size(self, tmp_path):
         """When POLARS_STREAMING_CHUNK_SIZE was never set, the finally block
         must not call set_streaming_chunk_size(0) — that raises ValueError."""
-        from haute.executor import execute_sink
+        from haute.executor import write_data_output
 
         out_path = str(tmp_path / "output.parquet")
         graph = _make_graph(
@@ -102,7 +103,7 @@ class TestStreamingChunkRestoreExecutor:
             "haute.executor._execute_lazy",
             return_value=(mock_outputs, ["s", "sink"], {}, {}),
         ):
-            result = execute_sink(graph, "sink")
+            result = write_data_output(graph, "sink")
 
         assert result.status == "ok"
         assert result.row_count == 3
@@ -119,7 +120,7 @@ class TestStreamingChunkRestoreExecutor:
 
     def test_sink_succeeds_when_prior_chunk_size_exists(self, tmp_path):
         """When a prior chunk size was explicitly set, it should be restored."""
-        from haute.executor import execute_sink
+        from haute.executor import write_data_output
 
         out_path = str(tmp_path / "output.parquet")
         graph = _make_graph(
@@ -137,7 +138,7 @@ class TestStreamingChunkRestoreExecutor:
             "haute.executor._execute_lazy",
             return_value=(mock_outputs, ["s", "sink"], {}, {}),
         ):
-            result = execute_sink(graph, "sink")
+            result = write_data_output(graph, "sink")
 
         assert result.status == "ok"
 
@@ -378,23 +379,22 @@ class TestPreamblePipelineDir:
 
 
 # ---------------------------------------------------------------------------
-# Data source config — empty path produces empty frame
+# Data Input config — empty path produces empty frame
 # ---------------------------------------------------------------------------
 
 
-class TestDataSourceConfigPath:
+class TestDataInputConfigPath:
     """Verify that _build_node_fn for data sources uses config.path correctly."""
 
-    def test_empty_config_path_produces_empty_frame(self):
-        """A data source with empty config path should produce an empty LazyFrame,
-        which is the root cause of 'unable to find column quote_id' errors."""
+    def test_unconfigured_preview_source_produces_empty_frame(self):
+        """A freshly dropped editor node may preview empty before its first save."""
         from haute.executor import _build_node_fn
 
         node = GraphNode(
             id="src",
             data=NodeData(
                 label="src",
-                nodeType=NodeType.DATA_SOURCE,
+                nodeType=NodeType.DATA_INPUT,
                 config={"path": ""},
             ),
         )
@@ -416,8 +416,8 @@ class TestDataSourceConfigPath:
             id="src",
             data=NodeData(
                 label="src",
-                nodeType=NodeType.DATA_SOURCE,
-                config={"path": str(path)},
+                nodeType=NodeType.DATA_INPUT,
+                config=make_file_input_config(path),
             ),
         )
         _, fn, is_source = _build_node_fn(node, source_names=[])
@@ -445,11 +445,11 @@ class TestDataSourceConfigPath:
             id="src",
             data=NodeData(
                 label="src",
-                nodeType=NodeType.DATA_SOURCE,
-                config={
-                    "path": str(tmp_path / "dummy.parquet"),
-                    "selected_columns": ["policy_id", "quote_id"],
-                },
+                nodeType=NodeType.DATA_INPUT,
+                config=make_file_input_config(
+                    tmp_path / "dummy.parquet",
+                    selected_columns=["policy_id", "quote_id"],
+                ),
             ),
         )
         config = node.data.config
@@ -610,8 +610,8 @@ class TestPreviewRouteSourceFile:
                     id="quotes",
                     data=NodeData(
                         label="quotes",
-                        nodeType=NodeType.DATA_SOURCE,
-                        config={"path": "data/quotes.parquet"},
+                        nodeType=NodeType.DATA_INPUT,
+                        config=make_file_input_config("data/quotes.parquet"),
                     ),
                 ),
             ],
@@ -818,7 +818,7 @@ class TestParserConfigLoadWarning:
         (pipeline_dir / "main.py").write_text(
             "import haute\nimport polars as pl\n\n"
             'pipeline = haute.Pipeline("test")\n\n'
-            '@pipeline.data_source(config="config/data_source/missing.json")\n'
+            '@pipeline.data_input(config="config/data_input/missing.json")\n'
             "def missing() -> pl.LazyFrame:\n"
             '    return pl.scan_parquet("")\n'
         )
@@ -834,13 +834,16 @@ class TestParserConfigLoadWarning:
         monkeypatch.chdir(tmp_path)
         pipeline_dir = tmp_path / "rating"
         pipeline_dir.mkdir()
-        config_dir = pipeline_dir / "config" / "data_source"
+        config_dir = pipeline_dir / "config" / "data_input"
         config_dir.mkdir(parents=True)
-        (config_dir / "src.json").write_text('{"path": "d.parquet"}')
+        (config_dir / "src.json").write_text(
+            '{"inputType":"file","format":"parquet","mode":"scan",'
+            '"cacheMode":"direct","path":"d.parquet","arguments":{}}'
+        )
         (pipeline_dir / "main.py").write_text(
             "import haute\nimport polars as pl\n\n"
             'pipeline = haute.Pipeline("test")\n\n'
-            '@pipeline.data_source(config="config/data_source/src.json")\n'
+            '@pipeline.data_input(config="config/data_input/src.json")\n'
             "def src() -> pl.LazyFrame:\n"
             '    return pl.scan_parquet("d.parquet")\n'
         )

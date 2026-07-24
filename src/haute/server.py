@@ -60,6 +60,8 @@ from haute.routes.databricks import router as databricks_router
 from haute.routes.explore import router as explore_router
 from haute.routes.files import router as files_router
 from haute.routes.git import router as git_router
+from haute.routes.input_cache import router as input_cache_router
+from haute.routes.io_capabilities import router as io_capabilities_router
 from haute.routes.json_cache import router as json_cache_router
 from haute.routes.mlflow import router as mlflow_router
 from haute.routes.modelling import router as modelling_router
@@ -460,6 +462,8 @@ app.include_router(assistant_router)
 app.include_router(output_assemble_router)
 app.include_router(databricks_router)
 app.include_router(files_router)
+app.include_router(io_capabilities_router)
+app.include_router(input_cache_router)
 app.include_router(json_cache_router)
 app.include_router(submodel_router)
 app.include_router(explore_router)

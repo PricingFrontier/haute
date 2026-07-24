@@ -296,8 +296,21 @@ therefore fail at the caller, consistent with the application's fail-loud policy
 
 ## Polars backend contracts (0.6.0)
 
-See [the remediation plan](../../trip/plans/F_0.6.0_polars-backend-remediation.plan.md).
+Remaining shared-frontend improvement work is tracked in the
+[frontend canvas roadmap](../../roadmap/frontend-canvas.md).
 Shared frontend infrastructure owns the typed API boundary for execution-strategy results. Its
 runtime guard accepts known status fields while retaining safe representations of unknown future
 fields, truncation and unavailable values. Feature-specific panels consume that single guarded
 contract; they must not independently parse or normalise backend strategy payloads.
+
+## Approved change contract — 0.7.0 data I/O client contracts
+
+Remaining shared-frontend improvement work is tracked in the
+[frontend canvas roadmap](../../roadmap/frontend-canvas.md).
+Shared frontend infrastructure owns the versioned guards, clients, and stores for
+`/api/io-capabilities`, input-cache jobs/status, and explicit output writes. Capability order and
+unsupported legs are preserved exactly; unknown versions or malformed discriminants become a
+visible unavailable/error state rather than guessed defaults. Cache readiness, freshness, and
+job progress are separate typed values, and all payloads are checked for the absence of secret
+fields before feature panels consume them. Removed format/sink/provider-cache endpoints and
+legacy node types have no client compatibility wrappers.

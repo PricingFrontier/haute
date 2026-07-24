@@ -22,11 +22,22 @@ def _project_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.mark.parametrize(
     "node_type",
-    [NodeType.DATA_SOURCE, NodeType.API_INPUT, NodeType.EXTERNAL_FILE],
+    [NodeType.DATA_INPUT, NodeType.API_INPUT, NodeType.EXTERNAL_FILE],
 )
 def test_validate_runtime_input_paths_rejects_project_escape_for_file_backed_nodes(
     node_type: NodeType,
 ) -> None:
+    config: dict[str, object] = {"path": "../escape.parquet"}
+    if node_type == NodeType.DATA_INPUT:
+        config.update(
+            {
+                "inputType": "file",
+                "format": "parquet",
+                "mode": "scan",
+                "cacheMode": "direct",
+                "arguments": {},
+            }
+        )
     graph = PipelineGraph(
         nodes=[
             GraphNode(
@@ -34,7 +45,7 @@ def test_validate_runtime_input_paths_rejects_project_escape_for_file_backed_nod
                 data=NodeData(
                     label="n1",
                     nodeType=node_type,
-                    config={"path": "../escape.parquet"},
+                    config=config,
                 ),
             )
         ],
@@ -81,7 +92,7 @@ def test_validate_runtime_input_paths_rejects_model_score_escape(
 
     The executor deliberately does not enforce the project root for these
     fields, relying on this route guard to gate route-driven flows. A path that
-    escapes the project root must be rejected here, exactly like a dataSource
+    escapes the project root must be rejected here, exactly like a dataInput
     ``path``.
     """
     graph = PipelineGraph(
@@ -124,8 +135,15 @@ def _config_node(node_id: str, label: str) -> GraphNode:
         id=node_id,
         data=NodeData(
             label=label,
-            nodeType=NodeType.DATA_SOURCE,
-            config={"path": f"{node_id}.csv"},
+            nodeType=NodeType.DATA_INPUT,
+            config={
+                "inputType": "file",
+                "format": "csv",
+                "mode": "scan",
+                "cacheMode": "direct",
+                "path": f"{node_id}.csv",
+                "arguments": {},
+            },
         ),
     )
 
@@ -145,8 +163,8 @@ def test_case_only_label_collision_rejected_before_any_config_write(
 
     assert exc_info.value.status_code == 400
     assert "Duplicate config sidecar path" in exc_info.value.detail
-    assert "config/data_source/Foo.json" in exc_info.value.detail
-    assert "config/data_source/foo.json" in exc_info.value.detail
+    assert "config/data_input/Foo.json" in exc_info.value.detail
+    assert "config/data_input/foo.json" in exc_info.value.detail
     # Rejected before any write: neither casing reached the disk.
     assert not (tmp_path / "config").exists()
 
@@ -183,8 +201,8 @@ def test_distinct_labels_still_write_one_sidecar_each(tmp_path: Path) -> None:
 
     svc._write_config_files(graph)
 
-    assert (tmp_path / "config" / "data_source" / "Foo.json").is_file()
-    assert (tmp_path / "config" / "data_source" / "Bar.json").is_file()
+    assert (tmp_path / "config" / "data_input" / "Foo.json").is_file()
+    assert (tmp_path / "config" / "data_input" / "Bar.json").is_file()
 
 
 # ---------------------------------------------------------------------------
@@ -210,10 +228,10 @@ def test_case_only_rename_survives_stale_cleanup(tmp_path: Path) -> None:
     config at the moment it was saved.
     """
     svc = SavePipelineService(tmp_path)
-    sidecar_dir = tmp_path / "config" / "data_source"
+    sidecar_dir = tmp_path / "config" / "data_input"
     sidecar_dir.mkdir(parents=True)
     (sidecar_dir / "Foo.json").write_text('{"path": "old.csv"}', encoding="utf-8")
-    svc._prev_config_files = {"config/data_source/Foo.json": '{"path": "old.csv"}'}
+    svc._prev_config_files = {"config/data_input/Foo.json": '{"path": "old.csv"}'}
     graph = PipelineGraph(nodes=[_config_node("a", "FOO")], edges=[])
 
     svc._write_config_files(graph)
@@ -228,10 +246,10 @@ def test_case_only_rename_survives_stale_cleanup(tmp_path: Path) -> None:
 def test_genuine_rename_still_removes_stale_sidecar(tmp_path: Path) -> None:
     """The casefold exclusion must not stop real stale cleanup."""
     svc = SavePipelineService(tmp_path)
-    sidecar_dir = tmp_path / "config" / "data_source"
+    sidecar_dir = tmp_path / "config" / "data_input"
     sidecar_dir.mkdir(parents=True)
     (sidecar_dir / "Foo.json").write_text('{"path": "old.csv"}', encoding="utf-8")
-    svc._prev_config_files = {"config/data_source/Foo.json": '{"path": "old.csv"}'}
+    svc._prev_config_files = {"config/data_input/Foo.json": '{"path": "old.csv"}'}
     graph = PipelineGraph(nodes=[_config_node("a", "Bar")], edges=[])
 
     svc._write_config_files(graph)
@@ -298,7 +316,7 @@ def test_reserved_device_label_rejected_before_any_config_write(
 
     assert exc_info.value.status_code == 400
     assert "reserved device name on Windows" in exc_info.value.detail
-    assert f"config/data_source/{label}.json" in exc_info.value.detail
+    assert f"config/data_input/{label}.json" in exc_info.value.detail
     # Rejected before any write: nothing reached the disk.
     assert not (tmp_path / "config").exists()
 
@@ -331,7 +349,7 @@ def test_near_reserved_labels_still_save(tmp_path: Path, label: str) -> None:
 
     svc._write_config_files(graph)
 
-    assert (tmp_path / "config" / "data_source" / f"{label}.json").is_file()
+    assert (tmp_path / "config" / "data_input" / f"{label}.json").is_file()
 
 
 def test_codegen_reserved_module_filename_rejected_before_any_write(
@@ -425,11 +443,11 @@ def test_case_only_rename_single_surviving_inode_holds_new_bytes(
     its OLD bytes — the documented Linux residue trade-off.
     """
     svc = SavePipelineService(tmp_path)
-    sidecar_dir = tmp_path / "config" / "data_source"
+    sidecar_dir = tmp_path / "config" / "data_input"
     sidecar_dir.mkdir(parents=True)
     old = sidecar_dir / "Foo.json"
     old.write_text('{"path": "old.csv"}', encoding="utf-8")
-    svc._prev_config_files = {"config/data_source/Foo.json": '{"path": "old.csv"}'}
+    svc._prev_config_files = {"config/data_input/Foo.json": '{"path": "old.csv"}'}
     graph = PipelineGraph(nodes=[_config_node("a", "FOO")], edges=[])
 
     svc._write_config_files(graph)
@@ -528,7 +546,7 @@ def test_genuine_module_delete_still_removes_the_file(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 # NFC/NFD: no normalization, pinned.
 #
-# Non-sanitized user paths (dataSource/apiInput/externalFile ``path`` config)
+# Non-sanitized user paths (dataInput/apiInput/externalFile ``path`` config)
 # are handed to the filesystem exactly as spelled — haute applies NO Unicode
 # normalization (ruled 2026-07-09; the case-ambiguity audit in
 # haute._path_case_audit is the advisory companion). On the normalizing

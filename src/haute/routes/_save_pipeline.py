@@ -115,6 +115,7 @@ class SavePipelineService:
         graph = body.graph
 
         self._validate_singletons(graph)
+        self._validate_data_io_configs(graph)
         self._validate_unique_sanitized_names(graph)
         self._validate_no_load_errors(graph)
         py_path = self._resolve_source_file(body.source_file)
@@ -280,6 +281,27 @@ class SavePipelineService:
                     status_code=400,
                     detail=f"Only one {label} node is allowed per pipeline (found {count}).",
                 )
+
+    @staticmethod
+    def _validate_data_io_configs(graph: PipelineGraph) -> None:
+        """Reject invalid provider branches before generating or writing files."""
+        from haute._config_validation import validate_node_config
+
+        graphs = [graph, *SavePipelineService._iter_embedded_submodel_graphs(graph)]
+        for scoped_graph in graphs:
+            for node in scoped_graph.nodes:
+                if node.data.nodeType not in {NodeType.DATA_INPUT, NodeType.DATA_OUTPUT}:
+                    continue
+                try:
+                    validate_node_config(node.data.nodeType, node.data.config)
+                except ValueError as exc:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            f"Invalid {node.data.nodeType.value} config for "
+                            f"node {node.data.label!r}: {exc}"
+                        ),
+                    ) from exc
 
     @staticmethod
     def _validate_unique_sanitized_names(graph: PipelineGraph) -> None:

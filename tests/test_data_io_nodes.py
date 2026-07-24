@@ -1,6 +1,6 @@
 """Node-level tests for the dataInput / dataOutput node types.
 
-Covers the executor path (execute_sink dispatch, preview empty-source
+Covers the executor path (write_data_output dispatch, preview empty-source
 behaviour), the codegen → parse round trip through the config sidecar, and
 sidecar persistence key filtering — the change-class obligations for a new
 node type (schema-mapping round-trips; struct capability end to end).
@@ -9,21 +9,25 @@ node type (schema-mapping round-trips; struct capability end to end).
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import polars as pl
 import pytest
 from polars.testing import assert_frame_equal
 
+import haute.executor as executor_module
 from haute._builders import NodeBuildContext
 from haute._config_io import (
     NODE_TYPE_TO_FOLDER,
     config_path_for_node,
     load_node_config,
 )
+from haute._execution_context import ExecutionProfile
 from haute._polars_io_registry import PolarsIoConfigError
 from haute._registry import NODE_REGISTRY, ensure_registry_ready
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
-from haute.executor import execute_sink, resolve_data_output_path
+from haute.errors import SchemaMismatchError
+from haute.executor import resolve_data_output_path, write_data_output
 
 ensure_registry_ready()
 
@@ -53,7 +57,7 @@ def struct_frame() -> pl.DataFrame:
 
 
 class TestExecuteSinkDataOutput:
-    """execute_sink dispatches dataOutput nodes through the format registry."""
+    """write_data_output dispatches dataOutput nodes through the format registry."""
 
     def test_data_input_to_data_output_ndjson_round_trip(self, haute_scratch, struct_frame) -> None:
         src_path = haute_scratch / "in.parquet"
@@ -62,12 +66,27 @@ class TestExecuteSinkDataOutput:
 
         graph = PipelineGraph(
             nodes=[
-                _data_input_node("din", {"format": "parquet", "path": str(src_path)}),
-                _data_output_node("dout", {"format": "ndjson", "path": str(out_path)}),
+                _data_input_node(
+                    "din",
+                    {
+                        "inputType": "file",
+                        "format": "parquet",
+                        "cacheMode": "direct",
+                        "path": str(src_path),
+                    },
+                ),
+                _data_output_node(
+                    "dout",
+                    {
+                        "outputType": "file",
+                        "format": "ndjson",
+                        "path": str(out_path),
+                    },
+                ),
             ],
             edges=[_edge("din", "dout")],
         )
-        result = execute_sink(graph, "dout")
+        result = write_data_output(graph, "dout")
 
         assert result.status == "ok"
         assert result.row_count == 3  # streaming sink → re-scanned via scan_ndjson
@@ -85,14 +104,28 @@ class TestExecuteSinkDataOutput:
 
         graph = PipelineGraph(
             nodes=[
-                _data_input_node("din", {"format": "parquet", "path": str(src_path)}),
+                _data_input_node(
+                    "din",
+                    {
+                        "inputType": "file",
+                        "format": "parquet",
+                        "cacheMode": "direct",
+                        "path": str(src_path),
+                    },
+                ),
                 _data_output_node(
-                    "dout", {"format": "json", "path": str(out_path), "mode": "write"}
+                    "dout",
+                    {
+                        "outputType": "file",
+                        "format": "json",
+                        "path": str(out_path),
+                        "mode": "write",
+                    },
                 ),
             ],
             edges=[_edge("din", "dout")],
         )
-        result = execute_sink(graph, "dout")
+        result = write_data_output(graph, "dout")
 
         assert result.row_count == 3  # eager write → df.height, no re-scan
         parsed = json.loads(out_path.read_text(encoding="utf-8"))
@@ -103,64 +136,382 @@ class TestExecuteSinkDataOutput:
         struct_frame.write_parquet(src_path)
         graph = PipelineGraph(
             nodes=[
-                _data_input_node("din", {"format": "parquet", "path": str(src_path)}),
-                _data_output_node("dout", {"format": "parquet"}),
+                _data_input_node(
+                    "din",
+                    {
+                        "inputType": "file",
+                        "format": "parquet",
+                        "cacheMode": "direct",
+                        "path": str(src_path),
+                    },
+                ),
+                _data_output_node(
+                    "dout",
+                    {"outputType": "file", "format": "parquet"},
+                ),
             ],
             edges=[_edge("din", "dout")],
         )
-        with pytest.raises(ValueError, match="no output path"):
-            execute_sink(graph, "dout")
+        with pytest.raises(ValueError, match="requires a non-empty 'path'"):
+            write_data_output(graph, "dout")
 
     def test_unknown_format_fails_loudly(self, haute_scratch, struct_frame) -> None:
         src_path = haute_scratch / "in.parquet"
         struct_frame.write_parquet(src_path)
         graph = PipelineGraph(
             nodes=[
-                _data_input_node("din", {"format": "parquet", "path": str(src_path)}),
-                _data_output_node("dout", {"format": "sas", "path": "x"}),
+                _data_input_node(
+                    "din",
+                    {
+                        "inputType": "file",
+                        "format": "parquet",
+                        "cacheMode": "direct",
+                        "path": str(src_path),
+                    },
+                ),
+                _data_output_node(
+                    "dout",
+                    {"outputType": "file", "format": "sas", "path": "x"},
+                ),
             ],
             edges=[_edge("din", "dout")],
         )
         with pytest.raises(PolarsIoConfigError, match="Supported formats"):
-            execute_sink(graph, "dout")
+            write_data_output(graph, "dout")
+
+    def test_non_output_node_is_rejected_before_execution(self) -> None:
+        graph = PipelineGraph(
+            nodes=[_data_input_node("din", {})],
+            edges=[],
+        )
+
+        with pytest.raises(ValueError, match="is not a Data Output"):
+            write_data_output(graph, "din")
+
+    @pytest.mark.parametrize(
+        ("selected_columns", "message"),
+        [
+            ("id", "must be a list"),
+            (["id", ""], "must contain non-empty string names"),
+        ],
+    )
+    def test_selected_columns_shape_is_validated_before_execution(
+        self,
+        haute_scratch: Path,
+        selected_columns: object,
+        message: str,
+    ) -> None:
+        graph = PipelineGraph(
+            nodes=[
+                _data_output_node(
+                    "dout",
+                    {
+                        "outputType": "file",
+                        "format": "parquet",
+                        "path": str(haute_scratch / "out.parquet"),
+                        "arguments": {},
+                        "selected_columns": selected_columns,
+                    },
+                )
+            ],
+            edges=[],
+        )
+
+        with pytest.raises(ValueError, match=message):
+            write_data_output(graph, "dout")
+
+    def test_failed_file_write_preserves_existing_target(
+        self,
+        haute_scratch,
+        monkeypatch: pytest.MonkeyPatch,
+        struct_frame,
+    ) -> None:
+        src_path = haute_scratch / "in.parquet"
+        struct_frame.write_parquet(src_path)
+        out_path = haute_scratch / "result.parquet"
+        original = b"existing-complete-output"
+        out_path.write_bytes(original)
+        graph = PipelineGraph(
+            nodes=[
+                _data_input_node(
+                    "din",
+                    {
+                        "inputType": "file",
+                        "format": "parquet",
+                        "cacheMode": "direct",
+                        "path": str(src_path),
+                    },
+                ),
+                _data_output_node(
+                    "dout",
+                    {
+                        "outputType": "file",
+                        "format": "parquet",
+                        "path": str(out_path),
+                    },
+                ),
+            ],
+            edges=[_edge("din", "dout")],
+        )
+
+        def fail_after_partial_write(_frame, _config, *, resolved_path, **_kwargs):
+            resolved_path.write_bytes(b"partial")
+            raise RuntimeError("writer failed")
+
+        monkeypatch.setattr(
+            "haute._polars_io_registry.write_polars_output",
+            fail_after_partial_write,
+        )
+        with pytest.raises(RuntimeError, match="writer failed"):
+            write_data_output(graph, "dout")
+
+        assert out_path.read_bytes() == original
+        assert list(haute_scratch.glob(".*.haute-stage-*")) == []
+
+    def test_failed_streaming_row_count_preserves_existing_target(
+        self,
+        haute_scratch,
+        monkeypatch: pytest.MonkeyPatch,
+        struct_frame,
+    ) -> None:
+        src_path = haute_scratch / "in.parquet"
+        struct_frame.write_parquet(src_path)
+        out_path = haute_scratch / "result.jsonl"
+        original = b"existing-complete-output"
+        out_path.write_bytes(original)
+        graph = PipelineGraph(
+            nodes=[
+                _data_input_node(
+                    "din",
+                    {
+                        "inputType": "file",
+                        "format": "parquet",
+                        "cacheMode": "direct",
+                        "path": str(src_path),
+                    },
+                ),
+                _data_output_node(
+                    "dout",
+                    {
+                        "outputType": "file",
+                        "format": "ndjson",
+                        "path": str(out_path),
+                    },
+                ),
+            ],
+            edges=[_edge("din", "dout")],
+        )
+
+        def fail_row_count(_path):
+            raise RuntimeError("row count failed")
+
+        monkeypatch.setattr(pl, "scan_ndjson", fail_row_count)
+        with pytest.raises(RuntimeError, match="row count failed"):
+            write_data_output(graph, "dout")
+
+        assert out_path.read_bytes() == original
+        assert list(haute_scratch.glob(".*.haute-stage-*")) == []
+
+    def test_containment_is_rechecked_before_atomic_publish(
+        self,
+        haute_scratch,
+        monkeypatch: pytest.MonkeyPatch,
+        struct_frame,
+    ) -> None:
+        src_path = haute_scratch / "in.parquet"
+        struct_frame.write_parquet(src_path)
+        out_path = haute_scratch / "result.parquet"
+        original = b"existing-complete-output"
+        out_path.write_bytes(original)
+        graph = PipelineGraph(
+            nodes=[
+                _data_input_node(
+                    "din",
+                    {
+                        "inputType": "file",
+                        "format": "parquet",
+                        "cacheMode": "direct",
+                        "path": str(src_path),
+                    },
+                ),
+                _data_output_node(
+                    "dout",
+                    {
+                        "outputType": "file",
+                        "format": "parquet",
+                        "path": str(out_path),
+                    },
+                ),
+            ],
+            edges=[_edge("din", "dout")],
+        )
+        original_validator = executor_module._validate_output_publish_paths
+        validation_count = 0
+
+        def reject_publish_after_write(final_path, staging_path, *, project_root):
+            nonlocal validation_count
+            validation_count += 1
+            if validation_count == 2:
+                raise ValueError("Data output path resolves outside the project root")
+            return original_validator(final_path, staging_path, project_root=project_root)
+
+        monkeypatch.setattr(
+            executor_module,
+            "_validate_output_publish_paths",
+            reject_publish_after_write,
+        )
+
+        with pytest.raises(ValueError, match="outside the project root"):
+            write_data_output(
+                graph,
+                "dout",
+                project_root=haute_scratch,
+            )
+
+        assert validation_count == 2
+        assert out_path.read_bytes() == original
+        assert list(haute_scratch.glob(".*.haute-stage-*")) == []
 
 
 class TestResolveDataOutputPath:
     def test_bare_filename_lands_under_outputs_with_format_extension(self) -> None:
         graph = PipelineGraph(nodes=[], edges=[])
-        resolved, display = resolve_data_output_path(graph, {"format": "ndjson", "path": "result"})
+        resolved, display = resolve_data_output_path(
+            graph,
+            {"outputType": "file", "format": "ndjson", "path": "result"},
+        )
         assert display == "outputs/result.jsonl"
         assert resolved is not None and resolved.name == "result.jsonl"
 
     def test_explicit_extension_is_never_rewritten(self) -> None:
         graph = PipelineGraph(nodes=[], edges=[])
         _resolved, display = resolve_data_output_path(
-            graph, {"format": "ndjson", "path": "out/result.ndjson"}
+            graph,
+            {"outputType": "file", "format": "ndjson", "path": "out/result.ndjson"},
         )
         assert display == "out/result.ndjson"
 
     def test_database_target_has_no_filesystem_path(self) -> None:
         graph = PipelineGraph(nodes=[], edges=[])
         resolved, display = resolve_data_output_path(
-            graph, {"format": "database", "table": "prices", "uri": "sqlite:///x.db"}
+            graph,
+            {
+                "outputType": "database",
+                "format": "database",
+                "table": "prices",
+                "uri": "sqlite:///x.db",
+            },
         )
         assert resolved is None
         assert display == "prices"
+
+    def test_raw_sqlite_database_target_cannot_escape_project_root(
+        self,
+        haute_scratch: Path,
+    ) -> None:
+        graph = PipelineGraph(nodes=[], edges=[])
+
+        with pytest.raises(ValueError, match="outside the project root"):
+            resolve_data_output_path(
+                graph,
+                {
+                    "outputType": "database",
+                    "format": "database",
+                    "table": "prices",
+                    "uri": "sqlite:///../outside.sqlite",
+                },
+                project_root=haute_scratch,
+            )
 
     def test_project_root_containment_is_enforced(self, haute_scratch) -> None:
         graph = PipelineGraph(nodes=[], edges=[])
         with pytest.raises(ValueError, match="outside the project root"):
             resolve_data_output_path(
                 graph,
-                {"format": "parquet", "path": "/somewhere/else/out.parquet"},
+                {
+                    "outputType": "file",
+                    "format": "parquet",
+                    "path": "/somewhere/else/out.parquet",
+                },
                 project_root=haute_scratch,
             )
+
+    def test_empty_file_path_is_rejected_by_low_level_resolver(self) -> None:
+        graph = PipelineGraph(nodes=[], edges=[])
+
+        with pytest.raises(ValueError, match="no output path configured"):
+            resolve_data_output_path(
+                graph,
+                {"outputType": "file", "format": "parquet", "path": ""},
+            )
+
+    def test_staging_path_must_be_a_contained_sibling(
+        self,
+        haute_scratch: Path,
+        tmp_path: Path,
+    ) -> None:
+        final_path = haute_scratch / "result.parquet"
+        outside_stage = tmp_path / "outside" / ".result.haute-stage-token.parquet"
+
+        with pytest.raises(ValueError, match="must be a sibling"):
+            executor_module._validate_output_publish_paths(
+                final_path,
+                outside_stage,
+                project_root=haute_scratch,
+            )
+
+    def test_staging_path_must_preserve_final_extension(self, tmp_path: Path) -> None:
+        final_path = tmp_path / "result.parquet"
+        wrong_extension = tmp_path / ".result.haute-stage-token.csv"
+
+        with pytest.raises(ValueError, match="preserve the final target extension"):
+            executor_module._validate_output_publish_paths(
+                final_path,
+                wrong_extension,
+                project_root=tmp_path,
+            )
+
+    def test_publish_paths_must_remain_inside_project_root(self, tmp_path: Path) -> None:
+        project_root = tmp_path / "project"
+        outside = tmp_path / "outside"
+        project_root.mkdir()
+        outside.mkdir()
+        final_path = outside / "result.parquet"
+        outside_stage = outside / ".result.haute-stage-token.parquet"
+
+        with pytest.raises(ValueError, match="outside the project root"):
+            executor_module._validate_output_publish_paths(
+                final_path,
+                outside_stage,
+                project_root=project_root,
+            )
+
+    def test_cleanup_refuses_staging_path_outside_project_root(self, tmp_path: Path) -> None:
+        project_root = tmp_path / "project"
+        outside = tmp_path / "outside"
+        project_root.mkdir()
+        outside.mkdir()
+        outside_stage = outside / ".result.haute-stage-token.parquet"
+        outside_stage.write_bytes(b"preserve")
+
+        executor_module._cleanup_output_staging_path(
+            outside_stage,
+            project_root=project_root,
+        )
+
+        assert outside_stage.read_bytes() == b"preserve"
 
 
 class TestDataInputBuilder:
     """The exec builder's preview affordances and profile plumbing."""
 
-    def _build(self, config: dict, profile: str | None = None):
+    def _build(
+        self,
+        config: dict,
+        profile: str | None = None,
+        *,
+        required_output_columns: frozenset[str] | None = None,
+    ):
         node = _data_input_node("din", config)
         ctx = NodeBuildContext(
             node=node,
@@ -172,6 +523,7 @@ class TestDataInputBuilder:
             orig_source_names=None,
             preamble_ns=None,
             source=None,
+            required_output_columns=required_output_columns,
             execution_profile=profile,
         )
         entry = NODE_REGISTRY[NodeType.DATA_INPUT]
@@ -189,22 +541,59 @@ class TestDataInputBuilder:
     def test_configured_node_reads_through_registry(self, haute_scratch, struct_frame) -> None:
         path = haute_scratch / "t.parquet"
         struct_frame.write_parquet(path)
-        fn = self._build({"format": "parquet", "path": str(path)})
+        fn = self._build(
+            {
+                "inputType": "file",
+                "format": "parquet",
+                "cacheMode": "direct",
+                "path": str(path),
+            }
+        )
         assert_frame_equal(fn().collect(), struct_frame)
 
-    def test_engine_gated_database_read_fails_actionably(self) -> None:
-        import importlib.util
+    def test_optional_polars_code_runs_after_input_resolution(
+        self, haute_scratch, struct_frame
+    ) -> None:
+        path = haute_scratch / "t.parquet"
+        struct_frame.write_parquet(path)
+        fn = self._build(
+            {
+                "inputType": "file",
+                "format": "parquet",
+                "cacheMode": "direct",
+                "path": str(path),
+                "code": "df = df.filter(pl.col('id') > 1).select('id')",
+            }
+        )
+        assert fn().collect().to_dicts() == [{"id": 2}, {"id": 3}]
 
-        if importlib.util.find_spec("connectorx") or importlib.util.find_spec(
-            "adbc_driver_manager"
-        ):
-            pytest.skip(
-                "a database read engine is installed, so the engine-absence error "
-                "path this test pins is not exercisable in this environment"
-            )
-        fn = self._build({"format": "database", "query": "select 1", "uri": "sqlite:///x.db"})
-        with pytest.raises(PolarsIoConfigError, match="install one of"):
+    def test_missing_projected_column_raises_schema_mismatch_before_polars_plan(
+        self,
+        haute_scratch,
+    ) -> None:
+        path = haute_scratch / "t.parquet"
+        pl.DataFrame({"present": [1]}).write_parquet(path)
+        fn = self._build(
+            {
+                "inputType": "file",
+                "format": "parquet",
+                "mode": "scan",
+                "cacheMode": "direct",
+                "path": str(path),
+                "arguments": {},
+            },
+            ExecutionProfile.OPTIMISER_SETUP.value,
+            required_output_columns=frozenset({"missing"}),
+        )
+
+        with pytest.raises(
+            SchemaMismatchError,
+            match="Source projection references columns missing",
+        ) as exc_info:
             fn()
+
+        assert exc_info.value.context["missing"] == ["missing"]
+        assert exc_info.value.context["available"] == ["present"]
 
 
 class TestCodegenAndParseRoundTrip:
@@ -214,20 +603,33 @@ class TestCodegenAndParseRoundTrip:
         from haute._codegen_builders import _gen_data_input
         from tests.conftest import compile_node_code
 
-        node = _data_input_node("quotes_in", {"format": "csv", "path": "data/q.csv"})
+        node = _data_input_node(
+            "quotes_in",
+            {
+                "inputType": "file",
+                "format": "csv",
+                "cacheMode": "direct",
+                "path": "data/q.csv",
+                "code": "df = df.filter(pl.col('id') > 0)",
+            },
+        )
         code = _gen_data_input(node, [])
         assert '@pipeline.data_input(config="config/data_input/quotes_in.json")' in code
-        assert "read_polars_input_from_config" in code
+        assert "resolve_data_input_from_config" in code
+        assert "df = df.filter(pl.col('id') > 0)" in code
         compile_node_code(code)
 
     def test_data_output_codegen_shape(self) -> None:
         from haute._codegen_builders import _gen_data_output
         from tests.conftest import compile_node_code
 
-        node = _data_output_node("prices_out", {"format": "ndjson", "path": "out.jsonl"})
+        node = _data_output_node(
+            "prices_out",
+            {"outputType": "file", "format": "ndjson", "path": "out.jsonl"},
+        )
         code = _gen_data_output(node, ["scored"])
         assert '@pipeline.data_output(config="config/data_output/prices_out.json")' in code
-        assert "write_polars_output_from_config" in code
+        assert "write_polars_output_from_config" not in code
         assert "return scored" in code
         compile_node_code(code)
 
@@ -236,11 +638,17 @@ class TestCodegenAndParseRoundTrip:
         from haute.parser import parse_pipeline_source
 
         din_config = {
+            "inputType": "file",
             "format": "csv",
+            "cacheMode": "direct",
             "path": "data/q.csv",
             "arguments": {"separator": ";", "schema_overrides": {"id": "int64"}},
         }
-        dout_config = {"format": "parquet", "path": "outputs/result.parquet"}
+        dout_config = {
+            "outputType": "file",
+            "format": "parquet",
+            "path": "outputs/result.parquet",
+        }
 
         graph = PipelineGraph(
             nodes=[
@@ -290,8 +698,10 @@ class TestSidecarPersistence:
         from haute._config_io import _prepare_config_for_sidecar
 
         config = {
+            "inputType": "file",
             "format": "csv",
             "mode": "scan",
+            "cacheMode": "direct",
             "path": "data/q.csv",
             "arguments": {"separator": ";"},
             "_editorOnly": {"open": True},
@@ -299,15 +709,19 @@ class TestSidecarPersistence:
         }
         prepared = _prepare_config_for_sidecar(NodeType.DATA_INPUT, config)
         assert prepared == {
+            "inputType": "file",
             "format": "csv",
             "mode": "scan",
+            "cacheMode": "direct",
             "path": "data/q.csv",
             "arguments": {"separator": ";"},
         }
 
     def test_sidecar_save_load_exact_shape(self, haute_scratch) -> None:
         config = {
+            "inputType": "inline",
             "format": "records",
+            "cacheMode": "direct",
             "records": [{"a": 1, "s": {"k": "v"}}],
             "arguments": {
                 "schema": {"a": "int64", "s": {"type": "Struct", "fields": {"k": "str"}}}

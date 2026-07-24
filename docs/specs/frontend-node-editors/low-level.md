@@ -13,8 +13,8 @@
 | `frontend/src/panels/editors/_shared.tsx` | Shared editor types, styles, file browser, schema preview and the input-source bar (chips keyed by edge id, showing each edge's input name — the code argument — with the source node named in the tooltip). |
 | `frontend/src/panels/editors/CodeEditor.tsx`, `frontend/src/panels/editors/CodeMirrorEditor.tsx`, `frontend/src/panels/editors/shared/PolarsCodePanel.tsx` | Code-editor wrappers and Polars-specific panel. |
 | `frontend/src/panels/editors/ConstantEditor.tsx`, `frontend/src/panels/editors/TransformEditor.tsx`, `frontend/src/panels/editors/EdgeJoinEditor.tsx`, `frontend/src/panels/editors/LiveSwitchEditor.tsx`, `frontend/src/panels/editors/ScenarioExpanderEditor.tsx` | Editors for scalar, transform, join, conditional-switch and scenario nodes. `EdgeJoinEditor` exposes fixed canvas-derived base/join roles, atomic swap, the seven supported join modes, mutually exclusive same-name/asymmetric key forms, and advanced Polars options. |
-| `frontend/src/panels/editors/DataSourceEditor.tsx`, `frontend/src/panels/editors/ExternalFileEditor.tsx`, `frontend/src/panels/editors/DataInputEditor.tsx`, `frontend/src/panels/editors/DataOutputEditor.tsx`, `frontend/src/panels/editors/SinkEditor.tsx` | File/database/IO source and destination configuration. |
-| `frontend/src/panels/editors/_IoFormatEditor.tsx`, `frontend/src/panels/editors/_ioFormats.ts`, `frontend/src/panels/editors/_DatabricksSelector.tsx` | Registry-driven IO arguments, cached capabilities and Databricks controls. |
+| `frontend/src/panels/editors/ExternalFileEditor.tsx`, `frontend/src/panels/editors/DataInputEditor.tsx`, `frontend/src/panels/editors/DataOutputEditor.tsx` | External-object, grouped tabular input, and grouped tabular output configuration. |
+| `frontend/src/panels/editors/_IoFormatEditor.tsx`, `frontend/src/panels/editors/_ioFormats.ts`, `frontend/src/panels/editors/_DatabricksSelector.tsx`, `frontend/src/panels/editors/_InputCacheControls.tsx` | Registry-driven IO arguments, cached capabilities, dedicated Databricks browsing, and shared input-cache lifecycle controls. |
 | `frontend/src/panels/editors/ApiInputEditor.tsx`, `frontend/src/panels/editors/apiInputSchema.ts`, `frontend/src/panels/editors/apiInputInherit.ts`, `frontend/src/panels/editors/FrameTableActions.tsx` | API-input frame/schema editing, persisted/inferred schema conversion, reconciliation and row actions. |
 | `frontend/src/panels/editors/OutputEditor.tsx`, `frontend/src/panels/editors/outputMappingSchema.ts`, `frontend/src/panels/editors/outputPathTools.ts`, `frontend/src/panels/editors/jsonpath.ts`, `frontend/src/panels/editors/pathCanonicalWarning.ts`, `frontend/src/panels/editors/JsonPreview.tsx` | Output mappings, JSON-path validation/rewrites, canonical-path hints and preview. |
 | `frontend/src/panels/editors/ColumnsTab.tsx`, `frontend/src/panels/editors/GroupedColumnsTab.tsx` | Generic flat/grouped column configuration. |
@@ -203,3 +203,44 @@ Browser coverage for authoring flows is in `frontend/e2e/data-io-nodes.spec.ts`,
 `frontend/e2e/persistence/api-input-v2-native.spec.ts`, and
 `frontend/e2e/persistence/api-input-frame-alignment.spec.ts` (downstream frame-naming chips
 alongside its canvas geometry assertions).
+
+## Approved change contract — 0.7.0 unified data I/O editors
+
+Remaining node-editor improvement work is tracked in the
+[frontend canvas roadmap](../../roadmap/frontend-canvas.md).
+
+- Delete `frontend/src/panels/editors/DataSourceEditor.tsx` and
+  `frontend/src/panels/editors/SinkEditor.tsx`, their lazy-registry entries, palette definitions,
+  tests, fixtures, icons, and type guards. `DataInputEditor.tsx` becomes the provider/group
+  orchestrator; `DataOutputEditor.tsx` receives `nodeId`/graph context and owns the explicit
+  write action formerly isolated in `SinkEditor`.
+- Replace the format-only payload helper with a guarded, cached
+  `/api/io-capabilities` client. Types represent ordered groups, provider fields, per-direction
+  formats/modes/arguments/engines, direct-batching, snapshot-build boundedness, native
+  sink/eager-writer class, and publication modes. Rendering derives every option from that
+  payload. `_IoFormatEditor.tsx` remains a shared registry-backed body but accepts one selected
+  group and direction rather than flattening all formats.
+- Add focused provider sections for file path browsing, database connection/query, lakehouse
+  locator/options, Databricks selectors, and inline records. Add one shared source-snapshot
+  component backed by the guarded input-cache API. Databricks reuses that component and retains
+  `_DatabricksSelector.tsx` only for browsing.
+- Add an atomic `replaceConfig(nextConfig)` editor callback alongside field updates. Input-type
+  changes construct a fresh valid branch with only safe common presentation fields retained;
+  they commit once and therefore produce one undo item. Capability/group/format inconsistency is
+  rendered as an error, not repaired in an effect.
+- `DataInputEditor` always mounts the shared Polars code panel beneath provider/cache controls.
+  `DataOutputEditor` never mounts it. The output Write action sends the unsaved current graph,
+  node id, active execution source, and streaming settings through the existing explicit sink
+  request, and surfaces cancellation/admission/publication diagnostics.
+- The one-to-one JSON/UI invariant remains: every key valid for the active branch has an editable
+  or visible read-only representation; an invalid/inactive key is shown as a configuration
+  error. The old generic “unrecognised keys, saved anyway” behaviour does not legitimise keys
+  from another input branch.
+
+Unit/component suites cover API guard rejection, ordered grouping, each field kind, dependency
+messages, direct/snapshot constraints, all cache states, type-switch atomicity/undo, Polars code
+round-trip, output direction filtering, write gating/status, and no output code panel.
+`frontend/e2e/data-io-nodes.spec.ts` is rewritten for the hard-cutover graph and expanded with
+provider grouping, snapshot refresh, cached offline execution, multiple format legs, atomic file
+write, and removed-node absence. The legacy node-continuity migration suite is deleted rather
+than adapted.

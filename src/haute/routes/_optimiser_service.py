@@ -81,7 +81,6 @@ from haute.execution import (
     execute_lazy_graph,
     plan_execution_strategy,
     ratebook_factor_required_columns,
-    source_scan_projection,
 )
 from haute.executor import _build_node_fn
 from haute.graph_utils import NodeType, flatten_graph, graph_fingerprint
@@ -741,23 +740,18 @@ def _node_contract_outputs_column(node: GraphNode, column: str) -> bool:
     return outputs is not None and column in outputs
 
 
-def _source_node_schema_has_column(node: GraphNode, column: str) -> bool:
-    if node.data.nodeType != NodeType.DATA_SOURCE:
+def _data_input_schema_has_column(node: GraphNode, column: str) -> bool:
+    if node.data.nodeType != NodeType.DATA_INPUT:
         return False
     config = node.data.config
-    if config.get("sourceType", "flat_file") != "flat_file":
-        return False
-    if not config.get("path"):
-        return False
     try:
-        from haute._io import read_data_source
+        from haute._input_providers import resolve_data_input
+        from haute._sandbox import _get_project_root
 
-        projected = source_scan_projection(config, {column})
-        lf = read_data_source(
+        lf = resolve_data_input(
             config,
+            base_dir=_get_project_root(),
             profile=ExecutionProfile.AUTO_RANGE,
-            columns=projected.columns,
-            validate_columns=projected.validate_columns,
         )
         return column in set(lf.collect_schema().names())
     except PUBLIC_CONTRACT_ERROR_TYPES:
@@ -776,7 +770,7 @@ def _auto_range_data_input_has_objective(
     node = graph.node_map.get(data_input_id)
     if node is None:
         return False
-    return _source_node_schema_has_column(node, objective) or _node_contract_outputs_column(
+    return _data_input_schema_has_column(node, objective) or _node_contract_outputs_column(
         node,
         objective,
     )
@@ -2830,7 +2824,7 @@ class OptimiserSolveService:
                     execution_context=execution_context,
                 )
                 self._raise_if_solve_stopped(job_id, execution_context=execution_context)
-                source_lf = self._resolve_data_source(
+                source_lf = self._resolve_data_input_frame(
                     lazy_outputs,
                     config,
                     body.node_id,
@@ -3629,7 +3623,7 @@ class OptimiserSolveService:
                     expected_status="running",
                 )
                 self._raise_if_frontier_auto_range_stopped(job_id)
-                source_lf = self._resolve_data_source(
+                source_lf = self._resolve_data_input_frame(
                     lazy_outputs,
                     config,
                     body.node_id,
@@ -4503,7 +4497,7 @@ class OptimiserSolveService:
             if execution_context is not None:
                 self._record_execution_metrics(job_id, execution_context)
 
-    def _resolve_data_source(
+    def _resolve_data_input_frame(
         self,
         lazy_outputs: dict[str, Any],
         config: dict[str, Any],

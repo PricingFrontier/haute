@@ -116,7 +116,8 @@ Performance regression coverage for background progress rendering is in
 
 ## Polars backend contracts (0.6.0)
 
-See [the remediation plan](../../trip/plans/F_0.6.0_polars-backend-remediation.plan.md).
+Remaining frontend modelling and optimiser improvement work is tracked in the
+[frontend canvas roadmap](../../roadmap/frontend-canvas.md).
 `ModellingConfig.tsx`, `OptimiserConfig.tsx`, their action/result areas, and shared diagnostics
 consume only the guarded version-1 strategy contract. They render `projected`, `boundary`,
 `admitted_eager`, `rejected`, and `not_planned`, plus diagnostic unavailable, using the shared
@@ -139,3 +140,20 @@ ordinary checked execution or `unprojected-streaming-boundary`.
 Focused tests cover all five status semantics, diagnostic unavailable, strict version/enum
 handling, additive version-1 fields, accessible truncated/raw detail, group-by boundary versus
 rejection, stable 422 fields, and submit gating.
+
+## Approved change contract — 0.7.0 unified data-input UI consumption
+
+Remaining frontend modelling and optimiser improvement work is tracked in the
+[frontend canvas roadmap](../../roadmap/frontend-canvas.md).
+
+- `OptimiserConfig.tsx` continues to derive candidate ids from direct graph inputs and preserves
+  explicit selection when valid. `useDataInputColumns.ts` consumes the retained node's guarded
+  schema/preview contract and keys results by node/config/source generation, not by path, table,
+  or removed node type.
+- `utils/banding.ts` keeps its exactly-one-direct-banding-source fallback. Its node filtering and
+  tests remove legacy I/O constants without broadening the fallback to an arbitrary `dataInput`.
+- Estimate/solve/auto-range request state carries backend capability and snapshot diagnostics
+  unchanged. Column loading never calls input-cache Build/Refresh.
+- Update component/hook/helper fixtures for grouped Data Input configs, optional code, multiple
+  roots, cached generation changes, and removed-node absence. Guard tests reject legacy node
+  values rather than rewriting them.

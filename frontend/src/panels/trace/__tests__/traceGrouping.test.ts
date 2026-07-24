@@ -853,12 +853,12 @@ describe("collapsePassthroughs", () => {
     expect((collapsedEntries[0] as { collapsed: TraceStep[] }).collapsed[0].node_id).toBe("p2")
   })
 
-  it("source steps (dataSource type) are NOT collapsed even when passthrough", () => {
+  it("source steps (dataInput type) are NOT collapsed even when passthrough", () => {
     const steps = [
       makeStep({
         node_id: "ds1",
         node_name: "Data Source",
-        node_type: "dataSource",
+        node_type: "dataInput",
         schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: ["premium"] },
       }),
       makeStep({
@@ -906,7 +906,7 @@ describe("collapsePassthroughs", () => {
       makeStep({
         node_id: "ds1",
         node_name: "Unrelated Source",
-        node_type: "dataSource",
+        node_type: "dataInput",
         schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: ["premium"] },
       }),
       makeStep({

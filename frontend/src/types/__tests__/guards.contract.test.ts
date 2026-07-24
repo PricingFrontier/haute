@@ -473,7 +473,7 @@ describe("API response guards", () => {
         omissions: [{
           node_id: "source",
           node_name: "Source",
-          node_type: "dataSource",
+          node_type: "dataInput",
           topological_rank: 0,
           reason: "duplicate_exact_match",
           diagnostic_index: 0,

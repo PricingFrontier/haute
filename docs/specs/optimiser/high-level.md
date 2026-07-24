@@ -289,5 +289,29 @@ click that triggered it.
 Optimiser estimate, setup, solve, and auto-range flows will use one execution-plan
 result for a given graph and request context. Each exposes the same bounded strategy
 diagnostics and deterministic feature provenance, so admission estimates and execution
-cannot silently select divergent plans. Execution-engine owns planner internals; see the
-[remediation plan](../../trip/plans/F_0.6.0_polars-backend-remediation.plan.md).
+cannot silently select divergent plans. Execution-engine owns planner internals. Remaining
+optimiser improvement work is tracked in the [optimiser roadmap](../../roadmap/optimiser.md).
+
+## Approved change contract — 0.7.0 unified data-input consumption
+
+Remaining optimiser improvement work is tracked in the
+[optimiser roadmap](../../roadmap/optimiser.md).
+
+- Optimiser inputs remain explicit connected upstream node ids; “data input” in optimiser
+  configuration does not mean there can be only one `dataInput` node in the graph. When several
+  direct parents are possible, the existing explicit-selection contract applies and no provider
+  or root is guessed.
+- The optimiser execution and schema paths recognise canonical `dataInput` provider metadata and
+  no `dataSource` type. They consume the same direct/snapshot resolution, selected generation,
+  projection, and post-read Polars code as ordinary execution instead of reopening a file or
+  connector through an optimiser-only branch.
+- Database and Databricks optimisation therefore require a ready matching snapshot and perform
+  no remote build/fetch. Refreshing a generation changes optimiser setup identity; a job/result
+  from the preceding generation cannot be reused for the new source.
+- Boundedness and projection remain execution-engine decisions. The optimiser may request the
+  columns it needs but never upgrades an unsupported provider leg, eager cache build, or
+  non-row-local input body into a streaming plan.
+
+Acceptance covers multiple roots/direct parents, explicit source selection, direct and cached
+inputs, generation invalidation, post-input code columns, no remote fetch during setup/solve, and
+complete removal of legacy source branches.

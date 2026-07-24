@@ -28,8 +28,49 @@ from tests.optimiser_fixtures import run_frontier_and_wait
 _SAFE_DETAIL = "Operation failed. Check the server logs for details."
 
 
+def _file_input_config(path: str) -> dict:
+    format_name, mode = {
+        ".csv": ("csv", "scan"),
+        ".parquet": ("parquet", "scan"),
+        ".json": ("json", "read"),
+        ".jsonl": ("ndjson", "scan"),
+        ".ndjson": ("ndjson", "scan"),
+        ".arrow": ("ipc", "scan"),
+        ".feather": ("ipc", "scan"),
+        ".ipc": ("ipc", "scan"),
+    }[Path(path).suffix.lower()]
+    return {
+        "inputType": "file",
+        "format": format_name,
+        "mode": mode,
+        "cacheMode": "direct",
+        "path": path,
+        "arguments": {},
+    }
+
+
+def _file_output_config(path: str) -> dict:
+    format_name = {
+        ".csv": "csv",
+        ".parquet": "parquet",
+        ".json": "json",
+        ".jsonl": "ndjson",
+        ".ndjson": "ndjson",
+        ".arrow": "ipc",
+        ".feather": "ipc",
+        ".ipc": "ipc",
+    }[Path(path).suffix.lower()]
+    return {
+        "outputType": "file",
+        "format": format_name,
+        "mode": "sink" if format_name in {"csv", "parquet"} else "write",
+        "path": path,
+        "arguments": {},
+    }
+
+
 def _minimal_source_graph(path: str = "fake.parquet") -> dict:
-    """A single-node graph with one dataSource node (reused in many tests)."""
+    """A single-node graph with one dataInput node (reused in many tests)."""
     return {
         "nodes": [
             {
@@ -38,8 +79,8 @@ def _minimal_source_graph(path: str = "fake.parquet") -> dict:
                 "position": {"x": 0, "y": 0},
                 "data": {
                     "label": "src",
-                    "nodeType": "dataSource",
-                    "config": {"path": path},
+                    "nodeType": "dataInput",
+                    "config": _file_input_config(path),
                 },
             },
         ],
@@ -57,8 +98,8 @@ def _minimal_sink_graph(path: str = "fake.parquet") -> dict:
             "position": {"x": 300, "y": 0},
             "data": {
                 "label": "sink",
-                "nodeType": "dataSink",
-                "config": {"path": "out.parquet", "format": "parquet"},
+                "nodeType": "dataOutput",
+                "config": _file_output_config("out.parquet"),
             },
         }
     )
@@ -71,7 +112,7 @@ def _source_and_transform_graph(
     transform_label: str = "bad_transform",
     code: str = "df",
 ) -> dict:
-    """A two-node graph: dataSource -> polars transform."""
+    """A two-node graph: dataInput -> polars transform."""
     return {
         "nodes": [
             {
@@ -80,8 +121,8 @@ def _source_and_transform_graph(
                 "position": {"x": 0, "y": 0},
                 "data": {
                     "label": "source",
-                    "nodeType": "dataSource",
-                    "config": {"path": "fake.parquet"},
+                    "nodeType": "dataInput",
+                    "config": _file_input_config("fake.parquet"),
                 },
             },
             {
@@ -123,11 +164,9 @@ def pipeline_graph(tmp_path: Path):
     data_dir.mkdir()
     data_path = data_dir / "input.parquet"
     pl.DataFrame({"x": [1, 2, 3]}).write_parquet(data_path)
-    cfg_dir = tmp_path / "config" / "data_source"
+    cfg_dir = tmp_path / "config" / "data_input"
     cfg_dir.mkdir(parents=True)
-    (cfg_dir / "source.json").write_text(
-        json.dumps({"path": data_path.as_posix(), "sourceType": "flat_file"})
-    )
+    (cfg_dir / "source.json").write_text(json.dumps(_file_input_config(data_path.as_posix())))
 
     # ``as_posix`` ensures the path emitted into the f-string stays
     # parseable on Windows, where ``C:\Users\...`` would otherwise be
@@ -136,7 +175,7 @@ def pipeline_graph(tmp_path: Path):
 import haute
 pipeline = haute.Pipeline("test")
 
-@pipeline.data_source(config="config/data_source/source.json")
+@pipeline.data_input(config="config/data_input/source.json")
 def source(config):
     pass
 """
@@ -250,16 +289,6 @@ _SIMPLE_SAFE_DETAIL_CASES: list[tuple] = [
         500,
         ["10.0.0.5"],
         id="databricks-tables",
-    ),
-    pytest.param(
-        "post",
-        "/api/databricks/fetch",
-        {"json": {"table": "cat.sch.tbl", "http_path": "/sql/wh"}},
-        lambda err: patch("haute._databricks_io.fetch_and_cache", side_effect=RuntimeError(err)),
-        "OSError: /mnt/data/cache full",
-        500,
-        ["/mnt/data/cache"],
-        id="databricks-fetch",
     ),
     # JSON cache
     pytest.param(
@@ -413,19 +442,21 @@ class TestSafeDetailOnError:
                 "position": {"x": 300, "y": 0},
                 "data": {
                     "label": "sink",
-                    "nodeType": "dataSink",
-                    "config": {"path": "test_sink.parquet", "format": "parquet"},
+                    "nodeType": "dataOutput",
+                    "config": _file_output_config("test_sink.parquet"),
                 },
             }
         )
         graph["edges"] = [{"id": "e1", "source": "src", "target": "sink"}]
-        # Route-scoped patch — see note in
+        # Route-scoped patch -- see note in
         # ``test_pipeline_trace_500_no_leak``.
         with patch(
-            "haute.routes.pipeline.execute_sink",
+            "haute.routes.pipeline.write_data_output",
             side_effect=RuntimeError("PermissionError: /secure/dir/output.parquet"),
         ):
-            resp = client.post("/api/pipeline/sink", json={"graph": graph, "node_id": "sink"})
+            resp = client.post(
+                "/api/pipeline/write-output", json={"graph": graph, "node_id": "sink"}
+            )
         assert resp.status_code == 500
         detail = resp.json()["detail"]
         assert "/secure/dir/" not in detail
@@ -611,16 +642,6 @@ _LOG_ON_ERROR_CASES: list[tuple] = [
     ),
     pytest.param(
         "post",
-        "/api/databricks/fetch",
-        {"json": {"table": "cat.sch.tbl", "http_path": "/sql/wh"}},
-        lambda err: patch("haute._databricks_io.fetch_and_cache", side_effect=RuntimeError(err)),
-        "haute.routes.databricks",
-        "internal-boom",
-        500,
-        id="databricks-fetch-log",
-    ),
-    pytest.param(
-        "post",
         "/api/json-cache/build",
         {"json": {"path": "data.jsonl"}},
         _json_cache_build_patch,
@@ -685,7 +706,7 @@ class TestLogOnError:
         mock_logger = MagicMock()
         with (
             # Route-side patch target: see the matching note in
-            # ``test_pipeline_trace_500_no_leak`` — after the #101
+            # ``test_pipeline_trace_500_no_leak`` -- after the #101
             # import hoist, ``routes/pipeline.py`` binds
             # ``execute_trace`` at module-load time.
             patch(
@@ -706,7 +727,7 @@ class TestLogOnError:
         mock_logger = MagicMock()
         node_id = pipeline_graph.nodes[0].id
         with (
-            # Route-scoped patch — see note in
+            # Route-scoped patch -- see note in
             # ``test_pipeline_trace_logs_error``.
             patch(
                 "haute.routes.pipeline.execute_graph",
@@ -726,15 +747,17 @@ class TestLogOnError:
         mock_logger = MagicMock()
         graph = _minimal_sink_graph()
         with (
-            # Route-scoped patch — see note in
+            # Route-scoped patch -- see note in
             # ``test_pipeline_trace_logs_error``.
             patch(
-                "haute.routes.pipeline.execute_sink",
+                "haute.routes.pipeline.write_data_output",
                 side_effect=RuntimeError("real-sink-error"),
             ),
             patch("haute.routes.pipeline.logger", mock_logger),
         ):
-            resp = client.post("/api/pipeline/sink", json={"graph": graph, "node_id": "sink"})
+            resp = client.post(
+                "/api/pipeline/write-output", json={"graph": graph, "node_id": "sink"}
+            )
         assert resp.status_code == 500
         mock_logger.error.assert_called()
         assert "real-sink-error" in str(mock_logger.error.call_args)
@@ -764,7 +787,7 @@ class TestDomainErrorsStillExposed:
 
         Raw ``git`` stderr (which commonly embeds absolute paths, remote
         URLs, SSL errors, and credentials) is kept in the structured
-        server log only — the HTTP body contains ``_INTERNAL_ERROR_DETAIL``.
+        server log only -- the HTTP body contains ``_INTERNAL_ERROR_DETAIL``.
         Hand-written domain messages travel through a dedicated
         :class:`GitGuardrailError` subclass that remains user-facing.
         """
@@ -781,7 +804,7 @@ class TestDomainErrorsStillExposed:
 
     # Phase 1C #11: this test's former assertion (raw "Unsupported
     # file format" text surfacing verbatim) is superseded by
-    # ``test_file_schema_value_error_sanitized`` above — the new
+    # ``test_file_schema_value_error_sanitized`` above -- the new
     # contract hides all ValueError detail behind
     # ``_INTERNAL_ERROR_DETAIL`` so absolute paths / tracebacks / git
     # output cannot leak through ``str(exc)``.
@@ -848,7 +871,7 @@ class TestNodeFailureLogLevel:
     def _build_fn(node, **kwargs):
         from haute._types import NodeType
 
-        if node.data.nodeType == NodeType.DATA_SOURCE:
+        if node.data.nodeType == NodeType.DATA_INPUT:
             return node.id, lambda: pl.DataFrame({"x": [1]}).lazy(), True
 
         def failing_fn(*dfs):
@@ -1002,17 +1025,6 @@ _LEAKAGE_CASES: list[tuple] = [
         ["dapi_test_token", "test.cloud.databricks.com"],
         id="env-var-warehouses",
     ),
-    pytest.param(
-        "post",
-        "/api/databricks/fetch",
-        {"json": {"table": "cat.sch.tbl", "http_path": "/sql/wh"}},
-        lambda err: patch("haute._databricks_io.fetch_and_cache", side_effect=RuntimeError(err)),
-        "ConnectionError: HTTPSConnectionPool(host=test.cloud.databricks.com, "
-        "port=443): Max retries exceeded with url: /sql/1.0/warehouses/abc123",
-        500,
-        ["test.cloud.databricks.com", "abc123"],
-        id="env-var-fetch-connection",
-    ),
     # GAP 4: Database connection string / MLflow tracking URI leakage
     pytest.param(
         "get",
@@ -1077,25 +1089,6 @@ class TestSensitiveInfoLeakage:
 
     # -- Cases that need special setup (not easily parametrizable) --
 
-    def test_databricks_schema_read_path_leak(self, client: TestClient) -> None:
-        """GET /api/schema/databricks -- parquet read failure must not leak cache path."""
-        with patch(
-            "haute._databricks_io.cached_path",
-            return_value=Path("/home/deploy/.haute_cache/cat.sch.tbl.parquet"),
-        ):
-            with patch(
-                "polars.scan_parquet",
-                side_effect=OSError(
-                    "No such file or directory: '/home/deploy/.haute_cache/cat.sch.tbl.parquet'"
-                ),
-            ):
-                resp = client.get("/api/schema/databricks", params={"table": "cat.sch.tbl"})
-        assert resp.status_code == 500
-        detail = resp.json()["detail"]
-        assert "/home/deploy" not in detail
-        assert ".haute_cache" not in detail
-        assert "Check the server logs" in detail
-
     @pytest.mark.xfail(
         reason="Known gap: list_pipelines passes raw str(e) into PipelineSummary.error "
         "(pipeline.py line 64). Absolute paths from parse exceptions leak to the client.",
@@ -1111,13 +1104,13 @@ class TestSensitiveInfoLeakage:
         bad_py = tmp_path / "bad_pipeline.py"
         bad_py.write_text(
             "import haute\npipeline = haute.Pipeline('bad')\n"
-            "@pipeline.data_source(path='/nonexistent')\ndef src(config): pass\n"
+            "@pipeline.data_input(path='/nonexistent')\ndef src(config): pass\n"
         )
 
         from haute.server import app
 
         c = TestClient(app)
-        # Patch the route-scoped binding — ``list_pipelines`` imports
+        # Patch the route-scoped binding -- ``list_pipelines`` imports
         # ``parse_pipeline_file`` at module top after #101.
         with patch(
             "haute.routes.pipeline.parse_pipeline_file",
@@ -1143,7 +1136,7 @@ class TestSensitiveInfoLeakage:
             "    in _collect\n"
             "RuntimeError: out of memory"
         )
-        # Patch the route-scoped ``execute_trace`` — after the
+        # Patch the route-scoped ``execute_trace`` -- after the
         # function-local imports were hoisted to module top (#101),
         # patching the source module is a no-op.
         with patch(
@@ -1186,18 +1179,20 @@ class TestSensitiveInfoLeakage:
         assert detail == _SAFE_DETAIL
 
     def test_sink_cpython_error_no_leak(self, client: TestClient) -> None:
-        """POST /api/pipeline/sink -- CPython info in error must not leak."""
+        """POST /api/pipeline/write-output -- CPython info in error must not leak."""
         graph = _minimal_sink_graph()
-        # Route-scoped patch — see note in
+        # Route-scoped patch -- see note in
         # ``test_pipeline_trace_500_no_leak``.
         with patch(
-            "haute.routes.pipeline.execute_sink",
+            "haute.routes.pipeline.write_data_output",
             side_effect=RuntimeError(
                 "SystemError: CPython 3.11.5 (default, Sep 11 2023) "
                 "[GCC 12.2.0] on linux: frame object is garbage collected"
             ),
         ):
-            resp = client.post("/api/pipeline/sink", json={"graph": graph, "node_id": "sink"})
+            resp = client.post(
+                "/api/pipeline/write-output", json={"graph": graph, "node_id": "sink"}
+            )
         assert resp.status_code == 500
         detail = resp.json()["detail"]
         assert "CPython" not in detail
@@ -1349,7 +1344,7 @@ class TestUserCodeErrorSanitization:
             ),
         }
 
-        # Route-scoped patch — see note in
+        # Route-scoped patch -- see note in
         # ``test_pipeline_trace_500_no_leak``.
         with patch("haute.routes.pipeline.execute_graph", return_value=mock_results):
             resp = client.post(
@@ -1434,7 +1429,7 @@ class TestPreambleErrorSanitization:
             ),
         }
 
-        # Route-scoped patch — see note in
+        # Route-scoped patch -- see note in
         # ``test_pipeline_trace_500_no_leak``.
         with patch("haute.routes.pipeline.execute_graph", return_value=mock_results):
             resp = client.post(

@@ -1,4 +1,4 @@
-"""Tests for execute_sink — T10: dedicated sink node tests.
+"""Tests for write_data_output — T10: dedicated Data Output tests.
 
 Covers:
   - Parquet sink (normal path)
@@ -19,7 +19,8 @@ import polars as pl
 import pytest
 
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
-from haute.schemas import SinkResponse
+from haute.schemas import WriteOutputResponse
+from tests.conftest import make_file_output_config
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -33,7 +34,7 @@ def _e(src: str, tgt: str) -> GraphEdge:
 def _source_node(nid: str, label: str | None = None) -> GraphNode:
     return GraphNode(
         id=nid,
-        data=NodeData(label=label or nid, nodeType=NodeType.DATA_SOURCE),
+        data=NodeData(label=label or nid, nodeType=NodeType.DATA_INPUT),
     )
 
 
@@ -44,14 +45,14 @@ def _sink_node(
     label: str | None = None,
     selected_columns: list[str] | None = None,
 ) -> GraphNode:
-    config = {"path": path, "format": fmt}
+    config = make_file_output_config(path, format_name=fmt)
     if selected_columns is not None:
         config["selected_columns"] = selected_columns
     return GraphNode(
         id=nid,
         data=NodeData(
             label=label or nid,
-            nodeType=NodeType.DATA_SINK,
+            nodeType=NodeType.DATA_OUTPUT,
             config=config,
         ),
     )
@@ -80,26 +81,26 @@ class TestExecuteSinkErrors:
     """Edge cases that raise before writing."""
 
     def test_unknown_sink_node_raises(self):
-        """Raises ValueError when sink_node_id is not in the graph."""
-        from haute.executor import execute_sink
+        """Raises ValueError when output_node_id is not in the graph."""
+        from haute.executor import write_data_output
 
         graph = _make_graph(
             nodes=[_source_node("s")],
             edges=[],
         )
         with pytest.raises(ValueError, match="not found"):
-            execute_sink(graph, "nonexistent_sink")
+            write_data_output(graph, "nonexistent_sink")
 
     def test_missing_path_raises(self):
         """Raises ValueError when sink node has no path configured."""
-        from haute.executor import execute_sink
+        from haute.executor import write_data_output
 
         graph = _make_graph(
             nodes=[_source_node("s"), _sink_node("sink", path="")],
             edges=[_e("s", "sink")],
         )
-        with pytest.raises(ValueError, match="no output path"):
-            execute_sink(graph, "sink")
+        with pytest.raises(ValueError, match="requires a non-empty 'path'"):
+            write_data_output(graph, "sink")
 
 
 class TestExecuteSinkParquet:
@@ -107,7 +108,7 @@ class TestExecuteSinkParquet:
 
     def test_writes_parquet_file(self, tmp_path):
         """Sink writes a parquet file with correct row count."""
-        from haute.executor import execute_sink
+        from haute.executor import write_data_output
 
         out_path = str(tmp_path / "output.parquet")
         graph = _make_graph(
@@ -126,9 +127,9 @@ class TestExecuteSinkParquet:
             "haute.executor._execute_lazy",
             return_value=(mock_outputs, ["s", "sink"], {}, {}),
         ):
-            result = execute_sink(graph, "sink")
+            result = write_data_output(graph, "sink")
 
-        assert isinstance(result, SinkResponse)
+        assert isinstance(result, WriteOutputResponse)
         assert result.status == "ok"
         assert result.row_count == 3
         assert result.path == out_path
@@ -147,7 +148,7 @@ class TestExecuteSinkParquet:
 
     def test_selected_columns_seed_lazy_projection(self, tmp_path):
         """Sink selected_columns should feed the backend projection planner."""
-        from haute.executor import execute_sink
+        from haute.executor import write_data_output
 
         out_path = str(tmp_path / "output.parquet")
         graph = _make_graph(
@@ -170,7 +171,7 @@ class TestExecuteSinkParquet:
             return {"sink": lf}, ["s", "sink"], {}, {}
 
         with patch("haute.executor._execute_lazy", side_effect=mock_execute_lazy):
-            execute_sink(graph, "sink")
+            write_data_output(graph, "sink")
 
         assert captured_kwargs["required_columns_by_node"] == {"sink": frozenset({"x", "z"})}
         cache_request = captured_kwargs["dataframe_cache_request"]
@@ -183,7 +184,7 @@ class TestExecuteSinkCSV:
 
     def test_writes_csv_file(self, tmp_path):
         """Sink writes a CSV file with correct row count."""
-        from haute.executor import execute_sink
+        from haute.executor import write_data_output
 
         out_path = str(tmp_path / "output.csv")
         graph = _make_graph(
@@ -201,7 +202,7 @@ class TestExecuteSinkCSV:
             "haute.executor._execute_lazy",
             return_value=(mock_outputs, ["s", "sink"], {}, {}),
         ):
-            result = execute_sink(graph, "sink")
+            result = write_data_output(graph, "sink")
 
         assert result.status == "ok"
         assert result.row_count == 2
@@ -219,7 +220,7 @@ class TestExecuteSinkDirectoryCreation:
 
     def test_creates_nested_output_directory(self, tmp_path):
         """Sink creates parent directories if they don't exist."""
-        from haute.executor import execute_sink
+        from haute.executor import write_data_output
 
         out_path = str(tmp_path / "deep" / "nested" / "dir" / "output.parquet")
         graph = _make_graph(
@@ -235,7 +236,7 @@ class TestExecuteSinkDirectoryCreation:
             "haute.executor._execute_lazy",
             return_value=({"sink": lf}, ["s", "sink"], {}, {}),
         ):
-            result = execute_sink(graph, "sink")
+            result = write_data_output(graph, "sink")
 
         assert result.status == "ok"
         assert Path(out_path).exists()
@@ -267,7 +268,7 @@ class TestExecuteSinkScenario:
 
     def test_live_scenario_coerced_to_batch(self, tmp_path):
         """When scenario='live', sink coerces to 'batch' (or ISM non-live value)."""
-        from haute.executor import execute_sink
+        from haute.executor import write_data_output
 
         out_path = str(tmp_path / "out.parquet")
         graph = _make_graph(
@@ -286,14 +287,14 @@ class TestExecuteSinkScenario:
             return {"sink": lf}, ["s", "sink"], {}, {}
 
         with patch("haute.executor._execute_lazy", side_effect=mock_execute_lazy):
-            execute_sink(graph, "sink", source="live")
+            write_data_output(graph, "sink", source="live")
 
         # Should NOT be "live" — should be coerced to "batch"
         assert captured_kwargs["source"] != "live"
 
     def test_custom_scenario_passed_through(self, tmp_path):
         """Non-'live' scenario is passed through unchanged."""
-        from haute.executor import execute_sink
+        from haute.executor import write_data_output
 
         out_path = str(tmp_path / "out.parquet")
         graph = _make_graph(
@@ -312,7 +313,7 @@ class TestExecuteSinkScenario:
             return {"sink": lf}, ["s", "sink"], {}, {}
 
         with patch("haute.executor._execute_lazy", side_effect=mock_execute_lazy):
-            execute_sink(graph, "sink", source="test_batch")
+            write_data_output(graph, "sink", source="test_batch")
 
         assert captured_kwargs["source"] == "test_batch"
 
@@ -322,7 +323,7 @@ class TestExecuteSinkComputeFailure:
 
     def test_none_lazy_output_raises(self, tmp_path):
         """Raises RuntimeError when lazy execution produces no output for sink."""
-        from haute.executor import execute_sink
+        from haute.executor import write_data_output
 
         out_path = str(tmp_path / "out.parquet")
         graph = _make_graph(
@@ -338,8 +339,8 @@ class TestExecuteSinkComputeFailure:
             "haute.executor._execute_lazy",
             return_value=({}, ["s", "sink"], {}, {}),
         ):
-            with pytest.raises(RuntimeError, match="Failed to compute sink input"):
-                execute_sink(graph, "sink")
+            with pytest.raises(RuntimeError, match="Failed to compute Data Output input"):
+                write_data_output(graph, "sink")
 
 
 class TestExecuteSinkResponse:
@@ -347,7 +348,7 @@ class TestExecuteSinkResponse:
 
     def test_response_message_format(self, tmp_path):
         """Response message includes row count and path."""
-        from haute.executor import execute_sink
+        from haute.executor import write_data_output
 
         out_path = str(tmp_path / "result.parquet")
         graph = _make_graph(
@@ -363,7 +364,7 @@ class TestExecuteSinkResponse:
             "haute.executor._execute_lazy",
             return_value=({"sink": lf}, ["s", "sink"], {}, {}),
         ):
-            result = execute_sink(graph, "sink")
+            result = write_data_output(graph, "sink")
 
         assert "1,000" in result.message
         assert out_path in result.message

@@ -269,8 +269,8 @@ running heavy work in a child process the parent can kill on timeout or memory l
 
 ## Polars backend contracts (0.6.0)
 
-This is an approved spec-first change. The implementation plan is
-[F_0.6.0_polars-backend-remediation.plan.md](../../trip/plans/F_0.6.0_polars-backend-remediation.plan.md).
+This is an approved spec-first change. Remaining execution-engine improvement work is tracked in
+the [execution-engine roadmap](../../roadmap/execution-engine.md).
 
 ### Current limitations
 
@@ -397,3 +397,42 @@ timing, error, and cleanup semantics.
   cancellation, and exceptions.
 - The relevant execution, projection, RAM-estimate, admission/context, eager/lazy, and
   deploy/preview test suites pass; benchmark evidence accompanies any Review-P11 optimisation claim.
+
+## Approved change contract — 0.7.0 unified data I/O execution
+
+Remaining execution-engine improvement work is tracked in the
+[execution-engine roadmap](../../roadmap/execution-engine.md)
+and the approved [I/O contract](../io-layer/high-level.md#approved-change-contract-070-data-io-convergence).
+
+- `dataInput` is the sole tabular source type understood by eager, lazy, projected, chunked,
+  tracing, optimiser, RAM-estimation, and deployment execution paths. A pipeline may have
+  multiple inputs; source discovery and explicit `chunk_start_node_id` retain their existing
+  multi-source semantics. `dataSource` is removed rather than aliased.
+- A data input executes either directly through its provider or from a validated shared Parquet
+  snapshot. Runtime execution never builds or refreshes a snapshot. Database and Databricks
+  inputs without a ready matching snapshot fail before the graph runs; local-file/lakehouse
+  direct reads follow their declared capability.
+- The optional input Polars body is applied after source resolution. It participates in column
+  contracts, projection, fingerprints, tracing, and codegen exactly once. Chunk planning accepts
+  it only when the shared AST proof establishes row-local semantics; it never treats whole-frame
+  code as independently correct on each batch.
+- Chunk-source selection is provider/format capability-driven. A valid direct-batch source or
+  valid cached Parquet generation feeds `bounded_collect_batches`; there is no CSV/Parquet
+  extension switch. Capability is opt-in and versioned. A scanner-backed format is still rejected
+  until format-specific evidence proves bounded ordered batches with the pinned Polars version.
+- Strategy diagnostics distinguish direct scan, cached scan, bounded snapshot build (reported by
+  the cache job rather than graph execution), admitted-eager build, native output sink, eager
+  writer, and unsupported boundaries. “Cached” never implies externally fresh and “Parquet”
+  never implies the cache build was bounded.
+- `dataOutput` is the sole persistence target and remains a preview pass-through. Only the
+  explicit write endpoint runs it. Native sink formats preserve bounded lazy execution;
+  writer-only formats require materialisation admission. Local single-file publication is staged
+  and atomic. Database/lakehouse publication reports its transactional semantics. `dataSink` is
+  removed rather than routed through a compatibility branch.
+
+The hard cutover deletes legacy node branches from graph path resolution, source enumeration,
+projection coverage, RAM estimation, chunk declarations, executor builders, sink dispatch,
+tracing/deploy hooks, and tests. Acceptance covers each execution strategy with direct and cached
+inputs, multiple roots, row-local and rejected global code, stale/missing/corrupt snapshots,
+format-capability mismatch, native/eager output modes, cancellation/admission, and assertions
+that graph execution causes no cache-build or remote-provider call.

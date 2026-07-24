@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Building a Haute pipeline requires the analyst to know which of the 21 node types to reach
+Building a Haute pipeline requires the analyst to know which of the 19 node types to reach
 for, how each is configured, and how the graph must be wired — knowledge that lives in the
 product, not in the analyst's head on day one. The assistant is an in-app AI assistant that
 authors the pipeline graph on the analyst's behalf: the analyst types an instruction into a
@@ -340,3 +340,23 @@ Loud, typed, and never averaged away:
 - **Broadcast failures are isolated** — the event bus already isolates subscriber
   exceptions, so a misbehaving WebSocket consumer can never fail a save that has already
   committed.
+
+## Approved change contract — 0.7.0 data I/O authoring
+
+Remaining assistant improvement work is tracked in the
+[assistant roadmap](../../roadmap/assistant.md).
+
+- The node catalogue, authoring guide, examples, mutation schema, and readiness checks expose
+  only `dataInput` and `dataOutput` for tabular I/O. Removed node names/decorators are not
+  accepted as aliases or suggestions.
+- Data-input creation/configuration follows the backend capability registry: provider group,
+  format/mode, safe fields, cache mode, and optional Polars body. Data-output configuration is
+  direction-filtered and never invents a Databricks writer or output Polars body.
+- Cache build/refresh and output Write are important explicit actions and are never triggered by
+  an ordinary graph mutation. Assistant tools may configure the nodes but may invoke those
+  actions only through their dedicated mutation/action contracts and normal user approval mode.
+- Assistant responses and tool results expose redacted cache identity/status and publication
+  results, never resolved credentials.
+
+Catalogue completeness and mutation tests pin the retained enum, capability-valid configs,
+explicit-action separation, redaction, and rejection of every removed node token.

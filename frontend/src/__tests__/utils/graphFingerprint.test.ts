@@ -19,7 +19,7 @@ function graphFingerprint(nodes: Node[], edges: Edge[]): string {
 describe("graphFingerprint (B20)", () => {
   const baseNodes: Node[] = [
     { id: "n1", data: { label: "Node A", nodeType: "polars" }, position: { x: 0, y: 0 } },
-    { id: "n2", data: { label: "Node B", nodeType: "dataSource" }, position: { x: 100, y: 200 } },
+    { id: "n2", data: { label: "Node B", nodeType: "dataInput" }, position: { x: 100, y: 200 } },
   ]
   const baseEdges: Edge[] = [
     { id: "e1", source: "n1", target: "n2" },

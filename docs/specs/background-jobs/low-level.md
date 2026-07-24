@@ -416,3 +416,23 @@ completed_message="Completed", **kwargs)`
   409 tests); the NOTE'd unhandled-non-`IsolatedWorkerError` path in
   `IsolatedJobSupervisor.launch` has no regression test pinning the "job stuck at
   running forever" behaviour.
+
+## Approved change contract — 0.7.0 input-cache jobs
+
+Remaining background-job improvement work is tracked in the
+[background jobs and API roadmap](../../roadmap/background-jobs-api.md).
+
+- Add `"input_cache"` to `_job_store._KNOWN_PREFIXES`; `get_job_store("input_cache")` owns
+  metadata for shared source-cache builds. Do not put snapshot files in `JobStore` artifact
+  cleanup or heavy-object fields.
+- `routes/input_cache.py` owns a `CancellableJobRegistry` and
+  `SingleFlightCoordinator` keyed by the versioned safe source-identity digest. Under one start
+  lock it checks `active(key)`, verifies the referenced job is still running, returns that job id
+  when so, or creates/registers/acquires a new job. Stale coordinator ownership is released and
+  repaired explicitly; it never causes a second builder for the same identity.
+- The worker updates immutable replacement dicts with rows, batches, bytes, phase, boundedness,
+  and elapsed time, and publishes terminal state only through `JobLifecycle`. Its `finally`
+  releases registry/coordinator ownership without deleting the cache generation.
+- Extend focused background-job tests for the new prefix and direct
+  `SingleFlightCoordinator` coverage. Input-cache route tests own join/start/cancel races,
+  redaction, global concurrency, builder checkpoints, and job-TTL/snapshot independence.

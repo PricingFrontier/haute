@@ -18,11 +18,14 @@ from unittest.mock import MagicMock, patch
 import pytest
 from fastapi import HTTPException
 
+from tests.conftest import make_file_input_config
+
 
 @pytest.fixture(autouse=True)
 def _isolated_cwd(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Run every test in a temporary directory."""
     monkeypatch.chdir(tmp_path)
+    (tmp_path / "haute.toml").write_text("[project]\nname = 'test'\n")
 
 
 @pytest.fixture()
@@ -64,7 +67,11 @@ def _graph_with_submodel() -> dict:
         "nodes": [
             {
                 "id": "load",
-                "data": {"label": "load", "nodeType": "dataSource", "config": {"path": "d.csv"}},
+                "data": {
+                    "label": "load",
+                    "nodeType": "dataInput",
+                    "config": make_file_input_config("d.csv"),
+                },
             },
             {
                 "id": "submodel__pricing",

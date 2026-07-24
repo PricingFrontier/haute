@@ -496,7 +496,7 @@ describe("useEdgeHandlers", () => {
   it("onConnectEnd does not reinterpret source-only nodes as input-side targets", () => {
     const params = makeParams()
     params.graphRef.current.nodes = [
-      { id: "base", position: { x: 300, y: 0 }, measured: { width: 240, height: 70 }, data: { label: "Base", nodeType: NODE_TYPES.DATA_SOURCE } } as unknown as Node,
+      { id: "base", position: { x: 300, y: 0 }, measured: { width: 240, height: 70 }, data: { label: "Base", nodeType: NODE_TYPES.DATA_INPUT } } as unknown as Node,
       { id: "lookup", position: { x: 0, y: 160 }, data: { label: "Lookup", nodeType: NODE_TYPES.POLARS } } as unknown as Node,
     ]
     const { result } = renderHook(() => useEdgeHandlers(params))
@@ -1048,7 +1048,7 @@ describe("useEdgeHandlers", () => {
   })
 
   it.each([
-    NODE_TYPES.DATA_SINK,
+    NODE_TYPES.DATA_OUTPUT,
     NODE_TYPES.OUTPUT,
     NODE_TYPES.SUBMODEL,
     NODE_TYPES.SUBMODEL_PORT,
@@ -1247,7 +1247,7 @@ describe("useEdgeHandlers", () => {
       clientY: 400,
       dataTransfer: {
         getData: vi.fn((key: string) => {
-          if (key === "application/reactflow-type") return NODE_TYPES.DATA_SINK
+          if (key === "application/reactflow-type") return NODE_TYPES.DATA_OUTPUT
           if (key === "application/reactflow-config") return "{}"
           return ""
         }),
@@ -1265,23 +1265,26 @@ describe("useEdgeHandlers", () => {
     expect(nextNodes).toEqual([
       expect.objectContaining({ id: "existing", selected: false }),
       expect.objectContaining({
-        id: "dataSink_1",
-        type: NODE_TYPES.DATA_SINK,
+        id: "dataOutput_1",
+        type: NODE_TYPES.DATA_OUTPUT,
         selected: true,
         position: { x: 300, y: 400 },
         data: {
-          label: "Data Sink 1",
+          label: "Data Output 1",
           description: "",
-          nodeType: NODE_TYPES.DATA_SINK,
+          nodeType: NODE_TYPES.DATA_OUTPUT,
           config: {
-            path: "",
+            outputType: "file",
             format: "parquet",
+            mode: "sink",
+            path: "",
+            arguments: {},
           },
         },
       }),
     ])
     expect(params.setSelectedNode).toHaveBeenCalledWith(
-      expect.objectContaining({ id: "dataSink_1", selected: true }),
+      expect.objectContaining({ id: "dataOutput_1", selected: true }),
     )
   })
 

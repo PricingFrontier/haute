@@ -1,91 +1,97 @@
-/**
- * Shared editor body for the dataInput / dataOutput node editors.
- *
- * Registry-driven (io-nodes review IO12): every format option, mode
- * option, argument-name list and missing-engine flag comes from the
- * GET /api/formats capability payload — no format knowledge is
- * hard-coded here. Formats with missing engine packages stay selectable
- * but are flagged with the reason.
- *
- * 1:1 JSON↔UI invariant: every key present in the persisted config
- * surfaces somewhere visible — keys this editor does not recognise (or
- * that do not apply to the selected format's source kind) render in a
- * read-only "Unrecognised keys" section rather than being dropped.
- */
-import { useEffect, useId, useRef, useState } from "react"
+import { useEffect, useId, useMemo, useRef, useState, type CSSProperties } from "react"
 import { Plus, X } from "lucide-react"
-import { CommittedTextField, CommittedTextArea, EditorLabel } from "../../components/form"
-import { configField } from "../../utils/configField"
+import {
+  CommittedTextArea,
+  CommittedTextField,
+  EditorLabel,
+} from "../../components/form"
+import type {
+  IoCapabilityGroup,
+  IoFormatCapability,
+  IoInputCapability,
+  IoOutputCapability,
+} from "../../api/types"
 import { withAlpha } from "../../utils/color"
 import { FileBrowser, INPUT_STYLE } from "./_shared"
 import type { OnUpdateConfig } from "./_shared"
-import { IO_SIDE_SPECS, useIoFormats } from "./_ioFormats"
-import type { IoSide } from "./_ioFormats"
 
-// ─── Argument rows ────────────────────────────────────────────────
+type Direction = "input" | "output"
 
-// Row ids are unique across the session so React keys stay stable while
-// rows are renamed or edited.
-let nextArgRowId = 0
+const INPUT_COMMON_KEYS = new Set([
+  "instanceOf",
+  "inputMapping",
+  "selected_columns",
+  "column_renames",
+  "categorical_levels",
+  "contract",
+  "code",
+])
 
-type ArgRow = { id: number; name: string; valueText: string }
+const OUTPUT_COMMON_KEYS = new Set([
+  "instanceOf",
+  "inputMapping",
+  "selected_columns",
+  "column_renames",
+  "categorical_levels",
+  "contract",
+])
 
-function rowsFromArguments(args: Record<string, unknown>): ArgRow[] {
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+}
+
+let nextArgumentRowId = 0
+
+type ArgumentRow = {
+  id: number
+  name: string
+  valueText: string
+}
+
+function argumentRows(args: Record<string, unknown>): ArgumentRow[] {
   return Object.entries(args).map(([name, value]) => ({
-    id: nextArgRowId++,
+    id: nextArgumentRowId++,
     name,
-    valueText: JSON.stringify(value),
+    valueText: JSON.stringify(value) ?? "null",
   }))
 }
 
-function parsesAsJson(text: string): boolean {
+function parsesAsJson(value: string): boolean {
   try {
-    JSON.parse(text)
+    JSON.parse(value)
     return true
   } catch {
     return false
   }
 }
 
-function isPlainRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-}
-
-/**
- * Rows of (name, JSON value) for the config's `arguments` object. Names
- * are validated against the payload's argument list for the selected
- * format+mode: unknown names are flagged inline but still persisted —
- * fail-loud happens at execute time. Values must be JSON; an invalid
- * value keeps the previously persisted value until it parses.
- */
-function ArgumentsEditor({
-  args,
+export function IoArgumentsEditor({
+  value,
   argumentNames,
-  flagContext,
+  context,
   onCommit,
-  inputStyle,
+  inputStyle = INPUT_STYLE,
 }: {
-  args: Record<string, unknown>
+  value: unknown
   argumentNames: string[]
-  flagContext: string
+  context: string
   onCommit: (next: Record<string, unknown>) => void
-  inputStyle: React.CSSProperties
+  inputStyle?: CSSProperties
 }) {
+  const args = useMemo(() => (isPlainRecord(value) ? value : {}), [value])
   const argsJson = JSON.stringify(args)
-  const [rows, setRows] = useState<ArgRow[]>(() => rowsFromArguments(args))
+  const [rows, setRows] = useState<ArgumentRow[]>(() => argumentRows(args))
   const lastSynced = useRef(argsJson)
-  useEffect(() => {
-    // Re-derive rows only on external config changes (node switch, undo);
-    // our own commits update lastSynced first so local edit state (row
-    // order, in-progress names) survives the round trip.
-    if (argsJson !== lastSynced.current) {
-      lastSynced.current = argsJson
-      setRows(rowsFromArguments(JSON.parse(argsJson) as Record<string, unknown>))
-    }
-  }, [argsJson])
   const datalistId = useId()
 
-  const commit = (nextRows: ArgRow[]) => {
+  useEffect(() => {
+    if (argsJson !== lastSynced.current) {
+      lastSynced.current = argsJson
+      setRows(argumentRows(args))
+    }
+  }, [args, argsJson])
+
+  const commit = (nextRows: ArgumentRow[]) => {
     setRows(nextRows)
     const next: Record<string, unknown> = {}
     for (const row of nextRows) {
@@ -94,8 +100,6 @@ function ArgumentsEditor({
       try {
         next[name] = JSON.parse(row.valueText)
       } catch {
-        // Invalid JSON mid-edit: keep the previously persisted value (if
-        // any) rather than dropping or corrupting the key.
         if (Object.hasOwn(args, name)) next[name] = args[name]
       }
     }
@@ -109,28 +113,38 @@ function ArgumentsEditor({
         <EditorLabel as="span">Arguments</EditorLabel>
         <button
           type="button"
-          onClick={() => commit([...rows, { id: nextArgRowId++, name: "", valueText: "" }])}
+          onClick={() =>
+            commit([
+              ...rows,
+              { id: nextArgumentRowId++, name: "", valueText: "" },
+            ])
+          }
           className="flex items-center gap-1 text-[11px] font-medium"
           style={{ color: "var(--accent)" }}
         >
-          <Plus size={11} /> Add argument
+          <Plus size={11} />
+          Add argument
         </button>
       </div>
+
       <datalist id={datalistId}>
-        {argumentNames.map((n) => (
-          <option key={n} value={n} />
+        {argumentNames.map((name) => (
+          <option key={name} value={name} />
         ))}
       </datalist>
+
       {rows.length === 0 ? (
-        <div className="mt-1 text-[11px]" style={{ color: "var(--text-muted)" }}>
-          No arguments — polars defaults apply.
-        </div>
+        <p className="mt-1 text-[11px]" style={{ color: "var(--text-muted)" }}>
+          No arguments configured.
+        </p>
       ) : (
         <div className="mt-1 space-y-1.5">
-          {rows.map((row, i) => {
+          {rows.map((row, index) => {
             const name = row.name.trim()
-            const nameUnknown = name !== "" && argumentNames.length > 0 && !argumentNames.includes(name)
-            const valueInvalid = row.valueText !== "" && !parsesAsJson(row.valueText)
+            const unknownName =
+              name !== "" && !argumentNames.includes(name)
+            const invalidValue =
+              row.valueText !== "" && !parsesAsJson(row.valueText)
             return (
               <div key={row.id}>
                 <div className="flex items-center gap-1.5">
@@ -139,8 +153,16 @@ function ArgumentsEditor({
                     list={datalistId}
                     value={row.name}
                     placeholder="name"
-                    aria-label={`Argument ${i + 1} name`}
-                    onCommit={(v) => commit(rows.map((r) => (r.id === row.id ? { ...r, name: v } : r)))}
+                    aria-label={`Argument ${index + 1} name`}
+                    onCommit={(nextName) =>
+                      commit(
+                        rows.map((candidate) =>
+                          candidate.id === row.id
+                            ? { ...candidate, name: nextName }
+                            : candidate,
+                        ),
+                      )
+                    }
                     className="focus-ring w-2/5 px-2 py-1.5 text-xs font-mono rounded-lg"
                     style={inputStyle}
                   />
@@ -148,29 +170,46 @@ function ArgumentsEditor({
                     type="text"
                     value={row.valueText}
                     placeholder='JSON value, e.g. "," or true'
-                    aria-label={`Argument ${i + 1} value`}
-                    onCommit={(v) => commit(rows.map((r) => (r.id === row.id ? { ...r, valueText: v } : r)))}
+                    aria-label={`Argument ${index + 1} value`}
+                    onCommit={(valueText) =>
+                      commit(
+                        rows.map((candidate) =>
+                          candidate.id === row.id
+                            ? { ...candidate, valueText }
+                            : candidate,
+                        ),
+                      )
+                    }
                     className="focus-ring flex-1 px-2 py-1.5 text-xs font-mono rounded-lg"
                     style={inputStyle}
                   />
                   <button
                     type="button"
-                    aria-label={`Remove argument ${i + 1}`}
-                    onClick={() => commit(rows.filter((r) => r.id !== row.id))}
+                    aria-label={`Remove argument ${index + 1}`}
+                    onClick={() =>
+                      commit(rows.filter((candidate) => candidate.id !== row.id))
+                    }
                     className="icon-danger-btn p-1 rounded shrink-0"
                   >
                     <X size={12} />
                   </button>
                 </div>
-                {nameUnknown && (
-                  <div className="mt-0.5 text-[11px]" style={{ color: "var(--warning-strong)" }}>
-                    {name} is not a recognised {flagContext} argument — saved anyway; execution fails loudly.
-                  </div>
+                {unknownName && (
+                  <p
+                    className="mt-0.5 text-[11px]"
+                    style={{ color: "var(--warning-strong)" }}
+                  >
+                    {name} is not a supported {context} argument. It is kept so
+                    the backend can reject it explicitly.
+                  </p>
                 )}
-                {valueInvalid && (
-                  <div className="mt-0.5 text-[11px]" style={{ color: "var(--danger-text)" }}>
-                    Invalid JSON value — the previous value is kept until this parses.
-                  </div>
+                {invalidValue && (
+                  <p
+                    className="mt-0.5 text-[11px]"
+                    style={{ color: "var(--danger-text)" }}
+                  >
+                    Invalid JSON. The previous value is kept until this parses.
+                  </p>
                 )}
               </div>
             )
@@ -181,394 +220,451 @@ function ArgumentsEditor({
   )
 }
 
-// ─── Source / target fields ──────────────────────────────────────
-
-function PathField({
-  config,
-  onUpdate,
-  extensions,
-  inputStyle,
-}: {
-  config: Record<string, unknown>
-  onUpdate: OnUpdateConfig
-  extensions: string[]
-  inputStyle: React.CSSProperties
-}) {
-  const configPath = configField(config, "path", "")
-  const [browsing, setBrowsing] = useState(false)
-  const id = useId()
-  return (
-    <div>
-      <div className="flex items-center justify-between">
-        <EditorLabel htmlFor={id}>Path</EditorLabel>
-        <button
-          type="button"
-          onClick={() => setBrowsing(!browsing)}
-          className="text-[11px] font-medium"
-          style={{ color: "var(--accent)" }}
-        >
-          {browsing ? "close" : "browse"}
-        </button>
-      </div>
-      <CommittedTextField
-        id={id}
-        type="text"
-        value={configPath}
-        onCommit={(v) => onUpdate("path", v)}
-        className="focus-ring mt-1 w-full px-2.5 py-1.5 text-xs font-mono rounded-lg"
-        style={inputStyle}
-      />
-      {browsing && (
-        <div className="mt-2">
-          <FileBrowser
-            currentPath={configPath || undefined}
-            onSelect={(p) => {
-              onUpdate("path", p)
-              setBrowsing(false)
-            }}
-            extensions={extensions.length > 0 ? extensions.join(",") : undefined}
-          />
-        </div>
-      )}
-    </div>
-  )
-}
-
-function DatabaseFields({
-  config,
-  onUpdate,
-  targetKey,
-  targetLabel,
-  multiline,
-  inputStyle,
-}: {
-  config: Record<string, unknown>
-  onUpdate: OnUpdateConfig
-  targetKey: "query" | "table"
-  targetLabel: string
-  multiline: boolean
-  inputStyle: React.CSSProperties
-}) {
-  const configUri = configField(config, "uri", "")
-  const configTarget = configField(config, targetKey, "")
-  const uriId = useId()
-  const targetId = useId()
-  return (
-    <>
-      <div>
-        <EditorLabel htmlFor={uriId}>Connection URI</EditorLabel>
-        <CommittedTextField
-          id={uriId}
-          type="text"
-          value={configUri}
-          onCommit={(v) => onUpdate("uri", v)}
-          className="focus-ring mt-1 w-full px-2.5 py-1.5 text-xs font-mono rounded-lg"
-          style={inputStyle}
-        />
-      </div>
-      <div>
-        <EditorLabel htmlFor={targetId}>{targetLabel}</EditorLabel>
-        {multiline ? (
-          <CommittedTextArea
-            id={targetId}
-            value={configTarget}
-            rows={3}
-            onCommit={(v) => onUpdate(targetKey, v)}
-            className="focus-ring mt-1 w-full px-2.5 py-1.5 text-xs font-mono rounded-lg resize-y"
-            style={inputStyle}
-          />
-        ) : (
-          <CommittedTextField
-            id={targetId}
-            type="text"
-            value={configTarget}
-            onCommit={(v) => onUpdate(targetKey, v)}
-            className="focus-ring mt-1 w-full px-2.5 py-1.5 text-xs font-mono rounded-lg"
-            style={inputStyle}
-          />
-        )}
-      </div>
-    </>
-  )
-}
-
 function RecordsField({
+  fieldName,
+  label,
+  required,
   config,
   onUpdate,
   inputStyle,
 }: {
+  fieldName: string
+  label: string
+  required: boolean
   config: Record<string, unknown>
   onUpdate: OnUpdateConfig
-  inputStyle: React.CSSProperties
+  inputStyle: CSSProperties
 }) {
-  const raw = config.records
-  const configText = raw === undefined ? "" : JSON.stringify(raw, null, 2)
-  const [text, setText] = useState(configText)
-  const [invalid, setInvalid] = useState<string | null>(null)
-  const lastCommitted = useRef(configText)
-  useEffect(() => {
-    if (configText !== lastCommitted.current) {
-      lastCommitted.current = configText
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- external-config resync: replace draft text with the persisted records
-      setText(configText)
-      setInvalid(null)
-    }
-  }, [configText])
+  const raw = config[fieldName]
+  const configText = JSON.stringify(raw ?? [], null, 2) ?? "[]"
+  const configError =
+    raw === undefined || Array.isArray(raw) ? null : "Records must be a JSON array."
+  const [editor, setEditor] = useState(() => ({
+    sourceText: configText,
+    text: configText,
+    error: configError,
+  }))
   const id = useId()
-  // Validate per keystroke (live feedback) but commit only at the blur
-  // boundary — committing per parseable keystroke pushed one undo
-  // snapshot per character (BUGS undo-atomicity class).
-  const validateRecords = (value: string): unknown[] | null => {
+
+  // React permits a guarded render-time adjustment when state is derived from
+  // a prop identity. This keeps undo/external config replacement in sync
+  // without an effect-driven extra render, while preserving an in-progress
+  // draft until the persisted value actually changes.
+  if (editor.sourceText !== configText) {
+    setEditor({
+      sourceText: configText,
+      text: configText,
+      error: configError,
+    })
+  }
+
+  const parseRecords = (value: string): unknown[] | null => {
     let parsed: unknown
     try {
       parsed = JSON.parse(value)
     } catch {
-      setInvalid("Invalid JSON — changes not saved yet")
+      setEditor((current) => ({
+        ...current,
+        error: "Invalid JSON - changes have not been saved.",
+      }))
       return null
     }
     if (!Array.isArray(parsed)) {
-      setInvalid("Must be a JSON array of records")
+      setEditor((current) => ({
+        ...current,
+        error: "Records must be a JSON array.",
+      }))
       return null
     }
-    setInvalid(null)
+    setEditor((current) => ({ ...current, error: null }))
     return parsed
   }
-  const handleChange = (value: string) => {
-    setText(value)
-    validateRecords(value)
-  }
-  const handleBlur = () => {
-    const parsed = validateRecords(text)
-    if (parsed === null) return
-    const canonical = JSON.stringify(parsed, null, 2)
-    // Skip no-op commits (same records, maybe different whitespace).
-    if (canonical === lastCommitted.current) return
-    lastCommitted.current = canonical
-    onUpdate("records", parsed)
-  }
+
   return (
     <div>
-      <EditorLabel htmlFor={id}>Records</EditorLabel>
+      <EditorLabel htmlFor={id}>
+        {label}
+        {required ? " *" : ""}
+      </EditorLabel>
       <textarea
         id={id}
-        value={text}
+        aria-label={label}
+        value={editor.text}
         rows={6}
-        placeholder='[{"a": 1, "b": "x"}]'
-        onChange={(e) => handleChange(e.target.value)}
-        onBlur={handleBlur}
+        placeholder='[{"column": "value"}]'
+        onChange={(event) => {
+          setEditor((current) => ({
+            ...current,
+            text: event.target.value,
+          }))
+          parseRecords(event.target.value)
+        }}
+        onBlur={() => {
+          const parsed = parseRecords(editor.text)
+          if (parsed === null) return
+          const canonical = JSON.stringify(parsed, null, 2)
+          setEditor({ sourceText: canonical, text: canonical, error: null })
+          if (canonical === configText) return
+          onUpdate(fieldName, parsed)
+        }}
         className="focus-ring mt-1 w-full px-2.5 py-1.5 text-xs font-mono rounded-lg resize-y"
         style={inputStyle}
       />
-      {invalid && (
-        <div className="mt-1 text-[11px]" style={{ color: "var(--danger-text)" }}>
-          {invalid}
-        </div>
+      {editor.error && (
+        <p className="mt-1 text-[11px]" style={{ color: "var(--danger-text)" }}>
+          {editor.error}
+        </p>
       )}
     </div>
   )
 }
 
-// ─── Unrecognised keys (1:1 JSON↔UI invariant) ───────────────────
-
-function UnrecognisedKeysSection({
-  config,
-  keys,
+function CapabilityDiagnostics({
+  direction,
+  capability,
 }: {
-  config: Record<string, unknown>
-  keys: string[]
+  direction: Direction
+  capability: IoInputCapability | IoOutputCapability
 }) {
-  if (keys.length === 0) return null
+  if (direction === "input") {
+    const input = capability as IoInputCapability
+    const snapshotLabel =
+      input.snapshot_build === "bounded"
+        ? "bounded"
+        : input.snapshot_build === "admitted_eager"
+          ? "eager with memory admission"
+          : "not supported"
+    return (
+      <p className="text-[11px]" style={{ color: "var(--text-muted)" }}>
+        Direct reads are {input.direct_bounded ? "bounded" : "eager"}; snapshot
+        builds are {snapshotLabel}.
+      </p>
+    )
+  }
+
+  const output = capability as IoOutputCapability
+  const execution =
+    output.native_sink && output.eager_writer
+      ? "streaming sink or eager writer"
+      : output.native_sink
+        ? "streaming sink"
+        : "eager writer"
   return (
-    <div
-      data-testid="unrecognised-keys"
-      className="rounded-lg px-2.5 py-2"
-      style={{ background: "var(--warning-soft)", border: "1px solid var(--warning-border)" }}
-    >
-      <EditorLabel as="div" color="var(--warning-strong)">Unrecognised keys</EditorLabel>
-      <div className="mt-0.5 text-[11px]" style={{ color: "var(--text-secondary)" }}>
-        Not edited here — kept as-is in the saved config.
-      </div>
-      <div className="mt-1 space-y-0.5">
-        {keys.map((k) => (
-          <div key={k} className="text-xs font-mono break-all" style={{ color: "var(--text-secondary)" }}>
-            <span style={{ color: "var(--warning-strong)" }}>{k}</span>: {JSON.stringify(config[k])}
-          </div>
-        ))}
-      </div>
-    </div>
+    <p className="text-[11px]" style={{ color: "var(--text-muted)" }}>
+      {execution}; {output.publication} publication.
+    </p>
   )
 }
 
-// ─── Editor body ──────────────────────────────────────────────────
-
 export default function IoFormatEditor({
-  side,
+  group,
+  direction,
   config,
   onUpdate,
+  onSelectFormat,
   accentColor,
 }: {
-  side: IoSide
+  group: IoCapabilityGroup
+  direction: Direction
   config: Record<string, unknown>
   onUpdate: OnUpdateConfig
+  onSelectFormat: (format: IoFormatCapability) => void
   accentColor: string
 }) {
-  const spec = IO_SIDE_SPECS[side]
-  const { formats, error: formatsError } = useIoFormats()
-  const format = configField(config, "format", "")
-  const capability = formats?.find((f) => f.name === format) ?? null
-  const options = (formats ?? []).filter((f) => f[spec.availableKey])
-  const modes = capability ? capability[spec.modesKey] : []
-  const explicitMode = configField(config, "mode", "")
-  const effectiveMode = explicitMode || modes[0] || ""
-  const enginesMissing = capability ? capability[spec.enginesMissingKey] : []
-  const argumentNames = capability ? capability[spec.argumentsKey][effectiveMode] ?? [] : []
-
-  const argsValue = config.arguments
-  const argsIsRecord = argsValue === undefined || isPlainRecord(argsValue)
-  const args = isPlainRecord(argsValue) ? argsValue : {}
-
-  // Mode selector: shown when there is a real choice, or when a persisted
-  // mode must surface. The default (first listed mode) is displayed but
-  // only persisted when the user picks explicitly.
-  const modeSelectVisible = modes.length > 1 || Boolean(explicitMode)
-
-  // 1:1 JSON↔UI invariant — anything not rendered by the structured
-  // controls above lands in the read-only unrecognised-keys section.
-  const renderedKeys = new Set<string>(["format"])
-  if (modeSelectVisible) renderedKeys.add("mode")
-  if (argsIsRecord) renderedKeys.add("arguments")
-  if (capability?.source_kind === "path") renderedKeys.add("path")
-  if (capability?.source_kind === "database") {
-    renderedKeys.add("uri")
-    renderedKeys.add(spec.databaseTargetKey)
-  }
-  if (capability?.source_kind === "inline") renderedKeys.add("records")
-  const unrecognisedKeys = Object.keys(config).filter(
-    (k) => !renderedKeys.has(k) && config[k] !== undefined,
+  const formats = group.formats.filter(
+    (candidate) => candidate[direction] !== null,
   )
+  const format = formats.find(
+    (candidate) => candidate.name === config.format,
+  )
+  const capability = format?.[direction] ?? null
+  const modes = capability?.modes ?? []
+  const explicitMode =
+    typeof config.mode === "string" ? config.mode : ""
+  const effectiveMode = explicitMode || modes[0] || ""
+  const fields =
+    direction === "input" ? group.input_fields : group.output_fields
+  const modeVisible = modes.length > 1 || explicitMode !== ""
+  const [browsingField, setBrowsingField] = useState<string | null>(null)
+  const formatId = useId()
+  const modeId = useId()
 
-  const inputStyle: React.CSSProperties = {
+  const inputStyle: CSSProperties = {
     ...INPUT_STYLE,
     ["--focus-ring-border" as string]: withAlpha(accentColor, 0.3),
     ["--focus-ring-shadow" as string]: withAlpha(accentColor, 0.1),
   }
-  const formatId = useId()
-  const modeId = useId()
+
+  const configErrors: string[] = []
+  if (!format) {
+    configErrors.push("Select a valid format for this provider.")
+  }
+  if (
+    capability &&
+    explicitMode !== "" &&
+    !modes.includes(explicitMode as never)
+  ) {
+    configErrors.push("The selected mode is not valid for this format.")
+  }
+  if (
+    config.arguments !== undefined &&
+    !isPlainRecord(config.arguments)
+  ) {
+    configErrors.push("Arguments must be an object.")
+  }
+
+  const common =
+    direction === "input" ? INPUT_COMMON_KEYS : OUTPUT_COMMON_KEYS
+  const knownKeys = new Set<string>([
+    ...common,
+    direction === "input" ? "inputType" : "outputType",
+    "format",
+    "arguments",
+    ...fields.map((field) => field.name),
+  ])
+  if (direction === "input") knownKeys.add("cacheMode")
+  if (!(direction === "input" && group.name === "database")) {
+    knownKeys.add("mode")
+  }
+  const inactiveKeys = Object.keys(config).filter(
+    (key) => config[key] !== undefined && !knownKeys.has(key),
+  )
+  if (inactiveKeys.length > 0) {
+    configErrors.push(
+      `Unexpected configuration keys: ${inactiveKeys.join(", ")}.`,
+    )
+  }
+
+  const updateField = (name: string, value: string) => {
+    if ((name === "connection" || name === "uri") && value.trim() !== "") {
+      const other = name === "connection" ? "uri" : "connection"
+      onUpdate({ [name]: value, [other]: "" })
+      return
+    }
+    onUpdate(name, value)
+  }
+
+  const argumentMode =
+    direction === "input" && group.name === "database"
+      ? "snapshot"
+      : effectiveMode
+  const argumentNames = capability?.arguments[argumentMode] ?? []
 
   return (
-    <div className="px-4 py-3 space-y-3">
+    <div className="space-y-3">
+      {configErrors.length > 0 && (
+        <section
+          aria-label="Configuration errors"
+          className="rounded-lg p-2 text-[11px]"
+          style={{
+            background: "var(--danger-soft)",
+            border: "1px solid var(--danger-border)",
+            color: "var(--danger-text)",
+          }}
+        >
+          <EditorLabel as="div" color="var(--danger-text)">
+            Configuration errors
+          </EditorLabel>
+          {configErrors.map((message) => (
+            <p key={message}>{message}</p>
+          ))}
+        </section>
+      )}
+
       <div>
         <EditorLabel htmlFor={formatId}>Format</EditorLabel>
-        {formatsError ? (
-          <div
-            className="mt-1 px-2.5 py-2 rounded-lg text-xs"
-            style={{ background: "var(--danger-soft)", border: "1px solid var(--danger-border)", color: "var(--danger-text)" }}
+        <select
+          id={formatId}
+          aria-label="Format"
+          value={typeof config.format === "string" ? config.format : ""}
+          onChange={(event) => {
+            const next = formats.find(
+              (candidate) => candidate.name === event.target.value,
+            )
+            if (next) onSelectFormat(next)
+          }}
+          className="focus-ring mt-1 w-full px-2.5 py-1.5 text-xs rounded-lg"
+          style={inputStyle}
+        >
+          <option value="">Select a format...</option>
+          {typeof config.format === "string" &&
+            config.format !== "" &&
+            !formats.some((candidate) => candidate.name === config.format) && (
+              <option value={config.format}>
+                {config.format} (not available)
+              </option>
+            )}
+          {formats.map((candidate) => (
+            <option key={candidate.name} value={candidate.name}>
+              {candidate.label}
+              {candidate.unstable ? " (unstable)" : ""}
+              {candidate[direction]?.engines_missing.length
+                ? ` - needs one of: ${candidate[
+                    direction
+                  ]?.engines_missing.join(", ")}`
+                : ""}
+            </option>
+          ))}
+        </select>
+
+        {format?.unstable && (
+          <p
+            className="mt-1 text-[11px]"
+            style={{ color: "var(--warning-strong)" }}
           >
-            Could not load format capabilities: {formatsError}
-          </div>
-        ) : formats === null ? (
-          <div className="mt-1 text-xs" style={{ color: "var(--text-muted)" }}>
-            Loading formats...
-          </div>
-        ) : (
-          <>
-            <select
-              id={formatId}
-              value={format}
-              onChange={(e) => onUpdate("format", e.target.value)}
-              className="focus-ring mt-1 w-full px-2.5 py-1.5 text-xs rounded-lg"
-              style={inputStyle}
-            >
-              <option value="">Select a format...</option>
-              {format !== "" && !options.some((f) => f.name === format) && (
-                <option value={format}>{format} (not available)</option>
-              )}
-              {options.map((f) => {
-                const missing = f[spec.enginesMissingKey]
-                return (
-                  <option key={f.name} value={f.name}>
-                    {f.label}
-                    {f.unstable ? " (unstable)" : ""}
-                    {missing.length > 0 ? ` — needs one of: ${missing.join(", ")}` : ""}
-                  </option>
-                )
-              })}
-            </select>
-            {capability?.unstable && (
-              <div className="mt-1 text-[11px]" style={{ color: "var(--warning-strong)" }}>
-                Unstable: polars marks this format's {side === "input" ? "reader" : "writer"} as unstable.
-              </div>
-            )}
-            {enginesMissing.length > 0 && (
-              <div
-                className="mt-1 px-2.5 py-1.5 rounded-lg text-[11px]"
-                style={{ background: "var(--warning-soft)", border: "1px solid var(--warning-border)", color: "var(--warning-strong)" }}
-              >
-                Missing engine package — needs one of: {enginesMissing.join(", ")}
-              </div>
-            )}
-          </>
+            Polars marks this format's{" "}
+            {direction === "input" ? "reader" : "writer"} as unstable.
+          </p>
+        )}
+        {capability && capability.engines_missing.length > 0 && (
+          <p
+            className="mt-1 rounded-lg px-2.5 py-1.5 text-[11px]"
+            style={{
+              background: "var(--warning-soft)",
+              border: "1px solid var(--warning-border)",
+              color: "var(--warning-strong)",
+            }}
+          >
+            Missing engine package. Install one of:{" "}
+            {capability.engines_missing.join(", ")}.
+          </p>
         )}
       </div>
 
-      {modeSelectVisible && (
+      {modeVisible && (
         <div>
           <EditorLabel htmlFor={modeId}>Mode</EditorLabel>
           <select
             id={modeId}
+            aria-label="Mode"
             value={effectiveMode}
-            onChange={(e) => onUpdate("mode", e.target.value)}
+            onChange={(event) => onUpdate("mode", event.target.value)}
             className="focus-ring mt-1 w-full px-2.5 py-1.5 text-xs rounded-lg"
             style={inputStyle}
           >
-            {explicitMode !== "" && !modes.includes(explicitMode) && (
-              <option value={explicitMode}>
-                {explicitMode}
-                {capability ? " (not valid for this format)" : ""}
-              </option>
-            )}
-            {modes.map((m) => (
-              <option key={m} value={m}>
-                {m}
+            {explicitMode !== "" &&
+              !modes.includes(explicitMode as never) && (
+                <option value={explicitMode}>
+                  {explicitMode} (not valid for this format)
+                </option>
+              )}
+            {modes.map((mode) => (
+              <option key={mode} value={mode}>
+                {mode}
               </option>
             ))}
           </select>
         </div>
       )}
 
-      {capability?.source_kind === "path" && (
-        <PathField config={config} onUpdate={onUpdate} extensions={capability.extensions} inputStyle={inputStyle} />
-      )}
-      {capability?.source_kind === "database" && (
-        <DatabaseFields
-          config={config}
-          onUpdate={onUpdate}
-          targetKey={spec.databaseTargetKey}
-          targetLabel={spec.databaseTargetLabel}
-          multiline={spec.databaseTargetKey === "query"}
-          inputStyle={inputStyle}
-        />
-      )}
-      {capability?.source_kind === "inline" && (
-        <RecordsField config={config} onUpdate={onUpdate} inputStyle={inputStyle} />
-      )}
-      {!capability && format === "" && formats !== null && !formatsError && (
-        <div className="text-xs" style={{ color: "var(--text-muted)" }}>
-          Select a format to configure its {side === "input" ? "source" : "target"}.
-        </div>
-      )}
+      {fields.map((field) => {
+        if (field.kind === "records") {
+          return (
+            <RecordsField
+              key={field.name}
+              fieldName={field.name}
+              label={field.label}
+              required={field.required}
+              config={config}
+              onUpdate={onUpdate}
+              inputStyle={inputStyle}
+            />
+          )
+        }
 
-      {argsIsRecord && (
-        <ArgumentsEditor
-          args={args}
-          argumentNames={argumentNames}
-          flagContext={capability ? `${capability.label} ${effectiveMode}`.trim() : "polars"}
-          onCommit={(next) => onUpdate("arguments", next)}
-          inputStyle={inputStyle}
-        />
-      )}
+        const rawValue = config[field.name]
+        const value = typeof rawValue === "string" ? rawValue : ""
 
-      <UnrecognisedKeysSection config={config} keys={unrecognisedKeys} />
+        if (field.kind === "path") {
+          const browsing = browsingField === field.name
+          return (
+            <div key={field.name}>
+              <div className="flex items-center justify-between">
+                <EditorLabel>
+                  {field.label}
+                  {field.required ? " *" : ""}
+                </EditorLabel>
+                <button
+                  type="button"
+                  onClick={() =>
+                    setBrowsingField(browsing ? null : field.name)
+                  }
+                  className="text-[11px] font-medium"
+                  style={{ color: "var(--accent)" }}
+                >
+                  {browsing ? "close" : "browse"}
+                </button>
+              </div>
+              <CommittedTextField
+                aria-label={field.label}
+                value={value}
+                onCommit={(next) => updateField(field.name, next)}
+                className="focus-ring mt-1 w-full px-2.5 py-1.5 text-xs font-mono rounded-lg"
+                style={inputStyle}
+              />
+              {browsing && (
+                <div className="mt-2">
+                  <FileBrowser
+                    currentPath={value || undefined}
+                    extensions={
+                      format && format.extensions.length > 0
+                        ? format.extensions.join(",")
+                        : undefined
+                    }
+                    onSelect={(path) => {
+                      updateField(field.name, path)
+                      setBrowsingField(null)
+                    }}
+                  />
+                </div>
+              )}
+            </div>
+          )
+        }
+
+        return (
+          <div key={field.name}>
+            <EditorLabel>
+              {field.label}
+              {field.required ? " *" : ""}
+            </EditorLabel>
+            {field.kind === "query" ? (
+              <CommittedTextArea
+                aria-label={field.label}
+                value={value}
+                rows={3}
+                onCommit={(next) => updateField(field.name, next)}
+                className="focus-ring mt-1 w-full px-2.5 py-1.5 text-xs font-mono rounded-lg resize-y"
+                style={inputStyle}
+              />
+            ) : (
+              <CommittedTextField
+                aria-label={field.label}
+                value={value}
+                onCommit={(next) => updateField(field.name, next)}
+                className="focus-ring mt-1 w-full px-2.5 py-1.5 text-xs font-mono rounded-lg"
+                style={inputStyle}
+              />
+            )}
+          </div>
+        )
+      })}
+
+      {capability && (
+        <>
+          <CapabilityDiagnostics
+            direction={direction}
+            capability={capability}
+          />
+          <IoArgumentsEditor
+            value={config.arguments}
+            argumentNames={argumentNames}
+            context={`${format?.label ?? "format"} ${argumentMode}`.trim()}
+            onCommit={(next) => onUpdate("arguments", next)}
+            inputStyle={inputStyle}
+          />
+        </>
+      )}
     </div>
   )
 }

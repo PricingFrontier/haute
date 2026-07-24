@@ -1,20 +1,378 @@
-import IoFormatEditor from "./_IoFormatEditor"
-import type { OnUpdateConfig } from "./_shared"
+import { CommittedTextArea, EditorLabel } from "../../components/form"
+import type { IoCapabilityGroup, IoFormatCapability } from "../../api/types"
+import { CodeEditor } from "./CodeEditor"
+import { WarehousePicker, CatalogTablePicker } from "./_DatabricksSelector"
+import InputCacheControls from "./_InputCacheControls"
+import IoFormatEditor, { IoArgumentsEditor } from "./_IoFormatEditor"
+import { useIoCapabilities } from "./_ioFormats"
+import { INPUT_STYLE } from "./_shared"
+import type { OnReplaceConfig, OnUpdateConfig } from "./_shared"
 
-/**
- * Editor for the `dataInput` node — a registry-driven wrapper over the
- * native polars read/scan surface. Format options, modes, argument names
- * and missing-engine flags all come from GET /api/formats; nothing is
- * hard-coded here (io-nodes review IO12).
- */
+const INPUT_COMMON_KEYS = [
+  "instanceOf",
+  "inputMapping",
+  "selected_columns",
+  "column_renames",
+  "categorical_levels",
+  "contract",
+  "code",
+] as const
+
+const DATABRICKS_KEYS = new Set([
+  ...INPUT_COMMON_KEYS,
+  "inputType",
+  "cacheMode",
+  "http_path",
+  "table",
+  "query",
+  "arguments",
+])
+
+function retainedCommonConfig(config: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(
+    INPUT_COMMON_KEYS.flatMap((key) =>
+      config[key] === undefined ? [] : [[key, config[key]]],
+    ),
+  )
+}
+
+function initialFieldValue(field: IoCapabilityGroup["input_fields"][number]): unknown {
+  return field.kind === "records" ? [] : ""
+}
+
+function selectedInputFormat(
+  group: IoCapabilityGroup,
+  requested?: IoFormatCapability,
+): IoFormatCapability | undefined {
+  if (requested?.input) return requested
+  return group.formats.find((format) => format.input !== null)
+}
+
+function inputBranchConfig(
+  config: Record<string, unknown>,
+  group: IoCapabilityGroup,
+  requestedFormat?: IoFormatCapability,
+  preserveProviderFields = false,
+): Record<string, unknown> {
+  const format = selectedInputFormat(group, requestedFormat)
+  const capability = format?.input
+  const fields = Object.fromEntries(
+    group.input_fields.flatMap((field) => {
+      if (preserveProviderFields && config[field.name] !== undefined) {
+        return [[field.name, config[field.name]]]
+      }
+      return field.required
+        ? [[field.name, initialFieldValue(field)]]
+        : []
+    }),
+  )
+  const currentCacheMode =
+    preserveProviderFields &&
+    typeof config.cacheMode === "string" &&
+    group.cache_modes.includes(config.cacheMode as "direct" | "snapshot")
+      ? config.cacheMode
+      : null
+  const cacheMode =
+    currentCacheMode ??
+    (group.cache_modes.includes("direct") ? "direct" : group.cache_modes[0])
+
+  return {
+    ...retainedCommonConfig(config),
+    inputType: group.name,
+    cacheMode,
+    ...(format ? { format: format.name } : {}),
+    ...(capability?.modes[0] ? { mode: capability.modes[0] } : {}),
+    arguments: {},
+    ...fields,
+  }
+}
+
+function hasNonEmptyString(value: unknown): boolean {
+  return typeof value === "string" && value.trim().length > 0
+}
+
+function providerFieldsReady(
+  group: IoCapabilityGroup,
+  config: Record<string, unknown>,
+): boolean {
+  if (group.name === "database") {
+    const hasConnection = hasNonEmptyString(config.connection)
+    const hasUri = hasNonEmptyString(config.uri)
+    return hasConnection !== hasUri && hasNonEmptyString(config.query)
+  }
+  return group.input_fields
+    .filter((field) => field.required)
+    .every((field) =>
+      field.kind === "records"
+        ? Array.isArray(config[field.name])
+        : hasNonEmptyString(config[field.name]),
+    )
+}
+
+function formatAndModeReady(
+  group: IoCapabilityGroup,
+  format: IoFormatCapability | undefined,
+  config: Record<string, unknown>,
+): boolean {
+  if (group.name === "databricks") return true
+  const capability = format?.input
+  if (!capability || capability.engines_missing.length > 0) return false
+  if (capability.modes.length === 0) return true
+  const configuredMode = typeof config.mode === "string" ? config.mode : ""
+  if (!configuredMode) return capability.modes.length === 1
+  return capability.modes.includes(configuredMode as "read" | "scan")
+}
+
+function databricksConfigurationErrors(config: Record<string, unknown>): string[] {
+  const errors: string[] = []
+  const inactive = Object.keys(config).filter(
+    (key) => config[key] !== undefined && !DATABRICKS_KEYS.has(key),
+  )
+  if (inactive.length > 0) {
+    errors.push(`Unexpected configuration keys: ${inactive.join(", ")}.`)
+  }
+  if (config.cacheMode !== "snapshot") {
+    errors.push("Databricks requires snapshot cache mode.")
+  }
+  if (
+    config.arguments !== undefined &&
+    (typeof config.arguments !== "object" ||
+      config.arguments === null ||
+      Array.isArray(config.arguments))
+  ) {
+    errors.push("Arguments must be an object.")
+  } else if (
+    config.arguments !== undefined &&
+    typeof config.arguments === "object" &&
+    config.arguments !== null &&
+    !Array.isArray(config.arguments)
+  ) {
+    const argumentsRecord = config.arguments as Record<string, unknown>
+    const unknownArguments = Object.keys(argumentsRecord).filter(
+      (name) => name !== "batch_size",
+    )
+    if (unknownArguments.length > 0) {
+      errors.push(
+        `Unsupported Databricks arguments: ${unknownArguments.join(", ")}.`,
+      )
+    }
+    const batchSize = argumentsRecord.batch_size
+    if (
+      batchSize !== undefined &&
+      (typeof batchSize !== "number" ||
+        !Number.isInteger(batchSize) ||
+        batchSize <= 0)
+    ) {
+      errors.push("Databricks batch_size must be a positive integer.")
+    }
+  }
+  if (config.query !== undefined && !hasNonEmptyString(config.query)) {
+    errors.push("The optional SELECT clause must be non-empty when present.")
+  }
+  return errors
+}
+
 export default function DataInputEditor({
   config,
   onUpdate,
+  onReplaceConfig,
   accentColor,
+  errorLine,
 }: {
   config: Record<string, unknown>
   onUpdate: OnUpdateConfig
+  onReplaceConfig: OnReplaceConfig
   accentColor: string
+  errorLine?: number | null
 }) {
-  return <IoFormatEditor side="input" config={config} onUpdate={onUpdate} accentColor={accentColor} />
+  const { capabilities, error } = useIoCapabilities()
+  const groups = (capabilities?.groups ?? []).filter((group) => group.input_available)
+  const group = groups.find((candidate) => candidate.name === config.inputType)
+  const format = group?.formats.find((candidate) => candidate.name === config.format)
+  const cacheMode = typeof config.cacheMode === "string" ? config.cacheMode : ""
+  const cacheModeReady =
+    group !== undefined &&
+    group.cache_modes.includes(cacheMode as "direct" | "snapshot")
+  const requiredReady =
+    group !== undefined &&
+    cacheModeReady &&
+    providerFieldsReady(group, config) &&
+    formatAndModeReady(group, format, config)
+  const showsSnapshotControls =
+    group?.cache_modes.includes("snapshot") === true && cacheMode === "snapshot"
+  const databricksErrors =
+    group?.name === "databricks" ? databricksConfigurationErrors(config) : []
+
+  return (
+    <div className="px-4 py-3 space-y-3">
+      {error && (
+        <p style={{ color: "var(--danger-text)" }}>
+          Could not load IO capabilities: {error}
+        </p>
+      )}
+
+      {config.inputType !== undefined && !group && capabilities && (
+        <section
+          aria-label="Configuration errors"
+          className="rounded-lg p-2 text-[11px]"
+          style={{
+            background: "var(--danger-soft)",
+            border: "1px solid var(--danger-border)",
+            color: "var(--danger-text)",
+          }}
+        >
+          Unknown Data Input provider {JSON.stringify(config.inputType)}.
+        </section>
+      )}
+
+      <div>
+        <EditorLabel>Provider</EditorLabel>
+        <select
+          aria-label="Provider"
+          value={group?.name ?? ""}
+          onChange={(event) => {
+            const next = groups.find((candidate) => candidate.name === event.target.value)
+            if (next) onReplaceConfig(inputBranchConfig(config, next))
+          }}
+          className="mt-1 w-full px-2.5 py-1.5 text-xs rounded-lg"
+          style={INPUT_STYLE}
+        >
+          <option value="">Select a provider...</option>
+          {groups.map((candidate) => (
+            <option key={candidate.name} value={candidate.name}>
+              {candidate.label}
+            </option>
+          ))}
+        </select>
+      </div>
+
+      {group && (
+        <div>
+          <EditorLabel>Cache mode</EditorLabel>
+          {group.cache_modes.length === 1 ? (
+            <div
+              aria-label="Cache mode"
+              className="mt-1 w-full px-2.5 py-1.5 text-xs rounded-lg"
+              style={INPUT_STYLE}
+            >
+              {group.cache_modes[0]} (required)
+            </div>
+          ) : (
+            <select
+              aria-label="Cache mode"
+              value={cacheMode}
+              onChange={(event) => onUpdate("cacheMode", event.target.value)}
+              className="mt-1 w-full px-2.5 py-1.5 text-xs rounded-lg"
+              style={INPUT_STYLE}
+            >
+              {cacheMode !== "" &&
+                !group.cache_modes.includes(
+                  cacheMode as "direct" | "snapshot",
+                ) && (
+                  <option value={cacheMode}>{cacheMode} (not available)</option>
+                )}
+              {group.cache_modes.map((mode) => (
+                <option key={mode} value={mode}>
+                  {mode}
+                </option>
+              ))}
+            </select>
+          )}
+        </div>
+      )}
+
+      {group?.name === "databricks" ? (
+        <div className="space-y-3">
+          {databricksErrors.length > 0 && (
+            <section
+              aria-label="Configuration errors"
+              className="rounded-lg p-2 text-[11px]"
+              style={{
+                background: "var(--danger-soft)",
+                border: "1px solid var(--danger-border)",
+                color: "var(--danger-text)",
+              }}
+            >
+              <EditorLabel as="div" color="var(--danger-text)">
+                Configuration errors
+              </EditorLabel>
+              {databricksErrors.map((message) => (
+                <p key={message}>{message}</p>
+              ))}
+            </section>
+          )}
+          <WarehousePicker
+            httpPath={typeof config.http_path === "string" ? config.http_path : ""}
+            onSelect={(value) => onUpdate("http_path", value)}
+          />
+          <CatalogTablePicker
+            table={typeof config.table === "string" ? config.table : ""}
+            onSelect={(value) => onUpdate("table", value)}
+          />
+          <div>
+            <EditorLabel>SELECT clause</EditorLabel>
+            <CommittedTextArea
+              aria-label="SELECT clause"
+              value={typeof config.query === "string" ? config.query : ""}
+              onCommit={(value) => {
+                const query = value.trim()
+                if (query) {
+                  onUpdate("query", query)
+                } else if ("query" in config) {
+                  const next = { ...config }
+                  delete next.query
+                  onReplaceConfig(next)
+                }
+              }}
+              rows={3}
+              className="mt-1 w-full px-2.5 py-1.5 text-xs font-mono rounded-lg"
+              style={INPUT_STYLE}
+            />
+            <p className="mt-1 text-[11px]" style={{ color: "var(--text-muted)" }}>
+              Optional projection/filter clause. Haute supplies the validated table.
+            </p>
+          </div>
+          <IoArgumentsEditor
+            value={config.arguments}
+            argumentNames={["batch_size"]}
+            context="Databricks snapshot"
+            onCommit={(next) => onUpdate("arguments", next)}
+          />
+        </div>
+      ) : group ? (
+        <IoFormatEditor
+          group={group}
+          direction="input"
+          config={config}
+          onUpdate={onUpdate}
+          onSelectFormat={(next) =>
+            onReplaceConfig(inputBranchConfig(config, group, next, true))
+          }
+          accentColor={accentColor}
+        />
+      ) : null}
+
+      {showsSnapshotControls && group && (
+        <InputCacheControls
+          config={config}
+          cacheable={
+            group.name === "databricks" || format?.input?.cached_read === true
+          }
+          admittedEager={format?.input?.snapshot_build === "admitted_eager"}
+          requiredReady={requiredReady}
+        />
+      )}
+
+      <section>
+        <p className="text-[11px]" style={{ color: "var(--text-muted)" }}>
+          Transforms the opened direct source or cached snapshot. Return <code>df</code>.
+        </p>
+        <CodeEditor
+          defaultValue={typeof config.code === "string" ? config.code : ""}
+          onChange={(value) => onUpdate("code", value)}
+          errorLine={errorLine}
+        />
+      </section>
+    </div>
+  )
 }

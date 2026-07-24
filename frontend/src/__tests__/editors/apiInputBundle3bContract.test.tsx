@@ -49,7 +49,7 @@ import useUIStore from "../../stores/useUIStore"
 
 vi.mock("../../panels/LazyNodeEditors", () => ({
   LazyEditorBoundary: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-  DataSourceEditor: () => <div data-testid="DataSourceEditor" />,
+  DataInputEditor: () => <div data-testid="DataInputEditor" />,
   TransformEditor: () => <div data-testid="TransformEditor" />,
   ExploreCodeEditor: () => <div data-testid="ExploreCodeEditor" />,
   ModelScoreEditor: () => <div data-testid="ModelScoreEditor" />,
@@ -59,7 +59,6 @@ vi.mock("../../panels/LazyNodeEditors", () => ({
   ExternalFileEditor: () => <div data-testid="ExternalFileEditor" />,
   ApiInputEditor: () => <div data-testid="ApiInputEditor" />,
   LiveSwitchEditor: () => <div data-testid="LiveSwitchEditor" />,
-  SinkEditor: () => <div data-testid="SinkEditor" />,
   ScenarioExpanderEditor: () => <div data-testid="ScenarioExpanderEditor" />,
   OptimiserApplyEditor: () => <div data-testid="OptimiserApplyEditor" />,
   ConstantEditor: () => <div data-testid="ConstantEditor" />,

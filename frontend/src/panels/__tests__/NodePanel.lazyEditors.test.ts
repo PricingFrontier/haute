@@ -35,7 +35,7 @@ describe("NodePanel lazy editor loading", () => {
     const source = readFileSync(path.resolve(__dirname, "..", "LazyNodeEditors.tsx"), "utf8")
 
     for (const importPath of [
-      "./editors/DataSourceEditor",
+      "./editors/DataInputEditor",
       "./editors/TransformEditor",
       "./editors/EdgeJoinEditor",
       "./editors/ModelScoreEditor",
@@ -45,7 +45,7 @@ describe("NodePanel lazy editor loading", () => {
       "./editors/ExternalFileEditor",
       "./editors/ApiInputEditor",
       "./editors/LiveSwitchEditor",
-      "./editors/SinkEditor",
+      "./editors/DataOutputEditor",
       "./editors/ScenarioExpanderEditor",
       "./editors/OptimiserApplyEditor",
       "./editors/ConstantEditor",

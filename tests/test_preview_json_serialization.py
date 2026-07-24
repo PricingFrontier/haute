@@ -9,12 +9,17 @@ import polars as pl
 from haute._types import GraphNode, NodeData, PipelineGraph
 from haute.executor import PreviewProjectionError, execute_graph
 from haute.schemas import ColumnInfo, NodeResult
+from tests.conftest import make_file_input_config
 
 
 def _source_node(nid: str, path: str) -> GraphNode:
     return GraphNode(
         id=nid,
-        data=NodeData(label=nid, nodeType="dataSource", config={"path": path}),
+        data=NodeData(
+            label=nid,
+            nodeType="dataInput",
+            config=make_file_input_config(path),
+        ),
     )
 
 

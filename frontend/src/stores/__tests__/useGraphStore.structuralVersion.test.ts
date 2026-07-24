@@ -341,7 +341,7 @@ describe("useGraphStore structuralVersion", () => {
     for (const dataPatch of [
       { label: "Node a renamed" },
       { description: "after" },
-      { nodeType: "dataSource" },
+      { nodeType: "dataInput" },
       { code: "df.select('x')" },
       { func_name: "renamed_node" },
     ]) {

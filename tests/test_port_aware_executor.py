@@ -69,7 +69,7 @@ def _simple_polars_graph() -> PipelineGraph:
                 id="src",
                 data=NodeData(
                     label="src",
-                    nodeType=NodeType.DATA_SOURCE,
+                    nodeType=NodeType.DATA_INPUT,
                     config={"path": "ignored.parquet"},
                 ),
             ),
@@ -108,7 +108,7 @@ def test_prepare_graph_with_edges_prunes_live_switch_inactive_edges() -> None:
                 id="batch",
                 data=NodeData(
                     label="batch",
-                    nodeType=NodeType.DATA_SOURCE,
+                    nodeType=NodeType.DATA_INPUT,
                     config={"path": "ignored.parquet"},
                 ),
             ),
@@ -116,7 +116,7 @@ def test_prepare_graph_with_edges_prunes_live_switch_inactive_edges() -> None:
                 id="live",
                 data=NodeData(
                     label="live",
-                    nodeType=NodeType.DATA_SOURCE,
+                    nodeType=NodeType.DATA_INPUT,
                     config={"path": "ignored.parquet"},
                 ),
             ),
@@ -218,7 +218,7 @@ def _capture_builder_calls(
             "source_names": list(source_names or []),
             "orig_source_names": (None if orig_source_names is None else list(orig_source_names)),
         }
-        is_source = node.data.nodeType in {NodeType.API_INPUT, NodeType.DATA_SOURCE}
+        is_source = node.data.nodeType in {NodeType.API_INPUT, NodeType.DATA_INPUT}
         return node.id, lambda *frames: frames[0] if frames else pl.LazyFrame(), is_source
 
     return build_node_fn
@@ -248,7 +248,7 @@ def test_build_funcs_derives_each_input_name_from_its_edge_in_declaration_order(
     graph = PipelineGraph(
         nodes=[
             _node("api", "API Input", NodeType.API_INPUT),
-            _node("ordinary", "Ordinary Source", NodeType.DATA_SOURCE),
+            _node("ordinary", "Ordinary Source", NodeType.DATA_INPUT),
             # Submodel expansion has already replaced the boundary placeholder
             # with this real child node by the time the executor sees the graph.
             _node("child", "Frequency Model Child", NodeType.POLARS),
@@ -416,7 +416,7 @@ def test_duplicate_derived_input_name_raises_config_error_naming_target_and_name
     graph = PipelineGraph(
         nodes=[
             _node("api", "API Input", NodeType.API_INPUT),
-            _node("ordinary", "shared name", NodeType.DATA_SOURCE),
+            _node("ordinary", "shared name", NodeType.DATA_INPUT),
             _node("pricing", "pricing", NodeType.POLARS),
         ],
         edges=[
@@ -467,9 +467,9 @@ def test_instance_original_input_names_come_from_original_incoming_edges() -> No
     graph = PipelineGraph(
         nodes=[
             _node("api", "API Input", NodeType.API_INPUT),
-            _node("ordinary", "Ordinary Source", NodeType.DATA_SOURCE),
+            _node("ordinary", "Ordinary Source", NodeType.DATA_INPUT),
             _node("original", "original", NodeType.POLARS),
-            _node("instance_source", "Instance Source", NodeType.DATA_SOURCE),
+            _node("instance_source", "Instance Source", NodeType.DATA_INPUT),
             _node(
                 "instance",
                 "instance",
@@ -537,7 +537,7 @@ def test_eager_diamond_reuses_one_cached_lazyframe_and_executes_source_once() ->
     """A target-only diamond shares one cache node, not one per branch."""
     graph = PipelineGraph(
         nodes=[
-            _node("src", "src", NodeType.DATA_SOURCE),
+            _node("src", "src", NodeType.DATA_INPUT),
             _node("left", "left", NodeType.POLARS),
             _node("right", "right", NodeType.POLARS),
             _node("sink", "sink", NodeType.POLARS),
@@ -594,7 +594,7 @@ def test_eager_nested_diamond_has_one_cache_per_shared_lazy_producer() -> None:
     """Nested fan-out retains one cache identity for each shared producer."""
     graph = PipelineGraph(
         nodes=[
-            _node("src", "src", NodeType.DATA_SOURCE),
+            _node("src", "src", NodeType.DATA_INPUT),
             _node("a", "a", NodeType.POLARS),
             _node("b", "b", NodeType.POLARS),
             _node("c", "c", NodeType.POLARS),
@@ -649,7 +649,7 @@ def test_eager_dataframe_parent_is_not_wrapped_in_a_cache_hint() -> None:
     """Concrete eager outputs retain their existing DataFrame-only path."""
     graph = PipelineGraph(
         nodes=[
-            _node("src", "src", NodeType.DATA_SOURCE),
+            _node("src", "src", NodeType.DATA_INPUT),
             _node("left", "left", NodeType.POLARS),
             _node("right", "right", NodeType.POLARS),
         ],

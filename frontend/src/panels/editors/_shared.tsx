@@ -26,6 +26,9 @@ export type OnUpdateConfig = (
   value?: unknown,
 ) => OnUpdateConfigResult
 
+/** Replace an IO configuration atomically when its provider branch changes. */
+export type OnReplaceConfig = (nextConfig: Record<string, unknown>) => OnUpdateConfigResult
+
 export type FileItem = {
   name: string
   path: string

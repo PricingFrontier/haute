@@ -96,19 +96,19 @@ class TestItem18ConfigPathFailsLoudly:
         with patch("haute._config_builder.warn_unrecognized_config_keys"):
             with pytest.raises(ConfigError):
                 _resolve_node_config(
-                    {"config": "config/data_source/does_not_exist.json"},
+                    {"config": "config/data_input/does_not_exist.json"},
                     body="",
                     param_names=[],
                     n_params=0,
                     base_dir=tmp_path,
                     func_name="does_not_exist",
-                    explicit_node_type=NodeType.DATA_SOURCE,
+                    explicit_node_type=NodeType.DATA_INPUT,
                 )
 
     def test_missing_config_error_names_original_path(self, tmp_path: Path) -> None:
         """The raised ``ConfigError`` must surface the original (possibly
         mangled) path so the user can see what was actually referenced."""
-        referenced_path = "config/data_source/missing_file.json"
+        referenced_path = "config/data_input/missing_file.json"
         with patch("haute._config_builder.warn_unrecognized_config_keys"):
             with pytest.raises(ConfigError) as exc_info:
                 _resolve_node_config(
@@ -118,7 +118,7 @@ class TestItem18ConfigPathFailsLoudly:
                     n_params=0,
                     base_dir=tmp_path,
                     func_name="missing_file",
-                    explicit_node_type=NodeType.DATA_SOURCE,
+                    explicit_node_type=NodeType.DATA_INPUT,
                 )
             # Either the rendered string or the structured context must
             # contain the original path verbatim (without the "forward
@@ -164,12 +164,12 @@ class TestItem18ConfigPathFailsLoudly:
             # marker must never surface.
             try:
                 _, cfg = _resolve_node_config(
-                    {"config": "config/data_source/missing.json"},
+                    {"config": "config/data_input/missing.json"},
                     body="",
                     param_names=[],
                     n_params=0,
                     base_dir=tmp_path,
-                    explicit_node_type=NodeType.DATA_SOURCE,
+                    explicit_node_type=NodeType.DATA_INPUT,
                 )
             except ConfigError:
                 return  # raising is acceptable
@@ -223,7 +223,7 @@ class TestItem18ConfigPathFailsLoudly:
 
     def test_invalid_json_raises_config_error(self, tmp_path: Path) -> None:
         """Corrupted JSON (as opposed to missing file) also fails loudly."""
-        cfg_dir = tmp_path / "config" / "data_source"
+        cfg_dir = tmp_path / "config" / "data_input"
         cfg_dir.mkdir(parents=True)
         bad = cfg_dir / "broken.json"
         bad.write_text("{ this is not valid json")
@@ -231,13 +231,13 @@ class TestItem18ConfigPathFailsLoudly:
         with patch("haute._config_builder.warn_unrecognized_config_keys"):
             with pytest.raises(ConfigError):
                 _resolve_node_config(
-                    {"config": "config/data_source/broken.json"},
+                    {"config": "config/data_input/broken.json"},
                     body="",
                     param_names=[],
                     n_params=0,
                     base_dir=tmp_path,
                     func_name="broken",
-                    explicit_node_type=NodeType.DATA_SOURCE,
+                    explicit_node_type=NodeType.DATA_INPUT,
                 )
 
 
@@ -399,7 +399,7 @@ class TestItem20SubmodelCrossBoundaryHandleValidation:
                     "id": "src",
                     "data": {
                         "label": "Source",
-                        "nodeType": "dataSource",
+                        "nodeType": "dataInput",
                         "config": {"path": "d.parquet"},
                     },
                 },

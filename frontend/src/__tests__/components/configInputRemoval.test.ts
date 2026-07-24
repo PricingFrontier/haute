@@ -320,7 +320,7 @@ describe("Phase 2 Wave 5 Package 5A — ConfigInput/ConfigSelect removed (#70)",
     // Defensive: make sure the dev didn't over-delete the barrel.
     // Five call-sites currently rely on `import { EditorLabel } from
     // "../../components/form"` via this barrel — losing that would
-    // break SinkEditor, OutputEditor, ColumnsTab, GroupedColumnsTab,
+    // break DataOutputEditor, OutputEditor, ColumnsTab, GroupedColumnsTab,
     // and SubmodelEditor.
     const barrel = readFileSync(BARREL_PATH, "utf8")
     const stripped = stripComments(barrel)

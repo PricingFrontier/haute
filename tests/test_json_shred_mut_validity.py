@@ -17,9 +17,13 @@ import pytest
 
 from haute._api_input_schema import ApiInputSchemaError
 from haute._json_shred import (
+    _content_signature_parts,
     _data_file_matches,
     _data_file_signature,
+    _file_content_matches,
+    _file_content_signature,
     _hash_file,
+    _payload_content_matches,
     _v2_fingerprint,
 )
 
@@ -55,6 +59,80 @@ def test_data_file_signature_rejects_a_file_changed_while_hashing(
 
     with pytest.raises(OSError, match="changed while its signature was computed"):
         _data_file_signature(p)
+
+
+@pytest.mark.parametrize("replacement", [b"expanded", b""])
+@pytest.mark.parametrize(
+    ("signature", "message"),
+    [
+        (_data_file_signature, "data file changed"),
+        (_file_content_signature, "file changed"),
+    ],
+)
+def test_content_signatures_reject_growth_and_shrink_races(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    replacement: bytes,
+    signature: Any,
+    message: str,
+) -> None:
+    """Both before/after-stat guards reject a source altered during hashing."""
+    import haute._json_shred as shred_mod
+
+    path = tmp_path / "racing.json"
+    path.write_bytes(b"same")
+    real_hash_file = shred_mod._hash_file
+
+    def racing_hash_file(candidate: Path) -> str:
+        candidate.write_bytes(replacement)
+        return real_hash_file(candidate)
+
+    monkeypatch.setattr(shred_mod, "_hash_file", racing_hash_file)
+    with pytest.raises(OSError, match=message):
+        signature(path)
+
+
+@pytest.mark.parametrize(
+    "recorded",
+    [
+        {"size": -1, "sha256": "0" * 64},
+        {"size": True, "sha256": "0" * 64},
+        {"size": 0, "sha256": 0},
+        {"size": 0, "sha256": "0" * 63},
+        {"size": 0, "sha256": "0" * 65},
+        {"size": 0, "sha256": "g" * 64},
+    ],
+)
+def test_content_signature_parser_rejects_malformed_records(recorded: dict[str, Any]) -> None:
+    assert _content_signature_parts(recorded) is None
+
+
+def test_content_signature_parser_accepts_empty_payload() -> None:
+    assert _content_signature_parts({"size": 0, "sha256": "0" * 64}) == (0, "0" * 64)
+
+
+def test_file_and_payload_content_matchers_require_exact_content(tmp_path: Path) -> None:
+    payload = b"middle"
+    path = tmp_path / "artifact.parquet"
+    path.write_bytes(payload)
+    digest = hashlib.sha256(payload).hexdigest()
+    exact = {"size": len(payload), "sha256": digest}
+    lower = {"size": len(payload), "sha256": "0" * 64}
+    upper = {"size": len(payload), "sha256": "f" * 64}
+
+    assert _file_content_matches(exact, path) is True
+    assert _payload_content_matches(exact, payload) is True
+    assert _file_content_matches("bad", path) is False
+    assert _payload_content_matches("bad", payload) is False
+    assert _file_content_matches({**exact, "size": len(payload) - 1}, path) is False
+    assert _file_content_matches({**exact, "size": len(payload) + 1}, path) is False
+    assert _payload_content_matches({**exact, "size": len(payload) - 1}, payload) is False
+    assert _payload_content_matches({**exact, "size": len(payload) + 1}, payload) is False
+    assert _file_content_matches(lower, path) is False
+    assert _file_content_matches(upper, path) is False
+    assert _payload_content_matches(lower, payload) is False
+    assert _payload_content_matches(upper, payload) is False
+    assert _file_content_matches(exact, tmp_path / "missing.parquet") is False
 
 
 # ─── _data_file_matches — stat-fast freshness with hash arbitration ──

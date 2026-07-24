@@ -5,7 +5,7 @@ the development executor, with ``NodeBuildHooks`` to override specific
 node types for live scoring:
 
 - Injects live input DataFrames at apiInput source nodes
-- Remaps artifact paths for externalFile and static dataSource nodes
+- Remaps artifact paths for externalFile and static dataInput nodes
 - Returns a single collected DataFrame from the output node
 """
 
@@ -14,7 +14,6 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
 import polars as pl
@@ -26,7 +25,7 @@ from haute._execution_admission import create_admitted_execution_context
 from haute._execution_context import ExecutionContext, ExecutionProfile
 from haute._graph_utils import edge_input_name, upstream_node_ids
 from haute._hashing import content_hash_bytes
-from haute._io import load_external_object, read_data_source
+from haute._io import load_external_object
 from haute._logging import get_logger
 from haute._node_builder import NodeBuildHooks, NodeFnResult, node_fn_name, wrap_builder
 from haute._polars_utils import streaming_collect
@@ -53,9 +52,8 @@ if TYPE_CHECKING:
 _RUNTIME_PATH_NODE_TYPES = frozenset(
     {
         NodeType.API_INPUT,
-        NodeType.DATA_SOURCE,
+        NodeType.DATA_INPUT,
         NodeType.EXTERNAL_FILE,
-        NodeType.DATA_SINK,
     }
 )
 logger = get_logger(component="deploy_scorer")
@@ -349,6 +347,42 @@ def _bundled_contract_path(node_id: str, remap: dict[str, str]) -> str | None:
     return remap.get(f"{node_id}__{CONTRACT_FILENAME}")
 
 
+def _remap_bundled_data_inputs(graph: PipelineGraph, remap: Mapping[str, str]) -> PipelineGraph:
+    """Point retained Data Inputs at the artifacts selected during packaging."""
+    universal = {
+        "instanceOf",
+        "inputMapping",
+        "selected_columns",
+        "column_renames",
+        "categorical_levels",
+        "contract",
+        "code",
+    }
+    nodes: list[GraphNode] = []
+    changed = False
+    for node in graph.nodes:
+        if node.data.nodeType != NodeType.DATA_INPUT:
+            nodes.append(node)
+            continue
+        config = node.data.config
+        snapshot_path = remap.get(f"{node.id}__snapshot.parquet")
+        if snapshot_path is not None:
+            remapped_config = {key: value for key, value in config.items() if key in universal}
+            remapped_config.update(
+                inputType="file", format="parquet", cacheMode="direct", path=snapshot_path
+            )
+        else:
+            path = _remap_artifact(node.id, config, dict(remap), "path")
+            if path is None:
+                nodes.append(node)
+                continue
+            remapped_config = {**config, "path": path}
+        data = node.data.model_copy(update={"config": remapped_config})
+        nodes.append(node.model_copy(update={"data": data}))
+        changed = True
+    return graph.model_copy(update={"nodes": nodes}) if changed else graph
+
+
 def _validate_deploy_model_score_source(node: GraphNode, remap: dict[str, str]) -> None:
     """Reject a deploy modelScore that would become an identity passthrough."""
     if node.data.nodeType != NodeType.MODEL_SCORE:
@@ -541,7 +575,7 @@ def score_graph_lazy(
         )
     remap = artifact_paths or {}
     graph = _attach_bundled_feature_contracts(
-        _resolve_runtime_graph_paths(graph),
+        _remap_bundled_data_inputs(_resolve_runtime_graph_paths(graph), remap),
         remap,
     )
     _validate_deploy_input_edges(graph)
@@ -571,7 +605,7 @@ def score_graph_lazy(
         func_name = node_fn_name(node)
 
         # Intercept: apiInput source → inject live DataFrame
-        if node_type == NodeType.API_INPUT and nid in input_set:
+        if node_type in {NodeType.API_INPUT, NodeType.DATA_INPUT} and nid in input_set:
 
             def inject_input() -> _Frame:
                 return input_lf
@@ -811,33 +845,6 @@ def score_graph_lazy(
             # the model.  Fail loud at build/validate time instead of shipping a
             # container that quietly returns unscored inputs.
             _validate_deploy_model_score_source(node, remap)
-
-        # Intercept: static dataSource with remapped artifact path
-        if node_type == NodeType.DATA_SOURCE and nid not in input_set and remap:
-            remapped_path = _remap_artifact(nid, config, remap, "path")
-            if remapped_path is not None:
-                _ds_remapped: str = remapped_path
-                _profile = (
-                    execution_context.profile.value if execution_context is not None else None
-                )
-                _required_output_columns = build_kwargs.get("required_output_columns")
-                _static_config = MappingProxyType(dict(config))
-
-                def static_source(
-                    _p: str = _ds_remapped,
-                    _execution_profile: str | None = _profile,
-                    _config: Mapping[str, Any] = _static_config,
-                    _required: Any = _required_output_columns,
-                ) -> _Frame:
-                    projected = projection.source_scan_projection(_config, _required)
-                    return read_data_source(
-                        {**_config, "path": _p},
-                        profile=_execution_profile,
-                        columns=projected.columns,
-                        validate_columns=projected.validate_columns,
-                    )
-
-                return func_name, static_source, True
 
         return None  # fall through to base builder
 

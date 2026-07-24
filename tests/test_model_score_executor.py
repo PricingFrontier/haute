@@ -11,7 +11,7 @@ import pytest
 from haute._mlflow_io import ScoringModel, _artifact_cache_path
 from haute.executor import _build_node_fn, execute_graph
 from haute.graph_utils import GraphNode, NodeData, PipelineGraph
-from tests.conftest import make_edge, make_graph
+from tests.conftest import make_edge, make_file_input_config, make_graph
 
 
 def _make_model_score_graph(
@@ -26,7 +26,7 @@ def _make_model_score_graph(
     code: str = "",
     data_path: str = "",
 ) -> PipelineGraph:
-    """Build a 2-node graph: dataSource → modelScore."""
+    """Build a 2-node graph: dataInput → modelScore."""
     config = {
         "sourceType": source_type,
         "run_id": run_id,
@@ -44,8 +44,8 @@ def _make_model_score_graph(
                     "id": "source",
                     "data": {
                         "label": "source",
-                        "nodeType": "dataSource",
-                        "config": {"path": data_path},
+                        "nodeType": "dataInput",
+                        "config": make_file_input_config(data_path),
                     },
                 },
                 {
@@ -169,8 +169,8 @@ class TestModelScorePassthrough:
                         "id": "source",
                         "data": {
                             "label": "source",
-                            "nodeType": "dataSource",
-                            "config": {"path": sample_data},
+                            "nodeType": "dataInput",
+                            "config": make_file_input_config(sample_data),
                         },
                     },
                     {

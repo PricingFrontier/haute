@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from haute._parser_helpers import _build_node_config
 from haute.codegen import graph_to_code
-from tests.conftest import make_edge, make_graph
+from tests.conftest import make_edge, make_file_input_config, make_graph
 
 # ---------------------------------------------------------------------------
 # Code generation
@@ -21,8 +21,8 @@ class TestModelScoreCodegen:
                         "id": "source",
                         "data": {
                             "label": "source",
-                            "nodeType": "dataSource",
-                            "config": {"path": "data.parquet"},
+                            "nodeType": "dataInput",
+                            "config": make_file_input_config("data.parquet"),
                         },
                     },
                     {
@@ -68,8 +68,8 @@ class TestModelScoreCodegen:
                         "id": "source",
                         "data": {
                             "label": "source",
-                            "nodeType": "dataSource",
-                            "config": {"path": "data.parquet"},
+                            "nodeType": "dataInput",
+                            "config": make_file_input_config("data.parquet"),
                         },
                     },
                     {
@@ -105,8 +105,8 @@ class TestModelScoreCodegen:
                         "id": "source",
                         "data": {
                             "label": "source",
-                            "nodeType": "dataSource",
-                            "config": {"path": "data.parquet"},
+                            "nodeType": "dataInput",
+                            "config": make_file_input_config("data.parquet"),
                         },
                     },
                     {
@@ -143,8 +143,8 @@ class TestModelScoreCodegen:
                         "id": "source",
                         "data": {
                             "label": "source",
-                            "nodeType": "dataSource",
-                            "config": {"path": "data.parquet"},
+                            "nodeType": "dataInput",
+                            "config": make_file_input_config("data.parquet"),
                         },
                     },
                     {
@@ -179,8 +179,8 @@ class TestModelScoreCodegen:
                         "id": "source",
                         "data": {
                             "label": "source",
-                            "nodeType": "dataSource",
-                            "config": {"path": "data.parquet"},
+                            "nodeType": "dataInput",
+                            "config": make_file_input_config("data.parquet"),
                         },
                     },
                     {
@@ -275,8 +275,8 @@ class TestParserRoundTrip:
                         "id": "source",
                         "data": {
                             "label": "source",
-                            "nodeType": "dataSource",
-                            "config": {"path": "data.parquet"},
+                            "nodeType": "dataInput",
+                            "config": make_file_input_config("data.parquet"),
                         },
                     },
                     {
@@ -329,8 +329,8 @@ class TestParserRoundTrip:
                         "id": "source",
                         "data": {
                             "label": "source",
-                            "nodeType": "dataSource",
-                            "config": {"path": "data.parquet"},
+                            "nodeType": "dataInput",
+                            "config": make_file_input_config("data.parquet"),
                         },
                     },
                     {

@@ -41,6 +41,62 @@ from tests.conftest import (
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
+def _file_input_config(
+    path: str,
+    *,
+    format_name: str | None = None,
+    mode: str | None = None,
+    code: str | None = None,
+    arguments: dict | None = None,
+) -> dict:
+    """Build an explicit canonical file Data Input config for codegen tests."""
+    suffix = Path(path).suffix.lower()
+    resolved_format, resolved_mode = {
+        ".csv": ("csv", "scan"),
+        ".json": ("json", "read"),
+        ".jsonl": ("ndjson", "scan"),
+        ".ndjson": ("ndjson", "scan"),
+        ".parquet": ("parquet", "scan"),
+        ".arrow": ("ipc", "scan"),
+        ".feather": ("ipc", "scan"),
+        ".ipc": ("ipc", "scan"),
+    }.get(suffix, ("parquet", "scan"))
+    config = {
+        "inputType": "file",
+        "format": format_name or resolved_format,
+        "mode": mode or resolved_mode,
+        "cacheMode": "direct",
+        "path": path,
+        "arguments": arguments or {},
+    }
+    if code is not None:
+        config["code"] = code
+    return config
+
+
+def _databricks_input_config(*, code: str | None = None) -> dict:
+    config = {
+        "inputType": "databricks",
+        "cacheMode": "snapshot",
+        "http_path": "/sql/1.0/warehouses/test",
+        "table": "catalog.schema.tbl",
+        "arguments": {},
+    }
+    if code is not None:
+        config["code"] = code
+    return config
+
+
+def _file_output_config(path: str, format_name: str) -> dict:
+    return {
+        "outputType": "file",
+        "format": format_name,
+        "mode": "sink" if format_name in {"csv", "parquet"} else "write",
+        "path": path,
+        "arguments": {},
+    }
+
+
 # ---------------------------------------------------------------------------
 # _build_params
 # ---------------------------------------------------------------------------
@@ -108,51 +164,50 @@ class TestNodeToCode:
         [
             pytest.param(
                 "Load Data",
-                {"path": "data/input.parquet"},
+                _file_input_config("data/input.parquet"),
                 [
                     "def Load_Data()",
-                    "read_data_source",
-                    'config="config/data_source/Load_Data.json"',
+                    "resolve_data_input_from_config",
+                    'config="config/data_input/Load_Data.json"',
                 ],
                 id="parquet",
             ),
             pytest.param(
                 "CSV Source",
-                {"path": "data/input.csv"},
+                _file_input_config("data/input.csv"),
                 [
-                    "read_data_source",
+                    "resolve_data_input_from_config",
                     "def CSV_Source()",
-                    'config="config/data_source/CSV_Source.json"',
+                    'config="config/data_input/CSV_Source.json"',
                 ],
                 id="csv",
             ),
             pytest.param(
                 "JSON Source",
-                {"path": "data/input.json"},
+                _file_input_config("data/input.json"),
                 [
-                    "read_data_source",
+                    "resolve_data_input_from_config",
                     "def JSON_Source()",
-                    'config="config/data_source/JSON_Source.json"',
+                    'config="config/data_input/JSON_Source.json"',
                 ],
                 id="json",
             ),
             pytest.param(
                 "JSONL Source",
-                {"path": "data/input.jsonl"},
+                _file_input_config("data/input.jsonl"),
                 [
-                    "read_data_source",
+                    "resolve_data_input_from_config",
                     "def JSONL_Source()",
-                    'config="config/data_source/JSONL_Source.json"',
+                    'config="config/data_input/JSONL_Source.json"',
                 ],
                 id="jsonl",
             ),
             pytest.param(
                 "DB Source",
-                {"sourceType": "databricks", "table": "catalog.schema.tbl"},
+                _databricks_input_config(),
                 [
-                    "read_data_source",
-                    "catalog.schema.tbl",
-                    'config="config/data_source/DB_Source.json"',
+                    "resolve_data_input_from_config",
+                    'config="config/data_input/DB_Source.json"',
                 ],
                 id="databricks",
             ),
@@ -162,7 +217,7 @@ class TestNodeToCode:
         node = _n(
             {
                 "id": "src",
-                "data": {"label": label, "nodeType": "dataSource", "config": config},
+                "data": {"label": label, "nodeType": "dataInput", "config": config},
             }
         )
         code = _node_to_code(node)
@@ -175,20 +230,26 @@ class TestNodeToCode:
         [
             pytest.param(
                 "Load Data",
-                {"path": "data/input.parquet", "code": "df = df.filter(pl.col('x') > 0)"},
-                ["df = read_data_source", "filter", "return df"],
+                _file_input_config(
+                    "data/input.parquet",
+                    code="df = df.filter(pl.col('x') > 0)",
+                ),
+                ["df = resolve_data_input_from_config", "filter", "return df"],
                 id="parquet_with_code",
             ),
             pytest.param(
                 "CSV Source",
-                {"path": "data/input.csv", "code": "df = df.select('a', 'b')"},
-                ["df = read_data_source", "select", "return df"],
+                _file_input_config(
+                    "data/input.csv",
+                    code="df = df.select('a', 'b')",
+                ),
+                ["df = resolve_data_input_from_config", "select", "return df"],
                 id="csv_with_code",
             ),
             pytest.param(
                 "DB Source",
-                {"sourceType": "databricks", "table": "cat.sch.tbl", "code": "df = df.limit(100)"},
-                ["read_data_source", "limit", "return df"],
+                _databricks_input_config(code="df = df.limit(100)"),
+                ["resolve_data_input_from_config", "limit", "return df"],
                 id="databricks_with_code",
             ),
         ],
@@ -198,7 +259,7 @@ class TestNodeToCode:
         node = _n(
             {
                 "id": "src",
-                "data": {"label": label, "nodeType": "dataSource", "config": config},
+                "data": {"label": label, "nodeType": "dataInput", "config": config},
             }
         )
         code = _node_to_code(node)
@@ -215,13 +276,13 @@ class TestNodeToCode:
                 "id": "src",
                 "data": {
                     "label": "Load Data",
-                    "nodeType": "dataSource",
-                    "config": {"path": "data/input.parquet"},
+                    "nodeType": "dataInput",
+                    "config": _file_input_config("data/input.parquet"),
                 },
             }
         )
         code = _node_to_code(node)
-        assert "df = read_data_source" in code
+        assert "df = resolve_data_input_from_config" in code
         assert "return df" in code
         _compile_node_code(code)
 
@@ -232,21 +293,21 @@ class TestNodeToCode:
                 "id": "src",
                 "data": {
                     "label": "Load Data",
-                    "nodeType": "dataSource",
-                    "config": {
-                        "path": "data/input.parquet",
-                        "code": (
+                    "nodeType": "dataInput",
+                    "config": _file_input_config(
+                        "data/input.parquet",
+                        code=(
                             "from pathlib import Path\n"
                             'df = pl.scan_parquet(Path(__file__).parent / "data/input.parquet")\n'
                             "df = df.limit(10)"
                         ),
-                    },
+                    ),
                 },
             }
         )
         code = _node_to_code(node)
         assert code.count("scan_parquet") == 0
-        assert code.count("df = read_data_source") == 1
+        assert code.count("df = resolve_data_input_from_config") == 1
         assert "df = df.limit(10)" in code
         _compile_node_code(code)
 
@@ -256,11 +317,11 @@ class TestNodeToCode:
                 "id": "src",
                 "data": {
                     "label": "Load Data",
-                    "nodeType": "dataSource",
-                    "config": {
-                        "path": "data/input.parquet",
-                        "code": "import math\ndf = df.limit(math.floor(10.9))",
-                    },
+                    "nodeType": "dataInput",
+                    "config": _file_input_config(
+                        "data/input.parquet",
+                        code="import math\ndf = df.limit(math.floor(10.9))",
+                    ),
                 },
             }
         )
@@ -387,14 +448,16 @@ class TestNodeToCode:
                 "id": "s",
                 "data": {
                     "label": "Write",
-                    "nodeType": "dataSink",
-                    "config": {"path": "out.parquet", "format": "parquet"},
+                    "nodeType": "dataOutput",
+                    "config": _file_output_config("out.parquet", "parquet"),
                 },
             }
         )
         code = _node_to_code(node, source_names=["transform"])
-        assert 'bounded_sink(transform, Path(__file__).parent / "outputs/out.parquet")' in code
+        assert '@pipeline.data_output(config="config/data_output/Write.json"' in code
         assert "def Write(transform: pl.LazyFrame)" in code
+        assert "return transform" in code
+        assert "bounded_sink" not in code
         _compile_node_code(code)
 
     def test_sink_csv(self):
@@ -403,13 +466,15 @@ class TestNodeToCode:
                 "id": "s",
                 "data": {
                     "label": "Write CSV",
-                    "nodeType": "dataSink",
-                    "config": {"path": "out.csv", "format": "csv"},
+                    "nodeType": "dataOutput",
+                    "config": _file_output_config("out.csv", "csv"),
                 },
             }
         )
         code = _node_to_code(node)
-        assert 'bounded_sink(df, Path(__file__).parent / "outputs/out.csv", fmt="csv")' in code
+        assert '@pipeline.data_output(config="config/data_output/Write_CSV.json"' in code
+        assert "return df" in code
+        assert "bounded_sink" not in code
         _compile_node_code(code)
 
     def test_model_score(self):
@@ -678,7 +743,7 @@ class TestGraphToCode:
                         "id": "src",
                         "data": {
                             "label": "Source",
-                            "nodeType": "dataSource",
+                            "nodeType": "dataInput",
                             "config": {"path": "data.parquet"},
                         },
                     },
@@ -711,7 +776,7 @@ class TestGraphToCode:
                         "id": "s",
                         "data": {
                             "label": "S",
-                            "nodeType": "dataSource",
+                            "nodeType": "dataInput",
                             "config": {"path": "d.parquet"},
                         },
                     }
@@ -750,7 +815,7 @@ class TestGraphToCode:
                         "id": "a",
                         "data": {
                             "label": "Read",
-                            "nodeType": "dataSource",
+                            "nodeType": "dataInput",
                             "config": {"path": "d.parquet"},
                         },
                     },
@@ -791,8 +856,8 @@ class TestGraphToCode:
                         "id": "scored-node",
                         "data": {
                             "label": "scored_quotes",
-                            "nodeType": "dataSource",
-                            "config": {"path": "scored.parquet"},
+                            "nodeType": "dataInput",
+                            "config": _file_input_config("scored.parquet"),
                         },
                     },
                     {
@@ -846,8 +911,8 @@ class TestGraphToCode:
                         "id": "scored-node",
                         "data": {
                             "label": "scored_quotes",
-                            "nodeType": "dataSource",
-                            "config": {"path": "scored.parquet"},
+                            "nodeType": "dataInput",
+                            "config": _file_input_config("scored.parquet"),
                         },
                     },
                     {
@@ -895,7 +960,7 @@ class TestGraphToCode:
                         "id": "scored-node",
                         "data": {
                             "label": "scored_quotes",
-                            "nodeType": "dataSource",
+                            "nodeType": "dataInput",
                             "config": {"path": "scored.parquet"},
                         },
                     },
@@ -945,8 +1010,8 @@ class TestGraphToCode:
                         "id": "scored-node",
                         "data": {
                             "label": "scored_quotes",
-                            "nodeType": "dataSource",
-                            "config": {"path": "scored.parquet"},
+                            "nodeType": "dataInput",
+                            "config": _file_input_config("scored.parquet"),
                         },
                     },
                     {
@@ -1045,10 +1110,10 @@ class TestLiveSwitchCodegen:
         full_code = (
             "import polars as pl\nimport haute\n"
             'pipeline = haute.Pipeline("test")\n\n'
-            '@pipeline.data_source(config="config/data_source/live_src.json")\n'
+            '@pipeline.data_input(config="config/data_input/live_src.json")\n'
             "def live_src() -> pl.LazyFrame:\n"
             '    return pl.scan_parquet("a.parquet")\n\n'
-            '@pipeline.data_source(config="config/data_source/batch_src.json")\n'
+            '@pipeline.data_input(config="config/data_input/batch_src.json")\n'
             "def batch_src() -> pl.LazyFrame:\n"
             '    return pl.scan_parquet("b.parquet")\n\n'
             f"{code}\n"
@@ -1062,9 +1127,9 @@ class TestLiveSwitchCodegen:
             json.dumps({"input_scenario_map": scenario_map, "inputs": ["live_src", "batch_src"]})
         )
         for name in ("live_src", "batch_src"):
-            ds_dir = tmp_path / "config" / "data_source"
+            ds_dir = tmp_path / "config" / "data_input"
             ds_dir.mkdir(parents=True, exist_ok=True)
-            (ds_dir / f"{name}.json").write_text(json.dumps({"path": "a.parquet"}))
+            (ds_dir / f"{name}.json").write_text(json.dumps(_file_input_config("a.parquet")))
 
         py_file = tmp_path / "test.py"
         py_file.write_text(full_code)
@@ -1167,7 +1232,7 @@ class TestSelectedColumnsCodegen:
                 "id": "s1",
                 "data": {
                     "label": "load_data",
-                    "nodeType": "dataSource",
+                    "nodeType": "dataInput",
                     "config": {"path": "data.parquet", "selected_columns": ["a", "b"]},
                 },
             }
@@ -1182,7 +1247,7 @@ class TestSelectedColumnsCodegen:
                 "id": "s1",
                 "data": {
                     "label": "load_data",
-                    "nodeType": "dataSource",
+                    "nodeType": "dataInput",
                     "config": {"path": "data.parquet"},
                 },
             }
@@ -1322,7 +1387,7 @@ class TestCodegenEdgeCases:
                         "id": "a",
                         "data": {
                             "label": "A",
-                            "nodeType": "dataSource",
+                            "nodeType": "dataInput",
                             "config": {"path": "d.parquet"},
                         },
                     },
@@ -1380,7 +1445,7 @@ class TestCodegenEdgeCases:
                 "id": "s",
                 "data": {
                     "label": "Sink",
-                    "nodeType": "dataSink",
+                    "nodeType": "dataOutput",
                     "config": {"path": "", "format": "parquet"},
                 },
             }
@@ -1396,7 +1461,7 @@ class TestCodegenEdgeCases:
                 "id": "src",
                 "data": {
                     "label": "Source",
-                    "nodeType": "dataSource",
+                    "nodeType": "dataInput",
                     "config": {},
                 },
             }
@@ -1463,7 +1528,7 @@ class TestCodegenEdgeCases:
                         "id": "a",
                         "data": {
                             "label": "A",
-                            "nodeType": "dataSource",
+                            "nodeType": "dataInput",
                             "config": {"path": "d.parquet"},
                         },
                     }
@@ -1624,18 +1689,16 @@ class TestTemplateParamConsistency:
 # ---------------------------------------------------------------------------
 
 
-class TestDataSourceJsonCodegen:
-    """Verify that DATA_SOURCE codegen produces correct templates for all
-    supported file extensions, including JSON and JSONL which were previously
-    missing (B4 bug: fell through to parquet template).
-    """
+class TestDataInputFormatCodegen:
+    """Verify that canonical Data Input codegen uses one registry boundary."""
 
     def _make_ds_node(self, path: str, label: str = "Source", **extra_config):
-        config = {"path": path, **extra_config}
+        config = _file_input_config(path)
+        config.update(extra_config)
         return _n(
             {
                 "id": "src",
-                "data": {"label": label, "nodeType": "dataSource", "config": config},
+                "data": {"label": label, "nodeType": "dataInput", "config": config},
             }
         )
 
@@ -1643,7 +1706,7 @@ class TestDataSourceJsonCodegen:
 
     def test_csv_uses_scan_csv(self):
         code = _node_to_code(self._make_ds_node("data/file.csv", "CSVSrc"))
-        assert "read_data_source" in code
+        assert "resolve_data_input_from_config" in code
         assert "scan_parquet" not in code
         assert "read_json" not in code
         _compile_node_code(code)
@@ -1652,7 +1715,7 @@ class TestDataSourceJsonCodegen:
 
     def test_parquet_uses_scan_parquet(self):
         code = _node_to_code(self._make_ds_node("data/file.parquet", "ParqSrc"))
-        assert "read_data_source" in code
+        assert "resolve_data_input_from_config" in code
         assert "scan_csv" not in code
         assert "read_json" not in code
         _compile_node_code(code)
@@ -1662,7 +1725,7 @@ class TestDataSourceJsonCodegen:
     def test_json_uses_read_json_lazy(self):
         """JSON data source should route through the shared source boundary."""
         code = _node_to_code(self._make_ds_node("data/quotes.json", "JSONSrc"))
-        assert "read_data_source" in code
+        assert "resolve_data_input_from_config" in code
         assert "read_json" not in code
         assert "scan_parquet" not in code
         assert "scan_csv" not in code
@@ -1681,14 +1744,14 @@ class TestDataSourceJsonCodegen:
     def test_json_config_path(self):
         """JSON data source should still emit the config= decorator reference."""
         code = _node_to_code(self._make_ds_node("data/input.json", "JsonCfg"))
-        assert 'config="config/data_source/JsonCfg.json"' in code
+        assert 'config="config/data_input/JsonCfg.json"' in code
 
     # -- JSONL (new behaviour) ----------------------------------------------
 
     def test_jsonl_uses_scan_ndjson(self):
         """JSONL data source should route through the shared source boundary."""
         code = _node_to_code(self._make_ds_node("data/events.jsonl", "JsonlSrc"))
-        assert "read_data_source" in code
+        assert "resolve_data_input_from_config" in code
         assert "scan_parquet" not in code
         assert "scan_csv" not in code
         assert "read_json" not in code
@@ -1707,14 +1770,14 @@ class TestDataSourceJsonCodegen:
     def test_jsonl_config_path(self):
         """JSONL data source should still emit the config= decorator reference."""
         code = _node_to_code(self._make_ds_node("data/stream.jsonl", "JsonlCfg"))
-        assert 'config="config/data_source/JsonlCfg.json"' in code
+        assert 'config="config/data_input/JsonlCfg.json"' in code
 
     # -- Case-insensitive extension matching --------------------------------
 
     def test_uppercase_json_extension(self):
         """Path with .JSON (uppercase) should still use the JSON template."""
         code = _node_to_code(self._make_ds_node("data/INPUT.JSON", "UpperJson"))
-        assert "read_data_source" in code
+        assert "resolve_data_input_from_config" in code
         assert "read_json" not in code
         assert "scan_parquet" not in code
         _compile_node_code(code)
@@ -1722,14 +1785,14 @@ class TestDataSourceJsonCodegen:
     def test_uppercase_jsonl_extension(self):
         """Path with .JSONL (uppercase) should still use the JSONL template."""
         code = _node_to_code(self._make_ds_node("data/EVENTS.JSONL", "UpperJsonl"))
-        assert "read_data_source" in code
+        assert "resolve_data_input_from_config" in code
         assert "scan_parquet" not in code
         _compile_node_code(code)
 
     def test_uppercase_csv_extension(self):
         """Path with .CSV (uppercase) should still use the CSV template."""
         code = _node_to_code(self._make_ds_node("data/FILE.CSV", "UpperCsv"))
-        assert "read_data_source" in code
+        assert "resolve_data_input_from_config" in code
         assert "scan_parquet" not in code
         _compile_node_code(code)
 
@@ -1738,7 +1801,7 @@ class TestDataSourceJsonCodegen:
     def test_json_with_dots_in_directory(self):
         """Dots in parent directory names must not confuse extension detection."""
         code = _node_to_code(self._make_ds_node("data/v2.1/quotes.json", "DotDir"))
-        assert "read_data_source" in code
+        assert "resolve_data_input_from_config" in code
         assert "read_json" not in code
         assert "scan_parquet" not in code
         _compile_node_code(code)
@@ -1746,14 +1809,14 @@ class TestDataSourceJsonCodegen:
     def test_jsonl_with_dots_in_directory(self):
         """Dots in parent directory names must not confuse extension detection."""
         code = _node_to_code(self._make_ds_node("data/v3.0.beta/events.jsonl", "DotDirL"))
-        assert "read_data_source" in code
+        assert "resolve_data_input_from_config" in code
         assert "scan_parquet" not in code
         _compile_node_code(code)
 
     def test_parquet_with_dots_in_directory(self):
         """Parquet path with dots in directory should still use scan_parquet."""
         code = _node_to_code(self._make_ds_node("data/v1.2/file.parquet", "DotDirP"))
-        assert "read_data_source" in code
+        assert "resolve_data_input_from_config" in code
         _compile_node_code(code)
 
     # -- Consistency with _io.read_source -----------------------------------
@@ -1772,7 +1835,7 @@ class TestDataSourceJsonCodegen:
         """Codegen must use the same source boundary as runtime execution."""
         path = f"data/file{ext}"
         code = _node_to_code(self._make_ds_node(path, f"Src{ext.strip('.')}"))
-        assert "read_data_source" in code
+        assert "resolve_data_input_from_config" in code
         assert "read_json" not in code
         _compile_node_code(code)
 
@@ -1781,7 +1844,7 @@ class TestDataSourceJsonCodegen:
     def test_unknown_extension_uses_shared_source_boundary(self):
         """An unrecognised extension should fail at the shared source boundary."""
         code = _node_to_code(self._make_ds_node("data/file.feather", "FeatherSrc"))
-        assert "read_data_source" in code
+        assert "resolve_data_input_from_config" in code
         assert "scan_parquet" not in code
         _compile_node_code(code)
 
@@ -1796,8 +1859,8 @@ class TestDataSourceJsonCodegen:
                         "id": "s",
                         "data": {
                             "label": "JsonData",
-                            "nodeType": "dataSource",
-                            "config": {"path": "data.json"},
+                            "nodeType": "dataInput",
+                            "config": _file_input_config("data.json"),
                         },
                     },
                     {
@@ -1813,7 +1876,7 @@ class TestDataSourceJsonCodegen:
             }
         )
         code = graph_to_code(graph)
-        assert "read_data_source" in code
+        assert "resolve_data_input_from_config" in code
         assert "read_json" not in code
         assert "def Clean(JsonData: pl.LazyFrame)" in code
         compile(code, "<test>", "exec")
@@ -1827,8 +1890,8 @@ class TestDataSourceJsonCodegen:
                         "id": "s",
                         "data": {
                             "label": "EventLog",
-                            "nodeType": "dataSource",
-                            "config": {"path": "events.jsonl"},
+                            "nodeType": "dataInput",
+                            "config": _file_input_config("events.jsonl"),
                         },
                     },
                     {
@@ -1844,7 +1907,7 @@ class TestDataSourceJsonCodegen:
             }
         )
         code = graph_to_code(graph)
-        assert "read_data_source" in code
+        assert "resolve_data_input_from_config" in code
         assert "scan_ndjson" not in code
         assert "def Filter(EventLog: pl.LazyFrame)" in code
         compile(code, "<test>", "exec")
@@ -1854,7 +1917,7 @@ class TestDataSourceJsonCodegen:
     def test_ndjson_extension_falls_through_to_parquet(self):
         """.ndjson is NOT a supported user-facing extension — falls through to parquet."""
         code = _node_to_code(self._make_ds_node("data/events.ndjson", "NdjsonSrc"))
-        assert "read_data_source" in code
+        assert "resolve_data_input_from_config" in code
         assert "scan_parquet" not in code
         assert "scan_ndjson" not in code
         _compile_node_code(code)
@@ -1862,28 +1925,28 @@ class TestDataSourceJsonCodegen:
     def test_empty_path_falls_through_to_parquet(self):
         """Empty path string should fall through to parquet template."""
         code = _node_to_code(self._make_ds_node("", "EmptyPath"))
-        assert "read_data_source" in code
+        assert "resolve_data_input_from_config" in code
         assert "scan_parquet" not in code
         _compile_node_code(code)
 
     def test_no_extension_falls_through_to_parquet(self):
         """Path with no extension should fall through to parquet template."""
         code = _node_to_code(self._make_ds_node("data/noext", "NoExt"))
-        assert "read_data_source" in code
+        assert "resolve_data_input_from_config" in code
         assert "scan_parquet" not in code
         _compile_node_code(code)
 
     def test_mixed_case_json_extension(self):
         """Path with .Json (mixed case) should use the JSON template."""
         code = _node_to_code(self._make_ds_node("data/file.Json", "MixedJson"))
-        assert "read_data_source" in code
+        assert "resolve_data_input_from_config" in code
         assert "read_json" not in code
         _compile_node_code(code)
 
     def test_mixed_case_parquet_extension(self):
         """Path with .Parquet (mixed case) should use the parquet template."""
         code = _node_to_code(self._make_ds_node("data/file.Parquet", "MixedPq"))
-        assert "read_data_source" in code
+        assert "resolve_data_input_from_config" in code
         assert "scan_parquet" not in code
         _compile_node_code(code)
 
@@ -2323,7 +2386,7 @@ class TestInstanceMissingTarget:
                         "id": "src",
                         "data": {
                             "label": "Source",
-                            "nodeType": "dataSource",
+                            "nodeType": "dataInput",
                             "config": {"path": "d.parquet"},
                         },
                     },
@@ -2363,7 +2426,7 @@ class TestInstanceAmbiguousMapping:
                 "id": node_id,
                 "data": {
                     "label": label,
-                    "nodeType": "dataSource",
+                    "nodeType": "dataInput",
                     "config": {"path": f"{node_id}.parquet"},
                 },
             }
@@ -2540,7 +2603,7 @@ class TestConnectDeduplication:
                         "id": "src",
                         "data": {
                             "label": "Source",
-                            "nodeType": "dataSource",
+                            "nodeType": "dataInput",
                             "config": {"path": "d.parquet"},
                         },
                     },
@@ -2691,7 +2754,7 @@ class TestSpecialCharacterLabels:
                         "id": "a",
                         "data": {
                             "label": "My Source (v2)",
-                            "nodeType": "dataSource",
+                            "nodeType": "dataInput",
                             "config": {"path": "d.parquet"},
                         },
                     },
@@ -2953,13 +3016,16 @@ class TestGenDataSourceEdgeCases:
                 "id": "src",
                 "data": {
                     "label": "WeirdSrc",
-                    "nodeType": "dataSource",
-                    "config": {"path": "data/file.xyz"},
+                    "nodeType": "dataInput",
+                    "config": _file_input_config(
+                        "data/file.xyz",
+                        format_name="parquet",
+                    ),
                 },
             }
         )
         code = _node_to_code(node)
-        assert "read_data_source" in code
+        assert "resolve_data_input_from_config" in code
         assert "scan_parquet" not in code
         _compile_node_code(code)
 
@@ -2969,13 +3035,16 @@ class TestGenDataSourceEdgeCases:
                 "id": "src",
                 "data": {
                     "label": "NoExtSrc",
-                    "nodeType": "dataSource",
-                    "config": {"path": "data/noext"},
+                    "nodeType": "dataInput",
+                    "config": _file_input_config(
+                        "data/noext",
+                        format_name="parquet",
+                    ),
                 },
             }
         )
         code = _node_to_code(node)
-        assert "read_data_source" in code
+        assert "resolve_data_input_from_config" in code
         assert "scan_parquet" not in code
         _compile_node_code(code)
 
@@ -2985,20 +3054,15 @@ class TestGenDataSourceEdgeCases:
                 "id": "src",
                 "data": {
                     "label": "DBSrc",
-                    "nodeType": "dataSource",
-                    "config": {
-                        "sourceType": "databricks",
-                        "table": "catalog.schema.tbl",
-                        "http_path": "/sql/1.0/endpoints/abc",
-                        "query": "SELECT * FROM t",
-                    },
+                    "nodeType": "dataInput",
+                    "config": _databricks_input_config(),
                 },
             }
         )
         code = _node_to_code(node)
-        assert "read_data_source" in code
+        assert "resolve_data_input_from_config" in code
         assert "read_cached_table" not in code
-        assert "catalog.schema.tbl" in code
+        assert 'config="config/data_input/DBSrc.json"' in code
         _compile_node_code(code)
 
 
@@ -3120,10 +3184,10 @@ class TestGenLiveSwitchRoundTrip:
         full_code = (
             "import polars as pl\nimport haute\n"
             'pipeline = haute.Pipeline("test")\n\n'
-            '@pipeline.data_source(config="config/data_source/src_a.json")\n'
+            '@pipeline.data_input(config="config/data_input/src_a.json")\n'
             "def src_a() -> pl.LazyFrame:\n"
             '    return pl.scan_parquet("a.parquet")\n\n'
-            '@pipeline.data_source(config="config/data_source/src_b.json")\n'
+            '@pipeline.data_input(config="config/data_input/src_b.json")\n'
             "def src_b() -> pl.LazyFrame:\n"
             '    return pl.scan_parquet("b.parquet")\n\n'
             f"{code}\n"
@@ -3136,9 +3200,9 @@ class TestGenLiveSwitchRoundTrip:
             json.dumps({"input_scenario_map": scenario_map, "inputs": ["src_a", "src_b"]})
         )
         for name in ("src_a", "src_b"):
-            ds_dir = tmp_path / "config" / "data_source"
+            ds_dir = tmp_path / "config" / "data_input"
             ds_dir.mkdir(parents=True, exist_ok=True)
-            (ds_dir / f"{name}.json").write_text(json.dumps({"path": "a.parquet"}))
+            (ds_dir / f"{name}.json").write_text(json.dumps(_file_input_config("a.parquet")))
         py_file = tmp_path / "test.py"
         py_file.write_text(full_code)
         graph = parse_pipeline_file(py_file)
@@ -3202,7 +3266,7 @@ class TestGraphToCodeEdgeCases:
                         "id": "s",
                         "data": {
                             "label": "OnlySource",
-                            "nodeType": "dataSource",
+                            "nodeType": "dataInput",
                             "config": {"path": "data.parquet"},
                         },
                     }
@@ -3229,7 +3293,7 @@ class TestGraphToCodeEdgeCases:
                         "id": "s",
                         "data": {
                             "label": "S",
-                            "nodeType": "dataSource",
+                            "nodeType": "dataInput",
                             "config": {"path": "d.parquet"},
                         },
                     }
@@ -3367,20 +3431,19 @@ class TestRoundTripEdgeCases:
                 "id": "db",
                 "data": {
                     "label": "DBRead",
-                    "nodeType": "dataSource",
+                    "nodeType": "dataInput",
                     "config": {
-                        "sourceType": "databricks",
+                        **_databricks_input_config(),
                         "table": "catalog.schema.my_table",
-                        "http_path": "/sql/1.0/endpoints/xyz",
-                        "query": "SELECT col1, col2 FROM t WHERE year = 2024",
+                        "query": "SELECT col1, col2",
                     },
                 },
             }
         )
         code = _node_to_code(node)
-        assert "read_data_source" in code
+        assert "resolve_data_input_from_config" in code
         assert "read_cached_table" not in code
-        assert "catalog.schema.my_table" in code
+        assert 'config="config/data_input/DBRead.json"' in code
         assert "def DBRead()" in code
         _compile_node_code(code)
 
@@ -3473,7 +3536,7 @@ class TestGraphToCodeSingleFileGuard:
                         "id": "src",
                         "data": {
                             "label": "Source",
-                            "nodeType": "dataSource",
+                            "nodeType": "dataInput",
                             "config": {"path": "d.parquet"},
                         },
                     }
@@ -3495,7 +3558,7 @@ class TestGraphToCodeSingleFileGuard:
                         "id": "src",
                         "data": {
                             "label": "Source",
-                            "nodeType": "dataSource",
+                            "nodeType": "dataInput",
                             "config": {"path": "d.parquet"},
                         },
                     },
@@ -3595,7 +3658,7 @@ class TestSubmodelImportSafePath:
                         "id": "src",
                         "data": {
                             "label": "Source",
-                            "nodeType": "dataSource",
+                            "nodeType": "dataInput",
                             "config": {"path": "d.parquet"},
                         },
                     },

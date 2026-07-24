@@ -34,6 +34,7 @@ from haute._databricks_io import (
 from haute._git import GitError, _validate_ref_name
 from haute._topo import topo_sort_ids
 from haute._types import GraphEdge
+from tests.conftest import make_file_output_config
 
 # =========================================================================
 # 1. SQL Injection — Table name validation
@@ -852,7 +853,7 @@ class TestW8bLocalSessionProtection:
         [
             "/api/pipeline/preview",
             "/api/pipeline/trace",
-            "/api/pipeline/sink",
+            "/api/pipeline/write-output",
         ],
     )
     def test_pipeline_posts_missing_session_token_rejected_before_validation(
@@ -902,7 +903,7 @@ class TestW8bLocalSessionProtection:
         [
             "/api/pipeline/preview",
             "/api/pipeline/trace",
-            "/api/pipeline/sink",
+            "/api/pipeline/write-output",
         ],
     )
     def test_pipeline_posts_foreign_origin_rejected_before_validation(
@@ -1000,8 +1001,8 @@ class TestW8bLocalSessionProtection:
                     "position": {"x": 0, "y": 0},
                     "data": {
                         "label": "Sink",
-                        "nodeType": "dataSink",
-                        "config": {"path": "../outside.parquet", "format": "parquet"},
+                        "nodeType": "dataOutput",
+                        "config": make_file_output_config("../outside.parquet"),
                     },
                 },
             ],
@@ -1009,7 +1010,7 @@ class TestW8bLocalSessionProtection:
         }
 
         resp = client.post(
-            "/api/pipeline/sink",
+            "/api/pipeline/write-output",
             json={"graph": graph, "node_id": "sink"},
             headers={
                 "host": self.LOCAL_HOST,
@@ -1023,7 +1024,7 @@ class TestW8bLocalSessionProtection:
     def test_pipeline_relative_sink_output_inside_project_is_allowed(self, client):
         from unittest.mock import patch
 
-        from haute.schemas import SinkResponse
+        from haute.schemas import WriteOutputResponse
 
         graph = {
             "nodes": [
@@ -1033,8 +1034,10 @@ class TestW8bLocalSessionProtection:
                     "position": {"x": 0, "y": 0},
                     "data": {
                         "label": "Sink",
-                        "nodeType": "dataSink",
-                        "config": {"path": "../output/result", "format": "parquet"},
+                        "nodeType": "dataOutput",
+                        "config": make_file_output_config(
+                            "../output/result", format_name="parquet"
+                        ),
                     },
                 },
             ],
@@ -1045,16 +1048,16 @@ class TestW8bLocalSessionProtection:
 
         def fake_execute_sink(*_args, **kwargs):
             captured_kwargs.update(kwargs)
-            return SinkResponse(
+            return WriteOutputResponse(
                 status="ok",
                 row_count=0,
                 path="../output/result.parquet",
                 format="parquet",
             )
 
-        with patch("haute.routes.pipeline.execute_sink", side_effect=fake_execute_sink):
+        with patch("haute.routes.pipeline.write_data_output", side_effect=fake_execute_sink):
             resp = client.post(
-                "/api/pipeline/sink",
+                "/api/pipeline/write-output",
                 json={"graph": graph, "node_id": "sink"},
                 headers={
                     "host": self.LOCAL_HOST,
@@ -1071,7 +1074,7 @@ class TestW8bLocalSessionProtection:
         tmp_path: Path,
     ):
         from haute._types import GraphNode, NodeData, NodeType, PipelineGraph
-        from haute.executor import execute_sink
+        from haute.executor import write_data_output
 
         outside = tmp_path.parent / "outside.parquet"
         graph = PipelineGraph(
@@ -1080,8 +1083,8 @@ class TestW8bLocalSessionProtection:
                     id="sink",
                     data=NodeData(
                         label="Sink",
-                        nodeType=NodeType.DATA_SINK,
-                        config={"path": str(outside), "format": "parquet"},
+                        nodeType=NodeType.DATA_OUTPUT,
+                        config=make_file_output_config(outside),
                     ),
                 ),
             ],
@@ -1089,7 +1092,7 @@ class TestW8bLocalSessionProtection:
         )
 
         with pytest.raises(ValueError, match="outside the project root"):
-            execute_sink(graph, "sink", project_root=tmp_path)
+            write_data_output(graph, "sink", project_root=tmp_path)
 
     def test_ws_sync_rejects_foreign_origin_before_accept(self, client):
         with pytest.raises(self._ws_rejection_errors()):

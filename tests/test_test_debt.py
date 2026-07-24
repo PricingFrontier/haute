@@ -70,7 +70,6 @@ _EXPECTED_DEBT_IDS = {
     # tests/test_polars_io_registry.py.
     "3b8e7f4c44b25931",
     "7008d3c3226e5b2f",
-    "91495e144f1f678c",
     "9f3ea940c8dfc2b4",
     "ad4157172134c634",
     "f0b346cafaa361b3",
@@ -118,13 +117,6 @@ _EXPECTED_DEBT_IDS = {
     "24665ee51c5161bd",
     # (test_windows_reserved_names_produce_paths's win32 skipif retired: the
     # test is now an all-platform predicate check, so its debt entry is gone.)
-    "6d705bbf63d485c1",
-    "27f1c7562a3e3d53",
-    "578c7caa35870e0c",
-    "5ae5cca72148cfb0",
-    "b87a713a330b9560",
-    "cbc41563e9c9ff03",
-    "1df1d9aa3e9efc57",
     "d23a55b468b6e518",
     "5efdb01a5c96e2ef",
     "bdc246f0c4c5f76e",

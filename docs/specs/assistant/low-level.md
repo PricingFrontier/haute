@@ -408,3 +408,18 @@ No test calls a live Anthropic, OpenAI, or Databricks-compatible endpoint; provi
 behaviour is exercised with scripted SDK streams. The package is covered by the repository's
 global branch gate, while exemplar `.py` assets are omitted from coverage because they are
 parsed package data rather than importable modules (they remain parser- and lint-checked).
+
+## Approved change contract — 0.7.0 data I/O authoring
+
+Remaining assistant improvement work is tracked in the
+[assistant roadmap](../../roadmap/assistant.md).
+
+- Remove legacy entries from `src/haute/assistant/_catalog.py` and
+  `src/haute/assistant/assets/authoring_guide.md`; update `_tools.py` configuration validation to
+  the retained discriminated configs and capability registry.
+- Node-catalog validation remains exhaustive over `NodeType`, now 19 entries. Action tools for
+  cache build/refresh/clear and output write remain distinct from graph-edit tools and honour the
+  plugin's approval policy.
+- Reset exemplar pipelines containing removed nodes to blank assets. Tests cover retained
+  catalogue shape, valid/invalid provider configs, explicit action dispatch, no-secret payloads,
+  and rejection/absence of legacy tool inputs.

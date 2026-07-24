@@ -16,9 +16,9 @@ from typing import Any, cast
 import polars as pl
 from fastapi import HTTPException
 
-from haute._databricks_io import CacheNotFoundError
 from haute._event_bus import GraphUpdatePayload, default_bus
 from haute._logging import get_logger
+from haute._source_cache import SourceCacheError
 from haute._types import GraphNode, NodeType, PipelineGraph
 from haute.assistant._assets import load_example
 from haute.assistant._catalog import NODE_CATALOG
@@ -61,7 +61,7 @@ def _error(code: str, message: str, **fields: object) -> dict[str, object]:
 def _error_message(exc: Exception, *, operation: str) -> str:
     """Keep analyst-facing Haute errors, but do not leak internal details."""
 
-    if isinstance(exc, (HauteError, CacheNotFoundError)):
+    if isinstance(exc, (HauteError, SourceCacheError)):
         return str(exc)
     if isinstance(exc, HTTPException):
         return str(exc.detail)

@@ -22,9 +22,17 @@ from typing import Any
 
 import orjson
 import polars as pl
+import pytest
 import structlog
 
+import haute._json_shred as shred_mod
+from haute._api_input_schema import ApiInputSchemaError
 from haute._json_shred import (
+    _cache_manifest_failure,
+    _cache_manifest_structure_failure,
+    _cache_meta_matches_config_and_source,
+    _CacheProbeFailure,
+    _data_file_signature,
     _v2_fingerprint,
     build_per_port_cache,
     is_per_port_cache_valid,
@@ -64,6 +72,102 @@ def _write(tmp_path: Path, records: list[Any]) -> Path:
     p = tmp_path / "data.json"
     p.write_text(json.dumps(records), encoding="utf-8")
     return p
+
+
+def _manifest_entry(label: str, *, parquet: str | None = None) -> dict[str, Any]:
+    return {
+        "label": label,
+        "parquet": parquet if parquet is not None else f"{label}.parquet",
+        "content_signature": {"size": 0, "sha256": "0" * 64},
+    }
+
+
+def test_manifest_structure_rejects_bad_labels_and_label_sets() -> None:
+    empty_label = _cache_manifest_structure_failure({"tables": [_manifest_entry("")]})
+    assert empty_label == _CacheProbeFailure("malformed_manifest")
+    assert _cache_manifest_structure_failure(
+        {"tables": [{**_manifest_entry("root"), "label": 2}]}
+    ) == _CacheProbeFailure("malformed_manifest")
+    missing = _cache_manifest_structure_failure(
+        {"tables": [_manifest_entry("root")]}, expected_labels=("root", "extra")
+    )
+    extra = _cache_manifest_structure_failure(
+        {"tables": [_manifest_entry("root"), _manifest_entry("extra")]},
+        expected_labels=("root",),
+    )
+    assert missing == _CacheProbeFailure("manifest_table_mismatch", label="extra")
+    assert extra == _CacheProbeFailure("manifest_table_mismatch", label="extra")
+
+
+@pytest.mark.parametrize("parquet", ["qoot.parquet", "soot.parquet"])
+def test_manifest_structure_requires_derived_parquet_name(parquet: str) -> None:
+    failure = _cache_manifest_structure_failure(
+        {"tables": [_manifest_entry("root", parquet=parquet)]}
+    )
+    assert failure == _CacheProbeFailure("manifest_parquet_name_mismatch", label="root")
+    assert _cache_manifest_structure_failure({"tables": [_manifest_entry("root")]}) is None
+
+
+def test_manifest_file_check_stops_on_structure_failure_then_checks_missing_frame(
+    tmp_path: Path,
+) -> None:
+    malformed = {"tables": [{"label": "root"}]}
+    assert _cache_manifest_failure(tmp_path, malformed) == _CacheProbeFailure(
+        "missing_content_signature", label="root"
+    )
+    valid = {"tables": [_manifest_entry("root")]}
+    assert _cache_manifest_failure(tmp_path, valid) == _CacheProbeFailure(
+        "missing_frame", label="root"
+    )
+
+
+def test_cache_meta_requires_exact_fingerprint_and_handles_bad_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    data = _write(tmp_path, [{"id": 1}])
+    meta = {"schema_mode": "v2", "schema_fingerprint": "middle", "data_file": {}}
+    monkeypatch.setattr(shred_mod, "_v2_fingerprint", lambda _config: "middle")
+    monkeypatch.setattr(shred_mod, "_data_file_matches", lambda *_args, **_kwargs: True)
+    assert _cache_meta_matches_config_and_source(meta, {}, data_path=data) is True
+    for fingerprint in ("lower", "upper"):
+        meta["schema_fingerprint"] = fingerprint
+        assert _cache_meta_matches_config_and_source(meta, {}, data_path=data) is False
+    monkeypatch.setattr(
+        shred_mod,
+        "_v2_fingerprint",
+        lambda _config: (_ for _ in ()).throw(ApiInputSchemaError("bad config")),
+    )
+    assert _cache_meta_matches_config_and_source(meta, {}, data_path=data) is False
+
+
+def test_validity_reuses_supplied_signature_and_handles_stat_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    data = _write(tmp_path, [{"id": 1}])
+    config = {"tables": [_table("$[:]", "root", [_col("id", "$[:].id")])]}
+    cache_dir = tmp_path / "cache"
+    build_per_port_cache(str(data), config, cache_dir)
+    signature = _data_file_signature(data)
+
+    def unexpected_signature(_path: Path) -> dict[str, Any]:
+        raise AssertionError("precomputed signature should be reused")
+
+    monkeypatch.setattr(shred_mod, "_data_file_signature", unexpected_signature)
+    assert (
+        is_per_port_cache_valid(
+            cache_dir,
+            config,
+            data_path=data,
+            data_file_signature=signature,
+        )
+        is True
+    )
+    monkeypatch.setattr(
+        shred_mod,
+        "_data_file_signature",
+        lambda _path: (_ for _ in ()).throw(OSError("unreadable")),
+    )
+    assert is_per_port_cache_valid(cache_dir, config, data_path=data) is False
 
 
 # ---------------------------------------------------------------------------

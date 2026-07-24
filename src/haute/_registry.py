@@ -66,7 +66,7 @@ class NodeRegistryEntry:
     #: Whether this NodeType applies a genuine, stateful transform (banding,
     #: rating, modelScore, liveSwitch, scenarioExpander, optimiserApply,
     #: output) as opposed to a pure passthrough (modelling, optimiser
-    #: preview, dataSink, submodel).  Set on the EXEC side at registration.
+    #: preview, dataOutput, submodel). Set on the EXEC side at registration.
     #:
     #: The invariant :func:`validate_registry_complete` enforces at import:
     #: a behavioural type's codegen body must NOT be a bare

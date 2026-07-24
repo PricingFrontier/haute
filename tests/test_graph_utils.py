@@ -240,7 +240,7 @@ class TestExecuteLazy:
         nt = node.data.nodeType
         name = node.data.label or nid
 
-        if nt == "dataSource":
+        if nt == "dataInput":
 
             def fn() -> pl.LazyFrame:
                 return pl.DataFrame({"x": [1, 2, 3]}).lazy()
@@ -260,7 +260,7 @@ class TestExecuteLazy:
         )
         g = PipelineGraph(
             nodes=[
-                GraphNode(id="src", data=NodeData(label="Source", nodeType="dataSource")),
+                GraphNode(id="src", data=NodeData(label="Source", nodeType="dataInput")),
                 GraphNode(id="t", data=NodeData(label="Transform", nodeType="polars")),
             ],
             edges=g.edges,
@@ -280,7 +280,7 @@ class TestExecuteLazy:
         )
         g = PipelineGraph(
             nodes=[
-                GraphNode(id="a", data=NodeData(label="A", nodeType="dataSource")),
+                GraphNode(id="a", data=NodeData(label="A", nodeType="dataInput")),
                 GraphNode(id="b", data=NodeData(label="B", nodeType="polars")),
                 GraphNode(id="c", data=NodeData(label="C", nodeType="polars")),
             ],
@@ -301,7 +301,7 @@ class TestExecuteLazy:
 
         g = PipelineGraph(
             nodes=[
-                GraphNode(id="src", data=NodeData(label="Src", nodeType="dataSource")),
+                GraphNode(id="src", data=NodeData(label="Src", nodeType="dataInput")),
                 GraphNode(id="t", data=NodeData(label="T", nodeType="polars")),
             ],
             edges=[_e("src", "t")],
@@ -332,7 +332,7 @@ class TestExecuteLazy:
         # Two nodes, no edge — "t" must not silently grab src's output
         g = PipelineGraph(
             nodes=[
-                GraphNode(id="src", data=NodeData(label="Src", nodeType="dataSource")),
+                GraphNode(id="src", data=NodeData(label="Src", nodeType="dataInput")),
                 GraphNode(id="t", data=NodeData(label="T", nodeType="polars")),
             ],
             edges=[],
@@ -360,8 +360,8 @@ class TestExecuteLazyMultiInput:
 
         g = PipelineGraph(
             nodes=[
-                GraphNode(id="a", data=NodeData(label="A", nodeType="dataSource")),
-                GraphNode(id="b", data=NodeData(label="B", nodeType="dataSource")),
+                GraphNode(id="a", data=NodeData(label="A", nodeType="dataInput")),
+                GraphNode(id="b", data=NodeData(label="B", nodeType="dataInput")),
                 GraphNode(id="c", data=NodeData(label="C", nodeType="polars")),
             ],
             edges=[_e("a", "c"), _e("b", "c")],

@@ -260,8 +260,8 @@ Out of scope (owned elsewhere, linked where relevant):
 
 ## Polars backend contracts (0.6.0)
 
-This contract authorises the cache-related work in
-[F_0.6.0 Polars backend remediation plan](../../trip/plans/F_0.6.0_polars-backend-remediation.plan.md).
+Remaining cache improvement work is tracked in the
+[caching roadmap](../../roadmap/caching.md).
 It supplements, rather than weakens, the fingerprint and failure contracts above.
 
 - **Preview and trace identity is lineage-scoped.** A preview or trace result is
@@ -328,3 +328,52 @@ invalidation; a regression proving unchanged file metadata alone cannot validate
 JSON work for a different operation; cleanup imports/callers; and benchmark-gated
 semantic identity plus version-bump tests for any direct row-hash buffer
 implementation.
+
+## Approved change contract — 0.7.0 shared input snapshots
+
+Remaining source-cache improvement work is tracked in the
+[caching roadmap](../../roadmap/caching.md).
+This is the cache portion of the approved
+[data I/O convergence contract](../io-layer/high-level.md#approved-change-contract-070-data-io-convergence).
+
+- Caching gains one provider-neutral, single-table source-snapshot service used by
+  `dataInput` file, database, lakehouse, and Databricks providers. It owns build/refresh,
+  status/progress, clear, identity, metadata, disk layout, concurrency, atomic publication,
+  validation, quota, and garbage collection. Provider components own acquisition and browsing;
+  the execution engine only opens a validated published snapshot.
+- A source identity is deterministic over the safe canonical provider configuration: provider,
+  normalised locator/table/path, complete query, format, source-affecting arguments, schema
+  declarations, and the name of the connection/secret reference. Resolved credentials,
+  post-input Polars code, graph layout, preview limits, and downstream projection are excluded.
+  Identity is content-addressed under `.haute_cache/inputs/`; two distinct queries against the
+  same table can never share a generation.
+- A generation consists of Parquet data and signed metadata containing schema, row/column
+  counts, bytes, timestamps, identity digest, builder boundedness, and any provider revision or
+  freshness token. A build is serialized per identity, uses a unique staging generation, and
+  publishes only after artifact and metadata validation. Concurrent readers retain a coherent
+  old generation or open the coherent new generation; they never observe an in-place rewrite.
+- Refresh is explicit. Pipeline preview, batch, CI, and deploy never initiate remote I/O.
+  Failure, timeout, cancellation, inconsistent database snapshot, retry ambiguity, disk-full,
+  or schema mismatch preserves the last complete generation. A missing generation or one whose
+  identity/signature does not match fails loudly.
+- Readiness and external freshness are separate. `ready` means the local signed generation can
+  be read. Freshness is `fresh`, `stale`, or `unknown`; it is `unknown` when a provider cannot
+  cheaply prove a revision. A fetch timestamp alone never means fresh. Changed local-file
+  signatures mark the generation stale; remote providers may supply snapshot/version tokens.
+- Builders declare `bounded`, `admitted_eager`, or `unsupported`. The cache service enforces that
+  declaration before acquisition. A Parquet result does not retroactively make an eager
+  full-memory import bounded. Database and Databricks builders must stream bounded batches;
+  lakehouse builders use bounded lazy scan/sink; eager-only local formats require memory
+  admission or remain unsupported for the requested profile.
+- The existing API-input JSON shredding cache and dataframe execution cache remain separate:
+  the former is a multi-frame structural codec and the latter caches graph computation, while a
+  source snapshot is a single-table external-boundary artifact.
+- Cache metadata, logs, routes, diagnostics, and paths never contain resolved credentials.
+  Project-wide byte quota and generation-count limits are explicit settings. Eviction never
+  removes a leased generation; clear/eviction marks then removes only after readers release it.
+
+Acceptance tests cover identity canonicalisation and query separation, secret exclusion,
+boundedness admission, atomic refresh with readers on both sides of publication, same-identity
+single flight, different-identity concurrency, cancellation and fault preservation, signed
+artifact corruption, local-file invalidation, remote freshness-unknown reporting, leased
+eviction, quota accounting, and direct-versus-snapshot schema/data equivalence.

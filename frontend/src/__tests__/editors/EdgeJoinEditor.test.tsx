@@ -11,7 +11,7 @@ const baseNode: SimpleNode = {
   data: {
     label: "Quotes",
     description: "",
-    nodeType: "dataSource",
+    nodeType: "dataInput",
     _columns: [
       { name: "policy_id", dtype: "String" },
       { name: "state", dtype: "String" },
@@ -25,7 +25,7 @@ const joinNode: SimpleNode = {
   data: {
     label: "Area Lookup",
     description: "",
-    nodeType: "dataSource",
+    nodeType: "dataInput",
     _columns: [
       { name: "policy_id", dtype: "String" },
       { name: "lookup_policy_id", dtype: "String" },

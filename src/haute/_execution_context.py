@@ -745,6 +745,12 @@ class ExecutionContext:
         init=False,
     )
     _admission_released: bool = field(default=False, init=False)
+    _cleanup_lock: threading.RLock = field(
+        default_factory=threading.RLock,
+        init=False,
+    )
+    _cleanup_callbacks: list[Callable[[], None]] = field(default_factory=list, init=False)
+    _cleanups_released: bool = field(default=False, init=False)
     _evidence_lock: threading.RLock = field(default_factory=threading.RLock, init=False)
     _column_widths: dict[str, ExecutionColumnWidths] = field(
         default_factory=dict,
@@ -758,16 +764,43 @@ class ExecutionContext:
     def cancel(self) -> None:
         self.cancellation_token.cancel()
 
-    def release_admission(self) -> None:
-        """Release any in-flight memory reservation held by this context."""
-        with self._admission_release_lock:
-            if self._admission_released:
+    def add_cleanup(self, callback: Callable[[], None]) -> None:
+        """Retain a runtime resource until this execution context is released."""
+        with self._cleanup_lock:
+            if self._cleanups_released:
+                raise RuntimeError("cannot register a resource on a released execution context")
+            self._cleanup_callbacks.append(callback)
+
+    def _release_cleanups(self) -> None:
+        with self._cleanup_lock:
+            if self._cleanups_released:
                 return
-            self._admission_released = True
-            release = self.admission_release
-            self.admission_release = None
-        if release is not None:
-            release()
+            self._cleanups_released = True
+            callbacks = list(reversed(self._cleanup_callbacks))
+            self._cleanup_callbacks.clear()
+        first_error: BaseException | None = None
+        for callback in callbacks:
+            try:
+                callback()
+            except BaseException as exc:
+                if first_error is None:
+                    first_error = exc
+        if first_error is not None:
+            raise first_error
+
+    def release_admission(self) -> None:
+        """Release runtime resources and any in-flight memory reservation."""
+        release: Callable[[], None] | None = None
+        try:
+            self._release_cleanups()
+        finally:
+            with self._admission_release_lock:
+                if not self._admission_released:
+                    self._admission_released = True
+                    release = self.admission_release
+                    self.admission_release = None
+            if release is not None:
+                release()
 
     def close(self) -> None:
         """Alias for callers that treat execution contexts as resources."""

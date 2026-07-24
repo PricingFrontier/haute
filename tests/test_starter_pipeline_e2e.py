@@ -221,22 +221,22 @@ class TestStarterPipelineParses:
         _, graph = parsed_starter
 
         source_types = {
-            NodeType.DATA_SOURCE,
+            NodeType.DATA_INPUT,
             NodeType.API_INPUT,
         }
         sink_types = {
             NodeType.OUTPUT,
-            NodeType.DATA_SINK,
+            NodeType.DATA_OUTPUT,
         }
 
         node_types = {n.data.nodeType for n in graph.nodes}
         assert source_types & node_types, (
-            "Starter pipeline must have a dataSource or apiInput node so "
+            "Starter pipeline must have a dataInput or apiInput node so "
             "data can enter the pipeline; node types present: "
             f"{sorted(str(nt) for nt in node_types)}"
         )
         assert sink_types & node_types, (
-            "Starter pipeline must have an output or dataSink node so the "
+            "Starter pipeline must have an output or dataOutput node so the "
             "computed result is produced somewhere; node types present: "
             f"{sorted(str(nt) for nt in node_types)}"
         )
@@ -301,10 +301,10 @@ class TestStarterPipelineExecutes:
         results = executed_starter.results
 
         terminals = [
-            n for n in graph.nodes if n.data.nodeType in (NodeType.OUTPUT, NodeType.DATA_SINK)
+            n for n in graph.nodes if n.data.nodeType in (NodeType.OUTPUT, NodeType.DATA_OUTPUT)
         ]
         assert terminals, (
-            "Pre-condition: starter must declare an output or dataSink node "
+            "Pre-condition: starter must declare an output or dataOutput node "
             "(see TestStarterPipelineParses.test_parsed_graph_has_source_and_output)"
         )
         terminal = terminals[0]
@@ -336,7 +336,7 @@ class TestStarterPipelineExecutes:
         results = executed_starter.results
 
         terminals = [
-            n for n in graph.nodes if n.data.nodeType in (NodeType.OUTPUT, NodeType.DATA_SINK)
+            n for n in graph.nodes if n.data.nodeType in (NodeType.OUTPUT, NodeType.DATA_OUTPUT)
         ]
         assert terminals, "starter must declare a terminal node"
         terminal = terminals[0]

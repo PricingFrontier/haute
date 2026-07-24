@@ -71,8 +71,15 @@ def _explore_graph(
                     "id": "source",
                     "data": {
                         "label": "source",
-                        "nodeType": "dataSource",
-                        "config": {"path": data_path},
+                        "nodeType": "dataInput",
+                        "config": {
+                            "inputType": "file",
+                            "format": "parquet",
+                            "mode": "scan",
+                            "cacheMode": "direct",
+                            "path": data_path,
+                            "arguments": {},
+                        },
                     },
                 },
                 {

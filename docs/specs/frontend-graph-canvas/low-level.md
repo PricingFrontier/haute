@@ -665,9 +665,9 @@ The pure connection/frame helpers are defended by `frontend/src/utils/__tests__/
     empty-graph provider is distinct from no provider; the context sentinel
     is a real, usable `React.Context`.
   - `NodePanel.graphContext.test.tsx` — DOM-level regression that
-    `NodePanel` and nested editors (`SinkEditor`, `ModellingConfig`,
+    `NodePanel` and nested editors (`DataOutputEditor`, `ModellingConfig`,
     `OptimiserConfig`) consume the graph purely via `useGraph()`, including
-    a structural assertion that `SinkEditor`'s prop type no longer declares
+    a structural assertion that `DataOutputEditor`'s prop type no longer declares
     `allNodes`/`edges`/`submodels`/`preamble`; and the #84 fail-loud
     behaviour for a missing `instanceOf` reference (diagnostic naming the
     missing id, never a silently stringified fallback label).
@@ -1003,6 +1003,27 @@ The pure connection/frame helpers are defended by `frontend/src/utils/__tests__/
   joined preview rows/columns; save/reload preservation of the compact node,
   role handles, config, and split topology; a second insertion on the same
   branch; exact preservation of a named API-input `sourceHandle`; and a
-  downstream trace retaining and highlighting each Edge Join ancestor. All
+  downstream trace retaining both Edge Join ancestors, leaving them undimmed,
+  and highlighting their connecting path while reserving node-active styling
+  for column-relevant steps. All
   drag points are derived from live locator geometry and every assertion is
   an observable DOM, preview, trace, or persisted-pipeline outcome.
+
+## Approved change contract — 0.7.0 canonical data-I/O canvas nodes
+
+Remaining graph-canvas improvement work is tracked in the
+[frontend canvas roadmap](../../roadmap/frontend-canvas.md).
+
+- Remove `DATA_SOURCE`/`DATA_SINK` from `utils/nodeTypes.ts`,
+  `utils/nodeTypeRegistry.ts`, `SOURCE_ONLY_TYPES`, `SINK_ONLY_TYPES`, `PALETTE_TYPES`, icons,
+  labels, search metadata, `ReadOnlyNodeConfig.tsx`, and click/preview exclusions. Retain
+  `DATA_INPUT` in the source-only set and `DATA_OUTPUT` in the sink-only set; do not add either to
+  `SINGLETON_TYPES`.
+- Make the retained metadata defaults branch-shaped and consistent with the shared frontend
+  config types. `flowElements` copies that shape without adding inactive keys. A Data Output
+  click may request a safe pass-through preview; the explicit writer remains editor/API-owned.
+- Strict graph response guards reject removed node strings before `buildGraph`, WebSocket apply,
+  comparison construction, or store mutation. No fallback maps them to retained types.
+- Update exact-count/completeness, factory, handles, palette/search, click preview, graph
+  fingerprint, load/save, comparison, and WebSocket tests. Browser coverage creates multiple
+  retained I/O nodes and proves a rejected legacy payload leaves the prior/blank graph intact.

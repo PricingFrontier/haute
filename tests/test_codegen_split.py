@@ -62,7 +62,7 @@ def _module_top_level_assignments(module_path: Path) -> set[str]:
 
 
 def _simple_source_graph():
-    """A single ``dataSource`` node — simplest valid graph."""
+    """A single ``dataInput`` node — simplest valid graph."""
     return _g(
         {
             "nodes": [
@@ -70,7 +70,7 @@ def _simple_source_graph():
                     "id": "src",
                     "data": {
                         "label": "Source",
-                        "nodeType": "dataSource",
+                        "nodeType": "dataInput",
                         "config": {"path": "data/in.parquet"},
                     },
                 }
@@ -89,7 +89,7 @@ def _source_transform_graph():
                     "id": "src",
                     "data": {
                         "label": "Source",
-                        "nodeType": "dataSource",
+                        "nodeType": "dataInput",
                         "config": {"path": "data/in.parquet"},
                     },
                 },
@@ -116,7 +116,7 @@ def _source_sink_graph():
                     "id": "src",
                     "data": {
                         "label": "Source",
-                        "nodeType": "dataSource",
+                        "nodeType": "dataInput",
                         "config": {"path": "data/in.parquet"},
                     },
                 },
@@ -124,7 +124,7 @@ def _source_sink_graph():
                     "id": "snk",
                     "data": {
                         "label": "Write",
-                        "nodeType": "dataSink",
+                        "nodeType": "dataOutput",
                         "config": {"path": "out.parquet", "format": "parquet"},
                     },
                 },
@@ -143,7 +143,7 @@ def _modelling_graph():
                     "id": "src",
                     "data": {
                         "label": "Source",
-                        "nodeType": "dataSource",
+                        "nodeType": "dataInput",
                         "config": {"path": "data/in.parquet"},
                     },
                 },
@@ -615,18 +615,18 @@ class TestBehaviourPreservation:
 
     def test_single_source_emits_data_source_decorator(self) -> None:
         code = _current_code_for(_simple_source_graph)
-        assert "@pipeline.data_source" in code
+        assert "@pipeline.data_input" in code
         assert "def Source()" in code
 
     def test_source_transform_emits_both_decorators_and_connect(self) -> None:
         code = _current_code_for(_source_transform_graph)
-        assert "@pipeline.data_source" in code
+        assert "@pipeline.data_input" in code
         assert "@pipeline.polars" in code
         assert 'pipeline.connect("Source", "Clean")' in code
 
     def test_source_sink_emits_data_sink_decorator(self) -> None:
         code = _current_code_for(_source_sink_graph)
-        assert "@pipeline.data_sink" in code
+        assert "@pipeline.data_output" in code
         assert 'pipeline.connect("Source", "Write")' in code
 
     def test_modelling_emits_modelling_decorator(self) -> None:

@@ -216,3 +216,30 @@ Depended on:
   ordinary exception is logged. A `BaseException` (e.g. `SystemExit`)
   raised by the background work is intentionally *not* swallowed by the drain path
   and propagates out of the callback.
+
+## Approved change contract — 0.7.0 input-cache jobs
+
+Remaining background-job improvement work is tracked in the
+[background jobs and API roadmap](../../roadmap/background-jobs-api.md).
+The shared input-snapshot API uses this component rather than creating another route-local job
+state machine.
+
+- Add one closed `input_cache` job-store namespace. Each build/refresh has a stable job id,
+  ordinary lifecycle status, cooperative cancellation token, bounded progress fields, and a safe
+  typed terminal error. The source-cache identity digest is the single-flight key.
+- A request for an identity already building returns the existing active job id; the route
+  obtains that join through `SingleFlightCoordinator.active()` before attempting `acquire()`.
+  Different identities may run concurrently under the input-cache route's explicit global
+  admission limit. The coordinator itself keeps its existing reject-on-conflicting-acquire
+  semantics.
+- Job TTL governs status observability only. Evicting an input-cache job never deletes a
+  published snapshot generation, and snapshot clear/garbage collection never depends on a job
+  record still existing. Jobs contain no resolved credentials, connector objects, dataframes, or
+  cache reader leases.
+- A cancel response means cancellation was requested; the job becomes `cancelled` only when the
+  builder observes a checkpoint and the lifecycle transition wins. A completed publication
+  remains sticky if cancellation races after commit.
+
+Acceptance covers namespace closure, same-identity join, different-identity concurrency,
+cancel/complete races, progress isolation, TTL independence from snapshots, bounded job payloads,
+and redaction.

@@ -12,7 +12,7 @@ The round-trip pipeline:
     5. Assert structural equivalence (node count, types, edges, config values)
 
 Focused on types that cleanly round-trip:
-    dataSource, transform, output, constant, dataSink, banding, ratingStep, apiInput
+    dataInput, transform, output, constant, dataOutput, banding, ratingStep, apiInput
 
 Skipped types (complex edge cases):
     modelScore, externalFile, liveSwitch, modelling, optimiser, optimiserApply,
@@ -47,11 +47,11 @@ from tests.conftest import make_output_config
 
 # Types that round-trip cleanly via codegen -> parse
 ROUNDTRIP_TYPES: list[NodeType] = [
-    NodeType.DATA_SOURCE,
+    NodeType.DATA_INPUT,
     NodeType.POLARS,
     NodeType.OUTPUT,
     NodeType.CONSTANT,
-    NodeType.DATA_SINK,
+    NodeType.DATA_OUTPUT,
     NodeType.BANDING,
     NodeType.RATING_STEP,
     NodeType.API_INPUT,
@@ -61,14 +61,14 @@ ROUNDTRIP_TYPES: list[NodeType] = [
 _NEEDS_UPSTREAM = {
     NodeType.POLARS,
     NodeType.OUTPUT,
-    NodeType.DATA_SINK,
+    NodeType.DATA_OUTPUT,
     NodeType.BANDING,
     NodeType.RATING_STEP,
 }
 
 # Types with zero params (sources)
 _SOURCE_TYPES = {
-    NodeType.DATA_SOURCE,
+    NodeType.DATA_INPUT,
     NodeType.API_INPUT,
     NodeType.CONSTANT,
 }
@@ -175,8 +175,8 @@ def _unique_labels(draw: st.DrawFn, n: int) -> list[str]:
 # -- Config strategies per type --------------------------------------------
 
 
-def _data_source_config() -> st.SearchStrategy[dict[str, Any]]:
-    """Strategy for dataSource config dicts."""
+def _data_input_config() -> st.SearchStrategy[dict[str, Any]]:
+    """Strategy for dataInput config dicts."""
     return st.fixed_dictionaries(
         {
             "path": st.sampled_from(
@@ -186,7 +186,11 @@ def _data_source_config() -> st.SearchStrategy[dict[str, Any]]:
                     "files/quotes.parquet",
                 ]
             ),
-            "sourceType": st.just("flat_file"),
+            "inputType": st.just("file"),
+            "format": st.just("parquet"),
+            "mode": st.just("scan"),
+            "cacheMode": st.just("direct"),
+            "arguments": st.just({}),
         }
     )
 
@@ -254,10 +258,11 @@ def _constant_config() -> st.SearchStrategy[dict[str, Any]]:
     )
 
 
-def _data_sink_config() -> st.SearchStrategy[dict[str, Any]]:
-    """Strategy for dataSink config dicts."""
+def _data_output_config() -> st.SearchStrategy[dict[str, Any]]:
+    """Strategy for dataOutput config dicts."""
     return st.fixed_dictionaries(
         {
+            "outputType": st.just("file"),
             "path": st.sampled_from(
                 [
                     "output/result.parquet",
@@ -265,6 +270,8 @@ def _data_sink_config() -> st.SearchStrategy[dict[str, Any]]:
                 ]
             ),
             "format": st.sampled_from(["parquet", "csv"]),
+            "mode": st.just("sink"),
+            "arguments": st.just({}),
         }
     )
 
@@ -316,12 +323,12 @@ def _rating_step_config() -> st.SearchStrategy[dict[str, Any]]:
 
 
 _CONFIG_STRATEGY: dict[NodeType, st.SearchStrategy[dict[str, Any]]] = {
-    NodeType.DATA_SOURCE: _data_source_config(),
+    NodeType.DATA_INPUT: _data_input_config(),
     NodeType.API_INPUT: _api_input_config(),
     NodeType.POLARS: _transform_config(),
     NodeType.OUTPUT: _output_config(),
     NodeType.CONSTANT: _constant_config(),
-    NodeType.DATA_SINK: _data_sink_config(),
+    NodeType.DATA_OUTPUT: _data_output_config(),
     NodeType.BANDING: _banding_config(),
     NodeType.RATING_STEP: _rating_step_config(),
 }
@@ -335,7 +342,7 @@ def _pipeline_graph(draw: st.DrawFn) -> PipelineGraph:
     """Generate a valid PipelineGraph with 2-5 nodes and linear edges.
 
     Rules:
-    - First node is always a source type (dataSource or apiInput)
+    - First node is always a source type (dataInput or apiInput)
     - Remaining nodes are non-source types that need upstream inputs
     - All labels sanitize to unique function names
     - Edges form a linear chain: node[0] -> node[1] -> ... -> node[n-1]
@@ -344,7 +351,7 @@ def _pipeline_graph(draw: st.DrawFn) -> PipelineGraph:
     labels = draw(_unique_labels(n_nodes))
 
     # First node: must be a source type
-    first_type = draw(st.sampled_from([NodeType.DATA_SOURCE, NodeType.API_INPUT]))
+    first_type = draw(st.sampled_from([NodeType.DATA_INPUT, NodeType.API_INPUT]))
     first_config = draw(_CONFIG_STRATEGY[first_type])
     first_name = _sanitize_func_name(labels[0])
 
@@ -469,7 +476,7 @@ def _assert_config_equivalence(
     *all_node_ids* is used to strip upstream param name prefixes from
     parsed transform code (see ``_strip_upstream_prefix``).
     """
-    if node_type == NodeType.DATA_SOURCE:
+    if node_type == NodeType.DATA_INPUT:
         assert parsed.get("path") == orig.get("path"), (
             f"[{node_id}] path mismatch: {parsed.get('path')!r} != {orig.get('path')!r}"
         )
@@ -511,7 +518,7 @@ def _assert_config_equivalence(
                 f"[{node_id}] constant value mismatch: {pv.get('value')!r} != {ov.get('value')!r}"
             )
 
-    elif node_type == NodeType.DATA_SINK:
+    elif node_type == NodeType.DATA_OUTPUT:
         assert parsed.get("path") == orig.get("path"), f"[{node_id}] sink path mismatch"
         assert parsed.get("format") == orig.get("format"), f"[{node_id}] sink format mismatch"
 
@@ -647,15 +654,22 @@ class TestEdgeCases:
     """Deterministic tests for specific round-trip edge cases."""
 
     def test_two_node_source_to_transform(self, tmp_path: Path) -> None:
-        """Minimal pipeline: dataSource -> transform."""
+        """Minimal pipeline: dataInput -> transform."""
         graph = PipelineGraph(
             nodes=[
                 GraphNode(
                     id="load_data",
                     data=NodeData(
                         label="load_data",
-                        nodeType=NodeType.DATA_SOURCE,
-                        config={"path": "data.parquet", "sourceType": "flat_file"},
+                        nodeType=NodeType.DATA_INPUT,
+                        config={
+                            "inputType": "file",
+                            "format": "parquet",
+                            "mode": "scan",
+                            "cacheMode": "direct",
+                            "path": "data.parquet",
+                            "arguments": {},
+                        },
                     ),
                 ),
                 GraphNode(
@@ -674,15 +688,22 @@ class TestEdgeCases:
         _assert_structural_equivalence(graph, parsed)
 
     def test_source_to_output_with_fields(self, tmp_path: Path) -> None:
-        """dataSource -> output with field selection."""
+        """dataInput -> output with field selection."""
         graph = PipelineGraph(
             nodes=[
                 GraphNode(
                     id="source",
                     data=NodeData(
                         label="source",
-                        nodeType=NodeType.DATA_SOURCE,
-                        config={"path": "data.parquet", "sourceType": "flat_file"},
+                        nodeType=NodeType.DATA_INPUT,
+                        config={
+                            "inputType": "file",
+                            "format": "parquet",
+                            "mode": "scan",
+                            "cacheMode": "direct",
+                            "path": "data.parquet",
+                            "arguments": {},
+                        },
                     ),
                 ),
                 GraphNode(
@@ -732,7 +753,7 @@ class TestEdgeCases:
         parsed = _parse_roundtrip(graph, tmp_path)
         _assert_structural_equivalence(graph, parsed)
 
-    def test_data_sink_parquet(self, tmp_path: Path) -> None:
+    def test_data_output_parquet(self, tmp_path: Path) -> None:
         """source -> sink (parquet) round-trips."""
         graph = PipelineGraph(
             nodes=[
@@ -740,16 +761,29 @@ class TestEdgeCases:
                     id="source",
                     data=NodeData(
                         label="source",
-                        nodeType=NodeType.DATA_SOURCE,
-                        config={"path": "in.parquet", "sourceType": "flat_file"},
+                        nodeType=NodeType.DATA_INPUT,
+                        config={
+                            "inputType": "file",
+                            "format": "parquet",
+                            "mode": "scan",
+                            "cacheMode": "direct",
+                            "path": "in.parquet",
+                            "arguments": {},
+                        },
                     ),
                 ),
                 GraphNode(
                     id="writer",
                     data=NodeData(
                         label="writer",
-                        nodeType=NodeType.DATA_SINK,
-                        config={"path": "output/result.parquet", "format": "parquet"},
+                        nodeType=NodeType.DATA_OUTPUT,
+                        config={
+                            "outputType": "file",
+                            "format": "parquet",
+                            "mode": "sink",
+                            "path": "output/result.parquet",
+                            "arguments": {},
+                        },
                     ),
                 ),
             ],
@@ -759,7 +793,7 @@ class TestEdgeCases:
         parsed = _parse_roundtrip(graph, tmp_path)
         _assert_structural_equivalence(graph, parsed)
 
-    def test_data_sink_csv(self, tmp_path: Path) -> None:
+    def test_data_output_csv(self, tmp_path: Path) -> None:
         """source -> sink (csv) round-trips."""
         graph = PipelineGraph(
             nodes=[
@@ -767,16 +801,29 @@ class TestEdgeCases:
                     id="source",
                     data=NodeData(
                         label="source",
-                        nodeType=NodeType.DATA_SOURCE,
-                        config={"path": "in.parquet", "sourceType": "flat_file"},
+                        nodeType=NodeType.DATA_INPUT,
+                        config={
+                            "inputType": "file",
+                            "format": "parquet",
+                            "mode": "scan",
+                            "cacheMode": "direct",
+                            "path": "in.parquet",
+                            "arguments": {},
+                        },
                     ),
                 ),
                 GraphNode(
                     id="csv_out",
                     data=NodeData(
                         label="csv_out",
-                        nodeType=NodeType.DATA_SINK,
-                        config={"path": "output/result.csv", "format": "csv"},
+                        nodeType=NodeType.DATA_OUTPUT,
+                        config={
+                            "outputType": "file",
+                            "format": "csv",
+                            "mode": "sink",
+                            "path": "output/result.csv",
+                            "arguments": {},
+                        },
                     ),
                 ),
             ],
@@ -794,8 +841,15 @@ class TestEdgeCases:
                     id="source",
                     data=NodeData(
                         label="source",
-                        nodeType=NodeType.DATA_SOURCE,
-                        config={"path": "data.parquet", "sourceType": "flat_file"},
+                        nodeType=NodeType.DATA_INPUT,
+                        config={
+                            "inputType": "file",
+                            "format": "parquet",
+                            "mode": "scan",
+                            "cacheMode": "direct",
+                            "path": "data.parquet",
+                            "arguments": {},
+                        },
                     ),
                 ),
                 GraphNode(
@@ -846,8 +900,15 @@ class TestEdgeCases:
                     id="source",
                     data=NodeData(
                         label="source",
-                        nodeType=NodeType.DATA_SOURCE,
-                        config={"path": "data.parquet", "sourceType": "flat_file"},
+                        nodeType=NodeType.DATA_INPUT,
+                        config={
+                            "inputType": "file",
+                            "format": "parquet",
+                            "mode": "scan",
+                            "cacheMode": "direct",
+                            "path": "data.parquet",
+                            "arguments": {},
+                        },
                     ),
                 ),
                 GraphNode(
@@ -891,8 +952,15 @@ class TestEdgeCases:
                     id="source",
                     data=NodeData(
                         label="source",
-                        nodeType=NodeType.DATA_SOURCE,
-                        config={"path": "data.parquet", "sourceType": "flat_file"},
+                        nodeType=NodeType.DATA_INPUT,
+                        config={
+                            "inputType": "file",
+                            "format": "parquet",
+                            "mode": "scan",
+                            "cacheMode": "direct",
+                            "path": "data.parquet",
+                            "arguments": {},
+                        },
                     ),
                 ),
                 GraphNode(
@@ -966,8 +1034,15 @@ class TestEdgeCases:
                     id="load",
                     data=NodeData(
                         label="load",
-                        nodeType=NodeType.DATA_SOURCE,
-                        config={"path": "data.parquet", "sourceType": "flat_file"},
+                        nodeType=NodeType.DATA_INPUT,
+                        config={
+                            "inputType": "file",
+                            "format": "parquet",
+                            "mode": "scan",
+                            "cacheMode": "direct",
+                            "path": "data.parquet",
+                            "arguments": {},
+                        },
                     ),
                 ),
                 GraphNode(
@@ -1055,8 +1130,15 @@ class TestEdgeCases:
                     id="source",
                     data=NodeData(
                         label="source",
-                        nodeType=NodeType.DATA_SOURCE,
-                        config={"path": "data.parquet", "sourceType": "flat_file"},
+                        nodeType=NodeType.DATA_INPUT,
+                        config={
+                            "inputType": "file",
+                            "format": "parquet",
+                            "mode": "scan",
+                            "cacheMode": "direct",
+                            "path": "data.parquet",
+                            "arguments": {},
+                        },
                     ),
                 ),
                 GraphNode(
@@ -1075,7 +1157,7 @@ class TestEdgeCases:
         # Structural: both nodes present, types preserved
         assert len(parsed.nodes) == 2
         parsed_types = {n.data.nodeType for n in parsed.nodes}
-        assert NodeType.DATA_SOURCE in parsed_types
+        assert NodeType.DATA_INPUT in parsed_types
         assert NodeType.POLARS in parsed_types
         # Edge: at least the original edge is present
         orig_edges = _edge_pairs(graph.edges)
@@ -1094,8 +1176,15 @@ class TestEdgeCases:
                     id="source",
                     data=NodeData(
                         label="source",
-                        nodeType=NodeType.DATA_SOURCE,
-                        config={"path": "data.parquet", "sourceType": "flat_file"},
+                        nodeType=NodeType.DATA_INPUT,
+                        config={
+                            "inputType": "file",
+                            "format": "parquet",
+                            "mode": "scan",
+                            "cacheMode": "direct",
+                            "path": "data.parquet",
+                            "arguments": {},
+                        },
                     ),
                 ),
                 GraphNode(
@@ -1121,8 +1210,15 @@ class TestEdgeCases:
                     id="load_data",
                     data=NodeData(
                         label="load data",
-                        nodeType=NodeType.DATA_SOURCE,
-                        config={"path": "data.parquet", "sourceType": "flat_file"},
+                        nodeType=NodeType.DATA_INPUT,
+                        config={
+                            "inputType": "file",
+                            "format": "parquet",
+                            "mode": "scan",
+                            "cacheMode": "direct",
+                            "path": "data.parquet",
+                            "arguments": {},
+                        },
                     ),
                 ),
                 GraphNode(
@@ -1143,7 +1239,7 @@ class TestEdgeCases:
         assert "load_data" in parsed_ids
         assert "clean_up" in parsed_ids
 
-    def test_csv_data_source_roundtrip(self, tmp_path: Path) -> None:
+    def test_csv_data_input_roundtrip(self, tmp_path: Path) -> None:
         """CSV data source uses scan_csv template and round-trips."""
         graph = PipelineGraph(
             nodes=[
@@ -1151,8 +1247,15 @@ class TestEdgeCases:
                     id="csv_src",
                     data=NodeData(
                         label="csv_src",
-                        nodeType=NodeType.DATA_SOURCE,
-                        config={"path": "data/input.csv", "sourceType": "flat_file"},
+                        nodeType=NodeType.DATA_INPUT,
+                        config={
+                            "inputType": "file",
+                            "format": "csv",
+                            "mode": "scan",
+                            "cacheMode": "direct",
+                            "path": "data/input.csv",
+                            "arguments": {},
+                        },
                     ),
                 ),
                 GraphNode(
@@ -1170,18 +1273,22 @@ class TestEdgeCases:
         parsed = _parse_roundtrip(graph, tmp_path)
         _assert_structural_equivalence(graph, parsed)
 
-    def test_data_source_with_code_roundtrip(self, tmp_path: Path) -> None:
-        """DataSource with user code round-trips through codegen→parse."""
+    def test_data_input_with_code_roundtrip(self, tmp_path: Path) -> None:
+        """DataInput with user code round-trips through codegen→parse."""
         graph = PipelineGraph(
             nodes=[
                 GraphNode(
                     id="src",
                     data=NodeData(
                         label="src",
-                        nodeType=NodeType.DATA_SOURCE,
+                        nodeType=NodeType.DATA_INPUT,
                         config={
                             "path": "data/input.parquet",
-                            "sourceType": "flat_file",
+                            "inputType": "file",
+                            "format": "parquet",
+                            "mode": "scan",
+                            "cacheMode": "direct",
+                            "arguments": {},
                             "code": "df = df.filter(pl.col('x') > 0)",
                         },
                     ),
@@ -1201,21 +1308,25 @@ class TestEdgeCases:
         parsed = _parse_roundtrip(graph, tmp_path)
         _assert_structural_equivalence(graph, parsed)
         # Verify the user code was preserved
-        src_node = next(n for n in parsed.nodes if n.data.nodeType == NodeType.DATA_SOURCE)
+        src_node = next(n for n in parsed.nodes if n.data.nodeType == NodeType.DATA_INPUT)
         assert "filter" in src_node.data.config.get("code", "")
 
-    def test_data_source_with_assignment_code_roundtrip(self, tmp_path: Path) -> None:
-        """DataSource with df= assignment code round-trips."""
+    def test_data_input_with_assignment_code_roundtrip(self, tmp_path: Path) -> None:
+        """DataInput with df= assignment code round-trips."""
         graph = PipelineGraph(
             nodes=[
                 GraphNode(
                     id="src",
                     data=NodeData(
                         label="src",
-                        nodeType=NodeType.DATA_SOURCE,
+                        nodeType=NodeType.DATA_INPUT,
                         config={
                             "path": "data/input.csv",
-                            "sourceType": "flat_file",
+                            "inputType": "file",
+                            "format": "csv",
+                            "mode": "scan",
+                            "cacheMode": "direct",
+                            "arguments": {},
                             "code": "df = df.select('a', 'b')",
                         },
                     ),
@@ -1234,10 +1345,10 @@ class TestEdgeCases:
         )
         parsed = _parse_roundtrip(graph, tmp_path)
         _assert_structural_equivalence(graph, parsed)
-        src_node = next(n for n in parsed.nodes if n.data.nodeType == NodeType.DATA_SOURCE)
+        src_node = next(n for n in parsed.nodes if n.data.nodeType == NodeType.DATA_INPUT)
         assert "select" in src_node.data.config.get("code", "")
 
-    def test_data_source_stale_generated_loader_is_dropped_from_code_box(
+    def test_data_input_stale_generated_loader_is_dropped_from_code_box(
         self,
         tmp_path: Path,
     ) -> None:
@@ -1248,10 +1359,14 @@ class TestEdgeCases:
                     id="src",
                     data=NodeData(
                         label="src",
-                        nodeType=NodeType.DATA_SOURCE,
+                        nodeType=NodeType.DATA_INPUT,
                         config={
                             "path": "data/input.parquet",
-                            "sourceType": "flat_file",
+                            "inputType": "file",
+                            "format": "parquet",
+                            "mode": "scan",
+                            "cacheMode": "direct",
+                            "arguments": {},
                             "code": "\n".join(
                                 [
                                     "from pathlib import Path",
@@ -1278,7 +1393,7 @@ class TestEdgeCases:
             pipeline_name="roundtrip_test",
         )
         parsed = _parse_roundtrip(graph, tmp_path)
-        src_node = next(n for n in parsed.nodes if n.data.nodeType == NodeType.DATA_SOURCE)
+        src_node = next(n for n in parsed.nodes if n.data.nodeType == NodeType.DATA_INPUT)
         parsed_code = src_node.data.config.get("code", "")
         assert parsed_code == "df = df.limit(10)"
         assert "scan_parquet" not in parsed_code
@@ -1325,8 +1440,15 @@ class TestEdgeCases:
                     id="source",
                     data=NodeData(
                         label="source",
-                        nodeType=NodeType.DATA_SOURCE,
-                        config={"path": "data.parquet", "sourceType": "flat_file"},
+                        nodeType=NodeType.DATA_INPUT,
+                        config={
+                            "inputType": "file",
+                            "format": "parquet",
+                            "mode": "scan",
+                            "cacheMode": "direct",
+                            "path": "data.parquet",
+                            "arguments": {},
+                        },
                     ),
                 ),
                 GraphNode(
@@ -1371,8 +1493,15 @@ class TestExcludedTypeRoundTrips:
             id=nid,
             data=NodeData(
                 label=nid,
-                nodeType=NodeType.DATA_SOURCE,
-                config={"path": "data.parquet", "sourceType": "flat_file"},
+                nodeType=NodeType.DATA_INPUT,
+                config={
+                    "inputType": "file",
+                    "format": "parquet",
+                    "mode": "scan",
+                    "cacheMode": "direct",
+                    "path": "data.parquet",
+                    "arguments": {},
+                },
             ),
         )
 

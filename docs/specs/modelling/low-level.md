@@ -538,5 +538,5 @@ exercised indirectly through `test_modelling.py`,
 `TrainService` and estimate paths consume the execution facade's typed result rather
 than selecting collection strategy themselves. Their response and job diagnostics retain
 the final feature inclusion/exclusion and provenance supplied by that result; execution
-engine remains the sole owner of planning mechanics. See the
-[remediation plan](../../trip/plans/F_0.6.0_polars-backend-remediation.plan.md).
+engine remains the sole owner of planning mechanics. Remaining modelling improvement work is
+tracked in the [modelling roadmap](../../roadmap/modelling.md).
