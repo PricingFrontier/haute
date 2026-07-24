@@ -210,10 +210,24 @@ Out of scope (owned by neighbouring components, linked where they exist):
   edge-join node at the drop point and rewires that edge through it;
   releasing one source handle on another source handle also inserts an
   edge-join (base + join inputs), including via a synthesized touch-event
-  drop point on touch devices. Self-loops, duplicate edges, a third input
-  to an edge-join, a role (base/join) that already has an input, and a
-  connection that would exceed a node type's `maxInputs` are all rejected
-  silently or with a named toast. Dropping a palette item parses its
+  drop point on touch devices. While a source-handle gesture is over an
+  existing edge, the editor hit-tests that edge against the current graph
+  before release. A compatible edge is rendered with a distinct insertion
+  highlight and accompanied by a named live status message; moving to
+  another edge transfers the feedback, while leaving the edge, leaving the
+  canvas, cancelling, or ending the gesture removes it immediately.
+  Target-handle gestures and incompatible, stale, self-join, or
+  cycle-forming edges never receive valid-target feedback. Release
+  revalidates the current graph rather than trusting the earlier hover
+  result. A valid release preserves both source and target handles while
+  splitting the edge, selects the new edge-join, and records the complete
+  rewrite as one undoable action. A rejected edge release reports its
+  actionable edge-join reason without changing nodes, edges, selection,
+  dirty state, or history; an ordinary blank-canvas cancellation remains a
+  no-op. Self-loops, duplicate edges, a third input to an edge-join, a role
+  (base/join) that already has an input, and a connection that would exceed
+  a node type's `maxInputs` are all rejected silently or with a named toast.
+  Dropping a palette item parses its
   drag-carried JSON config and creates a node at the drop position; a
   malformed payload never creates a node with an empty config.
   Clicking a node opens/updates the inspector panel and, unless the node
@@ -352,6 +366,15 @@ Out of scope (owned by neighbouring components, linked where they exist):
   its own overlay shape, so every node type — including pill-shaped
   edge-join markers — gets a visually consistent highlight without special
   casing per shape.
+- **Edge-join insertion candidacy is transient UI state, not graph state.**
+  The active source endpoint and compatible edge id exist only for the
+  connection gesture. The candidate edge is decorated in the derived render
+  list, so entering or leaving it cannot affect persistence, dirty tracking,
+  selection, or undo history. Candidate detection and release share the same
+  pure compatibility check, while release still re-runs that check against
+  the latest graph to prevent a stale hover result from authorising a
+  rewrite. A conditional live-region status mirrors the visual highlight so
+  the affordance is not pointer-only.
 - **`useGraph()` throws instead of defaulting to an empty graph** when no
   provider is mounted, so a misconfigured mount surfaces immediately through
   the enclosing `ErrorBoundary` instead of silently rendering editors against
@@ -490,7 +513,13 @@ Out of scope (owned by neighbouring components, linked where they exist):
 - Edge-join *insertion* failures (self-join, cycle, missing source/target
   node, drop point not over an edge) are looked up in a static
   `edgeJoinFailureMessages` map and surfaced as a named `error` toast; no
-  partial node/edge mutation is applied.
+  partial node/edge mutation is applied. Candidate calculation uses those
+  same compatibility reasons but does not toast while the pointer merely
+  moves: invalid edges remain visually and programmatically unmarked. The
+  release path revalidates and toasts an actionable rejection where an edge
+  was actually targeted. Every connection-end path clears the active
+  candidate before it can return or throw, and pointer exit clears the
+  feedback without ending the underlying connection gesture.
 - `useEdgeHandlers.onDrop`'s drag-carried config JSON is parsed
   defensively: a malformed payload, or one that isn't a plain JSON object,
   produces a named `error` toast and creates no node — it never falls back

@@ -71,8 +71,9 @@ that the tests reveal:
   [Polars execution strategy](polars-execution-strategy.md);
 - isolated-worker artifact/event protocols belong to
   [Worker isolation](worker-isolation.md); and
-- Edge Join interaction and browser coverage belong to
-  [Edge Join completion](edge-join-completion.md).
+- Edge Join interaction and browser coverage were delivered under the retired
+  [Edge Join completion roadmap](edge-join-completion.md) and now belong to
+  the durable frontend specifications and dedicated regression suites.
 
 The same defect may need tests in this track and an implementation change in
 another one. Keep the oracle and ownership boundary explicit rather than

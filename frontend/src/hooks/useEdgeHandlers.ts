@@ -6,18 +6,25 @@
  * and drag-drop operations so the main component stays focused on
  * orchestration and rendering.
  */
-import { useCallback, type MutableRefObject, type DragEvent } from "react"
+import { useCallback, useRef, useState, type MutableRefObject, type DragEvent } from "react"
 import {
   type Connection,
   type Node,
   type Edge,
   type OnConnect,
+  type OnConnectStart,
   type OnConnectEnd,
   type OnSelectionChangeFunc,
 } from "@xyflow/react"
 import { effectiveNodeType, nodeData } from "../types/node"
 import { NODE_TYPES, NODE_TYPE_META, isSingletonType, type NodeTypeValue } from "../utils/nodeTypes"
-import { insertEdgeJoinNode, insertEdgeJoinNodeFromSources, type EdgeJoinFailureReason, type EdgeJoinInsertResult } from "../utils/edgeJoinGraph"
+import {
+  insertEdgeJoinNode,
+  insertEdgeJoinNodeFromSources,
+  validateEdgeJoinInsertionCandidate,
+  type EdgeJoinFailureReason,
+  type EdgeJoinInsertResult,
+} from "../utils/edgeJoinGraph"
 import { appEdge, appNode, selectOnlyNode } from "../utils/flowElements"
 import { edgeJoinCanonicalTargetHandle, edgeJoinRoleConfigKey } from "../utils/edgeJoinRoles"
 import { normalizeDefaultTargetHandle } from "../utils/flowHandles"
@@ -133,6 +140,47 @@ export default function useEdgeHandlers({
   validateConnection,
 }: UseEdgeHandlersParams) {
   const addToast = useToastStore((s) => s.addToast)
+  const activeEdgeJoinSourceRef = useRef<{
+    source: string
+    sourceHandle: string | null
+  } | null>(null)
+  const edgeJoinCandidateEdgeIdRef = useRef<string | null>(null)
+  const [edgeJoinCandidateEdgeId, setEdgeJoinCandidateEdgeId] = useState<string | null>(null)
+
+  const clearEdgeJoinCandidate = useCallback(() => {
+    edgeJoinCandidateEdgeIdRef.current = null
+    setEdgeJoinCandidateEdgeId((current) => current === null ? current : null)
+  }, [])
+
+  const onConnectStart: OnConnectStart = useCallback((_event, params) => {
+    clearEdgeJoinCandidate()
+    if (params.handleType === "source" && params.nodeId) {
+      activeEdgeJoinSourceRef.current = { source: params.nodeId, sourceHandle: params.handleId ?? null }
+      return
+    }
+    activeEdgeJoinSourceRef.current = null
+  }, [clearEdgeJoinCandidate])
+
+  const onConnectionPointerMove = useCallback(
+    ({ clientX, clientY }: { clientX: number; clientY: number }) => {
+      const activeSource = activeEdgeJoinSourceRef.current
+      if (!activeSource) return
+      const targetEdgeId = findEdgeIdAtPoint({ x: clientX, y: clientY })
+      let candidate: string | null = null
+      if (targetEdgeId) {
+        const validation = validateEdgeJoinInsertionCandidate({
+          nodes: graphRef.current.nodes,
+          edges: graphRef.current.edges,
+          targetEdgeId,
+          connection: activeSource,
+        })
+        if (validation.ok) candidate = targetEdgeId
+      }
+      edgeJoinCandidateEdgeIdRef.current = candidate
+      setEdgeJoinCandidateEdgeId((current) => current === candidate ? current : candidate)
+    },
+    [findEdgeIdAtPoint, graphRef],
+  )
 
   const reportConnectionValidationFailure = useCallback((result: ConnectionValidationResult) => {
     if (result.ok || result.reason.kind !== "duplicate-input-name") return
@@ -223,6 +271,9 @@ export default function useEdgeHandlers({
 
   const onConnectEnd: OnConnectEnd = useCallback(
     (event, connectionState) => {
+      const edgeJoinCandidateId = edgeJoinCandidateEdgeIdRef.current
+      activeEdgeJoinSourceRef.current = null
+      clearEdgeJoinCandidate()
       const sourceNodeId = connectionState.fromNode?.id
       if (!sourceNodeId) return
       const targetNodeId = connectionState.toNode?.id ?? null
@@ -250,12 +301,27 @@ export default function useEdgeHandlers({
         cancelPreview()
       }
 
+      if (edgeJoinCandidateId && fromHandle?.type === "source") {
+        const releasePoint = connectionEndPoint(event)
+        commitEdgeJoinResult(insertEdgeJoinNode({
+          nodes: graphRef.current.nodes,
+          edges: graphRef.current.edges,
+          targetEdgeId: edgeJoinCandidateId,
+          connection: {
+            source: sourceNodeId,
+            sourceHandle: fromHandle.id ?? null,
+          },
+          position: screenToFlowPosition(releasePoint),
+          idFactory,
+        }))
+        return
+      }
+
       if (
         fromHandle?.type === "source" &&
         toHandle?.type === "source" &&
         targetNodeId
       ) {
-        const point = screenToFlowPosition(connectionEndPoint(event))
         commitEdgeJoinResult(insertEdgeJoinNodeFromSources({
           nodes: graphRef.current.nodes,
           edges: graphRef.current.edges,
@@ -267,7 +333,7 @@ export default function useEdgeHandlers({
             source: sourceNodeId,
             sourceHandle: fromHandle.id ?? null,
           },
-          position: point,
+          position: screenToFlowPosition(connectionEndPoint(event)),
           idFactory,
         }))
         return
@@ -309,24 +375,24 @@ export default function useEdgeHandlers({
       }
 
       if (fromHandle?.type !== "source") return
-      const point = connectionEndPoint(event)
-      const targetEdgeId = findEdgeIdAtPoint(point)
+      const releasePoint = connectionEndPoint(event)
+      const targetEdgeId = findEdgeIdAtPoint(releasePoint)
       if (!targetEdgeId) return
-
       commitEdgeJoinResult(insertEdgeJoinNode({
         nodes: graphRef.current.nodes,
         edges: graphRef.current.edges,
         targetEdgeId,
         connection: {
           source: sourceNodeId,
-          sourceHandle: connectionState.fromHandle?.id ?? null,
+          sourceHandle: fromHandle.id ?? null,
         },
-        position: screenToFlowPosition(point),
+        position: screenToFlowPosition(releasePoint),
         idFactory,
       }))
     },
     [
       addToast,
+      clearEdgeJoinCandidate,
       cancelPreview,
       clearTrace,
       commitConnection,
@@ -455,7 +521,11 @@ export default function useEdgeHandlers({
 
   return {
     onConnect,
+    onConnectStart,
     onConnectEnd,
+    onConnectionPointerMove,
+    clearEdgeJoinCandidate,
+    edgeJoinCandidateEdgeId,
     onSelectionChange,
     onNodeClick,
     handleDeleteEdge,

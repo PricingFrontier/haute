@@ -60,8 +60,9 @@ of every component.
 
 The matrix is a maintained engineering asset, not a second roadmap. Each row
 must identify the user-visible failure, exact persisted shape, fixture path,
-owning test, layer, and owner. Rows owned by another roadmap, such as Edge Join
-insertion, are references to that owner rather than duplicate test work here.
+owning test, layer, and owner. Rows with a dedicated durable feature suite,
+such as the completed Edge Join insertion workflow, reference that suite and
+its component specification rather than duplicating test work here.
 
 **Tests first:**
 
@@ -252,8 +253,10 @@ a decision on whether the UI should have failed visibly.
   infrastructure with a parallel harness.
 - Mandating a blanket accessibility scanner, a device matrix, or snapshots for
   every component without a demonstrated user-risk case.
-- Duplicating Edge Join insertion, role-handle, and feature E2E work; that is
-  owned by the [Edge Join completion roadmap](edge-join-completion.md).
+- Duplicating Edge Join insertion, role-handle, and feature E2E work; that was
+  delivered under the retired
+  [Edge Join completion roadmap](edge-join-completion.md) and is now owned by
+  its durable component specifications and regression suites.
 - Owning generic backend contract, persistence, execution, or artifact
   hardening; those cross-cutting non-UI concerns belong to the
   [test-suite hardening roadmap](test-suite-hardening.md).
@@ -265,9 +268,9 @@ defines the contract for the Banding-to-Rating browser slice. Complete the
 visible-failure contract before asserting it end to end. Add visual and
 accessibility coverage only after the core workflow has stable fixtures and
 semantic locators. Tier any new CI lane last, using evidence from the
-implemented tests rather than estimates. Coordinate with Edge Join only where
-the shared user-journey inventory needs an entry; its specialized insertion
-workflow remains separate.
+implemented tests rather than estimates. Reference the completed Edge Join
+suite only where the shared user-journey inventory needs an entry; its
+specialized insertion workflow remains separate.
 
 ## Completion and retirement criteria
 

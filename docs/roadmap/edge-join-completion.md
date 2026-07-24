@@ -1,8 +1,8 @@
 # Edge Join completion roadmap
 
-**Status:** Active
+**Status:** Implemented
 
-**Current as of:** 2026-07-20
+**Current as of:** 2026-07-24
 
 ## Outcome
 
@@ -12,11 +12,16 @@ An analyst can insert and configure an Edge Join confidently in the canvas, and 
 
 Edge Join is already a first-class `edgeJoin` node rather than edge metadata. The backend validates its two explicit input roles, executes lazy Polars joins, round-trips generated code and graph state, and uses the normal preview, tracing, save/load, and deployment execution paths. The editor already has compact-node metadata, base/join role handles, pure graph-rewrite helpers, configuration UI, save-time validation, and focused coverage for insertion and role preservation. See the public [Edge Join guide](../building-models/nodes/edge-join.md) for the current user contract.
 
-The remaining gaps are observable in the current tree: edge insertion is detected only when `onConnectEnd` asks `document.elementsFromPoint(...)` for the released pointer position, so there is no pre-release candidate state or insertion marker; `frontend/e2e/` has no Edge Join workflow; and the public guide does not yet describe the dynamic role-handle geometry or list the implemented `right` join mode.
+At the planning baseline, edge insertion was detected only when
+`onConnectEnd` asked `document.elementsFromPoint(...)` for the released pointer
+position, so there was no pre-release candidate state or insertion marker;
+`frontend/e2e/` had no Edge Join workflow; and the public guide did not describe
+the dynamic role-handle geometry or list the implemented `right` join mode.
 
-The remaining work is deliberately limited to the gaps below; it must not reopen the completed backend, graph-rewrite, configuration, or integration work without a failing regression test.
+The delivered work remained limited to those gaps and did not reopen the
+completed backend, graph-rewrite, configuration, or integration work.
 
-## Remaining milestones
+## Delivered milestones
 
 ### 1. Make edge insertion discoverable and accessible
 
@@ -79,7 +84,10 @@ The remaining work is deliberately limited to the gaps below; it must not reopen
 
 ## Dependencies and sequencing
 
-Milestone 1 provides the interaction contract that Milestone 2 exercises. Milestone 3 should be completed after the interaction is settled so the description is authoritative. All work must continue to use the existing graph-rewrite and validation utilities; backend changes require a newly demonstrated contract gap and a failing backend regression test.
+Milestone 1 established the interaction contract exercised by Milestone 2.
+Milestone 3 followed the settled interaction so its description is
+authoritative. The work continued to use the existing graph-rewrite and
+validation utilities; no backend contract gap or backend change was required.
 
 Milestone 2 consumes the shared production-shaped fixture and deterministic
 browser-harness conventions in the [Frontend UI quality](frontend-ui-quality.md)
@@ -92,3 +100,25 @@ repeated joins, named source handles, and tracing.
 ## Completion and retirement criteria
 
 Retire this roadmap when the insertion feedback and accessibility tests pass; the dedicated Edge Join browser coverage proves insertion, preview, persistence, repeated joins, named API-input handles, and tracing in the normal E2E suite; and the checked documentation reflects the actual role-handle placement and seven supported join modes. At that point, ongoing behavior belongs in the public guide, component specifications, and ordinary regression suites rather than a separate roadmap.
+
+## Completion evidence
+
+The retirement criteria were met on 2026-07-24:
+
+- The focused Edge Join frontend suite passes candidate, cleanup,
+  release-revalidation, insertion, handle-preservation, mode, key, and
+  accessibility regressions.
+- `frontend/e2e/edge-join.spec.ts` passes in Chromium and proves two real
+  edge-drop insertions, pre-release feedback, configuration and preview,
+  save/reload topology, the named API-input source handle, and downstream
+  trace highlighting.
+- The documentation accuracy suite and strict MkDocs build pass. The public
+  guide and durable graph-canvas, node-editor, runtime, and
+  engineering-quality specifications now own the delivered contract.
+- The repository quick preflight passes, including Python lint/format/type
+  checks and frontend TypeScript/ESLint checks.
+
+This roadmap is therefore retired from the active roadmap index and
+navigation. Its file remains as dated completion context; current behaviour is
+defined by the linked guide, specifications, implementation, and ordinary
+regression suites.

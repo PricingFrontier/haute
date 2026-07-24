@@ -1,6 +1,6 @@
 # Engineering roadmap
 
-**Current as of:** 2026-07-23
+**Current as of:** 2026-07-24
 
 This is Haute's active engineering delivery roadmap. It records the remaining
 outcomes after the implementation and specification audit; it is intentionally
@@ -17,7 +17,6 @@ roadmap item is implemented and verified.
 |---|---|---|
 | [Test-suite hardening](test-suite-hardening.md) | The optimiser contiguity incident, contract/parity/property tests, and mutation foundations are covered. | Ratchet high-risk boundary evidence; complete optimiser/ratebook oracle matrices; add seeded parser differential coverage; and publish fixture, regression, and test-health evidence. |
 | [Frontend UI quality](frontend-ui-quality.md) | The Banding/Rating Step incident is fixed; Vitest, isolated Playwright, save/reload, and CI foundations exist. | Maintain a configuration-shape and user-journey matrix, prove high-risk browser workflows, make missing choices visible, and add targeted visual, keyboard, accessibility, and CI policy evidence. |
-| [Edge Join completion](edge-join-completion.md) | The `edgeJoin` graph node, lazy join execution, configuration, persistence, trace, and deploy paths are implemented. | Make insertion feedback discoverable and accessible, add a deterministic browser workflow, and align user-facing documentation with the interaction and supported join semantics. |
 | [Worker isolation](worker-isolation.md) | Spawn-worker and typed supervisor foundations, bounded execution, admission, and lifecycle primitives exist. | Make terminalisation total, establish artifact/event contracts, migrate training and optimiser/auto-range work, and decide the deploy/API enforcement boundary. |
 | [Polars execution strategy](polars-execution-strategy.md) ([implementation plan](../trip/plans/F_0.6.0_polars-backend-remediation.plan.md)) | Shared projection planning, bounded execution/chunking, and structured diagnostics exist. | Establish one explicit planning contract across surfaces, explain boundary and feature choices, decide group-by semantics, expose diagnostics, and prove scale behaviour. |
 | [Backend execution hardening](backend-execution-hardening.md) | Core admission, bounded helpers, metrics, lifecycle, and cleanup foundations are implemented. | Unify execution boundaries, inject faults, add reproducible scale and compatibility evidence, introduce opt-in telemetry, and harden startup/request-local cleanup. |
@@ -25,18 +24,16 @@ roadmap item is implemented and verified.
 The Price Contour ratebook factor-context work is implemented and retired. It
 has no active roadmap because it no longer has remaining delivery work.
 
+[Edge Join completion](edge-join-completion.md) is implemented and retired.
+Durable behaviour now lives in the public
+[Edge Join guide](../building-models/nodes/edge-join.md), graph-canvas,
+node-editor, runtime, and engineering-quality specifications, and the
+dedicated frontend regression suites.
+
 [Tracing reliability and explainability](tracing-reliability-and-explainability.md) is implemented
 and retired. Durable behaviour now lives in the tracing, frontend trace UI, rating, and server API
 specifications; its [dated performance baseline](tracing-performance-baseline-2026-07-23.md)
 records the delivered measurements and remaining performance hypotheses.
-
-## Working issue notes
-
-- [API Input UI issue notes](api-input-ui-issues.md) — the four captured issues
-  were designed and implemented as v0.4.1 (frame-row node body, frame-named
-  downstream inputs); see
-  `docs/trip/plans/F_0.4.1_api-input-frame-identity.plan.md`. The note stays as
-  the collection point for any further API Input observations.
 
 ## Sequencing and ownership
 
@@ -47,10 +44,10 @@ The execution tracks must preserve their boundary of ownership:
 1. Test-suite hardening owns backend and cross-boundary invariant/oracle,
    production-shape fixture, and test-health evidence. Feature roadmaps consume
    those conventions but retain their feature-specific acceptance tests.
-2. Frontend UI quality owns the shared frontend workflow, visual, accessibility,
-   fixture, and CI-tier policy. Edge Join consumes its fixture and browser-harness
-   conventions while retaining its node-specific insertion and end-to-end
-   acceptance criteria.
+2. Frontend UI quality owns the shared frontend workflow, visual,
+   accessibility, fixture, and CI-tier policy. Completed feature workflows
+   such as Edge Join retain their dedicated regression suites and durable
+   component specifications without remaining active delivery tracks.
 3. The Polars track owns planning semantics, Polars capability decisions, and
    user-facing strategy diagnostics. Backend hardening owns the shared error,
    lifecycle, fault-injection, and observability infrastructure those plans

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest"
-import { render, screen, fireEvent, cleanup } from "@testing-library/react"
+import { render, screen, fireEvent, cleanup, within } from "@testing-library/react"
 import EdgeJoinEditor from "../../panels/editors/EdgeJoinEditor"
 import { GraphProvider } from "../../panels/GraphContext"
 import type { OnUpdateConfig, SimpleEdge, SimpleNode } from "../../panels/editors"
@@ -187,6 +187,40 @@ describe("EdgeJoinEditor", () => {
     expect(onUpdate).not.toHaveBeenCalledWith("suffix", "_dim")
     fireEvent.blur(screen.getByLabelText("Suffix"))
     expect(onUpdate).toHaveBeenCalledWith("suffix", "_dim")
+  })
+
+  it("offers exactly the seven backend-supported join modes", () => {
+    renderEditor({
+      baseInput: "quotes",
+      joinInput: "lookup",
+      how: "left",
+      on: ["policy_id"],
+    })
+
+    const values = within(screen.getByLabelText("Join Type"))
+      .getAllByRole("option")
+      .map((option) => (option as HTMLOptionElement).value)
+
+    expect(values).toEqual(["left", "inner", "full", "right", "semi", "anti", "cross"])
+  })
+
+  it("clears every key representation when changing to a cross join", () => {
+    const { onUpdate } = renderEditor({
+      baseInput: "quotes",
+      joinInput: "lookup",
+      how: "left",
+      leftOn: ["policy_id"],
+      rightOn: ["lookup_policy_id"],
+    })
+
+    fireEvent.change(screen.getByLabelText("Join Type"), { target: { value: "cross" } })
+
+    expect(onUpdate).toHaveBeenCalledWith({
+      how: "cross",
+      on: [],
+      leftOn: [],
+      rightOn: [],
+    })
   })
 
   it("switches between same-name and paired key modes without leaving conflicting config", () => {
