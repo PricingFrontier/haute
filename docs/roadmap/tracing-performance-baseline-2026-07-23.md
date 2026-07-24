@@ -4,6 +4,8 @@ This is the post-roadmap baseline for the tracing implementation delivered on 20
 replaces the July 6 point-in-time numbers as evidence for future tracing work; it is not a promise
 that every graph or model will have the same latency.
 
+**Owning evidence index:** [Tracing and explainability](components/tracing-explainability/README.md)
+
 ## Environment and commands
 
 - Windows 10 build 26200, Python 3.11.13, Polars 1.39.3.

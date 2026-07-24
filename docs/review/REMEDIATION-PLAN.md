@@ -1,5 +1,9 @@
 # Remediation plan - root-cause clusters
 
+> **Historical source package.** Current ownership and execution state live in
+> the [component improvement catalogue](../roadmap/index.md). Re-verify a
+> cluster against `HEAD` before implementation.
+
 > **Scope:** Pure review and documentation - no code changes are to be made yet. The branches under active development are unpublished and not visible here, so no branch-overlap or sequencing-vs-branch analysis applies. Order remediation by severity x real-world urgency x effort only. Remediation is deferred.
 
 > 69 verified findings grouped by underlying defect. Honour `review/02-findings/orchestrator-notes.md` corrections (codegen cluster = standalone-portability, not deployed mispricing).

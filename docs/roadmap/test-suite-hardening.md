@@ -4,6 +4,8 @@
 
 **Current as of:** 2026-07-20
 
+**Owning queue:** [Engineering quality](components/engineering-quality/README.md)
+
 ## Outcome
 
 Make high-risk behaviour fail at the boundary where it becomes incorrect, not
@@ -67,8 +69,9 @@ that the tests reveal:
   matrices belong to [Frontend UI quality](frontend-ui-quality.md);
 - execution fault injection, DAG fuzzing, Polars version compatibility, and
   scale/RSS evidence belong to [Backend execution hardening](backend-execution-hardening.md);
-- planner semantics and physical execution-strategy decisions belong to
-  [Polars execution strategy](polars-execution-strategy.md);
+- planner semantics and physical execution-strategy decisions belong to the
+  [execution-engine specification](../specs/execution-engine/high-level.md)
+  and its implementation;
 - isolated-worker artifact/event protocols belong to
   [Worker isolation](worker-isolation.md); and
 - Edge Join interaction and browser coverage belong to

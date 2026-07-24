@@ -58,8 +58,9 @@ Out of scope:
   artifact so the wheel carries the browser client.
 - A push to `main` that changes any `docs/**` path or `mkdocs.yml` builds MkDocs
   in strict mode and deploys the resulting `site/` artifact to GitHub Pages.
-  `docs/specs/`, review archives, and TRIP material are excluded from the public
-  site, but changes to those paths still trigger this workflow.
+  `docs/specs/`, engineering roadmaps, review archives, and TRIP material are
+  excluded from the public site, but changes to those paths still trigger this
+  workflow.
 
 ## Design rationale
 

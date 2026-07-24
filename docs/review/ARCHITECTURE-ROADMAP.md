@@ -1,5 +1,9 @@
 # Architecture roadmap - the engineering-marvel changes
 
+> **Historical synthesis, not the active roadmap.** The
+> [component improvement catalogue](../roadmap/index.md) now owns package state
+> and component boundaries.
+
 > **Scope:** Pure review and documentation - no code changes are to be made yet. The branches under active development are unpublished and not visible here, so no branch-overlap or sequencing-vs-branch analysis applies. Order remediation by severity x real-world urgency x effort only. Remediation is deferred.
 
 > Chief-architect synthesis of a 5-lens principal-engineer panel over the verified findings.

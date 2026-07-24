@@ -1,20 +1,25 @@
 # Fable Review
 
-Deep engineering reviews of Haute subsystems, one folder per review area. Each folder is
-self-contained: a `README.md` with the verdict, ranked fix packages, and the implementation protocol
-(TDD failing-test-first, dev/reviewer pairing rules, gates); per-package files with evidence,
-fix designs, and test specs; and a `CLEARED.md` of behaviours checked and found correct (do not
-"fix" those).
+Deep engineering reviews of Haute subsystems, one folder per review area. Reviews are
+point-in-time evidence: no source was changed while they were written, and fixes are implemented
+separately with failing tests and the normal repository gates.
 
-Reviews are read-only — no source was changed. Fixes are implemented separately, package by package,
-per each review's protocol.
+Completed review packages are removed once their accepted fixes or measured no-change decisions
+are represented by current specifications and regression tests. The Polars backend review was
+retired after the [v0.6.0 remediation](../trip/changelog/v0.6.0.md), and the tracing review was
+retired after its behaviour moved into the [tracing specification](../specs/tracing/high-level.md)
+and ordinary test suites.
 
-| Area | Reviewed at | Status | Headline |
-|------|-------------|--------|----------|
-| [polars-backend](polars-backend/README.md) | 2026-07-06, HEAD `4fcaa8f0` | findings ready, fixes not started | Strong engine; 5 HIGH / ~15 MEDIUM verified findings — preview-cache scoping, diamond `.cache()` no-op, trace hot path, O(rows²) assembler, Windows RSS sampler |
-| [optimisation](optimisation/README.md) | 2026-07-06, HEAD `2caa4134` | findings ready, fixes not started | Seriously engineered; 5 HIGH / 14 MEDIUM / 8 LOW verified — frontier apply wipes grid, non-atomic deploy save, null-constraint silent wrongness, 15^d frontier sizing, sync 10k-solve endpoints; +11 upstream (price_contour) |
-| [tracing](tracing/README.md) | 2026-07-06, HEAD `220bcccd` | findings ready, fixes not started | Right architecture, trust holes at the edges; 2 CRITICAL (silent wrong-row anchor, stale trace over edited pipeline) / 7 HIGH verified — self-referential calc shows wrong numbers, multi-frame pipelines 500 on every trace, warm click 3–6× the 10 ms budget; all polars-P03 trace items re-verified still open; one reported HIGH refuted in verification |
-| [io-nodes](io-nodes/README.md) | 2026-07-06, HEAD `aca58177` | findings ready, fixes not started | Good bones, dishonest edges; 5 HIGH / ~14 MEDIUM verified — OUTPUT drops null-headed fields (repro'd), apiInput infer⇒build dead-end, picker advertises unreadable `.xml` / hides `.jsonl`, hand-edits to baked source paths silently discarded, no dtype UI blocks CSV deploys; format-registry design for jsonl/IPC/xlsx/XML in IO12 |
+The remaining packages each contain at least one unresolved or not-yet-reverified item:
 
-<!-- Add future review areas as sibling folders (e.g. frontend/, git-panel/, deploy/) with the same
-     structure, and a row here. -->
+The review folders retain detailed evidence and TDD plans. Working state,
+ordering, cross-component dependencies, and retirement are owned by the
+[component improvement catalogue](../roadmap/index.md).
+
+| Review area | Owning component queue | Why it remains |
+|---|---|---|
+| [EDA node](eda-node/README.md) | [Explore / EDA](../roadmap/components/explore-eda/README.md) | Correctness, scalability, export, and UX packages still require a current closure pass. |
+| [Git implementation](git-implementation/README.md) | [Git integration](../roadmap/components/git-integration/README.md) | Several proposed contracts are not current behaviour, including global mutation serialisation and removal of the status surface. |
+| [I/O nodes](io-nodes/README.md) | [I/O layer](../roadmap/components/io-layer/README.md) | The review spans correctness, schema, format, performance, and editor packages that are not closed as one programme. |
+| [Modelling node](modelling-node/README.md) | [Modelling](../roadmap/components/modelling/README.md) | Its implementation plan and capability packages have not all met their exit criteria. |
+| [Optimisation](optimisation/README.md) | [Optimiser](../roadmap/components/optimiser/README.md) | Worker, lifecycle, scaling, and upstream packages still contain tracked work or explicit external follow-ups. |

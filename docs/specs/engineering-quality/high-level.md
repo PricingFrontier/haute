@@ -62,6 +62,12 @@ Out of scope:
   monitoring checks: on eligible failures they create or update a labelled
   GitHub issue carrying diagnostic/reproduction context. Mutation and
   performance workflows likewise operate through maintained scripts/artifacts.
+- Internal improvement work is indexed by component under
+  `docs/roadmap/components/`. Each component page owns one ordered package
+  queue and links to the review, roadmap, or reproduction material that
+  justifies each candidate. Those queues coordinate work but remain
+  non-normative: an item must be re-verified against `HEAD`, specified, and
+  regression-tested before implementation.
 
 ## Design rationale
 
@@ -81,6 +87,9 @@ Out of scope:
 - Historical review and repro material is excluded from normal lint and public
   docs because it is point-in-time evidence. Treating it as current product code
   would create misleading failures and claims.
+- Component queues link to evidence instead of copying entire audit reports.
+  This preserves provenance while giving each change one visible owner,
+  execution order, dependency boundary, and retirement decision.
 
 ## Interactions
 

@@ -1,81 +1,87 @@
-# Engineering roadmap
+# Component improvement catalogue
 
-**Current as of:** 2026-07-23
+**Current as of:** 2026-07-24
 
-This is Haute's active engineering delivery roadmap. It records the remaining
-outcomes after the implementation and specification audit; it is intentionally
-shorter-lived than a product specification.
+This is the working view of Haute's remaining engineering opportunities. It
+groups the surviving Fable reviews, audit clusters, and delivery roadmaps by
+the component that owns the outcome. The source reports stay where they were
+written for provenance; these component queues decide what is actually picked
+up next.
 
-Roadmaps describe intended delivery, sequencing, and retirement criteria.
-They are **not** the source of truth for shipped behaviour. The code, its
-tests, and the public behaviour documentation remain authoritative until a
-roadmap item is implemented and verified.
+The catalogue is non-normative. Shipped behaviour remains defined by code,
+tests, component specifications, and public documentation.
 
-## Active tracks
+## How to work the catalogue
 
-| Track | Delivered baseline | Remaining outcome |
+1. Pick one component, then one package from its ordered queue.
+2. Re-verify the cited evidence against `HEAD`. `Reverify` means the source is
+   point-in-time evidence, not a confirmed current defect.
+3. Write or update the component specification before changing behaviour.
+4. Add the smallest failing regression test, implement the package, and run
+   the affected verification ladder.
+5. Update the owning component queue. Remove a package only when its acceptance
+   criteria are proved and durable rationale lives in specs/tests; record a
+   blocked or declined decision explicitly rather than silently dropping it.
+
+Package IDs are source-qualified (`AUD-*`, `EDA-*`, `GIT-*`, `IO-*`, `MOD-*`,
+`OPT-*`, or `ROAD-*`). An ID has exactly one owning queue. Other components
+link to that owner when they consume the result.
+
+`Active` packages have a current delivery roadmap; `Reverify` packages come
+from older review evidence; `Decision` packages need an explicit product or
+architecture choice before implementation.
+
+## Components
+
+| Component | Primary improvement surface | Suggested starting package |
 |---|---|---|
-| [Test-suite hardening](test-suite-hardening.md) | The optimiser contiguity incident, contract/parity/property tests, and mutation foundations are covered. | Ratchet high-risk boundary evidence; complete optimiser/ratebook oracle matrices; add seeded parser differential coverage; and publish fixture, regression, and test-health evidence. |
-| [Frontend UI quality](frontend-ui-quality.md) | The Banding/Rating Step incident is fixed; Vitest, isolated Playwright, save/reload, and CI foundations exist. | Maintain a configuration-shape and user-journey matrix, prove high-risk browser workflows, make missing choices visible, and add targeted visual, keyboard, accessibility, and CI policy evidence. |
-| [Edge Join completion](edge-join-completion.md) | The `edgeJoin` graph node, lazy join execution, configuration, persistence, trace, and deploy paths are implemented. | Make insertion feedback discoverable and accessible, add a deterministic browser workflow, and align user-facing documentation with the interaction and supported join semantics. |
-| [Worker isolation](worker-isolation.md) | Spawn-worker and typed supervisor foundations, bounded execution, admission, and lifecycle primitives exist. | Make terminalisation total, establish artifact/event contracts, migrate training and optimiser/auto-range work, and decide the deploy/API enforcement boundary. |
-| [Polars execution strategy](polars-execution-strategy.md) ([implementation plan](../trip/plans/F_0.6.0_polars-backend-remediation.plan.md)) | Shared projection planning, bounded execution/chunking, and structured diagnostics exist. | Establish one explicit planning contract across surfaces, explain boundary and feature choices, decide group-by semantics, expose diagnostics, and prove scale behaviour. |
-| [Backend execution hardening](backend-execution-hardening.md) | Core admission, bounded helpers, metrics, lifecycle, and cleanup foundations are implemented. | Unify execution boundaries, inject faults, add reproducible scale and compatibility evidence, introduce opt-in telemetry, and harden startup/request-local cleanup. |
+| [Background jobs & API lifecycle](components/background-jobs-api/README.md) | Terminal states, worker artifacts/events, route lifecycle, cleanup | `ROAD-WORKER-01` |
+| [Caching](components/caching/README.md) | Key completeness, cache lifecycle, concurrency, invalidation | `AUD-C03` |
+| [Deploy & platform](components/deploy-platform/README.md) | Validate/serve parity, packaging paths, platform boundaries | `AUD-C04` |
+| [Edge Join](components/edge-join/README.md) | Discoverable insertion, browser workflow, documentation | `ROAD-EDGE-01` |
+| [Engineering quality](components/engineering-quality/README.md) | Invariants, oracles, fixtures, CI, types, documentation truth | `ROAD-TEST-01` |
+| [Execution engine](components/execution-engine/README.md) | Execution boundary, projection, memory bounds, faults, metrics | `ROAD-EXEC-01` |
+| [Explore / EDA](components/explore-eda/README.md) | Report correctness, scale, UX, charts, relationships, export | `EDA-E01` |
+| [Frontend & canvas](components/frontend-canvas/README.md) | Cache/sync correctness, journeys, visibility, visual/a11y evidence | `AUD-C16` |
+| [Git integration](components/git-integration/README.md) | Mutation safety, history integrity, performance, user feedback | `GIT-G01` |
+| [I/O layer](components/io-layer/README.md) | Input/output correctness, JSON shred, formats, editor workflow | `IO-IO03` |
+| [Modelling](components/modelling/README.md) | Offset/loss correctness, lifecycle, performance, capability | `MOD-M01` |
+| [Optimiser](components/optimiser/README.md) | Apply/save correctness, scaling, lifecycle, worker migration | `OPT-P01` |
+| [Pipeline authoring](components/pipeline-authoring/README.md) | Parser/codegen/standalone equivalence and public DSL contracts | `AUD-C05` |
+| [Rating](components/rating/README.md) | Key canonicalisation and save/apply dtype agreement | `AUD-C06` |
+| [Security & supply chain](components/security-supply-chain/README.md) | Deserialisation, path/session boundaries, dependency advisories | `AUD-C18` |
+| [Tracing & explainability](components/tracing-explainability/README.md) | Expression fidelity, row correlation, waterfall honesty | `AUD-C07` |
 
-The Price Contour ratebook factor-context work is implemented and retired. It
-has no active roadmap because it no longer has remaining delivery work.
+## Source hierarchy
 
-[Tracing reliability and explainability](tracing-reliability-and-explainability.md) is implemented
-and retired. Durable behaviour now lives in the tracing, frontend trace UI, rating, and server API
-specifications; its [dated performance baseline](tracing-performance-baseline-2026-07-23.md)
-records the delivered measurements and remaining performance hypotheses.
+- The [HEAD re-verification report](../review/06-reverification/REPORT.md) is the
+  most recent audit status source. Its 17 `FIXED`/`OBSOLETE` findings are not
+  queued.
+- [Fable Review](../fable-Review/README.md) supplies component-sized packages
+  with detailed evidence and TDD plans. Every retained package still requires
+  a current closure pass.
+- The five active delivery roadmaps remain the detailed acceptance source for
+  execution, worker isolation, frontend quality, Edge Join, and test-suite
+  hardening.
+- Phase reports, the master finding index, cleared lists, and the
+  [tracing performance baseline](tracing-performance-baseline-2026-07-23.md)
+  are evidence, not additional queues.
 
-## Working issue notes
+## Cross-component sequencing
 
-- [API Input UI issue notes](api-input-ui-issues.md) — the four captured issues
-  were designed and implemented as v0.4.1 (frame-row node body, frame-named
-  downstream inputs); see
-  `docs/trip/plans/F_0.4.1_api-input-frame-identity.plan.md`. The note stays as
-  the collection point for any further API Input observations.
-
-## Sequencing and ownership
-
-Test-suite hardening and Frontend UI quality are cross-cutting evidence tracks;
-they establish shared conventions without taking ownership of feature delivery.
-The execution tracks must preserve their boundary of ownership:
-
-1. Test-suite hardening owns backend and cross-boundary invariant/oracle,
-   production-shape fixture, and test-health evidence. Feature roadmaps consume
-   those conventions but retain their feature-specific acceptance tests.
-2. Frontend UI quality owns the shared frontend workflow, visual, accessibility,
-   fixture, and CI-tier policy. Edge Join consumes its fixture and browser-harness
-   conventions while retaining its node-specific insertion and end-to-end
-   acceptance criteria.
-3. The Polars track owns planning semantics, Polars capability decisions, and
-   user-facing strategy diagnostics. Backend hardening owns the shared error,
-   lifecycle, fault-injection, and observability infrastructure those plans
-   use.
-4. Establish the canonical execution boundary and the explicit strategy
-   contract before relying on their diagnostics for broad scale or worker
-   migrations.
-5. Worker isolation owns spawn protocols, artifact boundaries, and migration
-   of heavy routes. It consumes the execution primitives but must not duplicate
-   planner or lifecycle policy.
-6. Add scale gates after the strategy and metrics contracts are stable; then
-   use those gates to protect the completed route migrations and hardening.
-7. Tracing reliability owns trace-specific lifecycle, fidelity, evidence, and
-   export behaviour. It consumes the Frontend UI quality browser conventions,
-   the Test-suite hardening evidence policy, and the shared Polars/cache
-   contracts without creating a second graph fingerprint or row matcher.
-
-When a change spans tracks, its tests must make the ownership split explicit
-rather than quietly adding a second planner, lifecycle path, or worker
-protocol.
+1. Security and silent-wrongness packages take precedence over performance,
+   cleanup, and new capability.
+2. Establish the canonical execution and worker lifecycle contracts before
+   migrating modelling or optimiser work.
+3. Engineering-quality and frontend-quality packages define shared evidence
+   conventions; feature components still own their feature-specific tests.
+4. Cache identity, parser/codegen equivalence, and frontend sync work must name
+   one owner even when several components consume the invariant.
 
 ## Retirement rules
 
-A track is retired only when all of its stated completion criteria are met,
-the relevant code and tests prove the result, and the public behaviour
-documentation has been updated. Move no implementation history into this
-directory: durable current behaviour belongs in its product documentation and
-tests, while review and reproduction archives remain point-in-time evidence.
+A package leaves its component page only after the relevant code and tests
+prove the outcome and current specifications/documentation carry the lasting
+contract. A component folder can be removed when its queue is empty and no
+active roadmap remains. Historical review material may then be deleted only
+when it has no unique evidence value and Git retains the recovery path.

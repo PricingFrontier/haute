@@ -1,5 +1,9 @@
 # Master finding index (all phases, verified)
 
+> **Historical index.** Work from the
+> [component improvement catalogue](../../roadmap/index.md) and use this file
+> only to trace original finding evidence.
+
 - Total: **881** verified findings (788 bugs/quality-findings + 93 sound simplifications).
 - Severity (bugs/findings): {'high': 110, 'medium': 257, 'low': 413, 'critical': 5, 'moderate': 2, 'info': 1}
 

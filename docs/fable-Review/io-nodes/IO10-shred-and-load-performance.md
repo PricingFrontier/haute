@@ -22,8 +22,10 @@ serve stale rating rows. The safe optimisation is an **in-process memo keyed by
 size/mtime change re-hashes. This narrows (does not reopen) the pathological window to
 within a single process lifetime — an explicit decision, not an accident. This is the same
 stat-gated pattern the repo already established for preview/trace
-(`_stat_gated_cache.py`; cross-ref `fable-Review/polars-backend/P06` and `eda-node/E04`, which
-fixed this exact class elsewhere) — reuse it rather than inventing a new memo.
+(`_stat_gated_cache.py`; cross-ref the delivered
+[v0.6.0 input-fingerprint work](../../trip/plans/F_0.6.0_polars-backend-remediation.plan.md)
+and `eda-node/E04`, which fixed this exact class elsewhere) — reuse it rather than inventing a
+new memo.
 
 **TDD.** With the memo: two loads, no edit → one hash call (spy/counter); touch mtime or
 change size → re-hash; content-change-with-same-stat behaviour documented in the test name.

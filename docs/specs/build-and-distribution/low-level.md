@@ -25,7 +25,7 @@
 | `frontend/tsconfig.json` | References the application and Vite-node TypeScript projects. |
 | `frontend/tsconfig.app.json` | Sets strict browser-source TypeScript compilation and build-info placement. |
 | `frontend/tsconfig.node.json` | Sets strict TypeScript compilation for `frontend/vite.config.ts`. |
-| `mkdocs.yml` | Configures the Material/MkDocs public site, navigation, strict-build plugins, and exclusions for internal specs/reviews/TRIP material. |
+| `mkdocs.yml` | Configures the Material/MkDocs public site, navigation, strict-build plugins, and exclusions for internal specs/roadmaps/reviews/TRIP material. |
 | `.github/workflows/docs.yml` | Builds public docs strictly and deploys the resulting `site/` artifact to GitHub Pages after `main` pushes affecting `docs/**` or `mkdocs.yml`, or on manual dispatch. |
 
 `src/haute/static/` is a generated build output, not a tracked source module.
@@ -50,8 +50,8 @@ package input validated by `hatch_build.py`, not hand-edited source.
   project targets browser ES2022/React JSX and the node project targets ES2023
   for Vite configuration. The root TypeScript config references both.
 - **MkDocs site inputs** are public Markdown/CSS/overrides under `docs/` plus
-  `mkdocs.yml`; `exclude_docs` prevents selected internal directories from
-  becoming pages.
+  `mkdocs.yml`; `exclude_docs` prevents internal specs, roadmaps, review
+  archives, and TRIP material from becoming pages.
 
 ## Control flow
 

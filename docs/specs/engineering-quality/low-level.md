@@ -74,7 +74,9 @@
 | `frontend/src/panels/editors/banding/__tests__/` and `frontend/src/panels/editors/rating/__tests__/` | Frontend banding/rating-editor test groups. |
 | `frontend/src/panels/explore/__tests__/`, `frontend/src/panels/gitgraph/__tests__/`, `frontend/src/panels/modelling/__tests__/`, `frontend/src/panels/optimiser/__tests__/`, and `frontend/src/panels/trace/__tests__/` | Specialised explore, Git graph, modelling, optimiser, and trace panel test groups. |
 | `frontend/src/stores/__tests__/`, `frontend/src/test-utils/__tests__/`, `frontend/src/trace/__tests__/`, `frontend/src/types/__tests__/`, and `frontend/src/utils/__tests__/` | Frontend store, test-helper, trace, type, and utility test groups. |
-| `docs/roadmap/` | Current non-normative engineering delivery roadmaps; not an active quality gate or product-behaviour specification. |
+| `docs/roadmap/index.md` | Entry point for the internal component improvement catalogue and its working/retirement protocol. |
+| `docs/roadmap/components/*/README.md` | One non-normative, ordered improvement queue per component. Each queue defines scope, actionable packages, dependencies, and evidence/retirement rules while linking rather than duplicating source reviews and roadmaps. |
+| `docs/roadmap/*.md` | Cross-component delivery roadmaps and dated evidence linked from their owning component queue; not active quality gates or product-behaviour specifications. |
 | `repro/` | Point-in-time benchmark/reproduction programs and metadata; not an automatically current product-behaviour contract. |
 | `docs/review/` | Historical engineering findings and runnable evidence excluded from normal Ruff and public MkDocs delivery. |
 | `docs/fable-Review/` | Historical review/audit material excluded from normal Ruff and public MkDocs delivery. |
@@ -98,6 +100,11 @@
 - **Pytest configuration** constrains collection to `tests/`, has strict
   markers/configuration/xfails, excludes `perf` by default, and recognises
   `slow`, `perf`, and `sandbox_strict` markers.
+- **Component improvement package** is a row in one
+  `docs/roadmap/components/*/README.md` queue. It has a stable source-qualified
+  ID, priority/order, outcome, and evidence link. The component page, not the
+  historical source document, owns whether the package is queued, blocked, or
+  retired.
 
 ## Control flow
 
@@ -143,6 +150,10 @@
   directories are active corpora. `docs/roadmap/`, `repro/`, review archives,
   and generated output/reports must not be read as exhaustive or current
   behaviour merely because they remain tracked or present locally.
+- Every component queue has the same `Scope`, `Work queue`, `Dependencies`, and
+  `Evidence and retirement` sections. A source-qualified package appears in
+  exactly one owning queue; cross-component consumers link to it instead of
+  creating a second copy.
 - The normal Ruff configuration excludes `rating/`, `modules/`, `outputs/`,
   `docs/review/`, and `docs/fable-Review/`; that is a lint-target boundary, not
   evidence that these paths are shipped runtime code.
@@ -182,7 +193,9 @@
   `tests/test_run_perf_suite.py`, `tests/test_perf_suite_script.py`,
   `tests/test_memory_smoke_script.py`, `tests/test_frontend_bundle_budget_ci.py`,
   and `tests/test_docs_accuracy.py` cover important assurance tooling and
-  repository-policy contracts.
+  repository-policy contracts. The documentation-accuracy checks also validate
+  the component queue inventory, required section shape, unique package
+  ownership, and local evidence links.
 - `mutation/` is tested as configuration/orchestration through its active
   script/tests and CI workflow. `docs/roadmap/`, `repro/`, review archives, and
   generated artifacts are intentionally not claimed as a current test suite.

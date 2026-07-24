@@ -1,19 +1,23 @@
 # Haute — path to the highest engineering standard
 
-**Premise.** This document assumes every finding in [`CODE_REVIEW.md`](./CODE_REVIEW.md) is fixed.
-Fixing that list gets you to *"no known dangerous defects."* That is the floor, not the ceiling.
-This document is the gap between the two: the **mechanisms, invariants, and process** that stop the
-same defect classes from ever regrowing, plus the architecture/performance/observability work a
-defect review structurally under-covers.
+> **Historical quality target.** Current candidate ownership and order live in
+> the [component improvement catalogue](../roadmap/index.md). Treat unchecked
+> items here as evidence to re-verify, not a second backlog.
 
-It does **not** re-list the defects. Where a CODE_REVIEW item is the *instance* of a class, this
-document specifies the *guard* that makes the class impossible to reintroduce silently.
+**Premise.** The predecessor codebase-review remediation is complete. Closing that list reached
+*"no known dangerous defects."* That is the floor, not the ceiling. This document is the gap
+between the two: the **mechanisms, invariants, and process** that stop the same defect classes from
+ever regrowing, plus the architecture/performance/observability work a defect review structurally
+under-covers.
+
+It does **not** re-list the retired findings. Where a predecessor finding was the *instance* of a
+class, this document specifies the *guard* that makes the class impossible to reintroduce silently.
 
 ### The three levels
 
 | Level | Meaning | Gets you there |
 |---|---|---|
-| L1 — Correct today | No known critical/high defects | CODE_REVIEW.md fixes |
+| L1 — Correct today | No known critical/high defects | Completed predecessor-review remediation |
 | L2 — Self-defending | The six root-cause classes are structurally prevented from regrowing | §A–§B + §I |
 | L3 — Highest standard | L2 + architecture, measured performance, test strength, observability, deliberate design, hygiene gates | this whole document |
 
@@ -25,8 +29,9 @@ ceiling is reached when that outcome is **structurally impossible for known inpu
 
 ## A. Install class-level invariants (the heart of the work)
 
-Each of the six root causes in CODE_REVIEW.md needs a structural guard. Fixing instances without
-these means the class regrows the next time someone adds a node type, a config key, or an input.
+Each of the six root causes from the predecessor review needs a structural guard. Fixing instances
+without these means the class regrows the next time someone adds a node type, a config key, or an
+input.
 
 ### A1. Codegen round-trip is a proven property, not a hope
 The product's core promise is "the visual graph and the `.py` file are the same artifact." That must
@@ -321,7 +326,7 @@ The standard requires:
 
 | Phase | Theme | Contents | Exit signal |
 |---|---|---|---|
-| 0 | Unblock | CODE_REVIEW C1; merge-gating items | Branch mergeable |
+| 0 | Unblock | Predecessor-review merge blockers | Branch mergeable |
 | 1 | Stop the bleeding | All CRITICAL/HIGH fixes, each via failing-test-first + dev/reviewer pair | L1 reached |
 | 2 | Self-defending | §A invariants + §I gates 1–7 wired into CI | A fixed class cannot regrow silently (L2) |
 | 3 | Prove the numbers | §B golden/property suites; de-mock optimiser & scoring (§C) | Pricing correctness is executable |
@@ -330,8 +335,8 @@ The standard requires:
 | 6 | Decide & document | §K decisions as ADRs; §J docs & API surface | No undocumented load-bearing call |
 | 7 | Re-verify | §L second pass + adversarial MEDIUM/LOW re-check | Confidence that pass-two is quiet |
 
-Phases 2–5 can run partly in parallel once Phase 1 lands. The ordering inside CODE_REVIEW.md's triage
-list feeds Phase 1.
+Phases 2–5 can run partly in parallel once Phase 1 lands. The retired predecessor-review triage
+fed Phase 1.
 
 ---
 

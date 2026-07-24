@@ -114,9 +114,10 @@ by IO12 step 3.
 6. **Gates before every commit:** `ruff format --check`, `ruff check`, `mypy`, the focused
    test files for the package, full suite before a package's final commit. Accumulate on the
    existing PR; **do not merge** — Ralph reviews independently.
-7. **Cross-review boundaries:** the O(rows²) assembler cost and redundant source hashing are
-   owned by `fable-Review/polars-backend` P04/P06 — do not re-fix here; IO03/IO10 note the
-   interactions. Nothing in this folder touches the optimiser/modelling/EDA/git review scopes.
+7. **Cross-review boundaries:** the O(rows²) assembler cost and redundant source hashing were
+   resolved by the [v0.6.0 Polars remediation](../../trip/plans/F_0.6.0_polars-backend-remediation.plan.md);
+   IO03/IO10 retain only their I/O-specific interactions. Nothing in this folder touches the
+   optimiser/modelling/EDA/git review scopes.
 
 ## Finding ID scheme
 
