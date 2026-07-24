@@ -184,7 +184,10 @@ def test_component_roadmaps_are_flat_complete_and_self_contained() -> None:
         assert f"({component}.md)" in index
 
         package_ids = _COMPONENT_PACKAGE_HEADING.findall(text)
-        assert package_ids, f"{path.relative_to(ROOT)} has no work packages"
+        if not package_ids:
+            assert "There are no active" in text, (
+                f"{path.relative_to(ROOT)} has no work packages without declaring that state"
+            )
         for package_id in package_ids:
             assert package_id not in package_owners, (
                 f"{package_id} is owned by both {package_owners[package_id]} and {component}"
@@ -210,11 +213,18 @@ def test_component_roadmaps_are_flat_complete_and_self_contained() -> None:
         "AUD-C02",
         "AUD-C03",
         "AUD-C04",
+        "AUD-C09",
         "AUD-C11",
+        "AUD-C13",
         "AUD-TRACE-01",
+        "ROAD-EXEC-01",
+        "ROAD-EXEC-02",
+        "ROAD-EXEC-03",
+        "ROAD-EXEC-04",
+        "ROAD-EXEC-05",
     }
     expected_packages = (
-        ({f"AUD-C{number:02d}" for number in range(1, 21)} - retired_or_folded_packages)
+        {f"AUD-C{number:02d}" for number in range(1, 21)}
         | {f"EDA-E{number:02d}" for number in range(1, 14)}
         | {f"GIT-G{number:02d}" for number in range(1, 17)}
         | {f"IO-IO{number:02d}" for number in range(1, 13)}
@@ -241,7 +251,7 @@ def test_component_roadmaps_are_flat_complete_and_self_contained() -> None:
             "CACHE-PERF-01",
             "RATING-PERF-01",
         }
-    )
+    ) - retired_or_folded_packages
     assert set(package_owners) == expected_packages, (
         "component roadmaps and the expected consolidated package set differ: "
         f"missing={sorted(expected_packages - set(package_owners))}, "

@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import datetime as dt
 from decimal import Decimal
+from pathlib import Path
 
 import polars as pl
 import pytest
 from polars.testing import assert_frame_equal
 
-from haute._execution_context import ExecutionProfile
+from haute._execute_lazy import _execute_lazy
+from haute._execution_context import ExecutionContext, ExecutionProfile
 from haute._polars_dtypes import dtype_to_spec, parse_dtype, parse_schema_mapping
 from haute._polars_io_registry import (
     FORMATS,
@@ -26,6 +28,87 @@ from haute._polars_io_registry import (
 )
 from haute._polars_io_schema import io_functions_by_key
 from haute.errors import BoundedMemoryUnsupportedError, SchemaMismatchError
+from haute.executor import _build_node_fn
+from tests.conftest import make_graph
+
+
+def test_partitioned_parquet_prunes_partition_and_columns_before_execution(
+    tmp_path: Path,
+) -> None:
+    dataset = tmp_path / "partitioned"
+    for year, value in ((2024, 10), (2025, 20)):
+        partition = dataset / f"year={year}"
+        partition.mkdir(parents=True)
+        pl.DataFrame(
+            {
+                "value": [value],
+                "unused_payload": ["x" * 1_024],
+            }
+        ).write_parquet(partition / "part.parquet")
+
+    graph = make_graph(
+        {
+            "nodes": [
+                {
+                    "id": "source",
+                    "data": {
+                        "label": "source",
+                        "nodeType": "dataInput",
+                        "config": {
+                            "inputType": "file",
+                            "format": "parquet",
+                            "mode": "scan",
+                            "cacheMode": "direct",
+                            "path": str(dataset),
+                            "arguments": {"hive_partitioning": True},
+                            "code": "df = df.filter(pl.col('year') == 2025)",
+                        },
+                    },
+                },
+                {
+                    "id": "target",
+                    "data": {
+                        "label": "target",
+                        "nodeType": "polars",
+                        "config": {
+                            "code": "df = df.select('value')",
+                            "contract": {
+                                "inputs": ["value"],
+                                "outputs": ["value"],
+                            },
+                        },
+                    },
+                },
+            ],
+            "edges": [
+                {
+                    "id": "source-target",
+                    "source": "source",
+                    "target": "target",
+                }
+            ],
+        }
+    )
+    context = ExecutionContext(
+        operation="partitioned-parquet",
+        profile=ExecutionProfile.LAZY_SINK,
+    )
+
+    outputs, *_ = _execute_lazy(
+        graph,
+        _build_node_fn,
+        target_node_id="target",
+        required_columns_by_node={"target": {"value"}},
+        execution_context=context,
+    )
+    output = outputs["target"]
+    assert isinstance(output, pl.LazyFrame)
+    optimised_plan = output.explain(optimized=True)
+
+    assert "year=2025" in optimised_plan
+    assert "year=2024" not in optimised_plan
+    assert "unused_payload" not in optimised_plan
+    assert output.collect().to_dict(as_series=False) == {"value": [20]}
 
 
 class TestRegistrySchemaCompleteness:

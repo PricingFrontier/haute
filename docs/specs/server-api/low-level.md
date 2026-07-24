@@ -4,10 +4,10 @@
 
 | File | Responsibility |
 |---|---|
-| `src/haute/server.py` | App factory (`app = FastAPI(...)`), lifespan (bytecode clear, logging config, env load, pipeline-index priming, watcher task lifecycle), middleware registration, router inclusion, the `/api/session` health probe, the API/WS 404 guard, the `/ws/sync` WebSocket endpoint, the debounced file watcher, and static SPA serving. |
+| `src/haute/server.py` | App factory (`app = FastAPI(...)`), lifespan (bytecode clear, logging config, env load, marked optimiser-artifact reaping, pipeline-index priming, watcher task lifecycle), middleware registration, router inclusion, the `/api/session` health probe, the API/WS 404 guard, the `/ws/sync` WebSocket endpoint, the debounced file watcher, and static SPA serving. |
 | `src/haute/_local_security.py` | Per-process local-session token, trusted-Origin/Host parsing (including bracketed IPv6), `LocalSessionMiddleware`, `LocalTrustedHostMiddleware`, and the HTTP/WebSocket token-validation contract. |
 | `src/haute/schemas.py` | Shared Pydantic request/response models used across the app — re-exports the canonical graph types from `_types.py` and defines per-feature model groups (pipeline save/preview/trace/sink, Explore, files/schema, Databricks, JSON cache, utility, submodel, modelling, MLflow, optimiser, git, I/O format capabilities). The OUTPUT dry-run models are the deliberate route-local exception. |
-| `src/haute/errors.py` | The `HauteError` root and its direct subclasses (`ConfigError`, `ParseError`, `ExecutionError` and its `BoundedMemoryUnsupportedError`/`ChunkPlanUnsupportedError` descendants, `DeployError`, `FeatureMismatchError`, `SchemaMismatchError`, `ContractMismatchError`, `ProjectionImpossibleError`). |
+| `src/haute/errors.py` | The `HauteError` root and its direct subclasses (`ConfigError`, `ParseError`, `ExecutionError` and its `ContractResolutionError`, `BoundedMemoryUnsupportedError`, `ChunkPlanUnsupportedError`, and `ChunkMemoryRiskError` descendants, `DeployError`, `FeatureMismatchError`, `SchemaMismatchError`, `ContractMismatchError`, `ProjectionImpossibleError`). |
 | `src/haute/_logging.py` | `configure_logging()` (structlog + stdlib bridge, dev-console vs. JSON-lines modes) and `get_logger()`. |
 | `src/haute/_event_bus.py` | `EventBus` — thread-safe synchronous pub/sub with typed `graph.update` / `parse.error` overloads; `default_bus` is the module-level singleton the watcher and server wire together. |
 | `src/haute/_types.py` | `NodeType` (`StrEnum`), the decorator↔NodeType maps, every per-node-type config `TypedDict`, the `SolveResultLike` Protocol family, and the canonical `NodeData` / `GraphNode` / `GraphEdge` / `PipelineGraph` Pydantic models (with `PipelineGraph`'s cached-property-invalidating `model_copy` override). |
@@ -139,10 +139,11 @@ no frame. The frame builder rejects an event payload that already contains reser
 ## Control flow
 
 **Startup.** `_lifespan()`: `_clear_bytecache()` (rmtree every `__pycache__` under
-`src/haute/`) → `configure_logging()` → `_load_env(Path.cwd())` → `_ensure_pipeline_index()`
-(builds the name→path index once, under a double-checked lock) → spawn `_watcher_forever()`
-as a background task. Shutdown cancels that task and awaits its completion, suppressing
-`CancelledError`.
+`src/haute/`) → `configure_logging()` → `_load_env(Path.cwd())` →
+`reap_stale_optimiser_artifacts()` (registered roots and ownership markers only) →
+`_ensure_pipeline_index()` (builds the name→path index once, under a double-checked lock) →
+spawn `_watcher_forever()` as a background task. Shutdown cancels that task and awaits its
+completion, suppressing `CancelledError`.
 
 **Request middleware chain.** `add_middleware` prepends entries and Starlette later wraps in
 reverse, so runtime outer-to-inner order is `(CORSMiddleware in dev) →

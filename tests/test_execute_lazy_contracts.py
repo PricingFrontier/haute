@@ -10,12 +10,19 @@ import pytest
 
 import haute.execution as execution_facade
 from haute._contracts import Contract
-from haute._execute_lazy import _effective_contract, _execute_eager_core, _execute_lazy
+from haute._execute_lazy import (
+    _effective_contract,
+    _execute_eager_core,
+    _execute_lazy,
+    _resolve_effective_contract,
+    _strict_contract_resolution,
+)
 from haute._execution_context import ExecutionContext, ExecutionProfile
 from haute._types import GraphNode, NodeData, NodeType, PipelineGraph
 from haute.errors import (
     ConfigError,
     ContractMismatchError,
+    ContractResolutionError,
     SchemaMismatchError,
 )
 from tests.conftest import make_edge, make_graph, make_output_config
@@ -46,6 +53,134 @@ def test_effective_contract_downgrades_oserror_to_opaque() -> None:
         contract = _effective_contract(_node(NodeType.MODEL_SCORE))
 
     assert contract == Contract.opaque()
+
+
+@pytest.mark.parametrize(
+    ("error", "failure_kind"),
+    [
+        pytest.param(ConfigError("missing model"), "configuration", id="configuration"),
+        pytest.param(OSError("disk offline"), "io", id="io"),
+    ],
+)
+def test_strict_contract_resolution_raises_typed_redacted_error(
+    error: BaseException,
+    failure_kind: str,
+) -> None:
+    with patch(
+        "haute._execute_lazy.get_column_contract",
+        side_effect=error,
+    ):
+        with pytest.raises(ContractResolutionError) as exc_info:
+            _resolve_effective_contract(
+                _node(NodeType.MODEL_SCORE),
+                strict=True,
+            )
+
+    assert exc_info.value.__cause__ is error
+    assert exc_info.value.to_payload() == {
+        "error_code": "contract_resolution_failed",
+        "message": "Unable to resolve the node column contract.",
+        "node_id": "node_1",
+        "node_type": "modelScore",
+        "failure_kind": failure_kind,
+    }
+    assert str(error) not in exc_info.value.message
+
+
+def test_non_strict_contract_resolution_reports_opaque_degradation() -> None:
+    with patch(
+        "haute._execute_lazy.get_column_contract",
+        side_effect=ConfigError("missing model"),
+    ):
+        resolution = _resolve_effective_contract(
+            _node(NodeType.MODEL_SCORE),
+            strict=False,
+        )
+
+    assert resolution.contract == Contract.opaque()
+    assert resolution.state == "degraded"
+    assert resolution.failure_kind == "configuration"
+
+
+@pytest.mark.parametrize(
+    "profile",
+    [
+        ExecutionProfile.LAZY_SINK,
+        ExecutionProfile.TRAINING_PREP,
+        ExecutionProfile.OPTIMISER_SETUP,
+        ExecutionProfile.EXPLORE_ANALYSIS,
+        ExecutionProfile.AUTO_RANGE,
+        ExecutionProfile.DEPLOY_BATCH,
+        ExecutionProfile.CHUNKED_MAP_REDUCE,
+    ],
+)
+def test_bounded_profiles_require_strict_contract_resolution(
+    profile: ExecutionProfile,
+) -> None:
+    assert _strict_contract_resolution(profile) is True
+
+
+@pytest.mark.parametrize(
+    "profile",
+    [ExecutionProfile.PREVIEW_EAGER, ExecutionProfile.DEPLOY_LIVE],
+)
+def test_materialising_profiles_allow_diagnosed_contract_degradation(
+    profile: ExecutionProfile,
+) -> None:
+    assert _strict_contract_resolution(profile) is False
+
+
+def test_lazy_and_eager_bounded_execution_share_typed_resolution_failure() -> None:
+    graph = make_graph(
+        {
+            "nodes": [
+                {
+                    "id": "source",
+                    "data": {
+                        "label": "source",
+                        "nodeType": "dataInput",
+                        "config": {},
+                    },
+                }
+            ],
+            "edges": [],
+        }
+    )
+
+    def build_node_fn(node: GraphNode, **_kwargs):
+        return node.id, lambda: pl.LazyFrame({"value": [1]}), True
+
+    payloads: list[dict[str, object]] = []
+    with patch(
+        "haute._execute_lazy.get_column_contract",
+        side_effect=ConfigError("missing source contract"),
+    ):
+        for execute in (
+            lambda: _execute_lazy(
+                graph,
+                build_node_fn,
+                target_node_id="source",
+                enforce_contracts=True,
+                execution_context=ExecutionContext(
+                    operation="lazy",
+                    profile=ExecutionProfile.LAZY_SINK,
+                ),
+            ),
+            lambda: _execute_eager_core(
+                graph,
+                build_node_fn,
+                target_node_id="source",
+                execution_context=ExecutionContext(
+                    operation="eager",
+                    profile=ExecutionProfile.TRAINING_PREP,
+                ),
+            ),
+        ):
+            with pytest.raises(ContractResolutionError) as exc_info:
+                execute()
+            payloads.append(exc_info.value.to_payload())
+
+    assert payloads[0] == payloads[1]
 
 
 def test_effective_contract_reraises_attribute_error() -> None:

@@ -1310,6 +1310,10 @@ def execute_graph(
                     )
             return node_warnings
 
+        execution_context.fault_point(
+            "response_shaping",
+            node_id=target_node_id,
+        )
         results: dict[str, NodeResult] = {}
         for nid in result_order:
             if nid in errors:
@@ -1494,6 +1498,13 @@ def _eager_execute(
             memo=fingerprint_memo,
         )
     except PreambleError as exc:
+        active_profile = (
+            execution_context.profile
+            if execution_context is not None
+            else ExecutionProfile.PREVIEW_EAGER
+        )
+        if active_profile != ExecutionProfile.PREVIEW_EAGER:
+            raise
         # Don't abort — let non-preamble nodes (data sources, model scoring,
         # etc.) execute normally.  The error will surface on transform /
         # source-switch nodes that actually need the preamble bindings.
@@ -1900,6 +1911,10 @@ def write_data_output(
             staging_out.replace(out)
         logger.info("data_output_written", path=path, format=config["format"])
 
+        execution_context.fault_point(
+            "response_shaping",
+            node_id=output_node_id,
+        )
         return WriteOutputResponse(
             status="ok",
             message=f"Wrote {row_count:,} rows to {path}",

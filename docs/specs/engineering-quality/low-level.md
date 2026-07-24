@@ -50,7 +50,7 @@
 | `scripts/regen_sanitize_parity_fixture.py` | Regenerates the committed sanitisation-parity fixture when deliberately requested. |
 | `scripts/run_frontend_e2e_server.py` | Starts and readiness-signals the backend/frontend process used by Playwright. |
 | `scripts/run_mutation_suite.py` | Implements mutation target selection, work planning, shard execution, merge, and survival-threshold reporting. |
-| `scripts/run_perf_suite.py` | Runs bounded Python performance tests and writes performance artifacts. |
+| `scripts/run_perf_suite.py` | Runs bounded Python performance tests and writes schema-3 workload, environment, resource, wall-time, and per-test evidence artifacts. |
 | `scripts/setup-worktree.sh` | Sets up a development worktree. |
 | `mutation/README.md` | Documents the maintained mutation-testing workflow and constraints. |
 | `mutation/targets.json` | Declares selected mutation targets, witness suites, and survival budgets. |
@@ -211,3 +211,25 @@ output semantics, chosen strategy, source-width propagation, no unintended full 
 budgeted rejection. Only the CI-small fixture belongs in ordinary CI; 1m/10m cases remain opt-in
 performance-harness work. Baselines are recorded as artifacts first: numeric throughput, latency
 or memory thresholds may not gate hardware-diverse CI until reproducible baselines are established.
+
+### Performance report schema 3
+
+- `scripts/run_perf_suite.py` emits `schema_version=3`.
+- Top-level `environment` records the Python and platform versions plus installed Haute, Polars,
+  and pytest package versions; an unavailable distribution version is explicit `null`.
+- Top-level `workload` contains deterministic scenario names/scales, the sorted execution-profile
+  set, and per-test input/schema descriptors supplied through `haute_perf_evidence`.
+- Top-level `resources` contains independent RSS, aggregate input/output bytes, collect/checkpoint/
+  chunk counts, temporary-disk peak bytes, admission states, and payload bytes. Every unavailable
+  numeric counter is present as `null`.
+- Top-level `wall_time` contains `total_seconds`, `reported_phase_seconds`,
+  `runner_overhead_seconds`, and `partition_tolerance_seconds`; the first two partition fields sum
+  to total within the tolerance or report construction fails.
+- The existing `tests` records retain their full bounded evidence maps. Evidence values must be
+  JSON-safe; malformed evidence fails the performance lane rather than being stringified.
+- `tests/performance/test_polars_scale_scenario.py` records the complete resource descriptor for
+  the generated join/training scenario. A CI-small cross-profile case uses a fixed graph and fixed
+  data and records every `ExecutionProfile` without multiplying the 1m/10m input generation.
+
+`tests/test_run_perf_suite.py` and `tests/test_perf_suite_script.py` pin schema completeness,
+explicit `null` values, deterministic profile ordering, and exact wall-time partitioning.

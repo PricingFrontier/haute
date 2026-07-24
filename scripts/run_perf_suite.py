@@ -24,6 +24,14 @@ except ModuleNotFoundError:  # Direct ``python scripts/run_perf_suite.py`` execu
     from memory_smoke import StdlibMemorySampler
 
 _POLARS_SCALE_ENV = "HAUTE_POLARS_PERF_SCALE"
+_WALL_TIME_PARTITION_TOLERANCE_SECONDS = 0.05
+
+
+def _installed_version(package: str) -> str | None:
+    try:
+        return version(package)
+    except PackageNotFoundError:
+        return None
 
 
 @dataclass(frozen=True)
@@ -193,16 +201,23 @@ def _build_report(
     polars_scale: str = "ci",
     rss: PerfRssEnvelope | None = None,
 ) -> dict[str, object]:
+    _validate_json_safe([result.evidence for result in results])
+    reported_phase_seconds = sum(result.duration_seconds for result in results)
+    runner_overhead_seconds = total_seconds - reported_phase_seconds
+    if runner_overhead_seconds < -_WALL_TIME_PARTITION_TOLERANCE_SECONDS:
+        raise ValueError(
+            "Reported pytest phase durations overlap wall time: "
+            f"{reported_phase_seconds:.6f}s reported > {total_seconds:.6f}s total."
+        )
+    runner_overhead_seconds = max(0.0, runner_overhead_seconds)
+    if not _wall_time_partitions(total_seconds, reported_phase_seconds, runner_overhead_seconds):
+        raise ValueError("Wall-time partition does not reconcile to total execution time.")
     outcomes: dict[str, int] = {}
     for result in results:
         key = "xfailed" if result.wasxfail and result.outcome == "skipped" else result.outcome
         outcomes[key] = outcomes.get(key, 0) + 1
 
     slowest = sorted(results, key=lambda result: result.duration_seconds, reverse=True)[:10]
-    try:
-        polars_version = version("polars")
-    except PackageNotFoundError:
-        polars_version = None
     rss_payload = (
         asdict(rss)
         if rss is not None
@@ -213,16 +228,28 @@ def _build_report(
             "poll_interval_seconds": None,
         }
     )
+    workload, resources = _summarise_evidence(results, rss_payload)
+    wall_time = {
+        "total_seconds": total_seconds,
+        "reported_phase_seconds": reported_phase_seconds,
+        "runner_overhead_seconds": runner_overhead_seconds,
+        "partition_tolerance_seconds": _WALL_TIME_PARTITION_TOLERANCE_SECONDS,
+    }
     return {
-        "schema_version": 2,
+        "schema_version": 3,
         "generated_at": datetime.now(UTC).isoformat(),
         "environment": {
             "python": platform.python_version(),
             "platform": platform.platform(),
-            "polars": polars_version,
+            "haute": _installed_version("haute"),
+            "polars": _installed_version("polars"),
+            "pytest": _installed_version("pytest"),
         },
         "scenario": {"polars_scale": polars_scale},
         "rss": rss_payload,
+        "workload": workload,
+        "resources": resources,
+        "wall_time": wall_time,
         "command": list(command),
         "budgets": asdict(budgets),
         "summary": {
@@ -235,6 +262,121 @@ def _build_report(
         },
         "tests": [asdict(result) for result in results],
     }
+
+
+def _wall_time_partitions(total: float, reported: float, overhead: float) -> bool:
+    return abs((reported + overhead) - total) <= _WALL_TIME_PARTITION_TOLERANCE_SECONDS
+
+
+def _validate_json_safe(evidence: object) -> None:
+    """Reject non-portable test evidence before it becomes a CI artifact."""
+    try:
+        json.dumps(evidence, allow_nan=False, sort_keys=True)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"haute_perf_evidence must be JSON-safe: {exc}") from exc
+
+
+def _summarise_evidence(
+    results: Sequence[PerfTestResult], rss: dict[str, object]
+) -> tuple[dict[str, object], dict[str, object]]:
+    """Create deterministic aggregate evidence while retaining each test's detail."""
+    scenarios: dict[str, dict[str, object]] = {}
+    input_bytes = output_bytes = n_collects = n_checkpoints = chunk_count = 0
+    any_input_bytes = any_output_bytes = any_collects = any_checkpoints = any_chunks = False
+    temp_disk_peaks: list[int] = []
+    admissions: list[object] = []
+    payload_bytes: list[int] = []
+    for result in results:
+        evidence = result.evidence
+        name = evidence.get("scenario")
+        if not isinstance(name, str):
+            continue
+        scenario = scenarios.setdefault(
+            name, {"name": name, "scales": set(), "execution_profiles": set(), "inputs": []}
+        )
+        scale = evidence.get("scale")
+        if isinstance(scale, str):
+            scenario["scales"].add(scale)  # type: ignore[index]
+        profiles = evidence.get("execution_profiles", [])
+        if isinstance(profiles, list):
+            scenario["execution_profiles"].update(str(profile) for profile in profiles)  # type: ignore[index]
+        descriptor = evidence.get("input")
+        if isinstance(descriptor, dict):
+            scenario["inputs"].append(descriptor)  # type: ignore[index]
+            value = descriptor.get("total_bytes")
+            if isinstance(value, int):
+                input_bytes += value
+                any_input_bytes = True
+        metrics = evidence.get("product_metrics")
+        if isinstance(metrics, dict):
+            for key, accumulator in (
+                ("n_collects", "collects"),
+                ("n_checkpoints", "checkpoints"),
+                ("chunk_count", "chunks"),
+            ):
+                value = metrics.get(key)
+                if isinstance(value, int):
+                    if accumulator == "collects":
+                        n_collects += value
+                        any_collects = True
+                    elif accumulator == "checkpoints":
+                        n_checkpoints += value
+                        any_checkpoints = True
+                    else:
+                        chunk_count += value
+                        any_chunks = True
+            value = metrics.get("output_bytes")
+            if isinstance(value, int):
+                output_bytes += value
+                any_output_bytes = True
+            value = metrics.get("temp_disk_peak_bytes")
+            if isinstance(value, int):
+                temp_disk_peaks.append(value)
+        if "admission" in evidence:
+            admissions.append(evidence["admission"])
+        value = evidence.get("payload_bytes")
+        if isinstance(value, int):
+            payload_bytes.append(value)
+    workload_scenarios = []
+    for scenario in scenarios.values():
+        workload_scenarios.append(
+            {
+                "name": scenario["name"],
+                "scales": sorted(scenario["scales"]),
+                "execution_profiles": sorted(scenario["execution_profiles"]),
+                "inputs": sorted(
+                    scenario["inputs"], key=lambda item: json.dumps(item, sort_keys=True)
+                ),
+            }
+        )
+    workload = {
+        "scenarios": sorted(workload_scenarios, key=lambda item: item["name"]),
+        "execution_profiles": sorted(
+            {
+                profile
+                for scenario in workload_scenarios
+                for profile in scenario["execution_profiles"]
+            }
+        ),
+    }
+    resources = {
+        "rss": rss,
+        "input_bytes": input_bytes if any_input_bytes else None,
+        "output_bytes": output_bytes if any_output_bytes else None,
+        "n_collects": n_collects if any_collects else None,
+        "n_checkpoints": n_checkpoints if any_checkpoints else None,
+        "chunk_count": chunk_count if any_chunks else None,
+        "temp_disk_peak_bytes": max(temp_disk_peaks) if temp_disk_peaks else None,
+        "admission_states": sorted(
+            {
+                str(item.get("state"))
+                for item in admissions
+                if isinstance(item, dict) and item.get("state") is not None
+            }
+        ),
+        "payload_bytes": sum(payload_bytes) if payload_bytes else None,
+    }
+    return workload, resources
 
 
 def _write_markdown_summary(report: dict[str, object], path: Path) -> None:

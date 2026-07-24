@@ -19,7 +19,7 @@ is covered by current specifications and ordinary regression tests.
 | [Deploy and platform](deploy-platform.md) | Deployment paths, scaffolding, platform/resource boundaries | `AUD-DEPLOY-01` |
 | [Edge Join](edge-join.md) | Discoverability, browser workflow, supported join geometry | `ROAD-EDGE-01` |
 | [Engineering quality](engineering-quality.md) | Invariants, oracles, fixtures, CI, types, documentation truth | `ROAD-TEST-01` |
-| [Execution engine](execution-engine.md) | Execution boundary, projection, memory, faults, metrics | `ROAD-EXEC-01` |
+| [Execution engine](execution-engine.md) | Execution boundary, projection, memory, faults, metrics | — |
 | [Explore and EDA](explore-eda.md) | Report correctness, scale, UX, analysis, export | `EDA-E01` |
 | [Frontend and canvas](frontend-canvas.md) | Cache/sync correctness, journeys, visibility, accessibility | `AUD-C16` |
 | [Git integration](git-integration.md) | Mutation safety, history integrity, performance, feedback | `GIT-G01` |

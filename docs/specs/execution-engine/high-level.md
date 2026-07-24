@@ -436,3 +436,52 @@ tracing/deploy hooks, and tests. Acceptance covers each execution strategy with 
 inputs, multiple roots, row-local and rejected global code, stale/missing/corrupt snapshots,
 format-capability mismatch, native/eager output modes, cancellation/admission, and assertions
 that graph execution causes no cache-build or remote-provider call.
+
+## Approved execution-roadmap hardening contract
+
+The execution-engine roadmap packages improve the codebase and are accepted with the following
+bounded scope. The two audit packages retain their shipped behaviour where re-verification proves
+the contract already holds; they do not justify a second planner or execution path.
+
+- **One bounded contract-resolution policy.** Eager and lazy execution use the same resolved-node
+  contract result. Profiles that require bounded projection fail before node work with one typed
+  `contract_resolution_failed` error when a builder contract cannot be resolved. Interactive
+  preview and deploy-live may retain the existing explicitly diagnosed opaque degradation because
+  they are the two admitted materialisation profiles. A broken preamble remains node-local only
+  for interactive preview; batch, sink, training, optimiser, and deploy-batch execution propagate
+  the typed preamble failure before materialisation.
+- **Partitioned Parquet remains a lazy source boundary.** A direct Parquet data input may identify
+  a directory-backed dataset and use Polars' declared Hive-partition arguments. A downstream
+  partition predicate and target-column demand must remain in the optimised scan: irrelevant
+  partitions and unrelated columns are pruned before any checkpoint, cache materialisation, or
+  eager response is built. No directory walk or eager concatenation is introduced in Haute.
+- **Target-width chunk bounds are authoritative.** Byte-budget planning continues to cost the
+  projected target schema and conservatively sample variable-width target columns. If one
+  estimated target row is already wider than the configured chunk budget, planning raises a
+  typed `chunk_memory_risk` error instead of manufacturing a one-row plan that still exceeds the
+  stated bound. Stage/checkpoint RSS sampling remains coarse post-operation evidence; it is not
+  described as continuous native-memory enforcement.
+- **Projection attribution remains explicit.** Fan-in demand is assigned only from operand,
+  contract, join-key, or producer-schema evidence. Ambiguous ownership fails in strict profiles
+  and remains an observable boundary in the two non-strict profiles. A blocked caller seed has a
+  distinct diagnostic, and code generation omits stale parent attribution rather than guessing.
+- **Deterministic fault and cleanup evidence.** Execution contexts expose a testable fault-point
+  seam at native collect, sink/checkpoint, reducer, response-shaping, and lifecycle boundaries.
+  Cancellation records the monotonic delay from request to observed checkpoint. Cleanup always
+  releases every registered resource and admission reservation; a cleanup failure is raised when
+  it is the only failure, but is attached as diagnostic detail when a primary failure already
+  exists and never replaces that primary error.
+- **Optional bounded telemetry.** `HAUTE_EXECUTION_TELEMETRY` is disabled by default. When enabled,
+  terminal metric publication emits one schema-versioned event containing only an allow-list of
+  aggregate profile, status, strategy, timing, RSS, byte, chunk, collect, checkpoint, and
+  truncation fields. It excludes job/node identifiers, paths, column names, plans, source values,
+  messages, and exception text. Disabled mode performs no payload assembly or sink call. Trace
+  payloads remain in the existing bounded in-memory caches/responses; this contract deliberately
+  adds no persistent trace artifact.
+
+Acceptance evidence covers both execution strategies and every profile, proves identical typed
+resolution failures in bounded eager/lazy paths, proves directory-backed Parquet partition and
+column pruning from the optimised scan, rejects an over-budget single target row, preserves the
+existing projection-attribution diagnostics, measures deterministic cancellation latency, injects
+faults across all named boundaries while proving cleanup precedence, and verifies telemetry's
+disabled no-op and enabled redaction/caps.

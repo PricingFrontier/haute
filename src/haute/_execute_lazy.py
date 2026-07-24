@@ -7,9 +7,10 @@ import gc
 import re
 import time
 from collections.abc import Callable, Iterable, Mapping
+from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, NamedTuple, cast
+from typing import Any, Literal, NamedTuple, cast
 
 import polars as pl
 
@@ -48,6 +49,7 @@ from haute._types import (
 from haute.errors import (
     ConfigError,
     ContractMismatchError,
+    ContractResolutionError,
     SchemaMismatchError,
     is_public_contract_error,
 )
@@ -155,54 +157,77 @@ def _is_boundary_check_exception(exc: BaseException) -> bool:
     return isinstance(exc, MlflowException)
 
 
-def _effective_contract(node: GraphNode) -> Contract:
-    """Return the effective contract for a node at boundary-check time.
+def _boundary_failure_kind(exc: BaseException) -> str:
+    """Classify a known boundary-resolution failure without exposing its text."""
+    if isinstance(exc, ConfigError):
+        return "configuration"
+    if isinstance(exc, OSError):
+        return "io"
+    return "artifact_store"
 
-    Combines the builder-derived contract with any user-declared
-    contract on the node's config so the executor has a single answer
-    to "what columns does this node read / produce?".
 
-    User-declared sides override the builder when they are concrete
-    (non-None).  This lets a user tighten an opaque POLARS contract to
-    a concrete set; the reverse — a user declaring opaque on top of a
-    concrete builder contract — is accepted silently because the parser
-    has already cross-checked against ``get_column_contract``.
+@dataclass(frozen=True, slots=True)
+class ContractResolution:
+    """One canonical node contract-resolution result."""
 
-    If the builder contract raises (MLflow unreachable, config mis-set
-    in a way only the builder knows about), the executor treats the
-    node as opaque rather than failing the whole run: the runtime path
-    for such nodes is typically ``_passthrough_fn`` and the caller will
-    still get the original error on the direct ``_model_score_columns``
-    call path that the loud-errors suite exercises.  Silencing here is
-    scoped strictly to the boundary check; it does not hide the
-    configuration issue elsewhere in the system.
+    contract: Contract
+    state: Literal["resolved", "degraded"]
+    failure_kind: str | None = None
+
+
+def _strict_contract_resolution(profile: ExecutionProfile) -> bool:
+    """Use the projection planner's canonical profile strictness predicate."""
+    return projection_planner.strict_projection_required(profile, None)
+
+
+def _resolve_effective_contract(
+    node: GraphNode,
+    *,
+    strict: bool,
+) -> ContractResolution:
+    """Resolve the effective node contract under the active profile policy.
+
+    User-declared concrete sides overlay the builder-derived contract. Known
+    external/configuration failures fail bounded profiles with a typed,
+    redacted error; the two admitted materialising profiles retain a diagnosed
+    opaque degradation. Programmer errors always propagate unchanged.
     """
-    from haute.errors import ConfigError
-
     try:
         builder = Contract.from_tuple(get_column_contract(node.data.nodeType, node.data.config))
     except Exception as exc:
         if not _is_boundary_check_exception(exc):
             raise
-        # Contract resolution for MODEL_SCORE etc. may touch MLflow /
-        # external stores.  A transient or deploy-mode lookup failure
-        # (ConfigError, OSError, MLflow REST) must not prevent the
-        # pipeline from running — the fn builder path has its own
-        # error reporting and will surface the real problem when the
-        # node actually executes.  We fall back to opaque so the
-        # boundary check is skipped for this node; the actual node
-        # code path still runs and still fails loudly via whichever
-        # error it has always produced.  Programmer errors
-        # (AttributeError / TypeError / KeyError) propagate.
-        if not isinstance(exc, ConfigError):
-            logger.debug(
-                "effective_contract_unresolved",
+        failure_kind = _boundary_failure_kind(exc)
+        if strict:
+            raise ContractResolutionError(
+                "Unable to resolve the node column contract.",
                 node_id=node.id,
                 node_type=node.data.nodeType.value,
-                error=repr(exc),
-            )
-        builder = Contract.opaque()
-    return projection_planner.overlay_declared_contract(node, builder)
+                failure_kind=failure_kind,
+            ) from exc
+        logger.info(
+            "effective_contract_degraded",
+            node_id=node.id,
+            node_type=node.data.nodeType.value,
+            failure_kind=failure_kind,
+        )
+        return ContractResolution(
+            contract=projection_planner.overlay_declared_contract(
+                node,
+                Contract.opaque(),
+            ),
+            state="degraded",
+            failure_kind=failure_kind,
+        )
+    return ContractResolution(
+        contract=projection_planner.overlay_declared_contract(node, builder),
+        state="resolved",
+    )
+
+
+def _effective_contract(node: GraphNode) -> Contract:
+    """Compatibility helper returning the explicitly non-strict contract."""
+    return _resolve_effective_contract(node, strict=False).contract
 
 
 def _assert_inputs_satisfy_contract(
@@ -791,6 +816,9 @@ def _execute_lazy(
         required_columns_by_node,
         order,
     )
+    strict_contract_resolution = _strict_contract_resolution(
+        execution_context.profile if execution_context is not None else ExecutionProfile.LAZY_SINK
+    )
     cache_request = dataframe_cache_request
 
     # Count downstream consumers per node so we can checkpoint fan-out
@@ -960,7 +988,7 @@ def _execute_lazy(
         profile=(
             execution_context.profile
             if execution_context is not None
-            else ExecutionProfile.PREVIEW_EAGER
+            else ExecutionProfile.LAZY_SINK
         ),
         required_columns_by_node=normalised_required_columns,
         execution_context=execution_context,
@@ -1139,7 +1167,14 @@ def _execute_lazy(
                 node_id=nid,
                 requested_width=(None if requested_columns is None else len(requested_columns)),
             )
-        contract = _effective_contract(node) if enforce_contracts else None
+        contract = (
+            _resolve_effective_contract(
+                node,
+                strict=strict_contract_resolution,
+            ).contract
+            if enforce_contracts
+            else None
+        )
         check_here = bool(contract) and _should_check_contract(contract)  # type: ignore[arg-type]
         # Builder-wired ``_passthrough_fn`` means the node is in a stub
         # state (MODEL_SCORE without a model, OPTIMISER_APPLY without
@@ -1715,6 +1750,11 @@ def _execute_eager_core(
         required_columns_by_node,
         order,
     )
+    strict_contract_resolution = _strict_contract_resolution(
+        execution_context.profile
+        if execution_context is not None
+        else ExecutionProfile.PREVIEW_EAGER
+    )
     materialized_ids = None if materialize_node_ids is None else frozenset(materialize_node_ids)
     materialize_column_limits = dict(materialize_column_limits_by_node or {})
     for limit_node_id, limit in materialize_column_limits.items():
@@ -1886,7 +1926,14 @@ def _execute_eager_core(
                 node_id=nid,
                 requested_width=(None if requested_columns is None else len(requested_columns)),
             )
-        contract = _effective_contract(node) if enforce_contracts else None
+        contract = (
+            _resolve_effective_contract(
+                node,
+                strict=strict_contract_resolution,
+            ).contract
+            if enforce_contracts
+            else None
+        )
         check_here = bool(contract) and _should_check_contract(contract)  # type: ignore[arg-type]
         # A node that the builder chose to wire to ``_passthrough_fn`` is
         # running in a stub/unconfigured state (MODEL_SCORE without a
