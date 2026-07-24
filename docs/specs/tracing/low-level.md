@@ -555,10 +555,10 @@ tests/test_optimiser_apply_trace_enrichment.py` when changing this component.
 
 ## Polars backend contracts (0.6.0)
 
-This implementation slice is governed by the
-[Polars backend remediation plan](../../trip/plans/F_0.6.0_polars-backend-remediation.plan.md)
-and is delivered as P9a (correlation/enrichment) followed by P9b (cache
-integration). P9a does not wait for or introduce lineage-key code. P9b starts
+Remaining tracing improvement work is tracked in the
+[tracing and explainability roadmap](../../roadmap/tracing-explainability.md).
+Delivery is split deliberately: P9a owns correlation and request-local enrichment, followed by
+P9b for cache integration. P9a does not wait for or introduce lineage-key code. P9b starts
 only after the shared caching/lineage-preview-key slice is complete.
 
 ### Correlation primitive
@@ -707,8 +707,8 @@ diamonds, cycle push/pop, exceptions, and cross-request isolation.
 
 ## Approved change contract — 0.7.0 data-input tracing
 
-The implementation plan is
-[`F_0.7.0_data-io-convergence.plan.md`](../../trip/plans/F_0.7.0_data-io-convergence.plan.md).
+Remaining tracing improvement work is tracked in the
+[tracing and explainability roadmap](../../roadmap/tracing-explainability.md).
 
 - Replace `DATA_SOURCE` branches in trace enrichment/export/grouping with provider-aware
   `DATA_INPUT` handling. Resolve safe source identity and cache generation through the same

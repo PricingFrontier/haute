@@ -281,12 +281,13 @@ most: a silent wrong answer here mis-prices real policies.
 Batch deployment and seedless live scoring will use the universal execution-plan facade.
 This adds strategy/provenance diagnostics and consistent bounded execution decisions
 without changing established input-to-output scoring semantics. Execution-engine owns
-plan selection; see the [remediation plan](../../trip/plans/F_0.6.0_polars-backend-remediation.plan.md).
+plan selection. Remaining deployment improvement work is tracked in the
+[deploy and platform roadmap](../../roadmap/deploy-platform.md).
 
 ## Approved change contract — 0.7.0 unified data-input deployment
 
-Implementation follows
-[`F_0.7.0_data-io-convergence.plan.md`](../../trip/plans/F_0.7.0_data-io-convergence.plan.md).
+Remaining deployment improvement work is tracked in the
+[deploy and platform roadmap](../../roadmap/deploy-platform.md).
 
 - Deploy source discovery recognises `dataInput`, `apiInput`, and `constant`; `dataSource` no
   longer exists. Direct local-file inputs retained in the pruned graph are bundled and remapped

@@ -319,7 +319,8 @@ Out of scope (owned elsewhere):
 
 ## Polars backend contracts (0.6.0)
 
-This component implements the scoring portions of the [Polars backend remediation plan](../../trip/plans/F_0.6.0_polars-backend-remediation.plan.md).
+Remaining model-registry improvement work is tracked in the
+[modelling roadmap](../../roadmap/modelling.md).
 
 - A valid empty scoring batch produces typed empty prediction output without scoring a synthetic all-null row when model metadata can determine the output schema. If metadata is insufficient, the operation fails loudly rather than guessing a dtype or invoking a semantically invalid probe.
 - Live categorical validation projects only the model features and other columns required by validation/scoring; unrelated input columns are not materialised for that check.

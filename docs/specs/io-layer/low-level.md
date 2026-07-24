@@ -431,7 +431,8 @@ contract is directly tested.
 
 ## Polars backend contracts (0.6.0)
 
-This component implements the IO portions of the [Polars backend remediation plan](../../trip/plans/F_0.6.0_polars-backend-remediation.plan.md).
+Remaining I/O improvement work is tracked in the
+[I/O layer roadmap](../../roadmap/io-layer.md).
 
 - Replace substring-based streaming failure detection in `_polars_utils` with a committed
   classifier table whose key is `(polars_version, exception_class,
@@ -463,8 +464,8 @@ that no public or internal caller can select the removed broadening helpers.
 
 ## Approved change contract — 0.7.0 data I/O convergence
 
-The target implementation is ordered by
-[`F_0.7.0_data-io-convergence.plan.md`](../../trip/plans/F_0.7.0_data-io-convergence.plan.md).
+Remaining data-I/O improvement work is tracked in the
+[I/O layer roadmap](../../roadmap/io-layer.md).
 The [high-level contract](high-level.md#approved-change-contract-070-data-io-convergence) is
 authoritative for behaviour; this section fixes the implementation shape and verification
 boundaries.

@@ -191,8 +191,8 @@ alongside its canvas geometry assertions).
 
 ## Approved change contract — 0.7.0 unified data I/O editors
 
-The implementation plan is
-[`F_0.7.0_data-io-convergence.plan.md`](../../trip/plans/F_0.7.0_data-io-convergence.plan.md).
+Remaining node-editor improvement work is tracked in the
+[frontend canvas roadmap](../../roadmap/frontend-canvas.md).
 
 - Delete `frontend/src/panels/editors/DataSourceEditor.tsx` and
   `frontend/src/panels/editors/SinkEditor.tsx`, their lazy-registry entries, palette definitions,

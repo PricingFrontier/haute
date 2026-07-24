@@ -533,8 +533,8 @@ Out of scope (owned by neighbouring components, linked where they exist):
 
 ## Approved change contract — 0.7.0 canonical data-I/O canvas nodes
 
-Implementation follows
-[`F_0.7.0_data-io-convergence.plan.md`](../../trip/plans/F_0.7.0_data-io-convergence.plan.md).
+Remaining graph-canvas improvement work is tracked in the
+[frontend canvas roadmap](../../roadmap/frontend-canvas.md).
 
 - Canvas node metadata, the React Flow registry, palette ordering, derived source/sink sets,
   node-search results, comparison inspector dispatch, and factories contain **Data Input** and

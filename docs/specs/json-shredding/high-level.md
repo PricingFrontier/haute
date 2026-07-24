@@ -236,7 +236,8 @@ strict build and raises a specific, column-named error instead.
 
 ## Polars backend contracts (0.6.0)
 
-Implementation is sequenced by the [Polars backend remediation plan](../../trip/plans/F_0.6.0_polars-backend-remediation.plan.md).
+Remaining JSON-shredding improvement work is tracked in the
+[I/O layer roadmap](../../roadmap/io-layer.md).
 
 ### OUTPUT assembly (Review-P04)
 

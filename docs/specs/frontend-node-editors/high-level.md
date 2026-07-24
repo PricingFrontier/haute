@@ -82,8 +82,8 @@ from a hand-edited file, so the verbatim-plus-warning rule is the complete unres
 
 ## Approved change contract — 0.7.0 unified data I/O editors
 
-Implementation follows
-[`F_0.7.0_data-io-convergence.plan.md`](../../trip/plans/F_0.7.0_data-io-convergence.plan.md)
+Remaining node-editor improvement work is tracked in the
+[frontend canvas roadmap](../../roadmap/frontend-canvas.md)
 and the approved [I/O behaviour](../io-layer/high-level.md#approved-change-contract-070-data-io-convergence).
 
 - The palette and editor registry expose one **Data Input** and one **Data Output** node type.

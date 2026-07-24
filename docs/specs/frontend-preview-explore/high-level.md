@@ -49,7 +49,8 @@ to surface rather than being fabricated.
 
 ## Polars backend contracts (0.6.0)
 
-See [the remediation plan](../../trip/plans/F_0.6.0_polars-backend-remediation.plan.md).
+Remaining preview and Explore improvement work is tracked in the
+[frontend canvas roadmap](../../roadmap/frontend-canvas.md).
 Preview and Explore surfaces will expose the five authoritative version-1 API states:
 `projected`, `boundary`, `admitted_eager`, `rejected`, and `not_planned`. They also expose a
 separate diagnostic-unavailable state when the shared parser rejects a missing/malformed payload,

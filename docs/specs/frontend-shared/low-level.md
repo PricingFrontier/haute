@@ -403,7 +403,8 @@ type-checking).
 
 ## Polars backend contracts (0.6.0)
 
-See [the remediation plan](../../trip/plans/F_0.6.0_polars-backend-remediation.plan.md).
+Remaining shared-frontend improvement work is tracked in the
+[frontend canvas roadmap](../../roadmap/frontend-canvas.md).
 The `api/` and `types/guards.ts` boundary will define one execution-strategy type and parser.
 Version 1 requires integer `schema_version=1`, `status`, `strategy`, `profile`, `boundedness`
 (`bounded|unbounded|unknown`), `reason_code`, `detail_state`
@@ -454,8 +455,8 @@ error additionally retains `remediation` and nullable `estimated_peak_bytes`/
 
 ## Approved change contract — 0.7.0 data I/O client contracts
 
-The implementation plan is
-[`F_0.7.0_data-io-convergence.plan.md`](../../trip/plans/F_0.7.0_data-io-convergence.plan.md).
+Remaining shared-frontend improvement work is tracked in the
+[frontend canvas roadmap](../../roadmap/frontend-canvas.md).
 Update `frontend/src/api/types.ts`, `client.ts`, and `types/guards.ts` with versioned capability,
 input-cache job/status, and output-write models; delete `fetchIoFormats` and legacy Databricks
 cache/sink clients. The settings/cache stores key remote work by safe identity digest and job id,

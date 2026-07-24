@@ -215,8 +215,8 @@ component's fail-loud default.
 
 ## Polars backend contracts (0.6.0)
 
-This component participates in the remediation plan at
-[`F_0.6.0_polars-backend-remediation.plan.md`](../../trip/plans/F_0.6.0_polars-backend-remediation.plan.md).
+Remaining pipeline-configuration improvement work is tracked in the
+[pipeline authoring roadmap](../../roadmap/pipeline-authoring.md).
 
 - A configured live-switch mapping is exhaustive for the active scenario set. When a mapping
   exists and the active scenario is absent, execution raises
@@ -240,8 +240,8 @@ successful mapped live-switch selection or unconfigured fallback.
 
 ## Approved change contract — 0.7.0 canonical data I/O node types
 
-Implementation follows
-[`F_0.7.0_data-io-convergence.plan.md`](../../trip/plans/F_0.7.0_data-io-convergence.plan.md).
+Remaining pipeline-configuration improvement work is tracked in the
+[pipeline authoring roadmap](../../roadmap/pipeline-authoring.md).
 
 - `Pipeline` and `Submodel` expose `data_input` and `data_output` as the only tabular I/O
   decorators. `data_source` and `data_sink` and their `NodeType` values are deleted. This changes

@@ -256,8 +256,8 @@ Out of scope (owned elsewhere, linked where relevant):
 
 ## Approved change contract — 0.7.0 unified data-I/O security
 
-Implementation follows
-[`F_0.7.0_data-io-convergence.plan.md`](../../trip/plans/F_0.7.0_data-io-convergence.plan.md).
+Remaining sandbox and security improvement work is tracked in the
+[security and supply-chain roadmap](../../roadmap/security-supply-chain.md).
 
 - Optional `dataInput` Polars code uses the existing validated `_exec_user_code` path after its
   direct source or snapshot is opened. It receives `df` and the ordinary restricted Polars

@@ -399,9 +399,8 @@ etc. when changing this component.
 
 ## Polars backend contracts (0.6.0)
 
-The implementation tracked by the
-[F_0.6.0 Polars backend remediation plan](../../trip/plans/F_0.6.0_polars-backend-remediation.plan.md)
-satisfies this low-level contract.
+The implementation satisfies this low-level contract. Remaining cache improvement work is
+tracked in the [caching roadmap](../../roadmap/caching.md).
 
 ### Preview/trace key construction and lifecycle
 
@@ -488,8 +487,8 @@ satisfies this low-level contract.
 
 ## Approved change contract — 0.7.0 shared input snapshots
 
-The target is implemented under
-[`F_0.7.0_data-io-convergence.plan.md`](../../trip/plans/F_0.7.0_data-io-convergence.plan.md).
+Remaining source-cache improvement work is tracked in the
+[caching roadmap](../../roadmap/caching.md).
 
 ### New source-cache module
 

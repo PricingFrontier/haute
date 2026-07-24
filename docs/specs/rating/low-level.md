@@ -136,7 +136,8 @@ constructible input (see [Edge cases](#edge-cases-and-invariants)).
 
 ## Polars backend contracts (0.6.0)
 
-The authoritative delivery sequence is the [Polars backend remediation plan](../../trip/plans/F_0.6.0_polars-backend-remediation.plan.md). Review-P07 has these implementation-level requirements:
+Remaining rating improvement work is tracked in the
+[rating roadmap](../../roadmap/rating.md). Review-P07 has these implementation-level requirements:
 
 - `_combine_rating_columns` / `_combine_rating_output` detect a per-row all-null participant
   set for `min` and `max` and raise `RatingExtremaUndefinedError(ExecutionError)` at eager or

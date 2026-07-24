@@ -411,8 +411,8 @@ parsed package data rather than importable modules (they remain parser- and lint
 
 ## Approved change contract — 0.7.0 data I/O authoring
 
-The implementation plan is
-[`F_0.7.0_data-io-convergence.plan.md`](../../trip/plans/F_0.7.0_data-io-convergence.plan.md).
+Remaining assistant improvement work is tracked in the
+[assistant roadmap](../../roadmap/assistant.md).
 
 - Remove legacy entries from `src/haute/assistant/_catalog.py` and
   `src/haute/assistant/assets/authoring_guide.md`; update `_tools.py` configuration validation to

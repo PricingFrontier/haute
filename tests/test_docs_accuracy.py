@@ -30,8 +30,8 @@ BACKEND_SOURCE_ROOT = ROOT / "src" / "haute"
 FRONTEND_SOURCE_ROOT = ROOT / "frontend" / "src"
 SPECS_ROOT = ROOT / "docs" / "specs"
 SPECS_OWNERSHIP = SPECS_ROOT / "ownership.toml"
-COMPONENT_BACKLOG_ROOT = ROOT / "docs" / "roadmap" / "components"
-COMPONENT_BACKLOG_INDEX = ROOT / "docs" / "roadmap" / "index.md"
+ROADMAP_ROOT = ROOT / "docs" / "roadmap"
+ROADMAP_INDEX = ROADMAP_ROOT / "README.md"
 
 _MARKDOWN_CODE_SPAN = re.compile(r"(?<!`)`([^`\r\n]+)`(?!`)")
 _MARKDOWN_LINK = re.compile(r"\[[^\]]+\]\(([^)]+)\)")
@@ -90,13 +90,13 @@ _REQUIRED_LOW_LEVEL_HEADINGS = (
     "## Error handling",
     "## Testing",
 )
-_REQUIRED_COMPONENT_BACKLOG_HEADINGS = (
+_REQUIRED_COMPONENT_ROADMAP_HEADINGS = (
     "## Scope",
-    "## Work queue",
-    "## Dependencies",
-    "## Evidence and retirement",
+    "## Priorities",
+    "## Planned improvements",
 )
-_EXPECTED_COMPONENT_BACKLOGS = (
+_EXPECTED_COMPONENT_ROADMAPS = (
+    "assistant",
     "background-jobs-api",
     "caching",
     "deploy-platform",
@@ -114,9 +114,16 @@ _EXPECTED_COMPONENT_BACKLOGS = (
     "security-supply-chain",
     "tracing-explainability",
 )
-_COMPONENT_PACKAGE_ROW = re.compile(
-    r"^\|\s*([A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+)\s*\|",
+_COMPONENT_PACKAGE_HEADING = re.compile(
+    r"^###\s+([A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+)\b",
     flags=re.MULTILINE,
+)
+_REQUIRED_PACKAGE_FIELDS = (
+    "**Why:**",
+    "**Plan:**",
+    "**Acceptance:**",
+    "**Dependencies:**",
+    "**Evidence:**",
 )
 
 DATABRICKS_SECRET_DOCS = [
@@ -149,32 +156,47 @@ def test_internal_engineering_docs_are_excluded_from_public_mkdocs_site() -> Non
         0
     ]
 
-    for internal_dir in ("specs/", "roadmap/", "review/", "fable-Review/", "trip/"):
+    for internal_dir in ("specs/", "roadmap/", "trip/"):
         assert f"  {internal_dir}\n" in exclude_block
     assert "\n  - Roadmap:" not in config
 
 
-def test_component_improvement_backlogs_are_complete_and_source_linked() -> None:
-    component_files = {
-        path.parent.name: path for path in COMPONENT_BACKLOG_ROOT.glob("*/README.md")
+def test_component_roadmaps_are_flat_complete_and_self_contained() -> None:
+    expected_markdown = {"README.md"} | {
+        f"{component}.md" for component in _EXPECTED_COMPONENT_ROADMAPS
     }
-    assert tuple(sorted(component_files)) == _EXPECTED_COMPONENT_BACKLOGS
+    roadmap_markdown = {
+        path.relative_to(ROADMAP_ROOT).as_posix() for path in ROADMAP_ROOT.rglob("*.md")
+    }
+    assert roadmap_markdown == expected_markdown
 
-    index = COMPONENT_BACKLOG_INDEX.read_text(encoding="utf-8")
+    component_files = {
+        path.stem: path for path in ROADMAP_ROOT.glob("*.md") if path.name != ROADMAP_INDEX.name
+    }
+    assert tuple(sorted(component_files)) == _EXPECTED_COMPONENT_ROADMAPS
+
+    index = ROADMAP_INDEX.read_text(encoding="utf-8")
     package_owners: dict[str, str] = {}
     for component, path in component_files.items():
         text = path.read_text(encoding="utf-8")
-        for heading in _REQUIRED_COMPONENT_BACKLOG_HEADINGS:
+        for heading in _REQUIRED_COMPONENT_ROADMAP_HEADINGS:
             assert heading in text, f"{path.relative_to(ROOT)} is missing {heading}"
-        assert f"(components/{component}/README.md)" in index
+        assert f"({component}.md)" in index
 
-        package_ids = _COMPONENT_PACKAGE_ROW.findall(text)
+        package_ids = _COMPONENT_PACKAGE_HEADING.findall(text)
         assert package_ids, f"{path.relative_to(ROOT)} has no work packages"
         for package_id in package_ids:
             assert package_id not in package_owners, (
                 f"{package_id} is owned by both {package_owners[package_id]} and {component}"
             )
             package_owners[package_id] = component
+            package_text = text.split(f"### {package_id}", maxsplit=1)[1].split(
+                "\n### ", maxsplit=1
+            )[0]
+            for field in _REQUIRED_PACKAGE_FIELDS:
+                assert field in package_text, (
+                    f"{path.relative_to(ROOT)} package {package_id} is missing {field}"
+                )
 
         for target in _MARKDOWN_LINK.findall(text):
             if target.startswith(("#", "http://", "https://", "mailto:")):
@@ -184,9 +206,15 @@ def test_component_improvement_backlogs_are_complete_and_source_linked() -> None
                 f"{path.relative_to(ROOT)} links to missing {local_target}"
             )
 
-    retired_audit_packages = {"AUD-C02", "AUD-C03", "AUD-C11"}
-    expected_source_packages = (
-        ({f"AUD-C{number:02d}" for number in range(1, 21)} - retired_audit_packages)
+    retired_or_folded_packages = {
+        "AUD-C02",
+        "AUD-C03",
+        "AUD-C04",
+        "AUD-C11",
+        "AUD-TRACE-01",
+    }
+    expected_packages = (
+        ({f"AUD-C{number:02d}" for number in range(1, 21)} - retired_or_folded_packages)
         | {f"EDA-E{number:02d}" for number in range(1, 14)}
         | {f"GIT-G{number:02d}" for number in range(1, 17)}
         | {f"IO-IO{number:02d}" for number in range(1, 13)}
@@ -197,15 +225,88 @@ def test_component_improvement_backlogs_are_complete_and_source_linked() -> None
         | {f"ROAD-TEST-{number:02d}" for number in range(1, 6)}
         | {f"ROAD-UI-{number:02d}" for number in range(1, 6)}
         | {f"ROAD-EDGE-{number:02d}" for number in range(1, 4)}
+        | {
+            "ASSIST-01",
+            "ASSIST-02",
+            "AUD-CACHE-01",
+            "AUD-DEPLOY-01",
+            "AUD-DEPLOY-02",
+            "AUD-PIPE-01",
+            "AUD-QUALITY-01",
+            "AUD-QUALITY-02",
+            "AUD-QUALITY-03",
+            "AUD-RATING-01",
+            "AUD-SEC-01",
+            "AUD-SEC-02",
+            "CACHE-PERF-01",
+            "RATING-PERF-01",
+        }
     )
-    assert expected_source_packages <= set(package_owners), (
-        f"component catalogue is missing source packages: "
-        f"{sorted(expected_source_packages - set(package_owners))}"
+    assert set(package_owners) == expected_packages, (
+        "component roadmaps and the expected consolidated package set differ: "
+        f"missing={sorted(expected_packages - set(package_owners))}, "
+        f"unexpected={sorted(set(package_owners) - expected_packages)}"
     )
-    assert retired_audit_packages.isdisjoint(package_owners), (
-        "fully implemented audit packages must not remain in active component queues: "
-        f"{sorted(retired_audit_packages & set(package_owners))}"
+    assert retired_or_folded_packages.isdisjoint(package_owners), (
+        "implemented or folded packages must not remain as separate roadmap work: "
+        f"{sorted(retired_or_folded_packages & set(package_owners))}"
     )
+
+    for retired_root in (
+        ROOT / "docs" / "fable-Review",
+        ROOT / "docs" / "review",
+        ROOT / "docs" / "roadmap" / "components",
+        ROOT / "docs" / "trip" / "code-review",
+        ROOT / "docs" / "trip" / "plans",
+    ):
+        assert not retired_root.exists(), (
+            f"retired planning/review directory still exists: {retired_root.relative_to(ROOT)}"
+        )
+
+    stray_planning_markdown: list[str] = []
+    forbidden_directory_names = {
+        "code-review",
+        "fable-review",
+        "plan",
+        "plans",
+        "review",
+        "reviews",
+        "roadmap",
+        "roadmaps",
+    }
+    for path in _tracked_repo_files():
+        if not path.exists() or path.suffix.casefold() != ".md":
+            continue
+        relative = path.relative_to(ROOT)
+        relative_posix = relative.as_posix()
+        if relative_posix.startswith("docs/roadmap/"):
+            continue
+        name = path.name.casefold()
+        if (
+            any(part.casefold() in forbidden_directory_names for part in relative.parts)
+            or name.endswith(".plan.md")
+            or "roadmap" in name
+            or "remediation" in name
+        ):
+            stray_planning_markdown.append(relative_posix)
+    assert not stray_planning_markdown, (
+        "review/roadmap/remediation-plan Markdown must live only in docs/roadmap: "
+        f"{sorted(stray_planning_markdown)}"
+    )
+
+    forbidden_references = (
+        "fable-Review",
+        "docs/review",
+        "roadmap/components",
+        "trip/plans",
+        "trip/code-review",
+        "REMEDIATION-",
+    )
+    combined_roadmap = "\n".join(
+        path.read_text(encoding="utf-8") for path in component_files.values()
+    )
+    for forbidden in forbidden_references:
+        assert forbidden not in combined_roadmap
 
 
 def _normalise_doc_reference(value: str) -> str:

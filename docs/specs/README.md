@@ -92,14 +92,14 @@ The component specs cover maintained behaviour, not just the importable runtime:
   set is [ownership.toml](ownership.toml); new shared files must be added there rather than
   silently acquiring multiple owners.
 
-Current delivery intent lives in `docs/roadmap/`; those roadmaps are non-normative and do not
-replace code, tests, or behaviour specifications. Review findings and reproducers under
-`docs/review/`, `docs/fable-Review/`, and `repro/` are point-in-time evidence. Generated caches,
-coverage data, untracked local MLflow state, `site/`, and built static assets are outputs, not
-additional source components. Tracked root policy, legal, tooling, and snapshot artifacts are
-listed explicitly in the appropriate repository-level module map even when they are non-runtime
-or non-normative; in particular, the tracked `mlflow.db` is classified as a historical local
-MLflow SQLite snapshot rather than silently grouped with untracked generated state.
+Current delivery intent lives in the flat [engineering roadmap](../roadmap/README.md): the index
+links to one self-contained, non-normative improvement file per component. Roadmaps do not replace
+code, tests, or behaviour specifications. Generated caches, coverage data, untracked local MLflow
+state, `site/`, and built static assets are outputs, not additional source components. Tracked root
+policy, legal, tooling, and snapshot artifacts are listed explicitly in the appropriate
+repository-level module map even when they are non-runtime or non-normative; in particular, the
+tracked `mlflow.db` is classified as a historical local MLflow SQLite snapshot rather than
+silently grouped with untracked generated state.
 
 ## Where is each node type specced?
 
@@ -180,8 +180,8 @@ every node type: its generated-code template (`_gen_*`) is specced in
 ## Approved change contract — 0.7.0 data I/O node convergence
 
 The approved target is specified in the
-[I/O layer](io-layer/high-level.md#approved-change-contract-070-data-io-convergence) and ordered
-by [`F_0.7.0_data-io-convergence.plan.md`](../trip/plans/F_0.7.0_data-io-convergence.plan.md).
+[I/O layer](io-layer/high-level.md#approved-change-contract-070-data-io-convergence). Remaining
+data-I/O improvement work is tracked in the [I/O layer roadmap](../roadmap/io-layer.md).
 The canonical node set has 19 types: `dataInput` owns all file, database,
 lakehouse, Databricks, and inline tabular sources; `dataOutput` owns all supported tabular
 persistence. `dataSource` and `dataSink` are removed with no compatibility path. This is

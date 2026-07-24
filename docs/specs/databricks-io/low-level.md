@@ -353,8 +353,8 @@ the other's visible progress as described under Edge cases.
 
 ## Approved change contract — 0.7.0 unified Databricks input
 
-The implementation plan is
-[`F_0.7.0_data-io-convergence.plan.md`](../../trip/plans/F_0.7.0_data-io-convergence.plan.md).
+Remaining Databricks I/O improvement work is tracked in the
+[I/O layer roadmap](../../roadmap/io-layer.md).
 
 - Refactor `src/haute/_databricks_io.py` into a provider adapter and bounded cache builder.
   Preserve credential resolution, table canonicalisation, query validation, SDK browsing, and

@@ -260,8 +260,8 @@ Out of scope (owned elsewhere, linked where relevant):
 
 ## Polars backend contracts (0.6.0)
 
-This contract authorises the cache-related work in
-[F_0.6.0 Polars backend remediation plan](../../trip/plans/F_0.6.0_polars-backend-remediation.plan.md).
+Remaining cache improvement work is tracked in the
+[caching roadmap](../../roadmap/caching.md).
 It supplements, rather than weakens, the fingerprint and failure contracts above.
 
 - **Preview and trace identity is lineage-scoped.** A preview or trace result is
@@ -331,8 +331,8 @@ implementation.
 
 ## Approved change contract — 0.7.0 shared input snapshots
 
-Implementation is sequenced by
-[`F_0.7.0_data-io-convergence.plan.md`](../../trip/plans/F_0.7.0_data-io-convergence.plan.md).
+Remaining source-cache improvement work is tracked in the
+[caching roadmap](../../roadmap/caching.md).
 This is the cache portion of the approved
 [data I/O convergence contract](../io-layer/high-level.md#approved-change-contract-070-data-io-convergence).
 

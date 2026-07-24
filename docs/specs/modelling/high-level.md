@@ -235,7 +235,8 @@ browser without a server or JS bundle.
 ## Polars backend contracts (0.6.0)
 
 Every pipeline materialisation, including initial eager previews, will use the universal
-execution-plan facade in the [remediation plan](../../trip/plans/F_0.6.0_polars-backend-remediation.plan.md).
+execution-plan facade. Remaining modelling improvement work is tracked in the
+[modelling roadmap](../../roadmap/modelling.md).
 Its final feature include/exclude decision and deterministic provenance diagnostics
 accompany modelling validation and execution. Modelling does not reimplement planning
 or infer a competing feature set.

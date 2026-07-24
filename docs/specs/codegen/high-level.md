@@ -281,8 +281,8 @@ execution time on a mis-wired pipeline). Concretely:
 
 ## Approved change contract — 0.7.0 data I/O code generation
 
-Implementation follows
-[`F_0.7.0_data-io-convergence.plan.md`](../../trip/plans/F_0.7.0_data-io-convergence.plan.md).
+Remaining code-generation improvement work is tracked in the
+[pipeline authoring roadmap](../../roadmap/pipeline-authoring.md).
 
 - Codegen has exactly one tabular-input builder and one persistence-output builder:
   `dataInput` emits `@pipeline.data_input(config="config/data_input/<name>.json")`, opens the

@@ -419,8 +419,8 @@ completed_message="Completed", **kwargs)`
 
 ## Approved change contract — 0.7.0 input-cache jobs
 
-The implementation plan is
-[`F_0.7.0_data-io-convergence.plan.md`](../../trip/plans/F_0.7.0_data-io-convergence.plan.md).
+Remaining background-job improvement work is tracked in the
+[background jobs and API roadmap](../../roadmap/background-jobs-api.md).
 
 - Add `"input_cache"` to `_job_store._KNOWN_PREFIXES`; `get_job_store("input_cache")` owns
   metadata for shared source-cache builds. Do not put snapshot files in `JobStore` artifact

@@ -368,12 +368,13 @@ the two arrays preserve the engine's correlation-key order, correspond positiona
 at most 16 items each. This is an intentional pre-1.0 change in 0.6 from unsafe silent
 fallback to typed failure; release and migration notes are required, with no compatibility
 shim for the unsafe behaviour. The DTO reports decisions; the execution engine owns how they
-are made. See the [remediation plan](../../trip/plans/F_0.6.0_polars-backend-remediation.plan.md).
+are made. Remaining server API improvement work is tracked in the
+[background jobs and API roadmap](../../roadmap/background-jobs-api.md).
 
 ## Approved change contract — 0.7.0 data I/O API
 
-Implementation follows
-[`F_0.7.0_data-io-convergence.plan.md`](../../trip/plans/F_0.7.0_data-io-convergence.plan.md).
+Remaining server API improvement work is tracked in the
+[background jobs and API roadmap](../../roadmap/background-jobs-api.md).
 
 - `GET /api/io-capabilities` replaces the flat format endpoint with a versioned, runtime-guarded
   description of ordered input/output groups, providers, formats, fields, modes, arguments,

@@ -360,8 +360,8 @@ writing a failing test before the fix.
 
 ## Approved change contract — 0.7.0 data I/O code generation
 
-The implementation plan is
-[`F_0.7.0_data-io-convergence.plan.md`](../../trip/plans/F_0.7.0_data-io-convergence.plan.md).
+Remaining code-generation improvement work is tracked in the
+[pipeline authoring roadmap](../../roadmap/pipeline-authoring.md).
 
 - Delete `_gen_data_source`, `_gen_data_sink`, `_SINK_CSV`, `_SINK_PARQUET`, legacy source/sink
   decorator templates, and their registrations from `src/haute/_codegen_builders.py`.

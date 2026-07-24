@@ -219,8 +219,8 @@ Depended on:
 
 ## Approved change contract — 0.7.0 input-cache jobs
 
-Implementation follows
-[`F_0.7.0_data-io-convergence.plan.md`](../../trip/plans/F_0.7.0_data-io-convergence.plan.md).
+Remaining background-job improvement work is tracked in the
+[background jobs and API roadmap](../../roadmap/background-jobs-api.md).
 The shared input-snapshot API uses this component rather than creating another route-local job
 state machine.
 
