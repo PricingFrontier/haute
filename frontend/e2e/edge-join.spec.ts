@@ -210,16 +210,10 @@ async function visibleEdgePoint(page: Page, edgeId: string): Promise<Point> {
 }
 
 async function dragSourceToEdge(page: Page, source: Locator, edgeId: string): Promise<void> {
-  let box = await source.boundingBox()
-  await expect
-    .poll(async () => {
-      box = await source.boundingBox()
-      return box !== null
-    })
-    .toBe(true)
-  if (!box) throw new Error(`Could not measure source handle while targeting ${edgeId}`)
+  await page.getByTestId("toolbar-centre").click()
+  await expect(source).toBeInViewport()
+  await source.hover()
   const targetPoint = await visibleEdgePoint(page, edgeId)
-  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
   await page.mouse.down()
   await page.mouse.move(targetPoint.x, targetPoint.y, { steps: 12 })
   const insertionStatus = page.getByRole("status", {
