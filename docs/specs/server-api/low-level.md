@@ -425,8 +425,11 @@ for route-level tests, and direct unit tests for the pure-function modules.
   behaviour.
 - **`test_event_bus_gaps.py`** — targeted edge-branch coverage for `EventBus` (idempotent
   unsubscribe, handler-exception isolation, empty-registry publish no-op).
-- **`test_logging.py`** — `configure_logging()`'s processors-list-identity invariant (so
-  `capture_logs` and cached bound loggers keep working across reconfiguration).
+- **`test_logging.py`** — `configure_logging()` preserves processor-list identity once
+  Haute's stdlib bridge is installed (so `capture_logs` and cached bound loggers keep
+  working across reconfiguration), but never mutates a pre-existing structlog default or
+  third-party processor list. Restoring a prior default configuration must therefore not
+  combine `PrintLogger` with Haute's stdlib-only processors.
 - **`test_routes_hygiene.py`**, **`test_routes_error_handling.py`** — cross-route regression
   checks (consistent sanitized-error usage, no leaked internal exception text) and explicit
   error-path tests per route.

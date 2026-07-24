@@ -217,6 +217,7 @@ def _verify_static_input_schema(
     """
     from haute._execution_context import ExecutionProfile
     from haute._input_providers import resolve_data_input
+    from haute._polars_utils import streaming_collect
     from haute.errors import DeployError
 
     try:
@@ -224,7 +225,7 @@ def _verify_static_input_schema(
             config, base_dir=pipeline_dir, profile=ExecutionProfile.DEPLOY_BATCH
         )
         frame.collect_schema()
-        frame.head(1).collect(engine="streaming")
+        streaming_collect(frame.head(1), profile=ExecutionProfile.DEPLOY_BATCH)
     except Exception as exc:
         raise DeployError(
             f"Could not validate static Data Input node {node_id!r} against "

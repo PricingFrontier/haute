@@ -86,9 +86,10 @@
 7. `collect_artifacts(pruned_graph, deploy_inputs, pipeline_dir)` → `artifacts` dict.
    Every retained direct Data Input is validated through its canonical provider config,
    resolved with the `DEPLOY_BATCH` profile, schema-checked, and read for at most one row
-   through the streaming engine before its source is admitted to the bundle. Schema and
-   dtype declarations live under the format-specific `arguments` object; the removed
-   top-level `expected_columns` and `schema_overrides` fields are not compatibility paths.
+   through the shared profiled `streaming_collect` helper before its source is admitted to
+   the bundle. Schema and dtype declarations live under the format-specific `arguments`
+   object; the removed top-level `expected_columns` and `schema_overrides` fields are not
+   compatibility paths.
 8. `infer_input_schema()` (call `collect_schema()` on the first input node's source;
    lazy readers avoid row collection, while the existing plain-JSON reader may parse
    eagerly) and
