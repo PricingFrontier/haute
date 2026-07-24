@@ -5,9 +5,9 @@ import { resetE2eProject } from "./projectIsolation"
 // dataInput / dataOutput end to end: the nodes render as proper canvas cards
 // (regression pin for the nodeTypeRegistry gap found in the first live
 // walkthrough, where they fell back to React Flow's unstyled default box),
-// the editor's format selector derives from GET /api/formats (engine-gated
-// formats flagged with a reason, never hidden), and the saved config
-// round-trips through the sidecar + generated code on reload.
+// the editor's provider/format selectors derive from GET /api/io-capabilities
+// and preserve provider grouping, and the saved config round-trips through the
+// sidecar + generated code on reload.
 test.describe("data input/output nodes", () => {
   test.beforeEach(() => {
     resetE2eProject()
@@ -100,16 +100,22 @@ test.describe("data input/output nodes", () => {
       await expect(page.getByTestId("node-panel")).toBeVisible({ timeout: 2_000 })
     }).toPass({ timeout: 15_000 })
 
-    // The editor renders the saved config and a capability-driven selector:
-    // options come from GET /api/formats, with engine-gated formats flagged
-    // by reason rather than hidden.
+    // The editor renders the saved config and capability-driven selectors.
+    // File formats stay scoped to File; Lakehouse formats appear only after
+    // selecting that provider.
+    const providerSelect = page.getByLabel("Provider")
+    await expect(providerSelect).toHaveValue("file")
     const formatSelect = page.getByLabel(/format/i).first()
     await expect(formatSelect).toHaveValue("parquet")
     const optionLabels = await formatSelect.locator("option").allTextContents()
-    expect(optionLabels.some((t) => /Delta Lake.*needs one of: deltalake/.test(t))).toBe(true)
     expect(optionLabels.some((t) => /Text lines \(unstable\)/.test(t))).toBe(true)
+    await expect(formatSelect.locator('option[value="delta"]')).toHaveCount(0)
 
     // The saved path round-tripped through sidecar + codegen + parse.
     await expect(page.getByLabel(/path/i).first()).toHaveValue("data/sample.parquet")
+
+    await providerSelect.selectOption("lakehouse")
+    await expect(formatSelect.locator('option[value="delta"]')).toContainText("Delta Lake")
+    await expect(formatSelect.locator('option[value="lines"]')).toHaveCount(0)
   })
 })
