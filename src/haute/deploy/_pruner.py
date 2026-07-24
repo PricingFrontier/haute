@@ -160,9 +160,9 @@ def find_deploy_input_nodes(graph: PipelineGraph) -> list[str]:
 
 
 def find_source_nodes(graph: PipelineGraph) -> list[str]:
-    """Find all source nodes in a graph (dataSource, apiInput, constant)."""
+    """Find all source nodes in a graph (dataInput, apiInput, constant)."""
     return [
         n.id
         for n in graph.nodes
-        if n.data.nodeType in (NodeType.DATA_SOURCE, NodeType.API_INPUT, NodeType.CONSTANT)
+        if n.data.nodeType in (NodeType.DATA_INPUT, NodeType.API_INPUT, NodeType.CONSTANT)
     ]

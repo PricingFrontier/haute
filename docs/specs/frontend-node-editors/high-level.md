@@ -79,3 +79,43 @@ presented (input chips, live-switch mapping rows, output frame blocks) — never
 to the parent node and never a normal-looking entry. Null-handle API-input edges cannot be
 created (the zero-frame handle is non-connectable) and are pruned by reconciliation when read
 from a hand-edited file, so the verbatim-plus-warning rule is the complete unresolved story.
+
+## Approved change contract — 0.7.0 unified data I/O editors
+
+Implementation follows
+[`F_0.7.0_data-io-convergence.plan.md`](../../trip/plans/F_0.7.0_data-io-convergence.plan.md)
+and the approved [I/O behaviour](../io-layer/high-level.md#approved-change-contract-070-data-io-convergence).
+
+- The palette and editor registry expose one **Data Input** and one **Data Output** node type.
+  Data Source and Data Sink entries/editors are deleted with no legacy rendering path. Multiple
+  input/output instances remain allowed on a graph.
+- Data Input begins with an input-type menu: **File**, **Database**, **Lakehouse**,
+  **Databricks**, and **Inline**. Registry-backed sections show only their backend-declared
+  formats, modes, fields, arguments, dependencies, direct-batching capability, and snapshot
+  capability. Databricks keeps its dedicated warehouse/catalog/schema/table controls and shared
+  snapshot controls; it does not show a meaningless Polars format/mode selector.
+- The common snapshot panel shows direct/snapshot choice where both are valid and
+  Build/Refresh, progress, readiness, freshness, generation metadata, and Clear where snapshots
+  are supported. Mandatory-snapshot providers do not pretend direct mode is selectable.
+  Readiness and freshness have distinct labels, and `unknown` freshness is not styled as success.
+- The optional Polars editor appears after every Data Input provider section, with wording that
+  it transforms the opened direct source or cached snapshot. Chunk-incompatible code produces
+  the execution planner's actionable diagnostic; the editor never promises that arbitrary code
+  is chunk-local.
+- Switching input type is one undoable graph mutation which replaces the discriminated config
+  and removes inactive keys. There is no hidden reuse of a path, URI, query, table, records, or
+  arguments from another branch.
+- Data Output mirrors the input groups and format language but filters by write capability.
+  It shows destination, supported sink/write mode, arguments, dependency and boundedness
+  diagnostics, overwrite/append/replace/upsert options only when declared, and the explicit
+  **Write** button with progress/result status retained from Data Sink. It has no Polars editor.
+  Databricks is not displayed as an output group in 0.7.0.
+- A format with a missing optional engine remains visible with an actionable dependency warning;
+  a format with no capability for that direction is not presented as working. The UI never
+  hard-codes format membership or silently substitutes a default when capability loading fails.
+
+Acceptance includes component tests for every group/config transition, capability-driven option
+sets, mandatory/optional/no-cache states, progress/freshness/error states, Polars-editor
+placement, inactive-key removal and undo, output Write gating/status, and unavailable engines.
+Browser coverage creates, configures, saves, reloads, executes, snapshots, and writes the
+retained node types and asserts that no Data Source/Data Sink palette/editor affordance exists.

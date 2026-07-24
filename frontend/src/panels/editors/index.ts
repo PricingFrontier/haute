@@ -1,4 +1,3 @@
-export { default as DataSourceEditor } from "./DataSourceEditor"
 export { default as TransformEditor } from "./TransformEditor"
 export { default as EdgeJoinEditor } from "./EdgeJoinEditor"
 export { default as ModelScoreEditor } from "./ModelScoreEditor"
@@ -8,7 +7,6 @@ export { default as OutputEditor } from "./OutputEditor"
 export { default as ExternalFileEditor } from "./ExternalFileEditor"
 export { default as ApiInputEditor } from "./ApiInputEditor"
 export { default as LiveSwitchEditor } from "./LiveSwitchEditor"
-export { default as SinkEditor } from "./SinkEditor"
 export { default as DataInputEditor } from "./DataInputEditor"
 export { default as DataOutputEditor } from "./DataOutputEditor"
 export { default as ScenarioExpanderEditor } from "./ScenarioExpanderEditor"
@@ -24,7 +22,8 @@ export type {
   SchemaInfo,
   OnUpdateConfig,
   OnUpdateConfigResult,
+  OnReplaceConfig,
 } from "./_shared"
 export { FileBrowser, SchemaPreview, InputSourcesBar } from "./_shared"
 export { CodeEditor } from "./CodeEditor"
-export { WarehousePicker, CatalogTablePicker, DatabricksFetchButton } from "./_DatabricksSelector"
+export { WarehousePicker, CatalogTablePicker } from "./_DatabricksSelector"

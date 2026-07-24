@@ -139,3 +139,20 @@ ordinary checked execution or `unprojected-streaming-boundary`.
 Focused tests cover all five status semantics, diagnostic unavailable, strict version/enum
 handling, additive version-1 fields, accessible truncated/raw detail, group-by boundary versus
 rejection, stable 422 fields, and submit gating.
+
+## Approved change contract — 0.7.0 unified data-input UI consumption
+
+The implementation plan is
+[`F_0.7.0_data-io-convergence.plan.md`](../../trip/plans/F_0.7.0_data-io-convergence.plan.md).
+
+- `OptimiserConfig.tsx` continues to derive candidate ids from direct graph inputs and preserves
+  explicit selection when valid. `useDataInputColumns.ts` consumes the retained node's guarded
+  schema/preview contract and keys results by node/config/source generation, not by path, table,
+  or removed node type.
+- `utils/banding.ts` keeps its exactly-one-direct-banding-source fallback. Its node filtering and
+  tests remove legacy I/O constants without broadening the fallback to an arbitrary `dataInput`.
+- Estimate/solve/auto-range request state carries backend capability and snapshot diagnostics
+  unchanged. Column loading never calls input-cache Build/Refresh.
+- Update component/hook/helper fixtures for grouped Data Input configs, optional code, multiple
+  roots, cached generation changes, and removed-node absence. Guard tests reject legacy node
+  values rather than rewriting them.

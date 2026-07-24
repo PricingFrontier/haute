@@ -16,7 +16,7 @@ values after normalization, not sidecar formatting.
 
 Known W5 tensions intentionally scoped here:
 
-* dataSource first-save non-idempotence with opaque contracts: this suite uses
+* dataInput first-save non-idempotence with opaque contracts: this suite uses
   explicit ``contract="opaque"`` in capstone fixtures and asserts source
   idempotence, not sidecar byte idempotence.
 * scaffold/docstring observations: generated scaffolding is not user semantic
@@ -156,7 +156,7 @@ def _capstone_root_graph(
     Coverage notes:
 
     * C1: raw frontend ids differ from sanitized labels for edgeJoin roles.
-    * C5: transform and dataSource code boxes use multiline chain assignment.
+    * C5: transform and dataInput code boxes use multiline chain assignment.
     * Brace/docstring: descriptions and config strings include braces and
       triple quotes.
     * Paren scanner: decorator strings include ``(`` and ``)`` before contract
@@ -184,12 +184,15 @@ def _capstone_root_graph(
         _node(
             left,
             'Left Source "{cafe}"',
-            NodeType.DATA_SOURCE,
+            NodeType.DATA_INPUT,
             _opaque(
                 {
+                    "inputType": "file",
+                    "format": "parquet",
+                    "mode": "scan",
+                    "cacheMode": "direct",
                     "path": r"data\raw {quotes}\left (gross).parquet",
-                    "sourceType": "flat_file",
-                    "schema": {"premium (gross)": "Float64"},
+                    "arguments": {"schema": {"premium (gross)": "Float64"}},
                     "code": _c5_chain_user_code(user_text),
                 }
             ),
@@ -415,8 +418,16 @@ def _capstone_root_graph(
         _node(
             sink,
             "Sink Node",
-            NodeType.DATA_SINK,
-            _opaque({"path": "outputs/final (gross).csv", "format": "csv"}),
+            NodeType.DATA_OUTPUT,
+            _opaque(
+                {
+                    "outputType": "file",
+                    "format": "csv",
+                    "mode": "sink",
+                    "path": "outputs/final (gross).csv",
+                    "arguments": {},
+                }
+            ),
             description="sink " + description,
         ),
         _node(
@@ -456,8 +467,10 @@ def _capstone_root_graph(
             NodeType.DATA_INPUT,
             _opaque(
                 {
+                    "inputType": "file",
                     "format": "csv",
                     "mode": "scan",
+                    "cacheMode": "direct",
                     "path": r"data\wide {quotes}\input (raw).csv",
                     "arguments": {
                         "separator": ";",
@@ -476,6 +489,7 @@ def _capstone_root_graph(
             NodeType.DATA_OUTPUT,
             _opaque(
                 {
+                    "outputType": "file",
                     "format": "ndjson",
                     "mode": "sink",
                     "path": "outputs/wide (result).jsonl",
@@ -605,7 +619,7 @@ def _canonical_config(node_type: NodeType, config: dict[str, Any], remap: dict[s
     normalized = dict(config)
     if normalized.get("code") == "":
         normalized.pop("code")
-    if node_type == NodeType.DATA_SINK and "path" in normalized:
+    if node_type == NodeType.DATA_OUTPUT and "path" in normalized:
         normalized["path"] = _resolve_sink_path(
             str(normalized.get("path") or ""),
             str(normalized.get("format") or "parquet"),

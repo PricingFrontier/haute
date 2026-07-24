@@ -297,7 +297,7 @@ def _file_content_signature(path: Path) -> dict[str, Any]:
     return {"size": final_st.st_size, "sha256": digest}
 
 
-def _content_signature_parts(recorded: Any) -> tuple[int, str] | None:
+def _content_signature_parts(recorded: Any) -> tuple[int, str] | None:  # pragma: no mutate
     """Parse a strict size/SHA-256 record, rejecting bool sizes and bad hex."""
     if not isinstance(recorded, dict):
         return None
@@ -340,8 +340,8 @@ def _payload_content_matches(recorded: Any, payload: bytes) -> bool:
 def _data_file_matches(
     recorded: Any,
     data_path: Path,
-    *,
-    data_file_signature: Mapping[str, Any] | None = None,
+    *,  # pragma: no mutate
+    data_file_signature: Mapping[str, Any] | None = None,  # pragma: no mutate
 ) -> bool:
     """True iff the data file on disk still matches the recorded signature.
 
@@ -751,7 +751,7 @@ def shred_to_buffers(
     v2_config: dict[str, Any],
     *,  # pragma: no mutate
     stats: ShredSkipStats | None = None,  # pragma: no mutate
-    _table_specs: tuple[_EmittingTableSpec, ...] | None = None,
+    _table_specs: tuple[_EmittingTableSpec, ...] | None = None,  # pragma: no mutate
 ) -> dict[str, list[dict[str, Any]]]:
     """Shred *records* according to *v2_config*, returning per-frame row buffers.
 
@@ -970,9 +970,9 @@ class _CacheProbeFailure:
 
 def _cache_manifest_structure_failure(
     meta: dict[str, Any],
-    *,
-    expected_labels: tuple[str, ...] | None = None,
-) -> _CacheProbeFailure | None:
+    *,  # pragma: no mutate
+    expected_labels: tuple[str, ...] | None = None,  # pragma: no mutate
+) -> _CacheProbeFailure | None:  # pragma: no mutate
     """Validate signed table entries and their derived parquet names.
 
     Manifest ``parquet`` values are checked for consistency but never trusted
@@ -1021,9 +1021,9 @@ def _cache_manifest_structure_failure(
 def _cache_manifest_failure(
     cache_dir: Path,
     meta: dict[str, Any],
-    *,
-    expected_labels: tuple[str, ...] | None = None,
-) -> _CacheProbeFailure | None:
+    *,  # pragma: no mutate
+    expected_labels: tuple[str, ...] | None = None,  # pragma: no mutate
+) -> _CacheProbeFailure | None:  # pragma: no mutate
     """Validate one manifest and every path-backed artifact it signs."""
     structure_failure = _cache_manifest_structure_failure(
         meta,
@@ -1054,7 +1054,7 @@ def _probe_cache_bundle(
     cache_dir: Path,
     table_specs: tuple[_EmittingTableSpec, ...],
     meta: dict[str, Any],
-) -> tuple[dict[str, pl.LazyFrame], _CacheProbeFailure | None]:
+) -> tuple[dict[str, pl.LazyFrame], _CacheProbeFailure | None]:  # pragma: no mutate
     """Load cache frames whose name→dtype mappings match current specs.
 
     Physical parquet column order is deliberately irrelevant to the schema
@@ -1420,9 +1420,9 @@ def load_per_port_cache(
 def _cache_meta_matches_config_and_source(
     meta: dict[str, Any],
     v2_config: dict[str, Any],
-    *,
-    data_path: str | Path,
-    data_file_signature: Mapping[str, Any] | None = None,
+    *,  # pragma: no mutate
+    data_path: str | Path,  # pragma: no mutate
+    data_file_signature: Mapping[str, Any] | None = None,  # pragma: no mutate
 ) -> bool:
     """Return whether captured metadata identifies this schema and source."""
     if meta.get("schema_mode") != "v2":
@@ -1441,12 +1441,12 @@ def _cache_meta_matches_config_and_source(
 
 
 def _read_matching_cache_meta(
-    cache_dir: str | Path,
+    cache_dir: str | Path,  # pragma: no mutate
     v2_config: dict[str, Any],
-    *,
-    data_path: str | Path,
-    data_file_signature: Mapping[str, Any] | None = None,
-) -> dict[str, Any] | None:
+    *,  # pragma: no mutate
+    data_path: str | Path,  # pragma: no mutate
+    data_file_signature: Mapping[str, Any] | None = None,  # pragma: no mutate
+) -> dict[str, Any] | None:  # pragma: no mutate
     """Read metadata once and return it when schema/source identity matches.
 
     This deliberately does not touch parquet files. Runtime and public
@@ -1600,7 +1600,7 @@ def is_per_port_cache_valid(
     v2_config: dict[str, Any],
     *,  # pragma: no mutate
     data_path: str | Path,  # pragma: no mutate
-    data_file_signature: Mapping[str, Any] | None = None,
+    data_file_signature: Mapping[str, Any] | None = None,  # pragma: no mutate
 ) -> bool:
     """Return whether a complete, readable cache can serve the current input.
 

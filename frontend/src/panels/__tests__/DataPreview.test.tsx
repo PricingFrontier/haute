@@ -101,7 +101,7 @@ describe("DataPreview", () => {
   })
 
   it("uses the selected node type icon in the frame header", () => {
-    render(<DataPreview data={makePreview()} nodeType="dataSource" />)
+    render(<DataPreview data={makePreview()} nodeType="dataInput" />)
 
     expect(screen.getByTestId("preview-panel-node-icon").querySelector(".lucide-database")).toBeTruthy()
   })
@@ -171,11 +171,11 @@ describe("DataPreview", () => {
         boundedness: "bounded",
         reason_code: "unprojected_streaming_boundary",
         detail_state: "available",
-        boundaries: { state: "available", total_count: 1, items: [{ topological_rank: 0, node_id: "competitor_premiums", operator: "dataSource", boundary_kind: "unprojected-streaming-boundary" }] },
+        boundaries: { state: "available", total_count: 1, items: [{ topological_rank: 0, node_id: "competitor_premiums", operator: "dataInput", boundary_kind: "unprojected-streaming-boundary" }] },
         reasons: { state: "available", total_count: 0, items: [] },
         provenance: { state: "available", total_count: 0, items: [] },
         blocking_node_id: "competitor_premiums",
-        blocking_operator: "dataSource",
+        blocking_operator: "dataInput",
         remediation: "Narrow the requested output or define the node's columns.",
       },
     })

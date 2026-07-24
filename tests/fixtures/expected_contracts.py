@@ -8,13 +8,10 @@ both producer (dev) and consumer (tests) agree on what "done" looks like.
 End-state design
 ================
 
-Today the column contract lives as an optional ``columns=`` kwarg on the
-``@_register`` decorator in :mod:`haute._builders`.  Adoption is partial:
-13 of 17 ``NodeType`` values declare one, and the four that don't
-(``API_INPUT``, ``DATA_SOURCE``, ``EXTERNAL_FILE``, ``POLARS``) silently
-fall back to ``(None, None)`` — same shape as "opaque" but also the shape
-used before the registry existed.  That ambiguity is the reason the
-contract doesn't propagate across codegen / parser / executor today.
+The column contract lives as an explicit ``columns=`` registration on the
+``@_register`` decorator in :mod:`haute._builders`. Every one of the 19
+``NodeType`` values declares a contract; genuinely data-dependent builders
+use the explicit opaque contract rather than relying on an absent registration.
 
 The proposed end-state is:
 
@@ -58,7 +55,7 @@ Allowlist
 A handful of builders are *genuinely* opaque and should register
 ``OPAQUE_CONTRACT`` rather than a concrete set of columns:
 
-- ``API_INPUT`` / ``DATA_SOURCE`` — output schema is determined by the
+- ``API_INPUT`` / ``DATA_INPUT`` — output schema is determined by the
   file on disk; we cannot know the columns without touching I/O.
 - ``POLARS`` / ``EXTERNAL_FILE`` — user code can do arbitrary column
   manipulation; the only way to know the contract is to execute.
@@ -100,7 +97,6 @@ from haute._types import NodeType
 ALLOWED_OPAQUE_NODE_TYPES: frozenset[NodeType] = frozenset(
     {
         NodeType.API_INPUT,  # output schema determined by file
-        NodeType.DATA_SOURCE,  # output schema determined by file
         NodeType.DATA_INPUT,  # output schema determined by the configured source
         NodeType.POLARS,  # arbitrary user code
         NodeType.EXTERNAL_FILE,  # arbitrary user code

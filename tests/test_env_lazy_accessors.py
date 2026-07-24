@@ -80,7 +80,7 @@ _ACCESSOR_CASES = [
         5.0,
         120.0,
     ),
-    ("haute.routes.databricks", "_fetch_timeout", "HAUTE_FETCH_TIMEOUT", "5", 5.0, 600.0),
+    ("haute.routes.input_cache", "_build_timeout", "HAUTE_BUILD_TIMEOUT", "5", 5.0, 1800.0),
     (
         "haute.routes._optimiser_service",
         "_default_auto_range_timeout",

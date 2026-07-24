@@ -28,7 +28,7 @@ from haute.graph_utils import (
     topo_sort_ids,
 )
 from haute.parser import parse_pipeline_file, parse_pipeline_source
-from tests.conftest import make_edge, make_output_config
+from tests.conftest import make_edge, make_file_input_config, make_output_config
 
 # ---------------------------------------------------------------------------
 # _sanitize_func_name properties
@@ -280,7 +280,7 @@ class TestBandingProperties:
 def _pipeline_graph_strategy():
     """Generate a random DAG-based pipeline graph.
 
-    Builds a chain: dataSource → N transforms → output.
+    Builds a chain: dataInput → N transforms → output.
     Uses valid Python identifiers as labels to survive codegen roundtrip.
     """
 
@@ -308,8 +308,8 @@ def _pipeline_graph_strategy():
                 id="source",
                 data=NodeData(
                     label="Source",
-                    nodeType=NodeType.DATA_SOURCE,
-                    config={"path": "data/input.parquet"},
+                    nodeType=NodeType.DATA_INPUT,
+                    config=make_file_input_config("data/input.parquet"),
                 ),
             )
         )

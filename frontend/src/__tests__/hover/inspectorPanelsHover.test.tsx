@@ -104,7 +104,7 @@ import useUIStore from "../../stores/useUIStore"
 // ═════════════════════════════════════════════════════════════════════
 
 vi.mock("../../panels/editors", () => ({
-  DataSourceEditor: () => <div data-testid="DataSourceEditor" />,
+  DataInputEditor: () => <div data-testid="DataInputEditor" />,
   TransformEditor: () => <div data-testid="TransformEditor" />,
   ModelScoreEditor: () => <div data-testid="ModelScoreEditor" />,
   BandingEditor: () => <div data-testid="BandingEditor" />,
@@ -113,7 +113,6 @@ vi.mock("../../panels/editors", () => ({
   ExternalFileEditor: () => <div data-testid="ExternalFileEditor" />,
   ApiInputEditor: () => <div data-testid="ApiInputEditor" />,
   LiveSwitchEditor: () => <div data-testid="LiveSwitchEditor" />,
-  SinkEditor: () => <div data-testid="SinkEditor" />,
   ScenarioExpanderEditor: () => <div data-testid="ScenarioExpanderEditor" />,
   OptimiserApplyEditor: () => <div data-testid="OptimiserApplyEditor" />,
   ConstantEditor: () => <div data-testid="ConstantEditor" />,

@@ -1,7 +1,7 @@
 """Case-ambiguity audit for user-facing runtime input paths.
 
 Haute pins **no Unicode/case normalization** on user-supplied data paths
-(dataSource / apiInput / externalFile ``path`` config): the string in the
+(dataInput / apiInput / externalFile ``path`` config): the string in the
 config is the string handed to the filesystem.  That makes the checkout
 portable only as long as the spelling in the config and the spelling on
 disk agree *under every platform's identity relation*.  Two ways they can

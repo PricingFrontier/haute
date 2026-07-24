@@ -25,14 +25,20 @@ def _make_sink_graph(out_path: str) -> PipelineGraph:
         nodes=[
             GraphNode(
                 id="s",
-                data=NodeData(label="s", nodeType=NodeType.DATA_SOURCE),
+                data=NodeData(label="s", nodeType=NodeType.DATA_INPUT),
             ),
             GraphNode(
                 id="sink",
                 data=NodeData(
                     label="sink",
-                    nodeType=NodeType.DATA_SINK,
-                    config={"path": out_path, "format": "parquet"},
+                    nodeType=NodeType.DATA_OUTPUT,
+                    config={
+                        "outputType": "file",
+                        "format": "parquet",
+                        "mode": "sink",
+                        "path": out_path,
+                        "arguments": {},
+                    },
                 ),
             ),
         ],
@@ -73,8 +79,15 @@ def _make_optimiser_graph(data_path: str, *, mode: str = "online") -> dict:
                 id="source",
                 data=NodeData(
                     label="source",
-                    nodeType=NodeType.DATA_SOURCE,
-                    config={"path": data_path},
+                    nodeType=NodeType.DATA_INPUT,
+                    config={
+                        "inputType": "file",
+                        "format": "parquet",
+                        "mode": "scan",
+                        "cacheMode": "direct",
+                        "path": data_path,
+                        "arguments": {},
+                    },
                 ),
             ),
             GraphNode(
@@ -92,64 +105,64 @@ def _make_optimiser_graph(data_path: str, *, mode: str = "online") -> dict:
 
 
 # ---------------------------------------------------------------------------
-# 1) execute_sink → bounded_sink
+# 1) write_data_output → bounded_sink
 # ---------------------------------------------------------------------------
 
 
-class TestExecuteSinkThreading:
-    """``execute_sink`` must forward ``streaming_chunk_size`` to ``bounded_sink``."""
+class TestDataOutputExecutionThreading:
+    """``write_data_output`` passes its chunk size into graph execution."""
 
     def test_uses_request_value(self, tmp_path):
-        from haute.executor import execute_sink
+        from haute.executor import write_data_output
 
         out_path = str(tmp_path / "out.parquet")
         graph = _make_sink_graph(out_path)
 
         captured: dict[str, object] = {}
 
-        def fake_bounded_sink(lf, path, **kwargs):
+        def fake_execute_lazy(*_args, **kwargs):
             captured.update(kwargs)
-            pl.DataFrame({"x": [1]}).write_parquet(path)
+            return {"sink": lf}, ["s", "sink"], {}, {}
 
         lf = pl.DataFrame({"x": [1, 2, 3]}).lazy()
         with (
             patch(
                 "haute.executor._execute_lazy",
-                return_value=({"sink": lf}, ["s", "sink"], {}, {}),
+                side_effect=fake_execute_lazy,
             ),
-            patch("haute._polars_utils.bounded_sink", side_effect=fake_bounded_sink),
         ):
-            execute_sink(graph, "sink", streaming_chunk_size=12345)
+            write_data_output(graph, "sink", streaming_chunk_size=12345)
 
-        assert captured.get("streaming_chunk_size") == 12345
+        assert captured["dataframe_cache_request"].streaming_chunk_size == 12345
 
     def test_default_when_missing(self, tmp_path):
-        from haute.executor import execute_sink
+        from haute.executor import write_data_output
 
         out_path = str(tmp_path / "out.parquet")
         graph = _make_sink_graph(out_path)
 
         captured: dict[str, object] = {}
 
-        def fake_bounded_sink(lf, path, **kwargs):
+        def fake_execute_lazy(*_args, **kwargs):
             captured.update(kwargs)
-            pl.DataFrame({"x": [1]}).write_parquet(path)
+            return {"sink": lf}, ["s", "sink"], {}, {}
 
         lf = pl.DataFrame({"x": [1]}).lazy()
         with (
             patch(
                 "haute.executor._execute_lazy",
-                return_value=({"sink": lf}, ["s", "sink"], {}, {}),
+                side_effect=fake_execute_lazy,
             ),
-            patch("haute._polars_utils.bounded_sink", side_effect=fake_bounded_sink),
         ):
-            execute_sink(graph, "sink")
+            write_data_output(graph, "sink")
 
-        assert captured.get("streaming_chunk_size") == DEFAULT_STREAMING_CHUNK_SIZE
+        assert (
+            captured["dataframe_cache_request"].streaming_chunk_size == DEFAULT_STREAMING_CHUNK_SIZE
+        )
 
 
 class TestSinkRouteThreading:
-    """The ``/api/pipeline/sink`` route must forward ``streaming_chunk_size``."""
+    """The ``/api/pipeline/write-output`` route must forward ``streaming_chunk_size``."""
 
     def test_request_value_reaches_execute_sink(self, client, tmp_path):
         from haute.routes import pipeline as pipeline_route
@@ -159,20 +172,20 @@ class TestSinkRouteThreading:
 
         captured: dict[str, object] = {}
 
-        from haute.schemas import SinkResponse
+        from haute.schemas import WriteOutputResponse
 
         def fake_execute_sink(*_args, **kwargs):
             captured.update(kwargs)
-            return SinkResponse(
+            return WriteOutputResponse(
                 status="ok",
                 row_count=0,
                 path=response_path,
                 format="parquet",
             )
 
-        with patch.object(pipeline_route, "execute_sink", side_effect=fake_execute_sink):
+        with patch.object(pipeline_route, "write_data_output", side_effect=fake_execute_sink):
             resp = client.post(
-                "/api/pipeline/sink",
+                "/api/pipeline/write-output",
                 json={"graph": graph, "node_id": "sink", "streaming_chunk_size": 9876},
             )
 
@@ -181,7 +194,7 @@ class TestSinkRouteThreading:
 
     def test_omitted_passes_none_to_execute_sink(self, client, tmp_path):
         from haute.routes import pipeline as pipeline_route
-        from haute.schemas import SinkResponse
+        from haute.schemas import WriteOutputResponse
 
         response_path = str(tmp_path / "sink_route_none.parquet")
         graph = _make_sink_graph("sink_route_none.parquet").model_dump()
@@ -190,16 +203,16 @@ class TestSinkRouteThreading:
 
         def fake_execute_sink(*_args, **kwargs):
             captured.update(kwargs)
-            return SinkResponse(
+            return WriteOutputResponse(
                 status="ok",
                 row_count=0,
                 path=response_path,
                 format="parquet",
             )
 
-        with patch.object(pipeline_route, "execute_sink", side_effect=fake_execute_sink):
+        with patch.object(pipeline_route, "write_data_output", side_effect=fake_execute_sink):
             resp = client.post(
-                "/api/pipeline/sink",
+                "/api/pipeline/write-output",
                 json={"graph": graph, "node_id": "sink"},
             )
 

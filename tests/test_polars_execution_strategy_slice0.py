@@ -7,7 +7,7 @@ from unittest.mock import patch
 import polars as pl
 import pytest
 
-from tests.conftest import make_edge, make_graph
+from tests.conftest import make_edge, make_file_input_config, make_graph
 
 _OPAQUE_PROJECTION_ERROR = "User-code projection requires a concrete node contract"
 
@@ -71,16 +71,16 @@ def _make_avg_top_5_competitor_join_graph(
                     "id": "policies",
                     "data": {
                         "label": "policies",
-                        "nodeType": "dataSource",
-                        "config": {"path": policies_path},
+                        "nodeType": "dataInput",
+                        "config": make_file_input_config(policies_path),
                     },
                 },
                 {
                     "id": "competitor_insights",
                     "data": {
                         "label": "competitor_insights",
-                        "nodeType": "dataSource",
-                        "config": {"path": competitor_path},
+                        "nodeType": "dataInput",
+                        "config": make_file_input_config(competitor_path),
                     },
                 },
                 {
@@ -205,15 +205,15 @@ def _make_optimiser_estimate_graph(
             "id": "optimiser_input",
             "data": {
                 "label": "optimiser_input",
-                "nodeType": "dataSource",
-                "config": {
-                    "path": optimiser_input_path,
-                    "contract": "opaque",
-                    "code": (
+                "nodeType": "dataInput",
+                "config": make_file_input_config(
+                    optimiser_input_path,
+                    contract="opaque",
+                    code=(
                         "df = df.with_columns("
                         "source_projection_probe=pl.col('expected_margin') * 0)"
                     ),
-                },
+                ),
             },
         },
         {
@@ -234,8 +234,8 @@ def _make_optimiser_estimate_graph(
                 "id": "age_veh_banding",
                 "data": {
                     "label": "age_veh_banding",
-                    "nodeType": "dataSource",
-                    "config": {"path": banding_path},
+                    "nodeType": "dataInput",
+                    "config": make_file_input_config(banding_path),
                 },
             },
         )

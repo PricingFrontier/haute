@@ -28,7 +28,6 @@ from haute._cache import (
 from haute._cache import (
     _pipeline_dir as _cache_pipeline_dir,
 )
-from haute._databricks_io import _cache_path_for as _databricks_table_cache_path
 from haute._dataframe_execution_cache import (
     CacheArtifactCorruptError,
     CacheArtifactMissingError,
@@ -142,20 +141,18 @@ _AUTO_MATERIALISATION_ESTIMATE = object()
 
 _GRAPH_PATH_CONFIG_BY_NODE_TYPE: dict[NodeType, str] = {
     NodeType.API_INPUT: "path",
-    NodeType.DATA_SOURCE: "path",
+    NodeType.DATA_INPUT: "path",
     NodeType.EXTERNAL_FILE: "path",
-    NodeType.DATA_SINK: "path",
 }
 
 _SOURCE_PATH_CONFIG_BY_NODE_TYPE: dict[NodeType, str] = {
     NodeType.API_INPUT: "path",
-    NodeType.DATA_SOURCE: "path",
+    NodeType.DATA_INPUT: "path",
     NodeType.EXTERNAL_FILE: "path",
 }
 
 _LOCAL_RUNTIME_INPUT_PATH_FIELDS_BY_NODE_TYPE: dict[NodeType, tuple[str, ...]] = {
     NodeType.API_INPUT: ("path",),
-    NodeType.DATA_SOURCE: ("path",),
     NodeType.EXTERNAL_FILE: ("path",),
     NodeType.MODEL_SCORE: (
         "artifact_path",
@@ -702,7 +699,7 @@ def _config_subset(config: Mapping[str, Any], keys: Iterable[str]) -> Mapping[st
 
 
 def _runtime_input_config_fields(node_type: NodeType) -> tuple[str, ...]:
-    if node_type in {NodeType.API_INPUT, NodeType.DATA_SOURCE}:
+    if node_type == NodeType.API_INPUT:
         return (
             "sourceType",
             "table",
@@ -710,6 +707,20 @@ def _runtime_input_config_fields(node_type: NodeType) -> tuple[str, ...]:
             "schema",
             "query",
             "http_path",
+            "code",
+        )
+    if node_type == NodeType.DATA_INPUT:
+        return (
+            "inputType",
+            "format",
+            "cacheMode",
+            "mode",
+            "path",
+            "connection",
+            "uri",
+            "query",
+            "http_path",
+            "table",
             "code",
         )
     if node_type == NodeType.EXTERNAL_FILE:
@@ -723,6 +734,11 @@ def _runtime_input_config_fields(node_type: NodeType) -> tuple[str, ...]:
 
 def _runtime_input_path_fields(node: GraphNode) -> tuple[str, ...]:
     fields = list(_LOCAL_RUNTIME_INPUT_PATH_FIELDS_BY_NODE_TYPE.get(node.data.nodeType, ()))
+    if node.data.nodeType == NodeType.DATA_INPUT and node.data.config.get("inputType") in {
+        "file",
+        "lakehouse",
+    }:
+        fields.append("path")
     if (
         node.data.nodeType == NodeType.OPTIMISER_APPLY
         and node.data.config.get("sourceType") == "file"
@@ -799,17 +815,13 @@ def _runtime_file_signature_paths(graph: PipelineGraph, node: GraphNode) -> dict
       and JSON/JSONL. JSON-shape inputs prefer a valid per-frame parquet
       cache and otherwise shred that raw file directly; signing it prevents
       a stale preview from hiding either fresh direct data or a raw-file error.
-    * **databricks dataSource** — preview consumes the LOCAL table-cache
-      parquet (``read_cached_table``), which the GUI Fetch Data route
-      rewrites in place; the derived cache path is signed (including
-      absence, so the cached not-fetched error clears once a fetch
-      lands).  Remote warehouse drift without a re-fetch is out of
-      scope: the local parquet is the consumed input.
+    * **dataInput** — direct local file/lakehouse inputs sign the configured
+      source path; snapshot inputs sign the active generation pointer, so only
+      an explicit refresh invalidates execution caches.
     * **everything else** — the per-node config path fields shared with
-      the sink path (:func:`_runtime_input_path_fields`): flat-file
-      dataSource / externalFile ``path``, ``modelScore``
-      artifact/feature-contract paths, file-sourced ``optimiserApply``
-      artifacts.
+      :func:`_runtime_input_path_fields`: ``externalFile`` paths,
+      ``modelScore`` artifact/feature-contract paths, and file-sourced
+      ``optimiserApply`` artifacts.
     """
     node_type = node.data.nodeType
     config = node.data.config
@@ -818,10 +830,30 @@ def _runtime_file_signature_paths(graph: PipelineGraph, node: GraphNode) -> dict
         if isinstance(raw_path, str) and raw_path:
             return {"path": _runtime_path_from_graph_config(graph, raw_path)}
         return {}
-    if node_type == NodeType.DATA_SOURCE and config.get("sourceType") == "databricks":
-        table = config.get("table")
-        if isinstance(table, str) and table:
-            return {"table_cache": _databricks_table_cache_path(table)}
+    if node_type == NodeType.DATA_INPUT:
+        input_type = config.get("inputType")
+        if config.get("cacheMode") == "snapshot":
+            try:
+                from haute._input_providers import source_cache_identity
+                from haute._sandbox import _get_project_root
+                from haute._source_cache import SourceCacheStore
+
+                base_dir = (
+                    Path(graph.source_file).resolve().parent
+                    if graph.source_file
+                    else _get_project_root()
+                )
+                identity = source_cache_identity(config, base_dir=base_dir)
+                pointer = (
+                    SourceCacheStore(_get_project_root()).identity_path(identity) / "current.json"
+                )
+                return {"snapshot_pointer": pointer}
+            except (TypeError, ValueError):
+                return {}
+        if input_type in {"file", "lakehouse"}:
+            raw_path = config.get("path")
+            if isinstance(raw_path, str) and raw_path:
+                return {"path": _runtime_path_from_graph_config(graph, raw_path)}
         return {}
     paths: dict[str, Path] = {}
     for path_field in _runtime_input_path_fields(node):
@@ -874,9 +906,8 @@ def runtime_input_extra_keys(graph: PipelineGraph) -> tuple[str, ...]:
 
     * ``runtime_files=…`` — file-backed input state
       (:func:`_runtime_file_inputs_signature`), so an out-of-band
-      re-export of a dataSource or flat-file apiInput file, an external
-      file, a model artifact, or a databricks table-cache refetch
-      invalidates affected entries;
+      change to a direct Data Input, active input snapshot, flat-file
+      apiInput, external file, or model artifact invalidates affected entries;
     * ``json_cache=…`` — the JSON-shape apiInput cache state
       (:func:`haute._json_flatten.cache_state_signature_for_graph`), so
       a cache build/clear/mirror invalidates affected entries.

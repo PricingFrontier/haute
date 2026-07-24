@@ -238,7 +238,7 @@ class TestTraceResultToDictCoverage:
                 TraceStep(
                     node_id="src",
                     node_name="Source",
-                    node_type="dataSource",
+                    node_type="dataInput",
                     schema_diff=SchemaDiff(
                         columns_added=["x", "y"],
                         columns_removed=[],
@@ -291,7 +291,7 @@ class TestTraceResultToDictCoverage:
         s0 = d["steps"][0]
         assert s0["node_id"] == "src"
         assert s0["node_name"] == "Source"
-        assert s0["node_type"] == "dataSource"
+        assert s0["node_type"] == "dataInput"
         assert s0["schema_diff"]["columns_added"] == ["x", "y"]
         assert s0["input_values"] == {}
         assert s0["output_values"] == {"x": 1, "y": 2}

@@ -31,7 +31,7 @@ from haute._flatten import flatten_graph
 from haute._parser_submodels import merge_submodels
 from haute._types import GraphEdge, GraphNode, NodeData, PipelineGraph
 from haute.parser import parse_pipeline_file
-from tests.conftest import write_data_source_config
+from tests.conftest import write_data_input_config
 
 # ---------------------------------------------------------------------------
 # Helpers — build parent + child graphs
@@ -53,7 +53,7 @@ def _simple_parent() -> PipelineGraph:
     """Parent: data_src → output (with submodel in the middle)."""
     return PipelineGraph(
         nodes=[
-            _node("data_src", ntype="dataSource", config={"path": "d.csv"}),
+            _node("data_src", ntype="dataInput", config={"path": "d.csv"}),
             _node("output", ntype="output"),
         ],
         edges=[],
@@ -258,7 +258,7 @@ class TestParsePipelineFlattenRegression:
             submodel.connect("Transform", "Finalise")
             """,
         )
-        source_config = write_data_source_config(tmp_path, "Source", "data/in.parquet")
+        source_config = write_data_input_config(tmp_path, "Source", "data/in.parquet")
         _write_file(
             tmp_path,
             "main.py",
@@ -268,7 +268,7 @@ class TestParsePipelineFlattenRegression:
 
             pipeline = haute.Pipeline("root")
 
-            @pipeline.data_source(config="{source_config}")
+            @pipeline.data_input(config="{source_config}")
             def Source() -> pl.LazyFrame:
                 return pl.scan_parquet("data/in.parquet")
 
@@ -312,7 +312,7 @@ class TestParsePipelineFlattenRegression:
                 return Source.select("x")
             """,
         )
-        source_config = write_data_source_config(tmp_path, "Source", "data/in.parquet")
+        source_config = write_data_input_config(tmp_path, "Source", "data/in.parquet")
         _write_file(
             tmp_path,
             "main.py",
@@ -322,7 +322,7 @@ class TestParsePipelineFlattenRegression:
 
             pipeline = haute.Pipeline("root")
 
-            @pipeline.data_source(config="{source_config}")
+            @pipeline.data_input(config="{source_config}")
             def Source() -> pl.LazyFrame:
                 return pl.scan_parquet("data/in.parquet")
 

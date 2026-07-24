@@ -9,7 +9,6 @@
 import type { Edge, Node } from "@xyflow/react"
 
 import type {
-  CacheStatusResponse,
   DatabricksCatalogsResponse,
   DatabricksSchemasResponse,
   DatabricksTablesResponse,
@@ -36,8 +35,6 @@ import type {
   ExploreOverviewSummary,
   ExploreRunResponse,
   ExploreStatusResponse,
-  FetchProgressResponse,
-  FetchTableResponse,
   FrontierAutoRangeResponse,
   FrontierAutoRangeStartResponse,
   FrontierAutoRangeStatusResponse,
@@ -74,8 +71,18 @@ import type {
   GitSetWorkingBranchResponse,
   GitStatus,
   GitWorkingBranchResponse,
+  IoCapabilitiesResponse,
+  IoCapabilityGroup,
+  IoFieldCapability,
   IoFormatCapability,
-  IoFormatsResponse,
+  IoInputCapability,
+  IoOutputCapability,
+  InputCacheBuildResponse,
+  InputCacheCancelResponse,
+  InputCacheGeneration,
+  InputCacheJobStatusResponse,
+  InputCacheProgress,
+  InputCacheSnapshotResponse,
   JsonCacheBuildResponse,
   JsonCacheProgressResponse,
   JsonCacheStatusResponse,
@@ -91,7 +98,7 @@ import type {
   SaveOptimiserResponse,
   SavePipelineResponse,
   SchemaResult,
-  SinkResponse,
+  WriteOutputResponse,
   SubmodelCreateResponse,
   SubmodelGraphResponse,
   TraceResponse,
@@ -169,6 +176,13 @@ function expectNumber(parser: string, value: unknown, field: string): number {
     throw new Error(`${parser}: expected ${field} to be a number, got ${value === undefined ? "missing" : typeName(value)}`)
   }
   return value
+}
+
+function expectSchemaVersionOne(parser: string, value: unknown, field: string): 1 {
+  if (value !== 1) {
+    throw new Error(`${parser}: expected ${field} to be 1, got ${value === undefined ? "missing" : typeName(value)}`)
+  }
+  return 1
 }
 
 function expectBoolean(parser: string, value: unknown, field: string): boolean {
@@ -1263,18 +1277,18 @@ export function parseTraceResponse(value: unknown): TraceResponse {
   }
 }
 
-/** Validate a `/api/pipeline/sink` response — brings executeSink in line with
+/** Validate a `/api/pipeline/write-output` response — brings writeOutput in line with
  *  every sibling data endpoint (preview, save, trace) that runtime-checks its
  *  wire body instead of casting it. */
-export function parseSinkResponse(value: unknown): SinkResponse {
-  const obj = expectPlainObject("parseSinkResponse", value)
+export function parseWriteOutputResponse(value: unknown): WriteOutputResponse {
+  const obj = expectPlainObject("parseWriteOutputResponse", value)
   return {
-    status: expectString("parseSinkResponse", obj.status, "field `status`"),
-    message: optionalString("parseSinkResponse", obj, "message"),
-    row_count: optionalNumber("parseSinkResponse", obj, "row_count"),
-    path: optionalString("parseSinkResponse", obj, "path"),
-    format: optionalString("parseSinkResponse", obj, "format", "parquet"),
-    execution_metrics: optionalExecutionMetrics("parseSinkResponse", obj),
+    status: expectString("parseWriteOutputResponse", obj.status, "field `status`"),
+    message: optionalString("parseWriteOutputResponse", obj, "message"),
+    row_count: optionalNumber("parseWriteOutputResponse", obj, "row_count"),
+    path: optionalString("parseWriteOutputResponse", obj, "path"),
+    format: optionalString("parseWriteOutputResponse", obj, "format", "parquet"),
+    execution_metrics: optionalExecutionMetrics("parseWriteOutputResponse", obj),
   }
 }
 
@@ -1294,37 +1308,71 @@ export function parseSchemaResponse(value: unknown): SchemaResult {
   }
 }
 
-const IO_SOURCE_KINDS = ["path", "database", "inline"] as const
+const IO_INPUT_MODES = ["scan", "read"] as const
+const IO_OUTPUT_MODES = ["sink", "write"] as const
+const IO_FORMAT_GROUPS = ["file", "database", "lakehouse", "inline"] as const
+const IO_GROUPS = ["file", "database", "lakehouse", "databricks", "inline"] as const
+const IO_FIELD_KINDS = ["path", "connection", "text", "query", "table", "records"] as const
+const IO_CACHE_MODES = ["direct", "snapshot"] as const
+const BUILD_CLASSES = ["bounded", "admitted_eager", "unsupported"] as const
+const INPUT_CACHE_PHASES = ["queued", "building", "publishing", "completed", "failed", "cancelled"] as const
+const INPUT_CACHE_SNAPSHOT_STATES = ["missing", "building", "ready", "corrupt", "failed"] as const
+const INPUT_CACHE_FRESHNESS = ["fresh", "stale", "unknown"] as const
+const JOB_STATUS_VALUES = ["running", "completed", "error", "cancelled", "superseded", "timed_out", "memory_limited", "contract_error"] as const
+
+function parseInputCacheStringRecord(parser: string, value: unknown, field: string): Record<string, string> {
+  const obj = expectPlainObject(parser, value, field)
+  return Object.fromEntries(Object.entries(obj).map(([key, item]) => [key, expectString(parser, item, `${field}.${key}`)]))
+}
+
+function parseIoInputCapability(value: unknown, field: string): IoInputCapability {
+  const p = "parseIoCapabilitiesResponse"
+  const obj = expectPlainObject(p, value, field)
+  return { modes: parseArray(p, obj.modes, `${field}.modes`, (v, f) => expectStringLiteral(p, v, f, IO_INPUT_MODES)), arguments: parseArrayRecord(p, obj.arguments, `${field}.arguments`, (v, f) => expectString(p, v, f)), engines_missing: parseStringArray(p, obj.engines_missing, `${field}.engines_missing`), direct_bounded: expectBoolean(p, obj.direct_bounded, `${field}.direct_bounded`), needs_schema_when_bounded: expectBoolean(p, obj.needs_schema_when_bounded, `${field}.needs_schema_when_bounded`), snapshot_build: expectStringLiteral(p, obj.snapshot_build, `${field}.snapshot_build`, BUILD_CLASSES), cached_read: expectBoolean(p, obj.cached_read, `${field}.cached_read`) }
+}
+
+function parseIoOutputCapability(value: unknown, field: string): IoOutputCapability {
+  const p = "parseIoCapabilitiesResponse"
+  const obj = expectPlainObject(p, value, field)
+  return { modes: parseArray(p, obj.modes, `${field}.modes`, (v, f) => expectStringLiteral(p, v, f, IO_OUTPUT_MODES)), arguments: parseArrayRecord(p, obj.arguments, `${field}.arguments`, (v, f) => expectString(p, v, f)), engines_missing: parseStringArray(p, obj.engines_missing, `${field}.engines_missing`), native_sink: expectBoolean(p, obj.native_sink, `${field}.native_sink`), eager_writer: expectBoolean(p, obj.eager_writer, `${field}.eager_writer`), publication: expectStringLiteral(p, obj.publication, `${field}.publication`, ["atomic_file", "transactional"]) }
+}
 
 function parseIoFormatCapability(value: unknown, field: string): IoFormatCapability {
-  const p = "parseIoFormatsResponse"
+  const p = "parseIoCapabilitiesResponse"
   const obj = expectPlainObject(p, value, field)
-  const stringItem = (item: unknown, itemField: string) => expectString(p, item, itemField)
-  return {
-    name: expectString(p, obj.name, `${field}.name`),
-    label: expectString(p, obj.label, `${field}.label`),
-    source_kind: expectStringLiteral(p, obj.source_kind, `${field}.source_kind`, IO_SOURCE_KINDS),
-    extensions: parseStringArray(p, obj.extensions, `${field}.extensions`),
-    unstable: expectBoolean(p, obj.unstable, `${field}.unstable`),
-    bounded_read: expectBoolean(p, obj.bounded_read, `${field}.bounded_read`),
-    needs_schema_when_bounded: expectBoolean(p, obj.needs_schema_when_bounded, `${field}.needs_schema_when_bounded`),
-    read_available: expectBoolean(p, obj.read_available, `${field}.read_available`),
-    write_available: expectBoolean(p, obj.write_available, `${field}.write_available`),
-    read_engines_missing: parseStringArray(p, obj.read_engines_missing, `${field}.read_engines_missing`),
-    write_engines_missing: parseStringArray(p, obj.write_engines_missing, `${field}.write_engines_missing`),
-    input_modes: parseStringArray(p, obj.input_modes, `${field}.input_modes`),
-    output_modes: parseStringArray(p, obj.output_modes, `${field}.output_modes`),
-    input_arguments: parseArrayRecord(p, obj.input_arguments, `${field}.input_arguments`, stringItem),
-    output_arguments: parseArrayRecord(p, obj.output_arguments, `${field}.output_arguments`, stringItem),
-  }
+  return { name: expectString(p, obj.name, `${field}.name`), label: expectString(p, obj.label, `${field}.label`), group: expectStringLiteral(p, obj.group, `${field}.group`, IO_FORMAT_GROUPS), extensions: parseStringArray(p, obj.extensions, `${field}.extensions`), unstable: expectBoolean(p, obj.unstable, `${field}.unstable`), input: obj.input === null ? null : parseIoInputCapability(obj.input, `${field}.input`), output: obj.output === null ? null : parseIoOutputCapability(obj.output, `${field}.output`) }
 }
 
-export function parseIoFormatsResponse(value: unknown): IoFormatsResponse {
-  const obj = expectPlainObject("parseIoFormatsResponse", value)
-  return {
-    formats: parseArray("parseIoFormatsResponse", obj.formats, "field `formats`", parseIoFormatCapability),
-  }
+function parseIoFieldCapability(value: unknown, field: string): IoFieldCapability {
+  const p = "parseIoCapabilitiesResponse"
+  const obj = expectPlainObject(p, value, field)
+  return { name: expectString(p, obj.name, `${field}.name`), label: expectString(p, obj.label, `${field}.label`), kind: expectStringLiteral(p, obj.kind, `${field}.kind`, IO_FIELD_KINDS), required: expectBoolean(p, obj.required, `${field}.required`) }
 }
+
+function parseIoCapabilityGroup(value: unknown, field: string): IoCapabilityGroup {
+  const p = "parseIoCapabilitiesResponse"
+  const obj = expectPlainObject(p, value, field)
+  return { name: expectStringLiteral(p, obj.name, `${field}.name`, IO_GROUPS), label: expectString(p, obj.label, `${field}.label`), input_available: expectBoolean(p, obj.input_available, `${field}.input_available`), output_available: expectBoolean(p, obj.output_available, `${field}.output_available`), cache_modes: parseArray(p, obj.cache_modes, `${field}.cache_modes`, (v, f) => expectStringLiteral(p, v, f, IO_CACHE_MODES)), input_fields: parseArray(p, obj.input_fields, `${field}.input_fields`, parseIoFieldCapability), output_fields: parseArray(p, obj.output_fields, `${field}.output_fields`, parseIoFieldCapability), formats: parseArray(p, obj.formats, `${field}.formats`, parseIoFormatCapability) }
+}
+
+export function parseIoCapabilitiesResponse(value: unknown): IoCapabilitiesResponse {
+  const p = "parseIoCapabilitiesResponse"
+  const obj = expectPlainObject(p, value)
+  return { schema_version: expectSchemaVersionOne(p, obj.schema_version, "field `schema_version`"), groups: parseArray(p, obj.groups, "field `groups`", parseIoCapabilityGroup) }
+}
+
+function parseInputCacheProgress(value: unknown, field: string): InputCacheProgress {
+  const p = "parseInputCacheJobStatusResponse"; const obj = expectPlainObject(p, value, field)
+  return { phase: expectStringLiteral(p, obj.phase, `${field}.phase`, INPUT_CACHE_PHASES), rows: expectNumber(p, obj.rows, `${field}.rows`), batches: expectNumber(p, obj.batches, `${field}.batches`), bytes: expectNumber(p, obj.bytes, `${field}.bytes`), elapsed_seconds: expectNumber(p, obj.elapsed_seconds, `${field}.elapsed_seconds`) }
+}
+function parseInputCacheGeneration(value: unknown, field: string): InputCacheGeneration {
+  const p = "parseInputCacheSnapshotResponse"; const obj = expectPlainObject(p, value, field)
+  return { generation_id: expectString(p, obj.generation_id, `${field}.generation_id`), row_count: expectNumber(p, obj.row_count, `${field}.row_count`), column_count: expectNumber(p, obj.column_count, `${field}.column_count`), columns: parseInputCacheStringRecord(p, obj.columns, `${field}.columns`), size_bytes: expectNumber(p, obj.size_bytes, `${field}.size_bytes`), created_at: expectNumber(p, obj.created_at, `${field}.created_at`), build_class: expectStringLiteral(p, obj.build_class, `${field}.build_class`, BUILD_CLASSES) }
+}
+export function parseInputCacheBuildResponse(value: unknown): InputCacheBuildResponse { const p = "parseInputCacheBuildResponse"; const obj = expectPlainObject(p, value); return { schema_version: expectSchemaVersionOne(p, obj.schema_version, "field `schema_version`"), job_id: expectString(p, obj.job_id, "field `job_id`"), identity_digest: expectString(p, obj.identity_digest, "field `identity_digest`"), status: expectStringLiteral(p, obj.status, "field `status`", ["running"]), joined: expectBoolean(p, obj.joined, "field `joined`") } }
+export function parseInputCacheSnapshotResponse(value: unknown): InputCacheSnapshotResponse { const p = "parseInputCacheSnapshotResponse"; const obj = expectPlainObject(p, value); return { schema_version: expectSchemaVersionOne(p, obj.schema_version, "field `schema_version`"), identity_digest: expectString(p, obj.identity_digest, "field `identity_digest`"), state: expectStringLiteral(p, obj.state, "field `state`", INPUT_CACHE_SNAPSHOT_STATES), freshness: expectStringLiteral(p, obj.freshness, "field `freshness`", INPUT_CACHE_FRESHNESS), generation: obj.generation === null ? null : parseInputCacheGeneration(obj.generation, "field `generation`") } }
+export function parseInputCacheJobStatusResponse(value: unknown): InputCacheJobStatusResponse { const p = "parseInputCacheJobStatusResponse"; const obj = expectPlainObject(p, value); return { schema_version: expectSchemaVersionOne(p, obj.schema_version, "field `schema_version`"), job_id: expectString(p, obj.job_id, "field `job_id`"), identity_digest: expectString(p, obj.identity_digest, "field `identity_digest`"), status: expectStringLiteral(p, obj.status, "field `status`", JOB_STATUS_VALUES), terminal_reason: expectNullableString(p, obj.terminal_reason, "field `terminal_reason`"), message: expectString(p, obj.message, "field `message`"), refresh: expectBoolean(p, obj.refresh, "field `refresh`"), build_class: expectStringLiteral(p, obj.build_class, "field `build_class`", BUILD_CLASSES), progress: parseInputCacheProgress(obj.progress, "field `progress`"), snapshot: obj.snapshot === null ? null : parseInputCacheSnapshotResponse(obj.snapshot), error_code: expectNullableString(p, obj.error_code, "field `error_code`") } }
+export function parseInputCacheCancelResponse(value: unknown): InputCacheCancelResponse { const p = "parseInputCacheCancelResponse"; const obj = expectPlainObject(p, value); return { schema_version: expectSchemaVersionOne(p, obj.schema_version, "field `schema_version`"), job_id: expectString(p, obj.job_id, "field `job_id`"), cancellation_requested: expectBoolean(p, obj.cancellation_requested, "field `cancellation_requested`"), status: expectStringLiteral(p, obj.status, "field `status`", JOB_STATUS_VALUES) } }
 
 function parseFeatureImportanceRow(value: unknown, field: string): NonNullable<TrainResponse["feature_importance"]>[number] {
   const obj = expectPlainObject("parseTrainResponse", value, field)
@@ -2133,44 +2181,6 @@ export function parseDatabricksTablesResponse(value: unknown): DatabricksTablesR
   const obj = expectPlainObject("parseDatabricksTablesResponse", value)
   return {
     tables: optionalArray("parseDatabricksTablesResponse", obj, "tables", parseTableItem),
-  }
-}
-
-export function parseFetchTableResponse(value: unknown): FetchTableResponse {
-  const obj = expectPlainObject("parseFetchTableResponse", value)
-  return {
-    path: expectString("parseFetchTableResponse", obj.path, "field `path`"),
-    table: expectString("parseFetchTableResponse", obj.table, "field `table`"),
-    row_count: expectNumber("parseFetchTableResponse", obj.row_count, "field `row_count`"),
-    column_count: expectNumber("parseFetchTableResponse", obj.column_count, "field `column_count`"),
-    columns: parseStringRecord("parseFetchTableResponse", obj.columns, "field `columns`"),
-    size_bytes: expectNumber("parseFetchTableResponse", obj.size_bytes, "field `size_bytes`"),
-    fetched_at: expectNumber("parseFetchTableResponse", obj.fetched_at, "field `fetched_at`"),
-    fetch_seconds: expectNumber("parseFetchTableResponse", obj.fetch_seconds, "field `fetch_seconds`"),
-  }
-}
-
-export function parseCacheStatusResponse(value: unknown): CacheStatusResponse {
-  const obj = expectPlainObject("parseCacheStatusResponse", value)
-  return {
-    cached: expectBoolean("parseCacheStatusResponse", obj.cached, "field `cached`"),
-    path: obj.path === undefined ? undefined : optionalNullableString("parseCacheStatusResponse", obj, "path") ?? undefined,
-    table: optionalString("parseCacheStatusResponse", obj, "table"),
-    row_count: optionalNumber("parseCacheStatusResponse", obj, "row_count"),
-    column_count: optionalNumber("parseCacheStatusResponse", obj, "column_count"),
-    size_bytes: optionalNumber("parseCacheStatusResponse", obj, "size_bytes"),
-    fetched_at: optionalNumber("parseCacheStatusResponse", obj, "fetched_at"),
-    columns: optionalStringRecord("parseCacheStatusResponse", obj, "columns"),
-  }
-}
-
-export function parseFetchProgressResponse(value: unknown): FetchProgressResponse {
-  const obj = expectPlainObject("parseFetchProgressResponse", value)
-  return {
-    active: expectBoolean("parseFetchProgressResponse", obj.active, "field `active`"),
-    rows: obj.rows === undefined ? undefined : expectNumber("parseFetchProgressResponse", obj.rows, "field `rows`"),
-    elapsed: obj.elapsed === undefined ? undefined : expectNumber("parseFetchProgressResponse", obj.elapsed, "field `elapsed`"),
-    batches: obj.batches === undefined ? undefined : expectNumber("parseFetchProgressResponse", obj.batches, "field `batches`"),
   }
 }
 

@@ -941,7 +941,7 @@ def starter_pipeline(name: str) -> str:
     output) and match the invariants pinned by
     ``tests/test_starter_pipeline_e2e.py``:
 
-    * a ``dataSource`` node so data enters the graph;
+    * a canonical ``dataInput`` node so data enters the graph;
     * a ``polars`` transform with real ``pl.col`` expressions so the
       user has a working example of the transform surface;
     * an ``output`` node so the terminal preview actually materialises.
@@ -977,15 +977,20 @@ pipeline = haute.Pipeline(
 )
 
 
-@pipeline.data_source(config="config/data_source/raw_rows.json")
+@pipeline.data_input(config="config/data_input/raw_rows.json")
 def raw_rows() -> pl.LazyFrame:
     """Load raw policy rows from parquet.
 
-    Point this at your own ``data/<whatever>.parquet`` file.  Haute
-    dispatches on the extension, so CSV and NDJSON files work too —
-    just update the source sidecar and this function body.
+    Point this at your own ``data/<whatever>.parquet`` file. CSV, NDJSON,
+    and the other advertised input formats work too — select the matching
+    explicit ``format`` and ``mode`` in the Data Input sidecar.
     """
-    df = pl.scan_parquet(Path(__file__).parent / "../data/sample.parquet")
+    from haute.graph_utils import resolve_data_input_from_config
+
+    df = resolve_data_input_from_config(
+        "config/data_input/raw_rows.json",
+        base_dir=Path(__file__).parent,
+    )
     return df
 
 

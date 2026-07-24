@@ -301,3 +301,15 @@ Shared frontend infrastructure owns the typed API boundary for execution-strateg
 runtime guard accepts known status fields while retaining safe representations of unknown future
 fields, truncation and unavailable values. Feature-specific panels consume that single guarded
 contract; they must not independently parse or normalise backend strategy payloads.
+
+## Approved change contract — 0.7.0 data I/O client contracts
+
+Implementation follows
+[`F_0.7.0_data-io-convergence.plan.md`](../../trip/plans/F_0.7.0_data-io-convergence.plan.md).
+Shared frontend infrastructure owns the versioned guards, clients, and stores for
+`/api/io-capabilities`, input-cache jobs/status, and explicit output writes. Capability order and
+unsupported legs are preserved exactly; unknown versions or malformed discriminants become a
+visible unavailable/error state rather than guessed defaults. Cache readiness, freshness, and
+job progress are separate typed values, and all payloads are checked for the absence of secret
+fields before feature panels consume them. Removed format/sink/provider-cache endpoints and
+legacy node types have no client compatibility wrappers.

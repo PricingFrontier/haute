@@ -1322,16 +1322,30 @@ class TestLiveSwitchTrace:
                     id="live_src",
                     data=NodeData(
                         label="live_src",
-                        nodeType="dataSource",
-                        config={"path": str(p_live)},
+                        nodeType="dataInput",
+                        config={
+                            "inputType": "file",
+                            "format": "parquet",
+                            "mode": "scan",
+                            "cacheMode": "direct",
+                            "path": str(p_live),
+                            "arguments": {},
+                        },
                     ),
                 ),
                 GraphNode(
                     id="batch_src",
                     data=NodeData(
                         label="batch_src",
-                        nodeType="dataSource",
-                        config={"path": str(p_batch)},
+                        nodeType="dataInput",
+                        config={
+                            "inputType": "file",
+                            "format": "parquet",
+                            "mode": "scan",
+                            "cacheMode": "direct",
+                            "path": str(p_batch),
+                            "arguments": {},
+                        },
                     ),
                 ),
                 GraphNode(
@@ -1382,16 +1396,30 @@ class TestLiveSwitchBranchChange:
                     id="live_src",
                     data=NodeData(
                         label="live_src",
-                        nodeType="dataSource",
-                        config={"path": str(p_live)},
+                        nodeType="dataInput",
+                        config={
+                            "inputType": "file",
+                            "format": "parquet",
+                            "mode": "scan",
+                            "cacheMode": "direct",
+                            "path": str(p_live),
+                            "arguments": {},
+                        },
                     ),
                 ),
                 GraphNode(
                     id="batch_src",
                     data=NodeData(
                         label="batch_src",
-                        nodeType="dataSource",
-                        config={"path": str(p_batch)},
+                        nodeType="dataInput",
+                        config={
+                            "inputType": "file",
+                            "format": "parquet",
+                            "mode": "scan",
+                            "cacheMode": "direct",
+                            "path": str(p_batch),
+                            "arguments": {},
+                        },
                     ),
                 ),
                 GraphNode(

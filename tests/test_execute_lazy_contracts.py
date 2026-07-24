@@ -115,7 +115,7 @@ def _join_graph(
                     "id": "left",
                     "data": {
                         "label": "left",
-                        "nodeType": "dataSource",
+                        "nodeType": "dataInput",
                         "config": {},
                     },
                 },
@@ -123,7 +123,7 @@ def _join_graph(
                     "id": "right",
                     "data": {
                         "label": "right",
-                        "nodeType": "dataSource",
+                        "nodeType": "dataInput",
                         "config": {},
                     },
                 },
@@ -171,7 +171,7 @@ def _contract_free_join_graph(*, code: str, fields: list[str]) -> PipelineGraph:
                     "id": "left",
                     "data": {
                         "label": "left",
-                        "nodeType": "dataSource",
+                        "nodeType": "dataInput",
                         "config": {},
                     },
                 },
@@ -179,7 +179,7 @@ def _contract_free_join_graph(*, code: str, fields: list[str]) -> PipelineGraph:
                     "id": "right",
                     "data": {
                         "label": "right",
-                        "nodeType": "dataSource",
+                        "nodeType": "dataInput",
                         "config": {},
                     },
                 },
@@ -324,7 +324,7 @@ def test_bounded_lazy_execution_context_carries_projection_plan() -> None:
                     "id": "source",
                     "data": {
                         "label": "source",
-                        "nodeType": "dataSource",
+                        "nodeType": "dataInput",
                         "config": {},
                     },
                 },
@@ -373,7 +373,7 @@ def test_bounded_lazy_execution_refines_unowned_fan_in_from_parent_schemas() -> 
                     "id": "left",
                     "data": {
                         "label": "left",
-                        "nodeType": "dataSource",
+                        "nodeType": "dataInput",
                         "config": {},
                     },
                 },
@@ -381,7 +381,7 @@ def test_bounded_lazy_execution_refines_unowned_fan_in_from_parent_schemas() -> 
                     "id": "right",
                     "data": {
                         "label": "right",
-                        "nodeType": "dataSource",
+                        "nodeType": "dataInput",
                         "config": {},
                     },
                 },
@@ -439,8 +439,8 @@ def test_bounded_lazy_execution_runtime_projects_simple_contract_free_join() -> 
     graph = make_graph(
         {
             "nodes": [
-                {"id": "left", "data": {"label": "left", "nodeType": "dataSource", "config": {}}},
-                {"id": "right", "data": {"label": "right", "nodeType": "dataSource", "config": {}}},
+                {"id": "left", "data": {"label": "left", "nodeType": "dataInput", "config": {}}},
+                {"id": "right", "data": {"label": "right", "nodeType": "dataInput", "config": {}}},
                 {
                     "id": "joined",
                     "data": {
@@ -538,10 +538,10 @@ def test_bounded_lazy_execution_runtime_projects_builtin_edge_join_and_final_dia
     graph = make_graph(
         {
             "nodes": [
-                {"id": "base", "data": {"label": "base", "nodeType": "dataSource", "config": {}}},
+                {"id": "base", "data": {"label": "base", "nodeType": "dataInput", "config": {}}},
                 {
                     "id": "competitor",
-                    "data": {"label": "competitor", "nodeType": "dataSource", "config": {}},
+                    "data": {"label": "competitor", "nodeType": "dataInput", "config": {}},
                 },
                 {
                     "id": "joined",
@@ -626,10 +626,10 @@ def test_eager_preview_runtime_projects_builtin_edge_join_and_final_diagnostic()
     graph = make_graph(
         {
             "nodes": [
-                {"id": "base", "data": {"label": "base", "nodeType": "dataSource", "config": {}}},
+                {"id": "base", "data": {"label": "base", "nodeType": "dataInput", "config": {}}},
                 {
                     "id": "competitor",
-                    "data": {"label": "competitor", "nodeType": "dataSource", "config": {}},
+                    "data": {"label": "competitor", "nodeType": "dataInput", "config": {}},
                 },
                 {
                     "id": "joined",
@@ -877,8 +877,8 @@ def test_bounded_lazy_execution_runtime_projection_preserves_join_suffixes() -> 
     graph = make_graph(
         {
             "nodes": [
-                {"id": "left", "data": {"label": "left", "nodeType": "dataSource", "config": {}}},
-                {"id": "right", "data": {"label": "right", "nodeType": "dataSource", "config": {}}},
+                {"id": "left", "data": {"label": "left", "nodeType": "dataInput", "config": {}}},
+                {"id": "right", "data": {"label": "right", "nodeType": "dataInput", "config": {}}},
                 {
                     "id": "joined",
                     "data": {
@@ -1109,8 +1109,8 @@ def test_bounded_lazy_execution_runtime_projects_left_on_right_on_join() -> None
     graph = make_graph(
         {
             "nodes": [
-                {"id": "left", "data": {"label": "left", "nodeType": "dataSource", "config": {}}},
-                {"id": "right", "data": {"label": "right", "nodeType": "dataSource", "config": {}}},
+                {"id": "left", "data": {"label": "left", "nodeType": "dataInput", "config": {}}},
+                {"id": "right", "data": {"label": "right", "nodeType": "dataInput", "config": {}}},
                 {
                     "id": "joined",
                     "data": {
@@ -1192,8 +1192,8 @@ def test_bounded_lazy_execution_runtime_projection_fails_loudly_on_missing_join_
     graph = make_graph(
         {
             "nodes": [
-                {"id": "left", "data": {"label": "left", "nodeType": "dataSource", "config": {}}},
-                {"id": "right", "data": {"label": "right", "nodeType": "dataSource", "config": {}}},
+                {"id": "left", "data": {"label": "left", "nodeType": "dataInput", "config": {}}},
+                {"id": "right", "data": {"label": "right", "nodeType": "dataInput", "config": {}}},
                 {
                     "id": "joined",
                     "data": {
@@ -1247,8 +1247,8 @@ def test_bounded_lazy_execution_keeps_full_width_for_unsupported_join_type() -> 
     graph = make_graph(
         {
             "nodes": [
-                {"id": "left", "data": {"label": "left", "nodeType": "dataSource", "config": {}}},
-                {"id": "right", "data": {"label": "right", "nodeType": "dataSource", "config": {}}},
+                {"id": "left", "data": {"label": "left", "nodeType": "dataInput", "config": {}}},
+                {"id": "right", "data": {"label": "right", "nodeType": "dataInput", "config": {}}},
                 {
                     "id": "joined",
                     "data": {
@@ -1335,7 +1335,7 @@ def test_bounded_lazy_execution_projects_simple_uncontracted_user_code() -> None
                     "id": "source",
                     "data": {
                         "label": "source",
-                        "nodeType": "dataSource",
+                        "nodeType": "dataInput",
                         "config": {},
                     },
                 },
@@ -1400,7 +1400,7 @@ def test_lazy_checkpoint_does_not_project_stale_contract_outputs_into_edge_join(
                     "id": "left",
                     "data": {
                         "label": "left",
-                        "nodeType": "dataSource",
+                        "nodeType": "dataInput",
                         "config": {},
                     },
                 },
@@ -1408,7 +1408,7 @@ def test_lazy_checkpoint_does_not_project_stale_contract_outputs_into_edge_join(
                     "id": "right",
                     "data": {
                         "label": "right",
-                        "nodeType": "dataSource",
+                        "nodeType": "dataInput",
                         "config": {},
                     },
                 },
@@ -1614,7 +1614,7 @@ def _rename_pipeline_graph(code: str, fields: list[str]) -> PipelineGraph:
                     "id": "source",
                     "data": {
                         "label": "source",
-                        "nodeType": "dataSource",
+                        "nodeType": "dataInput",
                         "config": {},
                     },
                 },
@@ -2038,7 +2038,7 @@ def test_bounded_lazy_execution_runs_terminal_uncontracted_user_code_as_boundary
                     "id": "source",
                     "data": {
                         "label": "source",
-                        "nodeType": "dataSource",
+                        "nodeType": "dataInput",
                         "config": {},
                     },
                 },
@@ -2054,7 +2054,7 @@ def test_bounded_lazy_execution_runs_terminal_uncontracted_user_code_as_boundary
                     "id": "sink",
                     "data": {
                         "label": "sink",
-                        "nodeType": "dataSink",
+                        "nodeType": "dataOutput",
                         "config": {},
                     },
                 },

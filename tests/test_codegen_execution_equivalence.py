@@ -10,7 +10,7 @@ each behavioural node type we:
 3. import the generated module and drive ``pipeline.run()`` / the generated
    node body under source in ``{live, batch}``,
 4. ``assert_frame_equal`` the result against the canvas executor
-   (``_execute_lazy`` — the same engine ``execute_sink`` / deploy scoring
+   (``_execute_lazy`` — the same engine ``write_data_output`` / deploy scoring
    uses) for the SAME source.
 
 Before the fix the generated bodies were bare passthroughs (``return {first}``)

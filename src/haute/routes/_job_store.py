@@ -559,7 +559,7 @@ class JobStore:
 #   3. Add a test that asserts the new prefix returns a store distinct
 #      from the existing ones.
 _KNOWN_PREFIXES: frozenset[str] = frozenset(  # pragma: no mutate
-    {"training", "optimiser", "explore"}
+    {"training", "optimiser", "explore", "input_cache"}
 )
 
 

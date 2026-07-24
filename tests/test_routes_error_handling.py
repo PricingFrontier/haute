@@ -147,7 +147,7 @@ class TestSubmodelCreateValueErrorSanitisation:
                     "position": {"x": 0, "y": 0},
                     "data": {
                         "label": "a",
-                        "nodeType": "dataSource",
+                        "nodeType": "dataInput",
                         "config": {"path": "x.parquet"},
                     },
                 },

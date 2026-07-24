@@ -6,9 +6,9 @@ the durable interface: node functions should have clear names, typed frame
 parameters, and a single responsibility.
 
 The vocabulary below follows the node-type lookup table in
-`docs/specs/README.md`: `apiInput`, `dataSource`, `dataInput`, `dataOutput`,
+`docs/specs/README.md`: `apiInput`, `dataInput`, `dataOutput`,
 `polars`, `edgeJoin`, `modelScore`, `banding`, `ratingStep`, `output`,
-`dataSink`, `explore`, `externalFile`, `liveSwitch`, `modelling`, `optimiser`,
+`explore`, `externalFile`, `liveSwitch`, `modelling`, `optimiser`,
 `scenarioExpander`, `optimiserApply`, `constant`, `submodel`, and
 `submodelPort`.  Use the specialised type whose name describes the operation;
 do not substitute a generic `polars` node when a domain node is required.
@@ -25,9 +25,15 @@ import haute
 pipeline = haute.Pipeline("pricing", description="Short analyst-facing description")
 
 
-@pipeline.data_source(config="config/data_source/quotes.json")
+@pipeline.data_input(config="config/data_input/quotes.json")
 def quotes() -> pl.LazyFrame:
-    return pl.scan_parquet("data/quotes.parquet")
+    from pathlib import Path
+    from haute.graph_utils import resolve_data_input_from_config
+
+    return resolve_data_input_from_config(
+        "config/data_input/quotes.json",
+        base_dir=Path(__file__).parent,
+    )
 
 
 @pipeline.polars
@@ -46,15 +52,16 @@ def priced(enriched: pl.LazyFrame) -> pl.LazyFrame:
 ```
 
 This is also the shape produced by `haute init`: its starter pipeline reads
-`config/data_source/raw_rows.json`, enriches the frame with a `polars` stage,
+`config/data_input/raw_rows.json`, enriches the frame with a `polars` stage,
 and writes the terminal response through
 `config/quote_response/priced.json`.  Keep those project-relative sidecar
 references when authoring a real project.  The packaged examples use only
 self-contained decorators where possible so the parser guard can load them
 without inventing project sidecar files.
 
-Use `api_input` for the live request source, `data_source` for a configured
-file-backed source, and `polars` for ordinary feature engineering.  Use the
+Use `api_input` for the live request source, `data_input` for configured file,
+database, lakehouse, Databricks, or inline tabular data, and `polars` for
+ordinary feature engineering. Use the
 specialised node decorators (`banding`, `rating_step`, `model_score`,
 `edge_join`, and so on) when the operation has that domain meaning; do not hide
 one of those operations inside an unlabelled transform.
@@ -70,8 +77,9 @@ one of those operations inside an unlabelled transform.
   the bottom of the module so the topology is easy to audit.
 - A node's input parameters are frame inputs.  Configuration belongs in the
   decorator or its JSON sidecar, not in a hidden module global.
-- Keep one output node for the pipeline's returned quote document.  A
-  `data_sink` is a separate terminal branch for writing an operational file.
+- Keep one `output` node for the pipeline's returned quote document. A
+  `data_output` is a separate explicitly-written branch for persisting tabular
+  data; graph save, preview, trace, and ordinary execution never write it.
 
 ## Configuration and transforms
 

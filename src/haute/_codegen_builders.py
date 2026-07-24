@@ -35,7 +35,6 @@ from haute._config_io import config_path_for_node
 from haute._edge_join import build_edge_join_kwargs, edge_join_config_to_decorator_kwargs
 from haute._explore_overview import validate_explore_overview
 from haute._graph_utils import (
-    _resolve_sink_path,
     _sanitize_func_name,
     duplicate_input_names,
 )
@@ -264,7 +263,7 @@ def _api_input_template(path: str, config: dict) -> str:
     else:
         return_annotation = "pl.LazyFrame"
         runtime_config = {"sourceType": "flat_file", **config}
-        runtime_expr = _data_source_runtime_config_expr(runtime_config)
+        runtime_expr = _api_input_runtime_config_expr(runtime_config)
         runtime_expr = runtime_expr.replace("{", "{{").replace("}", "}}")
         body = (
             "    from pathlib import Path\n"
@@ -303,7 +302,7 @@ def {func_name}({params}) -> pl.LazyFrame:
 '''
 
 
-def _data_source_runtime_config_expr(config: dict) -> str:
+def _api_input_runtime_config_expr(config: dict) -> str:
     runtime_config = {
         key: value
         for key, value in config.items()
@@ -322,35 +321,6 @@ def _data_source_runtime_config_expr(config: dict) -> str:
         items.append(f"{key!r}: {value!r}")
 
     return "{" + ", ".join(items) + "}"
-
-
-def _data_source_parts(config: dict) -> tuple[str, str, str]:
-    """Return (decorator, imports, load_expr) for a DataSource node.
-
-    Generated data sources use the same shared I/O boundary as runtime
-    execution. This keeps file dispatch, schema declarations, bounded JSON
-    rules, and source-type validation in one place.
-    """
-    source_type = config.get("sourceType", "flat_file")
-    path = config.get("path", "")
-
-    if source_type == "databricks":
-        table = config.get("table", "catalog.schema.table")
-        http_path = config.get("http_path", "")
-        query = config.get("query", "")
-        parts = [f"table={_safe_str(table)}"]
-        if http_path:
-            parts.append(f"http_path={http_path!r}")
-        if query:
-            parts.append(f"query={query!r}")
-        decorator = f"@pipeline.data_source({', '.join(parts)})"
-    else:
-        decorator = f"@pipeline.data_source(path={_safe_path(path)})"
-
-    imports = "    from pathlib import Path\n    from haute.graph_utils import read_data_source\n"
-    load_expr = f"read_data_source({_data_source_runtime_config_expr(config)})"
-
-    return decorator, imports, load_expr
 
 
 _BANDING_SINGLE = '''\
@@ -385,26 +355,6 @@ def {func_name}({params}) -> pl.LazyFrame:
     base = Path(__file__).parent
     df = apply_rating_step_from_config({first}, {config_path_repr}, base_dir=base)
     return df
-'''
-
-_SINK_PARQUET = '''\
-@pipeline.data_sink(path={path_repr}, format="parquet")
-def {func_name}({params}) -> pl.LazyFrame:
-    """{description}"""
-    from pathlib import Path
-    from haute._polars_utils import bounded_sink
-    bounded_sink({first}, {portable_path})
-    return {first}
-'''
-
-_SINK_CSV = '''\
-@pipeline.data_sink(path={path_repr}, format="csv")
-def {func_name}({params}) -> pl.LazyFrame:
-    """{description}"""
-    from pathlib import Path
-    from haute._polars_utils import bounded_sink
-    bounded_sink({first}, {portable_path}, fmt="csv")
-    return {first}
 '''
 
 _SCENARIO_EXPANDER = '''\
@@ -558,36 +508,6 @@ def _gen_live_switch(node: GraphNode, source_names: list[str]) -> str:
         frames_dict=frames_dict,
         input_order_repr=repr(list(source_names)),
         switch_repr=repr(func_name),
-    )
-
-
-@_register_codegen(NodeType.DATA_SOURCE)
-def _gen_data_source(node: GraphNode, source_names: list[str]) -> str:
-    func_name, description, config = _common_node_fields(node)
-    code = _strip_generated_boilerplate_from_code(
-        config.get("code") or "",
-        kind="data_source",
-    )
-    decorator, imports, load_expr = _data_source_parts(config)
-
-    if not code:
-        return (
-            f"{decorator}\n"
-            f"def {func_name}() -> pl.LazyFrame:\n"
-            f'    """{description}"""\n'
-            f"{imports}"
-            f"    df = {load_expr}\n"
-            f"    return df\n"
-        )
-
-    user_body = _wrap_user_code(code, ["df"])
-    return (
-        f"{decorator}\n"
-        f"def {func_name}() -> pl.LazyFrame:\n"
-        f'    """{description}"""\n'
-        f"{imports}"
-        f"    df = {load_expr}\n"
-        f"{user_body}\n"
     )
 
 
@@ -1006,42 +926,29 @@ def _gen_external_file(node: GraphNode, source_names: list[str]) -> str:
     )
 
 
-@_register_codegen(NodeType.DATA_SINK)
-def _gen_data_sink(node: GraphNode, source_names: list[str]) -> str:
-    func_name, description, config = _common_node_fields(node)
-    path = config.get("path", "output.parquet")
-    fmt = config.get("format", "parquet")
-    path = _resolve_sink_path(path, fmt)
-    params = _build_params(source_names)
-    first = _first_source(source_names)
-    template = _SINK_CSV if fmt == "csv" else _SINK_PARQUET
-    return template.format(
-        func_name=func_name,
-        description=description,
-        path_repr=_safe_path(path),
-        portable_path=_portable_path_expr(path),
-        params=params,
-        first=first,
-    )
-
-
 @_register_codegen(NodeType.DATA_INPUT)
 def _gen_data_input(node: GraphNode, source_names: list[str]) -> str:
-    func_name, description, _config = _common_node_fields(node)
+    func_name, description, config = _common_node_fields(node)
     # The config (format/mode/source fields/arguments) lives in the JSON
     # sidecar like every other config-folder node; the decorator is rewritten
     # to ``config=`` by codegen, and the body executes the same registry
     # invocation the canvas executor uses, anchored to the pipeline dir.
     cfg_path = config_path_for_node(node.data.nodeType, func_name).as_posix()
+    code = _strip_generated_boilerplate_from_code(
+        config.get("code") or "",
+        kind="data_input",
+    )
+    body = _wrap_external_code(code)
     return (
         f"@pipeline.data_input(config={_safe_path(cfg_path)})\n"
         f"def {func_name}() -> pl.LazyFrame:\n"
         f'    """{description}"""\n'
         f"    from pathlib import Path\n"
-        f"    from haute.graph_utils import read_polars_input_from_config\n"
-        f"    return read_polars_input_from_config(\n"
+        f"    from haute.graph_utils import resolve_data_input_from_config\n"
+        f"    df = resolve_data_input_from_config(\n"
         f"        {_safe_path(cfg_path)}, base_dir=Path(__file__).parent\n"
         f"    )\n"
+        f"{body}\n"
     )
 
 
@@ -1050,16 +957,11 @@ def _gen_data_output(node: GraphNode, source_names: list[str]) -> str:
     func_name, description, _config = _common_node_fields(node)
     params = _build_params(source_names)
     first = _first_source(source_names)
-    cfg_path = config_path_for_node(node.data.nodeType, func_name).as_posix()
     return (
-        f"@pipeline.data_output(config={_safe_path(cfg_path)})\n"
+        f"@pipeline.data_output(config="
+        f"{_safe_path(config_path_for_node(node.data.nodeType, func_name).as_posix())})\n"
         f"def {func_name}({params}) -> pl.LazyFrame:\n"
         f'    """{description}"""\n'
-        f"    from pathlib import Path\n"
-        f"    from haute.graph_utils import write_polars_output_from_config\n"
-        f"    write_polars_output_from_config(\n"
-        f"        {first}, {_safe_path(cfg_path)}, base_dir=Path(__file__).parent\n"
-        f"    )\n"
         f"    return {first}\n"
     )
 
@@ -1070,7 +972,7 @@ def _gen_output(node: GraphNode, source_names: list[str]) -> str:
     param_names = source_names or ["df"]
     params = _build_params(source_names)
     # v2: the outputMapping lives in a JSON schema mapping (like every other
-    # config-folder node — apiInput, dataSource, …), referenced by
+    # config-folder node — apiInput, dataInput, …), referenced by
     # ``config=``. The body routes through the SAME assembler the canvas
     # executor calls, so a standalone ``pipeline.run()`` / ``score()``
     # returns the assembled response document — not a passthrough of the
@@ -1175,7 +1077,7 @@ def _gen_edge_join(node: GraphNode, source_names: list[str]) -> str:
             missing=missing_roles,
         )
     # Role kwargs must name the functions this pass emits, not the raw config
-    # node ids: live canvas ids (e.g. "dataSource_5") do not survive a parse
+    # node ids: live canvas ids do not survive a parse
     # round-trip, where node ids become sanitized function names, so verbatim
     # ids would make the saved file unloadable.  `_role_order_node_sources`
     # has already resolved baseInput/joinInput against the connected node ids
@@ -1250,8 +1152,6 @@ __all__ = [
     "_gen_constant",
     "_gen_data_input",
     "_gen_data_output",
-    "_gen_data_sink",
-    "_gen_data_source",
     "_gen_edge_join",
     "_gen_external_file",
     "_gen_live_switch",

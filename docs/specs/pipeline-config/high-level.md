@@ -237,3 +237,37 @@ inspection, and malformed wiring. The 0.6 pre-1.0 release/migration notes must i
 formerly silent configured-mapping fallback and the new stable error code and fields.
 Non-goals: implicit-edge changes, static source-graph inference changes, and changes to
 successful mapped live-switch selection or unconfigured fallback.
+
+## Approved change contract — 0.7.0 canonical data I/O node types
+
+Implementation follows
+[`F_0.7.0_data-io-convergence.plan.md`](../../trip/plans/F_0.7.0_data-io-convergence.plan.md).
+
+- `Pipeline` and `Submodel` expose `data_input` and `data_output` as the only tabular I/O
+  decorators. `data_source` and `data_sink` and their `NodeType` values are deleted. This changes
+  the node-type set from 21 to 19; it does not restrict how many input or output nodes a graph may
+  contain.
+- `dataInput` remains a zero-parameter source function and now carries the strict provider union
+  and optional Polars body defined by the I/O spec. `dataOutput` remains a connected terminal
+  pass-through during ordinary execution and carries the strict destination union.
+- Multiple Data Outputs do not change standalone return selection: `Pipeline.run()`/`score()`
+  still return the single explicit `output` node, otherwise the single terminal leaf, and raise
+  on ambiguous leaves. Explicit persistence always names one `dataOutput` id, so graph
+  cardinality is not resolved by guessing a “primary” writer.
+- Only `config/data_input/<name>.json` and `config/data_output/<name>.json` are valid tabular-I/O
+  sidecars. The removed folders are neither read nor cleaned up as compatibility inputs.
+  Repository-owned pipelines which contain removed decorators are intentionally reset to blank
+  pipelines; no parser conversion, alias, migration command, or config salvage is provided.
+- Config validation enforces active-branch keys, group/format agreement, safe connection
+  references, cache-mode constraints, and the absence of `code` on outputs. Unknown legacy
+  decorators/configs fail through the ordinary unknown-node/config error surface.
+- The node registry, decorator map, config-folder map, valid-key map, standalone pipeline API,
+  scaffold, assistant-facing graph schema, and parse/build round trip contain no removed node
+  token after the cutover.
+
+Acceptance includes registry completeness over exactly the retained node enum, valid/invalid
+cases for every input/output discriminant, multiple data inputs and outputs in one graph,
+sidecar save/load, standalone registration and explicit-output/ambiguous-leaf behaviour,
+scaffold parsing, and repository-wide assertions that `dataSource`, `dataSink`, `data_source`,
+and `data_sink` are absent outside the 0.7 plan, release note, and historical current-state spec
+text.

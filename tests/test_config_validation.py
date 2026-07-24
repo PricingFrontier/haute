@@ -40,7 +40,7 @@ class TestValidKeysRegistry:
         """Every node type with a TypedDict should have an entry."""
         expected = {
             NodeType.API_INPUT,
-            NodeType.DATA_SOURCE,
+            NodeType.DATA_INPUT,
             NodeType.DATA_INPUT,
             NodeType.DATA_OUTPUT,
             NodeType.POLARS,
@@ -49,7 +49,7 @@ class TestValidKeysRegistry:
             NodeType.BANDING,
             NodeType.RATING_STEP,
             NodeType.OUTPUT,
-            NodeType.DATA_SINK,
+            NodeType.DATA_OUTPUT,
             NodeType.EXPLORE,
             NodeType.EXTERNAL_FILE,
             NodeType.LIVE_SWITCH,
@@ -75,12 +75,12 @@ class TestValidKeysRegistry:
         "node_type, expected_key",
         [
             (NodeType.API_INPUT, "path"),
-            (NodeType.DATA_SOURCE, "sourceType"),
+            (NodeType.DATA_INPUT, "inputType"),
             (NodeType.MODEL_SCORE, "run_id"),
             (NodeType.BANDING, "factors"),
             (NodeType.RATING_STEP, "tables"),
             (NodeType.OUTPUT, "outputMapping"),
-            (NodeType.DATA_SINK, "format"),
+            (NodeType.DATA_OUTPUT, "format"),
             (NodeType.EXPLORE, "contract"),
             (NodeType.EXTERNAL_FILE, "fileType"),
             (NodeType.LIVE_SWITCH, "input_scenario_map"),
@@ -99,22 +99,17 @@ class TestValidKeysRegistry:
     @pytest.mark.parametrize(
         "key",
         [
+            "sourceType",
             "catalog",
             "schema",
             "expected_columns",
             "schema_overrides",
             "dtypes",
             "column_dtypes",
-            "categorical_levels",
         ],
     )
-    def test_data_source_boundary_keys_present(self, key):
-        """dataSource dtype/deploy schema keys are first-class config keys.
-
-        ApiInput has its OWN v2-shaped key set (tested below) — these v1
-        dtype keys are not part of the v2 apiInput contract anymore.
-        """
-        assert key in VALID_KEYS[NodeType.DATA_SOURCE]
+    def test_removed_data_source_keys_are_not_present(self, key):
+        assert key not in VALID_KEYS[NodeType.DATA_INPUT]
 
     @pytest.mark.parametrize("key", ["path", "contract", "tables"])
     def test_api_input_v2_keys_present(self, key):
@@ -200,8 +195,16 @@ class TestWarnUnrecognizedConfigKeys:
     def test_instance_of_always_valid(self):
         """instanceOf is a universal key, valid for any node type."""
         bad = warn_unrecognized_config_keys(
-            NodeType.DATA_SOURCE,
-            {"path": "x.parquet", "sourceType": "flat_file", "instanceOf": "other"},
+            NodeType.DATA_INPUT,
+            {
+                "inputType": "file",
+                "format": "parquet",
+                "mode": "scan",
+                "cacheMode": "direct",
+                "path": "x.parquet",
+                "arguments": {},
+                "instanceOf": "other",
+            },
         )
         assert bad == []
 
@@ -276,14 +279,14 @@ class TestBuildNodeConfigProducesValidKeys:
                 id="api_input",
             ),
             pytest.param(
-                NodeType.DATA_SOURCE,
+                NodeType.DATA_INPUT,
                 {"path": "d.parquet"},
                 "",
                 [],
                 id="datasource_flat",
             ),
             pytest.param(
-                NodeType.DATA_SOURCE,
+                NodeType.DATA_INPUT,
                 {"table": "cat.sch.tbl"},
                 "",
                 [],
@@ -327,11 +330,11 @@ class TestBuildNodeConfigProducesValidKeys:
                 id="output",
             ),
             pytest.param(
-                NodeType.DATA_SINK,
+                NodeType.DATA_OUTPUT,
                 {"sink": "out.csv", "format": "csv"},
                 "",
                 ["df"],
-                id="data_sink",
+                id="data_output",
             ),
             pytest.param(
                 NodeType.EXPLORE,

@@ -258,7 +258,7 @@ describe("CalculationHero \u2014 Formula Modes", () => {
       <CalculationHero
         {...makeProps({
           nodeName: "Policy Source",
-          nodeType: "dataSource",
+          nodeType: "dataInput",
           expression: makeExpression({
             expression_text: "",
             expression_type: "opaque",

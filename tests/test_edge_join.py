@@ -278,7 +278,7 @@ def _edge_join_decorator_line(code: str) -> str:
 def test_edge_join_round_trip_resolves_roles_when_node_ids_differ_from_labels(
     tmp_path: Path,
 ) -> None:
-    """Canvas node ids (e.g. ``dataSource_5``) must not leak into decorator kwargs.
+    """Canvas node ids (e.g. ``dataInput_5``) must not leak into decorator kwargs.
 
     On reload, parsed node ids are the sanitized function names, so role
     kwargs emitted verbatim from config would never resolve again — preview
@@ -292,7 +292,7 @@ def test_edge_join_round_trip_resolves_roles_when_node_ids_differ_from_labels(
     graph = PipelineGraph(
         nodes=[
             GraphNode(
-                id="dataSource_5",
+                id="dataInput_5",
                 data=NodeData(
                     label="Data Source 5",
                     nodeType=NodeType.CONSTANT,
@@ -309,7 +309,7 @@ def test_edge_join_round_trip_resolves_roles_when_node_ids_differ_from_labels(
             ),
             _edge_join_node(
                 {
-                    "baseInput": "dataSource_5",
+                    "baseInput": "dataInput_5",
                     "joinInput": "polars_2",
                     "how": "left",
                     "on": ["region"],
@@ -318,7 +318,7 @@ def test_edge_join_round_trip_resolves_roles_when_node_ids_differ_from_labels(
         ],
         edges=[
             GraphEdge(id="e_enrich_join", source="polars_2", target="join", targetHandle="join"),
-            GraphEdge(id="e_ds_join", source="dataSource_5", target="join", targetHandle="base"),
+            GraphEdge(id="e_ds_join", source="dataInput_5", target="join", targetHandle="base"),
         ],
     )
 
@@ -349,7 +349,7 @@ def test_edge_join_round_trip_resolves_roles_when_node_ids_differ_from_labels(
 
     assert 'base_input="Data_Source_5"' in code
     assert 'join_input="Enrich_Step"' in code
-    assert "dataSource_5" not in code
+    assert "dataInput_5" not in code
     assert "polars_2" not in code
     assert parsed_join.data.config["baseInput"] == "Data_Source_5"
     assert parsed_join.data.config["joinInput"] == "Enrich_Step"
@@ -584,11 +584,11 @@ def test_flattening_submodel_restores_external_edge_join_target_role() -> None:
 def test_edge_join_pipeline_run_honours_configured_roles_for_reversed_connects() -> None:
     pipeline = Pipeline("joins")
 
-    @pipeline.data_source
+    @pipeline.data_input
     def quotes() -> pl.DataFrame:
         return pl.DataFrame({"quote_id": [1, 2, 3], "region": ["N", "S", "E"]})
 
-    @pipeline.data_source
+    @pipeline.data_input
     def lookup() -> pl.DataFrame:
         return pl.DataFrame({"region": ["N", "S"], "factor": [1.1, 0.9]})
 
@@ -608,11 +608,11 @@ def test_edge_join_pipeline_run_honours_configured_roles_for_reversed_connects()
 def test_edge_join_pipeline_run_calls_function_body_like_other_nodes() -> None:
     pipeline = Pipeline("joins")
 
-    @pipeline.data_source
+    @pipeline.data_input
     def quotes() -> pl.DataFrame:
         return pl.DataFrame({"quote_id": [1, 2, 3], "region": ["N", "S", "E"]})
 
-    @pipeline.data_source
+    @pipeline.data_input
     def lookup() -> pl.DataFrame:
         return pl.DataFrame({"region": ["N", "S"], "factor": [1.1, 0.9]})
 
@@ -633,11 +633,11 @@ def test_edge_join_pipeline_run_calls_function_body_like_other_nodes() -> None:
 def test_edge_join_pipeline_run_can_use_shared_edge_join_helper() -> None:
     pipeline = Pipeline("joins")
 
-    @pipeline.data_source
+    @pipeline.data_input
     def quotes() -> pl.DataFrame:
         return pl.DataFrame({"quote_id": [1, 2, 3], "region": ["N", "S", "E"]})
 
-    @pipeline.data_source
+    @pipeline.data_input
     def lookup() -> pl.DataFrame:
         return pl.DataFrame({"region": ["N", "S"], "factor": [1.1, 0.9]})
 
@@ -661,7 +661,7 @@ def test_edge_join_pipeline_score_can_use_shared_edge_join_helper() -> None:
     def quotes() -> pl.DataFrame:
         raise AssertionError("score() should seed API inputs without calling the source")
 
-    @pipeline.data_source
+    @pipeline.data_input
     def lookup() -> pl.DataFrame:
         return pl.DataFrame({"region": ["N", "S"], "factor": [1.1, 0.9]})
 
@@ -849,11 +849,11 @@ def _run_pipeline_edge_join(
     """
     pipeline = Pipeline("join_matrix")
 
-    @pipeline.data_source
+    @pipeline.data_input
     def base_src() -> pl.DataFrame:
         return base_df
 
-    @pipeline.data_source
+    @pipeline.data_input
     def lookup_src() -> pl.DataFrame:
         return join_df
 

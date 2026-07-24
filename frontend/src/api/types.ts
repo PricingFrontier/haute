@@ -290,7 +290,7 @@ export interface TraceResponse {
   trace: import("../types/trace").TraceResult
 }
 
-export interface SinkResponse {
+export interface WriteOutputResponse {
   status: string
   message?: string
   row_count?: number
@@ -299,7 +299,7 @@ export interface SinkResponse {
   execution_metrics?: ExecutionMetrics | null
 }
 
-/** Schema info returned by /api/schema and /api/schema/databricks. */
+/** Schema info returned by the schema endpoint. */
 export interface SchemaResult {
   path: string
   columns: ColumnInfo[]
@@ -310,37 +310,134 @@ export interface SchemaResult {
 }
 
 // ---------------------------------------------------------------------------
-// Data In/Out format capabilities (GET /api/formats)
+// Data In/Out capabilities (GET /api/io-capabilities)
 // ---------------------------------------------------------------------------
 
 /**
  * One format's capabilities from the dataInput/dataOutput registry.
  * Mirrors `IoFormatCapability` in `src/haute/schemas.py` so the frontend
- * never hard-codes format knowledge: which formats exist, which are
- * read/write capable, which polars arguments each mode accepts, and which
- * engine packages are missing in this install (empty = runnable).
+ * never hard-codes registry knowledge: its grouping, input/output modes,
+ * accepted arguments, execution guarantees, and unavailable engines.
  */
+export interface IoInputCapability {
+  modes: ("scan" | "read")[]
+  arguments: Record<string, string[]>
+  engines_missing: string[]
+  direct_bounded: boolean
+  needs_schema_when_bounded: boolean
+  snapshot_build: "bounded" | "admitted_eager" | "unsupported"
+  cached_read: boolean
+}
+
+export interface IoOutputCapability {
+  modes: ("sink" | "write")[]
+  arguments: Record<string, string[]>
+  engines_missing: string[]
+  native_sink: boolean
+  eager_writer: boolean
+  publication: "atomic_file" | "transactional"
+}
+
 export interface IoFormatCapability {
   name: string
   label: string
-  source_kind: "path" | "database" | "inline"
+  group: "file" | "database" | "lakehouse" | "inline"
   extensions: string[]
   unstable: boolean
-  bounded_read: boolean
-  needs_schema_when_bounded: boolean
-  read_available: boolean
-  write_available: boolean
-  read_engines_missing: string[]
-  write_engines_missing: string[]
-  input_modes: string[]
-  output_modes: string[]
-  input_arguments: Record<string, string[]>
-  output_arguments: Record<string, string[]>
+  input: IoInputCapability | null
+  output: IoOutputCapability | null
 }
 
-/** Response for GET /api/formats. */
-export interface IoFormatsResponse {
+export interface IoFieldCapability {
+  name: string
+  label: string
+  kind: "path" | "connection" | "text" | "query" | "table" | "records"
+  required: boolean
+}
+
+export interface IoCapabilityGroup {
+  name: "file" | "database" | "lakehouse" | "databricks" | "inline"
+  label: string
+  input_available: boolean
+  output_available: boolean
+  cache_modes: ("direct" | "snapshot")[]
+  input_fields: IoFieldCapability[]
+  output_fields: IoFieldCapability[]
   formats: IoFormatCapability[]
+}
+
+export interface IoCapabilitiesResponse {
+  schema_version: 1
+  groups: IoCapabilityGroup[]
+}
+
+// ---------------------------------------------------------------------------
+// Input-cache contracts (/api/input-cache)
+// ---------------------------------------------------------------------------
+
+export interface InputCacheSourceRequest {
+  schema_version: 1
+  config: Record<string, unknown>
+}
+
+export interface InputCacheBuildRequest extends InputCacheSourceRequest {
+  refresh: boolean
+  profile: "preview_eager" | "lazy_sink"
+}
+
+export interface InputCacheBuildResponse {
+  schema_version: 1
+  job_id: string
+  identity_digest: string
+  status: "running"
+  joined: boolean
+}
+
+export interface InputCacheProgress {
+  phase: "queued" | "building" | "publishing" | "completed" | "failed" | "cancelled"
+  rows: number
+  batches: number
+  bytes: number
+  elapsed_seconds: number
+}
+
+export interface InputCacheGeneration {
+  generation_id: string
+  row_count: number
+  column_count: number
+  columns: Record<string, string>
+  size_bytes: number
+  created_at: number
+  build_class: "bounded" | "admitted_eager" | "unsupported"
+}
+
+export interface InputCacheSnapshotResponse {
+  schema_version: 1
+  identity_digest: string
+  state: "missing" | "building" | "ready" | "corrupt" | "failed"
+  freshness: "fresh" | "stale" | "unknown"
+  generation: InputCacheGeneration | null
+}
+
+export interface InputCacheJobStatusResponse {
+  schema_version: 1
+  job_id: string
+  identity_digest: string
+  status: JobStatus
+  terminal_reason: string | null
+  message: string
+  refresh: boolean
+  build_class: "bounded" | "admitted_eager" | "unsupported"
+  progress: InputCacheProgress
+  snapshot: InputCacheSnapshotResponse | null
+  error_code: string | null
+}
+
+export interface InputCacheCancelResponse {
+  schema_version: 1
+  job_id: string
+  cancellation_requested: boolean
+  status: JobStatus
 }
 
 // ---------------------------------------------------------------------------
@@ -943,35 +1040,6 @@ export interface DatabricksSchemasResponse {
 
 export interface DatabricksTablesResponse {
   tables: DatabricksTable[]
-}
-
-export interface FetchTableResponse {
-  path: string
-  table: string
-  row_count: number
-  column_count: number
-  columns: Record<string, string>
-  size_bytes: number
-  fetched_at: number
-  fetch_seconds: number
-}
-
-export interface CacheStatusResponse {
-  cached: boolean
-  path?: string
-  table: string
-  row_count: number
-  column_count: number
-  size_bytes: number
-  fetched_at: number
-  columns?: Record<string, string>
-}
-
-export interface FetchProgressResponse {
-  active: boolean
-  rows?: number
-  elapsed?: number
-  batches?: number
 }
 
 // ---------------------------------------------------------------------------

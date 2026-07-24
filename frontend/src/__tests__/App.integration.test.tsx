@@ -69,7 +69,6 @@ vi.mock("../api/client", async () => {
     dissolveSubmodel: vi.fn(() => Promise.resolve({})),
     // Schema
     fetchSchema: vi.fn(() => Promise.resolve({ columns: [] })),
-    fetchDatabricksSchema: vi.fn(() => Promise.resolve({ columns: [] })),
     // MLflow — checkMlflow is invoked on startup by useSettingsStore.
     checkMlflow: vi.fn(() => Promise.resolve({ mlflow_installed: false })),
     getTrainStatus: vi.fn(() => Promise.resolve({})),
@@ -94,10 +93,6 @@ vi.mock("../api/client", async () => {
     getCatalogs: vi.fn(() => Promise.resolve({ catalogs: [] })),
     getSchemas: vi.fn(() => Promise.resolve({ schemas: [] })),
     getTables: vi.fn(() => Promise.resolve({ tables: [] })),
-    getCacheStatus: vi.fn(() => Promise.resolve({})),
-    getFetchProgress: vi.fn(() => Promise.resolve({})),
-    fetchDatabricksData: vi.fn(() => Promise.resolve({})),
-    deleteCache: vi.fn(() => Promise.resolve({})),
     // JSON cache
     buildJsonCache: vi.fn(() => Promise.resolve({})),
     cancelJsonCache: vi.fn(() => Promise.resolve({ cancelled: false, data_path: "" })),
@@ -536,7 +531,7 @@ describe("App integration — load a pipeline with nodes", () => {
     // (e.g. "Data Source", "Model Training") so getByText is unambiguous.
     vi.mocked(api.loadPipeline).mockResolvedValueOnce({
       nodes: [
-        makeNode("ds_0", "CustomerDB Loader", "dataSource"),
+        makeNode("ds_0", "CustomerDB Loader", "dataInput"),
         makeNode("polars_1", "Feature Cleanup", "polars"),
         makeNode("output_2", "Final Quote Payload", "output"),
       ],
@@ -578,7 +573,7 @@ describe("App integration — load a pipeline with nodes", () => {
   })
 
   it("selecting an Explore node previews the post-code dataframe in the Explore lower panel", async () => {
-    const sourceNode = makeNode("source_0", "Claims Source", "dataSource")
+    const sourceNode = makeNode("source_0", "Claims Source", "dataInput")
     sourceNode.data._columns = [{ name: "premium", dtype: "i64" }]
     sourceNode.data._availableColumns = [{ name: "premium", dtype: "i64" }]
     // Tag the stash with its capture source — untagged stashes are treated

@@ -1,6 +1,5 @@
 import { lazy, Suspense, type ReactNode } from "react"
 
-export const DataSourceEditor = lazy(() => import("./editors/DataSourceEditor"))
 export const TransformEditor = lazy(() => import("./editors/TransformEditor"))
 export const EdgeJoinEditor = lazy(() => import("./editors/EdgeJoinEditor"))
 export const ExploreCodeEditor = lazy(() => import("./editors/ExploreCodeEditor"))
@@ -12,7 +11,6 @@ export const OutputEditor = lazy(() => import("./editors/OutputEditor"))
 export const ExternalFileEditor = lazy(() => import("./editors/ExternalFileEditor"))
 export const ApiInputEditor = lazy(() => import("./editors/ApiInputEditor"))
 export const LiveSwitchEditor = lazy(() => import("./editors/LiveSwitchEditor"))
-export const SinkEditor = lazy(() => import("./editors/SinkEditor"))
 export const DataInputEditor = lazy(() => import("./editors/DataInputEditor"))
 export const DataOutputEditor = lazy(() => import("./editors/DataOutputEditor"))
 export const ScenarioExpanderEditor = lazy(() => import("./editors/ScenarioExpanderEditor"))

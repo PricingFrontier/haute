@@ -310,7 +310,7 @@ class TestDocstringRoundTrip:
                         "id": "src",
                         "data": {
                             "label": "Src",
-                            "nodeType": "dataSource",
+                            "nodeType": "dataInput",
                             "config": {"path": "d.parquet"},
                         },
                     }
@@ -441,7 +441,7 @@ class TestPipelineNameDocstringSafety:
                                     "id": "src",
                                     "data": {
                                         "label": "Src",
-                                        "nodeType": "dataSource",
+                                        "nodeType": "dataInput",
                                         "config": {"path": "d.parquet"},
                                     },
                                 }
@@ -518,7 +518,7 @@ class TestTortureEndToEnd:
                                     "id": "src",
                                     "data": {
                                         "label": "Src",
-                                        "nodeType": "dataSource",
+                                        "nodeType": "dataInput",
                                         "config": {"path": "d.parquet"},
                                     },
                                 },
@@ -582,7 +582,7 @@ class TestTortureEndToEnd:
                                     "id": "src",
                                     "data": {
                                         "label": "Src",
-                                        "nodeType": "dataSource",
+                                        "nodeType": "dataInput",
                                         "config": {"path": "d.parquet"},
                                     },
                                 },

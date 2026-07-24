@@ -28,7 +28,7 @@ from haute import errors as haute_errors
 from haute._builders import get_column_contract
 from haute._registry import NODE_REGISTRY
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
-from tests.conftest import write_data_source_config, write_node_config
+from tests.conftest import write_data_input_config, write_node_config
 from tests.fixtures.expected_contracts import (
     ALL_NODE_KINDS,
     ALLOWED_OPAQUE_NODE_TYPES,
@@ -48,6 +48,15 @@ def _e(src: str, tgt: str) -> GraphEdge:
 
 def _node(nid: str, nt: NodeType, **cfg: Any) -> GraphNode:
     """Convenience node constructor."""
+    if nt is NodeType.DATA_INPUT:
+        cfg = {
+            "inputType": "file",
+            "format": "parquet",
+            "mode": "scan",
+            "cacheMode": "direct",
+            "arguments": {},
+            **cfg,
+        }
     return GraphNode(id=nid, data=NodeData(label=nid, nodeType=nt, config=cfg))
 
 
@@ -85,9 +94,9 @@ class TestEveryBuilderHasContract:
     def test_every_node_type_has_a_contract(self):
         """Every ``NodeType`` has a ``column_contract`` in ``NODE_REGISTRY``.
 
-        Today only 13 of 17 do.  After adoption, all 17 must — concrete
-        for structured nodes, ``OPAQUE_CONTRACT`` for ``API_INPUT`` /
-        ``DATA_SOURCE`` / ``POLARS`` / ``EXTERNAL_FILE``.
+        All 19 must be explicit — concrete for structured nodes,
+        ``OPAQUE_CONTRACT`` for ``API_INPUT`` / ``DATA_INPUT`` /
+        ``POLARS`` / ``EXTERNAL_FILE`` / ``EDGE_JOIN``.
         """
         missing = ALL_NODE_KINDS - {
             nt for nt, entry in NODE_REGISTRY.items() if entry.column_contract is not None
@@ -120,7 +129,7 @@ class TestEveryBuilderHasContract:
     def test_non_allowlisted_types_return_concrete_contract(self):
         """All non-allowlisted kinds return concrete sets (not None).
 
-        A "pass-through" node (``OUTPUT``, ``DATA_SINK``, etc.) counts as
+        A "pass-through" node (``OUTPUT``, ``DATA_OUTPUT``, etc.) counts as
         concrete because its contract is ``(set(), set())`` — it creates
         nothing, reads nothing.  ``None`` would mean "can't tell" which
         is only acceptable for the allowlisted kinds.
@@ -241,7 +250,7 @@ class TestCodegenEmitsContractMetadata:
 
         graph = PipelineGraph(
             nodes=[
-                _node("src", NodeType.DATA_SOURCE, path="x.parquet"),
+                _node("src", NodeType.DATA_INPUT, path="x.parquet"),
                 _node(
                     "band",
                     NodeType.BANDING,
@@ -273,7 +282,7 @@ class TestCodegenEmitsContractMetadata:
 
         graph = PipelineGraph(
             nodes=[
-                _node("src", NodeType.DATA_SOURCE, path="x.parquet"),
+                _node("src", NodeType.DATA_INPUT, path="x.parquet"),
                 _node("t", NodeType.POLARS, code="df = df.with_columns(pl.lit(1).alias('z'))"),
             ],
             edges=[_e("src", "t")],
@@ -303,7 +312,7 @@ class TestCodegenEmitsContractMetadata:
         from haute.codegen import graph_to_code
         from haute.parser import parse_pipeline_source
 
-        source_config = write_data_source_config(tmp_path, "src", "x.parquet")
+        source_config = write_data_input_config(tmp_path, "src", "x.parquet")
         band_config = write_node_config(
             tmp_path,
             NodeType.BANDING,
@@ -326,7 +335,7 @@ import haute
 pipeline = haute.Pipeline("roundtrip")
 
 
-@pipeline.data_source(config="{source_config}")
+@pipeline.data_input(config="{source_config}")
 def src() -> pl.LazyFrame:
     """Source."""
     return pl.scan_parquet("x.parquet")
@@ -420,7 +429,7 @@ class TestParserValidatesUserDeclaredContracts:
         # Banding factor says column='age', outputColumn='age_band',
         # but the user's explicit contract says 'height' / 'height_band'.
         # The parser must detect the disagreement and raise.
-        source_config = write_data_source_config(tmp_path, "src", "x.parquet")
+        source_config = write_data_input_config(tmp_path, "src", "x.parquet")
         band_config = write_node_config(
             tmp_path,
             NodeType.BANDING,
@@ -443,7 +452,7 @@ import haute
 pipeline = haute.Pipeline("bad")
 
 
-@pipeline.data_source(config="{source_config}")
+@pipeline.data_input(config="{source_config}")
 def src() -> pl.LazyFrame:
     """Source."""
     return pl.scan_parquet("x.parquet")
@@ -480,7 +489,7 @@ pipeline.connect("src", "band")
             pytest.skip("ContractMismatchError not yet defined")
         from haute.parser import parse_pipeline_source
 
-        source_config = write_data_source_config(tmp_path, "src", "x.parquet")
+        source_config = write_data_input_config(tmp_path, "src", "x.parquet")
         band_config = write_node_config(
             tmp_path,
             NodeType.BANDING,
@@ -503,7 +512,7 @@ import haute
 pipeline = haute.Pipeline("good")
 
 
-@pipeline.data_source(config="{source_config}")
+@pipeline.data_input(config="{source_config}")
 def src() -> pl.LazyFrame:
     """Source."""
     return pl.scan_parquet("x.parquet")
@@ -535,7 +544,7 @@ pipeline.connect("src", "band")
         """The public ``Contract(...)`` decorator spelling parses from source."""
         from haute.parser import parse_pipeline_source
 
-        source_config = write_data_source_config(tmp_path, "src", "x.parquet")
+        source_config = write_data_input_config(tmp_path, "src", "x.parquet")
         band_config = write_node_config(
             tmp_path,
             NodeType.BANDING,
@@ -559,7 +568,7 @@ from haute._builders import Contract
 pipeline = haute.Pipeline("contract_ctor")
 
 
-@pipeline.data_source(config="{source_config}")
+@pipeline.data_input(config="{source_config}")
 def src() -> pl.LazyFrame:
     return pl.scan_parquet("x.parquet")
 
@@ -599,7 +608,7 @@ pipeline.connect("src", "band")
         """
         from haute.parser import parse_pipeline_source
 
-        source_config = write_data_source_config(tmp_path, "src", "x.parquet")
+        source_config = write_data_input_config(tmp_path, "src", "x.parquet")
         score_config = write_node_config(
             tmp_path,
             NodeType.MODEL_SCORE,
@@ -625,7 +634,7 @@ import haute
 pipeline = haute.Pipeline("model_score_contract")
 
 
-@pipeline.data_source(config="{source_config}")
+@pipeline.data_input(config="{source_config}")
 def src() -> pl.LazyFrame:
     return pl.scan_parquet("x.parquet")
 
@@ -701,7 +710,7 @@ class TestExecutorAssertsContractsAtBoundaries:
 
         graph = PipelineGraph(
             nodes=[
-                _node("src", NodeType.DATA_SOURCE, path=str(pq)),
+                _node("src", NodeType.DATA_INPUT, path=str(pq)),
                 _node(
                     "band",
                     NodeType.BANDING,
@@ -745,7 +754,7 @@ class TestExecutorAssertsContractsAtBoundaries:
         # forgets to create it — executor must notice.
         graph = PipelineGraph(
             nodes=[
-                _node("src", NodeType.DATA_SOURCE, path=str(pq)),
+                _node("src", NodeType.DATA_INPUT, path=str(pq)),
                 _node(
                     "t",
                     NodeType.POLARS,
@@ -788,7 +797,7 @@ class TestExecutorAssertsContractsAtBoundaries:
 
         graph = PipelineGraph(
             nodes=[
-                _node("src", NodeType.DATA_SOURCE, path=str(pq)),
+                _node("src", NodeType.DATA_INPUT, path=str(pq)),
                 _node(
                     "t",
                     NodeType.POLARS,
@@ -843,7 +852,7 @@ class TestExecutorAssertsContractsAtBoundaries:
 
         graph = PipelineGraph(
             nodes=[
-                _node("src", NodeType.DATA_SOURCE, path=str(pq)),
+                _node("src", NodeType.DATA_INPUT, path=str(pq)),
                 _node(
                     "band",
                     NodeType.BANDING,
@@ -888,7 +897,7 @@ class TestContractOverheadBenchmark:
         this is a realistic shape for a scoring pipeline.
         """
         nodes: list[GraphNode] = [
-            _node("src", NodeType.DATA_SOURCE, path=data_path),
+            _node("src", NodeType.DATA_INPUT, path=data_path),
         ]
         edges: list[GraphEdge] = []
         prev = "src"

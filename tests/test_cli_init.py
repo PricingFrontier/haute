@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import stat
 import sys
 import tomllib
@@ -55,6 +56,21 @@ class TestInitCreatesProjectStructure:
         monkeypatch.chdir(tmp_path)
         runner.invoke(cli, ["init"], catch_exceptions=False)
         assert (tmp_path / "data").is_dir()
+
+    def test_starter_data_input_path_is_pipeline_local_and_traversal_free(
+        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.chdir(tmp_path)
+        result = runner.invoke(cli, ["init"], catch_exceptions=False)
+
+        assert result.exit_code == 0, result.output
+        config_path = tmp_path / "rating" / "config" / "data_input" / "raw_rows.json"
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        source_path = Path(config["path"])
+
+        assert source_path == Path("data/sample.parquet")
+        assert ".." not in source_path.parts
+        assert (tmp_path / "rating" / "data").is_dir()
 
     def test_creates_prompts_directory(
         self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

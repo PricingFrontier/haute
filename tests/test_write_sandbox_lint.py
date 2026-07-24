@@ -503,7 +503,6 @@ EXPECTED_VIOLATIONS: dict[str, int] = {
     # these actually escape the sandbox at run time.
     "tests/test_algorithms_coverage.py": 3,
     "tests/test_cache_perf_fixes.py": 2,
-    "tests/test_databricks_io.py": 3,
     "tests/test_dataframe_execution_cache.py": 1,
     "tests/test_deploy.py": 1,
     "tests/test_deploy_contract_integrity.py": 1,

@@ -25,7 +25,7 @@ describe("bundle size checker initial JS budget", () => {
         { name: "index.js", rawBytes: 100, gzipBytes: 75 * 1024 },
         { name: "vendor-react.js", rawBytes: 100, gzipBytes: 120 * 1024 },
         { name: "CodeMirrorEditor.js", rawBytes: 100, gzipBytes: 180 * 1024 },
-        { name: "DataSourceEditor.js", rawBytes: 100, gzipBytes: 40 * 1024 },
+        { name: "DataInputEditor.js", rawBytes: 100, gzipBytes: 40 * 1024 },
       ],
       budgetsKiB: {
         maxInitialJsGzipKiB: 230,

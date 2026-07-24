@@ -2,7 +2,7 @@
 
 Covers gaps in:
   - _extract_column_refs
-  - execute_sink
+  - write_data_output
   - _apply_column_renames
   - _apply_selected_columns
   - _prune_live_switch_edges
@@ -12,8 +12,6 @@ Covers gaps in:
 from __future__ import annotations
 
 import errno
-import tempfile
-from pathlib import Path
 from unittest.mock import patch
 
 import polars as pl
@@ -33,7 +31,7 @@ from haute._types import (
 from haute.executor import (
     _extract_column_refs,
     execute_graph,
-    execute_sink,
+    write_data_output,
 )
 from tests.conftest import (
     make_edge as _edge,
@@ -63,7 +61,7 @@ def _e(src: str, tgt: str) -> GraphEdge:
 def _src_node(nid: str, label: str | None = None) -> GraphNode:
     return GraphNode(
         id=nid,
-        data=NodeData(label=label or nid, nodeType=NodeType.DATA_SOURCE),
+        data=NodeData(label=label or nid, nodeType=NodeType.DATA_INPUT),
     )
 
 
@@ -99,8 +97,14 @@ def _sink_graph(tmp_path, *, fmt="parquet", src_data=None, out_name=None):
                         "id": "sink",
                         "data": {
                             "label": "sink",
-                            "nodeType": "dataSink",
-                            "config": {"path": str(out_path), "format": fmt},
+                            "nodeType": "dataOutput",
+                            "config": {
+                                "outputType": "file",
+                                "format": fmt,
+                                "mode": "sink" if fmt in {"csv", "parquet"} else "write",
+                                "path": str(out_path),
+                                "arguments": {},
+                            },
                         },
                     }
                 ),
@@ -176,7 +180,7 @@ class TestExtractColumnRefsEdgeCases:
 
 
 # ===========================================================================
-# execute_sink edge cases
+# write_data_output edge cases
 # ===========================================================================
 
 
@@ -194,8 +198,14 @@ class TestExecuteSinkEdgeCases:
                             "id": "sink",
                             "data": {
                                 "label": "sink",
-                                "nodeType": "dataSink",
-                                "config": {"path": str(out_path), "format": "parquet"},
+                                "nodeType": "dataOutput",
+                                "config": {
+                                    "outputType": "file",
+                                    "format": "parquet",
+                                    "mode": "sink",
+                                    "path": str(out_path),
+                                    "arguments": {},
+                                },
                             },
                         }
                     ),
@@ -204,7 +214,7 @@ class TestExecuteSinkEdgeCases:
             }
         )
         assert not out_path.parent.exists()
-        result = execute_sink(graph, sink_node_id="sink")
+        result = write_data_output(graph, output_node_id="sink")
         assert result.status == "ok"
         assert out_path.exists()
 
@@ -383,7 +393,7 @@ class TestRowLimitEdgeCases:
 
 
 # ===========================================================================
-# execute_sink — I/O error propagation
+# write_data_output — I/O error propagation
 # ===========================================================================
 
 
@@ -391,37 +401,27 @@ class TestExecuteSinkIOErrors:
     def test_permission_error_propagates(self, tmp_path):
         graph, _out = _sink_graph(tmp_path, fmt="parquet")
         with patch(
-            "haute._polars_utils.bounded_sink",
+            "haute._polars_io_registry.write_polars_output",
             side_effect=PermissionError("Access denied"),
         ):
             with pytest.raises(PermissionError, match="Access denied"):
-                execute_sink(graph, sink_node_id="sink")
+                write_data_output(graph, output_node_id="sink")
 
     def test_oserror_disk_full_propagates(self, tmp_path):
         graph, _out = _sink_graph(tmp_path, fmt="parquet")
         err = OSError(errno.ENOSPC, "No space left")
-        with patch("haute._polars_utils.bounded_sink", side_effect=err):
+        with patch("haute._polars_io_registry.write_polars_output", side_effect=err):
             with pytest.raises(OSError, match="No space left"):
-                execute_sink(graph, sink_node_id="sink")
+                write_data_output(graph, output_node_id="sink")
 
-    def test_checkpoint_dir_cleaned_up_on_exception(self, tmp_path):
+    def test_output_write_error_propagates(self, tmp_path):
         graph, _out = _sink_graph(tmp_path, fmt="parquet")
-        captured_dirs: list[str] = []
-
-        original_mkdtemp = tempfile.mkdtemp
-
-        def _tracking_mkdtemp(**kwargs):
-            d = original_mkdtemp(**kwargs)
-            captured_dirs.append(d)
-            return d
-
-        with patch("haute.executor.tempfile.mkdtemp", side_effect=_tracking_mkdtemp):
-            with patch("haute._polars_utils.bounded_sink", side_effect=RuntimeError("boom")):
-                with pytest.raises(RuntimeError, match="boom"):
-                    execute_sink(graph, sink_node_id="sink")
-
-        assert len(captured_dirs) == 1
-        assert not Path(captured_dirs[0]).exists()
+        with patch(
+            "haute._polars_io_registry.write_polars_output",
+            side_effect=RuntimeError("boom"),
+        ):
+            with pytest.raises(RuntimeError, match="boom"):
+                write_data_output(graph, output_node_id="sink")
 
 
 # ===========================================================================

@@ -216,11 +216,77 @@ def _restore_project_root():
 # ---------------------------------------------------------------------------
 
 
+def make_file_input_config(path: object, **extra: object) -> dict[str, object]:
+    """Build a persisted canonical file ``dataInput`` config for tests."""
+    path_text = str(path)
+    format_name, mode = {
+        ".csv": ("csv", "scan"),
+        ".json": ("json", "read"),
+        ".jsonl": ("ndjson", "scan"),
+        ".ndjson": ("ndjson", "scan"),
+        ".parquet": ("parquet", "scan"),
+        ".arrow": ("ipc", "scan"),
+        ".feather": ("ipc", "scan"),
+        ".ipc": ("ipc", "scan"),
+        ".avro": ("avro", "read"),
+        ".xlsx": ("excel", "read"),
+        ".ods": ("ods", "read"),
+        ".txt": ("lines", "scan"),
+        ".log": ("lines", "scan"),
+    }.get(Path(path_text).suffix.lower(), ("parquet", "scan"))
+    return {
+        "inputType": "file",
+        "format": format_name,
+        "mode": mode,
+        "cacheMode": "direct",
+        "path": path_text,
+        "arguments": {},
+        **extra,
+    }
+
+
+def make_file_output_config(
+    path: object,
+    *,
+    format_name: str | None = None,
+    mode: str | None = None,
+    **extra: object,
+) -> dict[str, object]:
+    """Build a persisted canonical file ``dataOutput`` config for tests."""
+    path_text = str(path)
+    resolved_format = format_name or {
+        ".csv": "csv",
+        ".json": "json",
+        ".jsonl": "ndjson",
+        ".ndjson": "ndjson",
+        ".parquet": "parquet",
+        ".arrow": "ipc",
+        ".feather": "ipc",
+        ".ipc": "ipc",
+        ".avro": "avro",
+        ".xlsx": "excel",
+        ".ods": "ods",
+    }.get(Path(path_text).suffix.lower(), "parquet")
+    resolved_mode = mode or ("sink" if resolved_format in {"csv", "ndjson", "parquet"} else "write")
+    return {
+        "outputType": "file",
+        "format": resolved_format,
+        "mode": resolved_mode,
+        "path": path_text,
+        "arguments": {},
+        **extra,
+    }
+
+
 def make_source_node(nid: str, path: str = "data.parquet") -> GraphNode:
-    """Build a minimal dataSource node."""
+    """Build a minimal canonical file ``dataInput`` node."""
     return GraphNode(
         id=nid,
-        data=NodeData(label=nid, nodeType="dataSource", config={"path": path}),
+        data=NodeData(
+            label=nid,
+            nodeType="dataInput",
+            config=make_file_input_config(path),
+        ),
     )
 
 
@@ -240,19 +306,40 @@ def write_node_config(
     return rel_path.as_posix()
 
 
-def write_data_source_config(
+def write_data_input_config(
     base_dir: Path,
     func_name: str,
     path: str,
-    *,
-    source_type: str = "flat_file",
 ) -> str:
-    """Write the canonical sidecar for a ``dataSource`` node."""
+    """Write the canonical sidecar for a ``dataInput`` node."""
+    suffix = Path(path).suffix.lower()
+    format_name, mode = {
+        ".csv": ("csv", "scan"),
+        ".json": ("json", "read"),
+        ".jsonl": ("ndjson", "scan"),
+        ".ndjson": ("ndjson", "scan"),
+        ".parquet": ("parquet", "scan"),
+        ".arrow": ("ipc", "scan"),
+        ".feather": ("ipc", "scan"),
+        ".ipc": ("ipc", "scan"),
+        ".avro": ("avro", "read"),
+        ".xlsx": ("excel", "read"),
+        ".ods": ("ods", "read"),
+        ".txt": ("lines", "scan"),
+        ".log": ("lines", "scan"),
+    }.get(suffix, ("parquet", "scan"))
     return write_node_config(
         base_dir,
-        NodeType.DATA_SOURCE,
+        NodeType.DATA_INPUT,
         func_name,
-        {"path": path, "sourceType": source_type},
+        {
+            "inputType": "file",
+            "format": format_name,
+            "mode": mode,
+            "cacheMode": "direct",
+            "path": path,
+            "arguments": {},
+        },
     )
 
 

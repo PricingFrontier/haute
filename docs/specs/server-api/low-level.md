@@ -13,8 +13,10 @@
 | `src/haute/_types.py` | `NodeType` (`StrEnum`), the decorator↔NodeType maps, every per-node-type config `TypedDict`, the `SolveResultLike` Protocol family, and the canonical `NodeData` / `GraphNode` / `GraphEdge` / `PipelineGraph` Pydantic models (with `PipelineGraph`'s cached-property-invalidating `model_copy` override). |
 | `src/haute/routes/__init__.py` | Package docstring only — no code. |
 | `src/haute/routes/_helpers.py` | `SidecarModel` (the `.haute.json` on-disk schema); `validate_safe_path`; `pipeline_dir()`; the pipeline-name→path index (`_ensure_pipeline_index`, `invalidate_pipeline_index`, `lookup_pipeline_by_name`) and its module-dependency twin (`_ensure_module_deps`, `pipelines_importing_module`); self-write tracking (`mark_self_write`, `is_self_write`); watcher-pause (`pause_watcher`, `watcher_is_paused`); the WebSocket client registry and `broadcast()`; sidecar load/save (`load_sidecar`, `save_sidecar`); `parse_pipeline_to_graph` (parse + sidecar merge); `commit_pipeline_graph` (read-only historical-commit parse); the shared `save_lock` asyncio.Lock. |
-| `src/haute/routes/pipeline.py` | `/api/pipelines`, `/api/pipeline`, `/api/pipeline/{name}`, `/api/pipeline/save`, `/api/pipeline/read-json`, `/api/pipeline/trace`, `/api/pipeline/preview`, `/api/pipeline/sink` — plus the supersession-key builders, runtime-input/sink-output path validators, and memory-limit-to-HTTP-exception translators shared across those handlers. |
-| `src/haute/routes/files.py` | `/api/files` (directory browse), `/api/formats` (polars I/O registry), `/api/schema` (flat-file schema+preview), `/api/schema/databricks` (cached-parquet schema+preview). |
+| `src/haute/routes/pipeline.py` | `/api/pipelines`, `/api/pipeline`, `/api/pipeline/{name}`, `/api/pipeline/save`, `/api/pipeline/read-json`, `/api/pipeline/trace`, `/api/pipeline/preview`, `/api/pipeline/write-output` — plus the supersession-key builders, runtime-input/output path validators, and memory-limit-to-HTTP-exception translators shared across those handlers. |
+| `src/haute/routes/files.py` | `/api/files` (directory browse) and `/api/schema` (flat-file schema+preview). |
+| `src/haute/routes/io_capabilities.py` | `/api/io-capabilities`, the versioned provider/format/cache capability contract consumed by the input and output editors. |
+| `src/haute/routes/input_cache.py` | `/api/input-cache/*`, the shared build/status/cancel/clear lifecycle for snapshot-backed inputs. |
 | `src/haute/routes/utility.py` | `/api/utility` CRUD (list/read/create/update/delete) for `utility/*.py` helper modules, with AST syntax validation on every write. |
 | `src/haute/routes/_save_pipeline.py` | `SavePipelineService` — the transactional save orchestrator: singleton/name-collision/load-error validation, codegen invocation, config-file + sidecar writes, stale-config cleanup, and rollback. |
 | `src/haute/routes/_supersession.py` | `SupersessionCoordinator` / `_SupersessionState` — generation-counted "run latest, cancel/skip the rest" concurrency primitive used by preview and trace. |
@@ -102,11 +104,14 @@ when a path/query/body fails model validation):
 | `POST /api/pipeline/read-json` | `ReadJsonRequest {path}` | `ReadJsonResponse`, a root JSON object (arrays/scalars are rejected) |
 | `POST /api/pipeline/preview` | `PreviewNodeRequest {graph, node_id, row_limit=100 (1..10000), source="live", requested_preview_columns=null (non-empty when present), streaming_chunk_size=null (1..10000000, bool rejected), port_label=null}` | `PreviewNodeResponse`, extending `NodeResult` with `node_id`, timings/memory, per-node schemas/statuses, and optional execution metrics |
 | `POST /api/pipeline/trace` | `TraceRequest {graph, row_index=0 (>=0), target_node_id=null, column=null, row_limit=100 (1..10000), source="live", row_values=null, streaming_chunk_size=null}` | Explicit JSON `TraceResponse {status, trace}`. `trace` includes successful steps, typed omissions, correlation/waterfall evidence, UTC `generated_at`, source identity, and `execution_origin: fresh_execution|preview_cache|trace_cache`; the payload is serialized and `TraceResponse`-validated in the worker, then the returned `JSONResponse` skips a second event-loop validation pass |
-| `POST /api/pipeline/sink` | `SinkRequest {graph, node_id, source="live", streaming_chunk_size=null}` | `SinkResponse {status, message="", row_count=0, path="", format="parquet", execution_metrics=null}` |
+| `POST /api/pipeline/write-output` | `WriteOutputRequest {graph, node_id, source="live", streaming_chunk_size=null}` | `WriteOutputResponse` with status, row count, destination path/table, format, publication outcome, and execution metrics |
 | `GET /api/files` | Query `dir="."`, `extensions=".parquet,.csv,.json,.xml"` | `BrowseFilesResponse {dir, items:[{name,path,type,size?}]}` |
-| `GET /api/formats` | No body | `IoFormatsResponse {formats:[IoFormatCapability...]}` from the runtime I/O registry |
+| `GET /api/io-capabilities` | No body | Versioned provider groups, format capabilities, modes, accepted arguments, optional engines, cache modes, and materialisation diagnostics |
 | `GET /api/schema` | Required query `path` | `SchemaResponse {path, columns, row_count?, row_count_estimated=false, column_count, preview=[]}` |
-| `GET /api/schema/databricks` | Required query `table` in `catalog.schema.table` form | `SchemaResponse` from the local parquet cache |
+| `POST /api/input-cache/build` | Canonical `dataInput` config and source identity | Starts or coalesces a cache-generation build and returns its job identity |
+| `POST /api/input-cache/status` | Canonical `dataInput` config | Current published-generation readiness, freshness, metadata, and active job |
+| `POST /api/input-cache/clear` | Canonical `dataInput` config | Clears published cache generations when no active lease prevents deletion |
+| `GET /api/input-cache/jobs/{job_id}` / `DELETE /api/input-cache/jobs/{job_id}` | Job id | Polls or requests cancellation of a cache build |
 | `GET /api/utility` | No body | `UtilityListResponse {files:[{name,module}]}` |
 | `GET /api/utility/{module}` | Python-identifier module path | `UtilityReadResponse {name,module,content}` |
 | `POST /api/utility` | `UtilityCreateRequest {name, content=""}` | `UtilityWriteResponse {status="ok", name, module, import_line, error=null, error_line=null}` |
@@ -420,8 +425,11 @@ for route-level tests, and direct unit tests for the pure-function modules.
   behaviour.
 - **`test_event_bus_gaps.py`** — targeted edge-branch coverage for `EventBus` (idempotent
   unsubscribe, handler-exception isolation, empty-registry publish no-op).
-- **`test_logging.py`** — `configure_logging()`'s processors-list-identity invariant (so
-  `capture_logs` and cached bound loggers keep working across reconfiguration).
+- **`test_logging.py`** — `configure_logging()` preserves processor-list identity once
+  Haute's stdlib bridge is installed (so `capture_logs` and cached bound loggers keep
+  working across reconfiguration), but never mutates a pre-existing structlog default or
+  third-party processor list. Restoring a prior default configuration must therefore not
+  combine `PrintLogger` with Haute's stdlib-only processors.
 - **`test_routes_hygiene.py`**, **`test_routes_error_handling.py`** — cross-route regression
   checks (consistent sanitized-error usage, no leaked internal exception text) and explicit
   error-path tests per route.
@@ -528,3 +536,30 @@ pre-1.0 fail-loud compatibility change: release and migration notes are required
 shim may preserve unsafe silent fallback. The execution-engine spec owns production of the
 strategy data; see the
 [remediation plan](../../trip/plans/F_0.6.0_polars-backend-remediation.plan.md).
+
+## Approved change contract — 0.7.0 data I/O API
+
+The implementation plan is
+[`F_0.7.0_data-io-convergence.plan.md`](../../trip/plans/F_0.7.0_data-io-convergence.plan.md).
+
+- `src/haute/routes/files.py` stops serving `/api/formats`; registry capability serving moves to
+  a focused `src/haute/routes/io_capabilities.py`. Add the exact versioned Pydantic response and
+  corresponding frontend guard.
+- Add `src/haute/routes/input_cache.py`, backed by the source-cache store and the existing
+  background-job/concurrency primitives. Build requests validate a retained `DataInputConfig`,
+  compute its redacted identity, enforce provider/build capability, then return `202` with job
+  id. Status/cancel are job-id addressed; snapshot status/clear are identity addressed through a
+  validated source descriptor rather than an arbitrary filesystem path.
+- In `src/haute/routes/databricks.py`, retain workspace browse endpoints and delete fetch,
+  progress, cache-status, and cache-delete endpoints after callers migrate.
+- Rename the explicit sink handler in `src/haute/routes/pipeline.py` to
+  `/api/pipeline/write-output`; validate exactly `NodeType.DATA_OUTPUT` and dispatch the unified
+  executor. Delete the legacy route and dual-type condition.
+- `src/haute/schemas.py` adds `IoCapabilitiesResponse`, input-cache job/request/status models, and
+  unified output-write request/response models. Stable error codes cover unsupported capability,
+  snapshot required/missing/stale/corrupt, build rejected/cancelled, secret-bearing config, and
+  unsupported publication. Guards reject unknown schema versions and malformed discriminants.
+- Route tests cover response-model exactness, same-key single flight, independent-key
+  concurrency, cancel/finish races, timeout ownership, safe errors/redaction, path containment,
+  unsaved graph execution, and removed route 404s. OpenAPI/frontend contract fixtures update in
+  the same batch.

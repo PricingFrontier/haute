@@ -130,8 +130,15 @@ class TestSingleNodeVariants:
                             "id": "src",
                             "data": {
                                 "label": "src",
-                                "nodeType": "dataSource",
-                                "config": {"path": "data/input.parquet"},
+                                "nodeType": "dataInput",
+                                "config": {
+                                    "inputType": "file",
+                                    "format": "parquet",
+                                    "mode": "scan",
+                                    "cacheMode": "direct",
+                                    "path": "data/input.parquet",
+                                    "arguments": {},
+                                },
                             },
                         }
                     )
@@ -161,8 +168,14 @@ class TestSingleNodeVariants:
                             "id": "sink",
                             "data": {
                                 "label": "sink",
-                                "nodeType": "dataSink",
-                                "config": {"path": "outputs/result", "format": "parquet"},
+                                "nodeType": "dataOutput",
+                                "config": {
+                                    "outputType": "file",
+                                    "format": "parquet",
+                                    "mode": "sink",
+                                    "path": "outputs/result",
+                                    "arguments": {},
+                                },
                             },
                         }
                     )
@@ -187,8 +200,15 @@ class TestExploreGraphShape:
                             "id": "Source",
                             "data": {
                                 "label": "Source",
-                                "nodeType": "dataSource",
-                                "config": {"path": "data/input.parquet"},
+                                "nodeType": "dataInput",
+                                "config": {
+                                    "inputType": "file",
+                                    "format": "parquet",
+                                    "mode": "scan",
+                                    "cacheMode": "direct",
+                                    "path": "data/input.parquet",
+                                    "arguments": {},
+                                },
                             },
                         }
                     ),
@@ -234,8 +254,15 @@ class TestExploreGraphShape:
                             "id": "a",
                             "data": {
                                 "label": "A",
-                                "nodeType": "dataSource",
-                                "config": {"path": "a.parquet"},
+                                "nodeType": "dataInput",
+                                "config": {
+                                    "inputType": "file",
+                                    "format": "parquet",
+                                    "mode": "scan",
+                                    "cacheMode": "direct",
+                                    "path": "a.parquet",
+                                    "arguments": {},
+                                },
                             },
                         }
                     ),
@@ -244,8 +271,15 @@ class TestExploreGraphShape:
                             "id": "b",
                             "data": {
                                 "label": "B",
-                                "nodeType": "dataSource",
-                                "config": {"path": "b.parquet"},
+                                "nodeType": "dataInput",
+                                "config": {
+                                    "inputType": "file",
+                                    "format": "parquet",
+                                    "mode": "scan",
+                                    "cacheMode": "direct",
+                                    "path": "b.parquet",
+                                    "arguments": {},
+                                },
                             },
                         }
                     ),
@@ -272,8 +306,15 @@ class TestExploreGraphShape:
                             "id": "src",
                             "data": {
                                 "label": "Source",
-                                "nodeType": "dataSource",
-                                "config": {"path": "data.parquet"},
+                                "nodeType": "dataInput",
+                                "config": {
+                                    "inputType": "file",
+                                    "format": "parquet",
+                                    "mode": "scan",
+                                    "cacheMode": "direct",
+                                    "path": "data.parquet",
+                                    "arguments": {},
+                                },
                             },
                         }
                     ),
@@ -313,8 +354,15 @@ class TestExploreGraphShape:
                             "id": "src",
                             "data": {
                                 "label": "Source",
-                                "nodeType": "dataSource",
-                                "config": {"path": str(path)},
+                                "nodeType": "dataInput",
+                                "config": {
+                                    "inputType": "file",
+                                    "format": "parquet",
+                                    "mode": "scan",
+                                    "cacheMode": "direct",
+                                    "path": str(path),
+                                    "arguments": {},
+                                },
                             },
                         }
                     ),
@@ -374,8 +422,15 @@ class TestExploreGraphShape:
                             "id": "src",
                             "data": {
                                 "label": "Source",
-                                "nodeType": "dataSource",
-                                "config": {"path": str(data_path)},
+                                "nodeType": "dataInput",
+                                "config": {
+                                    "inputType": "file",
+                                    "format": "parquet",
+                                    "mode": "scan",
+                                    "cacheMode": "direct",
+                                    "path": str(data_path),
+                                    "arguments": {},
+                                },
                             },
                         }
                     ),
@@ -426,8 +481,15 @@ class TestExploreGraphShape:
                             "id": "first",
                             "data": {
                                 "label": "First",
-                                "nodeType": "dataSource",
-                                "config": {"path": str(first)},
+                                "nodeType": "dataInput",
+                                "config": {
+                                    "inputType": "file",
+                                    "format": "parquet",
+                                    "mode": "scan",
+                                    "cacheMode": "direct",
+                                    "path": str(first),
+                                    "arguments": {},
+                                },
                             },
                         }
                     ),
@@ -436,8 +498,15 @@ class TestExploreGraphShape:
                             "id": "second",
                             "data": {
                                 "label": "Second",
-                                "nodeType": "dataSource",
-                                "config": {"path": str(second)},
+                                "nodeType": "dataInput",
+                                "config": {
+                                    "inputType": "file",
+                                    "format": "parquet",
+                                    "mode": "scan",
+                                    "cacheMode": "direct",
+                                    "path": str(second),
+                                    "arguments": {},
+                                },
                             },
                         }
                     ),
@@ -501,8 +570,15 @@ class TestRoundTripDrift:
                             "id": "src",
                             "data": {
                                 "label": "src",
-                                "nodeType": "dataSource",
-                                "config": {"path": "data/input.parquet"},
+                                "nodeType": "dataInput",
+                                "config": {
+                                    "inputType": "file",
+                                    "format": "parquet",
+                                    "mode": "scan",
+                                    "cacheMode": "direct",
+                                    "path": "data/input.parquet",
+                                    "arguments": {},
+                                },
                             },
                         }
                     ),

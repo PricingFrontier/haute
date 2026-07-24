@@ -61,6 +61,8 @@ Use the fewest workers that materially reduce wall-clock time. Prefer direct too
 5. Inspect the actual diff and run the verification ladder below. The root must not accept a worker summary in place of reviewing its changes and evidence.
 6. The root performs the final review for correctness, regressions, maintainability, consistency, and user experience. Work is complete only after the acceptance criteria are met and the relevant verification evidence is clean.
 
+For failures reported by GitHub CI, inspect the failing check and logs with `gh`, make the smallest targeted fix, and validate it by pushing and rerunning the GitHub workflow. Do not recreate or run the full CI, preflight, or browser suite locally unless the user asks, or a targeted local reproduction is necessary to diagnose an unclear failure. Limit local verification to the affected test or static check; treat the GitHub pipeline as the authoritative full-suite environment.
+
 # Verification ladder
 
 Run only the lowest sufficient level while iterating, then climb when the change's risk warrants it:

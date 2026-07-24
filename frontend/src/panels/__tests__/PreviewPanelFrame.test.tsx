@@ -29,7 +29,7 @@ describe("PreviewPanelFrame", () => {
 
   it("centralises default preview panel sizing and node icon rendering", () => {
     render(
-      <PreviewPanelFrame nodeLabel="Claims source" nodeType="dataSource">
+      <PreviewPanelFrame nodeLabel="Claims source" nodeType="dataInput">
         <div>Preview body</div>
       </PreviewPanelFrame>,
     )
@@ -44,7 +44,7 @@ describe("PreviewPanelFrame", () => {
     render(
       <PreviewPanelFrame
         nodeLabel="Claims source"
-        nodeType="dataSource"
+        nodeType="dataInput"
         collapsedMeta="100 rows"
         data-testid="preview-panel-frame"
       >
@@ -63,7 +63,7 @@ describe("PreviewPanelFrame", () => {
 
   it("places the top-expand command to the right of the collapse control and can restore height", () => {
     render(
-      <PreviewPanelFrame nodeLabel="Claims source" nodeType="dataSource" data-testid="preview-panel-frame">
+      <PreviewPanelFrame nodeLabel="Claims source" nodeType="dataInput" data-testid="preview-panel-frame">
         <div>Preview body</div>
       </PreviewPanelFrame>,
     )
@@ -99,7 +99,7 @@ describe("PreviewPanelFrame", () => {
 
   it("collapsing from full height resets the collapsed full-open control instead of showing restore", () => {
     render(
-      <PreviewPanelFrame nodeLabel="Claims source" nodeType="dataSource" data-testid="preview-panel-frame">
+      <PreviewPanelFrame nodeLabel="Claims source" nodeType="dataInput" data-testid="preview-panel-frame">
         <div>Preview body</div>
       </PreviewPanelFrame>,
     )

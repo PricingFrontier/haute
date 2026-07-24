@@ -49,7 +49,7 @@ def _node(nid: str, node_type: NodeType, **config) -> GraphNode:
 
 
 def _source(nid: str) -> GraphNode:
-    return _node(nid, NodeType.DATA_SOURCE)
+    return _node(nid, NodeType.DATA_INPUT)
 
 
 def _output(nid: str, fields: list[str] | None = None) -> GraphNode:
@@ -78,7 +78,7 @@ def _passthrough(nid: str) -> GraphNode:
 
 
 def _sink(nid: str) -> GraphNode:
-    return _node(nid, NodeType.DATA_SINK)
+    return _node(nid, NodeType.DATA_OUTPUT)
 
 
 def _build_children_of(
@@ -528,7 +528,7 @@ class TestEdgeCases:
         assert needed["src"] == {"x", "y"}
 
     def test_terminal_non_output_does_not_crash(self):
-        """A terminal DATA_SINK is not an OUTPUT — its needed is
+        """A terminal DATA_OUTPUT is not a quote OUTPUT — its needed is
         ``None`` and that propagates up without error.
         """
         nodes = [_source("src"), _sink("sink")]

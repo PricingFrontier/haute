@@ -11,7 +11,7 @@ Exercises the v2 apiInput at runtime end-to-end through execute_graph:
 - Multi-port edge with null ``sourceHandle`` → executor raises a clear
   diagnostic naming the available ports.
 
-The test pipelines use only DATA_SOURCE + POLARS + API_INPUT to keep
+The test pipelines use only DATA_INPUT + POLARS + API_INPUT to keep
 the surface focused on routing, not transform semantics.
 """
 

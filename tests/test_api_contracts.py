@@ -75,32 +75,10 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
             "success_schema": {"$ref": "#/components/schemas/AssistantStatusResponse"},
         },
     },
-    "/api/databricks/cache": {
-        "DELETE": {
-            "request_ref": None,
-            "success_schema": {"$ref": "#/components/schemas/CacheStatusResponse"},
-        },
-        "GET": {
-            "request_ref": None,
-            "success_schema": {"$ref": "#/components/schemas/CacheStatusResponse"},
-        },
-    },
     "/api/databricks/catalogs": {
         "GET": {
             "request_ref": None,
             "success_schema": {"$ref": "#/components/schemas/CatalogListResponse"},
-        },
-    },
-    "/api/databricks/fetch": {
-        "POST": {
-            "request_ref": "#/components/schemas/FetchTableRequest",
-            "success_schema": {"$ref": "#/components/schemas/FetchTableResponse"},
-        },
-    },
-    "/api/databricks/fetch/progress": {
-        "GET": {
-            "request_ref": None,
-            "success_schema": {"$ref": "#/components/schemas/FetchProgressResponse"},
         },
     },
     "/api/databricks/schemas": {
@@ -145,10 +123,38 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
             "success_schema": {"$ref": "#/components/schemas/BrowseFilesResponse"},
         },
     },
-    "/api/formats": {
+    "/api/input-cache/build": {
+        "POST": {
+            "request_ref": "#/components/schemas/InputCacheBuildRequest",
+            "success_schema": {"$ref": "#/components/schemas/InputCacheBuildResponse"},
+        },
+    },
+    "/api/input-cache/clear": {
+        "POST": {
+            "request_ref": "#/components/schemas/InputCacheSourceRequest",
+            "success_schema": {"$ref": "#/components/schemas/InputCacheSnapshotStatusResponse"},
+        },
+    },
+    "/api/input-cache/jobs/{job_id}": {
+        "DELETE": {
+            "request_ref": None,
+            "success_schema": {"$ref": "#/components/schemas/InputCacheCancelResponse"},
+        },
         "GET": {
             "request_ref": None,
-            "success_schema": {"$ref": "#/components/schemas/IoFormatsResponse"},
+            "success_schema": {"$ref": "#/components/schemas/InputCacheJobStatusResponse"},
+        },
+    },
+    "/api/input-cache/status": {
+        "POST": {
+            "request_ref": "#/components/schemas/InputCacheSourceRequest",
+            "success_schema": {"$ref": "#/components/schemas/InputCacheSnapshotStatusResponse"},
+        },
+    },
+    "/api/io-capabilities": {
+        "GET": {
+            "request_ref": None,
+            "success_schema": {"$ref": "#/components/schemas/IoCapabilitiesResponse"},
         },
     },
     "/api/git/archive": {
@@ -551,10 +557,10 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
             "success_schema": {"$ref": "#/components/schemas/SavePipelineResponse"},
         },
     },
-    "/api/pipeline/sink": {
+    "/api/pipeline/write-output": {
         "POST": {
-            "request_ref": "#/components/schemas/SinkRequest",
-            "success_schema": {"$ref": "#/components/schemas/SinkResponse"},
+            "request_ref": "#/components/schemas/WriteOutputRequest",
+            "success_schema": {"$ref": "#/components/schemas/WriteOutputResponse"},
         },
     },
     "/api/pipeline/trace": {
@@ -579,12 +585,6 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
         },
     },
     "/api/schema": {
-        "GET": {
-            "request_ref": None,
-            "success_schema": {"$ref": "#/components/schemas/SchemaResponse"},
-        },
-    },
-    "/api/schema/databricks": {
         "GET": {
             "request_ref": None,
             "success_schema": {"$ref": "#/components/schemas/SchemaResponse"},

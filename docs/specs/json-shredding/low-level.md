@@ -408,6 +408,9 @@ Shred / inference / cache lifecycle (`_json_shred.py`, `_json_flatten.py`):
   `tests/test_json_shred_mutation_witnesses.py` — targeted mutation-testing witness
   suites; each pins one specific branch/condition so a mutation-testing run can't
   silently survive a change to it.
+- `tests/test_inference_identifier_labels.py` — focused mutation witnesses for
+  inferred table-label derivation, symmetric collision qualification,
+  deterministic suffixing, case-only collisions, and validation closure.
 - `tests/test_load_v2_api_source.py` — direct coverage of the shared runtime entry
   point: emit checks, working→committed→direct resolution, cache corruption and
   exact-schema rejection, stale post-schema changes, scalar/empty arrays, typed

@@ -25,12 +25,22 @@ def _resolve_pipeline_path(graph: PipelineGraph, path: str) -> str:
     return str((Path(graph.source_file).parent / raw).resolve())
 
 
-def _read_input_source(node: GraphNode, resolved_path: str) -> pl.LazyFrame:
+def _read_input_source(graph: PipelineGraph, node: GraphNode, resolved_path: str) -> pl.LazyFrame:
     config = node.data.config
-    if node.data.nodeType in {
-        NodeType.API_INPUT,
-        NodeType.DATA_SOURCE,
-    } and not resolved_path.lower().endswith((".json", ".jsonl")):
+    if node.data.nodeType == NodeType.DATA_INPUT:
+        from haute._input_providers import resolve_data_input
+        from haute._sandbox import _get_project_root
+        from haute._source_cache import SourceCacheStore
+
+        base_dir = Path(graph.source_file).parent if graph.source_file else None
+        return resolve_data_input(
+            {**config, **({"path": resolved_path} if resolved_path else {})},
+            store=SourceCacheStore(_get_project_root()),
+            base_dir=base_dir,
+        )
+    if node.data.nodeType == NodeType.API_INPUT and not resolved_path.lower().endswith(
+        (".json", ".jsonl")
+    ):
         return read_data_source({**config, "path": resolved_path})
     return read_source(resolved_path)
 
@@ -54,14 +64,14 @@ def infer_input_schema(graph: PipelineGraph, input_node_id: str) -> dict[str, st
     config = node.data.config
     path = config.get("path", "")
 
-    if not path:
+    if not path and node.data.nodeType != NodeType.DATA_INPUT:
         raise ValueError(
             f"Input node '{input_node_id}' has no path configured. Cannot infer schema."
         )
 
     try:
-        resolved_path = _resolve_pipeline_path(graph, path)
-        lf = _read_input_source(node, resolved_path)
+        resolved_path = _resolve_pipeline_path(graph, path) if path else ""
+        lf = _read_input_source(graph, node, resolved_path)
         schema = lf.collect_schema()
     except Exception as exc:
         raise ValueError(
@@ -132,18 +142,18 @@ def infer_output_schema(
     config = node.data.config
     path = config.get("path", "")
 
-    if not path:
+    if not path and node.data.nodeType != NodeType.DATA_INPUT:
         raise ValueError(
             f"Input node '{input_node_ids[0]}' has no path - cannot create sample row."
         )
 
     try:
-        resolved_path = _resolve_pipeline_path(graph, path)
+        resolved_path = _resolve_pipeline_path(graph, path) if path else ""
         from haute._execution_context import ExecutionProfile
         from haute._polars_utils import streaming_collect
 
         sample = streaming_collect(
-            _read_input_source(node, resolved_path).head(1),
+            _read_input_source(graph, node, resolved_path).head(1),
             profile=ExecutionProfile.DEPLOY_LIVE,
         )
     except Exception as exc:

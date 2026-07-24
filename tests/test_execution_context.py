@@ -25,7 +25,13 @@ from haute._execution_context import (
 )
 from haute.graph_utils import NodeType, _execute_eager_core, _execute_lazy
 from haute.schemas import ExecutionMetricsPayload
-from tests.conftest import make_edge, make_graph, make_output_config, make_source_node
+from tests.conftest import (
+    make_edge,
+    make_file_output_config,
+    make_graph,
+    make_output_config,
+    make_source_node,
+)
 
 
 def _clear_execution_memory_env(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -483,6 +489,23 @@ def test_heavy_admission_releases_reservation_when_context_construction_fails(
         memory_sampler=lambda: 100,
     )
     context.release_admission()
+
+
+def test_execution_context_releases_registered_cleanups_once() -> None:
+    context = ExecutionContext(
+        operation="resource-cleanup",
+        profile=ExecutionProfile.LAZY_SINK,
+    )
+    released: list[str] = []
+    context.add_cleanup(lambda: released.append("first"))
+    context.add_cleanup(lambda: released.append("second"))
+
+    context.release_admission()
+    context.close()
+
+    assert released == ["second", "first"]
+    with pytest.raises(RuntimeError, match="released execution context"):
+        context.add_cleanup(lambda: None)
 
 
 def test_heavy_admission_releases_reservation_when_finalizer_registration_fails(
@@ -1508,7 +1531,7 @@ def test_eager_graph_execution_records_collect_stages() -> None:
                     "id": "source",
                     "data": {
                         "label": "source",
-                        "nodeType": NodeType.DATA_SOURCE.value,
+                        "nodeType": NodeType.DATA_INPUT.value,
                         "config": {},
                     },
                 },
@@ -1560,7 +1583,7 @@ def test_eager_graph_execution_does_not_swallow_memory_budget_failures() -> None
                     "id": "source",
                     "data": {
                         "label": "source",
-                        "nodeType": NodeType.DATA_SOURCE.value,
+                        "nodeType": NodeType.DATA_INPUT.value,
                         "config": {},
                     },
                 },
@@ -1597,7 +1620,7 @@ def test_eager_graph_execution_does_not_swallow_cancellation() -> None:
                     "id": "source",
                     "data": {
                         "label": "source",
-                        "nodeType": NodeType.DATA_SOURCE.value,
+                        "nodeType": NodeType.DATA_INPUT.value,
                         "config": {},
                     },
                 },
@@ -1632,7 +1655,7 @@ def test_lazy_graph_execution_checks_cancellation_before_node_work() -> None:
                     "id": "source",
                     "data": {
                         "label": "source",
-                        "nodeType": NodeType.DATA_SOURCE.value,
+                        "nodeType": NodeType.DATA_INPUT.value,
                         "config": {},
                     },
                 },
@@ -1658,7 +1681,7 @@ def test_lazy_graph_execution_records_build_and_checkpoint_stages(tmp_path) -> N
                     "id": "source",
                     "data": {
                         "label": "source",
-                        "nodeType": NodeType.DATA_SOURCE.value,
+                        "nodeType": NodeType.DATA_INPUT.value,
                         "config": {},
                     },
                 },
@@ -1728,7 +1751,7 @@ def test_lazy_graph_execution_records_build_and_checkpoint_stages(tmp_path) -> N
 
 
 def test_execute_sink_forwards_execution_context_to_lazy_executor(tmp_path) -> None:
-    from haute.executor import execute_sink
+    from haute.executor import write_data_output
 
     output_path = tmp_path / "sink.parquet"
     graph = make_graph(
@@ -1738,8 +1761,8 @@ def test_execute_sink_forwards_execution_context_to_lazy_executor(tmp_path) -> N
                     "id": "sink",
                     "data": {
                         "label": "sink",
-                        "nodeType": NodeType.DATA_SINK.value,
-                        "config": {"path": str(output_path), "format": "parquet"},
+                        "nodeType": NodeType.DATA_OUTPUT.value,
+                        "config": make_file_output_config(output_path),
                     },
                 },
             ],
@@ -1758,11 +1781,11 @@ def test_execute_sink_forwards_execution_context_to_lazy_executor(tmp_path) -> N
         return {"sink": pl.DataFrame({"a": [1]}).lazy()}, ["sink"], {}, {}
 
     with patch("haute.executor._execute_lazy", side_effect=fake_execute_lazy):
-        result = execute_sink(graph, "sink", execution_context=context)
+        result = write_data_output(graph, "sink", execution_context=context)
 
     assert result.status == "ok"
     assert captured["execution_context"] is context
-    assert any(metric.name == "sink_write" for metric in context.metrics.snapshot())
+    assert any(metric.name == "output_write" for metric in context.metrics.snapshot())
     assert result.execution_metrics is not None
     assert result.execution_metrics.profile == ExecutionProfile.LAZY_SINK.value
 
@@ -1770,7 +1793,7 @@ def test_execute_sink_forwards_execution_context_to_lazy_executor(tmp_path) -> N
 @pytest.mark.asyncio
 async def test_sink_route_creates_lazy_sink_execution_context(monkeypatch, tmp_path) -> None:
     from haute.routes import pipeline as pipeline_route
-    from haute.schemas import SinkRequest, SinkResponse
+    from haute.schemas import WriteOutputRequest, WriteOutputResponse
 
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("HAUTE_SINK_MEMORY_LIMIT_MB", "512")
@@ -1786,8 +1809,8 @@ async def test_sink_route_creates_lazy_sink_execution_context(monkeypatch, tmp_p
                     "id": "sink",
                     "data": {
                         "label": "sink",
-                        "nodeType": NodeType.DATA_SINK.value,
-                        "config": {"path": str(output_path), "format": "parquet"},
+                        "nodeType": NodeType.DATA_OUTPUT.value,
+                        "config": make_file_output_config(output_path),
                     },
                 },
             ],
@@ -1798,11 +1821,11 @@ async def test_sink_route_creates_lazy_sink_execution_context(monkeypatch, tmp_p
 
     def fake_execute_sink(*_args, **kwargs):
         captured.update(kwargs)
-        return SinkResponse(status="ok")
+        return WriteOutputResponse(status="ok")
 
-    with patch.object(pipeline_route, "execute_sink", side_effect=fake_execute_sink):
-        response = await pipeline_route.execute_sink_node(
-            SinkRequest(graph=graph, node_id="sink", source="batch")
+    with patch.object(pipeline_route, "write_data_output", side_effect=fake_execute_sink):
+        response = await pipeline_route.write_output_node(
+            WriteOutputRequest(graph=graph, node_id="sink", source="batch")
         )
 
     assert response.status == "ok"
@@ -1813,9 +1836,14 @@ async def test_sink_route_creates_lazy_sink_execution_context(monkeypatch, tmp_p
 
 
 @pytest.mark.asyncio
-async def test_sink_route_allows_sink_without_configured_output_path(monkeypatch, tmp_path) -> None:
+async def test_write_output_route_rejects_unconfigured_data_output(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from fastapi import HTTPException
+
     from haute.routes import pipeline as pipeline_route
-    from haute.schemas import SinkRequest, SinkResponse
+    from haute.schemas import WriteOutputRequest
 
     monkeypatch.chdir(tmp_path)
     graph = make_graph(
@@ -1825,7 +1853,7 @@ async def test_sink_route_allows_sink_without_configured_output_path(monkeypatch
                     "id": "sink",
                     "data": {
                         "label": "sink",
-                        "nodeType": NodeType.DATA_SINK.value,
+                        "nodeType": NodeType.DATA_OUTPUT.value,
                         "config": {},
                     },
                 },
@@ -1834,22 +1862,18 @@ async def test_sink_route_allows_sink_without_configured_output_path(monkeypatch
         }
     )
 
-    def fake_execute_sink(*_args, **_kwargs):
-        return SinkResponse(status="ok")
-
-    with (
-        patch.object(
-            pipeline_route,
-            "resolve_sink_output_path",
-            side_effect=AssertionError("empty sink paths should not be resolved"),
-        ),
-        patch.object(pipeline_route, "execute_sink", side_effect=fake_execute_sink),
+    with patch.object(
+        pipeline_route,
+        "write_data_output",
+        side_effect=AssertionError("invalid Data Output must not execute"),
     ):
-        response = await pipeline_route.execute_sink_node(
-            SinkRequest(graph=graph, node_id="sink", source="batch")
-        )
+        with pytest.raises(HTTPException) as exc_info:
+            await pipeline_route.write_output_node(
+                WriteOutputRequest(graph=graph, node_id="sink", source="batch")
+            )
 
-    assert response.status == "ok"
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == "Invalid Data Output configuration."
 
 
 @pytest.mark.asyncio
@@ -1869,7 +1893,7 @@ async def test_get_pipeline_falls_back_after_indexed_and_scanned_parse_failures(
                     "id": "source",
                     "data": {
                         "label": "source",
-                        "nodeType": NodeType.DATA_SOURCE.value,
+                        "nodeType": NodeType.DATA_INPUT.value,
                         "config": {},
                     },
                 },
@@ -1964,7 +1988,7 @@ async def test_trace_route_maps_target_not_found_and_unknown_value_errors(
                     "id": "source",
                     "data": {
                         "label": "source",
-                        "nodeType": NodeType.DATA_SOURCE.value,
+                        "nodeType": NodeType.DATA_INPUT.value,
                         "config": {},
                     },
                 },
@@ -2002,7 +2026,7 @@ async def test_trace_route_maps_contract_mismatch_to_http_422(monkeypatch) -> No
                     "id": "source",
                     "data": {
                         "label": "source",
-                        "nodeType": NodeType.DATA_SOURCE.value,
+                        "nodeType": NodeType.DATA_INPUT.value,
                         "config": {},
                     },
                 },
@@ -2066,7 +2090,7 @@ async def test_preview_route_creates_admitted_preview_execution_context(monkeypa
                     "id": "source",
                     "data": {
                         "label": "source",
-                        "nodeType": NodeType.DATA_SOURCE.value,
+                        "nodeType": NodeType.DATA_INPUT.value,
                         "config": {},
                     },
                 },
@@ -2126,7 +2150,7 @@ async def test_preview_route_admits_when_warm_process_rss_exceeds_operation_budg
                     "id": "source",
                     "data": {
                         "label": "source",
-                        "nodeType": NodeType.DATA_SOURCE.value,
+                        "nodeType": NodeType.DATA_INPUT.value,
                         "config": {},
                     },
                 },
@@ -2183,7 +2207,7 @@ async def test_preview_route_maps_admission_failure_to_http_507(monkeypatch) -> 
                     "id": "source",
                     "data": {
                         "label": "source",
-                        "nodeType": NodeType.DATA_SOURCE.value,
+                        "nodeType": NodeType.DATA_INPUT.value,
                         "config": {},
                     },
                 },
@@ -2218,7 +2242,7 @@ async def test_preview_route_cancels_execution_context_on_timeout(monkeypatch) -
                     "id": "source",
                     "data": {
                         "label": "source",
-                        "nodeType": NodeType.DATA_SOURCE.value,
+                        "nodeType": NodeType.DATA_INPUT.value,
                         "config": {},
                     },
                 },
@@ -2273,7 +2297,7 @@ async def test_preview_route_releases_admission_after_timed_out_worker_finishes(
                     "id": "source",
                     "data": {
                         "label": "source",
-                        "nodeType": NodeType.DATA_SOURCE.value,
+                        "nodeType": NodeType.DATA_INPUT.value,
                         "config": {},
                     },
                 },
@@ -2360,7 +2384,7 @@ async def test_preview_route_releases_admission_when_timeout_task_already_finish
                     "id": "source",
                     "data": {
                         "label": "source",
-                        "nodeType": NodeType.DATA_SOURCE.value,
+                        "nodeType": NodeType.DATA_INPUT.value,
                         "config": {},
                     },
                 },
@@ -2433,7 +2457,7 @@ async def test_preview_route_maps_timeout_without_execution_context_to_http_504(
                     "id": "source",
                     "data": {
                         "label": "source",
-                        "nodeType": NodeType.DATA_SOURCE.value,
+                        "nodeType": NodeType.DATA_INPUT.value,
                         "config": {},
                     },
                 },
@@ -2463,7 +2487,7 @@ async def test_preview_route_returns_error_response_for_contract_mismatch(monkey
                     "id": "source",
                     "data": {
                         "label": "source",
-                        "nodeType": NodeType.DATA_SOURCE.value,
+                        "nodeType": NodeType.DATA_INPUT.value,
                         "config": {},
                     },
                 },
@@ -2489,7 +2513,7 @@ async def test_sink_route_maps_admission_failure_to_http_507(monkeypatch, tmp_pa
     from fastapi import HTTPException
 
     from haute.routes import pipeline as pipeline_route
-    from haute.schemas import SinkRequest
+    from haute.schemas import WriteOutputRequest
 
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("HAUTE_SINK_MEMORY_LIMIT_MB", "64")
@@ -2506,8 +2530,8 @@ async def test_sink_route_maps_admission_failure_to_http_507(monkeypatch, tmp_pa
                     "id": "sink",
                     "data": {
                         "label": "sink",
-                        "nodeType": NodeType.DATA_SINK.value,
-                        "config": {"path": str(output_path), "format": "parquet"},
+                        "nodeType": NodeType.DATA_OUTPUT.value,
+                        "config": make_file_output_config(output_path),
                     },
                 },
             ],
@@ -2516,8 +2540,8 @@ async def test_sink_route_maps_admission_failure_to_http_507(monkeypatch, tmp_pa
     )
 
     with pytest.raises(HTTPException) as exc_info:
-        await pipeline_route.execute_sink_node(
-            SinkRequest(graph=graph, node_id="sink", source="batch")
+        await pipeline_route.write_output_node(
+            WriteOutputRequest(graph=graph, node_id="sink", source="batch")
         )
 
     assert exc_info.value.status_code == 507
@@ -2534,7 +2558,7 @@ async def test_sink_route_maps_execution_memory_budget_failure_to_http_507(
     from fastapi import HTTPException
 
     from haute.routes import pipeline as pipeline_route
-    from haute.schemas import SinkRequest
+    from haute.schemas import WriteOutputRequest
 
     monkeypatch.chdir(tmp_path)
     output_path = tmp_path / "sink.parquet"
@@ -2545,8 +2569,8 @@ async def test_sink_route_maps_execution_memory_budget_failure_to_http_507(
                     "id": "sink",
                     "data": {
                         "label": "sink",
-                        "nodeType": NodeType.DATA_SINK.value,
-                        "config": {"path": str(output_path), "format": "parquet"},
+                        "nodeType": NodeType.DATA_OUTPUT.value,
+                        "config": make_file_output_config(output_path),
                     },
                 },
             ],
@@ -2554,7 +2578,7 @@ async def test_sink_route_maps_execution_memory_budget_failure_to_http_507(
         }
     )
     memory_error = ExecutionMemoryLimitExceededError(
-        "pipeline_sink",
+        "pipeline_write_output",
         rss_bytes=150,
         limit_bytes=100,
         baseline_rss_bytes=0,
@@ -2565,16 +2589,16 @@ async def test_sink_route_maps_execution_memory_budget_failure_to_http_507(
     def raise_memory_budget(*_args, **_kwargs):
         raise memory_error
 
-    monkeypatch.setattr(pipeline_route, "execute_sink", raise_memory_budget)
+    monkeypatch.setattr(pipeline_route, "write_data_output", raise_memory_budget)
 
     with pytest.raises(HTTPException) as exc_info:
-        await pipeline_route.execute_sink_node(
-            SinkRequest(graph=graph, node_id="sink", source="batch")
+        await pipeline_route.write_output_node(
+            WriteOutputRequest(graph=graph, node_id="sink", source="batch")
         )
 
     assert exc_info.value.status_code == 507
     assert exc_info.value.detail["error_code"] == "memory_limit"
-    assert exc_info.value.detail["operation"] == "pipeline_sink"
+    assert exc_info.value.detail["operation"] == "pipeline_write_output"
     assert exc_info.value.detail["reason"] == "process_rss_limit_exceeded"
 
 
@@ -2587,7 +2611,7 @@ async def test_sink_route_maps_bounded_streaming_failure_to_http_422(
 
     from haute.errors import BoundedMemoryUnsupportedError
     from haute.routes import pipeline as pipeline_route
-    from haute.schemas import SinkRequest
+    from haute.schemas import WriteOutputRequest
 
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("HAUTE_SINK_MEMORY_LIMIT_MB", "512")
@@ -2600,8 +2624,8 @@ async def test_sink_route_maps_bounded_streaming_failure_to_http_422(
                     "id": "sink",
                     "data": {
                         "label": "sink",
-                        "nodeType": NodeType.DATA_SINK.value,
-                        "config": {"path": str(output_path), "format": "parquet"},
+                        "nodeType": NodeType.DATA_OUTPUT.value,
+                        "config": make_file_output_config(output_path),
                     },
                 },
             ],
@@ -2612,10 +2636,10 @@ async def test_sink_route_maps_bounded_streaming_failure_to_http_422(
     def unsupported_sink(*_args, **_kwargs):
         raise BoundedMemoryUnsupportedError("Bounded streaming sink failed", path="sink")
 
-    with patch.object(pipeline_route, "execute_sink", side_effect=unsupported_sink):
+    with patch.object(pipeline_route, "write_data_output", side_effect=unsupported_sink):
         with pytest.raises(HTTPException) as exc_info:
-            await pipeline_route.execute_sink_node(
-                SinkRequest(graph=graph, node_id="sink", source="batch")
+            await pipeline_route.write_output_node(
+                WriteOutputRequest(graph=graph, node_id="sink", source="batch")
             )
 
     assert exc_info.value.status_code == 422
@@ -2638,7 +2662,7 @@ async def test_preview_route_maps_execution_memory_budget_failure_to_http_507(
                     "id": "source",
                     "data": {
                         "label": "source",
-                        "nodeType": NodeType.DATA_SOURCE.value,
+                        "nodeType": NodeType.DATA_INPUT.value,
                         "config": {},
                     },
                 },
@@ -2677,7 +2701,7 @@ async def test_sink_route_maps_timeout_before_execution_context_to_http_504(
     from fastapi import HTTPException
 
     from haute.routes import pipeline as pipeline_route
-    from haute.schemas import SinkRequest
+    from haute.schemas import WriteOutputRequest
 
     monkeypatch.chdir(tmp_path)
     graph = make_graph(
@@ -2687,8 +2711,8 @@ async def test_sink_route_maps_timeout_before_execution_context_to_http_504(
                     "id": "sink",
                     "data": {
                         "label": "sink",
-                        "nodeType": NodeType.DATA_SINK.value,
-                        "config": {},
+                        "nodeType": NodeType.DATA_OUTPUT.value,
+                        "config": make_file_output_config(tmp_path / "sink.parquet"),
                     },
                 },
             ],
@@ -2702,8 +2726,8 @@ async def test_sink_route_maps_timeout_before_execution_context_to_http_504(
     monkeypatch.setattr(pipeline_route, "create_admitted_execution_context", raise_timeout)
 
     with pytest.raises(HTTPException) as exc_info:
-        await pipeline_route.execute_sink_node(
-            SinkRequest(graph=graph, node_id="sink", source="batch")
+        await pipeline_route.write_output_node(
+            WriteOutputRequest(graph=graph, node_id="sink", source="batch")
         )
 
     assert exc_info.value.status_code == 504
@@ -2719,7 +2743,7 @@ async def test_sink_route_releases_admission_after_timeout_background_task_finis
 
     from haute.routes import pipeline as pipeline_route
     from haute.routes._timeouts import BlockingWorkTimeoutError
-    from haute.schemas import SinkRequest
+    from haute.schemas import WriteOutputRequest
 
     monkeypatch.chdir(tmp_path)
     output_path = tmp_path / "sink.parquet"
@@ -2730,8 +2754,8 @@ async def test_sink_route_releases_admission_after_timeout_background_task_finis
                     "id": "sink",
                     "data": {
                         "label": "sink",
-                        "nodeType": NodeType.DATA_SINK.value,
-                        "config": {"path": str(output_path), "format": "parquet"},
+                        "nodeType": NodeType.DATA_OUTPUT.value,
+                        "config": make_file_output_config(output_path),
                     },
                 },
             ],
@@ -2747,7 +2771,7 @@ async def test_sink_route_releases_admission_after_timeout_background_task_finis
             release_calls += 1
 
     sink_context = ExecutionContext(
-        operation="pipeline_sink",
+        operation="pipeline_write_output",
         profile=ExecutionProfile.LAZY_SINK,
         admission_release=release_admission,
     )
@@ -2756,7 +2780,7 @@ async def test_sink_route_releases_admission_after_timeout_background_task_finis
     async def raise_timeout(*_args, **_kwargs):
         nonlocal background_task
         background_task = asyncio.get_running_loop().create_future()
-        raise BlockingWorkTimeoutError("pipeline_sink", 0.01, background_task)
+        raise BlockingWorkTimeoutError("pipeline_write_output", 0.01, background_task)
 
     monkeypatch.setattr(
         pipeline_route,
@@ -2770,8 +2794,8 @@ async def test_sink_route_releases_admission_after_timeout_background_task_finis
     )
 
     with pytest.raises(HTTPException) as exc_info:
-        await pipeline_route.execute_sink_node(
-            SinkRequest(graph=graph, node_id="sink", source="batch")
+        await pipeline_route.write_output_node(
+            WriteOutputRequest(graph=graph, node_id="sink", source="batch")
         )
 
     assert exc_info.value.status_code == 504
@@ -2795,7 +2819,7 @@ async def test_sink_route_releases_admission_when_timeout_task_already_finished(
 
     from haute.routes import pipeline as pipeline_route
     from haute.routes._timeouts import BlockingWorkTimeoutError
-    from haute.schemas import SinkRequest
+    from haute.schemas import WriteOutputRequest
 
     monkeypatch.chdir(tmp_path)
     output_path = tmp_path / "sink.parquet"
@@ -2806,8 +2830,8 @@ async def test_sink_route_releases_admission_when_timeout_task_already_finished(
                     "id": "sink",
                     "data": {
                         "label": "sink",
-                        "nodeType": NodeType.DATA_SINK.value,
-                        "config": {"path": str(output_path), "format": "parquet"},
+                        "nodeType": NodeType.DATA_OUTPUT.value,
+                        "config": make_file_output_config(output_path),
                     },
                 },
             ],
@@ -2823,7 +2847,7 @@ async def test_sink_route_releases_admission_when_timeout_task_already_finished(
             release_calls += 1
 
     sink_context = ExecutionContext(
-        operation="pipeline_sink",
+        operation="pipeline_write_output",
         profile=ExecutionProfile.LAZY_SINK,
         admission_release=release_admission,
     )
@@ -2831,7 +2855,7 @@ async def test_sink_route_releases_admission_when_timeout_task_already_finished(
     async def raise_finished_timeout(*_args, **_kwargs):
         background_task = asyncio.get_running_loop().create_future()
         background_task.set_result(None)
-        raise BlockingWorkTimeoutError("pipeline_sink", 0.01, background_task)
+        raise BlockingWorkTimeoutError("pipeline_write_output", 0.01, background_task)
 
     monkeypatch.setattr(
         pipeline_route,
@@ -2845,8 +2869,8 @@ async def test_sink_route_releases_admission_when_timeout_task_already_finished(
     )
 
     with pytest.raises(HTTPException) as exc_info:
-        await pipeline_route.execute_sink_node(
-            SinkRequest(graph=graph, node_id="sink", source="batch")
+        await pipeline_route.write_output_node(
+            WriteOutputRequest(graph=graph, node_id="sink", source="batch")
         )
 
     assert exc_info.value.status_code == 504
@@ -2864,7 +2888,7 @@ async def test_sink_route_cancels_execution_context_on_timeout(monkeypatch, tmp_
     from fastapi import HTTPException
 
     from haute.routes import pipeline as pipeline_route
-    from haute.schemas import SinkRequest, SinkResponse
+    from haute.schemas import WriteOutputRequest, WriteOutputResponse
 
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("HAUTE_SINK_MEMORY_LIMIT_MB", "512")
@@ -2878,8 +2902,8 @@ async def test_sink_route_cancels_execution_context_on_timeout(monkeypatch, tmp_
                     "id": "sink",
                     "data": {
                         "label": "sink",
-                        "nodeType": NodeType.DATA_SINK.value,
-                        "config": {"path": str(output_path), "format": "parquet"},
+                        "nodeType": NodeType.DATA_OUTPUT.value,
+                        "config": make_file_output_config(output_path),
                     },
                 },
             ],
@@ -2897,12 +2921,12 @@ async def test_sink_route_cancels_execution_context_on_timeout(monkeypatch, tmp_
             time.sleep(0.005)
         if context.cancellation_token.cancelled:
             cancel_seen.set()
-        return SinkResponse(status="ok")
+        return WriteOutputResponse(status="ok")
 
-    with patch.object(pipeline_route, "execute_sink", side_effect=slow_execute_sink):
+    with patch.object(pipeline_route, "write_data_output", side_effect=slow_execute_sink):
         with pytest.raises(HTTPException) as exc_info:
-            await pipeline_route.execute_sink_node(
-                SinkRequest(graph=graph, node_id="sink", source="batch")
+            await pipeline_route.write_output_node(
+                WriteOutputRequest(graph=graph, node_id="sink", source="batch")
             )
 
     assert exc_info.value.status_code == 504
@@ -3143,7 +3167,7 @@ def test_deploy_batch_graph_routing_stays_live_for_source_switch(tmp_path) -> No
                     "id": "batch_src",
                     "data": {
                         "label": "batch_src",
-                        "nodeType": NodeType.DATA_SOURCE.value,
+                        "nodeType": NodeType.DATA_INPUT.value,
                         "config": {"path": "batch.parquet"},
                     },
                 },

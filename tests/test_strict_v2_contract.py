@@ -95,17 +95,21 @@ class TestPrepareConfigForSidecarAllowlist:
         assert out["selected_columns"] == ["foo"]
         assert out["column_renames"] == {"a": "b"}
 
-    def test_data_source_drops_keys_not_in_its_allowlist(self) -> None:
-        """A key valid on apiInput (tables) is not valid on dataSource — dropped."""
+    def test_data_input_drops_keys_not_in_its_allowlist(self) -> None:
+        """A key valid on apiInput (tables) is not valid on dataInput — dropped."""
         config: dict[str, Any] = {
+            "inputType": "file",
+            "format": "parquet",
+            "mode": "scan",
+            "cacheMode": "direct",
             "path": "data.parquet",
-            "sourceType": "flat_file",
+            "arguments": {},
             "tables": [{"path": "$[:]"}],  # apiInput-only key
         }
-        out = _prepare_config_for_sidecar(NodeType.DATA_SOURCE, config)
+        out = _prepare_config_for_sidecar(NodeType.DATA_INPUT, config)
         assert "tables" not in out
         assert out["path"] == "data.parquet"
-        assert out["sourceType"] == "flat_file"
+        assert out["inputType"] == "file"
 
     def test_existing_code_key_strip_still_works(self) -> None:
         """α composes with the existing _CODE_KEYS filter."""

@@ -22,12 +22,28 @@ from tests.conftest import make_edge, make_graph, make_output_config
 
 
 def _node(node_id: str, node_type: str, config: dict[str, object] | None = None):
+    config = dict(config or {})
+    if node_type == "dataInput" and "path" in config:
+        suffix = Path(str(config["path"])).suffix.lower().lstrip(".")
+        formats = {
+            "jsonl": "ndjson",
+            "ndjson": "ndjson",
+            "arrow": "ipc",
+            "feather": "ipc",
+            "ipc": "ipc",
+        }
+        config = {
+            **config,
+            "inputType": "file",
+            "format": formats.get(suffix, suffix),
+            "cacheMode": "direct",
+        }
     return {
         "id": node_id,
         "data": {
             "label": node_id,
             "nodeType": node_type,
-            "config": config or {},
+            "config": config,
         },
     }
 
@@ -48,7 +64,7 @@ def _source_output_graph(path: Path, output_fields: list[str]):
     return make_graph(
         {
             "nodes": [
-                _node("source", "dataSource", {"path": str(path)}),
+                _node("source", "dataInput", {"path": str(path)}),
                 _node("out", "output", make_output_config(output_fields)),
             ],
             "edges": [make_edge("source", "out").model_dump()],
@@ -67,7 +83,7 @@ def test_chunk_capability_registry_is_immutable() -> None:
     declarations = chunk_capability_declarations()
 
     with pytest.raises(TypeError):
-        declarations[NodeType.POLARS] = declarations[NodeType.DATA_SOURCE]  # type: ignore[index]
+        declarations[NodeType.POLARS] = declarations[NodeType.DATA_INPUT]  # type: ignore[index]
 
 
 def test_chunk_capability_registry_declares_unsupported_types_explicitly() -> None:
@@ -81,9 +97,7 @@ def test_chunk_capability_registry_declares_unsupported_types_explicitly() -> No
     assert unsupported == {
         NodeType.API_INPUT,
         NodeType.CONSTANT,
-        NodeType.DATA_INPUT,
         NodeType.DATA_OUTPUT,
-        NodeType.DATA_SINK,
         NodeType.EDGE_JOIN,
         NodeType.EXPLORE,
         NodeType.EXTERNAL_FILE,
@@ -107,7 +121,7 @@ def test_chunk_capability_registry_validation_rejects_drift() -> None:
         validate_chunk_capability_declarations(declarations)
 
     declarations = dict(chunk_capability_declarations())
-    source_declaration = declarations[NodeType.DATA_SOURCE]
+    source_declaration = declarations[NodeType.DATA_INPUT]
     declarations[NodeType.POLARS] = source_declaration
 
     with pytest.raises(RuntimeError, match="wrong node type"):
@@ -132,7 +146,7 @@ def test_chunk_plan_accepts_v1_chunk_safe_chain():
     graph = make_graph(
         {
             "nodes": [
-                _node("source", "dataSource", {"path": "quotes.parquet"}),
+                _node("source", "dataInput", {"path": "quotes.parquet"}),
                 _node(
                     "banding",
                     "banding",
@@ -240,7 +254,7 @@ def test_byte_budgeted_chunk_plan_accounts_for_scenario_row_expansion(
     graph = make_graph(
         {
             "nodes": [
-                _node("source", "dataSource", {"path": str(source_path)}),
+                _node("source", "dataInput", {"path": str(source_path)}),
                 _node(
                     "scenario",
                     "scenarioExpander",
@@ -303,7 +317,7 @@ def test_byte_budgeted_chunk_plan_costs_downstream_created_wide_column(
     graph = make_graph(
         {
             "nodes": [
-                _node("source", "dataSource", {"path": str(source_path)}),
+                _node("source", "dataInput", {"path": str(source_path)}),
                 _node(
                     "widen",
                     "polars",
@@ -435,14 +449,14 @@ def test_chunk_plan_rejects_json_sources_for_bounded_chunking():
     graph = make_graph(
         {
             "nodes": [
-                _node("source", "dataSource", {"path": "quotes.json"}),
+                _node("source", "dataInput", {"path": "quotes.json"}),
                 _node("out", "output", make_output_config(["quote_id"])),
             ],
             "edges": [make_edge("source", "out").model_dump()],
         }
     )
 
-    with pytest.raises(ChunkPlanUnsupportedError, match="parquet or csv"):
+    with pytest.raises(ChunkPlanUnsupportedError, match="bounded lazy scan"):
         chunk_plan(
             ChunkPlanRequest(
                 graph=graph,
@@ -471,7 +485,7 @@ def test_chunk_plan_requires_explicit_model_score_batch_reuse(tmp_path):
     graph = make_graph(
         {
             "nodes": [
-                _node("source", "dataSource", {"path": "quotes.parquet"}),
+                _node("source", "dataInput", {"path": "quotes.parquet"}),
                 _node(
                     "score",
                     "modelScore",
@@ -517,7 +531,14 @@ def test_chunk_plan_rejects_opaque_rating_step_user_code():
     graph = make_graph(
         {
             "nodes": [
-                _node("source", "dataSource", {"path": "quotes.csv"}),
+                _node(
+                    "source",
+                    "dataInput",
+                    {
+                        "path": "quotes.csv",
+                        "arguments": {"schema": {"quote_id": "str"}},
+                    },
+                ),
                 _node("rating", "ratingStep", {"code": "df = df.sort('quote_id')"}),
                 _node("out", "output", make_output_config(["quote_id"])),
             ],

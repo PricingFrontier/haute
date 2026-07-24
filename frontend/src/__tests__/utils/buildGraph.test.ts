@@ -8,7 +8,7 @@ import { makeSimpleNode, makeSimpleEdge } from "../../test-utils/factories"
 describe("buildGraph", () => {
   it("builds correct graph shape from nodes and edges", () => {
     const nodes: SimpleNode[] = [
-      makeSimpleNode("n1", "dataSource", { type: "custom" }),
+      makeSimpleNode("n1", "dataInput", { type: "custom" }),
       makeSimpleNode("n2", "polars", { type: "custom" }),
     ]
     const edges: SimpleEdge[] = [makeSimpleEdge("e1", "n1", "n2")]
@@ -100,7 +100,7 @@ describe("buildGraph", () => {
         data: {
           label: "My Source",
           description: "Loads data",
-          nodeType: "dataSource",
+          nodeType: "dataInput",
           config: { path: "/data/input.csv" },
           extraField: "should be preserved",
         },

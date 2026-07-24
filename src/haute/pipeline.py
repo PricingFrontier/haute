@@ -192,7 +192,7 @@ class NodeRegistry:
     def _register_node(self, fn: Callable | None = None, **config: Any) -> Callable:
         """Internal decorator to register a function as a node.
 
-        Type-specific public decorators (``transform``, ``data_source``, etc.)
+        Type-specific public decorators (``transform``, ``data_input``, etc.)
         delegate to this method.
         """
 
@@ -227,10 +227,6 @@ class NodeRegistry:
     def api_input(self, fn: Callable | None = None, **config: Any) -> Callable:
         """Decorator alias for API-input nodes."""
         return self._register_node(fn, _node_type=NodeType.API_INPUT, **config)
-
-    def data_source(self, fn: Callable | None = None, **config: Any) -> Callable:
-        """Decorator alias for data-source nodes."""
-        return self._register_node(fn, _node_type=NodeType.DATA_SOURCE, **config)
 
     def data_input(self, fn: Callable | None = None, **config: Any) -> Callable:
         """Decorator alias for data-input nodes (native-polars-width inputs)."""
@@ -282,10 +278,6 @@ class NodeRegistry:
     def output(self, fn: Callable | None = None, **config: Any) -> Callable:
         """Decorator alias for output nodes."""
         return self._register_node(fn, _node_type=NodeType.OUTPUT, **config)
-
-    def data_sink(self, fn: Callable | None = None, **config: Any) -> Callable:
-        """Decorator alias for data-sink nodes."""
-        return self._register_node(fn, _node_type=NodeType.DATA_SINK, **config)
 
     def explore(self, fn: Callable | None = None, **config: Any) -> Callable:
         """Decorator alias for explore nodes."""
@@ -392,10 +384,10 @@ class Pipeline(NodeRegistry):
     Usage:
         pipeline = Pipeline("main")
 
-        # Folder-backed types (data_source, external_file, …) reference a
+        # Folder-backed types (data_input, external_file, …) reference a
         # JSON sidecar rather than inline kwargs, matching the scaffold and
         # what the parser accepts:
-        @pipeline.data_source(config="config/data_source/read_data.json")
+        @pipeline.data_input(config="config/data_input/read_data.json")
         def read_data() -> pl.DataFrame: ...
 
         @pipeline.polars
@@ -657,7 +649,7 @@ class Pipeline(NodeRegistry):
             if n.config.get("_node_type"):
                 rf_type = n.config["_node_type"]
             elif n.is_source:
-                rf_type = NodeType.DATA_SOURCE
+                rf_type = NodeType.DATA_INPUT
             elif is_last:
                 rf_type = NodeType.OUTPUT
             else:
@@ -724,7 +716,7 @@ class Submodel(NodeRegistry):
 
         # A source node so downstream connects resolve; folder-backed types
         # reference a JSON sidecar, matching the scaffold and the parser.
-        @submodel.data_source(config="config/data_source/policies.json")
+        @submodel.data_input(config="config/data_input/policies.json")
         def policies() -> pl.LazyFrame: ...
 
         @submodel.external_file(config="config/external_file/frequency_model.json")

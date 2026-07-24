@@ -18,7 +18,7 @@ from haute.executor import (
     _preview_row_limit_for_width,
     _result_order_for_target,
     execute_graph,
-    execute_sink,
+    write_data_output,
 )
 from tests.conftest import (
     make_edge as _edge,
@@ -243,8 +243,14 @@ def test_execute_sink_resolves_relative_output_when_explain_fails(
                         "id": "sink",
                         "data": {
                             "label": "sink",
-                            "nodeType": "dataSink",
-                            "config": {"path": "outputs/out.parquet", "format": "parquet"},
+                            "nodeType": "dataOutput",
+                            "config": {
+                                "outputType": "file",
+                                "format": "parquet",
+                                "mode": "sink",
+                                "path": "outputs/out.parquet",
+                                "arguments": {},
+                            },
                         },
                     }
                 ),
@@ -253,7 +259,7 @@ def test_execute_sink_resolves_relative_output_when_explain_fails(
         }
     )
 
-    result = execute_sink(graph, "sink")
+    result = write_data_output(graph, "sink")
 
     output_path = pipeline_dir / "outputs" / "out.parquet"
     assert result.status == "ok"
@@ -277,8 +283,14 @@ def test_execute_sink_fails_loudly_when_lazy_execution_drops_sink_output(
                         "id": "sink",
                         "data": {
                             "label": "sink",
-                            "nodeType": "dataSink",
-                            "config": {"path": str(tmp_path / "out.parquet"), "format": "parquet"},
+                            "nodeType": "dataOutput",
+                            "config": {
+                                "outputType": "file",
+                                "format": "parquet",
+                                "mode": "sink",
+                                "path": str(tmp_path / "out.parquet"),
+                                "arguments": {},
+                            },
                         },
                     }
                 ),
@@ -289,5 +301,5 @@ def test_execute_sink_fails_loudly_when_lazy_execution_drops_sink_output(
 
     monkeypatch.setattr(executor, "_execute_lazy", lambda *_, **__: ({}, [], {}, {}))
 
-    with pytest.raises(RuntimeError, match="Failed to compute sink input"):
-        execute_sink(graph, "sink")
+    with pytest.raises(RuntimeError, match="Failed to compute Data Output input"):
+        write_data_output(graph, "sink")

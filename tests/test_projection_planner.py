@@ -36,14 +36,14 @@ def test_projection_rule_coverage_is_immutable() -> None:
     coverage = projection_rule_coverage_by_node_type()
 
     with pytest.raises(TypeError):
-        coverage[NodeType.POLARS] = coverage[NodeType.DATA_SOURCE]  # type: ignore[index]
+        coverage[NodeType.POLARS] = coverage[NodeType.DATA_INPUT]  # type: ignore[index]
 
 
 def test_projection_rule_coverage_declares_opaque_node_types_explicitly() -> None:
     coverage = projection_rule_coverage_by_node_type()
 
     opaque_types = {node_type for node_type, entry in coverage.items() if entry.opaque}
-    assert opaque_types == {NodeType.DATA_INPUT, NodeType.SUBMODEL, NodeType.SUBMODEL_PORT}
+    assert opaque_types == {NodeType.SUBMODEL, NodeType.SUBMODEL_PORT}
     for node_type in opaque_types:
         assert coverage[node_type].rules == frozenset({"opaque_contract"})
 
@@ -67,7 +67,7 @@ def test_projection_plan_is_stable_when_graph_order_changes() -> None:
     nodes = [
         {
             "id": "source",
-            "data": {"label": "source", "nodeType": "dataSource", "config": {}},
+            "data": {"label": "source", "nodeType": "dataInput", "config": {}},
         },
         {
             "id": "band",
@@ -132,7 +132,7 @@ def _fan_in_graph(*, declared_parent_inputs: bool = True):
                     "id": "left",
                     "data": {
                         "label": "left",
-                        "nodeType": "dataSource",
+                        "nodeType": "dataInput",
                         "config": {},
                     },
                 },
@@ -140,7 +140,7 @@ def _fan_in_graph(*, declared_parent_inputs: bool = True):
                     "id": "right",
                     "data": {
                         "label": "right",
-                        "nodeType": "dataSource",
+                        "nodeType": "dataInput",
                         "config": {},
                     },
                 },
@@ -181,7 +181,7 @@ def _ratebook_graph():
                     "id": "scored",
                     "data": {
                         "label": "scored",
-                        "nodeType": "dataSource",
+                        "nodeType": "dataInput",
                         "config": {},
                     },
                 },
@@ -189,7 +189,7 @@ def _ratebook_graph():
                     "id": "banding",
                     "data": {
                         "label": "banding",
-                        "nodeType": "dataSource",
+                        "nodeType": "dataInput",
                         "config": {},
                     },
                 },
@@ -228,7 +228,7 @@ def _model_score_graph():
                     "id": "source",
                     "data": {
                         "label": "source",
-                        "nodeType": "dataSource",
+                        "nodeType": "dataInput",
                         "config": {},
                     },
                 },
@@ -567,7 +567,7 @@ def test_edge_join_projection_keeps_full_width_when_a_parent_is_opaque():
                             "id": "base",
                             "data": {
                                 "label": "base",
-                                "nodeType": "dataSource",
+                                "nodeType": "dataInput",
                                 "config": {"contract": "opaque"},
                             },
                         },
@@ -720,7 +720,7 @@ def test_projection_diagnostics_payload_exposes_strategy_reasons_for_broad_and_a
                     "id": "source",
                     "data": {
                         "label": "source",
-                        "nodeType": "dataSource",
+                        "nodeType": "dataInput",
                         "config": {
                             "path": "data.parquet",
                             "code": "df = df.filter(pl.col('segment') == 'A')",
@@ -792,7 +792,7 @@ def test_single_parent_polars_with_columns_projects_expression_dependencies():
                     "id": "source",
                     "data": {
                         "label": "source",
-                        "nodeType": "dataSource",
+                        "nodeType": "dataInput",
                         "config": {"path": "data.parquet"},
                     },
                 },
@@ -847,7 +847,7 @@ def test_empty_declared_polars_contract_does_not_mask_expression_dependency():
                     "id": "source",
                     "data": {
                         "label": "source",
-                        "nodeType": "dataSource",
+                        "nodeType": "dataInput",
                         "config": {"path": "data.parquet"},
                     },
                 },
@@ -902,7 +902,7 @@ def test_empty_declared_scenario_contract_keeps_structural_outputs():
                     "id": "source",
                     "data": {
                         "label": "source",
-                        "nodeType": "dataSource",
+                        "nodeType": "dataInput",
                         "config": {"path": "data.parquet"},
                     },
                 },
@@ -1081,7 +1081,7 @@ def test_single_parent_polars_filter_keeps_predicate_dependencies():
                     "id": "source",
                     "data": {
                         "label": "source",
-                        "nodeType": "dataSource",
+                        "nodeType": "dataInput",
                         "config": {"path": "data.parquet"},
                     },
                 },
@@ -1135,7 +1135,7 @@ def test_single_parent_polars_keyword_filter_keeps_constraint_column():
                     "id": "source",
                     "data": {
                         "label": "source",
-                        "nodeType": "dataSource",
+                        "nodeType": "dataInput",
                         "config": {"path": "data.parquet"},
                     },
                 },
@@ -1197,7 +1197,7 @@ def test_single_parent_polars_rename_to_new_target_keeps_full_width():
                     "id": "source",
                     "data": {
                         "label": "source",
-                        "nodeType": "dataSource",
+                        "nodeType": "dataInput",
                         "config": {"path": "data.parquet"},
                     },
                 },
@@ -1246,7 +1246,7 @@ def _single_parent_polars_plan(code: str, fields: list[str]):
                     "id": "source",
                     "data": {
                         "label": "source",
-                        "nodeType": "dataSource",
+                        "nodeType": "dataInput",
                         "config": {"path": "data.parquet"},
                     },
                 },
@@ -1461,7 +1461,7 @@ def test_rename_node_then_downstream_filter_node_keeps_rename_parent_full_width(
                     "id": "source",
                     "data": {
                         "label": "source",
-                        "nodeType": "dataSource",
+                        "nodeType": "dataInput",
                         "config": {"path": "data.parquet"},
                     },
                 },
@@ -1836,7 +1836,7 @@ def test_single_parent_polars_group_by_uses_explicit_boundary_not_wrong_projecti
                     "id": "source",
                     "data": {
                         "label": "source",
-                        "nodeType": "dataSource",
+                        "nodeType": "dataInput",
                         "config": {"path": "data.parquet"},
                     },
                 },
@@ -1929,7 +1929,7 @@ def test_right_join_missing_parent_contract_does_not_route_left_column_to_right_
                     "id": "left",
                     "data": {
                         "label": "left",
-                        "nodeType": "dataSource",
+                        "nodeType": "dataInput",
                         "config": {"contract": {"inputs": [], "outputs": ["k", "left_value"]}},
                     },
                 },
@@ -1937,7 +1937,7 @@ def test_right_join_missing_parent_contract_does_not_route_left_column_to_right_
                     "id": "right",
                     "data": {
                         "label": "right",
-                        "nodeType": "dataSource",
+                        "nodeType": "dataInput",
                         "config": {"contract": {"inputs": [], "outputs": ["k", "right_value"]}},
                     },
                 },
@@ -1994,7 +1994,7 @@ def test_public_projection_plan_strict_profile_projects_simple_user_code():
                     "id": "source",
                     "data": {
                         "label": "source",
-                        "nodeType": "dataSource",
+                        "nodeType": "dataInput",
                         "config": {},
                     },
                 },
@@ -2045,7 +2045,7 @@ def test_public_projection_plan_strict_profile_boundaries_terminal_user_code():
                     "id": "source",
                     "data": {
                         "label": "source",
-                        "nodeType": "dataSource",
+                        "nodeType": "dataInput",
                         "config": {},
                     },
                 },
@@ -2061,7 +2061,7 @@ def test_public_projection_plan_strict_profile_boundaries_terminal_user_code():
                     "id": "sink",
                     "data": {
                         "label": "sink",
-                        "nodeType": "dataSink",
+                        "nodeType": "dataOutput",
                         "config": {},
                     },
                 },
@@ -2093,7 +2093,7 @@ def test_public_projection_plan_strict_profile_runs_source_user_code_unprojected
                     "id": "source",
                     "data": {
                         "label": "source",
-                        "nodeType": "dataSource",
+                        "nodeType": "dataInput",
                         "config": {
                             "path": "data.parquet",
                             "code": "df = df.with_columns(pl.col('a') + 1)",
@@ -2136,7 +2136,7 @@ def test_public_projection_plan_strict_profile_allows_projection_safe_source_lim
                     "id": "source",
                     "data": {
                         "label": "source",
-                        "nodeType": "dataSource",
+                        "nodeType": "dataInput",
                         "config": {
                             "path": "data.parquet",
                             "contract": "opaque",
@@ -2176,7 +2176,7 @@ def test_public_projection_plan_strict_profile_runs_source_filter_unprojected():
                     "id": "source",
                     "data": {
                         "label": "source",
-                        "nodeType": "dataSource",
+                        "nodeType": "dataInput",
                         "config": {
                             "path": "data.parquet",
                             "contract": "opaque",
@@ -2220,7 +2220,7 @@ def test_public_projection_plan_strict_profile_allows_contracted_user_code():
                     "id": "source",
                     "data": {
                         "label": "source",
-                        "nodeType": "dataSource",
+                        "nodeType": "dataInput",
                         "config": {},
                     },
                 },
@@ -2270,7 +2270,7 @@ def test_public_projection_plan_routes_ratebook_shared_input_factors_in_planner(
                     "id": "source",
                     "data": {
                         "label": "source",
-                        "nodeType": "dataSource",
+                        "nodeType": "dataInput",
                         "config": {},
                     },
                 },
@@ -2338,7 +2338,7 @@ def test_public_projection_plan_treats_empty_polars_node_as_passthrough():
                     "id": "source",
                     "data": {
                         "label": "source",
-                        "nodeType": "dataSource",
+                        "nodeType": "dataInput",
                         "config": {},
                     },
                 },

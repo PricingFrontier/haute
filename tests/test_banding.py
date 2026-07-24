@@ -473,13 +473,20 @@ class TestBandingCodegen:
 
 
 def _banding_graph(factors: list[dict]) -> tuple[PipelineGraph, GraphNode]:
-    """A dataSource -> banding graph with canvas-style ids != sanitized labels."""
+    """A dataInput -> banding graph with canvas-style ids != sanitized labels."""
     source = GraphNode(
-        id="dataSource_7",
+        id="dataInput_7",
         data=NodeData(
             label="Quote Data",
-            nodeType=NodeType.DATA_SOURCE,
-            config={"path": "data.parquet", "sourceType": "flat_file"},
+            nodeType=NodeType.DATA_INPUT,
+            config={
+                "inputType": "file",
+                "format": "parquet",
+                "mode": "scan",
+                "cacheMode": "direct",
+                "path": "data.parquet",
+                "arguments": {},
+            },
         ),
     )
     band = GraphNode(
@@ -493,7 +500,7 @@ def _banding_graph(factors: list[dict]) -> tuple[PipelineGraph, GraphNode]:
     graph = PipelineGraph.model_validate(
         {
             "nodes": [source.model_dump(), band.model_dump()],
-            "edges": [{"id": "e1", "source": "dataSource_7", "target": "banding_3"}],
+            "edges": [{"id": "e1", "source": "dataInput_7", "target": "banding_3"}],
         }
     )
     return graph, band

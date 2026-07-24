@@ -235,7 +235,7 @@ class TestTraceDecoupling:
         # that contains the output DataFrame trace will read.
         node = GraphNode(
             id="n1",
-            data=NodeData(label="n1", nodeType="dataSource", config={"path": "data.parquet"}),
+            data=NodeData(label="n1", nodeType="dataInput", config={"path": "data.parquet"}),
         )
         graph = PipelineGraph(nodes=[node], edges=[])
         df = pl.DataFrame({"col": [1, 2, 3]})

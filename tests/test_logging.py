@@ -224,6 +224,18 @@ class TestIdempotency:
         configure_logging()
         assert logging.getLogger().level == logging.DEBUG
 
+    def test_configure_does_not_mutate_restorable_default_processors(self) -> None:
+        previous_config = structlog.get_config()
+        previous_processors = previous_config["processors"]
+        assert isinstance(previous_processors, list)
+        processor_snapshot = list(previous_processors)
+
+        configure_logging()
+
+        assert previous_processors == processor_snapshot
+        structlog.configure(**previous_config)
+        get_logger(component="restored_default").info("restored_default_usable")
+
 
 # ---------------------------------------------------------------------------
 # configure_logging — isatty detection

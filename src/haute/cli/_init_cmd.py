@@ -540,12 +540,17 @@ def handle_init(config: InitConfig) -> None:
     (rating_dir / "main.py").write_text(starter_pipeline(name), encoding="utf-8")
 
     # -- rating/ placeholder directories (used once the pipeline grows) --------
-    for sub in ("config", "models", "outputs"):
+    for sub in ("config", "data", "models", "outputs"):
         (rating_dir / sub).mkdir(exist_ok=True)
-    data_source_config_dir = rating_dir / "config" / "data_source"
-    data_source_config_dir.mkdir(parents=True, exist_ok=True)
-    (data_source_config_dir / "raw_rows.json").write_text(
-        '{\n  "path": "../data/sample.parquet",\n  "sourceType": "flat_file"\n}\n',
+    data_input_config_dir = rating_dir / "config" / "data_input"
+    data_input_config_dir.mkdir(parents=True, exist_ok=True)
+    (data_input_config_dir / "raw_rows.json").write_text(
+        "{\n"
+        '  "inputType": "file",\n'
+        '  "format": "parquet",\n'
+        '  "cacheMode": "direct",\n'
+        '  "path": "data/sample.parquet"\n'
+        "}\n",
         encoding="utf-8",
     )
     output_config_dir = rating_dir / "config" / "quote_response"

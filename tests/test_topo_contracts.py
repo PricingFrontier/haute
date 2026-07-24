@@ -375,7 +375,7 @@ class TestIntegrationSmoke:
         end-to-end pipeline execution to fall over.
         """
         nodes = [
-            GraphNode(id="src", type="dataSource", data=NodeData(label="Source")),
+            GraphNode(id="src", type="dataInput", data=NodeData(label="Source")),
             GraphNode(id="mid", type="polars", data=NodeData(label="Transform")),
             GraphNode(id="snk", type="output", data=NodeData(label="Output")),
         ]
@@ -395,7 +395,7 @@ class TestIntegrationSmoke:
         continues to cooperate post-refactor.
         """
         nodes = [
-            GraphNode(id="a", type="dataSource", data=NodeData(label="A")),
+            GraphNode(id="a", type="dataInput", data=NodeData(label="A")),
             GraphNode(id="b", type="polars", data=NodeData(label="B")),
             GraphNode(id="c", type="polars", data=NodeData(label="C")),
             GraphNode(id="d", type="output", data=NodeData(label="D")),
