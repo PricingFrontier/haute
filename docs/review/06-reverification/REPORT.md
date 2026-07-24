@@ -1,5 +1,9 @@
 # Re-verification of the engineering audit against HEAD
 
+> **Point-in-time status evidence.** Component ownership and current queue state
+> live in the [component improvement catalogue](../../roadmap/index.md).
+> Re-check a finding against the present `HEAD` before implementation.
+
 > Every one of the audit's **881 findings** was independently re-checked against the current
 > code (branch `code-fixes`), which carries **145 commits of drift** since the audit base
 > (`1b8eb150`, 2026-06-22). Each verdict cites current `file:line` evidence; 78 backend repros

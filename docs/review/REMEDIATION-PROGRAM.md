@@ -1,5 +1,9 @@
 # Haute — Master Remediation Program
 
+> **Historical synthesis, not the active queue.** Choose and update work through
+> the [component improvement catalogue](../roadmap/index.md); use this document
+> for evidence and original prioritisation only.
+
 > **Single prioritised, deduplicated remediation program** compiled from the complete read-only audit (5 phases, every file and function). No source code has been changed. Each finding links back to its phase detail under `review/`.
 
 ## Audit at a glance

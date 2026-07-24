@@ -30,6 +30,8 @@ BACKEND_SOURCE_ROOT = ROOT / "src" / "haute"
 FRONTEND_SOURCE_ROOT = ROOT / "frontend" / "src"
 SPECS_ROOT = ROOT / "docs" / "specs"
 SPECS_OWNERSHIP = SPECS_ROOT / "ownership.toml"
+COMPONENT_BACKLOG_ROOT = ROOT / "docs" / "roadmap" / "components"
+COMPONENT_BACKLOG_INDEX = ROOT / "docs" / "roadmap" / "index.md"
 
 _MARKDOWN_CODE_SPAN = re.compile(r"(?<!`)`([^`\r\n]+)`(?!`)")
 _MARKDOWN_LINK = re.compile(r"\[[^\]]+\]\(([^)]+)\)")
@@ -88,6 +90,34 @@ _REQUIRED_LOW_LEVEL_HEADINGS = (
     "## Error handling",
     "## Testing",
 )
+_REQUIRED_COMPONENT_BACKLOG_HEADINGS = (
+    "## Scope",
+    "## Work queue",
+    "## Dependencies",
+    "## Evidence and retirement",
+)
+_EXPECTED_COMPONENT_BACKLOGS = (
+    "background-jobs-api",
+    "caching",
+    "deploy-platform",
+    "edge-join",
+    "engineering-quality",
+    "execution-engine",
+    "explore-eda",
+    "frontend-canvas",
+    "git-integration",
+    "io-layer",
+    "modelling",
+    "optimiser",
+    "pipeline-authoring",
+    "rating",
+    "security-supply-chain",
+    "tracing-explainability",
+)
+_COMPONENT_PACKAGE_ROW = re.compile(
+    r"^\|\s*([A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+)\s*\|",
+    flags=re.MULTILINE,
+)
 
 DATABRICKS_SECRET_DOCS = [
     ROOT / "docs" / "deployment" / "targets" / "databricks.md",
@@ -111,6 +141,71 @@ def test_execution_strategy_guide_is_in_public_navigation_and_states_key_contrac
         "unavailable or `null`",
     ):
         assert claim in guide
+
+
+def test_internal_engineering_docs_are_excluded_from_public_mkdocs_site() -> None:
+    config = MKDOCS_CONFIG.read_text(encoding="utf-8")
+    exclude_block = config.split("exclude_docs: |", maxsplit=1)[1].split("\ndev_addr:", maxsplit=1)[
+        0
+    ]
+
+    for internal_dir in ("specs/", "roadmap/", "review/", "fable-Review/", "trip/"):
+        assert f"  {internal_dir}\n" in exclude_block
+    assert "\n  - Roadmap:" not in config
+
+
+def test_component_improvement_backlogs_are_complete_and_source_linked() -> None:
+    component_files = {
+        path.parent.name: path for path in COMPONENT_BACKLOG_ROOT.glob("*/README.md")
+    }
+    assert tuple(sorted(component_files)) == _EXPECTED_COMPONENT_BACKLOGS
+
+    index = COMPONENT_BACKLOG_INDEX.read_text(encoding="utf-8")
+    package_owners: dict[str, str] = {}
+    for component, path in component_files.items():
+        text = path.read_text(encoding="utf-8")
+        for heading in _REQUIRED_COMPONENT_BACKLOG_HEADINGS:
+            assert heading in text, f"{path.relative_to(ROOT)} is missing {heading}"
+        assert f"(components/{component}/README.md)" in index
+
+        package_ids = _COMPONENT_PACKAGE_ROW.findall(text)
+        assert package_ids, f"{path.relative_to(ROOT)} has no work packages"
+        for package_id in package_ids:
+            assert package_id not in package_owners, (
+                f"{package_id} is owned by both {package_owners[package_id]} and {component}"
+            )
+            package_owners[package_id] = component
+
+        for target in _MARKDOWN_LINK.findall(text):
+            if target.startswith(("#", "http://", "https://", "mailto:")):
+                continue
+            local_target = target.split("#", maxsplit=1)[0]
+            assert (path.parent / local_target).resolve().exists(), (
+                f"{path.relative_to(ROOT)} links to missing {local_target}"
+            )
+
+    retired_audit_packages = {"AUD-C02", "AUD-C03", "AUD-C11"}
+    expected_source_packages = (
+        ({f"AUD-C{number:02d}" for number in range(1, 21)} - retired_audit_packages)
+        | {f"EDA-E{number:02d}" for number in range(1, 14)}
+        | {f"GIT-G{number:02d}" for number in range(1, 17)}
+        | {f"IO-IO{number:02d}" for number in range(1, 13)}
+        | {f"MOD-M{number:02d}" for number in range(1, 10)}
+        | {f"OPT-P{number:02d}" for number in range(1, 11)}
+        | {f"ROAD-WORKER-{number:02d}" for number in range(1, 6)}
+        | {f"ROAD-EXEC-{number:02d}" for number in range(1, 6)}
+        | {f"ROAD-TEST-{number:02d}" for number in range(1, 6)}
+        | {f"ROAD-UI-{number:02d}" for number in range(1, 6)}
+        | {f"ROAD-EDGE-{number:02d}" for number in range(1, 4)}
+    )
+    assert expected_source_packages <= set(package_owners), (
+        f"component catalogue is missing source packages: "
+        f"{sorted(expected_source_packages - set(package_owners))}"
+    )
+    assert retired_audit_packages.isdisjoint(package_owners), (
+        "fully implemented audit packages must not remain in active component queues: "
+        f"{sorted(retired_audit_packages & set(package_owners))}"
+    )
 
 
 def _normalise_doc_reference(value: str) -> str:

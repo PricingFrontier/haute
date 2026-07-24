@@ -74,7 +74,9 @@ consumers from ragged inference.
 - Do **not** touch the assembler's `_prune` semantics — the null-prune/empty-collection rule
   is deliberate and documented (`_output_assembler.py:358-390`); the bug is purely the
   frame-construction sampling on top of it.
-- `fable-Review/polars-backend/P04` owns the assembler's O(rows²) build cost; this package is
-  orthogonal (correctness of the frame boundary, not cost). Fixing IO03 first is required
-  before any new output format work (IO09) — a JSON/JSONL output format built on this boundary
-  would inherit the same silent drop.
+- The delivered
+  [v0.6.0 Polars remediation](../../trip/plans/F_0.6.0_polars-backend-remediation.plan.md)
+  owns the assembler's former O(rows²) build cost; this package is orthogonal (correctness of
+  the frame boundary, not cost). Fixing IO03 first is required before any new output format
+  work (IO09) — a JSON/JSONL output format built on this boundary would inherit the same
+  silent drop.

@@ -4,6 +4,8 @@
 
 **Current as of:** 2026-07-20
 
+**Owning queue:** [Edge Join](components/edge-join/README.md)
+
 ## Outcome
 
 An analyst can insert and configure an Edge Join confidently in the canvas, and can rely on its saved pipeline to preserve the same topology, role bindings, and join semantics through preview, tracing, and deployment.
@@ -75,7 +77,7 @@ The remaining work is deliberately limited to the gaps below; it must not reopen
 - Replacing the two-input, role-bound Edge Join model with generic edge annotations or arbitrary custom join code.
 - Adding implicit key inference, best-effort repair of malformed graphs, or fallback selection of input roles.
 - Redesigning general canvas connections, node palette behavior, or Polars join semantics as part of this work.
-- Generic executor resilience and scale gates, worker-process migration, and graph-wide Polars planning; those are owned by the [backend execution hardening](backend-execution-hardening.md), [worker isolation](worker-isolation.md), and [Polars execution strategy](polars-execution-strategy.md) roadmaps.
+- Generic executor resilience and scale gates, worker-process migration, and graph-wide Polars planning; those are owned by [Backend execution hardening](backend-execution-hardening.md), [Worker isolation](worker-isolation.md), and the durable [execution-engine contract](../specs/execution-engine/high-level.md).
 
 ## Dependencies and sequencing
 

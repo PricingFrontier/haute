@@ -4,6 +4,8 @@
 
 **Current as of:** 2026-07-20
 
+**Owning queue:** [Frontend and canvas](components/frontend-canvas/README.md)
+
 ## Outcome
 
 The browser UI protects the user journeys and persisted configuration shapes

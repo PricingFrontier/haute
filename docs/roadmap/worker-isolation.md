@@ -4,6 +4,8 @@
 
 **Current as of:** 2026-07-20
 
+**Owning queue:** [Background jobs and API lifecycle](components/background-jobs-api/README.md)
+
 ## Outcome
 
 Heavy jobs can run outside the GUI/API host without losing truthful progress,
@@ -151,9 +153,10 @@ supported platform class.
 ## Dependencies and ownership
 
 This roadmap consumes the engine's existing bounded-execution, projection,
-chunking, telemetry, and admission primitives. It should coordinate with the
-[Polars execution strategy](polars-execution-strategy.md) roadmap when a worker
-needs an explicit streaming boundary, but does not redefine planner semantics.
+chunking, telemetry, and admission primitives. It should use the
+[execution-engine contract](../specs/execution-engine/high-level.md) when a
+worker needs an explicit streaming boundary, but does not redefine planner
+semantics.
 
 The [backend execution hardening](backend-execution-hardening.md) roadmap owns
 cross-cutting lifecycle guardrails, fault-injection infrastructure,

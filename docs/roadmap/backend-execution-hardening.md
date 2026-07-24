@@ -4,6 +4,8 @@
 
 **Current as of:** 2026-07-20
 
+**Owning queue:** [Execution engine](components/execution-engine/README.md)
+
 ## Outcome
 
 Make the execution engine demonstrably safe to evolve: one strict contract and
@@ -53,14 +55,15 @@ This roadmap owns cross-cutting execution safety. It does **not** own:
 
 - migrating training, optimiser, or auto-range work into isolated workers; see
   [Worker isolation](worker-isolation.md);
-- defining physical execution strategies, group-by reducers, or user-facing
-  strategy diagnostics; see [Polars execution strategy](polars-execution-strategy.md);
-- defining richer per-column projection provenance or the compatibility policy
-  for non-strict/no-seed surfaces; those are planner semantics owned by the
-  Polars roadmap;
-- defining the Polars-specific 1m/10m join-and-training workloads or their
-  strategy invariants; that roadmap owns those fixtures, while this roadmap
-  owns the common report envelope and release aggregation;
+- redefining physical execution strategies, group-by rejection, or user-facing
+  strategy diagnostics; see the
+  [execution-engine specification](../specs/execution-engine/high-level.md);
+- redefining per-column projection provenance or the compatibility policy for
+  non-strict/no-seed surfaces; those are durable planner semantics owned by the
+  execution-engine contract;
+- redefining the delivered Polars-specific 1m/10m join-and-training workloads
+  or their strategy invariants; the execution-engine suite owns those fixtures,
+  while this roadmap owns the common report envelope and release aggregation;
 - new business capabilities or a global priority queue/disk-budget subsystem.
 
 The last item is an intentional constraint. Reconsider scheduling or disk
@@ -184,7 +187,7 @@ reviewable, and comparable across execution profiles.
 2. Provide deterministic, small cross-profile smoke fixtures for preview,
    sink, deploy batch, training preparation, optimiser setup, and auto-range.
    Consume
-   domain-owned scale fixtures, including the Polars roadmap's 1m/10m cases,
+   domain-owned scale fixtures, including the delivered Polars 1m/10m cases,
    through the same report envelope instead of duplicating them here.
 3. Account for route-handler wall time explicitly: report bounded stage time
    plus a named `unaccounted_ms` remainder. Populate row/byte counters when the
