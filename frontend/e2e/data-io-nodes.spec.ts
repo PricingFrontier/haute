@@ -106,7 +106,7 @@ test.describe("data input/output nodes", () => {
     const formatSelect = page.getByLabel(/format/i).first()
     await expect(formatSelect).toHaveValue("parquet")
     const optionLabels = await formatSelect.locator("option").allTextContents()
-    expect(optionLabels.some((t) => /Delta Lake — needs one of: deltalake/.test(t))).toBe(true)
+    expect(optionLabels.some((t) => /Delta Lake.*needs one of: deltalake/.test(t))).toBe(true)
     expect(optionLabels.some((t) => /Text lines \(unstable\)/.test(t))).toBe(true)
 
     // The saved path round-tripped through sidecar + codegen + parse.
