@@ -61,7 +61,7 @@
   `_UNIVERSAL_KEYS` (`instanceOf`, `inputMapping`, `selected_columns`, `column_renames`,
   `categorical_levels`, `contract` — keys any node type may legitimately carry).
 - **`NODE_TYPE_TO_FOLDER` / `FOLDER_TO_NODE_TYPE`** (`_config_io.py`) — the bidirectional
-  map between a `NodeType` and its `config/<folder>/` sidecar directory name. 16 of the 21
+  map between a `NodeType` and its `config/<folder>/` sidecar directory name. 14 of the 19
   node types store external config (all except `polars`, `edgeJoin`, `explore`, `submodel`,
   and `submodelPort`):
 

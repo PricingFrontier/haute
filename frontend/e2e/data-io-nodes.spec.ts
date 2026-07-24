@@ -37,7 +37,14 @@ test.describe("data input/output nodes", () => {
           data: {
             label: "wide_in",
             nodeType: "dataInput",
-            config: { format: "parquet", path: "data/sample.parquet", arguments: {} },
+            config: {
+              inputType: "file",
+              format: "parquet",
+              mode: "scan",
+              cacheMode: "direct",
+              path: "../data/sample.parquet",
+              arguments: {},
+            },
           },
         },
         {
@@ -47,7 +54,13 @@ test.describe("data input/output nodes", () => {
           data: {
             label: "wide_out",
             nodeType: "dataOutput",
-            config: { format: "ndjson", path: "outputs/wide.jsonl", arguments: {} },
+            config: {
+              outputType: "file",
+              format: "ndjson",
+              mode: "sink",
+              path: "outputs/wide.jsonl",
+              arguments: {},
+            },
           },
         },
       )
@@ -93,6 +106,6 @@ test.describe("data input/output nodes", () => {
     expect(optionLabels.some((t) => /Text lines \(unstable\)/.test(t))).toBe(true)
 
     // The saved path round-tripped through sidecar + codegen + parse.
-    await expect(page.getByLabel(/path/i).first()).toHaveValue("data/sample.parquet")
+    await expect(page.getByLabel(/path/i).first()).toHaveValue("../data/sample.parquet")
   })
 })

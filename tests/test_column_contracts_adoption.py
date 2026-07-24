@@ -48,6 +48,15 @@ def _e(src: str, tgt: str) -> GraphEdge:
 
 def _node(nid: str, nt: NodeType, **cfg: Any) -> GraphNode:
     """Convenience node constructor."""
+    if nt is NodeType.DATA_INPUT:
+        cfg = {
+            "inputType": "file",
+            "format": "parquet",
+            "mode": "scan",
+            "cacheMode": "direct",
+            "arguments": {},
+            **cfg,
+        }
     return GraphNode(id=nid, data=NodeData(label=nid, nodeType=nt, config=cfg))
 
 

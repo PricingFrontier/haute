@@ -360,7 +360,14 @@ class TestScoreGraphStaticDataSourceRemap:
                         "data": {
                             "label": "static_ds",
                             "nodeType": "dataInput",
-                            "config": {"path": "original/factors.parquet"},
+                            "config": {
+                                "inputType": "file",
+                                "format": "parquet",
+                                "mode": "scan",
+                                "cacheMode": "direct",
+                                "path": "original/factors.parquet",
+                                "arguments": {},
+                            },
                         },
                     },
                     {

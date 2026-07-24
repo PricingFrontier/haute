@@ -1574,7 +1574,14 @@ class TestRenamePreservingSaveIntegration:
                     data=NodeData(
                         label=label,
                         nodeType="dataInput",
-                        config={"path": "data.parquet"},
+                        config={
+                            "inputType": "file",
+                            "format": "parquet",
+                            "mode": "scan",
+                            "cacheMode": "direct",
+                            "path": "data.parquet",
+                            "arguments": {},
+                        },
                     ),
                 )
             ],
@@ -1661,7 +1668,14 @@ class TestRenamePreservingSaveIntegration:
                         data=NodeData(
                             label=label,
                             nodeType="dataInput",
-                            config={"path": "data.parquet"},
+                            config={
+                                "inputType": "file",
+                                "format": "parquet",
+                                "mode": "scan",
+                                "cacheMode": "direct",
+                                "path": "data.parquet",
+                                "arguments": {},
+                            },
                         ),
                     )
                 ],

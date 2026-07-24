@@ -5,11 +5,13 @@ import { GraphProvider } from "../GraphContext"
 import type { SimpleNode, SimpleEdge } from "../editors"
 import useUIStore from "../../stores/useUIStore"
 
-const { transformEditorProps, edgeJoinEditorProps, exploreCodeEditorProps, bandingEditorProps, modellingConfigProps, optimiserConfigProps } = vi.hoisted(() => ({
+const { transformEditorProps, edgeJoinEditorProps, exploreCodeEditorProps, bandingEditorProps, dataInputEditorProps, dataOutputEditorProps, modellingConfigProps, optimiserConfigProps } = vi.hoisted(() => ({
   transformEditorProps: [] as Record<string, unknown>[],
   edgeJoinEditorProps: [] as Record<string, unknown>[],
   exploreCodeEditorProps: [] as Record<string, unknown>[],
   bandingEditorProps: [] as Record<string, unknown>[],
+  dataInputEditorProps: [] as Record<string, unknown>[],
+  dataOutputEditorProps: [] as Record<string, unknown>[],
   modellingConfigProps: [] as Record<string, unknown>[],
   optimiserConfigProps: [] as Record<string, unknown>[],
 }))
@@ -58,8 +60,14 @@ vi.mock("../LazyNodeEditors", async () => {
   ExternalFileEditor: () => <div data-testid="ExternalFileEditor" />,
   ApiInputEditor: () => <div data-testid="ApiInputEditor" />,
   LiveSwitchEditor: () => <div data-testid="LiveSwitchEditor" />,
-  DataInputEditor: () => <div data-testid="DataInputEditor" />,
-  DataOutputEditor: () => <div data-testid="DataOutputEditor" />,
+  DataInputEditor: (props: Record<string, unknown>) => {
+    dataInputEditorProps.push(props)
+    return <div data-testid="DataInputEditor" />
+  },
+  DataOutputEditor: (props: Record<string, unknown>) => {
+    dataOutputEditorProps.push(props)
+    return <div data-testid="DataOutputEditor" />
+  },
   ScenarioExpanderEditor: () => <div data-testid="ScenarioExpanderEditor" />,
   OptimiserApplyEditor: () => <div data-testid="OptimiserApplyEditor" />,
   ConstantEditor: () => <div data-testid="ConstantEditor" />,
@@ -150,6 +158,8 @@ describe("NodePanel", () => {
     edgeJoinEditorProps.length = 0
     exploreCodeEditorProps.length = 0
     bandingEditorProps.length = 0
+    dataInputEditorProps.length = 0
+    dataOutputEditorProps.length = 0
     modellingConfigProps.length = 0
     optimiserConfigProps.length = 0
   })
@@ -278,6 +288,55 @@ describe("NodePanel", () => {
   it("renders DataOutputEditor for dataOutput nodes", () => {
     renderPanel({ node: makeNode({ data: { label: "Out", description: "", nodeType: "dataOutput", config: {} } }) })
     expect(screen.getByTestId("DataOutputEditor")).toBeInTheDocument()
+  })
+
+  it.each([
+    ["dataInput", dataInputEditorProps],
+    ["dataOutput", dataOutputEditorProps],
+  ] as const)("replaces the complete config for %s nodes and clears cached result shape", (nodeType, editorProps) => {
+    const node = makeNode({
+      id: "io_node",
+      data: {
+        label: "I/O",
+        description: "",
+        nodeType,
+        config: { stale: true },
+        _columns: [{ name: "old_output", dtype: "f64" }],
+        _availableColumns: [{ name: "old_output", dtype: "f64" }],
+        _schemaWarnings: [{ column: "old_output", status: "stale" }],
+        _columnsSource: "preview",
+      },
+    })
+    const onUpdateNode = vi.fn(() => ({ ok: true as const }))
+    renderPanel({ node, onUpdateNode })
+    const onReplaceConfig = editorProps.at(-1)?.onReplaceConfig as (
+      config: Record<string, unknown>,
+    ) => { ok: boolean }
+
+    expect(onReplaceConfig({ format: "parquet" })).toEqual({ ok: true })
+    expect(onUpdateNode).toHaveBeenCalledWith("io_node", {
+      label: "I/O",
+      description: "",
+      nodeType,
+      config: { format: "parquet" },
+    })
+  })
+
+  it("reports when a complete config replacement has no node update handler", () => {
+    renderPanel({
+      node: makeNode({
+        data: { label: "In", description: "", nodeType: "dataInput", config: {} },
+      }),
+      onUpdateNode: undefined,
+    })
+    const onReplaceConfig = dataInputEditorProps.at(-1)?.onReplaceConfig as (
+      config: Record<string, unknown>,
+    ) => { ok: boolean; error?: string }
+
+    expect(onReplaceConfig({ format: "parquet" })).toEqual({
+      ok: false,
+      error: "Node update handler is unavailable.",
+    })
   })
 
   it("renders OutputEditor for output nodes", () => {

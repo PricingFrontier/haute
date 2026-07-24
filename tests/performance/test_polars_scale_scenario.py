@@ -43,6 +43,18 @@ def _edge(source: str, target: str) -> GraphEdge:
     return GraphEdge(id=f"{source}-{target}", source=source, target=target)
 
 
+def _direct_parquet_input(path: Path, **extra: Any) -> dict[str, Any]:
+    return {
+        "inputType": "file",
+        "format": "parquet",
+        "mode": "scan",
+        "cacheMode": "direct",
+        "path": str(path),
+        "arguments": {},
+        **extra,
+    }
+
+
 def _generate_inputs(tmp_path: Path, rows: int) -> tuple[Path, Path, list[str], list[str]]:
     base_path = tmp_path / "polars-scale-base.parquet"
     lookup_path = tmp_path / "polars-scale-lookup.parquet"
@@ -105,18 +117,18 @@ def _scenario_graph(
             _node(
                 "base",
                 NodeType.DATA_INPUT,
-                {
-                    "path": str(base_path),
-                    "contract": {"inputs": [], "outputs": base_columns},
-                },
+                _direct_parquet_input(
+                    base_path,
+                    contract={"inputs": [], "outputs": base_columns},
+                ),
             ),
             _node(
                 "lookup",
                 NodeType.DATA_INPUT,
-                {
-                    "path": str(lookup_path),
-                    "contract": {"inputs": [], "outputs": lookup_columns},
-                },
+                _direct_parquet_input(
+                    lookup_path,
+                    contract={"inputs": [], "outputs": lookup_columns},
+                ),
             ),
             _node(
                 "training_input",

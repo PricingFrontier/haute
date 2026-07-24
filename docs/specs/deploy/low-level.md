@@ -7,7 +7,7 @@
 | `src/haute/deploy/__init__.py` | Public API surface (`deploy`, `deploy_resolved`, config/result re-exports); target validation (`_validate_target`) and dispatch (`_dispatch_resolved`) by `config.target`. |
 | `src/haute/deploy/_config.py` | `DeployConfig` (user input), target sub-configs (`DatabricksConfig`, `ContainerConfig`, `AzureContainerAppsConfig`, `AwsEcsConfig`, `GcpRunConfig`, `SafetyConfig`, `CIConfig`), `haute.toml` loading + schema validation, base-image pinning validation, `.env` loading, `resolve_config()` producing `ResolvedDeploy`. |
 | `src/haute/deploy/_pruner.py` | Graph pruning to the output node's ancestors; `liveSwitch` live-branch collapsing; output/input/source node discovery. |
-| `src/haute/deploy/_bundler.py` | Artefact discovery and collection (`collect_artifacts`): external files, file-backed optimiser artefacts, supported MLflow-sourced local models + feature contracts, and static data sources; path resolution and static-source schema drift checks. MLflow-sourced optimiser applies are deliberately not bundled. |
+| `src/haute/deploy/_bundler.py` | Artefact discovery and collection (`collect_artifacts`): external files, file-backed optimiser artefacts, supported MLflow-sourced local models + feature contracts, and retained Data Inputs; path resolution plus canonical provider/schema validation and a bounded one-row readability probe. MLflow-sourced optimiser applies are deliberately not bundled. |
 | `src/haute/deploy/_schema.py` | Input schema inference (read source file schema) and output schema inference (dry-run scoring with the bundled artefacts), with a graph-and-artefact-fingerprint-keyed on-disk cache. |
 | `src/haute/deploy/_scorer.py` | Runtime scoring engine (`score_graph`, `score_graph_lazy`) shared by every deploy target; `NodeBuildHooks` interception for live-input injection and artefact-path remapping; stat-gated model/contract caches; execution admission. |
 | `src/haute/deploy/_validators.py` | Pre-deploy validation (`validate_deploy`): structural checks + test-quote scoring; golden test-quote parsing and expected-output tolerance comparison; `score_test_quotes`. |
@@ -84,6 +84,11 @@
    fall back to the single source node in the pruned graph (`ValueError` if zero or
    multiple non-apiInput sources exist).
 7. `collect_artifacts(pruned_graph, deploy_inputs, pipeline_dir)` → `artifacts` dict.
+   Every retained direct Data Input is validated through its canonical provider config,
+   resolved with the `DEPLOY_BATCH` profile, schema-checked, and read for at most one row
+   through the streaming engine before its source is admitted to the bundle. Schema and
+   dtype declarations live under the format-specific `arguments` object; the removed
+   top-level `expected_columns` and `schema_overrides` fields are not compatibility paths.
 8. `infer_input_schema()` (call `collect_schema()` on the first input node's source;
    lazy readers avoid row collection, while the existing plain-JSON reader may parse
    eagerly) and
@@ -289,7 +294,7 @@ JSON have separate structured payloads. A body exactly at the configured limit i
 
 | Exception | Raised where | Propagates to |
 |---|---|---|
-| `haute.errors.DeployError` | `_config.py` (unpinned base image), `_bundler.py` (static-source schema drift), `_scorer.py` (unscoreable `modelScore`), `_validators.py` (aggregated validation failure) | `deploy()` / `resolve_config()` callers; carries structured `context` kwargs (e.g. `node_id`, `expected_columns`) rendered into `str()`. |
+| `haute.errors.DeployError` | `_config.py` (unpinned base image), `_bundler.py` (invalid or unreadable retained Data Input), `_scorer.py` (unscoreable `modelScore`), `_validators.py` (aggregated validation failure) | `deploy()` / `resolve_config()` callers; carries structured `context` kwargs (for example `node_id` and the underlying provider/schema `error`) rendered into `str()`. |
 | `ValueError` | `_pruner.py` (missing/multiple output nodes, bad explicit `liveSwitch` config), `_config.py` (zero/ambiguous fallback source nodes, unknown TOML keys, missing `from_cli_args` required fields), `__init__.py` (unknown target), `_scorer.py` (bad `output_fields` type, negative `row_count`), `_impact.py` (non-finite predictions, zero-baseline change) | Caller of `resolve_config`/`deploy`/scoring functions; container `/quote` endpoint catches the `BoundedMemoryUnsupportedError` subclass specially (422) but a bare `ValueError` from scoring falls into the generic 500 handler. |
 | `FileNotFoundError` | `_bundler.py::_check_exists` (missing artefact on disk), `_bundler.py::_download_model_artifact` (MLflow download landed but file missing) | Propagates uncaught through `resolve_config()`. |
 | `RuntimeError` | `_container.py` (Docker unavailable/build/push failure, unpinned Dockerfile dependency), `_scorer.py` (`modelScore` contract matched but no model artefact — deliberately after the contract check), `_mlflow.py` (Databricks host/token unset, unreachable, `run_id`-less registered model version) | Uncaught to caller; `_check_docker_available`'s message specifically redirects the operator to CI. |
@@ -409,8 +414,9 @@ The implementation plan is
 - `src/haute/deploy/_bundler.py` dispatches retained static inputs by provider/cache mode.
   Direct local path formats contribute their source artifact; snapshot inputs acquire a cache
   generation lease, verify signed metadata/identity/schema, and bundle both data and metadata
-  under an immutable artifact name. The manifest records provider, identity digest, generation
-  id, and remap.
+  under an immutable artifact name. Before publication, each direct input must resolve in the
+  bounded deploy profile and complete a one-row streaming readability probe using its canonical
+  format arguments. The manifest records provider, identity digest, generation id, and remap.
 - `src/haute/deploy/_scorer.py` remaps `DATA_INPUT` direct paths or snapshot roots through shared
   provider dispatch. Remove static-data-source hooks and direct Databricks rejection. Secret
   references resolve through target configuration only for explicitly supported direct remote

@@ -227,8 +227,9 @@ most: a silent wrong answer here mis-prices real policies.
   build) starts. `deploy()` explicitly validates the target *before* resolving the config,
   so an unknown target never gets misreported as "no output node found".
 - **Missing or drifted artefacts** raise `FileNotFoundError` (bundler: artefact file
-  absent on disk) or `haute.errors.DeployError` (bundler: static data source's actual
-  columns disagree with its declared `expected_columns`; scorer:
+  absent on disk) or `haute.errors.DeployError` (bundler: a retained Data Input has an
+  invalid provider config, cannot satisfy its canonical `arguments.schema` declaration,
+  or cannot complete a bounded one-row readability probe; scorer:
   `FeatureMismatchError` when a live request schema disagrees with a bundled training-time
   feature contract).
 - **Structural graph errors** split across the two stages: no/multiple output nodes and an

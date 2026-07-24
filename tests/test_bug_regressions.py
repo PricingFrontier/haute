@@ -106,7 +106,14 @@ class TestBugB13StreamingChunkSizeRestore:
                     data=NodeData(
                         label="src",
                         nodeType="dataInput",
-                        config={"path": "unused.parquet"},
+                        config={
+                            "inputType": "file",
+                            "format": "parquet",
+                            "mode": "scan",
+                            "cacheMode": "direct",
+                            "path": "unused.parquet",
+                            "arguments": {},
+                        },
                     ),
                 ),
                 GraphNode(
@@ -114,7 +121,13 @@ class TestBugB13StreamingChunkSizeRestore:
                     data=NodeData(
                         label="sink",
                         nodeType="dataOutput",
-                        config={"path": str(out_path), "format": "parquet"},
+                        config={
+                            "outputType": "file",
+                            "format": "parquet",
+                            "mode": "sink",
+                            "path": str(out_path),
+                            "arguments": {},
+                        },
                     ),
                 ),
             ],
@@ -535,7 +548,14 @@ class TestBugB13B14ChunkSizeRestore:
                     data=NodeData(
                         label="src",
                         nodeType="dataInput",
-                        config={"path": "unused.parquet"},
+                        config={
+                            "inputType": "file",
+                            "format": "parquet",
+                            "mode": "scan",
+                            "cacheMode": "direct",
+                            "path": "unused.parquet",
+                            "arguments": {},
+                        },
                     ),
                 ),
                 GraphNode(
@@ -543,7 +563,13 @@ class TestBugB13B14ChunkSizeRestore:
                     data=NodeData(
                         label="sink",
                         nodeType="dataOutput",
-                        config={"path": str(out_path), "format": "parquet"},
+                        config={
+                            "outputType": "file",
+                            "format": "parquet",
+                            "mode": "sink",
+                            "path": str(out_path),
+                            "arguments": {},
+                        },
                     ),
                 ),
             ],

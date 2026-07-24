@@ -39,7 +39,7 @@ from haute.routes._optimiser_limits import (
     FrontierComputeBudgetExceededError,
     enforce_frontier_compute_budget,
 )
-from tests.conftest import make_edge, make_graph
+from tests.conftest import make_edge, make_file_input_config, make_graph
 from tests.optimiser_fixtures import run_frontier_and_wait
 
 if TYPE_CHECKING:
@@ -142,7 +142,7 @@ def _online_graph(data_path: str, config: dict | None = None) -> dict:
                     "data": {
                         "label": "source",
                         "nodeType": "dataInput",
-                        "config": {"path": data_path},
+                        "config": make_file_input_config(data_path),
                     },
                 },
                 {
@@ -187,7 +187,7 @@ def _ratebook_graph(scored_path: str, banding_path: str) -> dict:
                     "data": {
                         "label": "source",
                         "nodeType": "dataInput",
-                        "config": {"path": scored_path},
+                        "config": make_file_input_config(scored_path),
                     },
                 },
                 {
@@ -195,7 +195,7 @@ def _ratebook_graph(scored_path: str, banding_path: str) -> dict:
                     "data": {
                         "label": "banding",
                         "nodeType": "dataInput",
-                        "config": {"path": banding_path},
+                        "config": make_file_input_config(banding_path),
                     },
                 },
                 {

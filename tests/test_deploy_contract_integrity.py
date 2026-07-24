@@ -2,7 +2,7 @@
 
 TDD suite covering:
 
-* #14 — Static dataInput column-order drift must raise at prune/bundle time
+* #14 — Static Data Input schema/readability drift must raise at prune/bundle time
 * #16 — ``validate_deploy`` must raise ``DeployError`` when test quotes fail
 * #17 — Bundle includes ``feature_contract.json``; scorer verifies at load
 
@@ -95,26 +95,19 @@ def _make_resolved(
 
 
 class TestStaticDataSourceSchemaDrift:
-    """A static dataInput (non-apiInput) bundled at deploy time must have
-    its column order match what the training-time pipeline saw.  Silent
-    reorder turns into positional-join bugs.
-    """
+    """A retained Data Input must satisfy its canonical schema at bundle time."""
 
-    def test_pruner_surfaces_static_source_column_mismatch(self, tmp_path: Path) -> None:
-        """The bundler/pruner pipeline must raise when a static CSV's columns
-        are reordered relative to the training-time expectation.
-        """
+    def test_pruner_surfaces_static_source_schema_mismatch(self, tmp_path: Path) -> None:
+        """The bundler must execute a bounded readability probe against the schema."""
         from haute.deploy._bundler import collect_artifacts
         from haute.deploy._pruner import prune_for_deploy
 
-        # Training pipeline expected columns: [area, factor].
-        # Deploy-time CSV has reversed column order.
+        # The declared schema order disagrees with the file. Polars can build
+        # a LazyFrame schema from this declaration without touching a row, so
+        # bundle validation must force a bounded readability probe.
         bad_csv = tmp_path / "area_factors.csv"
         bad_csv.write_text("factor,area\n1.2,A\n1.3,B\n")
 
-        # Write an expected-schema sidecar (the contract-style hint embedded
-        # in the node config).  This mirrors how the contract flows from
-        # training to deploy.
         graph = PipelineGraph.model_validate(
             {
                 "nodes": [
@@ -124,8 +117,17 @@ class TestStaticDataSourceSchemaDrift:
                             "label": "static_ds",
                             "nodeType": "dataInput",
                             "config": {
+                                "inputType": "file",
+                                "format": "csv",
+                                "mode": "scan",
+                                "cacheMode": "direct",
                                 "path": str(bad_csv),
-                                "expected_columns": ["area", "factor"],
+                                "arguments": {
+                                    "schema": {
+                                        "area": "String",
+                                        "factor": "Float64",
+                                    }
+                                },
                             },
                         },
                     },
@@ -146,10 +148,7 @@ class TestStaticDataSourceSchemaDrift:
 
         pruned, _kept, _removed = prune_for_deploy(graph, "output")
 
-        # Pruner + bundler pipeline must detect the column-order drift.
-        # Either the pruner itself (preferred) or the bundler must raise
-        # with a clear message naming the offending node.
-        with pytest.raises((DeployError, FeatureMismatchError, ValueError)) as exc_info:
+        with pytest.raises(DeployError) as exc_info:
             collect_artifacts(pruned, [], tmp_path)
 
         msg = str(exc_info.value)
@@ -173,8 +172,16 @@ class TestStaticDataSourceSchemaDrift:
                             "label": "static_ds",
                             "nodeType": "dataInput",
                             "config": {
+                                "inputType": "file",
+                                "format": "csv",
+                                "mode": "scan",
+                                "cacheMode": "direct",
                                 "path": str(source_path),
-                                "schema_overrides": {"missing": "String"},
+                                "arguments": {
+                                    "schema": {
+                                        "quote_id": "String",
+                                    }
+                                },
                             },
                         },
                     }
@@ -204,8 +211,12 @@ class TestStaticDataSourceSchemaDrift:
                             "label": "static_ds",
                             "nodeType": "dataInput",
                             "config": {
+                                "inputType": "file",
+                                "format": "json",
+                                "mode": "read",
+                                "cacheMode": "direct",
                                 "path": str(source_path),
-                                "expected_columns": ["quote_id"],
+                                "arguments": {},
                             },
                         },
                     }
@@ -214,8 +225,13 @@ class TestStaticDataSourceSchemaDrift:
             }
         )
 
-        with pytest.raises(DeployError, match="Plain JSON"):
+        with pytest.raises(DeployError) as exc_info:
             collect_artifacts(graph, [], tmp_path)
+
+        message = str(exc_info.value).lower()
+        assert "static_ds" in message
+        assert "json" in message
+        assert "bounded" in message
 
 
 # ===========================================================================

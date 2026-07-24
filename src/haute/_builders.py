@@ -35,7 +35,7 @@ from haute._edge_join import (
 )
 from haute._execution_context import ExecutionProfile, current_execution_context
 from haute._graph_utils import _sanitize_func_name
-from haute._io import load_external_object, read_data_source
+from haute._io import _select_columns, load_external_object, read_data_source
 from haute._logging import get_logger
 
 # Scenario-expander defaults live in ``_node_apply`` (the shared apply module)
@@ -581,16 +581,11 @@ def _build_data_input(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
             base_dir=_configured_pipeline_dir(),
             profile=_profile,
         )
-        if projected.validate_columns:
-            source_columns = set(frame.collect_schema().names())
-            missing = projected.validate_columns - source_columns
-            if missing:
-                raise ValueError(
-                    "Data Input selected_columns references columns missing from "
-                    f"the source schema: {sorted(missing)!r}"
-                )
-        if projected.columns is not None:
-            frame = frame.select(list(projected.columns))
+        frame = _select_columns(
+            frame,
+            None if projected.columns is None else tuple(projected.columns),
+            validate_columns=tuple(projected.validate_columns),
+        )
         if code:
             return _exec_user_code(code, ["df"], (frame,), extra_ns=preamble)
         return frame

@@ -20,6 +20,7 @@ import pytest
 
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute.schemas import WriteOutputResponse
+from tests.conftest import make_file_output_config
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -44,7 +45,7 @@ def _sink_node(
     label: str | None = None,
     selected_columns: list[str] | None = None,
 ) -> GraphNode:
-    config = {"path": path, "format": fmt}
+    config = make_file_output_config(path, format_name=fmt)
     if selected_columns is not None:
         config["selected_columns"] = selected_columns
     return GraphNode(
@@ -98,7 +99,7 @@ class TestExecuteSinkErrors:
             nodes=[_source_node("s"), _sink_node("sink", path="")],
             edges=[_e("s", "sink")],
         )
-        with pytest.raises(ValueError, match="no output path"):
+        with pytest.raises(ValueError, match="requires a non-empty 'path'"):
             write_data_output(graph, "sink")
 
 
@@ -338,7 +339,7 @@ class TestExecuteSinkComputeFailure:
             "haute.executor._execute_lazy",
             return_value=({}, ["s", "sink"], {}, {}),
         ):
-            with pytest.raises(RuntimeError, match="Failed to compute sink input"):
+            with pytest.raises(RuntimeError, match="Failed to compute Data Output input"):
                 write_data_output(graph, "sink")
 
 

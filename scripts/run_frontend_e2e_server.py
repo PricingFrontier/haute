@@ -254,7 +254,7 @@ def _augment_starter_pipeline() -> None:
         '  "format": "parquet",\n'
         '  "mode": "scan",\n'
         '  "cacheMode": "direct",\n'
-        '  "path": "data/sample.parquet",\n'
+        '  "path": "../data/sample.parquet",\n'
         '  "arguments": {}\n'
         "}\n",
         encoding="utf-8",
@@ -268,7 +268,7 @@ def _augment_starter_pipeline() -> None:
         '  "format": "parquet",\n'
         '  "mode": "scan",\n'
         '  "cacheMode": "direct",\n'
-        '  "path": "data/optimiser_sample.parquet",\n'
+        '  "path": "../data/optimiser_sample.parquet",\n'
         '  "arguments": {}\n'
         "}\n",
         encoding="utf-8",

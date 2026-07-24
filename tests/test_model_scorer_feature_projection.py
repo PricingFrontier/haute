@@ -17,7 +17,7 @@ from haute._model_scorer import (
     score_frame,
 )
 from haute.graph_utils import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
-from tests.conftest import make_output_config
+from tests.conftest import make_file_input_config, make_output_config
 
 
 def _predicting_model(predictions: list[float]) -> MagicMock:
@@ -621,7 +621,7 @@ def test_lazy_batch_model_score_uses_downstream_required_output_projection(tmp_p
                 data=NodeData(
                     label="source",
                     nodeType="dataInput",
-                    config={"path": str(data_path)},
+                    config=make_file_input_config(data_path),
                 ),
             ),
             GraphNode(
@@ -710,7 +710,7 @@ def test_lazy_batch_model_score_uses_declared_transform_contract_for_projection(
                 data=NodeData(
                     label="source",
                     nodeType="dataInput",
-                    config={"path": str(data_path)},
+                    config=make_file_input_config(data_path),
                 ),
             ),
             GraphNode(
@@ -850,7 +850,7 @@ def test_lazy_batch_model_score_applies_stale_selected_columns_after_scoring(
                 data=NodeData(
                     label="source",
                     nodeType="dataInput",
-                    config={"path": str(data_path)},
+                    config=make_file_input_config(data_path),
                 ),
             ),
             GraphNode(

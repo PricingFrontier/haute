@@ -173,7 +173,8 @@ def test_corrupt_current_generation_fails_without_fallback(tmp_path: Path) -> No
         _LazyBuilder(pl.DataFrame({"id": [1]}).lazy()),
         context=_context(),
     )
-    generation.data_path.write_bytes(b"not parquet")
+    corrupt_path = tmp_path / generation.data_path.relative_to(tmp_path)
+    corrupt_path.write_bytes(b"not parquet")
 
     with pytest.raises(SourceCacheCorruptError):
         store.open_generation(identity)
@@ -188,7 +189,7 @@ def test_current_pointer_rejects_malformed_generation_ids(
 ) -> None:
     store = SourceCacheStore(tmp_path)
     identity = _identity(path="data/input.parquet", format="parquet")
-    pointer = store.identity_path(identity) / "current.json"
+    pointer = tmp_path / store.identity_path(identity).relative_to(tmp_path) / "current.json"
     pointer.parent.mkdir(parents=True, exist_ok=True)
     pointer.write_text(
         json.dumps(

@@ -44,6 +44,8 @@ from unittest.mock import patch
 import pytest
 from fastapi.testclient import TestClient
 
+from tests.conftest import make_file_input_config
+
 # ---------------------------------------------------------------------------
 # Common fixtures
 # ---------------------------------------------------------------------------
@@ -151,7 +153,7 @@ class TestWatcherLongSaveRace:
                     data=NodeData(
                         label="src",
                         nodeType="dataInput",
-                        config={"path": "data.parquet"},
+                        config=make_file_input_config("data.parquet"),
                     ),
                 ),
             ],
@@ -221,7 +223,7 @@ class TestWatcherLongSaveRace:
                     data=NodeData(
                         label="src",
                         nodeType="dataInput",
-                        config={"path": "d.parquet"},
+                        config=make_file_input_config("d.parquet"),
                     ),
                 ),
             ],
@@ -359,7 +361,7 @@ class TestGraphToCodeMultiPathTraversal:
                                 "data": {
                                     "label": "a",
                                     "nodeType": "dataInput",
-                                    "config": {"path": "data.parquet"},
+                                    "config": make_file_input_config("data.parquet"),
                                 },
                             },
                             {
@@ -584,7 +586,7 @@ class TestSaveServiceTransaction:
                     data=NodeData(
                         label="a",
                         nodeType="dataInput",
-                        config={"path": "data.parquet"},
+                        config=make_file_input_config("data.parquet"),
                     ),
                     position={"x": 0.0, "y": 0.0},
                 ),

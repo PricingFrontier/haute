@@ -28,7 +28,7 @@ from haute.graph_utils import (
     topo_sort_ids,
 )
 from haute.parser import parse_pipeline_file, parse_pipeline_source
-from tests.conftest import make_edge, make_output_config
+from tests.conftest import make_edge, make_file_input_config, make_output_config
 
 # ---------------------------------------------------------------------------
 # _sanitize_func_name properties
@@ -309,7 +309,7 @@ def _pipeline_graph_strategy():
                 data=NodeData(
                     label="Source",
                     nodeType=NodeType.DATA_INPUT,
-                    config={"path": "data/input.parquet"},
+                    config=make_file_input_config("data/input.parquet"),
                 ),
             )
         )

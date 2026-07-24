@@ -45,6 +45,7 @@ import structlog.testing
 from haute.errors import ExecutionError
 from haute.trace import TraceResult, TraceStep, execute_trace
 from tests.conftest import make_edge as _edge
+from tests.conftest import make_file_input_config
 from tests.conftest import make_graph as _g
 from tests.conftest import make_source_node as _source_node
 from tests.conftest import make_transform_node as _transform_node
@@ -342,7 +343,7 @@ class TestItem3SilentEnrichmentExcepts:
                     data=NodeData(
                         label="live_src",
                         nodeType="dataInput",
-                        config={"path": str(p_live)},
+                        config=make_file_input_config(p_live),
                     ),
                 ),
                 GraphNode(
@@ -350,7 +351,7 @@ class TestItem3SilentEnrichmentExcepts:
                     data=NodeData(
                         label="batch_src",
                         nodeType="dataInput",
-                        config={"path": str(p_batch)},
+                        config=make_file_input_config(p_batch),
                     ),
                 ),
                 GraphNode(

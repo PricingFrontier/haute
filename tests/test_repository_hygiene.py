@@ -306,11 +306,6 @@ _FRONTEND_BLESSED_SANITIZERS = {
 # Every non-blessed module allowed to contain a mint shape, with why.  A new
 # entry needs the same justification review as a new subprocess chokepoint.
 _BACKEND_MINT_ALLOWLIST = {
-    # Databricks cache stem: deliberate, documented case-insensitive table
-    # identity (backtick-strip + casefold + separator collapse) with a
-    # containment check; identifier-sanitizer semantics do not fit a dotted
-    # catalog.schema.table reference.
-    "src/haute/_databricks_io.py",
     # Git branch-name slug from a username; collisions are cosmetic and
     # _validate_ref_name guards injection.
     "src/haute/_git.py",
@@ -327,6 +322,10 @@ _BACKEND_MINT_ALLOWLIST = {
     # payload (timestamp-salted); the on-disk path comes from the
     # user-supplied output_path, so no name it mints reaches persistence.
     "src/haute/routes/optimiser.py",
+    # Secret-key comparison normalisation only: folds hyphens to underscores
+    # before checking credential substrings. It neither mints nor persists a
+    # filesystem or identifier name.
+    "src/haute/_source_cache.py",
 }
 _FRONTEND_MINT_ALLOWLIST = {
     # Deliberate third sanitizer with distinct semantics (run-collapse

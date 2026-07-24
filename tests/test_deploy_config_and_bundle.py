@@ -26,6 +26,7 @@ import json
 import os
 from pathlib import Path
 
+import polars as pl
 import pytest
 
 from haute.deploy._bundler import collect_artifacts
@@ -200,7 +201,14 @@ def _make_datasource_graph(node_id: str, raw_path: str):
                     "id": node_id,
                     "data": {
                         "nodeType": "dataInput",
-                        "config": {"path": raw_path},
+                        "config": {
+                            "inputType": "file",
+                            "format": "parquet",
+                            "mode": "scan",
+                            "cacheMode": "direct",
+                            "path": raw_path,
+                            "arguments": {},
+                        },
                     },
                 },
             ],
@@ -224,11 +232,11 @@ class TestBundledPathsAreAbsolute:
         their pipeline."""
         pipeline_dir = tmp_path / "project"
         pipeline_dir.mkdir()
-        data_file = pipeline_dir / "lookup.csv"
-        data_file.write_text("a,b\n1,2\n")
+        data_file = pipeline_dir / "lookup.parquet"
+        pl.DataFrame({"a": [1], "b": [2]}).write_parquet(data_file)
 
         # User wrote a pipeline-relative path.  This is what matters.
-        graph = _make_datasource_graph("static_ds", "lookup.csv")
+        graph = _make_datasource_graph("static_ds", "lookup.parquet")
 
         artifacts = collect_artifacts(graph, [], pipeline_dir)
 
@@ -251,17 +259,17 @@ class TestBundledPathsAreAbsolute:
         """
         pipeline_dir = tmp_path / "project"
         pipeline_dir.mkdir()
-        pipeline_file = pipeline_dir / "lookup.csv"
-        pipeline_file.write_text("PIPELINE\n")
+        pipeline_file = pipeline_dir / "lookup.parquet"
+        pl.DataFrame({"source": ["PIPELINE"]}).write_parquet(pipeline_file)
 
         cwd_dir = tmp_path / "elsewhere"
         cwd_dir.mkdir()
-        cwd_file = cwd_dir / "lookup.csv"
-        cwd_file.write_text("CWD\n")
+        cwd_file = cwd_dir / "lookup.parquet"
+        pl.DataFrame({"source": ["CWD"]}).write_parquet(cwd_file)
 
         monkeypatch.chdir(cwd_dir)
 
-        graph = _make_datasource_graph("static_ds", "lookup.csv")
+        graph = _make_datasource_graph("static_ds", "lookup.parquet")
         artifacts = collect_artifacts(graph, [], pipeline_dir)
 
         [(_name, resolved_path)] = artifacts.items()
@@ -271,7 +279,7 @@ class TestBundledPathsAreAbsolute:
             f"Expected pipeline-relative file {pipeline_file}, got {resolved_path}"
         )
         # And the file contents should confirm that — belt and braces.
-        assert resolved_path.read_text() == "PIPELINE\n"
+        assert pl.read_parquet(resolved_path)["source"].to_list() == ["PIPELINE"]
 
     def test_manifest_artifact_paths_are_absolute(self, tmp_path: Path) -> None:
         """``build_manifest`` must emit absolute artifact paths — the
@@ -279,9 +287,9 @@ class TestBundledPathsAreAbsolute:
         and runtime has no access to the user's project CWD."""
         pipeline_dir = tmp_path / "project"
         pipeline_dir.mkdir()
-        (pipeline_dir / "lookup.csv").write_text("x\n1\n")
+        pl.DataFrame({"x": [1]}).write_parquet(pipeline_dir / "lookup.parquet")
 
-        graph = _make_datasource_graph("static_ds", "lookup.csv")
+        graph = _make_datasource_graph("static_ds", "lookup.parquet")
         artifacts = collect_artifacts(graph, [], pipeline_dir)
 
         resolved = make_resolved_deploy(
@@ -309,12 +317,12 @@ class TestBundledPathsAreAbsolute:
         point at concrete files on disk without relying on CWD."""
         pipeline_dir = tmp_path / "project"
         pipeline_dir.mkdir()
-        real_file = pipeline_dir / "lookup.csv"
-        real_file.write_text("payload\n")
+        real_file = pipeline_dir / "lookup.parquet"
+        pl.DataFrame({"payload": [1]}).write_parquet(real_file)
 
         # Build the manifest from the pipeline directory as CWD.
         monkeypatch.chdir(pipeline_dir)
-        graph = _make_datasource_graph("static_ds", "lookup.csv")
+        graph = _make_datasource_graph("static_ds", "lookup.parquet")
         artifacts = collect_artifacts(graph, [], pipeline_dir)
         resolved = make_resolved_deploy(
             pipeline_file=pipeline_dir / "main.py",
@@ -324,7 +332,7 @@ class TestBundledPathsAreAbsolute:
         )
         manifest = build_manifest(resolved)
 
-        # Move somewhere that contains no ``lookup.csv``.  If the bundler
+        # Move somewhere that contains no ``lookup.parquet``.  If the bundler
         # stored a relative path, re-reading the manifest entry now would
         # resolve to a non-existent file.
         other_dir = tmp_path / "somewhere_else"

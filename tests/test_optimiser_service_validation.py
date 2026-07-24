@@ -37,7 +37,7 @@ from haute.routes._optimiser_service import (
     _optional_positive_int,
 )
 from haute.schemas import OptimiserFrontierAutoRangeRequest, OptimiserSolveRequest
-from tests.conftest import make_edge, make_graph
+from tests.conftest import make_edge, make_file_input_config, make_graph
 
 _TERMINAL_STATUSES = {"completed", "error", "contract_error", "cancelled", "memory_limited"}
 
@@ -103,7 +103,7 @@ def _source_to_optimiser_graph(source_path: str, opt_config: dict) -> dict:
                     "data": {
                         "label": "source",
                         "nodeType": "dataInput",
-                        "config": {"path": source_path},
+                        "config": make_file_input_config(source_path),
                     },
                 },
                 {

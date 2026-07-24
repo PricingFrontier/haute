@@ -19,6 +19,7 @@ import pytest
 
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute.executor import PreambleError, _compile_preamble
+from tests.conftest import make_file_input_config, make_file_output_config
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -32,7 +33,7 @@ def _e(src: str, tgt: str) -> GraphEdge:
 def _source_node(nid: str, path: str = "data.parquet") -> GraphNode:
     return GraphNode(
         id=nid,
-        data=NodeData(label=nid, nodeType=NodeType.DATA_INPUT, config={"path": path}),
+        data=NodeData(label=nid, nodeType=NodeType.DATA_INPUT, config=make_file_input_config(path)),
     )
 
 
@@ -42,7 +43,7 @@ def _sink_node(nid: str, path: str = "", fmt: str = "parquet") -> GraphNode:
         data=NodeData(
             label=nid,
             nodeType=NodeType.DATA_OUTPUT,
-            config={"path": path, "format": fmt},
+            config=make_file_output_config(path, format_name=fmt),
         ),
     )
 
@@ -385,9 +386,8 @@ class TestPreamblePipelineDir:
 class TestDataInputConfigPath:
     """Verify that _build_node_fn for data sources uses config.path correctly."""
 
-    def test_empty_config_path_produces_empty_frame(self):
-        """A data source with empty config path should produce an empty LazyFrame,
-        which is the root cause of 'unable to find column quote_id' errors."""
+    def test_unconfigured_preview_source_produces_empty_frame(self):
+        """A freshly dropped editor node may preview empty before its first save."""
         from haute.executor import _build_node_fn
 
         node = GraphNode(
@@ -417,7 +417,7 @@ class TestDataInputConfigPath:
             data=NodeData(
                 label="src",
                 nodeType=NodeType.DATA_INPUT,
-                config={"path": str(path)},
+                config=make_file_input_config(path),
             ),
         )
         _, fn, is_source = _build_node_fn(node, source_names=[])
@@ -446,10 +446,10 @@ class TestDataInputConfigPath:
             data=NodeData(
                 label="src",
                 nodeType=NodeType.DATA_INPUT,
-                config={
-                    "path": str(tmp_path / "dummy.parquet"),
-                    "selected_columns": ["policy_id", "quote_id"],
-                },
+                config=make_file_input_config(
+                    tmp_path / "dummy.parquet",
+                    selected_columns=["policy_id", "quote_id"],
+                ),
             ),
         )
         config = node.data.config
@@ -611,7 +611,7 @@ class TestPreviewRouteSourceFile:
                     data=NodeData(
                         label="quotes",
                         nodeType=NodeType.DATA_INPUT,
-                        config={"path": "data/quotes.parquet"},
+                        config=make_file_input_config("data/quotes.parquet"),
                     ),
                 ),
             ],

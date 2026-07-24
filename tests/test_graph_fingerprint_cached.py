@@ -30,6 +30,7 @@ import pytest
 
 from haute._cache import GraphFingerprintMemo, graph_fingerprint
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
+from tests.conftest import make_file_input_config
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -564,7 +565,7 @@ class TestFingerprintRecomputeSpy:
                     data=NodeData(
                         label="src",
                         nodeType=NodeType.DATA_INPUT,
-                        config={"path": str(parquet)},
+                        config=make_file_input_config(parquet),
                     ),
                 ),
                 GraphNode(

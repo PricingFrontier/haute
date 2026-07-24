@@ -207,43 +207,31 @@ def _verify_static_input_schema(
     config: dict,
     pipeline_dir: Path,
 ) -> None:
-    """Check that a static Data Input matches its declared schema.
+    """Validate a direct Data Input's canonical schema and readability.
 
-    Reads the file schema through the same data-source adapter used at
-    execution time, so schema declarations and bounded-profile source
-    restrictions are enforced at the deploy boundary too. When
-    ``expected_columns`` is declared, disagreement raises
-    :class:`DeployError` naming the node. The deploy layer refuses to
-    bundle a file whose shape drifted from the contract the rest of the
-    pipeline was designed against.
+    Schema construction alone is insufficient for formats such as CSV:
+    Polars can accept a declared schema without parsing a row, even when the
+    declaration is incompatible with the file. Resolve through the bounded
+    deploy profile, then force at most one row through the streaming engine so
+    an invalid schema or unreadable source fails before it enters the bundle.
     """
-    expected = config.get("expected_columns")
     from haute._execution_context import ExecutionProfile
     from haute._input_providers import resolve_data_input
     from haute.errors import DeployError
 
     try:
-        schema = resolve_data_input(
+        frame = resolve_data_input(
             config, base_dir=pipeline_dir, profile=ExecutionProfile.DEPLOY_BATCH
-        ).collect_schema()
-        actual = schema.names()
-    except Exception as exc:  # pragma: no cover — malformed-file path
+        )
+        frame.collect_schema()
+        frame.head(1).collect(engine="streaming")
+    except Exception as exc:
         raise DeployError(
-            f"Could not read schema for static Data Input node {node_id!r} "
-            f"to verify its expected_columns contract.",
+            f"Could not validate static Data Input node {node_id!r} against "
+            "its canonical provider, schema, and bounded-read contract.",
             node_id=node_id,
             error=str(exc),
         ) from exc
-
-    if expected and list(expected) != list(actual):
-        raise DeployError(
-            f"Static Data Input {node_id!r} column order does not match the "
-            f"expected_columns declared in the pipeline: "
-            f"expected={list(expected)}, actual={list(actual)}.",
-            node_id=node_id,
-            expected_columns=list(expected),
-            actual_columns=list(actual),
-        )
 
 
 def _resolve_path(raw_path: str, pipeline_dir: Path) -> Path:

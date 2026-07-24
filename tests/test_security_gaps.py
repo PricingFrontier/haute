@@ -34,6 +34,7 @@ from haute._databricks_io import (
 from haute._git import GitError, _validate_ref_name
 from haute._topo import topo_sort_ids
 from haute._types import GraphEdge
+from tests.conftest import make_file_output_config
 
 # =========================================================================
 # 1. SQL Injection — Table name validation
@@ -1001,7 +1002,7 @@ class TestW8bLocalSessionProtection:
                     "data": {
                         "label": "Sink",
                         "nodeType": "dataOutput",
-                        "config": {"path": "../outside.parquet", "format": "parquet"},
+                        "config": make_file_output_config("../outside.parquet"),
                     },
                 },
             ],
@@ -1034,7 +1035,9 @@ class TestW8bLocalSessionProtection:
                     "data": {
                         "label": "Sink",
                         "nodeType": "dataOutput",
-                        "config": {"path": "../output/result", "format": "parquet"},
+                        "config": make_file_output_config(
+                            "../output/result", format_name="parquet"
+                        ),
                     },
                 },
             ],
@@ -1081,7 +1084,7 @@ class TestW8bLocalSessionProtection:
                     data=NodeData(
                         label="Sink",
                         nodeType=NodeType.DATA_OUTPUT,
-                        config={"path": str(outside), "format": "parquet"},
+                        config=make_file_output_config(outside),
                     ),
                 ),
             ],

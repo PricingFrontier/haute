@@ -37,6 +37,17 @@ def _edge(source: str, target: str) -> GraphEdge:
     return GraphEdge(id=f"e-{source}-{target}", source=source, target=target)
 
 
+def _direct_parquet_input(path: Path) -> dict[str, Any]:
+    return {
+        "inputType": "file",
+        "format": "parquet",
+        "mode": "scan",
+        "cacheMode": "direct",
+        "path": str(path),
+        "arguments": {},
+    }
+
+
 def _write_preview_trace_source(tmp_path: Path, rows: int = _ROW_LIMIT) -> Path:
     path = tmp_path / "preview_trace_perf.parquet"
     pl.DataFrame(
@@ -59,7 +70,7 @@ def _preview_trace_graph(tmp_path: Path) -> PipelineGraph:
             _node(
                 "source",
                 NodeType.DATA_INPUT,
-                {"path": str(source_path)},
+                _direct_parquet_input(source_path),
             ),
             _node(
                 "features",
@@ -137,7 +148,7 @@ def _linear_trace_graph(tmp_path: Path) -> tuple[PipelineGraph, str, str]:
         _node(
             "source",
             NodeType.DATA_INPUT,
-            {"path": str(source_path)},
+            _direct_parquet_input(source_path),
         )
     ]
     edges: list[GraphEdge] = []

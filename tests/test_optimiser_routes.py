@@ -88,6 +88,19 @@ def scored_data(tmp_path) -> str:
     return _make_scored_data(tmp_path)
 
 
+def _direct_parquet_data_input(path: str, **extra: object) -> dict[str, object]:
+    """Return the persisted canonical configuration for a direct parquet input."""
+    return {
+        "inputType": "file",
+        "format": "parquet",
+        "mode": "scan",
+        "cacheMode": "direct",
+        "path": path,
+        "arguments": {},
+        **extra,
+    }
+
+
 def _make_optimiser_graph(data_path: str, config: dict | None = None) -> dict:
     """Build a 2-node graph: dataInput → optimiser."""
     default_config: dict = {
@@ -111,7 +124,7 @@ def _make_optimiser_graph(data_path: str, config: dict | None = None) -> dict:
                     "data": {
                         "label": "source",
                         "nodeType": "dataInput",
-                        "config": {"path": data_path},
+                        "config": _direct_parquet_data_input(data_path),
                     },
                 },
                 {
@@ -139,7 +152,7 @@ def _make_estimate_projection_impossible_graph(left_path: str, right_path: str) 
                     "data": {
                         "label": "left",
                         "nodeType": "dataInput",
-                        "config": {"path": left_path},
+                        "config": _direct_parquet_data_input(left_path),
                     },
                 },
                 {
@@ -147,7 +160,7 @@ def _make_estimate_projection_impossible_graph(left_path: str, right_path: str) 
                     "data": {
                         "label": "right",
                         "nodeType": "dataInput",
-                        "config": {"path": right_path},
+                        "config": _direct_parquet_data_input(right_path),
                     },
                 },
                 {
@@ -207,7 +220,7 @@ def _make_auto_range_runtime_projectable_graph(left_path: str, right_path: str) 
                     "data": {
                         "label": "left",
                         "nodeType": "dataInput",
-                        "config": {"path": left_path},
+                        "config": _direct_parquet_data_input(left_path),
                     },
                 },
                 {
@@ -215,7 +228,7 @@ def _make_auto_range_runtime_projectable_graph(left_path: str, right_path: str) 
                     "data": {
                         "label": "right",
                         "nodeType": "dataInput",
-                        "config": {"path": right_path},
+                        "config": _direct_parquet_data_input(right_path),
                     },
                 },
                 {
@@ -913,7 +926,7 @@ class TestSolveRoute:
                         "data": {
                             "label": "source",
                             "nodeType": "dataInput",
-                            "config": {"path": scored_data},
+                            "config": _direct_parquet_data_input(scored_data),
                         },
                     },
                     {
@@ -981,7 +994,7 @@ class TestSolveRoute:
 
         with (
             patch.object(_solve_service, "_execute_pipeline", return_value={}),
-            patch.object(_solve_service, "_resolve_data_source", return_value=object()),
+            patch.object(_solve_service, "_resolve_data_input_frame", return_value=object()),
             patch.object(
                 _solve_service,
                 "_validate_and_project",
@@ -1811,7 +1824,7 @@ class TestEstimateRoute:
                         "data": {
                             "label": "source",
                             "nodeType": "dataInput",
-                            "config": {"path": str(scored_path)},
+                            "config": _direct_parquet_data_input(str(scored_path)),
                         },
                     },
                     {
@@ -1830,7 +1843,7 @@ class TestEstimateRoute:
                         "data": {
                             "label": "unused_parent",
                             "nodeType": "dataInput",
-                            "config": {"path": str(extra_path)},
+                            "config": _direct_parquet_data_input(str(extra_path)),
                         },
                     },
                     {
@@ -2279,7 +2292,9 @@ class TestEstimateRoute:
                         "data": {
                             "label": "source",
                             "nodeType": "dataInput",
-                            "config": {"path": str(source_path), "contract": "opaque"},
+                            "config": _direct_parquet_data_input(
+                                str(source_path), contract="opaque"
+                            ),
                         },
                     },
                     {
@@ -2449,7 +2464,7 @@ class TestEstimateRoute:
                         "data": {
                             "label": "source",
                             "nodeType": "dataInput",
-                            "config": {"path": str(source_path)},
+                            "config": _direct_parquet_data_input(str(source_path)),
                         },
                     },
                     {
@@ -2581,7 +2596,7 @@ class TestEstimateRoute:
                         "data": {
                             "label": "source",
                             "nodeType": "dataInput",
-                            "config": {"path": str(source_path)},
+                            "config": _direct_parquet_data_input(str(source_path)),
                         },
                     },
                     {
@@ -2710,7 +2725,9 @@ class TestEstimateRoute:
                         "data": {
                             "label": "source",
                             "nodeType": "dataInput",
-                            "config": {"path": str(source_path), "contract": "opaque"},
+                            "config": _direct_parquet_data_input(
+                                str(source_path), contract="opaque"
+                            ),
                         },
                     },
                     {
@@ -2802,7 +2819,9 @@ class TestEstimateRoute:
                         "data": {
                             "label": "source",
                             "nodeType": "dataInput",
-                            "config": {"path": str(source_path), "contract": "opaque"},
+                            "config": _direct_parquet_data_input(
+                                str(source_path), contract="opaque"
+                            ),
                         },
                     },
                     {
@@ -3043,7 +3062,9 @@ class TestEstimateRoute:
                         "data": {
                             "label": "source",
                             "nodeType": "dataInput",
-                            "config": {"path": str(source_path), "contract": "opaque"},
+                            "config": _direct_parquet_data_input(
+                                str(source_path), contract="opaque"
+                            ),
                         },
                     },
                     {
@@ -3142,7 +3163,7 @@ class TestEstimateRoute:
                         "data": {
                             "label": "source",
                             "nodeType": "dataInput",
-                            "config": {"path": str(source_path)},
+                            "config": _direct_parquet_data_input(str(source_path)),
                         },
                     },
                     {
@@ -3241,7 +3262,7 @@ class TestEstimateRoute:
                         "data": {
                             "label": "source",
                             "nodeType": "dataInput",
-                            "config": {"path": str(source_path)},
+                            "config": _direct_parquet_data_input(str(source_path)),
                         },
                     },
                     {
@@ -3333,7 +3354,7 @@ class TestEstimateRoute:
                         "data": {
                             "label": "source",
                             "nodeType": "dataInput",
-                            "config": {"path": str(source_path)},
+                            "config": _direct_parquet_data_input(str(source_path)),
                         },
                     },
                     {
@@ -3417,7 +3438,7 @@ class TestEstimateRoute:
                         "data": {
                             "label": "source",
                             "nodeType": "dataInput",
-                            "config": {"path": str(source_path)},
+                            "config": _direct_parquet_data_input(str(source_path)),
                         },
                     },
                     {
@@ -3517,7 +3538,7 @@ class TestEstimateRoute:
                         "data": {
                             "label": "source",
                             "nodeType": "dataInput",
-                            "config": {"path": str(source_path)},
+                            "config": _direct_parquet_data_input(str(source_path)),
                         },
                     },
                     {
@@ -3731,7 +3752,7 @@ class TestEstimateRoute:
                         "data": {
                             "label": "left",
                             "nodeType": "dataInput",
-                            "config": {"path": str(left_path)},
+                            "config": _direct_parquet_data_input(str(left_path)),
                         },
                     },
                     {
@@ -3739,7 +3760,7 @@ class TestEstimateRoute:
                         "data": {
                             "label": "right",
                             "nodeType": "dataInput",
-                            "config": {"path": str(right_path)},
+                            "config": _direct_parquet_data_input(str(right_path)),
                         },
                     },
                     {
@@ -3947,8 +3968,8 @@ class TestEstimateRoute:
         from haute.routes._optimiser_service import OptimiserSolveService
         from haute.schemas import OptimiserFrontierAutoRangeRequest
 
-        source_path = tmp_path / "quotes.json"
-        source_path.write_text('{"quote_id":"q1","premium":100.0}\n', encoding="utf-8")
+        source_path = tmp_path / "quotes.parquet"
+        pl.DataFrame({"quote_id": ["q1"], "premium": [100.0]}).write_parquet(source_path)
         graph = make_graph(
             {
                 "nodes": [
@@ -3957,7 +3978,7 @@ class TestEstimateRoute:
                         "data": {
                             "label": "source",
                             "nodeType": "dataInput",
-                            "config": {"path": str(source_path)},
+                            "config": _direct_parquet_data_input(str(source_path)),
                         },
                     },
                     {
@@ -3999,12 +4020,20 @@ class TestEstimateRoute:
         )
         body = OptimiserFrontierAutoRangeRequest(graph=graph, node_id="opt")
 
-        with pytest.raises(HTTPException) as exc_info:
+        from haute.errors import ChunkPlanUnsupportedError
+
+        with (
+            patch(
+                "haute.chunking.chunk_plan",
+                side_effect=ChunkPlanUnsupportedError("forced chunk-plan rejection"),
+            ),
+            pytest.raises(HTTPException) as exc_info,
+        ):
             OptimiserSolveService(JobStore())._prepare_frontier_auto_range(body)
 
         assert exc_info.value.status_code == 422
         assert "bounded streaming mode" in str(exc_info.value.detail)
-        assert "parquet or csv" in str(exc_info.value.detail)
+        assert "forced chunk-plan rejection" in str(exc_info.value.detail)
 
     def test_frontier_auto_range_prepare_prefers_auto_range_chunk_override(
         self,
@@ -4283,7 +4312,7 @@ class TestEstimateRoute:
                         "data": {
                             "label": "source",
                             "nodeType": "dataInput",
-                            "config": {"path": str(source_path)},
+                            "config": _direct_parquet_data_input(str(source_path)),
                         },
                     },
                     {
@@ -4305,7 +4334,7 @@ class TestEstimateRoute:
                         "data": {
                             "label": "banding",
                             "nodeType": "dataInput",
-                            "config": {"path": str(banding_path)},
+                            "config": _direct_parquet_data_input(str(banding_path)),
                         },
                     },
                     {
@@ -4451,7 +4480,7 @@ class TestEstimateRoute:
                         "data": {
                             "label": "source",
                             "nodeType": "dataInput",
-                            "config": {"path": str(source_path)},
+                            "config": _direct_parquet_data_input(str(source_path)),
                         },
                     },
                     {
@@ -4668,7 +4697,7 @@ def _make_ratebook_graph(data_path: str, banding_data_path: str) -> dict:
                     "data": {
                         "label": "source",
                         "nodeType": "dataInput",
-                        "config": {"path": data_path},
+                        "config": _direct_parquet_data_input(data_path),
                     },
                 },
                 {
@@ -4676,7 +4705,7 @@ def _make_ratebook_graph(data_path: str, banding_data_path: str) -> dict:
                     "data": {
                         "label": "banding",
                         "nodeType": "dataInput",
-                        "config": {"path": banding_data_path},
+                        "config": _direct_parquet_data_input(banding_data_path),
                     },
                 },
                 {
@@ -4721,7 +4750,7 @@ def _make_ratebook_intermediate_graph(data_path: str, banding_data_path: str) ->
                     "data": {
                         "label": "source",
                         "nodeType": "dataInput",
-                        "config": {"path": data_path},
+                        "config": _direct_parquet_data_input(data_path),
                     },
                 },
                 {
@@ -4740,7 +4769,7 @@ def _make_ratebook_intermediate_graph(data_path: str, banding_data_path: str) ->
                     "data": {
                         "label": "banding",
                         "nodeType": "dataInput",
-                        "config": {"path": banding_data_path},
+                        "config": _direct_parquet_data_input(banding_data_path),
                     },
                 },
                 {
@@ -5139,7 +5168,7 @@ def _make_expander_graph(data_path: str) -> dict:
                     "data": {
                         "label": "source",
                         "nodeType": "dataInput",
-                        "config": {"path": data_path},
+                        "config": _direct_parquet_data_input(data_path),
                     },
                 },
                 {
@@ -6266,7 +6295,7 @@ class TestExecutePipelineArgs:
                         "data": {
                             "label": "source",
                             "nodeType": "dataInput",
-                            "config": {"path": scored_data},
+                            "config": _direct_parquet_data_input(scored_data),
                         },
                     },
                     {
@@ -6274,7 +6303,7 @@ class TestExecutePipelineArgs:
                         "data": {
                             "label": "side source",
                             "nodeType": "dataInput",
-                            "config": {"path": scored_data},
+                            "config": _direct_parquet_data_input(scored_data),
                         },
                     },
                     {
@@ -6381,7 +6410,7 @@ class TestExecutePipelineArgs:
                         "data": {
                             "label": "source",
                             "nodeType": "dataInput",
-                            "config": {"path": scored_data},
+                            "config": _direct_parquet_data_input(scored_data),
                         },
                     },
                     {
@@ -6389,7 +6418,7 @@ class TestExecutePipelineArgs:
                         "data": {
                             "label": "side source",
                             "nodeType": "dataInput",
-                            "config": {"path": scored_data},
+                            "config": _direct_parquet_data_input(scored_data),
                         },
                     },
                     {
@@ -6473,7 +6502,7 @@ class TestExecutePipelineArgs:
                         "data": {
                             "label": "source",
                             "nodeType": "dataInput",
-                            "config": {"path": scored_data},
+                            "config": _direct_parquet_data_input(scored_data),
                         },
                     },
                     {
@@ -6548,7 +6577,7 @@ class TestExecutePipelineArgs:
                         "data": {
                             "label": "source",
                             "nodeType": "dataInput",
-                            "config": {"path": scored_data},
+                            "config": _direct_parquet_data_input(scored_data),
                         },
                     },
                     {
@@ -6853,7 +6882,7 @@ class TestExecutePipelineArgs:
                         "data": {
                             "label": "source",
                             "nodeType": "dataInput",
-                            "config": {"path": str(source_path)},
+                            "config": _direct_parquet_data_input(str(source_path)),
                         },
                     },
                     {
@@ -6872,7 +6901,7 @@ class TestExecutePipelineArgs:
                         "data": {
                             "label": "banding",
                             "nodeType": "dataInput",
-                            "config": {"path": str(banding_path)},
+                            "config": _direct_parquet_data_input(str(banding_path)),
                         },
                     },
                     {
@@ -12740,8 +12769,8 @@ class TestBuildGrid:
         assert job["terminal_reason"] == "contract_error"
 
 
-class TestResolveDataSource:
-    """Tests for _resolve_data_source."""
+class TestResolveDataInputFrame:
+    """Tests for _resolve_data_input_frame."""
 
     def test_uses_data_input_id(self):
         """When data_input is set and present, uses that output."""
@@ -12756,7 +12785,7 @@ class TestResolveDataSource:
         lazy_outputs = {"data_node": mock_lf, "opt": MagicMock()}
         config = {"data_input": "data_node"}
 
-        result = service._resolve_data_source(lazy_outputs, config, "opt", job_id)
+        result = service._resolve_data_input_frame(lazy_outputs, config, "opt", job_id)
         assert result is mock_lf
 
     def test_falls_back_to_node_id(self):
@@ -12772,7 +12801,7 @@ class TestResolveDataSource:
         lazy_outputs = {"opt": mock_lf}
         config = {}
 
-        result = service._resolve_data_source(lazy_outputs, config, "opt", job_id)
+        result = service._resolve_data_input_frame(lazy_outputs, config, "opt", job_id)
         assert result is mock_lf
 
     def test_configured_data_input_missing_raises_400(self):
@@ -12790,7 +12819,7 @@ class TestResolveDataSource:
         config = {"data_input": "missing_data"}
 
         with pytest.raises(HTTPException) as exc_info:
-            service._resolve_data_source(lazy_outputs, config, "opt", job_id)
+            service._resolve_data_input_frame(lazy_outputs, config, "opt", job_id)
 
         assert exc_info.value.status_code == 400
         assert "missing_data" in exc_info.value.detail
@@ -12813,7 +12842,7 @@ class TestResolveDataSource:
         config = {}
 
         with pytest.raises(HTTPException) as exc_info:
-            service._resolve_data_source(lazy_outputs, config, "opt", job_id)
+            service._resolve_data_input_frame(lazy_outputs, config, "opt", job_id)
         assert exc_info.value.status_code == 400
         assert "no data" in exc_info.value.detail.lower()
 

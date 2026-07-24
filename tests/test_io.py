@@ -527,9 +527,9 @@ class TestDataSourceAdapterFlatFile:
             build_data_source_adapter({"sourceType": "flat_file", "path": ""})
 
 
-class TestDataSourceAdapterErrors:
-    def test_unknown_source_type_fails_loudly(self) -> None:
-        with pytest.raises(ValueError, match="Unsupported data source type"):
+class TestApiInputSourceAdapterErrors:
+    def test_unknown_api_input_source_type_fails_loudly(self) -> None:
+        with pytest.raises(ValueError, match="Unsupported API Input source type"):
             build_data_source_adapter({"sourceType": "warehouse", "path": "data.parquet"})
 
 

@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Building a Haute pipeline requires the analyst to know which of the 21 node types to reach
+Building a Haute pipeline requires the analyst to know which of the 19 node types to reach
 for, how each is configured, and how the graph must be wired — knowledge that lives in the
 product, not in the analyst's head on day one. The assistant is an in-app AI assistant that
 authors the pipeline graph on the analyst's behalf: the analyst types an instruction into a

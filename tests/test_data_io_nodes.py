@@ -22,9 +22,11 @@ from haute._config_io import (
     config_path_for_node,
     load_node_config,
 )
+from haute._execution_context import ExecutionProfile
 from haute._polars_io_registry import PolarsIoConfigError
 from haute._registry import NODE_REGISTRY, ensure_registry_ready
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
+from haute.errors import SchemaMismatchError
 from haute.executor import resolve_data_output_path, write_data_output
 
 ensure_registry_ready()
@@ -412,7 +414,13 @@ class TestResolveDataOutputPath:
 class TestDataInputBuilder:
     """The exec builder's preview affordances and profile plumbing."""
 
-    def _build(self, config: dict, profile: str | None = None):
+    def _build(
+        self,
+        config: dict,
+        profile: str | None = None,
+        *,
+        required_output_columns: frozenset[str] | None = None,
+    ):
         node = _data_input_node("din", config)
         ctx = NodeBuildContext(
             node=node,
@@ -424,6 +432,7 @@ class TestDataInputBuilder:
             orig_source_names=None,
             preamble_ns=None,
             source=None,
+            required_output_columns=required_output_columns,
             execution_profile=profile,
         )
         entry = NODE_REGISTRY[NodeType.DATA_INPUT]
@@ -466,6 +475,34 @@ class TestDataInputBuilder:
             }
         )
         assert fn().collect().to_dicts() == [{"id": 2}, {"id": 3}]
+
+    def test_missing_projected_column_raises_schema_mismatch_before_polars_plan(
+        self,
+        haute_scratch,
+    ) -> None:
+        path = haute_scratch / "t.parquet"
+        pl.DataFrame({"present": [1]}).write_parquet(path)
+        fn = self._build(
+            {
+                "inputType": "file",
+                "format": "parquet",
+                "mode": "scan",
+                "cacheMode": "direct",
+                "path": str(path),
+                "arguments": {},
+            },
+            ExecutionProfile.OPTIMISER_SETUP.value,
+            required_output_columns=frozenset({"missing"}),
+        )
+
+        with pytest.raises(
+            SchemaMismatchError,
+            match="Source projection references columns missing",
+        ) as exc_info:
+            fn()
+
+        assert exc_info.value.context["missing"] == ["missing"]
+        assert exc_info.value.context["available"] == ["present"]
 
 
 class TestCodegenAndParseRoundTrip:

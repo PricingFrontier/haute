@@ -25,7 +25,13 @@ from haute._execution_context import (
 )
 from haute.graph_utils import NodeType, _execute_eager_core, _execute_lazy
 from haute.schemas import ExecutionMetricsPayload
-from tests.conftest import make_edge, make_graph, make_output_config, make_source_node
+from tests.conftest import (
+    make_edge,
+    make_file_output_config,
+    make_graph,
+    make_output_config,
+    make_source_node,
+)
 
 
 def _clear_execution_memory_env(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1756,7 +1762,7 @@ def test_execute_sink_forwards_execution_context_to_lazy_executor(tmp_path) -> N
                     "data": {
                         "label": "sink",
                         "nodeType": NodeType.DATA_OUTPUT.value,
-                        "config": {"path": str(output_path), "format": "parquet"},
+                        "config": make_file_output_config(output_path),
                     },
                 },
             ],
@@ -1779,7 +1785,7 @@ def test_execute_sink_forwards_execution_context_to_lazy_executor(tmp_path) -> N
 
     assert result.status == "ok"
     assert captured["execution_context"] is context
-    assert any(metric.name == "sink_write" for metric in context.metrics.snapshot())
+    assert any(metric.name == "output_write" for metric in context.metrics.snapshot())
     assert result.execution_metrics is not None
     assert result.execution_metrics.profile == ExecutionProfile.LAZY_SINK.value
 
@@ -1804,7 +1810,7 @@ async def test_sink_route_creates_lazy_sink_execution_context(monkeypatch, tmp_p
                     "data": {
                         "label": "sink",
                         "nodeType": NodeType.DATA_OUTPUT.value,
-                        "config": {"path": str(output_path), "format": "parquet"},
+                        "config": make_file_output_config(output_path),
                     },
                 },
             ],
@@ -1818,7 +1824,7 @@ async def test_sink_route_creates_lazy_sink_execution_context(monkeypatch, tmp_p
         return WriteOutputResponse(status="ok")
 
     with patch.object(pipeline_route, "write_data_output", side_effect=fake_execute_sink):
-        response = await pipeline_route.execute_sink_node(
+        response = await pipeline_route.write_output_node(
             WriteOutputRequest(graph=graph, node_id="sink", source="batch")
         )
 
@@ -1830,9 +1836,14 @@ async def test_sink_route_creates_lazy_sink_execution_context(monkeypatch, tmp_p
 
 
 @pytest.mark.asyncio
-async def test_sink_route_allows_sink_without_configured_output_path(monkeypatch, tmp_path) -> None:
+async def test_write_output_route_rejects_unconfigured_data_output(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from fastapi import HTTPException
+
     from haute.routes import pipeline as pipeline_route
-    from haute.schemas import WriteOutputRequest, WriteOutputResponse
+    from haute.schemas import WriteOutputRequest
 
     monkeypatch.chdir(tmp_path)
     graph = make_graph(
@@ -1851,22 +1862,18 @@ async def test_sink_route_allows_sink_without_configured_output_path(monkeypatch
         }
     )
 
-    def fake_execute_sink(*_args, **_kwargs):
-        return WriteOutputResponse(status="ok")
-
-    with (
-        patch.object(
-            pipeline_route,
-            "resolve_sink_output_path",
-            side_effect=AssertionError("empty sink paths should not be resolved"),
-        ),
-        patch.object(pipeline_route, "write_data_output", side_effect=fake_execute_sink),
+    with patch.object(
+        pipeline_route,
+        "write_data_output",
+        side_effect=AssertionError("invalid Data Output must not execute"),
     ):
-        response = await pipeline_route.execute_sink_node(
-            WriteOutputRequest(graph=graph, node_id="sink", source="batch")
-        )
+        with pytest.raises(HTTPException) as exc_info:
+            await pipeline_route.write_output_node(
+                WriteOutputRequest(graph=graph, node_id="sink", source="batch")
+            )
 
-    assert response.status == "ok"
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == "Invalid Data Output configuration."
 
 
 @pytest.mark.asyncio
@@ -2524,7 +2531,7 @@ async def test_sink_route_maps_admission_failure_to_http_507(monkeypatch, tmp_pa
                     "data": {
                         "label": "sink",
                         "nodeType": NodeType.DATA_OUTPUT.value,
-                        "config": {"path": str(output_path), "format": "parquet"},
+                        "config": make_file_output_config(output_path),
                     },
                 },
             ],
@@ -2533,7 +2540,7 @@ async def test_sink_route_maps_admission_failure_to_http_507(monkeypatch, tmp_pa
     )
 
     with pytest.raises(HTTPException) as exc_info:
-        await pipeline_route.execute_sink_node(
+        await pipeline_route.write_output_node(
             WriteOutputRequest(graph=graph, node_id="sink", source="batch")
         )
 
@@ -2563,7 +2570,7 @@ async def test_sink_route_maps_execution_memory_budget_failure_to_http_507(
                     "data": {
                         "label": "sink",
                         "nodeType": NodeType.DATA_OUTPUT.value,
-                        "config": {"path": str(output_path), "format": "parquet"},
+                        "config": make_file_output_config(output_path),
                     },
                 },
             ],
@@ -2571,7 +2578,7 @@ async def test_sink_route_maps_execution_memory_budget_failure_to_http_507(
         }
     )
     memory_error = ExecutionMemoryLimitExceededError(
-        "pipeline_sink",
+        "pipeline_write_output",
         rss_bytes=150,
         limit_bytes=100,
         baseline_rss_bytes=0,
@@ -2585,13 +2592,13 @@ async def test_sink_route_maps_execution_memory_budget_failure_to_http_507(
     monkeypatch.setattr(pipeline_route, "write_data_output", raise_memory_budget)
 
     with pytest.raises(HTTPException) as exc_info:
-        await pipeline_route.execute_sink_node(
+        await pipeline_route.write_output_node(
             WriteOutputRequest(graph=graph, node_id="sink", source="batch")
         )
 
     assert exc_info.value.status_code == 507
     assert exc_info.value.detail["error_code"] == "memory_limit"
-    assert exc_info.value.detail["operation"] == "pipeline_sink"
+    assert exc_info.value.detail["operation"] == "pipeline_write_output"
     assert exc_info.value.detail["reason"] == "process_rss_limit_exceeded"
 
 
@@ -2618,7 +2625,7 @@ async def test_sink_route_maps_bounded_streaming_failure_to_http_422(
                     "data": {
                         "label": "sink",
                         "nodeType": NodeType.DATA_OUTPUT.value,
-                        "config": {"path": str(output_path), "format": "parquet"},
+                        "config": make_file_output_config(output_path),
                     },
                 },
             ],
@@ -2631,7 +2638,7 @@ async def test_sink_route_maps_bounded_streaming_failure_to_http_422(
 
     with patch.object(pipeline_route, "write_data_output", side_effect=unsupported_sink):
         with pytest.raises(HTTPException) as exc_info:
-            await pipeline_route.execute_sink_node(
+            await pipeline_route.write_output_node(
                 WriteOutputRequest(graph=graph, node_id="sink", source="batch")
             )
 
@@ -2705,7 +2712,7 @@ async def test_sink_route_maps_timeout_before_execution_context_to_http_504(
                     "data": {
                         "label": "sink",
                         "nodeType": NodeType.DATA_OUTPUT.value,
-                        "config": {},
+                        "config": make_file_output_config(tmp_path / "sink.parquet"),
                     },
                 },
             ],
@@ -2719,7 +2726,7 @@ async def test_sink_route_maps_timeout_before_execution_context_to_http_504(
     monkeypatch.setattr(pipeline_route, "create_admitted_execution_context", raise_timeout)
 
     with pytest.raises(HTTPException) as exc_info:
-        await pipeline_route.execute_sink_node(
+        await pipeline_route.write_output_node(
             WriteOutputRequest(graph=graph, node_id="sink", source="batch")
         )
 
@@ -2748,7 +2755,7 @@ async def test_sink_route_releases_admission_after_timeout_background_task_finis
                     "data": {
                         "label": "sink",
                         "nodeType": NodeType.DATA_OUTPUT.value,
-                        "config": {"path": str(output_path), "format": "parquet"},
+                        "config": make_file_output_config(output_path),
                     },
                 },
             ],
@@ -2764,7 +2771,7 @@ async def test_sink_route_releases_admission_after_timeout_background_task_finis
             release_calls += 1
 
     sink_context = ExecutionContext(
-        operation="pipeline_sink",
+        operation="pipeline_write_output",
         profile=ExecutionProfile.LAZY_SINK,
         admission_release=release_admission,
     )
@@ -2773,7 +2780,7 @@ async def test_sink_route_releases_admission_after_timeout_background_task_finis
     async def raise_timeout(*_args, **_kwargs):
         nonlocal background_task
         background_task = asyncio.get_running_loop().create_future()
-        raise BlockingWorkTimeoutError("pipeline_sink", 0.01, background_task)
+        raise BlockingWorkTimeoutError("pipeline_write_output", 0.01, background_task)
 
     monkeypatch.setattr(
         pipeline_route,
@@ -2787,7 +2794,7 @@ async def test_sink_route_releases_admission_after_timeout_background_task_finis
     )
 
     with pytest.raises(HTTPException) as exc_info:
-        await pipeline_route.execute_sink_node(
+        await pipeline_route.write_output_node(
             WriteOutputRequest(graph=graph, node_id="sink", source="batch")
         )
 
@@ -2824,7 +2831,7 @@ async def test_sink_route_releases_admission_when_timeout_task_already_finished(
                     "data": {
                         "label": "sink",
                         "nodeType": NodeType.DATA_OUTPUT.value,
-                        "config": {"path": str(output_path), "format": "parquet"},
+                        "config": make_file_output_config(output_path),
                     },
                 },
             ],
@@ -2840,7 +2847,7 @@ async def test_sink_route_releases_admission_when_timeout_task_already_finished(
             release_calls += 1
 
     sink_context = ExecutionContext(
-        operation="pipeline_sink",
+        operation="pipeline_write_output",
         profile=ExecutionProfile.LAZY_SINK,
         admission_release=release_admission,
     )
@@ -2848,7 +2855,7 @@ async def test_sink_route_releases_admission_when_timeout_task_already_finished(
     async def raise_finished_timeout(*_args, **_kwargs):
         background_task = asyncio.get_running_loop().create_future()
         background_task.set_result(None)
-        raise BlockingWorkTimeoutError("pipeline_sink", 0.01, background_task)
+        raise BlockingWorkTimeoutError("pipeline_write_output", 0.01, background_task)
 
     monkeypatch.setattr(
         pipeline_route,
@@ -2862,7 +2869,7 @@ async def test_sink_route_releases_admission_when_timeout_task_already_finished(
     )
 
     with pytest.raises(HTTPException) as exc_info:
-        await pipeline_route.execute_sink_node(
+        await pipeline_route.write_output_node(
             WriteOutputRequest(graph=graph, node_id="sink", source="batch")
         )
 
@@ -2896,7 +2903,7 @@ async def test_sink_route_cancels_execution_context_on_timeout(monkeypatch, tmp_
                     "data": {
                         "label": "sink",
                         "nodeType": NodeType.DATA_OUTPUT.value,
-                        "config": {"path": str(output_path), "format": "parquet"},
+                        "config": make_file_output_config(output_path),
                     },
                 },
             ],
@@ -2918,7 +2925,7 @@ async def test_sink_route_cancels_execution_context_on_timeout(monkeypatch, tmp_
 
     with patch.object(pipeline_route, "write_data_output", side_effect=slow_execute_sink):
         with pytest.raises(HTTPException) as exc_info:
-            await pipeline_route.execute_sink_node(
+            await pipeline_route.write_output_node(
                 WriteOutputRequest(graph=graph, node_id="sink", source="batch")
             )
 
