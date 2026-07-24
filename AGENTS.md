@@ -6,6 +6,17 @@
 - Preserve existing user changes and avoid unrelated edits.
 - Make sure changes to functionality are defined in docs/specs before changing code.
 
+# GitHub access
+
+- In the managed sandbox, GitHub CLI credential storage may be inaccessible and
+  `gh auth status` can falsely report that the active token is invalid.
+- Always run `gh auth status` and GitHub network operations outside the sandbox
+  (using the normal escalation mechanism) before concluding that authentication
+  is missing or invalid.
+- If a sandboxed GitHub authentication check fails, immediately repeat it
+  outside the sandbox. Do not ask the user to re-authenticate based only on the
+  sandboxed result.
+
 # Model and delegation budget
 
 This repository uses one high-capability decision-maker and two cheaper execution tiers.
