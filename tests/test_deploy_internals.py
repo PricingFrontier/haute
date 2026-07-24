@@ -1521,7 +1521,7 @@ class TestScoreGraphOutputFields:
 
 class TestScoreGraphStaticDataSourceRemap:
     def test_static_data_source_remap_uses_declared_schema(self, tmp_path):
-        """Static source artifact remaps should preserve dataSource schema config."""
+        """Static source artifact remaps should preserve dataInput schema config."""
         from haute.deploy._scorer import score_graph
 
         source_path = tmp_path / "lookup.csv"
@@ -1533,12 +1533,18 @@ class TestScoreGraphStaticDataSourceRemap:
                         "id": "lookup",
                         "data": {
                             "label": "lookup",
-                            "nodeType": "dataSource",
+                            "nodeType": "dataInput",
                             "config": {
+                                "inputType": "file",
+                                "format": "csv",
+                                "mode": "scan",
+                                "cacheMode": "direct",
                                 "path": "lookup.csv",
-                                "schema_overrides": {
-                                    "quote_id": "String",
-                                    "factor": "Float64",
+                                "arguments": {
+                                    "schema_overrides": {
+                                        "quote_id": "String",
+                                        "factor": "Float64",
+                                    }
                                 },
                             },
                         },
@@ -1578,8 +1584,15 @@ class TestScoreGraphStaticDataSourceRemap:
                         "id": "lookup",
                         "data": {
                             "label": "lookup",
-                            "nodeType": "dataSource",
-                            "config": {"path": "lookup.parquet"},
+                            "nodeType": "dataInput",
+                            "config": {
+                                "inputType": "file",
+                                "format": "parquet",
+                                "mode": "scan",
+                                "cacheMode": "direct",
+                                "path": "lookup.parquet",
+                                "arguments": {},
+                            },
                         },
                     },
                     {
@@ -1596,14 +1609,14 @@ class TestScoreGraphStaticDataSourceRemap:
         )
         captured: dict[str, object] = {}
 
-        def fake_read_data_source(config, *, profile=None, columns=None, validate_columns=None):
+        def fake_resolve_data_input(config, *, base_dir=None, profile=None, store=None):
             captured["config"] = config
             captured["profile"] = profile
-            captured["columns"] = columns
-            captured["validate_columns"] = validate_columns
             return pl.DataFrame({"keep": [1], "unused": [2]}).lazy()
 
-        with patch.object(_scorer, "read_data_source", side_effect=fake_read_data_source):
+        with patch(
+            "haute._input_providers.resolve_data_input", side_effect=fake_resolve_data_input
+        ):
             result = _scorer.score_graph(
                 graph=graph,
                 input_df=pl.DataFrame(),
@@ -1614,7 +1627,6 @@ class TestScoreGraphStaticDataSourceRemap:
             )
 
         assert result.columns == ["keep"]
-        assert captured["columns"] == frozenset({"keep"})
         assert captured["profile"] == "deploy_live"
 
 

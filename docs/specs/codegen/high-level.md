@@ -278,3 +278,28 @@ execution time on a mis-wired pipeline). Concretely:
   `RuntimeError` from `_gen_submodel_placeholder_unreachable`; this
   indicates `graph_to_code_multi`'s root/child-node filtering has a bug,
   since the placeholder should never be dispatched on.
+
+## Approved change contract — 0.7.0 data I/O code generation
+
+Implementation follows
+[`F_0.7.0_data-io-convergence.plan.md`](../../trip/plans/F_0.7.0_data-io-convergence.plan.md).
+
+- Codegen has exactly one tabular-input builder and one persistence-output builder:
+  `dataInput` emits `@pipeline.data_input(config="config/data_input/<name>.json")`, opens the
+  configured direct/cached provider through the shared generated-code helper, binds the result as
+  `df`, executes the optional user Polars body, and returns `df`; `dataOutput` emits
+  `@pipeline.data_output(config="config/data_output/<name>.json")` and a side-effect-free
+  pass-through body for ordinary module execution.
+- No `dataSource`/`dataSink` builder, decorator, template, extractor kind, or sidecar rewrite
+  remains. Codegen accepts only the retained enum and never translates a removed graph node.
+- Generated `dataInput` execution observes the same base-directory path anchoring, snapshot
+  identity, cache-only remote execution, code ordering, and config validation as canvas
+  execution. Generated `dataOutput` writes only when its explicit helper/endpoint is invoked;
+  importing or running the generated pipeline does not persist data.
+- Parse → graph → code → parse round trips preserve `inputType`/`outputType`, format/mode,
+  source/destination fields, arguments, cache mode, connection references, and input code without
+  inventing inactive fields.
+
+Acceptance executes generated direct and cached inputs with and without code, verifies offline
+remote-cache use, exercises each output publication class explicitly, round-trips multiple
+inputs/outputs and submodels, and asserts registry completeness/absence for the removed builders.

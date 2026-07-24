@@ -277,15 +277,14 @@ class TestEngineInvocation:
     def test_engine_raise_becomes_structured_error(
         self, project_root: Path, monkeypatch: pytest.MonkeyPatch
     ):
-        """An unfetched Databricks cache raises CacheNotFoundError — its
-        analyst-facing message must survive into the structured error."""
+        """A source snapshot failure keeps its analyst-facing message."""
 
         import haute.assistant._tools as tools_module
-        from haute._databricks_io import CacheNotFoundError
+        from haute._source_cache import SourceCacheCorruptError
 
         def raising_facade(graph, build_node_fn, **kwargs):
-            raise CacheNotFoundError(
-                "No cached data for table 'x'. Click Fetch Data in the node editor first."
+            raise SourceCacheCorruptError(
+                "The Data Input snapshot is corrupt. Rebuild its cache in the node editor."
             )
 
         monkeypatch.setattr(tools_module, "execute_lazy_graph", raising_facade)
@@ -293,7 +292,7 @@ class TestEngineInvocation:
 
         result = get_node_schema("main.py", "quotes")
         assert result["error"]["code"] == "schema_unresolvable"
-        assert "Fetch Data" in result["error"]["message"]
+        assert "Rebuild" in result["error"]["message"]
 
 
 # ---------------------------------------------------------------------------
@@ -331,11 +330,11 @@ class TestReadTools:
 
         assert get_node_config("main.py", "ghost")["error"]["code"] == "unknown_node"
 
-    def test_list_node_types_covers_all_21(self, project_root: Path):
+    def test_list_node_types_covers_all_19(self, project_root: Path):
         from haute.assistant._tools import list_node_types
 
         entries = list_node_types()["node_types"]
-        assert len(entries) == 21
+        assert len(entries) == 19
         assert all("usage_note" in entry for entry in entries)
 
     def test_list_datasets_applies_the_extension_allowlist(self, project_root: Path):
@@ -444,7 +443,7 @@ class TestExecutorArms:
 
         execute_tool = build_tool_executor("main.py")
         assert "config" in await execute_tool("get_node_config", {"node": "quotes"})
-        assert len((await execute_tool("list_node_types", {}))["node_types"]) == 21
+        assert len((await execute_tool("list_node_types", {}))["node_types"]) == 19
         listed = await execute_tool("list_datasets", {"project_root": "data"})
         assert listed["datasets"][0]["name"] == "quotes.parquet"
         schema = await execute_tool("get_dataset_schema", {"path": "data/quotes.parquet"})

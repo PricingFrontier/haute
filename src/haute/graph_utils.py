@@ -27,6 +27,9 @@ from haute._graph_utils import _resolve_sink_path as _resolve_sink_path
 from haute._graph_utils import _sanitize_func_name as _sanitize_func_name
 from haute._graph_utils import build_instance_mapping as build_instance_mapping
 from haute._graph_utils import resolve_orig_source_names as resolve_orig_source_names
+from haute._input_providers import (
+    resolve_data_input_from_config as resolve_data_input_from_config,
+)
 from haute._io import load_external_object as load_external_object
 from haute._io import read_data_source as read_data_source
 from haute._io import read_source as read_source
@@ -48,12 +51,6 @@ from haute._node_apply import (
 )
 from haute._optimiser_io import load_mlflow_optimiser_artifact as load_mlflow_optimiser_artifact
 from haute._optimiser_io import load_optimiser_artifact as load_optimiser_artifact
-from haute._polars_io_registry import (
-    read_polars_input_from_config as read_polars_input_from_config,
-)
-from haute._polars_io_registry import (
-    write_polars_output_from_config as write_polars_output_from_config,
-)
 from haute._rating import RatingTableMissError as RatingTableMissError
 from haute._rating import apply_banding_from_config as apply_banding_from_config
 from haute._rating import apply_rating_step_from_config as apply_rating_step_from_config

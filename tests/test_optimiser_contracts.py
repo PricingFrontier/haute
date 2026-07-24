@@ -16,7 +16,7 @@ from haute.executor import _build_node_fn
 from haute.routes._job_store import JobStore
 from haute.routes._optimiser_service import OptimiserSolveService
 from haute.schemas import OptimiserFrontierRequest
-from tests.conftest import make_edge, make_graph, make_node
+from tests.conftest import make_edge, make_file_input_config, make_graph, make_node
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -132,8 +132,8 @@ def _make_expander_optimiser_graph(data_path: str) -> dict:
                     "id": "source",
                     "data": {
                         "label": "source",
-                        "nodeType": "dataSource",
-                        "config": {"path": data_path},
+                        "nodeType": "dataInput",
+                        "config": make_file_input_config(data_path),
                     },
                 },
                 {
@@ -292,16 +292,16 @@ def test_ratebook_solve_preserves_non_source_banding_input_after_target_checkpoi
                     "id": "scored",
                     "data": {
                         "label": "scored",
-                        "nodeType": "dataSource",
-                        "config": {"path": str(scored_path)},
+                        "nodeType": "dataInput",
+                        "config": make_file_input_config(scored_path),
                     },
                 },
                 {
                     "id": "banding_source",
                     "data": {
                         "label": "banding source",
-                        "nodeType": "dataSource",
-                        "config": {"path": str(banding_path)},
+                        "nodeType": "dataInput",
+                        "config": make_file_input_config(banding_path),
                     },
                 },
                 {
@@ -577,8 +577,8 @@ def test_solve_rejects_null_quote_id_instead_of_dropping_rows(
                     "id": "source",
                     "data": {
                         "label": "source",
-                        "nodeType": "dataSource",
-                        "config": {"path": str(source_path)},
+                        "nodeType": "dataInput",
+                        "config": make_file_input_config(source_path),
                     },
                 },
                 {
@@ -738,8 +738,8 @@ def test_real_solve_apply_totals_match_selected_rows(
                     "id": "source",
                     "data": {
                         "label": "source",
-                        "nodeType": "dataSource",
-                        "config": {"path": str(source_path)},
+                        "nodeType": "dataInput",
+                        "config": make_file_input_config(source_path),
                     },
                 },
                 {

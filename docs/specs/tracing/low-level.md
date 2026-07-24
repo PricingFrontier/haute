@@ -394,7 +394,7 @@ snapshot deterministically.
   node's code so the step that structurally created a column gets the correct
   expression, not a blank one.
 - **The trace cache fingerprint includes `runtime_input_extra_keys(graph)`** so
-  an out-of-band re-export of a flat-file `dataSource`/`externalFile`, a
+  an out-of-band re-export of a file-backed `dataInput`/`externalFile`, a
   model-artifact signature change, or an `apiInput` JSON-cache rebuild
   invalidates cached trace frames even though the graph structure itself did not
   change.
@@ -704,3 +704,17 @@ values stay unresolved with the typed diagnostic; and trace/preview JSON parity
 holds without broadening key support. Add large-frame correlation performance
 coverage plus memo tests for same-key reuse, differing concern inputs, sibling
 diamonds, cycle push/pop, exceptions, and cross-request isolation.
+
+## Approved change contract — 0.7.0 data-input tracing
+
+The implementation plan is
+[`F_0.7.0_data-io-convergence.plan.md`](../../trip/plans/F_0.7.0_data-io-convergence.plan.md).
+
+- Replace `DATA_SOURCE` branches in trace enrichment/export/grouping with provider-aware
+  `DATA_INPUT` handling. Resolve safe source identity and cache generation through the same
+  execution metadata object rather than reparsing config or cache paths.
+- Extend trace cache keys and response provenance with direct/snapshot mode and generation
+  signature. Guarded API types model freshness independently from execution origin.
+- Tests cover each provider group, direct/snapshot equivalence, code-before-correlation,
+  generation refresh invalidation, redaction, external-file separation, and source searches
+  excluding executable legacy branches.

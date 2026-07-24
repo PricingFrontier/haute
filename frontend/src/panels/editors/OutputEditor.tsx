@@ -95,7 +95,7 @@ function frameIsUnresolved(edge: SimpleEdge, sourceNode: SimpleNode | undefined)
  * Only `selected` columns are returned, matching what the frame actually emits
  * at runtime (an unselected column is not in the frame, so mapping it would
  * fail the upstream-column contract). For a NON-apiInput source (transform,
- * dataSource, …) there is no `tables` config, so fall back to the node's
+ * dataInput, …) there is no `tables` config, so fall back to the node's
  * `_columns` (populated by preview/run).
  *
  * SHAPE NOTE: this helper is deliberately the only place that derives a frame's

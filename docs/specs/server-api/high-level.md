@@ -122,8 +122,8 @@ per-node config JSON sidecars, and its `.haute.json` position sidecar — descri
 below. `POST /api/pipeline/preview` runs the graph up to one node and returns its schema,
 sample rows, and per-node timing/memory; `POST /api/pipeline/trace` follows one row's values
 through every node it passed through and returns typed correlation omissions plus generation
-provenance; `POST /api/pipeline/sink` materialises a `dataSink` /
-`dataOutput` node to disk. Preview and trace are keyed on (graph fingerprint, source, node,
+provenance; `POST /api/pipeline/write-output` explicitly materialises a
+`dataOutput` node. Preview and trace are keyed on (graph fingerprint, source, node,
 row/column selectors): a newer request for the *same* key supersedes the older request's
 response and waits for its active slot to clear, so same-key workers never overlap. Preview
 also requests cooperative cancellation of the active worker; trace has no route-level
@@ -140,10 +140,12 @@ here.
 **File browsing and schema inspection.** `GET /api/files` lists a directory (extension-
 filtered) for the file picker. `GET /api/schema` reads a data file's column schema, a 5-row
 preview, and (for parquet) an exact row count or (for JSONL) an estimated one, without
-loading the whole file. `GET /api/schema/databricks` does the same against a table's local
-parquet cache. `GET /api/formats` exposes the polars I/O format registry (read/write
-capability, accepted arguments, missing optional engines) so the dataInput/dataOutput node
-editors never hard-code format knowledge.
+loading the whole file. `GET /api/io-capabilities` exposes provider groups, the Polars I/O
+format registry (read/write capability, modes, accepted arguments, missing optional engines),
+and cache/materialisation capabilities so the dataInput/dataOutput node editors never
+hard-code format knowledge. `/api/input-cache/*` owns shared snapshot build, progress,
+cancellation, status, and clear operations for file, database, lakehouse, and Databricks
+inputs.
 
 **Utility scripts.** `GET/POST/PUT/DELETE /api/utility[/{module}]` manage Python files under
 the project's `utility/` directory — reusable helpers a pipeline's preamble imports via
@@ -367,3 +369,37 @@ at most 16 items each. This is an intentional pre-1.0 change in 0.6 from unsafe 
 fallback to typed failure; release and migration notes are required, with no compatibility
 shim for the unsafe behaviour. The DTO reports decisions; the execution engine owns how they
 are made. See the [remediation plan](../../trip/plans/F_0.6.0_polars-backend-remediation.plan.md).
+
+## Approved change contract — 0.7.0 data I/O API
+
+Implementation follows
+[`F_0.7.0_data-io-convergence.plan.md`](../../trip/plans/F_0.7.0_data-io-convergence.plan.md).
+
+- `GET /api/io-capabilities` replaces the flat format endpoint with a versioned, runtime-guarded
+  description of ordered input/output groups, providers, formats, fields, modes, arguments,
+  engines, direct batching, snapshot-build boundedness, output execution class, and publication
+  modes. The server derives it from the canonical registry; unsupported direction legs are
+  explicit, not inferred by the client.
+- A shared input-cache API owns Build/Refresh, job progress/status/cancel, snapshot status, and
+  Clear for every cache-capable `dataInput`. Build is an asynchronous job with a stable id and
+  cooperative cancellation, not a request thread allowed to continue invisibly after a 504.
+  Same-identity builds join one single flight; different identities may run under bounded global
+  concurrency. Responses separate local readiness, external freshness, build boundedness, and
+  typed failure.
+- `POST /api/pipeline/write-output` replaces the sink-named route and accepts only
+  `dataOutput`. It executes the unsaved graph supplied by the editor under normal admission,
+  cancellation, path, credential, and publication validation and returns measured/unavailable
+  row count plus destination and publication outcome. Preview, trace, load, and save never call
+  it implicitly.
+- Databricks retains only browsing endpoints under `/api/databricks`; its fetch/cache routes move
+  to the shared cache API. The old `/api/formats`, `/api/pipeline/sink`, and provider-specific
+  cache endpoints are removed without compatibility aliases.
+- Capability, cache, and write responses never expose resolved credentials, raw connector
+  errors, absolute paths outside approved user-facing scope, or background tracebacks. Typed
+  configuration/capability/cache/publication errors have stable codes and safe fields; unexpected
+  failures retain the common sanitised envelope.
+
+Acceptance includes schema/guard parity, capability ordering and completeness, secret redaction,
+cache single-flight/cancel/progress/status races, no orphaned job after timeout, cache corruption
+and identity mismatch, explicit output-write admission/cancellation/atomicity, and route absence
+for every removed endpoint.

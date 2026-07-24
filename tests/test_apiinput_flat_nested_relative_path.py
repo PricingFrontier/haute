@@ -2,7 +2,7 @@
 directory-relative must resolve to the same file whether the pipeline lives at the
 project root or in a subdirectory, and regardless of cwd.
 
-THE BUG (third sibling of the v2 apiInput / DATA_SOURCE / EXTERNAL_FILE cwd
+THE BUG (third sibling of the v2 apiInput / DATA_INPUT / EXTERNAL_FILE cwd
 path-resolution bug). ``_builders._build_api_input`` has two codecs: the JSON one
 (``_make_api_source_v2``), anchored to the pipeline dir by 09a5500f, and the FLAT
 one (``_api_source_flat``, taken for a non-JSON ``.csv`` / ``.parquet`` path). The
@@ -16,11 +16,11 @@ layout and the server run from the project root, the executor read
 The two only agreed when cwd == the pipeline dir; otherwise the source read the
 wrong file or failed with "No such file or directory". 09a5500f fixed only the
 JSON codec; this closes the flat codec with the identical fix
-(``_config_with_resolved_data_path``) already applied to the two ``DATA_SOURCE``
-call sites in tests/test_data_source_nested_relative_path.py.
+(the canonical file-input resolver) already applied to the two ``DATA_INPUT``
+call sites in tests/test_data_input_nested_relative_path.py.
 
 WHY THE FIX ANCHORS AT CALL TIME / WHY ``source_file`` IS EMPTY. Same as the
-DATA_SOURCE sibling: the graph-level resolver
+DATA_INPUT sibling: the graph-level resolver
 (``execution.canonical_dataframe_execution_graph``) pre-resolves the path only
 when ``graph.source_file`` is set. The empty-``source_file`` flows — the frontend
 canvas graph and the OUTPUT-editor dry-run route
@@ -93,7 +93,7 @@ def _api_input_config(path: str) -> dict[str, Any]:
 
     ``sourceType`` defaults to ``flat_file`` inside ``build_data_source_adapter``;
     spelling it out matches how the frontend serialises a flat apiInput and keeps
-    this parallel with the DATA_SOURCE sibling test.
+    this parallel with the DATA_INPUT sibling test.
     """
     return {"sourceType": "flat_file", "path": path}
 
@@ -146,7 +146,7 @@ def test_apiinput_flat_out_of_cwd_absolute_passthrough(
     re-execute, or ``haute run <pipeline outside cwd>``); the executor must load
     it. This stage does not enforce project-root containment (that gate lives on
     the route boundary), and ``read_source`` imposes none either. Regression
-    guard mirroring the DATA_SOURCE sibling.
+    guard mirroring the DATA_INPUT sibling.
     """
     monkeypatch.chdir(tmp_path)  # cwd == project root
     original = _get_project_root()

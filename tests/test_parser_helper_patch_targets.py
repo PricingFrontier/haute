@@ -35,27 +35,35 @@ def test_parser_helper_legacy_patch_attributes_are_absent() -> None:
 
 
 def test_config_builder_calls_real_helpers_directly(tmp_path: Path) -> None:
-    config = {"path": "data.csv", "sourceType": "flat_file"}
+    config = {
+        "inputType": "file",
+        "format": "csv",
+        "mode": "scan",
+        "cacheMode": "direct",
+        "path": "data.csv",
+        "arguments": {},
+    }
     source = inspect.getsource(_config_builder)
     assert "from haute._config_io import" in source
     assert "load_node_config" in source
-    assert "from haute._config_validation import warn_unrecognized_config_keys" in source
+    assert "from haute._config_validation import" in source
+    assert "warn_unrecognized_config_keys" in source
     with (
         patch("haute._config_builder.load_node_config", return_value=config) as load_mock,
         patch("haute._config_builder.warn_unrecognized_config_keys", return_value=[]) as warn_mock,
     ):
         node_type, resolved = _resolve_node_config(
-            {"config": "config/data_source/sample.json"},
+            {"config": "config/data_input/sample.json"},
             "",
             [],
             0,
             tmp_path,
-            explicit_node_type=NodeType.DATA_SOURCE,
+            explicit_node_type=NodeType.DATA_INPUT,
         )
 
-    assert node_type == NodeType.DATA_SOURCE
+    assert node_type == NodeType.DATA_INPUT
     assert resolved["path"] == "data.csv"
-    assert resolved["sourceType"] == "flat_file"
+    assert resolved["inputType"] == "file"
     assert "code" in resolved
-    load_mock.assert_called_once_with("config/data_source/sample.json", base_dir=tmp_path)
+    load_mock.assert_called_once_with("config/data_input/sample.json", base_dir=tmp_path)
     warn_mock.assert_called_once()

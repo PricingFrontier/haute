@@ -1,18 +1,11 @@
-"""Regression: a ``DATA_SOURCE`` whose flat-file ``path`` is pipeline-directory-
+"""Regression: a ``DATA_INPUT`` whose file ``path`` is pipeline-directory-
 relative must resolve to the same file whether the pipeline lives at the project
 root or in a subdirectory, and regardless of cwd.
 
-THE BUG (sibling of the v2 apiInput cwd path-resolution bug). The in-process
-executor's data-source builder (``_builders._build_data_source``) handed the RAW
-``config`` — carrying a relative ``path`` — to ``_io.read_data_source`` →
-``build_data_source_adapter`` → ``read_source``, which resolves a relative path
-against ``cwd`` (``Path(path)`` scanned from the process working directory). The
-cache-build route (``routes.json_cache._resolve_data_path``) and codegen anchor a
-relative data path to the PIPELINE DIRECTORY instead. So with the standard
-``rating/main.py`` layout and the server run from the project root, the executor
-read ``<root>/data/...`` while the file actually lived under
-``<root>/rating/data/...``. The two only agreed when cwd == the pipeline dir;
-otherwise the source read the wrong file or failed to find it.
+The canonical Data Input resolver must anchor relative file paths to the
+pipeline directory. With the standard ``rating/main.py`` layout and the server
+run from the project root, it must read ``<root>/rating/data/...`` rather than
+``<root>/data/...``.
 
 WHY THE FIX ANCHORS AT CALL TIME.  The graph-level resolver
 (``execution.canonical_dataframe_execution_graph``) pre-resolves the path, but
@@ -37,7 +30,7 @@ from haute._sandbox import _get_project_root, set_project_root
 from haute._types import GraphNode, NodeData, NodeType, PipelineGraph
 from haute.executor import _preview_cache, execute_graph
 
-#: The data-source ``path`` written into the node config — RELATIVE and
+#: The Data Input ``path`` written into the node config — RELATIVE and
 #: pipeline-directory-relative (resolves under ``rating/`` at runtime).
 _RELATIVE_DATA_PATH = "data/customers.csv"
 _CSV_TEXT = "customer_id,premium\n1,100\n2,250\n"
@@ -79,8 +72,8 @@ def nested_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     _preview_cache.invalidate()
 
 
-def _data_source_graph(path: str) -> PipelineGraph:
-    """A lone flat-file dataSource node with NO ``source_file`` (as the frontend
+def _data_input_graph(path: str) -> PipelineGraph:
+    """A lone file Data Input node with NO ``source_file`` (as the frontend
     and the dry-run route produce it)."""
     return PipelineGraph(
         source_file="",
@@ -89,8 +82,15 @@ def _data_source_graph(path: str) -> PipelineGraph:
                 id="src",
                 data=NodeData(
                     label="src",
-                    nodeType=NodeType.DATA_SOURCE,
-                    config={"sourceType": "flat_file", "path": path},
+                    nodeType=NodeType.DATA_INPUT,
+                    config={
+                        "inputType": "file",
+                        "format": "csv",
+                        "mode": "scan",
+                        "cacheMode": "direct",
+                        "path": path,
+                        "arguments": {},
+                    },
                 ),
             ),
         ],
@@ -98,15 +98,15 @@ def _data_source_graph(path: str) -> PipelineGraph:
     )
 
 
-def test_data_source_reads_pipeline_relative_path_from_project_root(nested_project) -> None:
-    """Executor core: a dataSource whose ``path`` is relative reads the pipeline-dir
+def test_data_input_reads_pipeline_relative_path_from_project_root(nested_project) -> None:
+    """Executor core: a dataInput whose ``path`` is relative reads the pipeline-dir
     file, with cwd at the project root and no ``source_file`` to anchor to.
 
     Pre-fix this failed (or read the wrong file) because the raw relative path
     resolved against cwd (``<root>/data/customers.csv``, absent) instead of the
     pipeline dir (``<root>/rating/data/customers.csv``) where the file lives.
     """
-    graph = _data_source_graph(_RELATIVE_DATA_PATH)
+    graph = _data_input_graph(_RELATIVE_DATA_PATH)
 
     results = execute_graph(graph, target_node_id="src")
 
@@ -115,7 +115,7 @@ def test_data_source_reads_pipeline_relative_path_from_project_root(nested_proje
     assert results["src"].preview == _EXPECTED_RECORDS
 
 
-def test_data_source_out_of_cwd_absolute_passthrough(
+def test_data_input_out_of_cwd_absolute_passthrough(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """An ABSOLUTE data path that resolves OUTSIDE cwd is loaded, NOT rejected and
@@ -141,7 +141,7 @@ def test_data_source_out_of_cwd_absolute_passthrough(
         outside.parent.mkdir(parents=True, exist_ok=True)
         outside.write_text(_CSV_TEXT)
 
-        graph = _data_source_graph(str(outside))
+        graph = _data_input_graph(str(outside))
         results = execute_graph(graph, target_node_id="src")
 
         assert results["src"].status == "ok", results["src"].error

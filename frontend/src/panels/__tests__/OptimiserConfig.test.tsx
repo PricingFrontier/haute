@@ -66,7 +66,7 @@ vi.mock("../../hooks/useConstraintHandlers", () => ({
 const DEFAULT_GRAPH_NODES: SimpleNode[] = [
   {
     id: "input_1",
-    data: { label: "Data Input", description: "", nodeType: "dataSource", config: {} },
+    data: { label: "Data Input", description: "", nodeType: "dataInput", config: {} },
   },
 ]
 const DEFAULT_GRAPH_EDGES: SimpleEdge[] = [{ id: "e1", source: "input_1", target: "opt_1" }]
@@ -286,7 +286,7 @@ describe("OptimiserConfig", () => {
         data: {
           label: "Data Input",
           description: "",
-          nodeType: "dataSource",
+          nodeType: "dataInput",
           config: {},
           _columns: [{ name: "expected_margin", dtype: "Float64" }],
         },
@@ -400,7 +400,7 @@ describe("OptimiserConfig", () => {
       renderConfig(makeProps({
             config: { _nodeId: "opt_1", mode: "ratebook", objective: "premium", constraints: {} },
             allNodes: [
-              { id: "input_1", data: { label: "Data Input", description: "", nodeType: "dataSource", config: {} } },
+              { id: "input_1", data: { label: "Data Input", description: "", nodeType: "dataInput", config: {} } },
               { id: "banding_1", data: { label: "My Banding", description: "", nodeType: "banding", config: {} } },
             ],
             edges: [
@@ -430,7 +430,7 @@ describe("OptimiserConfig", () => {
           banding_source: "banding_1",
         },
         allNodes: [
-          { id: "input_1", data: { label: "Data Input", description: "", nodeType: "dataSource", config: {} } },
+          { id: "input_1", data: { label: "Data Input", description: "", nodeType: "dataInput", config: {} } },
           { id: "banding_1", data: { label: "Age Vehicle Banding", description: "", nodeType: "banding", config: {} } },
         ],
         edges: [
@@ -468,7 +468,7 @@ describe("OptimiserConfig", () => {
           factor_columns: [],
         },
         allNodes: [
-          { id: "input_1", data: { label: "Data Input", description: "", nodeType: "dataSource", config: {} } },
+          { id: "input_1", data: { label: "Data Input", description: "", nodeType: "dataInput", config: {} } },
           { id: "banding_1", data: { label: "Age Vehicle Banding", description: "", nodeType: "banding", config: {} } },
         ],
         edges: [

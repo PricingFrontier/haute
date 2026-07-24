@@ -19,7 +19,7 @@ def _simple_graph():
                     "id": "src",
                     "data": {
                         "label": "src",
-                        "nodeType": "dataSource",
+                        "nodeType": "dataInput",
                         "config": {"path": "x.parquet"},
                     },
                 },
@@ -81,7 +81,7 @@ class TestCreateSubmodelGraph:
                         "id": "src",
                         "data": {
                             "label": "src",
-                            "nodeType": "dataSource",
+                            "nodeType": "dataInput",
                             "config": {"path": "x.parquet"},
                         },
                     },
@@ -217,7 +217,7 @@ class TestCreateSubmodelGraph:
                         "id": "a",
                         "data": {
                             "label": "a",
-                            "nodeType": "dataSource",
+                            "nodeType": "dataInput",
                             "config": {"path": "a.parquet"},
                         },
                     },
@@ -225,7 +225,7 @@ class TestCreateSubmodelGraph:
                         "id": "b",
                         "data": {
                             "label": "b",
-                            "nodeType": "dataSource",
+                            "nodeType": "dataInput",
                             "config": {"path": "b.parquet"},
                         },
                     },
@@ -289,7 +289,7 @@ class TestCreateSubmodelGraph:
                         "id": "src",
                         "data": {
                             "label": "src",
-                            "nodeType": "dataSource",
+                            "nodeType": "dataInput",
                             "config": {"path": "x.parquet"},
                         },
                     },

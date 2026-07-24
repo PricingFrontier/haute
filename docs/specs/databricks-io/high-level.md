@@ -36,10 +36,8 @@ Out of scope (owned elsewhere):
 - Actually reading/writing/caching parquet for non-Databricks sources —
   general Parquet/CSV/file IO lives in the [io-layer](../io-layer/high-level.md).
 - Turning a cached table into a pipeline node's runtime data, request
-  validation, and the HTTP layer around other data sources — see the
-  [server-api](../server-api/high-level.md) component, which also owns the
-  `/api/schema/databricks` endpoint that reads this component's cache to
-  build a schema preview.
+  validation, and the provider-neutral cache HTTP lifecycle around other data sources — see
+  the [server-api](../server-api/high-level.md) component.
 - Deploying a *pipeline* to Databricks Model Serving (MLflow experiments,
   serving endpoints, `haute deploy` targets). That is a distinct feature — see
   [deploy](../deploy/high-level.md) and the user-facing setup guide at
@@ -134,10 +132,8 @@ Out of scope (owned elsewhere):
   (the fetch response timeout) and `haute._logging` for structured
   logging.
 - Is consumed by the [server-api](../server-api/high-level.md) layer: the
-  FastAPI routes in this component are mounted under `/api/databricks/*`,
-  and a separate server-api route (`/api/schema/databricks`) reads this
-  component's cache (via `cache_info`) to preview a fetched table's
-  schema.
+  browsing routes in this component are mounted under `/api/databricks/*`, while the shared
+  `/api/input-cache/*` lifecycle publishes and reports Databricks snapshots.
 - Is consumed by the pipeline execution engine at run time via
   `read_cached_table`, which is how a Databricks-backed data source node
   actually gets its data during a pipeline run — see the
@@ -197,3 +193,42 @@ Out of scope (owned elsewhere):
 > passed — this is an internal consistency assertion, not a
 > user-reachable error path (the preceding check guarantees the http path
 > is truthy or the function has already raised).
+
+## Approved change contract — 0.7.0 unified Databricks input
+
+Implementation follows
+[`F_0.7.0_data-io-convergence.plan.md`](../../trip/plans/F_0.7.0_data-io-convergence.plan.md)
+and the shared [data I/O](../io-layer/high-level.md#approved-change-contract-070-data-io-convergence)
+and [source-snapshot](../caching/high-level.md#approved-change-contract-070-shared-input-snapshots)
+contracts.
+
+- Databricks becomes the dedicated `inputType="databricks"` branch of `dataInput`; there is no
+  `dataSource` node. The editor retains warehouse/catalog/schema/table browsing, optional
+  validated query, fetch/refresh, progress, status, and clear.
+- Databricks supplies a bounded Arrow-batch builder to the shared source-cache store and stops
+  owning cache naming, publication, metadata, progress storage, and cache routes. Normal pipeline
+  execution obtains only the validated shared Parquet generation and never connects to a
+  warehouse.
+- Cache identity includes the canonical fully-qualified table, complete validated select
+  fragment, warehouse/connection-reference identity, and source-affecting options. It is no
+  longer keyed by table spelling alone. Two nodes selecting different rows/columns from one table
+  have independent snapshots; equivalent case/backtick spellings still canonicalise together
+  when every other identity field matches.
+- The builder must either obtain a provider snapshot/version token or report external freshness
+  `unknown`. A long fetch must use a consistent Databricks result snapshot; if retries or
+  connector behaviour make completeness/consistency unprovable, publication fails and the
+  previous generation remains current.
+- The optional `dataInput` Polars body runs after the shared Parquet snapshot is scanned and is
+  excluded from snapshot identity. Cached Databricks inputs therefore receive the same projection
+  and chunked-batch behaviour as every other valid source snapshot.
+- Existing query validation remains fail-loud and is strengthened so the configured value is a
+  complete, unambiguous read-only selection contract; the known nested-`FROM` gap cannot be
+  carried into the shared cache identity. Credentials continue to resolve only from named
+  environment/secret references and never enter node or cache metadata.
+
+There is no Databricks `dataOutput` in this release. The output UI may add that group only after a
+real writer, boundedness model, and transactional publication contract are separately approved.
+Acceptance covers picker continuity, query-distinct identities, canonical table equivalence,
+bounded batch publication, snapshot consistency/retry failure, old-generation preservation,
+credential redaction, shared route payloads, and offline/CI/deploy reads with zero Databricks
+calls.

@@ -53,9 +53,9 @@ from haute.graph_utils import _sanitize_func_name
 from haute.schemas import SavePipelineRequest, SavePipelineResponse
 
 
-def _data_source_config(label: str) -> str:
-    """Relative config path the save flow writes for a dataSource node *label*."""
-    return f"config/data_source/{_sanitize_func_name(label)}.json"
+def _data_input_config(label: str) -> str:
+    """Relative config path the save flow writes for a dataInput node *label*."""
+    return f"config/data_input/{_sanitize_func_name(label)}.json"
 
 
 WORKING = "pricing-dev"
@@ -908,7 +908,7 @@ class TestSeedGitignoreGuards:
             "rating/main.py",
             "rating/main.haute.json",
             "rating/utility/helpers.py",
-            "rating/config/data_source/quotes.json",
+            "rating/config/data_input/quotes.json",
             "prompts/starter.md",
             "tests/test_pipeline.py",
             ".githooks/pre-commit",
@@ -1473,8 +1473,8 @@ class TestRenamePreservingStaging:
     in :class:`TestRenamePreservingSaveIntegration`.
     """
 
-    OLD = "config/data_source/alpha.json"
-    NEW = "config/data_source/beta.json"
+    OLD = "config/data_input/alpha.json"
+    NEW = "config/data_input/beta.json"
     BODY = '{\n  "path": "data.parquet"\n}\n'
 
     def _commit_creating_old(self, repo: Path) -> str:
@@ -1534,8 +1534,8 @@ class TestRenamePreservingStaging:
         # converse, a rename bundled with a *large* rewrite of a tiny config, can
         # fall below the threshold and sever history; that is git's limit, not a
         # staging bug, and is the "content-minimal where possible" caveat in §3.5.)
-        old = "config/data_source/gamma.json"
-        new = "config/data_source/delta.json"
+        old = "config/data_input/gamma.json"
+        new = "config/data_input/delta.json"
         body = (
             '{\n  "path": "data.parquet",\n  "format": "parquet",\n'
             '  "limit": 1000,\n  "cache": true\n}\n'
@@ -1573,8 +1573,15 @@ class TestRenamePreservingSaveIntegration:
                     id="src",
                     data=NodeData(
                         label=label,
-                        nodeType="dataSource",
-                        config={"path": "data.parquet"},
+                        nodeType="dataInput",
+                        config={
+                            "inputType": "file",
+                            "format": "parquet",
+                            "mode": "scan",
+                            "cacheMode": "direct",
+                            "path": "data.parquet",
+                            "arguments": {},
+                        },
                     ),
                 )
             ],
@@ -1588,8 +1595,8 @@ class TestRenamePreservingSaveIntegration:
     def test_node_rename_is_rename_preserving_in_ledger(self, repo: Path) -> None:
         from haute._git_state import write_working_branch
 
-        old_rel = _data_source_config("Alpha")
-        new_rel = _data_source_config("Beta")
+        old_rel = _data_input_config("Alpha")
+        new_rel = _data_input_config("Beta")
 
         write_working_branch(repo, WORKING)
         first = self._save_graph(repo, "Alpha")  # → old_rel
@@ -1634,8 +1641,8 @@ class TestRenamePreservingSaveIntegration:
         assert len(rename_lines) == 1, out
         # Exact endpoints (not just the folder): a regression in the sanitized
         # filename would still satisfy a folder-prefix check but is caught here.
-        assert _data_source_config("Alpha") in rename_lines[0]
-        assert _data_source_config("Beta") in rename_lines[0]
+        assert _data_input_config("Alpha") in rename_lines[0]
+        assert _data_input_config("Beta") in rename_lines[0]
 
     def test_rename_preserving_under_divergent_pipeline_root(self, repo: Path) -> None:
         # Production runs pipeline_root *nested under* project_root (haute.toml
@@ -1660,8 +1667,15 @@ class TestRenamePreservingSaveIntegration:
                         id="src",
                         data=NodeData(
                             label=label,
-                            nodeType="dataSource",
-                            config={"path": "data.parquet"},
+                            nodeType="dataInput",
+                            config={
+                                "inputType": "file",
+                                "format": "parquet",
+                                "mode": "scan",
+                                "cacheMode": "direct",
+                                "path": "data.parquet",
+                                "arguments": {},
+                            },
                         ),
                     )
                 ],
@@ -1676,8 +1690,8 @@ class TestRenamePreservingSaveIntegration:
         second = save("Beta")
         assert first.git_sha is not None and second.git_sha is not None
 
-        old_rel = f"rating/{_data_source_config('Alpha')}"
-        new_rel = f"rating/{_data_source_config('Beta')}"
+        old_rel = f"rating/{_data_input_config('Alpha')}"
+        new_rel = f"rating/{_data_input_config('Beta')}"
         out = _git(repo, "show", "--name-status", "--format=", "-M", second.git_sha)
         rename_lines = [ln for ln in out.splitlines() if ln.startswith("R")]
         assert len(rename_lines) == 1, out
@@ -1708,8 +1722,8 @@ class TestRenamePreservingSaveIntegration:
         with patch.object(_git_mod, "commit_save", side_effect=spy):
             self._save_graph(repo, "Beta")
 
-        assert _data_source_config("Alpha") in captured["paths"], captured
-        assert _data_source_config("Beta") in captured["paths"], captured
+        assert _data_input_config("Alpha") in captured["paths"], captured
+        assert _data_input_config("Beta") in captured["paths"], captured
 
 
 class TestLedgerExpansion:
@@ -1740,8 +1754,8 @@ class TestLedgerExpansion:
 
     def test_milestone_saves_is_rename_aware(self, repo: Path) -> None:
         set_working_branch(WORKING, repo, cwd=repo)
-        old = "config/data_source/alpha.json"
-        new = "config/data_source/beta.json"
+        old = "config/data_input/alpha.json"
+        new = "config/data_input/beta.json"
         body = '{\n  "path": "data.parquet"\n}\n'
         _write_and_save(repo, WORKING, {old: body}, message="add config")
         (repo / old).unlink()
@@ -1790,7 +1804,7 @@ class TestLedgerExpansion:
         # core.quotepath=false: a non-ASCII config filename must render as itself,
         # not git's octal-escaped, double-quoted form.
         set_working_branch(WORKING, repo, cwd=repo)
-        unicode_path = "config/data_source/café.json"
+        unicode_path = "config/data_input/café.json"
         _write_and_save(repo, WORKING, {unicode_path: '{"x": 1}\n'}, message="add café")
         paths = [f.path for s in pending_ledger_saves(repo, cwd=repo).saves for f in s.files]
         assert unicode_path in paths, paths

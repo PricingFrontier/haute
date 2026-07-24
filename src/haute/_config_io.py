@@ -40,7 +40,6 @@ logger = get_logger(component="config_io")
 
 NODE_TYPE_TO_FOLDER: dict[NodeType, str] = {
     NodeType.API_INPUT: "quote_input",
-    NodeType.DATA_SOURCE: "data_source",
     NodeType.DATA_INPUT: "data_input",
     NodeType.DATA_OUTPUT: "data_output",
     NodeType.LIVE_SWITCH: "source_switch",
@@ -48,7 +47,6 @@ NODE_TYPE_TO_FOLDER: dict[NodeType, str] = {
     NodeType.BANDING: "banding",
     NodeType.RATING_STEP: "rating_step",
     NodeType.OUTPUT: "quote_response",
-    NodeType.DATA_SINK: "data_sink",
     NodeType.EXTERNAL_FILE: "load_file",
     NodeType.MODELLING: "model_training",
     NodeType.OPTIMISER: "optimisation",

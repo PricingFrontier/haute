@@ -971,7 +971,7 @@ def detect_row_lineage_type(
     """
     try:
         # Source nodes always create rows
-        if node_type in ("dataSource", "apiInput"):
+        if node_type in ("dataInput", "apiInput"):
             return "created"
 
         if node_type == "liveSwitch":

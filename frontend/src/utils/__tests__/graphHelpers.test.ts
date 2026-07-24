@@ -19,7 +19,7 @@ describe("computeNextNodeId", () => {
   it("returns max suffix + 1 from multiple nodes", () => {
     const nodes = [
       { id: "transform_1" },
-      { id: "dataSource_5" },
+      { id: "dataInput_5" },
       { id: "banding_3" },
     ] as Node[]
     expect(computeNextNodeId(nodes)).toBe(6)

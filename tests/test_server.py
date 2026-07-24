@@ -16,11 +16,32 @@ from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from watchfiles import Change
 
-from tests.conftest import write_data_source_config
+from tests.conftest import write_data_input_config
 
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
+
+def _file_input_config(path: str) -> dict:
+    return {
+        "inputType": "file",
+        "format": "parquet",
+        "mode": "scan",
+        "cacheMode": "direct",
+        "path": path,
+        "arguments": {},
+    }
+
+
+def _file_output_config(path: str) -> dict:
+    return {
+        "outputType": "file",
+        "format": "parquet",
+        "mode": "sink",
+        "path": path,
+        "arguments": {},
+    }
 
 
 @pytest.fixture()
@@ -33,7 +54,7 @@ def pipeline_dir(tmp_path: Path) -> Path:
     # Use as_posix() to avoid Windows backslash escape issues in the
     # generated Python source (e.g. \U interpreted as unicode escape).
     data_path = (data_dir / "input.parquet").as_posix()
-    source_config = write_data_source_config(tmp_path, "source", data_path)
+    source_config = write_data_input_config(tmp_path, "source", data_path)
 
     code = f'''\
 import polars as pl
@@ -42,7 +63,7 @@ import haute
 pipeline = haute.Pipeline("test_pipeline", description="A test pipeline")
 
 
-@pipeline.data_source(config="{source_config}")
+@pipeline.data_input(config="{source_config}")
 def source() -> pl.DataFrame:
     """Read data."""
     return pl.scan_parquet("{data_path}")
@@ -442,8 +463,8 @@ class TestSavePipeline:
                     "position": {"x": 0, "y": 0},
                     "data": {
                         "label": "Source",
-                        "nodeType": "dataSource",
-                        "config": {"path": "d.parquet"},
+                        "nodeType": "dataInput",
+                        "config": _file_input_config("d.parquet"),
                     },
                 },
             ],
@@ -476,7 +497,7 @@ class TestSavePipeline:
 
 
 # ---------------------------------------------------------------------------
-# POST /api/pipeline/sink
+# POST /api/pipeline/write-output
 # ---------------------------------------------------------------------------
 
 
@@ -493,8 +514,8 @@ class TestExecuteSinkEndpoint:
                     "position": {"x": 0, "y": 0},
                     "data": {
                         "label": "src",
-                        "nodeType": "dataSource",
-                        "config": {"path": str(data_path)},
+                        "nodeType": "dataInput",
+                        "config": _file_input_config(str(data_path)),
                     },
                 },
                 {
@@ -503,15 +524,15 @@ class TestExecuteSinkEndpoint:
                     "position": {"x": 300, "y": 0},
                     "data": {
                         "label": "sink",
-                        "nodeType": "dataSink",
-                        "config": {"path": "output/result.parquet", "format": "parquet"},
+                        "nodeType": "dataOutput",
+                        "config": _file_output_config("output/result.parquet"),
                     },
                 },
             ],
             "edges": [{"id": "e1", "source": "src", "target": "sink"}],
         }
         resp = client.post(
-            "/api/pipeline/sink",
+            "/api/pipeline/write-output",
             json={
                 "graph": graph,
                 "node_id": "sink",
@@ -522,6 +543,47 @@ class TestExecuteSinkEndpoint:
         assert data["status"] == "ok"
         assert data["row_count"] == 3
         assert out_path.exists()
+
+    def test_invalid_output_config_returns_safe_400(
+        self, client: TestClient, pipeline_dir: Path
+    ) -> None:
+        data_path = pipeline_dir / "data" / "input.parquet"
+        graph = {
+            "nodes": [
+                {
+                    "id": "src",
+                    "type": "pipelineNode",
+                    "position": {"x": 0, "y": 0},
+                    "data": {
+                        "label": "src",
+                        "nodeType": "dataInput",
+                        "config": _file_input_config(str(data_path)),
+                    },
+                },
+                {
+                    "id": "sink",
+                    "type": "pipelineNode",
+                    "position": {"x": 300, "y": 0},
+                    "data": {
+                        "label": "sink",
+                        "nodeType": "dataOutput",
+                        "config": {
+                            "outputType": "unsupported",
+                            "format": "parquet",
+                            "mode": "sink",
+                            "path": "/secure/output.parquet",
+                            "arguments": {},
+                        },
+                    },
+                },
+            ],
+            "edges": [{"id": "e1", "source": "src", "target": "sink"}],
+        }
+
+        resp = client.post("/api/pipeline/write-output", json={"graph": graph, "node_id": "sink"})
+
+        assert resp.status_code == 400
+        assert "/secure/" not in resp.json()["detail"]
 
 
 # ---------------------------------------------------------------------------
@@ -598,7 +660,7 @@ class TestGetSchema:
 
 
 # ---------------------------------------------------------------------------
-# Submodel routes — POST /api/submodel/create, GET /api/submodel/{name},
+# Submodel routes -- POST /api/submodel/create, GET /api/submodel/{name},
 #                   POST /api/submodel/dissolve
 # ---------------------------------------------------------------------------
 
@@ -666,7 +728,7 @@ class TestCreateSubmodel:
         """
         from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
 
-        # Only 1 node — must be at least 2
+        # Only 1 node -- must be at least 2
         node_ids = [three_node_graph["nodes"][0]["id"]]
         payload = self._create_payload(three_node_graph, node_ids)
         resp = client.post("/api/submodel/create", json=payload)
@@ -794,14 +856,14 @@ class TestDissolveSubmodel:
 
 
 # ---------------------------------------------------------------------------
-# WebSocket — /ws/sync connect/disconnect and broadcast
+# WebSocket -- /ws/sync connect/disconnect and broadcast
 # ---------------------------------------------------------------------------
 
 
 class TestWebSocket:
     def test_connect_and_disconnect(self, client: TestClient):
         with client.websocket_connect("/ws/sync") as ws:
-            # Connection should be accepted — sending a keep-alive message works
+            # Connection should be accepted -- sending a keep-alive message works
             ws.send_text("ping")
         # No error means connect + clean disconnect succeeded
 
@@ -810,7 +872,7 @@ class TestWebSocket:
         client: TestClient,
         pipeline_dir: Path,
     ):
-        """Save endpoint writes files and triggers sidecar — verify the
+        """Save endpoint writes files and triggers sidecar -- verify the
         full HTTP flow still works with an active WebSocket connection."""
         from haute.routes._helpers import ws_clients
 
@@ -826,8 +888,8 @@ class TestWebSocket:
                         "position": {"x": 0, "y": 0},
                         "data": {
                             "label": "S",
-                            "nodeType": "dataSource",
-                            "config": {"path": "d.parquet"},
+                            "nodeType": "dataInput",
+                            "config": _file_input_config("d.parquet"),
                         },
                     },
                 ],
@@ -1640,7 +1702,7 @@ class TestFileWatcher:
 
     def test_paused_skips_broadcast(self, pipeline_dir: Path, monkeypatch: pytest.MonkeyPatch):
         """S30: while the watcher is paused (a git op in flight), a .py change
-        is dropped — the wholesale tree replacement of a move/checkout must not
+        is dropped -- the wholesale tree replacement of a move/checkout must not
         be broadcast as user edits."""
         import asyncio
         from unittest.mock import patch
@@ -1927,7 +1989,7 @@ class TestFileWatcher:
 
 
 class TestPipelineTimeouts:
-    """Timeout paths — let asyncio.wait_for cancel pending route work."""
+    """Timeout paths -- let asyncio.wait_for cancel pending route work."""
 
     @staticmethod
     async def _never_finishes(*_args: object, **_kwargs: object) -> None:
@@ -1944,8 +2006,8 @@ class TestPipelineTimeouts:
                     "position": {"x": 0, "y": 0},
                     "data": {
                         "label": "src",
-                        "nodeType": "dataSource",
-                        "config": {"path": str(data_path)},
+                        "nodeType": "dataInput",
+                        "config": _file_input_config(str(data_path)),
                     },
                 },
                 {
@@ -1954,8 +2016,8 @@ class TestPipelineTimeouts:
                     "position": {"x": 300, "y": 0},
                     "data": {
                         "label": "sink",
-                        "nodeType": "dataSink",
-                        "config": {"path": "output/test_sink.parquet", "format": "parquet"},
+                        "nodeType": "dataOutput",
+                        "config": _file_output_config("output/test_sink.parquet"),
                     },
                 },
             ],
@@ -1967,7 +2029,7 @@ class TestPipelineTimeouts:
         [
             ("trace", True),
             ("preview", True),
-            ("sink", False),
+            ("write-output", False),
         ],
         ids=["trace_timeout", "preview_timeout", "sink_timeout"],
     )
@@ -2006,7 +2068,7 @@ class TestPipelineTimeouts:
 
 
 class TestPipelineExceptions:
-    """Exception paths — mock execute_graph to raise RuntimeError → 500."""
+    """Exception paths -- mock execute_graph to raise RuntimeError -> 500."""
 
     @staticmethod
     def _sink_graph(pipeline_dir: Path) -> dict:
@@ -2019,8 +2081,8 @@ class TestPipelineExceptions:
                     "position": {"x": 0, "y": 0},
                     "data": {
                         "label": "src",
-                        "nodeType": "dataSource",
-                        "config": {"path": str(data_path)},
+                        "nodeType": "dataInput",
+                        "config": _file_input_config(str(data_path)),
                     },
                 },
                 {
@@ -2029,8 +2091,8 @@ class TestPipelineExceptions:
                     "position": {"x": 300, "y": 0},
                     "data": {
                         "label": "sink",
-                        "nodeType": "dataSink",
-                        "config": {"path": "output/test_sink.parquet", "format": "parquet"},
+                        "nodeType": "dataOutput",
+                        "config": _file_output_config("output/test_sink.parquet"),
                     },
                 },
             ],
@@ -2043,11 +2105,11 @@ class TestPipelineExceptions:
             # Route-side patch targets: the route module imports these
             # functions at top level (post-#101 hoist), so patching the
             # source modules (``haute.trace`` / ``haute.executor``) would
-            # be a no-op — the route still calls its own top-level
+            # be a no-op -- the route still calls its own top-level
             # bindings.
             ("trace", "haute.routes.pipeline.execute_trace", "trace error", True),
             ("preview", "haute.routes.pipeline.execute_graph", "preview error", True),
-            ("sink", "haute.routes.pipeline.execute_sink", "sink error", False),
+            ("write-output", "haute.routes.pipeline.write_data_output", "sink error", False),
         ],
         ids=["trace_exception", "preview_exception", "sink_exception"],
     )
@@ -2084,7 +2146,7 @@ class TestPreviewEdgeCases:
     """Preview edge cases: missing node in results."""
 
     def test_preview_node_not_in_results(self, client: TestClient, pipeline_dir: Path):
-        """If the node_id is valid but not found in execute_graph results → 404."""
+        """If the node_id is valid but not found in execute_graph results -> 404."""
         from unittest.mock import patch
 
         from haute.parser import parse_pipeline_file
@@ -2141,7 +2203,7 @@ class TestListPipelinesParseError:
         invalidate_pipeline_index()
 
         c = TestClient(app)
-        # Patch the route-scoped binding — after the #101 import hoist
+        # Patch the route-scoped binding -- after the #101 import hoist
         # ``list_pipelines`` calls its own top-level ``parse_pipeline_file``
         # alias, so patching the ``haute.parser`` source module alone no
         # longer affects the code path.
@@ -2192,7 +2254,7 @@ class TestSinkEmptyGraph:
 
     def test_sink_empty_graph(self, client: TestClient):
         resp = client.post(
-            "/api/pipeline/sink",
+            "/api/pipeline/write-output",
             json={
                 "graph": {"nodes": [], "edges": []},
                 "node_id": "x",
@@ -3272,7 +3334,7 @@ class TestSubmodelOutputPorts:
         graph = parse_pipeline_file(pipeline_dir / "test_pipeline.py")
         graph_dict = graph.model_dump()
 
-        # Select only "source" — it has an edge to "transform" which is outside
+        # Select only "source" -- it has an edge to "transform" which is outside
         # Need at least 2 nodes for submodel creation
         nodes = graph_dict["nodes"]
         assert len(nodes) >= 2
@@ -3311,14 +3373,14 @@ class TestSubmodelEdgeRewiring:
     ):
         """Add a third transform node so we can test outgoing edge rewiring."""
         # Create a 3-node pipeline: source -> transform -> transform2
-        source_config = write_data_source_config(pipeline_dir, "source", "data/input.parquet")
+        source_config = write_data_input_config(pipeline_dir, "source", "data/input.parquet")
         code = f"""\
 import polars as pl
 import haute
 
 pipeline = haute.Pipeline("rewire_test", description="Rewire test")
 
-@pipeline.data_source(config="{source_config}")
+@pipeline.data_input(config="{source_config}")
 def source() -> pl.LazyFrame:
     return pl.scan_parquet("data/input.parquet")
 
@@ -3339,7 +3401,7 @@ pipeline.connect("middle", "final")
         graph = parse_pipeline_file(pipeline_dir / "rewire_test.py")
         graph_dict = graph.model_dump()
 
-        # Select only "middle" and "source" (2 nodes) — "final" stays outside
+        # Select only "middle" and "source" (2 nodes) -- "final" stays outside
         selected = ["source", "middle"]
 
         resp = client.post(
@@ -3735,7 +3797,7 @@ class TestStaticBuildReady:
         assert not static_build_ready(static)
 
     def test_index_without_assets_is_not_ready(self, tmp_path: Path) -> None:
-        """Mounting a missing assets/ raises at import — require it up front."""
+        """Mounting a missing assets/ raises at import -- require it up front."""
         from haute.server import static_build_ready
 
         static = tmp_path / "static"

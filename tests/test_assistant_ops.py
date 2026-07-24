@@ -124,7 +124,7 @@ class TestAddNode:
 
 class TestRefs:
     def test_add_then_connect_via_ref(self):
-        base = _graph([_node("src", "dataSource", path="data.parquet")])
+        base = _graph([_node("src", "dataInput", path="data.parquet")])
         out = _apply(
             base,
             [
@@ -188,7 +188,7 @@ class TestRefs:
 
 class TestUpdateNode:
     def test_shallow_merge_preserves_untouched_keys(self):
-        base = _graph([_node("src", "dataSource", path="a.parquet", format="parquet")])
+        base = _graph([_node("src", "dataInput", path="a.parquet", format="parquet")])
         out = _apply(
             base,
             [
@@ -200,7 +200,7 @@ class TestUpdateNode:
         assert cfg["format"] == "parquet"
 
     def test_explicit_null_removes_key(self):
-        base = _graph([_node("src", "dataSource", path="a.parquet", format="parquet")])
+        base = _graph([_node("src", "dataInput", path="a.parquet", format="parquet")])
         out = _apply(
             base,
             [
@@ -210,7 +210,7 @@ class TestUpdateNode:
         assert "format" not in _get(out, "src").data.config
 
     def test_unknown_config_key_rejected(self):
-        base = _graph([_node("src", "dataSource", path="a.parquet")])
+        base = _graph([_node("src", "dataInput", path="a.parquet")])
         with pytest.raises(OpValidationError):
             _apply(
                 base,
@@ -365,7 +365,7 @@ class TestSubmodelBoundary:
 
 class TestAtomicity:
     def test_failed_batch_leaves_input_untouched(self):
-        base = _graph([_node("src", "dataSource", path="a.parquet")])
+        base = _graph([_node("src", "dataInput", path="a.parquet")])
         snapshot = base.model_dump()
         with pytest.raises(OpValidationError):
             _apply(
@@ -378,7 +378,7 @@ class TestAtomicity:
         assert base.model_dump() == snapshot
 
     def test_successful_batch_does_not_mutate_input(self):
-        base = _graph([_node("src", "dataSource", path="a.parquet")])
+        base = _graph([_node("src", "dataInput", path="a.parquet")])
         snapshot = base.model_dump()
         out = _apply(base, [{"op": "add_node", "node_type": "polars", "name": "new step"}])
         assert base.model_dump() == snapshot

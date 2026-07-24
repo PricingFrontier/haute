@@ -143,6 +143,11 @@
   a time per runner. Separate CI runners provide the shard parallelism while
   serial execution avoids concurrent in-place mutation races; merge expects
   every selected mutant to contribute exactly once.
+- Mutation thresholds measure observable behaviour. Syntax-only mutants in
+  postponed annotations and keyword-only call markers are explicitly excluded
+  with `# pragma: no mutate`; executable expressions and branch decisions must
+  remain in scope and be killed by focused witnesses rather than hidden behind
+  a pragma or a relaxed survivor budget.
 - Frontend shuffled tests are a nightly monitor for within-file state leaks,
   not an ordinary PR requirement. A captured seed makes a failed ordering
   reproducible.

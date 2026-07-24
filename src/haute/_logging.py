@@ -40,6 +40,10 @@ import sys
 import structlog
 
 
+class _HauteProcessorList(list[structlog.types.Processor]):
+    """Mark a processor list as owned by Haute's logging configuration."""
+
+
 def configure_logging() -> None:
     """Configure structlog + stdlib logging.
 
@@ -49,20 +53,26 @@ def configure_logging() -> None:
         HAUTE_LOG_FORMAT:  "json" for machine-readable output (default: console)
         HAUTE_LOG_LEVEL:   Python log level name (default: INFO)
 
-    Implementation note — processors-list identity is stable:
-        We mutate the existing ``structlog`` processors list in place rather
-        than passing a fresh list to :func:`structlog.configure`.  This
-        matters because ``cache_logger_on_first_use=True`` causes
+    Implementation note — Haute processors-list identity is stable:
+        Once Haute has installed its own marked processors list, subsequent
+        calls mutate that list in place rather than passing a fresh list to
+        :func:`structlog.configure`.  This matters because
+        ``cache_logger_on_first_use=True`` causes
         :class:`~structlog._config.BoundLoggerLazyProxy` instances to capture
-        a reference to the processors list at first use; if a subsequent
-        ``configure_logging`` call replaced that list, the cached bound
-        loggers would still emit through the OLD list.
+        a reference to the processors list at first use; if a subsequent call
+        replaced that list, cached bound loggers would still emit through the
+        old list.
 
         :func:`structlog.testing.capture_logs` exploits the same invariant —
         it mutates the list in place — so preserving the list instance here
         keeps log capture working after any number of reconfigurations.
         Without this, tests that use ``capture_logs`` become order-dependent
         flakes when they follow any test that calls ``configure_logging``.
+
+        An arbitrary pre-existing list is never mutated. In particular,
+        structlog's default ``PrintLogger`` processors may be held by a saved
+        configuration that is restored later; replacing that shared list with
+        stdlib-only processors would make the restored logger crash.
     """
     json_mode = os.environ.get("HAUTE_LOG_FORMAT", "").lower() == "json"
     log_level = os.environ.get("HAUTE_LOG_LEVEL", "INFO").upper()
@@ -87,29 +97,23 @@ def configure_logging() -> None:
         structlog.stdlib.ProcessorFormatter.wrap_for_formatter,
     ]
 
-    # Mutate the existing processors list in place so cached bound loggers
-    # (held by any module that did ``logger = get_logger(...)`` at import
-    # time) keep emitting through the current pipeline after reconfigure.
-    # See the docstring above for the full rationale.
+    # Mutate only a list previously installed by Haute. Structlog configuration
+    # snapshots retain processor lists by reference, so mutating its default or
+    # a third-party list would corrupt that configuration when it is restored.
     current_processors = structlog.get_config().get("processors")
-    if isinstance(current_processors, list):
+    if isinstance(current_processors, _HauteProcessorList):
         current_processors.clear()
         current_processors.extend(new_processors)
-        structlog.configure(
-            processors=current_processors,
-            logger_factory=structlog.stdlib.LoggerFactory(),
-            wrapper_class=structlog.stdlib.BoundLogger,
-            cache_logger_on_first_use=True,
-        )
+        configured_processors = current_processors
     else:
-        # First-time configuration (or tests that just called
-        # reset_defaults) — no list to preserve.
-        structlog.configure(
-            processors=new_processors,
-            logger_factory=structlog.stdlib.LoggerFactory(),
-            wrapper_class=structlog.stdlib.BoundLogger,
-            cache_logger_on_first_use=True,
-        )
+        configured_processors = _HauteProcessorList(new_processors)
+
+    structlog.configure(
+        processors=configured_processors,
+        logger_factory=structlog.stdlib.LoggerFactory(),
+        wrapper_class=structlog.stdlib.BoundLogger,
+        cache_logger_on_first_use=True,
+    )
 
     # Bridge stdlib logging (uvicorn, watchfiles, etc.) through structlog
     formatter = structlog.stdlib.ProcessorFormatter(

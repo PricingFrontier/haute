@@ -102,15 +102,22 @@ class TestConfigPathForNode:
 
 class TestSaveAndLoad:
     def test_save_creates_directories_and_file(self, tmp_path):
-        config = {"path": "data/input.parquet", "sourceType": "flat_file"}
-        rel = _write_node_config_sidecar(NodeType.DATA_SOURCE, "my_source", config, tmp_path)
-        assert rel == Path("config/data_source/my_source.json")
+        config = {
+            "inputType": "file",
+            "format": "parquet",
+            "mode": "scan",
+            "cacheMode": "direct",
+            "path": "data/input.parquet",
+            "arguments": {},
+        }
+        rel = _write_node_config_sidecar(NodeType.DATA_INPUT, "my_source", config, tmp_path)
+        assert rel == Path("config/data_input/my_source.json")
         assert (tmp_path / rel).is_file()
 
     def test_saved_content_is_valid_json(self, tmp_path):
         config = {"path": "data/input.parquet"}
-        _write_node_config_sidecar(NodeType.DATA_SOURCE, "src", config, tmp_path)
-        loaded = load_node_config("config/data_source/src.json", base_dir=tmp_path)
+        _write_node_config_sidecar(NodeType.DATA_INPUT, "src", config, tmp_path)
+        loaded = load_node_config("config/data_input/src.json", base_dir=tmp_path)
         assert loaded == config
 
     def test_code_key_excluded_from_json(self, tmp_path):
@@ -123,7 +130,7 @@ class TestSaveAndLoad:
 
     def test_load_nonexistent_file_raises(self, tmp_path):
         with pytest.raises(FileNotFoundError):
-            load_node_config("config/data_source/nope.json", base_dir=tmp_path)
+            load_node_config("config/data_input/nope.json", base_dir=tmp_path)
 
     def test_round_trip_complex_config(self, tmp_path):
         config = {
@@ -319,12 +326,12 @@ class TestSaveAndLoad:
 class TestRemoveConfigFile:
     def test_remove_existing_file(self, tmp_path):
         config = {"path": "data.parquet"}
-        _write_node_config_sidecar(NodeType.DATA_SOURCE, "src", config, tmp_path)
-        assert remove_config_file(NodeType.DATA_SOURCE, "src", tmp_path)
-        assert not (tmp_path / "config" / "data_source" / "src.json").exists()
+        _write_node_config_sidecar(NodeType.DATA_INPUT, "src", config, tmp_path)
+        assert remove_config_file(NodeType.DATA_INPUT, "src", tmp_path)
+        assert not (tmp_path / "config" / "data_input" / "src.json").exists()
 
     def test_remove_nonexistent_returns_false(self, tmp_path):
-        assert not remove_config_file(NodeType.DATA_SOURCE, "nope", tmp_path)
+        assert not remove_config_file(NodeType.DATA_INPUT, "nope", tmp_path)
 
     def test_remove_transform_returns_false(self, tmp_path):
         assert not remove_config_file(NodeType.POLARS, "t", tmp_path)
@@ -344,7 +351,7 @@ class TestCollectNodeConfigs:
                         "id": "src",
                         "data": {
                             "label": "src",
-                            "nodeType": "dataSource",
+                            "nodeType": "dataInput",
                             "config": {"path": "d.parquet"},
                         },
                     },
@@ -361,7 +368,7 @@ class TestCollectNodeConfigs:
             }
         )
         configs = collect_node_configs(graph)
-        assert "config/data_source/src.json" in configs
+        assert "config/data_input/src.json" in configs
         # Transform should NOT have a config file
         assert not any("transform" in k for k in configs)
 
@@ -398,7 +405,7 @@ class TestCollectNodeConfigs:
                         "id": "orig",
                         "data": {
                             "label": "orig",
-                            "nodeType": "dataSource",
+                            "nodeType": "dataInput",
                             "config": {"path": "d.parquet"},
                         },
                     },
@@ -406,7 +413,7 @@ class TestCollectNodeConfigs:
                         "id": "inst",
                         "data": {
                             "label": "inst",
-                            "nodeType": "dataSource",
+                            "nodeType": "dataInput",
                             "config": {"path": "d.parquet", "instanceOf": "orig"},
                         },
                     },
@@ -415,8 +422,8 @@ class TestCollectNodeConfigs:
             }
         )
         configs = collect_node_configs(graph)
-        assert "config/data_source/orig.json" in configs
-        assert "config/data_source/inst.json" not in configs
+        assert "config/data_input/orig.json" in configs
+        assert "config/data_input/inst.json" not in configs
 
     def test_all_node_types_produce_config(self):
         """Every non-transform, non-submodel node type should generate a config file."""
@@ -427,7 +434,7 @@ class TestCollectNodeConfigs:
             },
             {
                 "id": "b",
-                "data": {"label": "b", "nodeType": "dataSource", "config": {"path": "d.parquet"}},
+                "data": {"label": "b", "nodeType": "dataInput", "config": {"path": "d.parquet"}},
             },
             {
                 "id": "c",
@@ -445,7 +452,7 @@ class TestCollectNodeConfigs:
             },
             {
                 "id": "h",
-                "data": {"label": "h", "nodeType": "dataSink", "config": {"path": "o.parquet"}},
+                "data": {"label": "h", "nodeType": "dataOutput", "config": {"path": "o.parquet"}},
             },
             {
                 "id": "i",
@@ -550,7 +557,7 @@ class TestLoadErrorProtection:
                         "id": "ok",
                         "data": {
                             "label": "ok",
-                            "nodeType": "dataSource",
+                            "nodeType": "dataInput",
                             "config": {"path": "d.parquet"},
                         },
                     },
@@ -558,7 +565,7 @@ class TestLoadErrorProtection:
                         "id": "bad",
                         "data": {
                             "label": "bad",
-                            "nodeType": "dataSource",
+                            "nodeType": "dataInput",
                             "config": {"_load_error": "file not found"},
                         },
                     },
@@ -567,8 +574,8 @@ class TestLoadErrorProtection:
             }
         )
         configs = collect_node_configs(graph)
-        assert "config/data_source/ok.json" in configs
-        assert "config/data_source/bad.json" not in configs
+        assert "config/data_input/ok.json" in configs
+        assert "config/data_input/bad.json" not in configs
 
     def test_load_error_node_appears_in_config_load_errors(self):
         """config_load_errors should return paths for nodes with _load_error."""
@@ -579,7 +586,7 @@ class TestLoadErrorProtection:
                         "id": "ok",
                         "data": {
                             "label": "ok",
-                            "nodeType": "dataSource",
+                            "nodeType": "dataInput",
                             "config": {"path": "d.parquet"},
                         },
                     },
@@ -587,7 +594,7 @@ class TestLoadErrorProtection:
                         "id": "bad",
                         "data": {
                             "label": "bad",
-                            "nodeType": "dataSource",
+                            "nodeType": "dataInput",
                             "config": {"_load_error": "missing"},
                         },
                     },
@@ -596,14 +603,14 @@ class TestLoadErrorProtection:
             }
         )
         errors = config_load_errors(graph)
-        assert "config/data_source/bad.json" in errors
-        assert "config/data_source/ok.json" not in errors
+        assert "config/data_input/bad.json" in errors
+        assert "config/data_input/ok.json" not in errors
 
     def test_load_error_not_written_to_json(self, tmp_path):
         """_load_error is filtered before config data is written to a sidecar."""
 
         config = {"path": "d.parquet", "_load_error": "test error"}
-        rel_path = _write_node_config_sidecar(NodeType.DATA_SOURCE, "test", config, tmp_path)
+        rel_path = _write_node_config_sidecar(NodeType.DATA_INPUT, "test", config, tmp_path)
         content = json.loads((tmp_path / rel_path).read_text())
         assert "_load_error" not in content
         assert content["path"] == "d.parquet"
@@ -617,7 +624,7 @@ class TestLoadErrorProtection:
                         "id": "ok",
                         "data": {
                             "label": "ok",
-                            "nodeType": "dataSource",
+                            "nodeType": "dataInput",
                             "config": {"path": "d.parquet"},
                         },
                     },
@@ -639,7 +646,7 @@ class TestLoadErrorProtection:
                         "id": "n",
                         "data": {
                             "label": "src",
-                            "nodeType": "dataSource",
+                            "nodeType": "dataInput",
                             "config": {"_load_error": "missing"},
                         },
                     },
@@ -647,7 +654,7 @@ class TestLoadErrorProtection:
                 "edges": [],
             }
         )
-        assert "config/data_source/src.json" not in collect_node_configs(graph_before)
+        assert "config/data_input/src.json" not in collect_node_configs(graph_before)
 
         # Simulate: user edits the node (frontend sends clean config without _load_error)
         graph_after = make_graph(
@@ -657,7 +664,7 @@ class TestLoadErrorProtection:
                         "id": "n",
                         "data": {
                             "label": "src",
-                            "nodeType": "dataSource",
+                            "nodeType": "dataInput",
                             "config": {"path": "new.parquet"},
                         },
                     },
@@ -666,8 +673,8 @@ class TestLoadErrorProtection:
             }
         )
         configs = collect_node_configs(graph_after)
-        assert "config/data_source/src.json" in configs
-        content = json.loads(configs["config/data_source/src.json"])
+        assert "config/data_input/src.json" in configs
+        content = json.loads(configs["config/data_input/src.json"])
         assert content["path"] == "new.parquet"
 
     def test_save_preserves_original_file(self, tmp_path):
@@ -676,12 +683,19 @@ class TestLoadErrorProtection:
 
         # Write the original config to disk
         _write_node_config_sidecar(
-            NodeType.DATA_SOURCE,
+            NodeType.DATA_INPUT,
             "src",
-            {"path": "data/real.parquet", "sourceType": "flat_file"},
+            {
+                "inputType": "file",
+                "format": "parquet",
+                "mode": "scan",
+                "cacheMode": "direct",
+                "path": "data/real.parquet",
+                "arguments": {},
+            },
             tmp_path,
         )
-        original_path = tmp_path / "config" / "data_source" / "src.json"
+        original_path = tmp_path / "config" / "data_input" / "src.json"
         assert original_path.exists()
         original_content = original_path.read_text()
 
@@ -693,7 +707,7 @@ class TestLoadErrorProtection:
                         "id": "s",
                         "data": {
                             "label": "src",
-                            "nodeType": "dataSource",
+                            "nodeType": "dataInput",
                             "config": {"_load_error": "test"},
                         },
                     },
@@ -704,7 +718,7 @@ class TestLoadErrorProtection:
 
         # collect_node_configs skips the error node
         configs = collect_node_configs(graph)
-        assert "config/data_source/src.json" not in configs
+        assert "config/data_input/src.json" not in configs
 
         # The original file is still on disk, untouched
         assert original_path.read_text() == original_content
@@ -723,13 +737,20 @@ class TestFindConfigByFuncName:
         return p
 
     def test_recovers_config_for_valid_func_name(self, tmp_path):
-        cfg = {"path": "data.parquet", "sourceType": "flat_file"}
-        self._write_config(tmp_path, "data_source", "my_source", cfg)
+        cfg = {
+            "inputType": "file",
+            "format": "parquet",
+            "mode": "scan",
+            "cacheMode": "direct",
+            "path": "data.parquet",
+            "arguments": {},
+        }
+        self._write_config(tmp_path, "data_input", "my_source", cfg)
         result = find_config_by_func_name("my_source", tmp_path)
         assert result is not None
         config_dict, node_type = result
         assert config_dict == cfg
-        assert node_type is NodeType.DATA_SOURCE
+        assert node_type is NodeType.DATA_INPUT
 
     def test_recovers_banding_config_with_expanded_compact_rules(self, tmp_path):
         compact_cfg = {
@@ -970,16 +991,16 @@ class TestLoadNodeConfigEdgeCases:
 
 class TestSidecarPreparationEdgeCases:
     def test_none_values_saved(self, tmp_path):
-        config = {"path": None, "sourceType": None}
-        _write_node_config_sidecar(NodeType.DATA_SOURCE, "src", config, tmp_path)
-        loaded = load_node_config("config/data_source/src.json", base_dir=tmp_path)
+        config = {"inputType": None, "path": None}
+        _write_node_config_sidecar(NodeType.DATA_INPUT, "src", config, tmp_path)
+        loaded = load_node_config("config/data_input/src.json", base_dir=tmp_path)
         assert loaded["path"] is None
-        assert loaded["sourceType"] is None
+        assert loaded["inputType"] is None
 
     def test_underscore_keys_filtered(self, tmp_path):
         config = {"path": "d.parquet", "_internal": "secret", "_cache": 42}
-        _write_node_config_sidecar(NodeType.DATA_SOURCE, "src", config, tmp_path)
-        loaded = load_node_config("config/data_source/src.json", base_dir=tmp_path)
+        _write_node_config_sidecar(NodeType.DATA_INPUT, "src", config, tmp_path)
+        loaded = load_node_config("config/data_input/src.json", base_dir=tmp_path)
         assert loaded == {"path": "d.parquet"}
         assert "_internal" not in loaded
         assert "_cache" not in loaded
@@ -1053,7 +1074,7 @@ class TestCollectNodeConfigsEdgeCases:
                         "id": "s",
                         "data": {
                             "label": "my_src",
-                            "nodeType": "dataSource",
+                            "nodeType": "dataInput",
                             "config": {"path": "d.parquet"},
                         },
                     },
@@ -1080,7 +1101,7 @@ class TestConfigLoadErrorsEdgeCases:
                         "id": "bad",
                         "data": {
                             "label": "broken",
-                            "nodeType": "dataSource",
+                            "nodeType": "dataInput",
                             "config": {"_load_error": "file corrupt"},
                         },
                     },
@@ -1089,8 +1110,8 @@ class TestConfigLoadErrorsEdgeCases:
             }
         )
         errors = config_load_errors(graph)
-        assert "config/data_source/broken.json" in errors
-        assert errors["config/data_source/broken.json"] == "file corrupt"
+        assert "config/data_input/broken.json" in errors
+        assert errors["config/data_input/broken.json"] == "file corrupt"
 
     def test_healthy_node_excluded(self):
         graph = make_graph(
@@ -1100,7 +1121,7 @@ class TestConfigLoadErrorsEdgeCases:
                         "id": "ok",
                         "data": {
                             "label": "good",
-                            "nodeType": "dataSource",
+                            "nodeType": "dataInput",
                             "config": {"path": "d.parquet"},
                         },
                     },
@@ -1118,7 +1139,7 @@ class TestConfigLoadErrorsEdgeCases:
                         "id": "b1",
                         "data": {
                             "label": "bad1",
-                            "nodeType": "dataSource",
+                            "nodeType": "dataInput",
                             "config": {"_load_error": "err1"},
                         },
                     },
@@ -1144,9 +1165,9 @@ class TestConfigLoadErrorsEdgeCases:
         )
         errors = config_load_errors(graph)
         assert len(errors) == 2
-        assert "config/data_source/bad1.json" in errors
+        assert "config/data_input/bad1.json" in errors
         assert "config/banding/bad2.json" in errors
-        assert errors["config/data_source/bad1.json"] == "err1"
+        assert errors["config/data_input/bad1.json"] == "err1"
         assert errors["config/banding/bad2.json"] == "err2"
 
 
@@ -1157,9 +1178,9 @@ class TestConfigLoadErrorsEdgeCases:
 
 class TestRemoveConfigFileEdgeCases:
     def test_remove_existing_returns_true(self, tmp_path):
-        _write_node_config_sidecar(NodeType.DATA_SOURCE, "src", {"path": "d"}, tmp_path)
-        assert remove_config_file(NodeType.DATA_SOURCE, "src", tmp_path) is True
-        assert not (tmp_path / "config" / "data_source" / "src.json").exists()
+        _write_node_config_sidecar(NodeType.DATA_INPUT, "src", {"path": "d"}, tmp_path)
+        assert remove_config_file(NodeType.DATA_INPUT, "src", tmp_path) is True
+        assert not (tmp_path / "config" / "data_input" / "src.json").exists()
 
     def test_remove_nonexistent_returns_false(self, tmp_path):
         assert remove_config_file(NodeType.BANDING, "nope", tmp_path) is False

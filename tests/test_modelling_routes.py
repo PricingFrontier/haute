@@ -22,7 +22,7 @@ from haute.routes._train_service import (
     _training_required_columns_by_node,
     _validate_glm_family_link,
 )
-from tests.conftest import make_edge, make_graph
+from tests.conftest import make_edge, make_file_input_config, make_graph
 
 
 def _admitted_training_context_for_launch(job_id: str | None = None) -> ExecutionContext:
@@ -74,11 +74,11 @@ class TestTrainingCategoricalLevelDeclarations:
                         "id": "src",
                         "data": {
                             "label": "src",
-                            "nodeType": "dataSource",
-                            "config": {
-                                "path": "quotes.csv",
-                                "categorical_levels": {"region": ["north", "south"]},
-                            },
+                            "nodeType": "dataInput",
+                            "config": make_file_input_config(
+                                "quotes.csv",
+                                categorical_levels={"region": ["north", "south"]},
+                            ),
                         },
                     },
                     {
@@ -122,7 +122,7 @@ def _make_modelling_graph(
     task: str = "regression",
     params: dict | None = None,
 ) -> dict:
-    """Build a simple 2-node graph: dataSource → modelling."""
+    """Build a simple 2-node graph: dataInput → modelling."""
     config: dict = {
         "target": target,
         "algorithm": algorithm,
@@ -143,8 +143,8 @@ def _make_modelling_graph(
                     "id": "source",
                     "data": {
                         "label": "source",
-                        "nodeType": "dataSource",
-                        "config": {"path": data_path},
+                        "nodeType": "dataInput",
+                        "config": make_file_input_config(data_path),
                     },
                 },
                 {
@@ -1457,8 +1457,8 @@ class TestExecuteAndSinkCheckpointCleanup:
                         "id": "n",
                         "data": {
                             "label": "n",
-                            "nodeType": "dataSource",
-                            "config": {"path": "x.parquet"},
+                            "nodeType": "dataInput",
+                            "config": make_file_input_config("x.parquet"),
                         },
                     }
                 ],
@@ -1783,8 +1783,8 @@ def _make_negbinomial_graph(data_path: str, **config_overrides: object) -> dict:
                     "id": "source",
                     "data": {
                         "label": "source",
-                        "nodeType": "dataSource",
-                        "config": {"path": data_path},
+                        "nodeType": "dataInput",
+                        "config": make_file_input_config(data_path),
                     },
                 },
                 {
@@ -2307,8 +2307,8 @@ class TestTrainModelDirect:
                         "id": "source",
                         "data": {
                             "label": "source",
-                            "nodeType": "dataSource",
-                            "config": {"path": "data.parquet"},
+                            "nodeType": "dataInput",
+                            "config": make_file_input_config("data.parquet"),
                         },
                     },
                     {
@@ -2420,8 +2420,8 @@ class TestExportScriptDirect:
                         "id": "source",
                         "data": {
                             "label": "source",
-                            "nodeType": "dataSource",
-                            "config": {"path": "data.parquet"},
+                            "nodeType": "dataInput",
+                            "config": make_file_input_config("data.parquet"),
                         },
                     },
                     {

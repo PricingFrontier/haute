@@ -10,7 +10,7 @@ import polars as pl
 import pytest
 
 from haute.cli import cli
-from tests.conftest import write_data_source_config
+from tests.conftest import write_data_input_config
 
 if TYPE_CHECKING:
     from click.testing import CliRunner
@@ -34,7 +34,7 @@ def project_dir(tmp_path: Path) -> Path:
     # Polars and os.path on every platform, so the generated pipeline
     # file loads without a ``SyntaxError`` cross-platform.
     input_path = (data / "input.parquet").as_posix()
-    source_config = write_data_source_config(tmp_path, "source", input_path)
+    source_config = write_data_input_config(tmp_path, "source", input_path)
     code = f'''\
 import polars as pl
 import haute
@@ -42,7 +42,7 @@ import haute
 pipeline = haute.Pipeline("test_cli", description="CLI test pipeline")
 
 
-@pipeline.data_source(config="{source_config}")
+@pipeline.data_input(config="{source_config}")
 def source() -> pl.DataFrame:
     """Read data."""
     return pl.scan_parquet("{input_path}")
@@ -415,7 +415,7 @@ class TestRun:
         # a raw Windows path in an f-string produces ``C:\Users\...``
         # which the Python parser then misreads as a ``\U`` escape.
         path = (data / "d.parquet").as_posix()
-        source_config = write_data_source_config(tmp_path, "source", path)
+        source_config = write_data_input_config(tmp_path, "source", path)
         code = f'''\
 import polars as pl
 import haute
@@ -423,7 +423,7 @@ import haute
 pipeline = haute.Pipeline("broken")
 
 
-@pipeline.data_source(config="{source_config}")
+@pipeline.data_input(config="{source_config}")
 def source() -> pl.DataFrame:
     return pl.scan_parquet("{path}")
 

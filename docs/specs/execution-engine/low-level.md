@@ -140,8 +140,8 @@ checkpoint directory, the decision has no materialisation effect. `gc.collect()`
 `_GC_BATCH_INTERVAL` (3) checkpoints, not every one, since Polars/Arrow buffers are
 freed immediately on `del` and full GC only matters for cyclic Python garbage.
 
-`executor.execute_sink()` then writes the terminal lazy frame. A native `dataSink` or
-sink-capable `dataOutput` format uses a bounded Polars sink. Writer-only formats and
+`executor.execute_sink()` then writes the terminal lazy frame. A sink-capable `dataOutput`
+format uses a bounded Polars sink. Writer-only formats and
 database outputs use `write_polars_output()`, whose `streaming_collect()` evaluates
 with Polars' streaming engine but returns a fully materialised `DataFrame` before the
 eager writer/database API is called; bounded profiles do not permit a second broad
@@ -167,7 +167,7 @@ the reservation exactly once.
 
 **Chunked map-reduce (`chunking.chunk_plan` → `iter_chunked_frames`).** `chunk_plan()`
 prepares the graph the same way as the other two paths, identifies the chunk-start
-node (single `DATA_SOURCE` root, or an explicit `chunk_start_node_id`), classifies
+node (single `DATA_INPUT` root, or an explicit `chunk_start_node_id`), classifies
 every node from `chunk_start_node_id` to the target via `_capability_for_node()`
 (consulting `_CHUNK_CAPABILITY_DECLARATIONS`, validating chunk-local user code for
 `POLARS`/`SCENARIO_EXPANDER` nodes via `is_chunk_local_polars_code()`), validates the
@@ -590,3 +590,42 @@ high-level approved contract.
   and duplicated predicates. Run the focused execution and projection suites plus the
   affected preview/deploy/admission/RAM suites; attach benchmark results for each Review-P11
   optimisation accepted into the implementation.
+
+## Approved change contract — 0.7.0 unified data I/O execution
+
+The implementation plan is
+[`F_0.7.0_data-io-convergence.plan.md`](../../trip/plans/F_0.7.0_data-io-convergence.plan.md).
+
+- `src/haute/_builders.py` keeps `_build_data_input` and `_build_data_output`, deletes the source
+  and sink builders, and delegates input construction to the provider dispatch defined by the
+  I/O layer. `_build_data_input` resolves direct/cached mode, applies `code` through the same
+  compiled-user-code machinery and preamble namespace as the removed source builder, and returns
+  one `LazyFrame`. `_build_data_output` remains pass-through.
+- `src/haute/chunking.py` changes `DATA_INPUT` from blanket unsupported to conditional. Its
+  declaration uses a provider-capability rule plus the existing single-parent/row-local code
+  rule. `_source_lazy_frame` asks provider dispatch for a direct batch source or leased cache
+  generation; `_validate_chunkable_source` and every literal suffix/type check are removed.
+  Planner messages name input id, provider, format, mode, cache mode, and the missing capability.
+- `src/haute/_execute_lazy.py`, `src/haute/execution.py`, `src/haute/executor.py`,
+  `src/haute/projection.py`, and `src/haute/_ram_estimate.py` replace every `DATA_SOURCE` source
+  set/path/metadata branch with `DATA_INPUT` provider metadata. Projection pushdown is allowed
+  only through provider-declared projectable scans and is applied before post-input code when
+  that code's contract proves it safe. Cache leases remain alive through lazy collection.
+- Execution fingerprints include `inputType`, format/mode, source identity, selected generation
+  id/signature, cache mode, and `code`; they exclude resolved secrets. Changing a snapshot
+  generation invalidates preview/dataframe/trace reuse even when node config is unchanged.
+- `execute_sink` accepts only `DATA_OUTPUT`. File outputs stage to a unique same-filesystem target
+  with the correct format extension, invoke the selected sink/writer, validate completion, then
+  replace. Database/lakehouse adapters expose transaction/publication outcome and measured row
+  count when available. Cancellation before commit removes staging; cancellation after an
+  atomic/transactional commit reports success rather than claiming rollback.
+- Delete all `DATA_SINK`/`DATA_SOURCE` branches, `_resolve_sink_path` legacy dispatch, and their
+  coverage rows. Registry-completeness tests require exactly one exec/codegen pair for each
+  retained `NodeType`.
+
+Focused tests extend `tests/test_chunking*.py`, `tests/test_executor*.py`,
+`tests/test_execute_lazy*.py`, projection, RAM-estimate, execution-context/cache-key, trace, and
+sink suites. They prove direct/cached equivalence, cache-lease lifetime, generation
+invalidation, multiple-input planning, no remote call during execution, post-read code ordering,
+row-local acceptance/global rejection, capability diagnostics, unique staging under concurrent
+writes, failure cleanup, and the complete absence of removed enum members and branches.

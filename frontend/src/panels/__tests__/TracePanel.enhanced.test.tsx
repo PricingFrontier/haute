@@ -56,7 +56,7 @@ function makeTrace(overrides: Partial<TraceResult> = {}): TraceResult {
     column: "premium",
     output_value: 42.5,
     steps: [
-      makeStep({ node_id: "n1", node_name: "Source", node_type: "dataSource" }),
+      makeStep({ node_id: "n1", node_name: "Source", node_type: "dataInput" }),
       makeStep({
         node_id: "n2",
         node_name: "Calc",
@@ -532,7 +532,7 @@ describe("TracePanel — Node Detail", () => {
             makeStep({
               node_id: "source",
               node_name: "Policies",
-              node_type: "dataSource",
+              node_type: "dataInput",
               schema_diff: {
                 columns_added: ["risk_age"],
                 columns_removed: [],

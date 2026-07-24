@@ -20,7 +20,7 @@ pipeline dir), and no absolute path anywhere. It exercises the builder through
 ``_build_node_fn`` — the same factory the executor calls — and invokes the
 returned callable, which is where ``load_external_object`` runs.
 
-NOTE ON THE ABSOLUTE GUARD. Unlike a dataSource read, ``load_external_object``
+NOTE ON THE ABSOLUTE GUARD. Unlike a dataInput read, ``load_external_object``
 independently enforces project-root containment via ``validate_project_path``, so
 an out-of-cwd ABSOLUTE object path is rejected there — a pre-existing gate this
 fix leaves untouched. The per-node-type out-of-cwd absolute-passthrough guard

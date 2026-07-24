@@ -77,8 +77,7 @@ Out of scope (owned elsewhere):
   config) for every column that will be read, for any execution profile
   outside `preview_eager`/`deploy_live` — without declared dtypes, `scan_csv`
   would infer types by reading the data itself, which those profiles forbid.
-- Every *input* path handed to this component — a legacy `dataSource` path or
-  a path-kind `dataInput` path — is rejected up front if it looks like a URL
+- Every file-backed `dataInput` path handed to this component is rejected up front if it looks like a URL
   (`scheme://...`) or contains a `..` path segment. `dataOutput` receives an
   already-resolved filesystem target from the executor; the registry itself
   checks only that its configured target is non-empty. The generated-code
@@ -276,3 +275,123 @@ This component implements the IO portions of the [Polars backend remediation pla
 - CSV recount changes are deferred behind an explicit benchmark and semantic-equivalence gate; no recount optimisation is part of this approved change.
 
 Non-goals: changing registry format coverage, introducing implicit eager fallbacks, or inventing counter values for operations that cannot report them. Required tests cover every committed classifier tuple; unknown version/type/signature propagation; full-match negatives containing `downstream`, `upstream`, or `stream_id`; each counter's present/unavailable state; and, subject to the audit gate, the absence of the retired sink APIs. Any future CSV recount proposal must first add representative correctness and performance benchmarks.
+
+## Approved change contract — 0.7.0 data I/O convergence
+
+Implementation is sequenced by
+[`F_0.7.0_data-io-convergence.plan.md`](../../trip/plans/F_0.7.0_data-io-convergence.plan.md).
+This section specifies approved future behaviour; the present-tense sections above continue to
+describe the shipped implementation until the 0.7.0 release reconciles them.
+
+### Canonical node surface
+
+- `dataInput` becomes the only authored tabular-source node type and `dataOutput` the only
+  authored persistence node type. A graph may contain any number of either node. `apiInput`
+  remains the live request boundary and `output` remains JSON response assembly; neither is
+  merged with tabular data I/O.
+- `dataSource` and `dataSink` are removed outright from the node enum, decorator API, registry,
+  parser, code generator, sidecar-folder map, frontend palette/editor registry, assistant
+  catalogue, examples, and tests. This is a deliberate pre-1.0 hard cutover: there are no
+  aliases, deprecation shims, compatibility parsing, or migration utilities. Repository-owned
+  pipelines which contain either removed node are reset to a blank graph rather than converted.
+
+### Input providers, formats, and code
+
+- A `dataInput` first selects an input group: **File**, **Database**, **Lakehouse**,
+  **Databricks**, or **Inline**. Registry-backed groups then select a concrete format and
+  supported `scan`/`read` mode. Group membership, ordering, labels, modes, arguments, optional
+  engines, direct-batching support, and cache-build support all come from one backend capability
+  registry; the frontend never owns a parallel format list.
+- File formats cover the Polars-backed file surface. Database inputs configure a connection
+  reference plus query. Lakehouse inputs cover Delta Lake and Iceberg. Databricks retains its
+  dedicated warehouse/catalog/schema/table browser, optional validated query fragment, and
+  explicit fetch controls; it is an input provider, not a pretend Polars file format. Inline
+  records remain config-bounded and have no disk-cache lifecycle.
+- Every `dataInput` exposes the optional Polars editor retained from `dataSource`. Its code runs
+  after the direct source or Parquet snapshot is opened and before the frame is handed
+  downstream. Source snapshots contain source data, not the result of that user code, so editing
+  code never triggers a remote refetch.
+- A persisted config is a strict discriminated shape. `inputType` selects the active branch;
+  `format`/`mode`, locator/query fields, `arguments`, `cacheMode`, and `code` must be valid for
+  that branch. Switching groups is one atomic config replacement which removes inactive branch
+  keys; undo restores the previous config.
+
+### Direct, cached, and chunked reads
+
+- Chunkability is capability-driven, never inferred merely from a file extension or from a
+  callable returning `LazyFrame`. Each registry entry declares independently whether it supports
+  a direct bounded scan, a bounded snapshot build, an admitted-eager snapshot build, and reading
+  an existing snapshot. A missing declaration means unsupported.
+- Direct chunk execution uses the common bounded batch iterator only for formats whose committed
+  Polars-version contract and format-specific integration tests prove ordered bounded iteration.
+  CSV and Parquet retain their existing support; every other scanner-backed format (including
+  NDJSON, IPC, text lines, Delta Lake, and Iceberg) is enabled only when that same evidence exists.
+- Snapshot mode materialises one source generation as Parquet and thereafter gives every
+  provider the same projection-capable, chunk-readable runtime boundary. It does not make an
+  eager cache builder bounded: JSON, Excel, Avro, ODS, database drivers, or any other importer
+  must separately prove incremental bounded publication or be classified
+  `admitted_eager`/`unsupported`. An unsupported bounded request fails before parsing or network
+  access; it never broad-collects and then calls the result “chunked”.
+- Databricks and database inputs execute from an explicitly built snapshot and never contact the
+  remote system during ordinary preview, batch, CI, or deploy execution. Lakehouse and local-file
+  inputs use direct scans by default and may opt into a snapshot when the provider declares it.
+  Inline input always executes directly.
+- The optional Polars body participates in the same row-local proof used for ordinary `polars`
+  nodes. Proven row-local code may run per chunk. Global operations such as joins, sorting,
+  grouping, windows, whole-frame aggregation, or collection are never silently evaluated once
+  per chunk; they use a separately admitted lazy/materialised strategy or cause chunk planning to
+  fail with a typed explanation.
+
+### Source snapshots
+
+- Snapshot build, refresh, status, progress, clear, publication, and metadata are provided by the
+  shared caching component. A build writes a unique staged generation and atomically publishes it
+  only after the Parquet artifact and signed metadata are complete. Cancellation, timeout,
+  connector failure, schema failure, or an unprovable retry leaves the previous generation
+  readable and unchanged.
+- Cache identity includes the provider, normalised safe locator, table or path, complete query,
+  format, source-affecting arguments, schema declarations, and connection-reference identity.
+  It excludes secrets and post-input Polars code. Two queries against one table cannot collide,
+  fixing the current Databricks table-only identity.
+- Status distinguishes snapshot readiness from external freshness. It reports the identity,
+  generation, rows, columns/schema, bytes, build time, and provider revision/freshness token when
+  one is available. Absence of such a token is `unknown`, never guessed fresh from a timestamp.
+  Execution may use an explicitly selected ready snapshot whose freshness is unknown; it may not
+  use a missing, corrupt, identity-mismatched, or stale local-file snapshot.
+- Connection credentials and storage credentials are resolved from named environment/secret
+  references. Raw secret-bearing URIs, tokens, and credential objects are rejected from node
+  sidecars, capability payloads, cache identities, metadata, logs, and error responses.
+
+### Unified outputs
+
+- `dataOutput` uses the same backend-defined group labels and format catalogue as `dataInput`,
+  filtered by write capability. UI symmetry does not invent backend symmetry: input-only formats
+  such as inline records, or a format with no writer, are not offered as working outputs.
+  Databricks is absent from the output groups until a real writer with a specified publication
+  contract exists.
+- The output editor contains destination group, format, supported `sink`/`write` mode,
+  destination path/table fields, format-specific arguments, optional-engine diagnostics, and the
+  explicit **Write** action/status retained from `dataSink`. It has no Polars code editor.
+  Preview, trace, graph save, and ordinary node execution never write.
+- Native sink formats consume the lazy plan with bounded Polars sinks. Writer-only formats use
+  admitted materialisation and say so in capabilities and execution diagnostics. Local
+  single-file outputs always write to a unique sibling staging path and atomically replace the
+  destination. Transactional lakehouse/database writers use their commit boundary; a
+  non-transactional destination must declare that limitation and is never presented as atomic.
+  Overwrite, append, replace, and provider-supported upsert semantics are explicit rather than
+  inferred.
+
+### Failure, non-goals, and acceptance
+
+- Unknown groups/formats/modes, group/format mismatches, inactive-branch keys, missing cache
+  generations, cache identity mismatch, unsafe credentials, unsupported bounded reads/builds,
+  non-row-local chunk code, missing engines, and unsupported publication modes fail with typed,
+  actionable errors before side effects wherever possible.
+- This change does not add a Databricks output writer, remote object-store credentials, implicit
+  cache refresh, automatic network access during execution, a per-chunk interpretation of global
+  Polars code, or fake parity for formats Polars cannot write.
+- Acceptance requires registry-contract tests for every provider/format leg; direct versus
+  cached execution equivalence; boundedness tests for direct scan and cache build independently;
+  cache identity/query separation, atomic refresh and concurrent-reader tests; Polars-code
+  ordering and row-local rejection tests; output atomicity and explicit-write tests; and
+  end-to-end parse/save/reload tests containing only `dataInput`/`dataOutput`.

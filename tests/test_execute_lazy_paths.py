@@ -16,13 +16,34 @@ def _node(node_id: str, node_type: NodeType, config: dict[str, object]) -> Graph
     )
 
 
-def test_resolve_graph_paths_rewrites_file_backed_nodes_only() -> None:
+def test_resolve_graph_paths_rewrites_inputs_but_not_outputs() -> None:
     graph = PipelineGraph(
         source_file="pipelines/pricing.py",
         nodes=[
             _node("api", NodeType.API_INPUT, {"path": "data/api.json"}),
-            _node("source", NodeType.DATA_SOURCE, {"path": "data/source.parquet"}),
-            _node("sink", NodeType.DATA_SINK, {"path": "outputs/result.parquet"}),
+            _node(
+                "source",
+                NodeType.DATA_INPUT,
+                {
+                    "inputType": "file",
+                    "format": "parquet",
+                    "mode": "scan",
+                    "cacheMode": "direct",
+                    "path": "data/source.parquet",
+                    "arguments": {},
+                },
+            ),
+            _node(
+                "sink",
+                NodeType.DATA_OUTPUT,
+                {
+                    "outputType": "file",
+                    "format": "parquet",
+                    "mode": "sink",
+                    "path": "outputs/result.parquet",
+                    "arguments": {},
+                },
+            ),
             _node("transform", NodeType.POLARS, {"code": "df"}),
         ],
     )
@@ -39,15 +60,12 @@ def test_resolve_graph_paths_rewrites_file_backed_nodes_only() -> None:
     assert calls == [
         "data/api.json",
         "data/source.parquet",
-        "outputs/result.parquet",
     ]
     assert resolved.node_map["api"].data.config["path"] == str(Path("resolved") / "data_api.json")
     assert resolved.node_map["source"].data.config["path"] == str(
         Path("resolved") / "data_source.parquet"
     )
-    assert resolved.node_map["sink"].data.config["path"] == str(
-        Path("resolved") / "outputs_result.parquet"
-    )
+    assert resolved.node_map["sink"].data.config["path"] == "outputs/result.parquet"
     assert resolved.node_map["transform"].data.config["code"] == "df"
 
 

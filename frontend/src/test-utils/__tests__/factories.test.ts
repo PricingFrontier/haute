@@ -13,9 +13,9 @@ describe("makeNode", () => {
   })
 
   it("accepts custom nodeType", () => {
-    const node = makeNode("n2", "dataSource")
-    expect(node.type).toBe("dataSource")
-    expect(node.data.nodeType).toBe("dataSource")
+    const node = makeNode("n2", "dataInput")
+    expect(node.type).toBe("dataInput")
+    expect(node.data.nodeType).toBe("dataInput")
   })
 
   it("accepts position override", () => {
@@ -75,7 +75,7 @@ describe("makeSimpleNode", () => {
   })
 
   it("accepts config override", () => {
-    const node = makeSimpleNode("s3", "dataSource", { config: { path: "/data.csv" } })
+    const node = makeSimpleNode("s3", "dataInput", { config: { path: "/data.csv" } })
     expect(node.data.config).toEqual({ path: "/data.csv" })
   })
 

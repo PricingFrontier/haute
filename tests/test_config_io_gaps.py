@@ -136,7 +136,7 @@ class TestConfigLoadErrorsPathFailure:
                         "id": "bad",
                         "data": {
                             "label": "broken",
-                            "nodeType": "dataSource",
+                            "nodeType": "dataInput",
                             "config": {"_load_error": "boom"},
                         },
                     },

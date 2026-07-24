@@ -169,7 +169,7 @@ describe("shallowNodeDataHash — input-key sensitivity", () => {
   }
 
   it("nodeType change flips the hash", () => {
-    const changed = { ...base, nodeType: "dataSource" }
+    const changed = { ...base, nodeType: "dataInput" }
     expect(shallowNodeDataHash(changed)).not.toBe(shallowNodeDataHash(base))
   })
 
@@ -328,7 +328,7 @@ describe("shallowNodeDataHash — benchmark", () => {
       id: `node_${i}`,
       data: {
         label: `Node ${i}`,
-        nodeType: i % 3 === 0 ? "dataSource" : "polars",
+        nodeType: i % 3 === 0 ? "dataInput" : "polars",
         description: `This is node ${i} with a short description`,
         config: {
           code: `df = df.with_columns(x_${i}=pl.col('x') * ${i})`,

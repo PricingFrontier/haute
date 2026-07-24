@@ -1,6 +1,6 @@
 """C4 — preview/trace cache keys must cover runtime file inputs.
 
-Re-exporting a dataSource CSV, replacing an external file or a model
+Re-exporting a dataInput CSV, replacing an external file or a model
 artifact, and rebuilding the apiInput JSON cache all happen out-of-band
 (there is no in-GUI upload), so the graph JSON — and therefore the
 structural fingerprint — does not change.  Before the fix the preview
@@ -8,12 +8,12 @@ and trace caches kept serving months-stale frames with zero indication.
 
 These tests pin:
 
-* preview recomputes after a dataSource file overwrite, an external
+* preview recomputes after a dataInput file overwrite, an external
   file change, and a model-artifact replacement (file-sourced
   optimiserApply artifact — the cheapest real model fixture);
-* a vanished dataSource file surfaces the execution error instead of a
+* a vanished dataInput file surfaces the execution error instead of a
   stale ok frame;
-* trace recomputes after a dataSource edit, a raw JSON apiInput edit before
+* trace recomputes after a dataInput edit, a raw JSON apiInput edit before
   any cache rebuild, and a JSON-cache rebuild (the trace key previously
   omitted the JSON-cache state signature entirely);
 * the stat-gated memo: unchanged files are content-hashed exactly once
@@ -84,7 +84,13 @@ def _bump_mtime(path: Path, seconds: float = 5.0) -> None:
 
 
 def _csv_graph(path: Path):
-    return _g({"nodes": [_source_node("src", str(path))], "edges": []})
+    return _g({"nodes": [_csv_input_node("src", path)], "edges": []})
+
+
+def _csv_input_node(nid: str, path: Path):
+    node = _source_node(nid, str(path))
+    node.data.config["format"] = "csv"
+    return node
 
 
 def test_graph_input_fingerprint_uses_canonical_json(monkeypatch, tmp_path: Path) -> None:
@@ -116,26 +122,6 @@ def _flat_api_input_node(nid: str, path: Path):
         {
             "id": nid,
             "data": {"label": nid, "nodeType": "apiInput", "config": {"path": str(path)}},
-        }
-    )
-
-
-def _databricks_graph(table: str):
-    return _g(
-        {
-            "nodes": [
-                _n(
-                    {
-                        "id": "db",
-                        "data": {
-                            "label": "db",
-                            "nodeType": "dataSource",
-                            "config": {"sourceType": "databricks", "table": table},
-                        },
-                    }
-                ),
-            ],
-            "edges": [],
         }
     )
 
@@ -319,7 +305,7 @@ class TestPreviewRuntimeFileInvalidation:
         assert results2["apply"].preview[0]["region_optimised_factor"] == pytest.approx(2.5)
 
     def test_vanished_datasource_file_errors_loudly(self, tmp_path):
-        """A deleted dataSource file must error like execution does — never
+        """A deleted dataInput file must error like execution does — never
         serve the stale ok frame cached while the file still existed."""
         p = tmp_path / "data.csv"
         _write_csv(p, [1, 2])
@@ -337,7 +323,7 @@ class TestPreviewRuntimeFileInvalidation:
     def test_flat_file_api_input_reexport_recomputes_preview(self, tmp_path):
         """A non-JSON apiInput reads the raw flat file at preview (no JSON
         cache layer exists for it), so a re-export must invalidate exactly
-        like a dataSource file — the json_cache= extra alone is a constant
+        like a dataInput file — the json_cache= extra alone is a constant
         ``<path-hash>:0:0`` for this shape and catches nothing."""
         p = tmp_path / "quotes.csv"
         _write_csv(p, [1, 2])
@@ -383,40 +369,7 @@ class TestPreviewRuntimeFileInvalidation:
         assert results3["t"].status == "ok"
         assert results3["t"].preview == [{"amount": 50, "y": 100}]
 
-    def test_databricks_fetch_data_rewrite_recomputes_preview(self, tmp_path, monkeypatch):
-        """Preview consumes the LOCAL table-cache parquet that the GUI
-        Fetch Data route rewrites in place.  Both lifecycle transitions
-        must invalidate: the cached not-fetched error clears once the
-        first fetch lands, and a re-fetch replaces stale rows."""
-        from haute._databricks_io import _cache_path_for
 
-        monkeypatch.chdir(tmp_path)  # the table cache lives under cwd/.haute_cache
-        graph = _databricks_graph("cat.sch.tbl")
-
-        results0 = execute_graph(graph)
-        assert results0["db"].status == "error"  # not fetched yet
-
-        cache_path = _cache_path_for("cat.sch.tbl")
-        cache_path.parent.mkdir(parents=True, exist_ok=True)
-        pl.DataFrame({"x": [1, 2]}).write_parquet(cache_path)
-
-        results1 = execute_graph(graph)
-        assert results1["db"].status == "ok"
-        assert [row["x"] for row in results1["db"].preview] == [1, 2]
-
-        pl.DataFrame({"x": [7, 8]}).write_parquet(cache_path)
-        _bump_mtime(cache_path)
-
-        results2 = execute_graph(graph)
-        assert [row["x"] for row in results2["db"].preview] == [7, 8]
-
-
-# ---------------------------------------------------------------------------
-# Trace: runtime file inputs + JSON-cache state invalidate the trace cache
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.usefixtures("_widen_sandbox_root")
 class TestTraceRuntimeInputInvalidation:
     def test_trace_recomputes_after_datasource_edit(self, tmp_path):
         p = tmp_path / "data.csv"
@@ -424,7 +377,7 @@ class TestTraceRuntimeInputInvalidation:
         graph = _g(
             {
                 "nodes": [
-                    _source_node("src", str(p)),
+                    _csv_input_node("src", p),
                     _transform_node("t", "df = df.with_columns(y=pl.col('x') * 2)"),
                 ],
                 "edges": [_edge("src", "t")],
@@ -524,7 +477,7 @@ class TestTraceRuntimeInputInvalidation:
         graph = _g(
             {
                 "nodes": [
-                    _source_node("src", str(p)),
+                    _csv_input_node("src", p),
                     _transform_node("t", "df = df.with_columns(y=pl.col('x') * 2)"),
                 ],
                 "edges": [_edge("src", "t")],
@@ -610,7 +563,7 @@ class TestStatGatedFingerprintMemo:
         key = str(p.resolve())
 
         execute_graph(graph)
-        assert hash_calls.get(key) == 1, "first preview must content-hash the dataSource"
+        assert hash_calls.get(key) == 1, "first preview must content-hash the dataInput"
 
         execute_graph(graph)
         assert hash_calls.get(key) == 1, "unchanged stat must not re-hash content"
@@ -741,57 +694,6 @@ class TestRuntimeInputExtraKeys:
         graph = _g({"nodes": [_transform_node("t", "df = df")], "edges": []})
         assert runtime_input_extra_keys(graph) == ()
 
-    def test_databricks_datasource_signs_local_table_cache(self, tmp_path, monkeypatch):
-        """The input a databricks dataSource consumes at preview is the
-        LOCAL table-cache parquet maintained by the Fetch Data route — its
-        state (including absence) is signed.  Remote warehouse drift
-        without a re-fetch is correctly out of scope: nothing local
-        changes until the user fetches again."""
-        from haute._databricks_io import _cache_path_for
-        from haute.execution import runtime_input_extra_keys
-
-        monkeypatch.chdir(tmp_path)
-        graph = _databricks_graph("cat.sch.tbl")
-
-        keys_unfetched = runtime_input_extra_keys(graph)
-        assert keys_unfetched, "the derived table-cache path is signed even before a fetch"
-
-        cache_path = _cache_path_for("cat.sch.tbl")
-        cache_path.parent.mkdir(parents=True, exist_ok=True)
-        pl.DataFrame({"x": [1]}).write_parquet(cache_path)
-        keys_v1 = runtime_input_extra_keys(graph)
-        assert keys_v1 != keys_unfetched
-
-        pl.DataFrame({"x": [2, 3]}).write_parquet(cache_path)
-        _bump_mtime(cache_path)
-        keys_v2 = runtime_input_extra_keys(graph)
-        assert keys_v2 != keys_v1
-
-    def test_databricks_datasource_without_table_contributes_nothing(self):
-        """A databricks dataSource with no table cannot derive a cache path;
-        execution rejects the config per-node and the (malformed) config is
-        already digest material in the base graph fingerprint."""
-        from haute.execution import runtime_input_extra_keys
-
-        graph = _g(
-            {
-                "nodes": [
-                    _n(
-                        {
-                            "id": "db",
-                            "data": {
-                                "label": "db",
-                                "nodeType": "dataSource",
-                                "config": {"sourceType": "databricks"},
-                            },
-                        }
-                    ),
-                ],
-                "edges": [],
-            }
-        )
-        assert runtime_input_extra_keys(graph) == ()
-
     def test_unset_optional_path_fields_sign_only_configured_files(self, tmp_path):
         """A modelScore with only ``artifact_path`` signs that one file —
         the unset ``feature_contract_path`` is skipped, not signed as
@@ -827,7 +729,7 @@ class TestRuntimeInputExtraKeys:
 
     def test_flat_file_api_input_path_is_signed(self, tmp_path):
         """Non-JSON apiInput paths are flat-file reads — signed like a
-        dataSource file, mirroring the builder's dispatch predicate."""
+        dataInput file, mirroring the builder's dispatch predicate."""
         from haute.execution import runtime_input_extra_keys
 
         p = tmp_path / "quotes.csv"
@@ -856,28 +758,6 @@ class TestRuntimeInputExtraKeys:
         _bump_mtime(data)
         keys_after = runtime_input_extra_keys(graph)
         assert keys_after != keys_before
-
-    def test_dataframe_fingerprint_signs_databricks_local_table_cache(self, tmp_path, monkeypatch):
-        from haute._databricks_io import _cache_path_for
-        from haute.execution import dataframe_graph_input_fingerprint
-
-        monkeypatch.chdir(tmp_path)
-        graph = _databricks_graph("cat.sch.tbl")
-
-        keys_unfetched = dataframe_graph_input_fingerprint(
-            graph, target_node_id="db", source="batch"
-        )
-
-        cache_path = _cache_path_for("cat.sch.tbl")
-        cache_path.parent.mkdir(parents=True, exist_ok=True)
-        pl.DataFrame({"x": [1]}).write_parquet(cache_path)
-        keys_v1 = dataframe_graph_input_fingerprint(graph, target_node_id="db", source="batch")
-        assert keys_v1 != keys_unfetched
-
-        pl.DataFrame({"x": [2, 3]}).write_parquet(cache_path)
-        _bump_mtime(cache_path)
-        keys_v2 = dataframe_graph_input_fingerprint(graph, target_node_id="db", source="batch")
-        assert keys_v2 != keys_v1
 
     def test_model_score_artifact_and_contract_are_signed(self, tmp_path):
         from haute.execution import runtime_input_extra_keys

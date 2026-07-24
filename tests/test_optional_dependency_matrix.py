@@ -107,13 +107,3 @@ def test_databricks_browsing_routes_fail_cleanly_without_sdk(client, path: str) 
 
     assert resp.status_code == 503
     assert "databricks-sdk is not installed" in resp.json()["detail"].lower()
-
-
-def test_databricks_fetch_fails_cleanly_without_sql_connector(client) -> None:
-    resp = client.post(
-        "/api/databricks/fetch",
-        json={"table": "main.analytics.quotes"},
-    )
-
-    assert resp.status_code == 400
-    assert "databricks-sql-connector is not installed" in resp.json()["detail"].lower()

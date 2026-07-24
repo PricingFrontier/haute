@@ -5,7 +5,7 @@
  *
  * 1) Issue #68 — prop drilling.  Before this package NodePanel threaded
  *    `allNodes`, `edges`, `submodels`, and `preamble` through ~6 nested
- *    children (InstancePanel, SinkEditor, ModellingConfig, OptimiserConfig,
+ *    children (InstancePanel, DataOutputEditor, ModellingConfig, OptimiserConfig,
  *    OutputEditor, RatingStepEditor).  The refactor introduces a React
  *    `GraphContext` so every nested consumer can read graph data from
  *    context rather than from explicit props.
@@ -41,15 +41,15 @@ import useUIStore from "../../stores/useUIStore"
 // are hoisted above module-level `const`s — without it, the factory
 // would hit a TDZ error when run.
 
-const { sinkEditorProps, modellingConfigProps, optimiserConfigProps } = vi.hoisted(() => ({
-  sinkEditorProps: [] as Record<string, unknown>[],
+const { dataOutputEditorProps, modellingConfigProps, optimiserConfigProps } = vi.hoisted(() => ({
+  dataOutputEditorProps: [] as Record<string, unknown>[],
   modellingConfigProps: [] as Record<string, unknown>[],
   optimiserConfigProps: [] as Record<string, unknown>[],
 }))
 
 vi.mock("../LazyNodeEditors", () => ({
   LazyEditorBoundary: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-  DataSourceEditor: () => <div data-testid="DataSourceEditor" />,
+  DataInputEditor: () => <div data-testid="DataInputEditor" />,
   TransformEditor: () => <div data-testid="TransformEditor" />,
   ModelScoreEditor: () => <div data-testid="ModelScoreEditor" />,
   BandingEditor: () => <div data-testid="BandingEditor" />,
@@ -58,9 +58,9 @@ vi.mock("../LazyNodeEditors", () => ({
   ExternalFileEditor: () => <div data-testid="ExternalFileEditor" />,
   ApiInputEditor: () => <div data-testid="ApiInputEditor" />,
   LiveSwitchEditor: () => <div data-testid="LiveSwitchEditor" />,
-  SinkEditor: (props: Record<string, unknown>) => {
-    sinkEditorProps.push(props)
-    return <div data-testid="SinkEditor" />
+  DataOutputEditor: (props: Record<string, unknown>) => {
+    dataOutputEditorProps.push(props)
+    return <div data-testid="DataOutputEditor" />
   },
   ScenarioExpanderEditor: () => <div data-testid="ScenarioExpanderEditor" />,
   OptimiserApplyEditor: () => <div data-testid="OptimiserApplyEditor" />,
@@ -141,7 +141,7 @@ describe("NodePanel — Phase 2 Package 3C (graph context + fail-loud instanceOf
   beforeEach(() => {
     Object.defineProperty(window, "innerWidth", { value: 1920, writable: true, configurable: true })
     useUIStore.setState({ nodePanelWidth: 600, paletteOpen: true })
-    sinkEditorProps.length = 0
+    dataOutputEditorProps.length = 0
     modellingConfigProps.length = 0
     optimiserConfigProps.length = 0
   })
@@ -160,10 +160,10 @@ describe("NodePanel — Phase 2 Package 3C (graph context + fail-loud instanceOf
     it("dispatches to the correct editor based on node type when graph is in context", () => {
       const node = makeNode({
         id: "ds_1",
-        data: { label: "DS", description: "", nodeType: "dataSource", config: {} },
+        data: { label: "DS", description: "", nodeType: "dataInput", config: {} },
       })
       renderWithGraph({ node, allNodes: [node] })
-      expect(screen.getByTestId("DataSourceEditor")).toBeInTheDocument()
+      expect(screen.getByTestId("DataInputEditor")).toBeInTheDocument()
     })
 
     it("instance of a present original still resolves to its label (regression)", () => {
@@ -188,10 +188,10 @@ describe("NodePanel — Phase 2 Package 3C (graph context + fail-loud instanceOf
   // ─── Nested editors read graph data from context, not props ─────
 
   describe("nested editors consume graph via context, not props", () => {
-    it("SinkEditor receives no `allNodes` / `edges` / `submodels` / `preamble` props", () => {
+    it("DataOutputEditor receives no `allNodes` / `edges` / `submodels` / `preamble` props", () => {
       const node = makeNode({
         id: "sink_1",
-        data: { label: "Sink", description: "", nodeType: "dataSink", config: {} },
+        data: { label: "Sink", description: "", nodeType: "dataOutput", config: {} },
       })
       renderWithGraph({
         node,
@@ -201,8 +201,8 @@ describe("NodePanel — Phase 2 Package 3C (graph context + fail-loud instanceOf
         preamble: "import numpy as np",
       })
 
-      expect(sinkEditorProps).toHaveLength(1)
-      const props = sinkEditorProps[0]!
+      expect(dataOutputEditorProps).toHaveLength(1)
+      const props = dataOutputEditorProps[0]!
       // Graph data must NOT be threaded through props any more.
       expect(props).not.toHaveProperty("allNodes")
       expect(props).not.toHaveProperty("edges")
@@ -250,19 +250,19 @@ describe("NodePanel — Phase 2 Package 3C (graph context + fail-loud instanceOf
       expect(props).not.toHaveProperty("submodels")
     })
 
-    it("structural: SinkEditor's props type no longer declares allNodes/edges/submodels/preamble", () => {
+    it("structural: DataOutputEditor's props type no longer declares allNodes/edges/submodels/preamble", () => {
       // Guards against a half-done refactor where NodePanel stops passing
       // props but the editor still accepts them.  We inspect the source
       // text directly because it is the cheapest way to pin the contract
       // without spinning up a full TypeScript program.
       const src = readFileSync(
-        path.resolve(__dirname, "..", "editors", "SinkEditor.tsx"),
+        path.resolve(__dirname, "..", "editors", "DataOutputEditor.tsx"),
         "utf8",
       )
       // Props are a type-literal argument.  Match the first `{ ... }`
       // that follows the component's default-export signature.
-      const match = src.match(/export default function SinkEditor\s*\(\s*\{[^}]*\}\s*:\s*\{([\s\S]*?)\n\}\)/)
-      expect(match, "Failed to locate SinkEditor props type literal").not.toBeNull()
+      const match = src.match(/export default function DataOutputEditor\s*\(\s*\{[^}]*\}\s*:\s*\{([\s\S]*?)\n\}\)/)
+      expect(match, "Failed to locate DataOutputEditor props type literal").not.toBeNull()
       const propsBlock = match![1]!
       // The props type must no longer declare any of these keys.
       expect(propsBlock).not.toMatch(/\ballNodes\b\s*:/)

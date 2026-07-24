@@ -95,7 +95,7 @@ class TestBugB13StreamingChunkSizeRestore:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Auto chunk-size mode must not be restored via ``set_streaming_chunk_size(0)``."""
-        from haute.executor import execute_sink
+        from haute.executor import write_data_output
         from haute.graph_utils import GraphEdge, GraphNode, NodeData, PipelineGraph
 
         out_path = tmp_path / "out.parquet"
@@ -105,16 +105,29 @@ class TestBugB13StreamingChunkSizeRestore:
                     id="src",
                     data=NodeData(
                         label="src",
-                        nodeType="dataSource",
-                        config={"path": "unused.parquet"},
+                        nodeType="dataInput",
+                        config={
+                            "inputType": "file",
+                            "format": "parquet",
+                            "mode": "scan",
+                            "cacheMode": "direct",
+                            "path": "unused.parquet",
+                            "arguments": {},
+                        },
                     ),
                 ),
                 GraphNode(
                     id="sink",
                     data=NodeData(
                         label="sink",
-                        nodeType="dataSink",
-                        config={"path": str(out_path), "format": "parquet"},
+                        nodeType="dataOutput",
+                        config={
+                            "outputType": "file",
+                            "format": "parquet",
+                            "mode": "sink",
+                            "path": str(out_path),
+                            "arguments": {},
+                        },
                     ),
                 ),
             ],
@@ -137,7 +150,7 @@ class TestBugB13StreamingChunkSizeRestore:
                 return_value=(lazy_outputs, ["src", "sink"], {}, {}),
             ),
         ):
-            result = execute_sink(graph, "sink")
+            result = write_data_output(graph, "sink")
 
         assert result.status == "ok"
         assert result.row_count == 3
@@ -147,93 +160,6 @@ class TestBugB13StreamingChunkSizeRestore:
 # ---------------------------------------------------------------------------
 # B15: Empty Databricks table fetch crashes
 # ---------------------------------------------------------------------------
-
-
-class TestBugB15EmptyDatabricksFetch:
-    def test_empty_fetch_writes_valid_parquet(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """Fetching a table with zero rows should produce valid empty parquet.
-
-        The real connector materializes every ``fetchmany_arrow`` result —
-        including the terminating empty batch — against the query's result
-        manifest schema, so the fake returns a schema-bearing empty table
-        and the cache must preserve those REAL column types (4a.8: not an
-        all-string rebuild from cursor.description).
-        """
-        import databricks.sql as dbsql
-        import pyarrow as pa
-
-        from haute._databricks_io import fetch_and_cache, fetch_progress
-
-        empty_result = pa.schema(
-            [("quote_id", pa.int64()), ("premium", pa.float64())]
-        ).empty_table()
-
-        class FakeCursor:
-            rownumber = 0
-
-            def __init__(self) -> None:
-                self.executed: list[str] = []
-
-            def __enter__(self) -> FakeCursor:
-                return self
-
-            def __exit__(self, *args: object) -> None:
-                return None
-
-            def execute(self, query: str) -> None:
-                self.executed.append(query)
-
-            def fetchmany_arrow(self, batch_size: int) -> pa.Table:
-                assert batch_size == 17
-                return empty_result
-
-        class FakeConnection:
-            def __init__(self, cursor: FakeCursor) -> None:
-                self._cursor = cursor
-
-            def __enter__(self) -> FakeConnection:
-                return self
-
-            def __exit__(self, *args: object) -> None:
-                return None
-
-            def cursor(self) -> FakeCursor:
-                return self._cursor
-
-        fake_cursor = FakeCursor()
-
-        def fake_connect(**kwargs: object) -> FakeConnection:
-            assert kwargs == {
-                "server_hostname": "example.cloud.databricks.com",
-                "http_path": "/sql/warehouse",
-                "access_token": "token",
-            }
-            return FakeConnection(fake_cursor)
-
-        monkeypatch.setenv("DATABRICKS_HOST", "https://example.cloud.databricks.com")
-        monkeypatch.setenv("DATABRICKS_TOKEN", "token")
-        monkeypatch.setattr(dbsql, "connect", fake_connect)
-
-        table = "catalog.schema.empty_table"
-        result = fetch_and_cache(
-            table,
-            http_path="/sql/warehouse",
-            project_root=tmp_path,
-            batch_size=17,
-        )
-
-        out_path = Path(result["path"])
-        assert result["row_count"] == 0
-        assert out_path.is_file()
-        cached = pl.read_parquet(out_path)
-        assert cached.height == 0
-        assert dict(cached.schema) == {"quote_id": pl.Int64, "premium": pl.Float64}
-        assert fake_cursor.executed == ["SELECT * FROM catalog.schema.empty_table"]
-        assert fetch_progress(table) is None
 
 
 # ---------------------------------------------------------------------------
@@ -496,7 +422,7 @@ class TestBugB7DissolveTargetOnly:
 
         graph = PipelineGraph(
             nodes=[
-                node("src", NodeType.DATA_SOURCE),
+                node("src", NodeType.DATA_INPUT),
                 node("submodel__rating", NodeType.SUBMODEL),
                 node("submodel__pricing", NodeType.SUBMODEL),
                 node("out", NodeType.OUTPUT),
@@ -611,7 +537,7 @@ class TestBugB11InstanceSelectedColumns:
 class TestBugB13B14ChunkSizeRestore:
     def test_explicit_prior_chunk_size_is_restored(self, tmp_path: Path) -> None:
         """Explicit pre-existing chunk size must survive a sink execution."""
-        from haute.executor import execute_sink
+        from haute.executor import write_data_output
         from haute.graph_utils import GraphEdge, GraphNode, NodeData, PipelineGraph
 
         out_path = tmp_path / "out.parquet"
@@ -621,16 +547,29 @@ class TestBugB13B14ChunkSizeRestore:
                     id="src",
                     data=NodeData(
                         label="src",
-                        nodeType="dataSource",
-                        config={"path": "unused.parquet"},
+                        nodeType="dataInput",
+                        config={
+                            "inputType": "file",
+                            "format": "parquet",
+                            "mode": "scan",
+                            "cacheMode": "direct",
+                            "path": "unused.parquet",
+                            "arguments": {},
+                        },
                     ),
                 ),
                 GraphNode(
                     id="sink",
                     data=NodeData(
                         label="sink",
-                        nodeType="dataSink",
-                        config={"path": str(out_path), "format": "parquet"},
+                        nodeType="dataOutput",
+                        config={
+                            "outputType": "file",
+                            "format": "parquet",
+                            "mode": "sink",
+                            "path": str(out_path),
+                            "arguments": {},
+                        },
                     ),
                 ),
             ],
@@ -643,7 +582,7 @@ class TestBugB13B14ChunkSizeRestore:
             "haute.executor._execute_lazy",
             return_value=(lazy_outputs, ["src", "sink"], {}, {}),
         ):
-            result = execute_sink(graph, "sink")
+            result = write_data_output(graph, "sink")
 
         assert result.status == "ok"
         assert pl.Config.state().get("POLARS_STREAMING_CHUNK_SIZE") == "75000"
@@ -660,7 +599,7 @@ class TestBugB13B14ChunkSizeRestore:
 
         from haute import executor
 
-        source = inspect.getsource(executor.execute_sink)
+        source = inspect.getsource(executor.write_data_output)
         # The old buggy pattern passed 0 when _prev_chunk_size was None:
         #   set_streaming_chunk_size(int(x) if x is not None else 0)
         # This raises ValueError. The fix guards the restore with an if check.

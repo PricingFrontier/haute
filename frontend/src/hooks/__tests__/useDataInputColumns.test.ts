@@ -30,7 +30,7 @@ function makeWideColumns(count: number) {
 }
 
 const nodes = [
-  { id: "ds1", data: { label: "DS1", description: "", nodeType: "dataSource" } },
+  { id: "ds1", data: { label: "DS1", description: "", nodeType: "dataInput" } },
   { id: "t1", data: { label: "T1", description: "", nodeType: "polars" } },
 ]
 

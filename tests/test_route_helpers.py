@@ -119,9 +119,9 @@ class TestRaiseNodeNotFound:
 class TestRaiseNodeTypeError:
     def test_raises_400(self):
         with pytest.raises(HTTPException) as exc_info:
-            raise_node_type_error("n1", "dataSource", "polars")
+            raise_node_type_error("n1", "dataInput", "polars")
         assert exc_info.value.status_code == 400
-        assert "dataSource" in exc_info.value.detail
+        assert "dataInput" in exc_info.value.detail
         assert "polars" in exc_info.value.detail
 
 
@@ -381,7 +381,7 @@ class TestSaveSidecar:
                 GraphNode(
                     id="a",
                     position={"x": 100.0, "y": 200.0},
-                    data=NodeData(label="A", nodeType=NodeType.DATA_SOURCE),
+                    data=NodeData(label="A", nodeType=NodeType.DATA_INPUT),
                 ),
             ],
             edges=[],
@@ -502,7 +502,7 @@ class TestSaveSidecar:
                 GraphNode(
                     id="a",
                     position={"x": 1.0, "y": 2.0},
-                    data=NodeData(label="A", nodeType=NodeType.DATA_SOURCE),
+                    data=NodeData(label="A", nodeType=NodeType.DATA_INPUT),
                 ),
             ],
             edges=[],
@@ -1026,7 +1026,7 @@ class TestFindTypedNode:
             nodes=[
                 GraphNode(
                     id="s1",
-                    data=NodeData(label="source", nodeType=NodeType.DATA_SOURCE),
+                    data=NodeData(label="source", nodeType=NodeType.DATA_INPUT),
                 ),
             ],
         )
@@ -1034,7 +1034,7 @@ class TestFindTypedNode:
             find_typed_node(graph, "s1", NodeType.MODELLING, "modelling")
         assert exc_info.value.status_code == 400
         assert "modelling" in exc_info.value.detail
-        assert "dataSource" in exc_info.value.detail
+        assert "dataInput" in exc_info.value.detail
 
 
 # ===========================================================================

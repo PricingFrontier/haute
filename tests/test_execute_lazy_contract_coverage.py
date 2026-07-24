@@ -29,7 +29,7 @@ def _e(src: str, tgt: str) -> GraphEdge:
 def _source_node(nid: str, label: str | None = None) -> GraphNode:
     return GraphNode(
         id=nid,
-        data=NodeData(label=label or nid, nodeType=NodeType.DATA_SOURCE),
+        data=NodeData(label=label or nid, nodeType=NodeType.DATA_INPUT),
     )
 
 
@@ -48,7 +48,7 @@ class TestLazyInputContractViolation:
         the only upstream frame does not carry that column."""
 
         def build_fn(node: GraphNode, source_names=None, **kwargs):
-            if node.data.nodeType == NodeType.DATA_SOURCE:
+            if node.data.nodeType == NodeType.DATA_INPUT:
                 return node.id, lambda: pl.DataFrame({"x": [1, 2, 3]}).lazy(), True
             return node.id, lambda *dfs: dfs[0], False
 
@@ -70,7 +70,7 @@ class TestLazyInputContractViolation:
         """Control: when the declared input column is present upstream, no raise."""
 
         def build_fn(node: GraphNode, source_names=None, **kwargs):
-            if node.data.nodeType == NodeType.DATA_SOURCE:
+            if node.data.nodeType == NodeType.DATA_INPUT:
                 return node.id, lambda: pl.DataFrame({"x": [1, 2, 3]}).lazy(), True
             return node.id, lambda *dfs: dfs[0], False
 
@@ -94,7 +94,7 @@ class TestLazyOutputContractViolation:
         function never emits that column."""
 
         def build_fn(node: GraphNode, source_names=None, **kwargs):
-            if node.data.nodeType == NodeType.DATA_SOURCE:
+            if node.data.nodeType == NodeType.DATA_INPUT:
                 return node.id, lambda: pl.DataFrame({"x": [1, 2, 3]}).lazy(), True
             # Returns only the input column 'x' — never produces 'promised'.
             return node.id, lambda *dfs: dfs[0], False
@@ -117,7 +117,7 @@ class TestLazyOutputContractViolation:
         """Control: when the node emits the promised column, no raise."""
 
         def build_fn(node: GraphNode, source_names=None, **kwargs):
-            if node.data.nodeType == NodeType.DATA_SOURCE:
+            if node.data.nodeType == NodeType.DATA_INPUT:
                 return node.id, lambda: pl.DataFrame({"x": [1, 2, 3]}).lazy(), True
             return node.id, lambda *dfs: dfs[0].with_columns(promised=pl.col("x") * 2), False
 
@@ -136,7 +136,7 @@ class TestLazyOutputContractViolation:
         """When ``enforce_contracts`` is False the violating output is allowed."""
 
         def build_fn(node: GraphNode, source_names=None, **kwargs):
-            if node.data.nodeType == NodeType.DATA_SOURCE:
+            if node.data.nodeType == NodeType.DATA_INPUT:
                 return node.id, lambda: pl.DataFrame({"x": [1, 2, 3]}).lazy(), True
             return node.id, lambda *dfs: dfs[0], False
 

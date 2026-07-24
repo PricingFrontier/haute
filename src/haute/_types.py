@@ -11,7 +11,17 @@ from __future__ import annotations
 from collections.abc import Mapping
 from enum import StrEnum
 from functools import cached_property
-from typing import Any, ClassVar, Protocol, Self, TypedDict, runtime_checkable
+from typing import (
+    Any,
+    ClassVar,
+    Literal,
+    Protocol,
+    Required,
+    Self,
+    TypeAlias,
+    TypedDict,
+    runtime_checkable,
+)
 
 import polars as pl
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -30,7 +40,6 @@ class NodeType(StrEnum):
     """
 
     API_INPUT = "apiInput"
-    DATA_SOURCE = "dataSource"
     DATA_INPUT = "dataInput"
     DATA_OUTPUT = "dataOutput"
     POLARS = "polars"
@@ -39,7 +48,6 @@ class NodeType(StrEnum):
     BANDING = "banding"
     RATING_STEP = "ratingStep"
     OUTPUT = "output"
-    DATA_SINK = "dataSink"
     EXPLORE = "explore"
     EXTERNAL_FILE = "externalFile"
     LIVE_SWITCH = "liveSwitch"
@@ -53,7 +61,6 @@ class NodeType(StrEnum):
 
 
 DECORATOR_TO_NODE_TYPE: dict[str, NodeType] = {
-    "data_source": NodeType.DATA_SOURCE,
     "data_input": NodeType.DATA_INPUT,
     "data_output": NodeType.DATA_OUTPUT,
     "api_input": NodeType.API_INPUT,
@@ -63,7 +70,6 @@ DECORATOR_TO_NODE_TYPE: dict[str, NodeType] = {
     "banding": NodeType.BANDING,
     "rating_step": NodeType.RATING_STEP,
     "output": NodeType.OUTPUT,
-    "data_sink": NodeType.DATA_SINK,
     "explore": NodeType.EXPLORE,
     "external_file": NodeType.EXTERNAL_FILE,
     "live_switch": NodeType.LIVE_SWITCH,
@@ -108,61 +114,102 @@ class ApiInputConfig(TypedDict, total=False):
     tables: list[dict[str, Any]]
 
 
-class DataSourceConfig(TypedDict, total=False):
-    """Config for dataSource nodes."""
-
-    path: str
-    sourceType: str  # "flat_file" | "databricks"
-    table: str
-    catalog: str
-    http_path: str
-    query: str
+class _DataInputCommon(TypedDict, total=False):
+    arguments: dict[str, Any]
     code: str
-    expected_columns: list[str]
-    schema_overrides: dict[str, Any]
-    dtypes: dict[str, Any]
-    column_dtypes: dict[str, Any]
-    schema: str | dict[str, Any]
-    categorical_levels: dict[str, list[str | None]]
 
 
-class DataInputConfig(TypedDict, total=False):
-    """Config for dataInput nodes (native-polars-width inputs).
+class _DataInputPolarsCommon(_DataInputCommon, total=False):
+    mode: Literal["read", "scan"]
 
-    A fully-configured node is equivalent to one invocation of a polars
-    input callable, dispatched through ``haute._polars_io_registry``:
-    ``format`` names the registry entry, ``mode`` picks eager read vs lazy
-    scan (defaulting to scan where polars has one), and ``arguments`` is
-    the validated pass-through of that callable's keyword arguments
-    (schema-declaration arguments carry struct-capable dtype specs, see
-    ``haute._polars_dtypes``). Exactly one source field applies per
-    format kind: ``path`` (file formats), ``uri``+``query`` (database),
-    or ``records`` (inline literal data).
-    """
 
-    format: str
-    mode: str  # "scan" | "read" (default: scan where available)
-    path: str
+class DataInputFileConfig(_DataInputPolarsCommon, total=False):
+    inputType: Required[Literal["file"]]
+    format: Required[str]
+    cacheMode: Required[Literal["direct", "snapshot"]]
+    path: Required[str]
+
+
+class DataInputDatabaseConfig(_DataInputCommon, total=False):
+    inputType: Required[Literal["database"]]
+    format: Required[Literal["database"]]
+    cacheMode: Required[Literal["snapshot"]]
+    connection: str
     uri: str
+    query: Required[str]
+
+
+class DataInputLakehouseConfig(_DataInputPolarsCommon, total=False):
+    inputType: Required[Literal["lakehouse"]]
+    format: Required[Literal["delta", "iceberg"]]
+    cacheMode: Required[Literal["direct", "snapshot"]]
+    path: Required[str]
+
+
+class DataInputDatabricksConfig(_DataInputCommon, total=False):
+    inputType: Required[Literal["databricks"]]
+    cacheMode: Required[Literal["snapshot"]]
+    http_path: Required[str]
+    table: Required[str]
     query: str
-    records: list[dict[str, Any]]
+
+
+class DataInputInlineConfig(_DataInputPolarsCommon, total=False):
+    inputType: Required[Literal["inline"]]
+    format: Required[Literal["records"]]
+    cacheMode: Required[Literal["direct"]]
+    records: Required[list[dict[str, Any]]]
+
+
+DataInputConfig: TypeAlias = (
+    DataInputFileConfig
+    | DataInputDatabaseConfig
+    | DataInputLakehouseConfig
+    | DataInputDatabricksConfig
+    | DataInputInlineConfig
+)
+DATA_INPUT_CONFIG_TYPES = (
+    DataInputFileConfig,
+    DataInputDatabaseConfig,
+    DataInputLakehouseConfig,
+    DataInputDatabricksConfig,
+    DataInputInlineConfig,
+)
+
+
+class _DataOutputCommon(TypedDict, total=False):
+    mode: Literal["sink", "write"]
     arguments: dict[str, Any]
 
 
-class DataOutputConfig(TypedDict, total=False):
-    """Config for dataOutput nodes (native-polars-width outputs).
+class DataOutputFileConfig(_DataOutputCommon, total=False):
+    outputType: Required[Literal["file"]]
+    format: Required[str]
+    path: Required[str]
 
-    The write-side sibling of :class:`DataInputConfig`: one polars
-    ``write_*``/``sink_*`` invocation per fully-configured node. ``table``
-    +``uri`` replace ``path`` for database targets.
-    """
 
-    format: str
-    mode: str  # "sink" | "write" (default: sink where available)
-    path: str
+class DataOutputDatabaseConfig(_DataOutputCommon, total=False):
+    outputType: Required[Literal["database"]]
+    format: Required[Literal["database"]]
+    connection: str
     uri: str
-    table: str
-    arguments: dict[str, Any]
+    table: Required[str]
+
+
+class DataOutputLakehouseConfig(_DataOutputCommon, total=False):
+    outputType: Required[Literal["lakehouse"]]
+    format: Required[Literal["delta", "iceberg"]]
+    path: Required[str]
+
+
+DataOutputConfig: TypeAlias = (
+    DataOutputFileConfig | DataOutputDatabaseConfig | DataOutputLakehouseConfig
+)
+DATA_OUTPUT_CONFIG_TYPES = (
+    DataOutputFileConfig,
+    DataOutputDatabaseConfig,
+    DataOutputLakehouseConfig,
+)
 
 
 class TransformConfig(TypedDict, total=False):
@@ -299,13 +346,6 @@ class OutputConfig(TypedDict, total=False):
 
     outputMapping: list[OutputMappingEntry]
     outputFormat: str  # "json" (only "json" built initially; jsonl/jsonseq later)
-
-
-class DataSinkConfig(TypedDict, total=False):
-    """Config for dataSink nodes."""
-
-    path: str
-    format: str  # "parquet" | "csv"
 
 
 class ExploreOverviewConfig(TypedDict, total=False):

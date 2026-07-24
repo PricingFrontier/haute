@@ -17,7 +17,7 @@ from haute.executor import (
     _compile_preamble,
     _resolve_batch_scenario,
     execute_graph,
-    execute_sink,
+    write_data_output,
 )
 from tests.conftest import (
     make_edge as _edge,
@@ -32,11 +32,45 @@ from tests.conftest import (
     make_output_node as _output_node,
 )
 from tests.conftest import (
-    make_source_node as _source_node,
+    make_source_node as _make_source_node,
 )
 from tests.conftest import (
     make_transform_node as _transform_node,
 )
+
+
+def _source_node(nid: str, path: str = "data.parquet"):
+    """Build a canonical file Data Input matching the path's format."""
+    node = _make_source_node(nid, path)
+    suffix = path.rsplit(".", 1)[-1].lower() if "." in path else "parquet"
+    format_name, mode = {
+        "csv": ("csv", "scan"),
+        "json": ("json", "read"),
+        "jsonl": ("ndjson", "scan"),
+        "ndjson": ("ndjson", "scan"),
+        "arrow": ("ipc", "scan"),
+        "feather": ("ipc", "scan"),
+        "ipc": ("ipc", "scan"),
+    }.get(suffix, ("parquet", "scan"))
+    node.data.config["format"] = format_name
+    node.data.config["mode"] = mode
+    return node
+
+
+def _file_input_config(path: str, **extra: object) -> dict[str, object]:
+    node = _source_node("input", path)
+    return {**node.data.config, **extra}
+
+
+def _file_output_config(path: str, format_name: str) -> dict[str, object]:
+    return {
+        "outputType": "file",
+        "format": format_name,
+        "mode": "sink" if format_name in {"csv", "parquet"} else "write",
+        "path": path,
+        "arguments": {},
+    }
+
 
 # ---------------------------------------------------------------------------
 # _exec_user_code
@@ -260,24 +294,27 @@ class TestBuildNodeFn:
             df = result
         assert df[col].to_list() == values
 
-    def test_data_source_databricks_is_source(self):
+    def test_databricks_input_is_source(self):
         node = _n(
             {
                 "id": "db",
                 "data": {
                     "label": "db",
-                    "nodeType": "dataSource",
-                    "config": {"sourceType": "databricks", "table": "cat.sch.tbl"},
+                    "nodeType": "dataInput",
+                    "config": {
+                        "inputType": "databricks",
+                        "cacheMode": "snapshot",
+                        "http_path": "/sql/1.0/warehouses/test",
+                        "table": "cat.sch.tbl",
+                        "arguments": {},
+                    },
                 },
             }
         )
         _, fn, is_source = _build_node_fn(node)
         assert is_source is True
-        # Without a cached parquet file, calling fn() raises CacheNotFoundError
-        from haute._databricks_io import CacheNotFoundError
-
-        with pytest.raises(CacheNotFoundError, match="not.*fetched"):
-            fn()
+        # Databricks inputs are snapshot-only. Snapshot publication is covered
+        # through the shared SourceCacheStore contract, not a provider-local API.
 
     def test_data_source_with_code(self, tmp_path):
         """DataSource with user code applies code after loading data."""
@@ -288,8 +325,8 @@ class TestBuildNodeFn:
                 "id": "src",
                 "data": {
                     "label": "src",
-                    "nodeType": "dataSource",
-                    "config": {"path": str(p), "code": "df = df.filter(pl.col('x') > 1)"},
+                    "nodeType": "dataInput",
+                    "config": _file_input_config(str(p), code="df = df.filter(pl.col('x') > 1)"),
                 },
             }
         )
@@ -307,8 +344,8 @@ class TestBuildNodeFn:
                 "id": "src",
                 "data": {
                     "label": "src",
-                    "nodeType": "dataSource",
-                    "config": {"path": str(p), "code": "df = df.select('a')"},
+                    "nodeType": "dataInput",
+                    "config": _file_input_config(str(p), code="df = df.select('a')"),
                 },
             }
         )
@@ -326,8 +363,8 @@ class TestBuildNodeFn:
                 "id": "src",
                 "data": {
                     "label": "src",
-                    "nodeType": "dataSource",
-                    "config": {"path": str(p), "code": ""},
+                    "nodeType": "dataInput",
+                    "config": _file_input_config(str(p), code=""),
                 },
             }
         )
@@ -344,8 +381,8 @@ class TestBuildNodeFn:
                 "id": "src",
                 "data": {
                     "label": "src",
-                    "nodeType": "dataSource",
-                    "config": {"path": str(p)},
+                    "nodeType": "dataInput",
+                    "config": _file_input_config(str(p)),
                 },
             }
         )
@@ -375,12 +412,10 @@ class TestBuildNodeFn:
                 "id": "src",
                 "data": {
                     "label": "src",
-                    "nodeType": "dataSource",
-                    "config": {
-                        "path": str(p),
-                        "contract": "opaque",
-                        "code": "df = df.limit(1)",
-                    },
+                    "nodeType": "dataInput",
+                    "config": _file_input_config(
+                        str(p), contract="opaque", code="df = df.limit(1)"
+                    ),
                 },
             }
         )
@@ -408,11 +443,10 @@ class TestBuildNodeFn:
                 "id": "src",
                 "data": {
                     "label": "src",
-                    "nodeType": "dataSource",
-                    "config": {
-                        "path": str(p),
-                        "code": "df = df.filter(pl.col('segment') == 'A').select('quote_id')",
-                    },
+                    "nodeType": "dataInput",
+                    "config": _file_input_config(
+                        str(p), code="df = df.filter(pl.col('segment') == 'A').select('quote_id')"
+                    ),
                 },
             }
         )
@@ -437,11 +471,8 @@ class TestBuildNodeFn:
                 "id": "src",
                 "data": {
                     "label": "src",
-                    "nodeType": "dataSource",
-                    "config": {
-                        "path": str(p),
-                        "column_renames": {"raw_premium": "premium"},
-                    },
+                    "nodeType": "dataInput",
+                    "config": _file_input_config(str(p), column_renames={"raw_premium": "premium"}),
                 },
             }
         )
@@ -463,8 +494,8 @@ class TestBuildNodeFn:
                 "id": "src",
                 "data": {
                     "label": "src",
-                    "nodeType": "dataSource",
-                    "config": {"path": str(p)},
+                    "nodeType": "dataInput",
+                    "config": _file_input_config(str(p)),
                 },
             }
         )
@@ -475,7 +506,7 @@ class TestBuildNodeFn:
         )
 
         assert is_source is True
-        with pytest.raises(BoundedMemoryUnsupportedError, match="Plain JSON"):
+        with pytest.raises(BoundedMemoryUnsupportedError, match="format=json"):
             fn()
 
     def test_data_source_builder_rejects_empty_path_in_bounded_profile(self):
@@ -484,8 +515,8 @@ class TestBuildNodeFn:
                 "id": "src",
                 "data": {
                     "label": "src",
-                    "nodeType": "dataSource",
-                    "config": {"path": ""},
+                    "nodeType": "dataInput",
+                    "config": _file_input_config(""),
                 },
             }
         )
@@ -496,7 +527,7 @@ class TestBuildNodeFn:
         )
 
         assert is_source is True
-        with pytest.raises(ValueError, match="flat_file.*path"):
+        with pytest.raises(Exception, match="non-empty 'path'"):
             fn()
 
     def test_transform_with_code(self):
@@ -536,7 +567,7 @@ class TestBuildNodeFn:
         node = _n(
             {
                 "id": "sink",
-                "data": {"label": "sink", "nodeType": "dataSink", "config": {}},
+                "data": {"label": "sink", "nodeType": "dataOutput", "config": {}},
             }
         )
         _, fn, is_source = _build_node_fn(node)
@@ -679,8 +710,8 @@ class TestPruneLiveSwitchEdges:
                     id="batch",
                     data=NodeData(
                         label="batch_quotes",
-                        nodeType="dataSource",
-                        config={"path": "data/batch.parquet"},
+                        nodeType="dataInput",
+                        config=_file_input_config("data/batch.parquet"),
                     ),
                 ),
                 GraphNode(
@@ -1058,7 +1089,7 @@ class TestExecuteGraph:
 
 
 class TestDataSourceUserCode:
-    """Verify user code on dataSource nodes survives the full lifecycle.
+    """Verify user code on dataInput nodes survives the full lifecycle.
 
     The .py file is the source of truth.  When the parser extracts user
     code (e.g. ``df = df.limit(100)``), that code must:
@@ -1069,7 +1100,7 @@ class TestDataSourceUserCode:
     """
 
     def test_data_source_code_applied_in_preview(self, tmp_path):
-        """User code on a dataSource node is executed during preview."""
+        """User code on a dataInput node is executed during preview."""
         p = tmp_path / "big.parquet"
         pl.DataFrame({"x": range(1000)}).write_parquet(p)
 
@@ -1081,11 +1112,8 @@ class TestDataSourceUserCode:
                             "id": "src",
                             "data": {
                                 "label": "src",
-                                "nodeType": "dataSource",
-                                "config": {
-                                    "path": str(p),
-                                    "code": "df = df.limit(10)",
-                                },
+                                "nodeType": "dataInput",
+                                "config": _file_input_config(str(p), code="df = df.limit(10)"),
                             },
                         }
                     ),
@@ -1098,7 +1126,7 @@ class TestDataSourceUserCode:
         assert results["src"].row_count == 10
 
     def test_data_source_code_applied_in_sink(self, tmp_path):
-        """User code on a dataSource node is executed during sink."""
+        """User code on a dataInput node is executed during sink."""
         src = tmp_path / "big.parquet"
         out = tmp_path / "out.parquet"
         pl.DataFrame({"x": range(1000)}).write_parquet(src)
@@ -1111,11 +1139,8 @@ class TestDataSourceUserCode:
                             "id": "src",
                             "data": {
                                 "label": "src",
-                                "nodeType": "dataSource",
-                                "config": {
-                                    "path": str(src),
-                                    "code": "df = df.limit(10)",
-                                },
+                                "nodeType": "dataInput",
+                                "config": _file_input_config(str(src), code="df = df.limit(10)"),
                             },
                         }
                     ),
@@ -1124,8 +1149,8 @@ class TestDataSourceUserCode:
                             "id": "sink",
                             "data": {
                                 "label": "sink",
-                                "nodeType": "dataSink",
-                                "config": {"path": str(out), "format": "parquet"},
+                                "nodeType": "dataOutput",
+                                "config": _file_output_config(str(out), "parquet"),
                             },
                         }
                     ),
@@ -1133,7 +1158,7 @@ class TestDataSourceUserCode:
                 "edges": [_edge("src", "sink")],
             }
         )
-        resp = execute_sink(graph, "sink")
+        resp = write_data_output(graph, "sink")
         assert resp.status == "ok"
         assert resp.row_count == 10
 
@@ -1150,8 +1175,8 @@ class TestDataSourceUserCode:
                             "id": "src",
                             "data": {
                                 "label": "src",
-                                "nodeType": "dataSource",
-                                "config": {"path": str(p)},
+                                "nodeType": "dataInput",
+                                "config": _file_input_config(str(p)),
                             },
                         }
                     ),
@@ -1174,11 +1199,10 @@ class TestDataSourceUserCode:
                             "id": "src",
                             "data": {
                                 "label": "my_source",
-                                "nodeType": "dataSource",
-                                "config": {
-                                    "path": "data.parquet",
-                                    "code": "df = df.limit(100)",
-                                },
+                                "nodeType": "dataInput",
+                                "config": _file_input_config(
+                                    "data.parquet", code="df = df.limit(100)"
+                                ),
                             },
                         }
                     ),
@@ -1194,7 +1218,7 @@ class TestDataSourceUserCode:
             )
 
     def test_parser_extracts_data_source_code_no_sentinel(self, tmp_path):
-        """Parser extracts user code from a dataSource body.
+        """Parser extracts user code from a dataInput body.
 
         The parser identifies user code as everything after the
         auto-generated ``df = pl.scan_parquet(...)`` boilerplate line.
@@ -1207,23 +1231,23 @@ class TestDataSourceUserCode:
             f"import polars as pl\n"
             f"import haute\n"
             f'pipeline = haute.Pipeline("test")\n\n'
-            f'@pipeline.data_source(config="config/data_source/my_src.json")\n'
+            f'@pipeline.data_input(config="config/data_input/my_src.json")\n'
             f"def my_src() -> pl.LazyFrame:\n"
             f'    """my_src node"""\n'
             f'    df = pl.scan_parquet("{parquet_path.as_posix()}")\n'
             f"    df = df.limit(2)\n"
             f"    return df\n"
         )
-        cfg_dir = tmp_path / "config" / "data_source"
+        cfg_dir = tmp_path / "config" / "data_input"
         cfg_dir.mkdir(parents=True)
-        (cfg_dir / "my_src.json").write_text(json.dumps({"path": str(parquet_path)}))
+        (cfg_dir / "my_src.json").write_text(json.dumps(_file_input_config(str(parquet_path))))
 
         from haute.parser import parse_pipeline_file
 
         graph = parse_pipeline_file(py_file)
         assert len(graph.nodes) == 1
         node = graph.nodes[0]
-        assert node.data.nodeType == "dataSource"
+        assert node.data.nodeType == "dataInput"
         code = node.data.config.get("code", "")
         assert "limit(2)" in code, (
             f"Parser should extract .limit(2) from the function body, got: {code!r}"
@@ -1240,7 +1264,7 @@ class TestDataSourceUserCode:
             "import haute\n"
             "from pathlib import Path\n"
             'pipeline = haute.Pipeline("test")\n\n'
-            '@pipeline.data_source(config="config/data_source/src.json")\n'
+            '@pipeline.data_input(config="config/data_input/src.json")\n'
             "def src() -> pl.LazyFrame:\n"
             '    """src node"""\n'
             '    df = pl.scan_parquet(Path(__file__).parent / "data.parquet")\n'
@@ -1250,9 +1274,9 @@ class TestDataSourceUserCode:
             "    df = df.limit(2)\n"
             "    return df\n"
         )
-        cfg_dir = tmp_path / "config" / "data_source"
+        cfg_dir = tmp_path / "config" / "data_input"
         cfg_dir.mkdir(parents=True)
-        (cfg_dir / "src.json").write_text(json.dumps({"path": str(parquet_path)}))
+        (cfg_dir / "src.json").write_text(json.dumps(_file_input_config(str(parquet_path))))
 
         from haute.parser import parse_pipeline_file
 
@@ -1271,16 +1295,16 @@ class TestDataSourceUserCode:
             f"import polars as pl\n"
             f"import haute\n"
             f'pipeline = haute.Pipeline("test")\n\n'
-            f'@pipeline.data_source(config="config/data_source/src.json")\n'
+            f'@pipeline.data_input(config="config/data_input/src.json")\n'
             f"def src() -> pl.LazyFrame:\n"
             f'    """src node"""\n'
             f'    df = pl.scan_parquet("{parquet_path.as_posix()}")\n'
             f"    df = df.limit(5)\n"
             f"    return df\n"
         )
-        cfg_dir = tmp_path / "config" / "data_source"
+        cfg_dir = tmp_path / "config" / "data_input"
         cfg_dir.mkdir(parents=True)
-        (cfg_dir / "src.json").write_text(json.dumps({"path": str(parquet_path)}))
+        (cfg_dir / "src.json").write_text(json.dumps(_file_input_config(str(parquet_path))))
 
         from haute.parser import parse_pipeline_file
 
@@ -1306,16 +1330,16 @@ class TestAdditionalPolarsCodeScaffoldSanitisation:
                 "id": "src",
                 "data": {
                     "label": "src",
-                    "nodeType": "dataSource",
-                    "config": {
-                        "path": str(source_path),
-                        "code": (
+                    "nodeType": "dataInput",
+                    "config": _file_input_config(
+                        str(source_path),
+                        code=(
                             "from pathlib import Path\n"
                             'df = pl.scan_parquet(Path(__file__).parent / "data.parquet")\n'
                             "df = df.limit(2)\n"
                             "return df"
                         ),
-                    },
+                    ),
                 },
             }
         )
@@ -1470,7 +1494,7 @@ class TestAdditionalPolarsCodeScaffoldSanitisation:
 
 
 # ---------------------------------------------------------------------------
-# execute_sink
+# write_data_output
 # ---------------------------------------------------------------------------
 
 
@@ -1488,8 +1512,8 @@ def _make_sink_graph(tmp_path, *, src_data=None):
                         "id": "sink",
                         "data": {
                             "label": "sink",
-                            "nodeType": "dataSink",
-                            "config": {"path": str(out_path), "format": "parquet"},
+                            "nodeType": "dataOutput",
+                            "config": _file_output_config(str(out_path), "parquet"),
                         },
                     }
                 ),
@@ -1515,8 +1539,8 @@ class TestExecuteSink:
                             "id": "sink",
                             "data": {
                                 "label": "sink",
-                                "nodeType": "dataSink",
-                                "config": {"path": str(out_path), "format": "parquet"},
+                                "nodeType": "dataOutput",
+                                "config": _file_output_config(str(out_path), "parquet"),
                             },
                         }
                     ),
@@ -1524,7 +1548,7 @@ class TestExecuteSink:
                 "edges": [_edge("src", "sink")],
             }
         )
-        result = execute_sink(graph, sink_node_id="sink")
+        result = write_data_output(graph, output_node_id="sink")
         assert result.status == "ok"
         assert result.row_count == 2
         assert out_path.exists()
@@ -1545,8 +1569,8 @@ class TestExecuteSink:
                             "id": "sink",
                             "data": {
                                 "label": "sink",
-                                "nodeType": "dataSink",
-                                "config": {"path": str(out_path), "format": "csv"},
+                                "nodeType": "dataOutput",
+                                "config": _file_output_config(str(out_path), "csv"),
                             },
                         }
                     ),
@@ -1554,11 +1578,11 @@ class TestExecuteSink:
                 "edges": [_edge("src", "sink")],
             }
         )
-        result = execute_sink(graph, sink_node_id="sink")
+        result = write_data_output(graph, output_node_id="sink")
         assert result.status == "ok"
         assert out_path.exists()
         assert result.execution_metrics is not None
-        assert "sink_row_count" in result.execution_metrics.stage_elapsed_ms
+        assert "output_row_count" in result.execution_metrics.stage_elapsed_ms
 
     def test_plain_json_source_rejected_by_default_bounded_sink_context(self, tmp_path):
         src_path = tmp_path / "in.json"
@@ -1573,8 +1597,8 @@ class TestExecuteSink:
                             "id": "sink",
                             "data": {
                                 "label": "sink",
-                                "nodeType": "dataSink",
-                                "config": {"path": str(out_path), "format": "parquet"},
+                                "nodeType": "dataOutput",
+                                "config": _file_output_config(str(out_path), "parquet"),
                             },
                         }
                     ),
@@ -1584,15 +1608,15 @@ class TestExecuteSink:
         )
 
         with patch.object(pl, "read_json", wraps=pl.read_json) as read_json:
-            with pytest.raises(BoundedMemoryUnsupportedError, match="Plain JSON"):
-                execute_sink(graph, sink_node_id="sink")
+            with pytest.raises(BoundedMemoryUnsupportedError, match="format=json"):
+                write_data_output(graph, output_node_id="sink")
 
         read_json.assert_not_called()
 
     def test_missing_sink_raises(self):
         graph = _g({"nodes": [], "edges": []})
         with pytest.raises(ValueError, match="not.*found"):
-            execute_sink(graph, sink_node_id="nope")
+            write_data_output(graph, output_node_id="nope")
 
     def test_live_scenario_coerced_to_batch(self, tmp_path):
         """Sinks are never live — scenario='live' must be coerced to 'batch'
@@ -1609,7 +1633,7 @@ class TestExecuteSink:
             return original_execute_lazy(*args, **kwargs)
 
         with patch("haute.executor._execute_lazy", side_effect=spy):
-            execute_sink(graph, sink_node_id="sink", source="live")
+            write_data_output(graph, output_node_id="sink", source="live")
 
         assert captured_sources == ["batch"]
 
@@ -1627,7 +1651,7 @@ class TestExecuteSink:
             return original_execute_lazy(*args, **kwargs)
 
         with patch("haute.executor._execute_lazy", side_effect=spy):
-            execute_sink(graph, sink_node_id="sink", source="my_custom")
+            write_data_output(graph, output_node_id="sink", source="my_custom")
 
         assert captured_sources == ["my_custom"]
 
@@ -1643,8 +1667,8 @@ class TestExecuteSink:
                             "id": "sink",
                             "data": {
                                 "label": "sink",
-                                "nodeType": "dataSink",
-                                "config": {"path": "", "format": "parquet"},
+                                "nodeType": "dataOutput",
+                                "config": _file_output_config("", "parquet"),
                             },
                         }
                     ),
@@ -1652,11 +1676,11 @@ class TestExecuteSink:
                 "edges": [_edge("src", "sink")],
             }
         )
-        with pytest.raises(ValueError, match="no.*output path"):
-            execute_sink(graph, sink_node_id="sink")
+        with pytest.raises(Exception, match="non-empty 'path'"):
+            write_data_output(graph, output_node_id="sink")
 
     def test_sink_with_multi_input_join(self, tmp_path):
-        """execute_sink checkpoints multi-input nodes and produces correct output."""
+        """write_data_output checkpoints multi-input nodes and produces correct output."""
         src1 = tmp_path / "s1.parquet"
         src2 = tmp_path / "s2.parquet"
         out = tmp_path / "out.parquet"
@@ -1683,8 +1707,8 @@ class TestExecuteSink:
                             "id": "sink",
                             "data": {
                                 "label": "sink",
-                                "nodeType": "dataSink",
-                                "config": {"path": str(out), "format": "parquet"},
+                                "nodeType": "dataOutput",
+                                "config": _file_output_config(str(out), "parquet"),
                             },
                         }
                     ),
@@ -1696,14 +1720,14 @@ class TestExecuteSink:
                 ],
             }
         )
-        result = execute_sink(graph, sink_node_id="sink")
+        result = write_data_output(graph, output_node_id="sink")
         assert result.status == "ok"
         assert result.row_count == 2
         df = pl.read_parquet(out)
         assert set(df.columns) >= {"key", "a", "b"}
 
     def test_sink_passes_checkpoint_dir(self, tmp_path):
-        """execute_sink must pass a checkpoint_dir to _execute_lazy."""
+        """write_data_output must pass a checkpoint_dir to _execute_lazy."""
         graph, _ = _make_sink_graph(tmp_path)
 
         from pathlib import Path
@@ -1718,7 +1742,7 @@ class TestExecuteSink:
             return original(*args, **kwargs)
 
         with patch("haute.executor._execute_lazy", side_effect=spy):
-            execute_sink(graph, sink_node_id="sink")
+            write_data_output(graph, output_node_id="sink")
 
         assert len(captured_kwargs) == 1
         cp_dir = captured_kwargs[0].get("checkpoint_dir")
@@ -1743,13 +1767,13 @@ class TestExecuteSink:
             return original(*args, **kwargs)
 
         with patch("haute.executor._execute_lazy", side_effect=spy):
-            execute_sink(graph, sink_node_id="sink")
+            write_data_output(graph, output_node_id="sink")
 
         assert len(created_dirs) == 1
         assert not created_dirs[0].exists(), "checkpoint dir should be cleaned up"
 
     def test_live_scenario_resolves_batch_from_ism(self, tmp_path):
-        """When scenario='live', execute_sink resolves the batch scenario
+        """When scenario='live', write_data_output resolves the batch scenario
         from the graph's live_switch ISM instead of hardcoding 'batch'."""
         live_src = tmp_path / "live.parquet"
         batch_src = tmp_path / "batch.parquet"
@@ -1782,8 +1806,8 @@ class TestExecuteSink:
                             "id": "sink",
                             "data": {
                                 "label": "sink",
-                                "nodeType": "dataSink",
-                                "config": {"path": str(out_path), "format": "parquet"},
+                                "nodeType": "dataOutput",
+                                "config": _file_output_config(str(out_path), "parquet"),
                             },
                         }
                     ),
@@ -1806,7 +1830,7 @@ class TestExecuteSink:
             return original_execute_lazy(*args, **kwargs)
 
         with patch("haute.executor._execute_lazy", side_effect=spy):
-            execute_sink(graph, sink_node_id="sink", source="live")
+            write_data_output(graph, output_node_id="sink", source="live")
 
         # Should resolve to "nb_batch" from the ISM, not generic "batch"
         assert captured_sources == ["nb_batch"]
@@ -2058,13 +2082,12 @@ class TestBuildNodeFnErrorPaths:
     """Error paths in _build_node_fn — missing config, bad source refs, etc."""
 
     def test_data_source_missing_path(self):
-        """Data source with empty path returns an empty LazyFrame."""
+        """A file Data Input requires a non-empty path."""
         node = _source_node("src", "")
         _, fn, is_source = _build_node_fn(node)
         assert is_source is True
-        result = fn()
-        assert isinstance(result, pl.LazyFrame)
-        assert len(result.collect()) == 0
+        with pytest.raises(Exception, match="non-empty 'path'"):
+            fn()
 
     def test_data_source_nonexistent_file(self):
         """Data source pointing to a file that doesn't exist should raise at collect."""
@@ -4082,7 +4105,7 @@ class TestEmptyDataFrameFullPipeline:
         _preview_cache.invalidate()
 
     def test_empty_source_sink_writes_empty_file(self, tmp_path):
-        """execute_sink with 0-row input should write a valid empty
+        """write_data_output with 0-row input should write a valid empty
         parquet file (schema only, no rows).
 
         Real failure: sink crashes on empty input or writes a corrupt
@@ -4105,8 +4128,8 @@ class TestEmptyDataFrameFullPipeline:
                             "id": "sink",
                             "data": {
                                 "label": "sink",
-                                "nodeType": "dataSink",
-                                "config": {"path": str(p_out), "format": "parquet"},
+                                "nodeType": "dataOutput",
+                                "config": _file_output_config(str(p_out), "parquet"),
                             },
                         }
                     ),
@@ -4115,7 +4138,7 @@ class TestEmptyDataFrameFullPipeline:
             }
         )
 
-        result = execute_sink(graph, sink_node_id="sink")
+        result = write_data_output(graph, output_node_id="sink")
         assert result.status == "ok"
         assert result.row_count == 0
         # The file should be readable with correct schema
@@ -4127,7 +4150,7 @@ class TestEmptyDataFrameFullPipeline:
 # ---------------------------------------------------------------------------
 # GAP 7: Conflicting batch scenarios
 # Production failure: Two live_switch nodes define different batch
-# scenario names (e.g. "nb_batch" and "monthly_batch").  execute_sink
+# scenario names (e.g. "nb_batch" and "monthly_batch").  write_data_output
 # silently picks one, routing half the pipeline to the wrong data source.
 # ---------------------------------------------------------------------------
 
@@ -4370,7 +4393,7 @@ class TestPreambleFailureIsolation:
         _preview_cache.invalidate()
 
     def test_broken_preamble_does_not_error_model_score_or_sink(self, tmp_path, monkeypatch):
-        """Non-preamble node types (dataSink, etc.) should not receive
+        """Non-preamble node types (dataOutput, etc.) should not receive
         the preamble error.
 
         Real failure: sink nodes display 'preamble error' when they
@@ -4399,7 +4422,7 @@ class TestPreambleFailureIsolation:
                             "id": "sink",
                             "data": {
                                 "label": "sink",
-                                "nodeType": "dataSink",
+                                "nodeType": "dataOutput",
                                 "config": {
                                     "path": str(tmp_path / "out.parquet"),
                                     "format": "parquet",
@@ -4415,7 +4438,7 @@ class TestPreambleFailureIsolation:
 
         # Use _eager_execute directly to check error injection logic
         outputs, order, errors, *_ = _eager_execute(graph, None, None, source="live")
-        # dataSink is NOT in the preamble_types set, so it should not
+        # dataOutput is NOT in the preamble_types set, so it should not
         # have the preamble error injected
         assert "sink" not in errors or "bad_name" not in errors.get("sink", "")
 

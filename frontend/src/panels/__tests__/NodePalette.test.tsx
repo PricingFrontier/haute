@@ -15,7 +15,7 @@ describe("NodePalette", () => {
   it("renders all node type templates", () => {
     render(<NodePalette />)
     expect(screen.getByText("Quote Input")).toBeInTheDocument()
-    expect(screen.getByText("Data Source")).toBeInTheDocument()
+    expect(screen.getByText("Data Input")).toBeInTheDocument()
     expect(screen.getByText("Polars")).toBeInTheDocument()
     expect(screen.getByText("Quote Response")).toBeInTheDocument()
     expect(screen.getByText("Model Scoring")).toBeInTheDocument()
@@ -49,8 +49,8 @@ describe("NodePalette", () => {
 
   it("non-singleton items are draggable", () => {
     render(<NodePalette nodes={[]} />)
-    // Data Source is not a singleton and should be draggable
-    const item = screen.getByText("Data Source").closest("[draggable]")
+    // Data Input is not a singleton and should be draggable
+    const item = screen.getByText("Data Input").closest("[draggable]")
     expect(item).toHaveAttribute("draggable", "true")
   })
 
@@ -74,7 +74,7 @@ describe("NodePalette", () => {
     render(<NodePalette />)
     const expectedNames = [
       "Quote Input", "Source Switch", "Quote Response",
-      "Data Source", "Data Sink", "Load File", "Constant",
+      "Data Input", "Data Output", "Load File", "Constant",
       "Polars", "Expander", "Banding", "Rating Step", "Explore",
       "Model Training", "Model Scoring",
       "Optimisation", "Apply Optimisation",

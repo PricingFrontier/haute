@@ -632,17 +632,3 @@ class TestAsyncRouteDoesNotBlockEventLoop:
             "#30: get_schema must call run_in_threadpool / asyncio.to_thread "
             "so the event loop is not blocked on disk I/O."
         )
-
-    def test_databricks_schema_route_offloads_blocking_reads(self) -> None:
-        """Same invariant for get_databricks_schema — it also calls
-        ``pl.scan_parquet`` and ``read_parquet_metadata`` synchronously.
-        """
-        import inspect
-
-        from haute.routes import files
-
-        src = inspect.getsource(files.get_databricks_schema)
-        assert ("run_in_threadpool" in src) or ("to_thread" in src), (
-            "#30: get_databricks_schema must run sync parquet reads in a "
-            "thread pool — currently blocks the event loop."
-        )

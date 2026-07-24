@@ -79,7 +79,7 @@ class TestPipeline:
     def _simple_pipeline(self) -> Pipeline:
         p = Pipeline("test", description="test pipeline")
 
-        @p.data_source
+        @p.data_input
         def source() -> pl.DataFrame:
             return pl.DataFrame({"x": [1, 2, 3]})
 
@@ -114,7 +114,7 @@ class TestPipeline:
     def test_connect_source_port_appears_as_source_handle(self):
         p = Pipeline("ports")
 
-        @p.data_source
+        @p.data_input
         def source() -> pl.DataFrame:
             return pl.DataFrame({"x": [1]})
 
@@ -177,7 +177,7 @@ class TestPipeline:
     def test_connect_chaining(self):
         p = Pipeline("chain")
 
-        @p.data_source
+        @p.data_input
         def a() -> pl.DataFrame:
             return pl.DataFrame({"x": [1]})
 
@@ -195,11 +195,11 @@ class TestPipeline:
     def test_node_decorator_with_config(self):
         p = Pipeline("cfg")
 
-        @p.data_source(path="data.parquet")
+        @p.data_input(path="data.parquet")
         def read_data() -> pl.DataFrame:
             return pl.DataFrame({"x": [1]})
 
-        assert p.nodes[0].config == {"path": "data.parquet", "_node_type": NodeType.DATA_SOURCE}
+        assert p.nodes[0].config == {"path": "data.parquet", "_node_type": NodeType.DATA_INPUT}
         assert p.nodes[0].is_source is True
 
     def test_explore_decorator_registers_analysis_sink_node(self):
@@ -220,7 +220,7 @@ class TestPipeline:
     def test_topo_order_delegates_to_graph_utils(self):
         p = Pipeline("topo")
 
-        @p.data_source
+        @p.data_input
         def a() -> pl.DataFrame:
             return pl.DataFrame({"x": [1]})
 
@@ -235,7 +235,7 @@ class TestPipeline:
     def test_no_edges_falls_back_to_registration_order(self):
         p = Pipeline("no_edges")
 
-        @p.data_source
+        @p.data_input
         def first() -> pl.DataFrame:
             return pl.DataFrame({"x": [1]})
 
@@ -250,7 +250,7 @@ class TestPipeline:
         """Cycle detection should raise CycleError."""
         p = Pipeline("cycle")
 
-        @p.data_source
+        @p.data_input
         def a() -> pl.DataFrame:
             return pl.DataFrame({"x": [1]})
 
@@ -266,7 +266,7 @@ class TestPipeline:
         """Without explicit edges, run() raises rather than silently chaining."""
         p = Pipeline("implicit")
 
-        @p.data_source
+        @p.data_input
         def source() -> pl.DataFrame:
             return pl.DataFrame({"x": [1, 2]})
 
@@ -282,7 +282,7 @@ class TestPipeline:
         """score() without edges raises rather than silently chaining."""
         p = Pipeline("score_implicit")
 
-        @p.data_source
+        @p.data_input
         def source() -> pl.DataFrame:
             return pl.DataFrame({"x": [0]})
 
@@ -303,7 +303,7 @@ class TestPipeline:
         assert g["edges"][0]["target"] == "transform"
         # Verify node types
         node_map = {n["id"]: n for n in g["nodes"]}
-        assert node_map["source"]["data"]["nodeType"] == "dataSource"
+        assert node_map["source"]["data"]["nodeType"] == "dataInput"
         assert node_map["transform"]["data"]["nodeType"] == "polars"
 
     def test_to_graph_does_not_invent_edges(self):
@@ -316,7 +316,7 @@ class TestPipeline:
         """
         p = Pipeline("chain")
 
-        @p.data_source
+        @p.data_input
         def a() -> pl.DataFrame:
             return pl.DataFrame()
 
@@ -336,7 +336,7 @@ class TestPipeline:
         captured: list[str] = []
         p = Pipeline("ctx_batch")
 
-        @p.data_source
+        @p.data_input
         def source() -> pl.DataFrame:
             captured.append(_scenario_ctx.get())
             return pl.DataFrame({"x": [1]})
@@ -361,7 +361,7 @@ class TestPipeline:
         captured: list[str] = []
         p = Pipeline("ctx_live")
 
-        @p.data_source
+        @p.data_input
         def source() -> pl.DataFrame:
             return pl.DataFrame({"x": [1]})
 
@@ -380,7 +380,7 @@ class TestPipeline:
         """_scenario_ctx must be reset even if a node raises."""
         p = Pipeline("ctx_err")
 
-        @p.data_source
+        @p.data_input
         def source() -> pl.DataFrame:
             return pl.DataFrame({"x": [1]})
 
@@ -397,7 +397,7 @@ class TestPipeline:
         """Nodes should be positioned with x_spacing."""
         p = Pipeline("pos")
 
-        @p.data_source
+        @p.data_input
         def a() -> pl.DataFrame:
             return pl.DataFrame()
 
@@ -686,14 +686,23 @@ class TestDecoratorAliases:
 
         assert reg.nodes[0].config["_node_type"] == NodeType.RATING_STEP
 
-    def test_data_sink(self):
+    def test_data_input(self):
         reg = NodeRegistry("test")
 
-        @reg.data_sink
-        def sink(df: pl.DataFrame) -> pl.DataFrame:
+        @reg.data_input
+        def source() -> pl.DataFrame:
+            return pl.DataFrame()
+
+        assert reg.nodes[0].config["_node_type"] == NodeType.DATA_INPUT
+
+    def test_data_output(self):
+        reg = NodeRegistry("test")
+
+        @reg.data_output
+        def output(df: pl.DataFrame) -> pl.DataFrame:
             return df
 
-        assert reg.nodes[0].config["_node_type"] == NodeType.DATA_SINK
+        assert reg.nodes[0].config["_node_type"] == NodeType.DATA_OUTPUT
 
     def test_external_file(self):
         reg = NodeRegistry("test")
@@ -786,7 +795,7 @@ class TestPipelineEdgeCases:
     def test_disconnected_graph_raises(self):
         p = Pipeline("disc")
 
-        @p.data_source
+        @p.data_input
         def a() -> pl.DataFrame:
             return pl.DataFrame({"x": [1]})
 
@@ -805,7 +814,7 @@ class TestPipelineEdgeCases:
     def test_self_loop_detected(self):
         p = Pipeline("loop")
 
-        @p.data_source
+        @p.data_input
         def a() -> pl.DataFrame:
             return pl.DataFrame({"x": [1]})
 
@@ -820,7 +829,7 @@ class TestPipelineEdgeCases:
     def test_diamond_dependency(self):
         p = Pipeline("diamond")
 
-        @p.data_source
+        @p.data_input
         def a() -> pl.DataFrame:
             return pl.DataFrame({"x": [1]})
 
@@ -850,11 +859,11 @@ class TestPipelineEdgeCases:
         """
         p = Pipeline("seed_all")
 
-        @p.data_source
+        @p.data_input
         def src1() -> pl.DataFrame:
             return pl.DataFrame({"x": [999]})
 
-        @p.data_source
+        @p.data_input
         def src2() -> pl.DataFrame:
             return pl.DataFrame({"x": [888]})
 
@@ -870,7 +879,7 @@ class TestPipelineEdgeCases:
         """A lone source is unambiguous, so score() seeds it without a mark."""
         p = Pipeline("single_seed")
 
-        @p.data_source
+        @p.data_input
         def src() -> pl.DataFrame:
             return pl.DataFrame({"x": [999]})
 
@@ -889,7 +898,7 @@ class TestPipelineEdgeCases:
         def live_src() -> pl.DataFrame:
             return pl.DataFrame({"x": [999]})
 
-        @p.data_source
+        @p.data_input
         def static_src() -> pl.DataFrame:
             return pl.DataFrame({"y": [77]})
 
@@ -906,7 +915,7 @@ class TestPipelineEdgeCases:
     def test_to_graph_single_node(self):
         p = Pipeline("single")
 
-        @p.data_source
+        @p.data_input
         def only() -> pl.DataFrame:
             return pl.DataFrame()
 
@@ -918,7 +927,7 @@ class TestPipelineEdgeCases:
     def test_to_graph_underscored_names_title_cased(self):
         p = Pipeline("title")
 
-        @p.data_source
+        @p.data_input
         def my_data_source() -> pl.DataFrame:
             return pl.DataFrame()
 
@@ -928,7 +937,7 @@ class TestPipelineEdgeCases:
     def test_to_graph_underscore_config_keys_filtered(self):
         p = Pipeline("filter")
 
-        @p.data_source(path="data.parquet")
+        @p.data_input(path="data.parquet")
         def src() -> pl.DataFrame:
             return pl.DataFrame()
 
@@ -964,7 +973,7 @@ class TestPipelineEdgeCases:
         def live() -> pl.DataFrame:
             return pl.DataFrame({"x": [999]})
 
-        @p.data_source
+        @p.data_input
         def static() -> pl.DataFrame:
             return pl.DataFrame({"y": [55]})
 
@@ -986,7 +995,7 @@ class TestPipelineEdgeCases:
     def test_no_edges_multiple_nodes_raises(self):
         p = Pipeline("no_edges")
 
-        @p.data_source
+        @p.data_input
         def src() -> pl.DataFrame:
             return pl.DataFrame({"x": [1]})
 
@@ -1046,7 +1055,7 @@ class TestOutputResolution:
         """run() must return the @pipeline.output node, not whatever sorts last."""
         p = Pipeline("declared_out")
 
-        @p.data_source
+        @p.data_input
         def src() -> pl.DataFrame:
             return pl.DataFrame({"x": [1]})
 
@@ -1054,7 +1063,7 @@ class TestOutputResolution:
         def result(df: pl.DataFrame) -> pl.DataFrame:
             return df.with_columns(kept=pl.lit("output"))
 
-        @p.data_sink
+        @p.data_output
         def audit(df: pl.DataFrame) -> pl.DataFrame:
             return df.with_columns(sink=pl.lit("side_effect"))
 
@@ -1069,7 +1078,7 @@ class TestOutputResolution:
         """A fan-out with several terminal nodes must fail loud, not guess."""
         p = Pipeline("fan_out")
 
-        @p.data_source
+        @p.data_input
         def src() -> pl.DataFrame:
             return pl.DataFrame({"x": [1]})
 
@@ -1088,7 +1097,7 @@ class TestOutputResolution:
     def test_run_multiple_output_nodes_raises(self):
         p = Pipeline("two_outputs")
 
-        @p.data_source
+        @p.data_input
         def src() -> pl.DataFrame:
             return pl.DataFrame({"x": [1]})
 
@@ -1115,7 +1124,7 @@ class TestOutputResolution:
         def result(df: pl.DataFrame) -> pl.DataFrame:
             return df.with_columns(kept=pl.lit("output"))
 
-        @p.data_sink
+        @p.data_output
         def audit(df: pl.DataFrame) -> pl.DataFrame:
             return df.with_columns(sink=pl.lit("side_effect"))
 
@@ -1182,11 +1191,11 @@ class TestNodeArityValidation:
         """A one-input node wired to two sources must not silently drop one."""
         p = Pipeline("over_wired")
 
-        @p.data_source
+        @p.data_input
         def a() -> pl.DataFrame:
             return pl.DataFrame({"x": [1]})
 
-        @p.data_source
+        @p.data_input
         def b() -> pl.DataFrame:
             return pl.DataFrame({"x": [2]})
 
@@ -1202,7 +1211,7 @@ class TestNodeArityValidation:
         """Under-wiring must raise an actionable HauteError, not a raw TypeError."""
         p = Pipeline("under_wired")
 
-        @p.data_source
+        @p.data_input
         def a() -> pl.DataFrame:
             return pl.DataFrame({"x": [1]})
 
@@ -1237,7 +1246,7 @@ class TestApiInputDecoratorMarksSeed:
         def live() -> pl.DataFrame:
             raise AssertionError("api_input source must be seeded, not called")
 
-        @p.data_source
+        @p.data_input
         def static() -> pl.DataFrame:
             return pl.DataFrame({"y": [5]})
 
@@ -1270,7 +1279,7 @@ class TestInstanceReferencesFailLoud:
     def test_instance_of_reference_raises_in_standalone_run(self):
         p = Pipeline("instance_run")
 
-        @p.data_source
+        @p.data_input
         def src() -> pl.DataFrame:
             return pl.DataFrame({"x": [1]})
 
@@ -1292,7 +1301,7 @@ class TestDuplicateNodeName:
     def test_duplicate_name_raises_at_registration(self):
         p = Pipeline("dupes")
 
-        @p.data_source
+        @p.data_input
         def src() -> pl.DataFrame:
             return pl.DataFrame({"x": [1]})
 

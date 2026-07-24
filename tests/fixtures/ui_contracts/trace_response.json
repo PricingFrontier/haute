@@ -9,7 +9,7 @@
       {
         "node_id": "source",
         "node_name": "Source",
-        "node_type": "data_source",
+        "node_type": "dataInput",
         "schema_diff": {
           "columns_added": [
             "base_rate"

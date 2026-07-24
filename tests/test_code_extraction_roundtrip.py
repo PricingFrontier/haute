@@ -43,6 +43,7 @@ from haute._code_extraction import (
 from haute.codegen import graph_to_code
 from haute.errors import ParseError
 from haute.parser import parse_pipeline_source
+from tests.conftest import write_data_input_config
 
 # ---------------------------------------------------------------------------
 # Helpers — drive the real production save/load cycle
@@ -54,7 +55,7 @@ from haute import Pipeline
 pipeline = Pipeline("demo")
 
 
-@pipeline.data_source(config="config/data_source/up.json")
+@pipeline.data_input(config="config/data_input/up.json")
 def up() -> pl.LazyFrame:
     """src"""
     df = pl.scan_parquet("data.parquet")
@@ -78,11 +79,7 @@ def lookup(up: pl.LazyFrame) -> pl.LazyFrame:
 
 
 def _write_sidecars(base_dir: Path) -> None:
-    source_dir = base_dir / "config" / "data_source"
-    source_dir.mkdir(parents=True, exist_ok=True)
-    (source_dir / "up.json").write_text(
-        json.dumps({"path": "data.parquet", "sourceType": "flat_file"})
-    )
+    write_data_input_config(base_dir, "up", "data.parquet")
     load_dir = base_dir / "config" / "load_file"
     load_dir.mkdir(parents=True, exist_ok=True)
     (load_dir / "lookup.json").write_text(

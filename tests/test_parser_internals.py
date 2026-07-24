@@ -227,10 +227,21 @@ class TestExtractModelScoreUserCode:
 
 
 class TestBuildNodeConfig:
-    def test_data_source_flat_file(self):
-        config = _build_node_config("dataSource", {"path": "d.parquet"}, "", [])
-        assert config["path"] == "d.parquet"
-        assert config["sourceType"] == "flat_file"
+    def test_data_input_config_is_not_synthesised_without_sidecar(self):
+        config = _build_node_config(
+            "dataInput",
+            {
+                "input_type": "file",
+                "format": "parquet",
+                "mode": "scan",
+                "cache_mode": "direct",
+                "path": "d.parquet",
+                "arguments": {},
+            },
+            "",
+            [],
+        )
+        assert config == {}
 
     def test_api_input_v2_keys_pass_through(self):
         """Post-commit-5.5: top-level `row_id_column` decorator kwarg is no
@@ -258,15 +269,14 @@ class TestBuildNodeConfig:
         assert config["input_scenario_map"] == {"live": "live", "nb": "test_batch"}
         assert config["inputs"] == ["live", "nb", "rn"]
 
-    def test_data_source_databricks(self):
+    def test_databricks_input_config_is_not_synthesised_without_sidecar(self):
         config = _build_node_config(
-            "dataSource",
-            {"table": "catalog.schema.tbl"},
+            "dataInput",
+            {"input_type": "databricks", "table": "catalog.schema.tbl", "arguments": {}},
             "",
             [],
         )
-        assert config["sourceType"] == "databricks"
-        assert config["table"] == "catalog.schema.tbl"
+        assert config == {}
 
     def test_model_score(self):
         config = _build_node_config(
@@ -306,10 +316,20 @@ class TestBuildNodeConfig:
         assert config["tables"][0]["factors"] == ["x"]
         assert config["tables"][0]["outputColumn"] == "out"
 
-    def test_data_sink(self):
-        config = _build_node_config("dataSink", {"sink": "out.csv", "format": "csv"}, "", ["df"])
-        assert config["path"] == "out.csv"
-        assert config["format"] == "csv"
+    def test_data_output_config_is_not_synthesised_without_sidecar(self):
+        config = _build_node_config(
+            "dataOutput",
+            {
+                "output_type": "file",
+                "format": "csv",
+                "mode": "sink",
+                "path": "out.csv",
+                "arguments": {},
+            },
+            "",
+            ["df"],
+        )
+        assert config == {}
 
     def test_external_file(self):
         config = _build_node_config(

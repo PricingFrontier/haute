@@ -88,7 +88,7 @@ function makePreview(overrides: Partial<PreviewData> = {}): PreviewData {
   }
 }
 
-const sourceNode = makeNode("source_1", "Claims Source", "dataSource")
+const sourceNode = makeNode("source_1", "Claims Source", "dataInput")
 const exploreNode = makeNode("explore_1", "Explore Claims", "explore")
 const edges: SimpleEdge[] = [{ id: "e1", source: "source_1", target: "explore_1" }]
 

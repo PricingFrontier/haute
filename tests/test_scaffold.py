@@ -705,15 +705,15 @@ class TestStarterFiles:
         Replaces the old ``test_pipeline_imports_from_utility``: Wave 10A
         #112 removes the unconditional ``from utility.features import …``
         line so the starter stands on its own, and introduces decorators
-        (``@pipeline.data_source``, ``@pipeline.polars``,
+        (``@pipeline.data_input``, ``@pipeline.polars``,
         ``@pipeline.output``) so ``haute init`` → ``haute run`` yields a
         real executable graph instead of an empty ``Pipeline()``.
         """
         result = starter_pipeline("my_project")
         # The three core decorator forms must be present so the parser
         # picks up a source, a transform, and a terminal node.
-        assert "@pipeline.data_source(" in result, (
-            "Starter pipeline must include a dataSource node so data can flow into the graph."
+        assert "@pipeline.data_input(" in result, (
+            "Starter pipeline must include a dataInput node so data can flow into the graph."
         )
         assert "@pipeline.polars" in result, (
             "Starter pipeline must include a polars transform so users "

@@ -44,6 +44,8 @@ from unittest.mock import patch
 import pytest
 from fastapi.testclient import TestClient
 
+from tests.conftest import make_file_input_config
+
 # ---------------------------------------------------------------------------
 # Common fixtures
 # ---------------------------------------------------------------------------
@@ -150,8 +152,8 @@ class TestWatcherLongSaveRace:
                     id="src",
                     data=NodeData(
                         label="src",
-                        nodeType="dataSource",
-                        config={"path": "data.parquet"},
+                        nodeType="dataInput",
+                        config=make_file_input_config("data.parquet"),
                     ),
                 ),
             ],
@@ -220,8 +222,8 @@ class TestWatcherLongSaveRace:
                     id="src",
                     data=NodeData(
                         label="src",
-                        nodeType="dataSource",
-                        config={"path": "d.parquet"},
+                        nodeType="dataInput",
+                        config=make_file_input_config("d.parquet"),
                     ),
                 ),
             ],
@@ -358,8 +360,8 @@ class TestGraphToCodeMultiPathTraversal:
                                 "id": "a",
                                 "data": {
                                     "label": "a",
-                                    "nodeType": "dataSource",
-                                    "config": {"path": "data.parquet"},
+                                    "nodeType": "dataInput",
+                                    "config": make_file_input_config("data.parquet"),
                                 },
                             },
                             {
@@ -583,8 +585,8 @@ class TestSaveServiceTransaction:
                     id="a",
                     data=NodeData(
                         label="a",
-                        nodeType="dataSource",
-                        config={"path": "data.parquet"},
+                        nodeType="dataInput",
+                        config=make_file_input_config("data.parquet"),
                     ),
                     position={"x": 0.0, "y": 0.0},
                 ),

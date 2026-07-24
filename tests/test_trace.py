@@ -24,6 +24,7 @@ from haute.trace import (
 from tests.conftest import (
     make_edge as _edge,
 )
+from tests.conftest import make_file_input_config
 from tests.conftest import (
     make_graph as _g,
 )
@@ -855,16 +856,16 @@ class TestExecuteTrace:
                     id="live_src",
                     data=NodeData(
                         label="live_src",
-                        nodeType="dataSource",
-                        config={"path": str(p_live)},
+                        nodeType="dataInput",
+                        config=make_file_input_config(p_live),
                     ),
                 ),
                 GraphNode(
                     id="batch_src",
                     data=NodeData(
                         label="batch_src",
-                        nodeType="dataSource",
-                        config={"path": str(p_batch)},
+                        nodeType="dataInput",
+                        config=make_file_input_config(p_batch),
                     ),
                 ),
                 GraphNode(

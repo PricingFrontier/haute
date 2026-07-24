@@ -40,7 +40,6 @@ from haute._types import (
 class TestNodeType:
     EXPECTED_MEMBERS = {
         "API_INPUT": "apiInput",
-        "DATA_SOURCE": "dataSource",
         "DATA_INPUT": "dataInput",
         "DATA_OUTPUT": "dataOutput",
         "POLARS": "polars",
@@ -49,7 +48,6 @@ class TestNodeType:
         "BANDING": "banding",
         "RATING_STEP": "ratingStep",
         "OUTPUT": "output",
-        "DATA_SINK": "dataSink",
         "EXPLORE": "explore",
         "EXTERNAL_FILE": "externalFile",
         "LIVE_SWITCH": "liveSwitch",
@@ -79,7 +77,7 @@ class TestNodeType:
         assert '"output"' in result
 
     def test_construct_from_string(self):
-        assert NodeType("dataSource") == NodeType.DATA_SOURCE
+        assert NodeType("dataInput") == NodeType.DATA_INPUT
 
     def test_invalid_string_raises(self):
         with pytest.raises(ValueError):
@@ -119,11 +117,11 @@ class TestNodeData:
         nd = NodeData(
             label="My Node",
             description="A description",
-            nodeType=NodeType.DATA_SOURCE,
+            nodeType=NodeType.DATA_INPUT,
             config={"path": "data.parquet"},
         )
         assert nd.label == "My Node"
-        assert nd.nodeType == NodeType.DATA_SOURCE
+        assert nd.nodeType == NodeType.DATA_INPUT
         assert nd.config["path"] == "data.parquet"
 
     def test_node_type_accepts_string(self):
@@ -138,11 +136,11 @@ class TestNodeData:
         assert "x" not in nd2.config
 
     def test_json_serialization_roundtrip(self):
-        nd = NodeData(label="Test", nodeType=NodeType.DATA_SOURCE, config={"k": 1})
+        nd = NodeData(label="Test", nodeType=NodeType.DATA_INPUT, config={"k": 1})
         json_str = nd.model_dump_json()
         restored = NodeData.model_validate_json(json_str)
         assert restored.label == "Test"
-        assert restored.nodeType == NodeType.DATA_SOURCE
+        assert restored.nodeType == NodeType.DATA_INPUT
         assert restored.config == {"k": 1}
 
     def test_empty_string_label_preserved(self):
@@ -176,12 +174,12 @@ class TestGraphNode:
             id="source",
             type="customType",
             position={"x": 100.0, "y": 200.0},
-            data=NodeData(label="Source", nodeType=NodeType.DATA_SOURCE),
+            data=NodeData(label="Source", nodeType=NodeType.DATA_INPUT),
         )
         assert node.id == "source"
         assert node.type == "customType"
         assert node.position["x"] == 100.0
-        assert node.data.nodeType == NodeType.DATA_SOURCE
+        assert node.data.nodeType == NodeType.DATA_INPUT
 
     def test_model_validate(self):
         raw = {
@@ -344,7 +342,7 @@ class TestPipelineGraph:
     def test_model_validate_roundtrip(self):
         data = {
             "nodes": [
-                {"id": "n1", "data": {"label": "N1", "nodeType": "dataSource", "config": {}}},
+                {"id": "n1", "data": {"label": "N1", "nodeType": "dataInput", "config": {}}},
             ],
             "edges": [],
             "pipeline_name": "test",
@@ -355,7 +353,7 @@ class TestPipelineGraph:
         assert g.pipeline_name == "test"
         assert g.sources == ["live", "test_batch"]
         assert g.active_source == "test_batch"
-        assert g.nodes[0].data.nodeType == NodeType.DATA_SOURCE
+        assert g.nodes[0].data.nodeType == NodeType.DATA_INPUT
 
     def test_preserved_blocks_default_factory(self):
         g1 = PipelineGraph()

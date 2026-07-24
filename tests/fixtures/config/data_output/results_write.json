@@ -1,0 +1,7 @@
+{
+  "outputType": "file",
+  "format": "parquet",
+  "mode": "sink",
+  "path": "output/results.parquet",
+  "arguments": {}
+}

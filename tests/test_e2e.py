@@ -22,7 +22,11 @@ from haute.graph_utils import _prune_live_switch_edges, flatten_graph
 from haute.parser import parse_pipeline_file, parse_pipeline_source
 from haute.routes._submodel_ops import create_submodel_graph
 from haute.trace import execute_trace
-from tests.conftest import make_output_config
+from tests.conftest import (
+    make_file_input_config,
+    make_file_output_config,
+    make_output_config,
+)
 
 FIXTURE_DIR = Path("tests/fixtures")
 PIPELINE_FILE = FIXTURE_DIR / "pipeline.py"
@@ -289,7 +293,9 @@ class TestFullPipelineLifecycle:
         df.write_parquet(data_path)
 
         nodes = [
-            _make_node("src", "src", NodeType.DATA_SOURCE, {"path": _posix_path(data_path)}),
+            _make_node(
+                "src", "src", NodeType.DATA_INPUT, make_file_input_config(_posix_path(data_path))
+            ),
             _make_node(
                 "transform",
                 "transform",
@@ -378,7 +384,9 @@ class TestAllNodeTypesRoundtrip:
         # Every node is connected in a linear chain so codegen handles
         # source_names correctly and the parser can reconstruct edges.
         nodes = [
-            _make_node("ds", "ds", NodeType.DATA_SOURCE, {"path": _posix_path(data_path)}),
+            _make_node(
+                "ds", "ds", NodeType.DATA_INPUT, make_file_input_config(_posix_path(data_path))
+            ),
             _make_node(
                 "api",
                 "api",
@@ -521,11 +529,8 @@ class TestAllNodeTypesRoundtrip:
             _make_node(
                 "sink",
                 "sink",
-                NodeType.DATA_SINK,
-                {
-                    "path": _posix_path(sink_path),
-                    "format": "parquet",
-                },
+                NodeType.DATA_OUTPUT,
+                make_file_output_config(sink_path),
             ),
             _make_node("out", "out", NodeType.OUTPUT, make_output_config([])),
         ]
@@ -586,7 +591,9 @@ class TestSubmodelLifecycle:
         pl.DataFrame({"x": [1, 2, 3], "y": [10, 20, 30]}).write_parquet(data_path)
 
         nodes = [
-            _make_node("src", "src", NodeType.DATA_SOURCE, {"path": _posix_path(data_path)}),
+            _make_node(
+                "src", "src", NodeType.DATA_INPUT, make_file_input_config(_posix_path(data_path))
+            ),
             _make_node(
                 "t1",
                 "step_one",
@@ -667,18 +674,15 @@ class TestSubmodelLifecycle:
 class TestConfigRoundtrip:
     """Set node configs, save, reload, verify configs are preserved."""
 
-    def test_data_source_config_roundtrip(self, tmp_path, _widen_sandbox_root):
+    def test_data_input_config_roundtrip(self, tmp_path, _widen_sandbox_root):
         data_path = tmp_path / "data.parquet"
         pl.DataFrame({"x": [1]}).write_parquet(data_path)
 
         node = _make_node(
             "ds",
             "ds",
-            NodeType.DATA_SOURCE,
-            {
-                "path": _posix_path(data_path),
-                "sourceType": "flat_file",
-            },
+            NodeType.DATA_INPUT,
+            make_file_input_config(_posix_path(data_path)),
         )
         graph = PipelineGraph(
             nodes=[node],
@@ -710,7 +714,7 @@ class TestConfigRoundtrip:
             ],
         }
         nodes = [
-            _make_node("ds", "ds", NodeType.DATA_SOURCE, {"path": "data.parquet"}),
+            _make_node("ds", "ds", NodeType.DATA_INPUT, make_file_input_config("data.parquet")),
             _make_node("band", "band", NodeType.BANDING, banding_config),
         ]
         edges = [_make_edge("ds", "band")]
@@ -748,7 +752,7 @@ class TestConfigRoundtrip:
             "combinedColumn": "total_factor",
         }
         nodes = [
-            _make_node("ds", "ds", NodeType.DATA_SOURCE, {"path": "data.parquet"}),
+            _make_node("ds", "ds", NodeType.DATA_INPUT, make_file_input_config("data.parquet")),
             _make_node("rt", "rt", NodeType.RATING_STEP, rating_config),
         ]
         edges = [_make_edge("ds", "rt")]
@@ -777,7 +781,7 @@ class TestConfigRoundtrip:
             "output_column": "pred",
         }
         nodes = [
-            _make_node("ds", "ds", NodeType.DATA_SOURCE, {"path": "data.parquet"}),
+            _make_node("ds", "ds", NodeType.DATA_INPUT, make_file_input_config("data.parquet")),
             _make_node("ms", "ms", NodeType.MODEL_SCORE, ms_config),
         ]
         edges = [_make_edge("ds", "ms")]
@@ -804,7 +808,7 @@ class TestConfigRoundtrip:
             "max_iter": 50,
         }
         nodes = [
-            _make_node("ds", "ds", NodeType.DATA_SOURCE, {"path": "data.parquet"}),
+            _make_node("ds", "ds", NodeType.DATA_INPUT, make_file_input_config("data.parquet")),
             _make_node("opt", "opt", NodeType.OPTIMISER, opt_config),
         ]
         edges = [_make_edge("ds", "opt")]
@@ -865,7 +869,9 @@ class TestUtilityModuleLifecycle:
         # Step 3: Create pipeline with preamble that uses the utility
         preamble = "from utility.helpers import MAGIC_CONSTANT, double_it"
         nodes = [
-            _make_node("src", "src", NodeType.DATA_SOURCE, {"path": _posix_path(data_path)}),
+            _make_node(
+                "src", "src", NodeType.DATA_INPUT, make_file_input_config(_posix_path(data_path))
+            ),
             _make_node(
                 "t",
                 "transform",
@@ -941,10 +947,16 @@ class TestMultiScenarioExecution:
 
         nodes = [
             _make_node(
-                "live_src", "live_src", NodeType.DATA_SOURCE, {"path": _posix_path(live_path)}
+                "live_src",
+                "live_src",
+                NodeType.DATA_INPUT,
+                make_file_input_config(_posix_path(live_path)),
             ),
             _make_node(
-                "batch_src", "batch_src", NodeType.DATA_SOURCE, {"path": _posix_path(batch_path)}
+                "batch_src",
+                "batch_src",
+                NodeType.DATA_INPUT,
+                make_file_input_config(_posix_path(batch_path)),
             ),
             _make_node(
                 "switch",

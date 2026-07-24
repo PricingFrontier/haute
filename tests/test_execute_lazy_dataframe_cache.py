@@ -29,7 +29,7 @@ def _edge(source: str, target: str) -> GraphEdge:
 def _graph() -> PipelineGraph:
     return PipelineGraph(
         nodes=[
-            _node("source", NodeType.DATA_SOURCE),
+            _node("source", NodeType.DATA_INPUT),
             _node("target", NodeType.POLARS),
         ],
         edges=[_edge("source", "target")],
@@ -39,7 +39,7 @@ def _graph() -> PipelineGraph:
 def _chain_graph() -> PipelineGraph:
     return PipelineGraph(
         nodes=[
-            _node("source", NodeType.DATA_SOURCE),
+            _node("source", NodeType.DATA_INPUT),
             _node("mid", NodeType.POLARS),
             _node("target", NodeType.POLARS),
         ],
@@ -117,7 +117,7 @@ def _build_fn(
 
     def build_node(node: GraphNode, **_: Any):
         calls.append(node.id)
-        if node.data.nodeType == NodeType.DATA_SOURCE:
+        if node.data.nodeType == NodeType.DATA_INPUT:
             return node.id, lambda: pl.DataFrame({"x": values}).lazy(), True
         return node.id, lambda input_lf: input_lf.with_columns(y=pl.col("x") * 2), False
 
@@ -125,7 +125,7 @@ def _build_fn(
 
 
 def _failing_source_build_fn(node: GraphNode, **_: Any):
-    if node.data.nodeType == NodeType.DATA_SOURCE:
+    if node.data.nodeType == NodeType.DATA_INPUT:
 
         def fail_source() -> pl.LazyFrame:
             raise RuntimeError("source builder exploded")
@@ -392,7 +392,7 @@ def test_execute_lazy_dataframe_cache_rejects_stale_graph_key(tmp_path: Path) ->
     graph = _graph()
     changed_graph = PipelineGraph(
         nodes=[
-            _node("source", NodeType.DATA_SOURCE),
+            _node("source", NodeType.DATA_INPUT),
             _node("target", NodeType.POLARS, {"selected_columns": ["x"]}),
         ],
         edges=[_edge("source", "target")],
@@ -604,7 +604,7 @@ def test_execute_lazy_dataframe_cache_missing_artifact_degrades_to_miss(
 def _diamond_graph() -> PipelineGraph:
     return PipelineGraph(
         nodes=[
-            _node("source", NodeType.DATA_SOURCE),
+            _node("source", NodeType.DATA_INPUT),
             _node("left", NodeType.POLARS),
             _node("right", NodeType.POLARS),
             _node("sink", NodeType.POLARS),
@@ -756,7 +756,18 @@ def test_execute_lazy_dataframe_cache_graph_config_change_invalidates(
     graph_a = _chain_graph()
     graph_b = PipelineGraph(
         nodes=[
-            _node("source", NodeType.DATA_SOURCE, config={"sourceType": "flat_file"}),
+            _node(
+                "source",
+                NodeType.DATA_INPUT,
+                config={
+                    "inputType": "file",
+                    "format": "parquet",
+                    "mode": "scan",
+                    "cacheMode": "direct",
+                    "path": "changed.parquet",
+                    "arguments": {},
+                },
+            ),
             _node("mid", NodeType.POLARS),
             _node("target", NodeType.POLARS),
         ],

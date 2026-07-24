@@ -22,7 +22,7 @@ def collect_artifacts(
     - ``externalFile`` nodes: model files (``.cbm``, ``.pkl``, etc.)
     - ``optimiserApply`` nodes: optimiser artifact files
     - ``modelScore`` nodes: CatBoost ``.cbm`` models (downloaded from MLflow)
-    - ``dataSource`` nodes that are NOT deploy inputs: static data files
+    - ``dataInput`` nodes that are NOT deploy inputs: static data inputs
 
     Args:
         pruned_graph: Pruned React Flow graph JSON.
@@ -110,18 +110,8 @@ def collect_artifacts(
             # files since W4b.9 and never populates this directory.
             _bundle_feature_contract(nid, local_path, artifacts)
 
-        elif node_type == NodeType.DATA_SOURCE and nid not in input_set:
-            raw_path = config.get("path", "")
-            if not raw_path:
-                continue
-            abs_path = _resolve_path(raw_path, pipeline_dir)
-            artifact_name = _artifact_name(nid, abs_path)
-            _check_exists(abs_path, nid, "dataSource (static)")
-            # When the pipeline declares an expected column order for the
-            # static source, verify the file agrees.  A
-            # silent reorder leads to wrong joins at runtime.
-            _verify_static_source_schema(nid, abs_path, config)
-            artifacts[artifact_name] = abs_path
+        elif node_type == NodeType.DATA_INPUT and nid not in input_set:
+            _collect_static_data_input(nid, config, pipeline_dir, artifacts)
 
     return artifacts
 
@@ -154,58 +144,95 @@ def _bundle_feature_contract(
     artifacts[artifact_name] = contract_path
 
 
-def _verify_static_source_schema(
+def _collect_static_data_input(
     node_id: str,
-    abs_path: Path,
     config: dict,
+    pipeline_dir: Path,
+    artifacts: dict[str, Path],
 ) -> None:
-    """Check that a static dataSource file matches its declared schema.
+    """Collect a retained canonical Data Input without refreshing it.
 
-    Reads the file schema through the same data-source adapter used at
-    execution time, so schema declarations and bounded-profile source
-    restrictions are enforced at the deploy boundary too. When
-    ``expected_columns`` is declared, disagreement raises
-    :class:`DeployError` naming the node. The deploy layer refuses to
-    bundle a file whose shape drifted from the contract the rest of the
-    pipeline was designed against.
+    Direct file/lakehouse inputs package their declared local source.  Snapshot
+    inputs package the exact generation selected by the shared cache store;
+    opening the generation verifies its pointer, signed metadata, identity and
+    parquet footer before it can enter a deploy bundle.
     """
-    expected = config.get("expected_columns")
-    has_schema_declaration = any(
-        key in config for key in ("schema_overrides", "dtypes", "column_dtypes", "schema")
-    )
-    if not expected and not has_schema_declaration:
-        return
-
-    from haute._execution_context import ExecutionProfile
-    from haute._io import read_data_source
+    from haute._input_providers import source_cache_identity
+    from haute._polars_io_registry import validate_data_input_config
+    from haute._sandbox import _get_project_root
+    from haute._source_cache import SourceCacheCorruptError, SourceCacheStore
     from haute.errors import DeployError
 
     try:
-        source_config = {**config, "path": str(abs_path)}
-        schema = read_data_source(
-            source_config,
-            profile=ExecutionProfile.DEPLOY_BATCH,
-        ).collect_schema()
-        actual = schema.names()
-    except Exception as exc:  # pragma: no cover — malformed-file path
+        validated = validate_data_input_config(config)
+        provider = validated["inputType"]
+        cache_mode = validated["cacheMode"]
+        if provider == "inline":
+            return
+        if cache_mode == "snapshot":
+            identity = source_cache_identity(validated, base_dir=pipeline_dir)
+            generation = SourceCacheStore(_get_project_root()).open_generation(identity)
+            artifacts[f"{node_id}__snapshot.parquet"] = generation.data_path
+            artifacts[f"{node_id}__snapshot.meta.json"] = generation.metadata_path
+            return
+        if provider not in {"file", "lakehouse"}:
+            raise DeployError(
+                f"Data Input node {node_id!r} cannot execute directly for deploy; "
+                "build a ready snapshot first.",
+                node_id=node_id,
+            )
+        raw_path = str(validated["path"])
+        abs_path = _resolve_path(raw_path, pipeline_dir)
+        _check_exists(abs_path, node_id, "dataInput (static)")
+        _verify_static_input_schema(node_id, validated, pipeline_dir)
+        artifacts[_artifact_name(node_id, abs_path)] = abs_path
+    except DeployError:
+        raise
+    except (FileNotFoundError, SourceCacheCorruptError) as exc:
         raise DeployError(
-            f"Could not read schema for static dataSource node {node_id!r} "
-            f"to verify its expected_columns contract.",
+            f"Data Input node {node_id!r} requires a ready, valid matching snapshot "
+            "before deployment.",
             node_id=node_id,
-            path=str(abs_path),
-            error=str(exc),
+        ) from exc
+    except Exception as exc:
+        raise DeployError(
+            f"Data Input node {node_id!r} is not deployable: invalid provider "
+            "configuration or unsupported direct engine.",
+            node_id=node_id,
         ) from exc
 
-    if expected and list(expected) != list(actual):
-        raise DeployError(
-            f"Static dataSource {node_id!r} column order does not match the "
-            f"expected_columns declared in the pipeline: "
-            f"expected={list(expected)}, actual={list(actual)}.",
-            node_id=node_id,
-            path=str(abs_path),
-            expected_columns=list(expected),
-            actual_columns=list(actual),
+
+def _verify_static_input_schema(
+    node_id: str,
+    config: dict,
+    pipeline_dir: Path,
+) -> None:
+    """Validate a direct Data Input's canonical schema and readability.
+
+    Schema construction alone is insufficient for formats such as CSV:
+    Polars can accept a declared schema without parsing a row, even when the
+    declaration is incompatible with the file. Resolve through the bounded
+    deploy profile, then force at most one row through the streaming engine so
+    an invalid schema or unreadable source fails before it enters the bundle.
+    """
+    from haute._execution_context import ExecutionProfile
+    from haute._input_providers import resolve_data_input
+    from haute._polars_utils import streaming_collect
+    from haute.errors import DeployError
+
+    try:
+        frame = resolve_data_input(
+            config, base_dir=pipeline_dir, profile=ExecutionProfile.DEPLOY_BATCH
         )
+        frame.collect_schema()
+        streaming_collect(frame.head(1), profile=ExecutionProfile.DEPLOY_BATCH)
+    except Exception as exc:
+        raise DeployError(
+            f"Could not validate static Data Input node {node_id!r} against "
+            "its canonical provider, schema, and bounded-read contract.",
+            node_id=node_id,
+            error=str(exc),
+        ) from exc
 
 
 def _resolve_path(raw_path: str, pipeline_dir: Path) -> Path:

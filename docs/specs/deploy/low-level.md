@@ -7,7 +7,7 @@
 | `src/haute/deploy/__init__.py` | Public API surface (`deploy`, `deploy_resolved`, config/result re-exports); target validation (`_validate_target`) and dispatch (`_dispatch_resolved`) by `config.target`. |
 | `src/haute/deploy/_config.py` | `DeployConfig` (user input), target sub-configs (`DatabricksConfig`, `ContainerConfig`, `AzureContainerAppsConfig`, `AwsEcsConfig`, `GcpRunConfig`, `SafetyConfig`, `CIConfig`), `haute.toml` loading + schema validation, base-image pinning validation, `.env` loading, `resolve_config()` producing `ResolvedDeploy`. |
 | `src/haute/deploy/_pruner.py` | Graph pruning to the output node's ancestors; `liveSwitch` live-branch collapsing; output/input/source node discovery. |
-| `src/haute/deploy/_bundler.py` | Artefact discovery and collection (`collect_artifacts`): external files, file-backed optimiser artefacts, supported MLflow-sourced local models + feature contracts, and static data sources; path resolution and static-source schema drift checks. MLflow-sourced optimiser applies are deliberately not bundled. |
+| `src/haute/deploy/_bundler.py` | Artefact discovery and collection (`collect_artifacts`): external files, file-backed optimiser artefacts, supported MLflow-sourced local models + feature contracts, and retained Data Inputs; path resolution plus canonical provider/schema validation and a bounded one-row readability probe. MLflow-sourced optimiser applies are deliberately not bundled. |
 | `src/haute/deploy/_schema.py` | Input schema inference (read source file schema) and output schema inference (dry-run scoring with the bundled artefacts), with a graph-and-artefact-fingerprint-keyed on-disk cache. |
 | `src/haute/deploy/_scorer.py` | Runtime scoring engine (`score_graph`, `score_graph_lazy`) shared by every deploy target; `NodeBuildHooks` interception for live-input injection and artefact-path remapping; stat-gated model/contract caches; execution admission. |
 | `src/haute/deploy/_validators.py` | Pre-deploy validation (`validate_deploy`): structural checks + test-quote scoring; golden test-quote parsing and expected-output tolerance comparison; `score_test_quotes`. |
@@ -84,6 +84,12 @@
    fall back to the single source node in the pruned graph (`ValueError` if zero or
    multiple non-apiInput sources exist).
 7. `collect_artifacts(pruned_graph, deploy_inputs, pipeline_dir)` → `artifacts` dict.
+   Every retained direct Data Input is validated through its canonical provider config,
+   resolved with the `DEPLOY_BATCH` profile, schema-checked, and read for at most one row
+   through the shared profiled `streaming_collect` helper before its source is admitted to
+   the bundle. Schema and dtype declarations live under the format-specific `arguments`
+   object; the removed top-level `expected_columns` and `schema_overrides` fields are not
+   compatibility paths.
 8. `infer_input_schema()` (call `collect_schema()` on the first input node's source;
    lazy readers avoid row collection, while the existing plain-JSON reader may parse
    eagerly) and
@@ -177,7 +183,7 @@ directory before re-raising.
    model artefact present → score; contract bundled but no model artefact → validate
    contract then raise `RuntimeError`; neither present and no usable model source
    configured → raise `DeployError` immediately, never a silent passthrough); static
-   `dataSource` with a remapped bundled path.
+   file-backed `dataInput` with a remapped bundled path.
 3. Compile the graph's preamble once so transform-node user code has access to the same
    namespace as at dev time.
 4. For non-`DEPLOY_LIVE` profiles, build a `dataframe_cache_request` — the deployed
@@ -281,7 +287,7 @@ JSON have separate structured payloads. A body exactly at the configured limit i
   returns at most 1,000 rows. NDJSON is the explicit all-rows streaming response.
 
 > NOTE: `_pruner.py::find_deploy_input_nodes` only returns `apiInput` nodes even though
-> `find_source_nodes` also recognises `dataSource` and `constant` node types as sources;
+> `find_source_nodes` also recognises `dataInput` and `constant` node types as sources;
 > `resolve_config`'s fallback-to-single-source-node path is the only way a non-`apiInput`
 > source becomes a deploy input, and it only fires when there is exactly one such source.
 
@@ -289,7 +295,7 @@ JSON have separate structured payloads. A body exactly at the configured limit i
 
 | Exception | Raised where | Propagates to |
 |---|---|---|
-| `haute.errors.DeployError` | `_config.py` (unpinned base image), `_bundler.py` (static-source schema drift), `_scorer.py` (unscoreable `modelScore`), `_validators.py` (aggregated validation failure) | `deploy()` / `resolve_config()` callers; carries structured `context` kwargs (e.g. `node_id`, `expected_columns`) rendered into `str()`. |
+| `haute.errors.DeployError` | `_config.py` (unpinned base image), `_bundler.py` (invalid or unreadable retained Data Input), `_scorer.py` (unscoreable `modelScore`), `_validators.py` (aggregated validation failure) | `deploy()` / `resolve_config()` callers; carries structured `context` kwargs (for example `node_id` and the underlying provider/schema `error`) rendered into `str()`. |
 | `ValueError` | `_pruner.py` (missing/multiple output nodes, bad explicit `liveSwitch` config), `_config.py` (zero/ambiguous fallback source nodes, unknown TOML keys, missing `from_cli_args` required fields), `__init__.py` (unknown target), `_scorer.py` (bad `output_fields` type, negative `row_count`), `_impact.py` (non-finite predictions, zero-baseline change) | Caller of `resolve_config`/`deploy`/scoring functions; container `/quote` endpoint catches the `BoundedMemoryUnsupportedError` subclass specially (422) but a bare `ValueError` from scoring falls into the generic 500 handler. |
 | `FileNotFoundError` | `_bundler.py::_check_exists` (missing artefact on disk), `_bundler.py::_download_model_artifact` (MLflow download landed but file missing) | Propagates uncaught through `resolve_config()`. |
 | `RuntimeError` | `_container.py` (Docker unavailable/build/push failure, unpinned Dockerfile dependency), `_scorer.py` (`modelScore` contract matched but no model artefact — deliberately after the contract check), `_mlflow.py` (Databricks host/token unset, unreachable, `run_id`-less registered model version) | Uncaught to caller; `_check_docker_available`'s message specifically redirects the operator to CI. |
@@ -398,3 +404,28 @@ facade and propagate its typed diagnostics. Their score, schema, ordering, and o
 envelope contracts remain unchanged. No deploy module decides execution strategy;
 execution-engine owns that policy. See the
 [remediation plan](../../trip/plans/F_0.6.0_polars-backend-remediation.plan.md).
+
+## Approved change contract — 0.7.0 unified data-input deployment
+
+The implementation plan is
+[`F_0.7.0_data-io-convergence.plan.md`](../../trip/plans/F_0.7.0_data-io-convergence.plan.md).
+
+- `find_source_nodes` in `src/haute/deploy/_pruner.py` substitutes
+  `NodeType.DATA_INPUT` for the removed source type and retains api-input/constant semantics.
+- `src/haute/deploy/_bundler.py` dispatches retained static inputs by provider/cache mode.
+  Direct local path formats contribute their source artifact; snapshot inputs acquire a cache
+  generation lease, verify signed metadata/identity/schema, and bundle both data and metadata
+  under an immutable artifact name. Before publication, each direct input must resolve in the
+  bounded deploy profile and complete a one-row streaming readability probe using its canonical
+  format arguments. The manifest records provider, identity digest, generation id, and remap.
+- `src/haute/deploy/_scorer.py` remaps `DATA_INPUT` direct paths or snapshot roots through shared
+  provider dispatch. Remove static-data-source hooks and direct Databricks rejection. Secret
+  references resolve through target configuration only for explicitly supported direct remote
+  lakehouse execution.
+- `_schema.py` infers through the unified provider/snapshot reader; `_validators.py` checks
+  snapshot readiness, identity, corruption, direct-remote policy, and format engines. No deploy
+  module calls a cache builder.
+- Tests update pruner roots, artifact collection, schema drift, remap, scorer hooks, dry-run,
+  manifest, package contents, and offline execution. Concurrency tests pin one leased generation
+  while refresh publishes another. Negative tests assert no removed-node recognition and no
+  write invocation for `DATA_OUTPUT`.

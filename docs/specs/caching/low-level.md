@@ -485,3 +485,60 @@ satisfies this low-level contract.
 - Any direct row-hash-buffer patch includes equivalence tests plus a repeatable
   benchmark with an agreed material-improvement threshold; absent that evidence,
   do not make the optimisation.
+
+## Approved change contract — 0.7.0 shared input snapshots
+
+The target is implemented under
+[`F_0.7.0_data-io-convergence.plan.md`](../../trip/plans/F_0.7.0_data-io-convergence.plan.md).
+
+### New source-cache module
+
+- Add `src/haute/_source_cache.py` as this component's primary owner. It defines
+  `SourceCacheIdentity`, `SourceCacheMetadata`, `SourceCacheStatus`,
+  `SourceCacheGeneration`, `SourceCacheBuildContext`, `SourceCacheBuilder` (protocol),
+  `SourceCacheStore`, and the typed cache error family. Provider adapters are registered by the
+  I/O and Databricks components; `_source_cache.py` has no connector imports.
+- `SourceCacheIdentity` canonical bytes use the repository's canonical JSON/hash primitives and
+  a versioned identity schema. The digest selects
+  `.haute_cache/inputs/<digest>/`. `meta.json` records the full redacted canonical identity and
+  its schema version so hash collisions or version drift fail validation rather than selecting
+  an unrelated artifact.
+- Each identity directory contains immutable `generations/<generation-id>/data.parquet` and
+  `meta.json` plus one atomically replaceable `current.json` pointer. A builder writes into a
+  unique sibling staging directory, fsyncs/closes its data, computes signatures and metadata,
+  renames the generation into place, then atomically replaces `current.json`. Publication never
+  edits an already-visible generation.
+- A per-identity single-flight lock admits one builder while allowing independent identities to
+  build concurrently. Reader leases pin the generation id they validated. Refresh, clear, quota
+  eviction, and process-start orphan cleanup may delete only unleased non-current generations;
+  current-generation replacement retires the old generation and deletes it after its final
+  lease.
+- `HAUTE_INPUT_CACHE_MAX_BYTES` (default 20 GiB) and
+  `HAUTE_INPUT_CACHE_MAX_GENERATIONS` (default 64) are positive project-store limits.
+  Publication deterministically evicts the oldest unleased current generations, with identity
+  digest and generation id as stable tie-breakers; when pinned generations prevent enough
+  reclamation, publication fails with the typed quota error and leaves them intact.
+- Builder output is an iterator/stream of Arrow record batches or an already-lazy bounded source,
+  never an untyped callback returning an arbitrary `DataFrame`. `SourceCacheBuildContext`
+  carries execution profile, cancellation/deadline checkpoints, progress counters, and the
+  declared `bounded | admitted_eager | unsupported` build class. The store rejects a mismatch
+  before invoking the builder.
+- Generation validation checks identity version/digest, Parquet existence and footer/schema,
+  signed size/hash, metadata shape, and local-file signature where applicable before returning
+  `pl.scan_parquet`. A corrupt or mismatched current pointer is a typed failure and never falls
+  back to another generation silently.
+
+### API and tests
+
+- `src/haute/routes/input_cache.py` becomes the shared HTTP owner for build/refresh, progress,
+  status, and clear. Requests carry a validated `dataInput` source descriptor; responses expose
+  only redacted identity, state, progress, generation metadata, and typed failure information.
+  The Databricks-specific cache routes are removed when their frontend callers move.
+- `src/haute/schemas.py` and the frontend API guards add versioned input-cache request/status
+  models. Status separates local state (`missing | building | ready | corrupt | failed`) from
+  freshness (`fresh | stale | unknown`) and build boundedness.
+- Add focused tests for identity canonicalisation, metadata/signature validation, publisher
+  crash points, reader leases across refresh, clear/eviction races, per-key single flight,
+  progress isolation, cancellation/deadline cleanup, quotas, redaction, and provider protocol
+  conformance. Database, Databricks, lakehouse, and file integration suites supply their own
+  builders against the same store contract.

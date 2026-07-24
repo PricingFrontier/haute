@@ -623,7 +623,7 @@ def _runtime_projectable_source_ids(
     node_map: Mapping[str, GraphNode],
 ) -> frozenset[str]:
     """Return source parents whose lazy scans can absorb an edge projection."""
-    source_types = {NodeType.API_INPUT, NodeType.DATA_SOURCE, NodeType.EXTERNAL_FILE}
+    source_types = {NodeType.API_INPUT, NodeType.DATA_INPUT, NodeType.EXTERNAL_FILE}
     projectable: set[str] = set()
     for parent_id in parent_ids:
         parent = node_map[parent_id]
@@ -722,7 +722,7 @@ def _execute_lazy(
 ) -> tuple[dict[str, _Frame], list[str], dict[str, list[str]], dict[str, str]]:
     """Execute a graph lazily and return per-node LazyFrames.
 
-    Used by execute_sink (batch writes) and score_graph (deploy scoring)
+    Used by write_data_output (batch writes) and score_graph (deploy scoring)
     where Polars can optimise the full lazy plan end-to-end.
     Interactive paths (preview, trace) use eager execution with caching
     instead — see executor._eager_execute and trace.execute_trace.

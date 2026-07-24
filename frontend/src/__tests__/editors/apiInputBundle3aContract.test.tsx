@@ -41,7 +41,7 @@ const apiInputEditorProps: Record<string, unknown>[] = []
 
 vi.mock("../../panels/LazyNodeEditors", () => ({
   LazyEditorBoundary: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-  DataSourceEditor: () => <div data-testid="DataSourceEditor" />,
+  DataInputEditor: () => <div data-testid="DataInputEditor" />,
   TransformEditor: () => <div data-testid="TransformEditor" />,
   ExploreCodeEditor: () => <div data-testid="ExploreCodeEditor" />,
   ModelScoreEditor: () => <div data-testid="ModelScoreEditor" />,
@@ -54,7 +54,6 @@ vi.mock("../../panels/LazyNodeEditors", () => ({
     return <div data-testid="ApiInputEditor" />
   },
   LiveSwitchEditor: () => <div data-testid="LiveSwitchEditor" />,
-  SinkEditor: () => <div data-testid="SinkEditor" />,
   ScenarioExpanderEditor: () => <div data-testid="ScenarioExpanderEditor" />,
   OptimiserApplyEditor: () => <div data-testid="OptimiserApplyEditor" />,
   ConstantEditor: () => <div data-testid="ConstantEditor" />,

@@ -109,7 +109,7 @@ def test_graph_to_code_remaps_inputs_by_parent_ids_to_function_names() -> None:
                     "id": "left-uuid",
                     "data": {
                         "label": "Left Input",
-                        "nodeType": "dataSource",
+                        "nodeType": "dataInput",
                         "config": {"path": "left.parquet"},
                     },
                 },
@@ -117,7 +117,7 @@ def test_graph_to_code_remaps_inputs_by_parent_ids_to_function_names() -> None:
                     "id": "right-uuid",
                     "data": {
                         "label": "Right Input",
-                        "nodeType": "dataSource",
+                        "nodeType": "dataInput",
                         "config": {"path": "right.parquet"},
                     },
                 },
@@ -167,7 +167,7 @@ def test_graph_to_code_drops_single_parent_stale_inputs_by_parent_key() -> None:
                     "id": "current-parent",
                     "data": {
                         "label": "Current Parent",
-                        "nodeType": "dataSource",
+                        "nodeType": "dataInput",
                         "config": {"path": "current.parquet"},
                     },
                 },
@@ -210,7 +210,7 @@ def test_graph_to_code_drops_ambiguous_stale_inputs_by_parent_metadata() -> None
                     "id": "left-parent",
                     "data": {
                         "label": "Left Parent",
-                        "nodeType": "dataSource",
+                        "nodeType": "dataInput",
                         "config": {"path": "left.parquet"},
                     },
                 },
@@ -218,7 +218,7 @@ def test_graph_to_code_drops_ambiguous_stale_inputs_by_parent_metadata() -> None
                     "id": "right-parent",
                     "data": {
                         "label": "Right Parent",
-                        "nodeType": "dataSource",
+                        "nodeType": "dataInput",
                         "config": {"path": "right.parquet"},
                     },
                 },
@@ -264,7 +264,7 @@ def test_graph_to_code_drops_multiple_stale_keys_for_single_current_parent() -> 
                     "id": "current-parent",
                     "data": {
                         "label": "Current Parent",
-                        "nodeType": "dataSource",
+                        "nodeType": "dataInput",
                         "config": {"path": "current.parquet"},
                     },
                 },
@@ -311,7 +311,7 @@ def test_graph_to_code_preserves_instance_contract() -> None:
                     "id": "src",
                     "data": {
                         "label": "premium",
-                        "nodeType": "dataSource",
+                        "nodeType": "dataInput",
                         "config": {"path": "premium.parquet"},
                     },
                 },
@@ -446,7 +446,7 @@ def test_graph_to_code_refuses_to_emit_unparseable_file() -> None:
                     "id": "src",
                     "data": {
                         "label": "Src",
-                        "nodeType": "dataSource",
+                        "nodeType": "dataInput",
                         "config": {"path": "d.parquet"},
                     },
                 },
@@ -487,7 +487,7 @@ def test_graph_to_code_multi_refuses_unparseable_submodel_file() -> None:
                                 "id": "src",
                                 "data": {
                                     "label": "Src",
-                                    "nodeType": "dataSource",
+                                    "nodeType": "dataInput",
                                     "config": {"path": "d.parquet"},
                                 },
                             },

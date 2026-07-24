@@ -410,31 +410,7 @@ def build_data_source_adapter(config: Mapping[str, Any]) -> DataSourceAdapter:
 
         return DataSourceAdapter(source_type=source_type, location=path, _reader=_read_flat_file)
 
-    if source_type == "databricks":
-        table = _required_config_string(config, "table", source_type=source_type)
-
-        def _read_databricks(
-            _profile: ExecutionProfile | str | None,
-            _columns: tuple[str, ...] | None,
-            _validate_columns: tuple[str, ...] | None,
-            _table: str = table,
-        ) -> pl.LazyFrame:
-            from haute._databricks_io import read_cached_table
-
-            return _select_columns(
-                read_cached_table(_table),
-                _columns,
-                validate_columns=_validate_columns,
-            )
-
-        return DataSourceAdapter(
-            source_type=source_type,
-            location=table,
-            _reader=_read_databricks,
-        )
-
-    supported = ", ".join(("databricks", "flat_file"))
-    raise ValueError(f"Unsupported data source type: {source_type!r}. Supported: {supported}")
+    raise ValueError(f"Unsupported API Input source type: {source_type!r}. Supported: flat_file")
 
 
 def read_data_source(

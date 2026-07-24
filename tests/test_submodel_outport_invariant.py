@@ -139,7 +139,7 @@ class TestOutPortHandleInvariant:
                         "id": "src",
                         "data": {
                             "label": "Source",
-                            "nodeType": "dataSource",
+                            "nodeType": "dataInput",
                             "config": {"path": "d.parquet"},
                         },
                     },

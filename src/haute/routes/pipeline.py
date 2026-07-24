@@ -30,6 +30,7 @@ from haute._io import read_user_text
 from haute._json_safe import rows_to_json_safe
 from haute._logging import get_logger
 from haute._path_resolution import resolve_runtime_file_path
+from haute._polars_io_registry import PolarsIoConfigError, validate_data_output_config
 from haute._polars_utils import DEFAULT_STREAMING_CHUNK_SIZE, temporary_streaming_chunk_size
 from haute._sandbox import _get_project_root
 from haute._topo import ancestors
@@ -44,9 +45,8 @@ from haute.executor import (
     PreviewProjectionError,
     _preview_cache,
     execute_graph,
-    execute_sink,
     resolve_data_output_path,
-    resolve_sink_output_path,
+    write_data_output,
 )
 from haute.graph_utils import (
     NodeType,
@@ -87,10 +87,10 @@ from haute.schemas import (
     ReadJsonResponse,
     SavePipelineRequest,
     SavePipelineResponse,
-    SinkRequest,
-    SinkResponse,
     TraceRequest,
     TraceResponse,
+    WriteOutputRequest,
+    WriteOutputResponse,
 )
 from haute.trace import execute_trace, trace_result_to_dict
 
@@ -149,7 +149,7 @@ def _validate_runtime_input_paths(graph: PipelineGraph) -> None:
     authoritative enumeration (:func:`haute.execution._runtime_input_path_fields`)
     rather than a hand-maintained map, so the guard can never drift from what
     execution actually reads.  This confines every file the executor consumes at
-    preview/trace time — flat-file ``apiInput`` / ``dataSource`` / ``externalFile``
+    preview/trace time — flat-file ``apiInput`` / ``dataInput`` / ``externalFile``
     ``path``, ``modelScore`` ``artifact_path`` / ``feature_contract_path``, and
     file-sourced ``optimiserApply`` artifacts — to the project root.
     """
@@ -172,30 +172,21 @@ def _validate_runtime_input_paths(graph: PipelineGraph) -> None:
                 raise HTTPException(status_code=status_code, detail=str(exc)) from None
 
 
-def _validate_sink_output_path(
+def _validate_data_output_path(
     graph: PipelineGraph,
-    sink_node: Any,
+    output_node: Any,
     *,
     project_root: Path,
 ) -> None:
-    raw_path = sink_node.data.config.get("path")
+    raw_path = output_node.data.config.get("path")
     if not isinstance(raw_path, str) or not raw_path:
         return
-    fmt = sink_node.data.config.get("format", "parquet")
     try:
-        if sink_node.data.nodeType == NodeType.DATA_OUTPUT:
-            resolve_data_output_path(
-                graph,
-                sink_node.data.config,
-                project_root=project_root,
-            )
-        else:
-            resolve_sink_output_path(
-                graph,
-                raw_path,
-                str(fmt),
-                project_root=project_root,
-            )
+        resolve_data_output_path(
+            graph,
+            output_node.data.config,
+            project_root=project_root,
+        )
     except ValueError as exc:
         status_code = 400 if "embedded null byte" in str(exc) else 403
         raise HTTPException(status_code=status_code, detail=str(exc)) from None
@@ -820,9 +811,9 @@ async def preview_node(body: PreviewNodeRequest) -> PreviewNodeResponse:
             preview_context.release_admission()
 
 
-@router.post("/pipeline/sink", response_model=SinkResponse)
-async def execute_sink_node(body: SinkRequest) -> SinkResponse:
-    """Execute the pipeline up to a sink node and write output to disk.
+@router.post("/pipeline/write-output", response_model=WriteOutputResponse)
+async def write_output_node(body: WriteOutputRequest) -> WriteOutputResponse:
+    """Execute the pipeline up to a Data Output and publish its destination.
 
     Only called on explicit user action (Write button), not during normal run/preview.
     """
@@ -832,33 +823,40 @@ async def execute_sink_node(body: SinkRequest) -> SinkResponse:
         raise HTTPException(status_code=400, detail="Empty graph")
     _ensure_printable_lookup_id(body.node_id, "node_id")
     _validate_runtime_input_paths(graph)
-    sink_node = graph.node_map.get(body.node_id)
-    if sink_node is None:
-        raise HTTPException(status_code=404, detail=f"Sink node '{body.node_id}' not found")
-    if sink_node.data.nodeType not in (NodeType.DATA_SINK, NodeType.DATA_OUTPUT):
+    output_node = graph.node_map.get(body.node_id)
+    if output_node is None:
+        raise HTTPException(status_code=404, detail=f"Data Output node '{body.node_id}' not found")
+    if output_node.data.nodeType != NodeType.DATA_OUTPUT:
         raise HTTPException(
             status_code=400,
-            detail=f"Node '{body.node_id}' is not a data sink",
+            detail=f"Node '{body.node_id}' is not a Data Output",
         )
-    project_root = Path.cwd().resolve()
-    _validate_sink_output_path(graph, sink_node, project_root=project_root)
-
-    sink_context: ExecutionContext | None = None
     try:
-        sink_context = create_admitted_execution_context(
-            operation="pipeline_sink",
+        validate_data_output_config(output_node.data.config)
+    except (PolarsIoConfigError, TypeError, ValueError):
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid Data Output configuration.",
+        ) from None
+    project_root = Path.cwd().resolve()
+    _validate_data_output_path(graph, output_node, project_root=project_root)
+
+    output_context: ExecutionContext | None = None
+    try:
+        output_context = create_admitted_execution_context(
+            operation="pipeline_write_output",
             profile=ExecutionProfile.LAZY_SINK,
         )
         result = await run_blocking_with_response_timeout(
-            execute_sink,
+            write_data_output,
             graph,
-            sink_node_id=body.node_id,
+            output_node_id=body.node_id,
             source=body.source,
-            execution_context=sink_context,
+            execution_context=output_context,
             streaming_chunk_size=body.streaming_chunk_size,
             project_root=project_root,
             timeout=_sink_timeout(),
-            operation="pipeline_sink",
+            operation="pipeline_write_output",
         )
         if result.execution_metrics is not None:
             logger.info(
@@ -880,25 +878,27 @@ async def execute_sink_node(body: SinkRequest) -> SinkResponse:
             "sink_bounded_streaming_unsupported",
             error=str(e),
             execution_metrics=(
-                sink_context.metrics_payload(status="error") if sink_context is not None else None
+                output_context.metrics_payload(status="error")
+                if output_context is not None
+                else None
             ),
         )
         raise HTTPException(status_code=422, detail=str(e)) from None
     except BlockingWorkTimeoutError as e:
-        if sink_context is not None:
-            timed_out_context = sink_context
+        if output_context is not None:
+            timed_out_context = output_context
             timed_out_context.cancel()
             e.background_task.add_done_callback(
                 lambda _future: timed_out_context.release_admission()
             )
-            sink_context = None
+            output_context = None
         raise HTTPException(
             status_code=504,
             detail=f"Sink execution timed out ({_sink_timeout():.0f}s limit)",
         )
     except TimeoutError:
-        if sink_context is not None:
-            sink_context.cancel()
+        if output_context is not None:
+            output_context.cancel()
         raise HTTPException(
             status_code=504,
             detail=f"Sink execution timed out ({_sink_timeout():.0f}s limit)",
@@ -909,5 +909,5 @@ async def execute_sink_node(body: SinkRequest) -> SinkResponse:
         logger.error("sink_failed", error=str(e))
         raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
     finally:
-        if sink_context is not None:
-            sink_context.release_admission()
+        if output_context is not None:
+            output_context.release_admission()

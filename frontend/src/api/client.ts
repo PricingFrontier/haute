@@ -11,7 +11,6 @@
 import type {
   ApplyOptimiserRequest,
   ApplyOptimiserResponse,
-  CacheStatusResponse,
   DatabricksCatalogsResponse,
   DatabricksSchemasResponse,
   DatabricksTablesResponse,
@@ -19,8 +18,6 @@ import type {
   DissolveSubmodelResponse,
   ExploreRunResponse,
   ExploreStatusResponse,
-  FetchProgressResponse,
-  FetchTableResponse,
   FileListItem,
   FrontierAutoRangeResponse,
   FrontierAutoRangeStartResponse,
@@ -50,7 +47,12 @@ import type {
   GitStatus,
   GitWorkingBranchResponse,
   GraphPayload,
-  IoFormatsResponse,
+  IoCapabilitiesResponse,
+  InputCacheBuildRequest,
+  InputCacheBuildResponse,
+  InputCacheCancelResponse,
+  InputCacheJobStatusResponse,
+  InputCacheSnapshotResponse,
   JsonCacheBuildResponse,
   JsonCacheProgressResponse,
   JsonCacheStatusResponse,
@@ -71,7 +73,7 @@ import type {
   SaveOptimiserResponse,
   SavePipelineResponse,
   SchemaResult,
-  SinkResponse,
+  WriteOutputResponse,
   SubmodelCreateResponse,
   SubmodelGraphResponse,
   TraceResponse,
@@ -85,7 +87,6 @@ import type {
 } from "./types"
 import {
   parseApplyOptimiserResponse,
-  parseCacheStatusResponse,
   parseDatabricksCatalogsResponse,
   parseDatabricksSchemasResponse,
   parseDatabricksTablesResponse,
@@ -93,8 +94,6 @@ import {
   parseDissolveSubmodelResponse,
   parseExploreRunResponse,
   parseExploreStatusResponse,
-  parseFetchProgressResponse,
-  parseFetchTableResponse,
   parseFrontierAutoRangeResponse,
   parseFrontierAutoRangeStartResponse,
   parseFrontierAutoRangeStatusResponse,
@@ -121,7 +120,11 @@ import {
   parseGitSetWorkingBranchResponse,
   parseGitStatusResponse,
   parseGitWorkingBranchResponse,
-  parseIoFormatsResponse,
+  parseIoCapabilitiesResponse,
+  parseInputCacheBuildResponse,
+  parseInputCacheCancelResponse,
+  parseInputCacheJobStatusResponse,
+  parseInputCacheSnapshotResponse,
   parseJsonCacheBuildResponse,
   parseJsonCacheProgressResponse,
   parseJsonCacheStatusResponse,
@@ -135,7 +138,7 @@ import {
   parsePreviewNodeResponse,
   parseSavePipelineResponse,
   parseSchemaResponse,
-  parseSinkResponse,
+  parseWriteOutputResponse,
   parseSubmodelCreateResponse,
   parseSubmodelGraphResponse,
   parseTraceResponse,
@@ -677,7 +680,7 @@ export function traceCell(args: TraceCellArgs): Promise<TraceResponse> {
   return post<unknown>("/api/pipeline/trace", body, { signal, timeout }).then(parseTraceResponse)
 }
 
-export interface ExecuteSinkArgs {
+export interface WriteOutputArgs {
   graph: GraphPayload
   nodeId: string
   source?: string
@@ -686,7 +689,7 @@ export interface ExecuteSinkArgs {
   timeout?: number
 }
 
-export function executeSink(args: ExecuteSinkArgs): Promise<SinkResponse> {
+export function writeOutput(args: WriteOutputArgs): Promise<WriteOutputResponse> {
   const {
     graph,
     nodeId,
@@ -696,7 +699,7 @@ export function executeSink(args: ExecuteSinkArgs): Promise<SinkResponse> {
     timeout = 300_000,
   } = args
   return post<unknown>(
-    "/api/pipeline/sink",
+    "/api/pipeline/write-output",
     {
       graph,
       node_id: nodeId,
@@ -704,7 +707,7 @@ export function executeSink(args: ExecuteSinkArgs): Promise<SinkResponse> {
       ...(streamingChunkSize !== undefined ? { streaming_chunk_size: streamingChunkSize } : {}),
     },
     { signal, timeout },
-  ).then(parseSinkResponse)
+  ).then(parseWriteOutputResponse)
 }
 
 // ---------------------------------------------------------------------------
@@ -761,21 +764,53 @@ export function fetchSchema(
   return request<unknown>(`/api/schema?path=${encodeURIComponent(path)}`, options).then(parseSchemaResponse)
 }
 
-export function fetchDatabricksSchema(
-  table: string,
-  options?: { signal?: AbortSignal },
-): Promise<SchemaResult> {
-  return request<unknown>(`/api/schema/databricks?table=${encodeURIComponent(table)}`, options).then(parseSchemaResponse)
-}
-
 // ---------------------------------------------------------------------------
 // Data In/Out format capabilities (dataInput / dataOutput node editors)
 // ---------------------------------------------------------------------------
 
-export function fetchIoFormats(
+export function fetchIoCapabilities(
   options?: { signal?: AbortSignal },
-): Promise<IoFormatsResponse> {
-  return request<unknown>("/api/formats", options).then(parseIoFormatsResponse)
+): Promise<IoCapabilitiesResponse> {
+  return request<unknown>("/api/io-capabilities", options).then(parseIoCapabilitiesResponse)
+}
+
+// ---------------------------------------------------------------------------
+// Input-cache endpoints
+// ---------------------------------------------------------------------------
+
+export function buildInputCache(
+  payload: InputCacheBuildRequest,
+  options?: { signal?: AbortSignal; timeout?: number },
+): Promise<InputCacheBuildResponse> {
+  return post<unknown>("/api/input-cache/build", payload, options).then(parseInputCacheBuildResponse)
+}
+
+export function getInputCacheJob(
+  jobId: string,
+  options?: { signal?: AbortSignal },
+): Promise<InputCacheJobStatusResponse> {
+  return request<unknown>(`/api/input-cache/jobs/${encodeURIComponent(jobId)}`, options).then(parseInputCacheJobStatusResponse)
+}
+
+export function cancelInputCacheJob(
+  jobId: string,
+  options?: { signal?: AbortSignal },
+): Promise<InputCacheCancelResponse> {
+  return del<unknown>(`/api/input-cache/jobs/${encodeURIComponent(jobId)}`, options).then(parseInputCacheCancelResponse)
+}
+
+export function getInputCacheStatus(
+  payload: { schema_version: 1; config: Record<string, unknown> },
+  options?: { signal?: AbortSignal },
+): Promise<InputCacheSnapshotResponse> {
+  return post<unknown>("/api/input-cache/status", payload, options).then(parseInputCacheSnapshotResponse)
+}
+
+export function clearInputCache(
+  payload: { schema_version: 1; config: Record<string, unknown> },
+  options?: { signal?: AbortSignal },
+): Promise<InputCacheSnapshotResponse> {
+  return post<unknown>("/api/input-cache/clear", payload, options).then(parseInputCacheSnapshotResponse)
 }
 
 // ---------------------------------------------------------------------------
@@ -1099,34 +1134,6 @@ export function getTables(
 ): Promise<DatabricksTablesResponse> {
   return request<unknown>(`/api/databricks/tables?catalog=${encodeURIComponent(catalog)}&schema=${encodeURIComponent(schema)}`, options)
     .then((data) => parseDatabricksTablesResponse(data) as DatabricksTablesResponse)
-}
-
-export function getCacheStatus(
-  table: string,
-  options?: { signal?: AbortSignal },
-): Promise<CacheStatusResponse> {
-  return request<unknown>(`/api/databricks/cache?table=${encodeURIComponent(table)}`, options).then(parseCacheStatusResponse)
-}
-
-export function getFetchProgress(
-  table: string,
-  options?: { signal?: AbortSignal },
-): Promise<FetchProgressResponse> {
-  return request<unknown>(`/api/databricks/fetch/progress?table=${encodeURIComponent(table)}`, options).then(parseFetchProgressResponse)
-}
-
-export function fetchDatabricksData(
-  payload: { table: string; http_path?: string; query?: string },
-  options?: { signal?: AbortSignal; timeout?: number },
-): Promise<FetchTableResponse> {
-  return post<unknown>("/api/databricks/fetch", payload, { timeout: 300_000, ...options }).then(parseFetchTableResponse)
-}
-
-export function deleteCache(
-  table: string,
-  options?: { signal?: AbortSignal },
-): Promise<CacheStatusResponse> {
-  return del<unknown>(`/api/databricks/cache?table=${encodeURIComponent(table)}`, options).then(parseCacheStatusResponse)
 }
 
 // ---------------------------------------------------------------------------
