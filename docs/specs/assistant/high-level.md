@@ -343,8 +343,8 @@ Loud, typed, and never averaged away:
 
 ## Approved change contract — 0.7.0 data I/O authoring
 
-Implementation follows
-[`F_0.7.0_data-io-convergence.plan.md`](../../trip/plans/F_0.7.0_data-io-convergence.plan.md).
+Remaining assistant improvement work is tracked in the
+[assistant roadmap](../../roadmap/assistant.md).
 
 - The node catalogue, authoring guide, examples, mutation schema, and readiness checks expose
   only `dataInput` and `dataOutput` for tabular I/O. Removed node names/decorators are not

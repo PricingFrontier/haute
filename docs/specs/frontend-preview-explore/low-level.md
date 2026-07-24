@@ -103,7 +103,8 @@ Browser preview/smoke coverage is in `frontend/e2e/core-flows.spec.ts`,
 
 ## Polars backend contracts (0.6.0)
 
-See [the remediation plan](../../trip/plans/F_0.6.0_polars-backend-remediation.plan.md).
+Remaining preview and Explore improvement work is tracked in the
+[frontend canvas roadmap](../../roadmap/frontend-canvas.md).
 `DataPreview.tsx` and `ExplorePreview.tsx` consume only the shared guarded version-1
 strategy payload. The consumer distinguishes `projected`, `boundary`, `admitted_eager`,
 `rejected`, and `not_planned`, with a separate diagnostic-unavailable state, and uses the shared

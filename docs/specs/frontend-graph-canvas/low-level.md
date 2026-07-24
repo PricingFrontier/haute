@@ -961,8 +961,8 @@ The pure connection/frame helpers are defended by `frontend/src/utils/__tests__/
 
 ## Approved change contract — 0.7.0 canonical data-I/O canvas nodes
 
-The implementation plan is
-[`F_0.7.0_data-io-convergence.plan.md`](../../trip/plans/F_0.7.0_data-io-convergence.plan.md).
+Remaining graph-canvas improvement work is tracked in the
+[frontend canvas roadmap](../../roadmap/frontend-canvas.md).
 
 - Remove `DATA_SOURCE`/`DATA_SINK` from `utils/nodeTypes.ts`,
   `utils/nodeTypeRegistry.ts`, `SOURCE_ONLY_TYPES`, `SINK_ONLY_TYPES`, `PALETTE_TYPES`, icons,

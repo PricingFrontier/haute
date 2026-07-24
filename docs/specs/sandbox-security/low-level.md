@@ -374,8 +374,8 @@ of `_FORMAT_METHOD_NAMES`. Receiver shapes:
 
 ## Approved change contract — 0.7.0 unified data-I/O security
 
-The implementation plan is
-[`F_0.7.0_data-io-convergence.plan.md`](../../trip/plans/F_0.7.0_data-io-convergence.plan.md).
+Remaining sandbox and security improvement work is tracked in the
+[security and supply-chain roadmap](../../roadmap/security-supply-chain.md).
 
 - `_builders._build_data_input` invokes `_user_exec._exec_user_code` exactly once for non-empty
   input code, after provider dispatch and before returning the frame. No provider-specific

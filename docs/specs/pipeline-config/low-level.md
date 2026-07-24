@@ -340,8 +340,8 @@ generated graphs.
 
 ## Polars backend contracts (0.6.0)
 
-This component implements the pipeline-config portions of
-[`F_0.6.0_polars-backend-remediation.plan.md`](../../trip/plans/F_0.6.0_polars-backend-remediation.plan.md).
+Remaining pipeline-configuration improvement work is tracked in the
+[pipeline authoring roadmap](../../roadmap/pipeline-authoring.md).
 
 `Node` computes `_InputArity` exactly once from `inspect.signature(fn)` during registration or
 construction and stores it as immutable node state; execution consumes that stored result rather
@@ -368,8 +368,8 @@ successful mapped live-switch selection, or removal of unconfigured default-sour
 
 ## Approved change contract — 0.7.0 canonical data I/O node types
 
-The implementation plan is
-[`F_0.7.0_data-io-convergence.plan.md`](../../trip/plans/F_0.7.0_data-io-convergence.plan.md).
+Remaining pipeline-configuration improvement work is tracked in the
+[pipeline authoring roadmap](../../roadmap/pipeline-authoring.md).
 
 - In `src/haute/_types.py`, delete `NodeType.DATA_SOURCE`, `NodeType.DATA_SINK`,
   `DataSourceConfig`, and `DataSinkConfig`; extend `DataInputConfig`/`DataOutputConfig` with the

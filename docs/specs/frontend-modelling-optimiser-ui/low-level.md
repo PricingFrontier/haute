@@ -116,7 +116,8 @@ Performance regression coverage for background progress rendering is in
 
 ## Polars backend contracts (0.6.0)
 
-See [the remediation plan](../../trip/plans/F_0.6.0_polars-backend-remediation.plan.md).
+Remaining frontend modelling and optimiser improvement work is tracked in the
+[frontend canvas roadmap](../../roadmap/frontend-canvas.md).
 `ModellingConfig.tsx`, `OptimiserConfig.tsx`, their action/result areas, and shared diagnostics
 consume only the guarded version-1 strategy contract. They render `projected`, `boundary`,
 `admitted_eager`, `rejected`, and `not_planned`, plus diagnostic unavailable, using the shared
@@ -142,8 +143,8 @@ rejection, stable 422 fields, and submit gating.
 
 ## Approved change contract — 0.7.0 unified data-input UI consumption
 
-The implementation plan is
-[`F_0.7.0_data-io-convergence.plan.md`](../../trip/plans/F_0.7.0_data-io-convergence.plan.md).
+Remaining frontend modelling and optimiser improvement work is tracked in the
+[frontend canvas roadmap](../../roadmap/frontend-canvas.md).
 
 - `OptimiserConfig.tsx` continues to derive candidate ids from direct graph inputs and preserves
   explicit selection when valid. `useDataInputColumns.ts` consumes the retained node's guarded

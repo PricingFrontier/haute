@@ -289,13 +289,13 @@ click that triggered it.
 Optimiser estimate, setup, solve, and auto-range flows will use one execution-plan
 result for a given graph and request context. Each exposes the same bounded strategy
 diagnostics and deterministic feature provenance, so admission estimates and execution
-cannot silently select divergent plans. Execution-engine owns planner internals; see the
-[remediation plan](../../trip/plans/F_0.6.0_polars-backend-remediation.plan.md).
+cannot silently select divergent plans. Execution-engine owns planner internals. Remaining
+optimiser improvement work is tracked in the [optimiser roadmap](../../roadmap/optimiser.md).
 
 ## Approved change contract — 0.7.0 unified data-input consumption
 
-Implementation follows
-[`F_0.7.0_data-io-convergence.plan.md`](../../trip/plans/F_0.7.0_data-io-convergence.plan.md).
+Remaining optimiser improvement work is tracked in the
+[optimiser roadmap](../../roadmap/optimiser.md).
 
 - Optimiser inputs remain explicit connected upstream node ids; “data input” in optimiser
   configuration does not mean there can be only one `dataInput` node in the graph. When several

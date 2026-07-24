@@ -534,13 +534,13 @@ permutations, cap boundary, over-cap rejection, aggregate `detail_state`, and du
 retention. Release 0.6 is an intentional
 pre-1.0 fail-loud compatibility change: release and migration notes are required, and no
 shim may preserve unsafe silent fallback. The execution-engine spec owns production of the
-strategy data; see the
-[remediation plan](../../trip/plans/F_0.6.0_polars-backend-remediation.plan.md).
+strategy data. Remaining server API improvement work is tracked in the
+[background jobs and API roadmap](../../roadmap/background-jobs-api.md).
 
 ## Approved change contract — 0.7.0 data I/O API
 
-The implementation plan is
-[`F_0.7.0_data-io-convergence.plan.md`](../../trip/plans/F_0.7.0_data-io-convergence.plan.md).
+Remaining server API improvement work is tracked in the
+[background jobs and API roadmap](../../roadmap/background-jobs-api.md).
 
 - `src/haute/routes/files.py` stops serving `/api/formats`; registry capability serving moves to
   a focused `src/haute/routes/io_capabilities.py`. Add the exact versioned Pydantic response and

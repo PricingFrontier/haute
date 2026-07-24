@@ -339,8 +339,8 @@ Out of scope (owned elsewhere, linked where relevant):
 
 ## Polars backend contracts (0.6.0)
 
-This slice implements the tracing commitments in the
-[Polars backend remediation plan](../../trip/plans/F_0.6.0_polars-backend-remediation.plan.md).
+Remaining tracing improvement work is tracked in the
+[tracing and explainability roadmap](../../roadmap/tracing-explainability.md).
 Delivery is split deliberately: P9a owns correlation and request-local
 enrichment; P9b, sequenced only after the shared lineage-key work, integrates
 trace caching. P9b consumes the shared lineage preview-key factory rather than
@@ -458,8 +458,8 @@ also contract tests.
 
 ## Approved change contract — 0.7.0 data-input tracing
 
-Implementation follows
-[`F_0.7.0_data-io-convergence.plan.md`](../../trip/plans/F_0.7.0_data-io-convergence.plan.md).
+Remaining tracing improvement work is tracked in the
+[tracing and explainability roadmap](../../roadmap/tracing-explainability.md).
 
 - Trace source classification recognises `dataInput` provider/cache identity and no
   `dataSource`. Direct and cached inputs expose the same row-correlation surface after the

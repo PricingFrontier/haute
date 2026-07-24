@@ -461,8 +461,8 @@ fixed, strict-server, explicit-override, process-RSS, and in-flight-reservation 
 
 ## Polars backend contracts (0.6.0)
 
-This is an approved spec-first change. The implementation plan is
-[F_0.6.0_polars-backend-remediation.plan.md](../../trip/plans/F_0.6.0_polars-backend-remediation.plan.md).
+This is an approved spec-first change. Remaining execution-engine improvement work is tracked in
+the [execution-engine roadmap](../../roadmap/execution-engine.md).
 
 ### Current limitations
 
@@ -593,8 +593,8 @@ high-level approved contract.
 
 ## Approved change contract — 0.7.0 unified data I/O execution
 
-The implementation plan is
-[`F_0.7.0_data-io-convergence.plan.md`](../../trip/plans/F_0.7.0_data-io-convergence.plan.md).
+Remaining execution-engine improvement work is tracked in the
+[execution-engine roadmap](../../roadmap/execution-engine.md).
 
 - `src/haute/_builders.py` keeps `_build_data_input` and `_build_data_output`, deletes the source
   and sink builders, and delegates input construction to the provider dispatch defined by the

@@ -402,13 +402,13 @@ image, contacts a real registry/Databricks workspace, or verifies a cloud servic
 Deploy's batch scorer and seedless live-scoring entry points call the shared execution
 facade and propagate its typed diagnostics. Their score, schema, ordering, and output
 envelope contracts remain unchanged. No deploy module decides execution strategy;
-execution-engine owns that policy. See the
-[remediation plan](../../trip/plans/F_0.6.0_polars-backend-remediation.plan.md).
+execution-engine owns that policy. Remaining deployment improvement work is tracked in the
+[deploy and platform roadmap](../../roadmap/deploy-platform.md).
 
 ## Approved change contract — 0.7.0 unified data-input deployment
 
-The implementation plan is
-[`F_0.7.0_data-io-convergence.plan.md`](../../trip/plans/F_0.7.0_data-io-convergence.plan.md).
+Remaining deployment improvement work is tracked in the
+[deploy and platform roadmap](../../roadmap/deploy-platform.md).
 
 - `find_source_nodes` in `src/haute/deploy/_pruner.py` substitutes
   `NodeType.DATA_INPUT` for the removed source type and retains api-input/constant semantics.

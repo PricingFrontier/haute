@@ -255,7 +255,8 @@ Out of scope (owned elsewhere):
 
 ## Polars backend contracts (0.6.0)
 
-This component implements the IO portions of the [Polars backend remediation plan](../../trip/plans/F_0.6.0_polars-backend-remediation.plan.md).
+Remaining I/O improvement work is tracked in the
+[I/O layer roadmap](../../roadmap/io-layer.md).
 
 - Streaming incompatibility is classified only by a committed, versioned table keyed by
   the supported Polars version (`1.39.3`), concrete exception class, and a verified anchored
@@ -278,8 +279,8 @@ Non-goals: changing registry format coverage, introducing implicit eager fallbac
 
 ## Approved change contract — 0.7.0 data I/O convergence
 
-Implementation is sequenced by
-[`F_0.7.0_data-io-convergence.plan.md`](../../trip/plans/F_0.7.0_data-io-convergence.plan.md).
+Remaining data-I/O improvement work is tracked in the
+[I/O layer roadmap](../../roadmap/io-layer.md).
 This section specifies approved future behaviour; the present-tense sections above continue to
 describe the shipped implementation until the 0.7.0 release reconciles them.
 

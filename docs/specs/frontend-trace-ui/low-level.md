@@ -101,8 +101,8 @@ detail renderer.
 
 ## Approved change contract — 0.7.0 data-input trace presentation
 
-The implementation plan is
-[`F_0.7.0_data-io-convergence.plan.md`](../../trip/plans/F_0.7.0_data-io-convergence.plan.md).
+Remaining trace-UI improvement work is tracked in the
+[tracing and explainability roadmap](../../roadmap/tracing-explainability.md).
 
 - Change `traceGrouping.isSourceLikeTraceStep` to accept `dataInput`/`apiInput` (and only
   backend-defined non-node source markers where still valid) and remove `dataSource`.

@@ -60,7 +60,7 @@ def test_graphify_is_not_a_runtime_dependency() -> None:
 # external tool (add a chokepoint module and an allowlist entry, in this file,
 # where review sees it) or a call that belongs in an existing chokepoint.
 #
-# Scope is src/haute/ only: tests/, scripts/, review/, and hatch_build.py may
+# Scope is src/haute/ only: tests/, scripts/, and hatch_build.py may
 # shell out freely (that is their job; the build hook cannot even import the
 # package's helpers because it runs before the package is installed).
 # ---------------------------------------------------------------------------

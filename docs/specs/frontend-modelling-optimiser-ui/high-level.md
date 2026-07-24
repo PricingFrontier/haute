@@ -51,7 +51,8 @@ rather than silently charting incorrect values.
 
 ## Polars backend contracts (0.6.0)
 
-See [the remediation plan](../../trip/plans/F_0.6.0_polars-backend-remediation.plan.md).
+Remaining frontend modelling and optimiser improvement work is tracked in the
+[frontend canvas roadmap](../../roadmap/frontend-canvas.md).
 Modelling and optimiser entry points will present the shared version-1 states `projected`,
 `boundary`, `admitted_eager`, `rejected`, and `not_planned`, plus a distinct diagnostic-
 unavailable state. Components use the authoritative shared mapping and never reinterpret internal
@@ -69,8 +70,8 @@ error copy.
 
 ## Approved change contract — 0.7.0 unified data-input UI consumption
 
-Implementation follows
-[`F_0.7.0_data-io-convergence.plan.md`](../../trip/plans/F_0.7.0_data-io-convergence.plan.md).
+Remaining frontend modelling and optimiser improvement work is tracked in the
+[frontend canvas roadmap](../../roadmap/frontend-canvas.md).
 
 - Optimiser source selection remains scoped to connected upstream nodes and continues to support
   an explicit `data_input` id; it never assumes one global Data Input merely because

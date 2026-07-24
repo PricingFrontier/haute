@@ -196,8 +196,8 @@ Out of scope (owned elsewhere):
 
 ## Approved change contract — 0.7.0 unified Databricks input
 
-Implementation follows
-[`F_0.7.0_data-io-convergence.plan.md`](../../trip/plans/F_0.7.0_data-io-convergence.plan.md)
+Remaining Databricks I/O improvement work is tracked in the
+[I/O layer roadmap](../../roadmap/io-layer.md)
 and the shared [data I/O](../io-layer/high-level.md#approved-change-contract-070-data-io-convergence)
 and [source-snapshot](../caching/high-level.md#approved-change-contract-070-shared-input-snapshots)
 contracts.

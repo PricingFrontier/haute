@@ -269,8 +269,8 @@ running heavy work in a child process the parent can kill on timeout or memory l
 
 ## Polars backend contracts (0.6.0)
 
-This is an approved spec-first change. The implementation plan is
-[F_0.6.0_polars-backend-remediation.plan.md](../../trip/plans/F_0.6.0_polars-backend-remediation.plan.md).
+This is an approved spec-first change. Remaining execution-engine improvement work is tracked in
+the [execution-engine roadmap](../../roadmap/execution-engine.md).
 
 ### Current limitations
 
@@ -400,8 +400,8 @@ timing, error, and cleanup semantics.
 
 ## Approved change contract — 0.7.0 unified data I/O execution
 
-Implementation follows
-[`F_0.7.0_data-io-convergence.plan.md`](../../trip/plans/F_0.7.0_data-io-convergence.plan.md)
+Remaining execution-engine improvement work is tracked in the
+[execution-engine roadmap](../../roadmap/execution-engine.md)
 and the approved [I/O contract](../io-layer/high-level.md#approved-change-contract-070-data-io-convergence).
 
 - `dataInput` is the sole tabular source type understood by eager, lazy, projected, chunked,

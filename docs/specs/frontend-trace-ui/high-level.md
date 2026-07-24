@@ -54,8 +54,8 @@ treating malformed optional values as valid numbers.
 
 ## Approved change contract — 0.7.0 data-input trace presentation
 
-Implementation follows
-[`F_0.7.0_data-io-convergence.plan.md`](../../trip/plans/F_0.7.0_data-io-convergence.plan.md).
+Remaining trace-UI improvement work is tracked in the
+[tracing and explainability roadmap](../../roadmap/tracing-explainability.md).
 
 - Source-like trace grouping recognises `dataInput` and `apiInput`; it has no `dataSource`
   compatibility value. A retained Data Input is never collapsed as an ordinary pass-through,
