@@ -5,11 +5,32 @@ name: Dependencies
 # init, serve, and pass the core test subset? This catches a new dependency
 # release inside our caps breaking us before a user's fresh install does.
 #
-# Deliberately never triggered by push/PR: it tests the index's state, not the
-# diff's, so a red run must not block unrelated landings. Non-blocking but
-# loud: a failure finds-or-creates a `dependency-watch` issue with the run URL.
+# The unlocked-resolve job deliberately never runs on push/PR: it tests the
+# index's state, not the diff's, so a red run must not block unrelated
+# landings. Non-blocking but loud: a failure finds-or-creates a
+# `dependency-watch` issue with the run URL. The locked audit below does run
+# when its policy or lock inputs change.
 
 on:
+  pull_request:
+    paths:
+      - "pyproject.toml"
+      - "uv.lock"
+      - "frontend/package.json"
+      - "frontend/package-lock.json"
+      - "scripts/check_dependency_audit.py"
+      - "security/accepted-risks.toml"
+      - ".github/workflows/dependencies.yml"
+  push:
+    branches: [main]
+    paths:
+      - "pyproject.toml"
+      - "uv.lock"
+      - "frontend/package.json"
+      - "frontend/package-lock.json"
+      - "scripts/check_dependency_audit.py"
+      - "security/accepted-risks.toml"
+      - ".github/workflows/dependencies.yml"
   workflow_dispatch:
     inputs:
       force_fail:
@@ -25,6 +46,7 @@ permissions:
 
 jobs:
   unlocked-resolve:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
@@ -92,6 +114,64 @@ jobs:
           body="A fresh latest-within-caps resolve of the built wheel failed. Run: ${RUN_URL}
 
           Likely cause: a new release of a dependency inside our caps. Triage: compare the run's 'Show the unlocked resolution' step against uv.lock to spot what moved."
+          gh label create dependency-watch --color D93F0B --force \
+            --description "Automated: scheduled dependency lane failures"
+          existing="$(gh issue list --state open --label dependency-watch \
+            --search "in:title \"${title}\"" --json number --jq '.[0].number // empty')"
+          if [ -n "${existing}" ]; then
+            gh issue comment "${existing}" --body "Still red: ${RUN_URL}"
+          else
+            gh issue create --title "${title}" --label dependency-watch --body "${body}"
+          fi
+
+  locked-advisory-audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Audit locked dependency advisories
+        run: python scripts/check_dependency_audit.py --reports-dir dependency-audit-reports
+
+      - name: Upload advisory reports
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency-advisory-reports
+          path: dependency-audit-reports
+          if-no-files-found: warn
+
+  locked-advisory-alarm:
+    needs: locked-advisory-audit
+    if: >-
+      always() &&
+      needs.locked-advisory-audit.result == 'failure' &&
+      (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Raise the advisory alarm (find-or-create dependency-watch issue)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          title="Locked dependency advisory audit is red"
+          body="The locked dependency advisory audit failed. Run: ${RUN_URL}
+
+          Triage the retained pip-audit and npm audit reports, then update the lockfile or a reviewed temporary acceptance."
           gh label create dependency-watch --color D93F0B --force \
             --description "Automated: scheduled dependency lane failures"
           existing="$(gh issue list --state open --label dependency-watch \

@@ -8,7 +8,7 @@ const toml = readFileSync(path.resolve(__dirname, "../pyproject.toml"), "utf-8")
 const versionMatch = toml.match(/^version\s*=\s*"(.+)"/m)
 const appVersion = versionMatch ? versionMatch[1] : "0.1.0"
 const backendUrl = new URL(
-  process.env.HAUTE_DEV_BACKEND_URL ?? "http://127.0.0.1:8000",
+  process.env.HAUTE_BACKEND_URL ?? "http://127.0.0.1:8000",
 )
 const websocketUrl = new URL(backendUrl)
 websocketUrl.protocol = backendUrl.protocol === "https:" ? "wss:" : "ws:"
@@ -27,11 +27,12 @@ export default defineConfig({
     proxy: {
       "/api": {
         target: backendUrl.origin,
-        changeOrigin: true,
+        changeOrigin: false,
       },
       "/ws": {
         target: websocketUrl.origin,
         ws: true,
+        changeOrigin: false,
       },
     },
   },

@@ -44,9 +44,10 @@ def test_resolve_data_path_outside_root_raises_403(tmp_path: Path) -> None:
 
 
 def test_resolve_data_path_null_byte_raises_400() -> None:
-    """L158 ``400 if "embedded null byte" in str(exc)`` — the ``400`` number and
-    the ``in``->``not in`` flip both change this. An embedded NUL makes
-    ``resolve_runtime_file_path`` raise the null-byte ValueError -> 400.
+    """Typed malformed-path failures map to 400 without scraping their message.
+
+    An embedded NUL makes ``resolve_runtime_file_path`` raise
+    ``MalformedRuntimePathError`` and the shared route adapter selects 400.
     """
     with pytest.raises(HTTPException) as ei:
         _resolve_data_path("data\x00.json")

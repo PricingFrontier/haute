@@ -38,6 +38,8 @@ from tests.conftest import (
     make_transform_node as _transform_node,
 )
 
+pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
+
 
 def _source_node(nid: str, path: str = "data.parquet"):
     """Build a canonical file Data Input matching the path's format."""

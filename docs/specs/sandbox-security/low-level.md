@@ -6,7 +6,8 @@
 | --- | --- |
 | `src/haute/_sandbox.py` | AST validation of user code (`validate_user_code`), restricted `exec()` globals (`safe_globals`), project-root path containment (`validate_project_path`), and the restricted pickle/joblib unpicklers (`safe_unpickle`, `safe_joblib_load`). |
 | `src/haute/_user_exec.py` | The single `exec()` call site for pipeline node code (`_exec_user_code`): namespace assembly, validation call, execution, and traceback line annotation. |
-| `src/haute/_local_security.py` | Local-session protection for the FastAPI/WebSocket server: session-token generation/comparison, trusted-Host middleware, trusted-Origin checks, HTTP middleware and WebSocket pre-accept rejection helper. |
+| `src/haute/_local_security.py` | Local-session protection for the FastAPI/WebSocket server: session-token generation/comparison, exact authority parsing, loopback/forwarded-header middleware, HttpOnly-cookie bootstrap policy, HTTP middleware, and WebSocket pre-accept rejection helper. |
+| `src/haute/_path_resolution.py` | Cross-platform runtime path normalization, project/pipeline candidate resolution, symlink-aware containment, and the context-local execution root shared by eager/lazy builders. |
 | `src/haute/_gitignore_guard.py` | The shared `.gitignore` guard-entry tuple and the idempotent append-if-missing writer (`ensure_gitignore_guards`) used by both `haute init` and the unborn-repo commit seed. |
 | `src/haute/_env.py` | Lazy, fail-soft environment-variable parsing helpers (`float_env`, `int_env`, `optional_int_env`) used by selected request-timeout, optimiser chunk/partition, solver-timeout, training-history, and assistant-loop accessors. Other numeric environment settings use component-owned parsers. |
 
@@ -63,9 +64,10 @@
   `BaseHTTPMiddleware`) — reimplements trusted-host checking with correct
   bracketed-IPv6 `Host` header parsing (Starlette's built-in
   `TrustedHostMiddleware` does not handle `[::1]:port` forms).
-- **`LocalSessionMiddleware(BaseHTTPMiddleware)`** — gates every `/api/*` HTTP
-  request behind Origin-then-token checks (skips `/api/session`'s prefix like any
-  other `/api/*` route — it enforces before endpoint code runs).
+- **`LocalSessionMiddleware(BaseHTTPMiddleware)`** — exposes one credential-free
+  path, `POST /api/session/bootstrap`, only to an explicit matching Origin; every
+  other `/api/*` request requires a cookie/header credential plus a trusted Origin
+  or an already-valid credential for absent-Origin non-browser calls.
 - **`GITIGNORE_GUARD_ENTRIES: tuple[str, ...]`** (`_gitignore_guard.py`) — the
   ordered, fixed set of paths every project's `.gitignore` must contain:
   `.env`, `.haute/`, `impact_report.md`, `.haute_cache/`, `mlruns/`, `data/`,
@@ -169,28 +171,44 @@ of `_FORMAT_METHOD_NAMES`. Receiver shapes:
 1. `LocalTrustedHostMiddleware` runs first (outermost of the two added
    middlewares — Starlette applies middleware in reverse registration order, and
    `add_middleware(LocalTrustedHostMiddleware, ...)` is registered *after*
-   `LocalSessionMiddleware`, so it wraps/executes before it). If
-   `allow_any` (`*` appears in the startup-time allowed-host list) or the scope type
-   isn't `http`/`websocket`, passes through unconditionally. Otherwise normalizes
-   the `Host` header and checks it against the normalized allowlist (supporting
-   `*.suffix` wildcard patterns); a mismatch returns a plain-text `400` before the
-   request reaches routing.
-2. `LocalSessionMiddleware.dispatch`: short-circuits (calls `call_next`
-   immediately) if `local_session_auth_disabled()` or the path doesn't start with
-   `/api/`. Otherwise: `_is_local_origin(headers)` first (an absent `Origin`
-   header is treated as trusted — same-origin browser navigation and non-browser
-   clients don't send one); a foreign origin returns `403` immediately. `OPTIONS`
-   requests then pass through (CORS preflight has no credentials to check).
-   Every other method requires `_token_matches(headers[SESSION_TOKEN_HEADER])`,
-   which strips whitespace, rejects empty, and compares via
-   `hmac.compare_digest` inside a `try/except TypeError` (guards against a
-   non-`str` header value reaching `compare_digest`); a mismatch returns `403`.
-3. `websocket_rejection_reason(headers, query_params)` (called from
-   `server.ws_sync` before `websocket.accept()`) mirrors the HTTP dispatch order:
-   auth-disabled short-circuit, then Origin, then token — but the token may come
-   from either the `x-haute-session-token` header *or* the
-   `haute_session_token` query parameter (`_query_token`), since browser
-   `WebSocket` clients cannot set arbitrary headers.
+   `LocalSessionMiddleware`, so it wraps/executes before it). Non-HTTP/WebSocket
+   scopes pass through. HTTP/WebSocket requests carrying `Forwarded` or any
+   `X-Forwarded-*` authority/address header return `400`; a malformed or
+   non-loopback Host does the same. There is no wildcard/remote allow mode.
+2. `LocalSessionMiddleware.dispatch`: short-circuits if auth is explicitly disabled
+   or the path is not `/api/*`. `POST /api/session/bootstrap` and `OPTIONS` require
+   `_origin_state(...) == "trusted"`; bootstrap then reaches the route that writes
+   the token only as an HttpOnly, SameSite=Strict cookie. Other requests reject an
+   untrusted Origin, then require `_request_token_matches` (constant-time match
+   against either the cookie or `x-haute-session-token`). A missing Origin is
+   accepted only after that credential check succeeds.
+3. `websocket_rejection_reason(headers, scope_scheme=...)` runs before
+   `websocket.accept()`: auth-disabled short-circuit, explicit exact matching
+   Origin, then cookie/header token. Browser WebSockets receive the HttpOnly cookie
+   automatically; URL query parameters are never read.
+
+**Runtime local-file containment (`_path_resolution.py` + execution core)**
+1. `canonical_dataframe_execution_graph` derives the execution root from the
+   configured sandbox project root (`_sandbox._get_project_root()`), which is
+   cwd in normal CLI use. If the graph names an absolute pipeline outside that
+   project, the pipeline's parent is the explicit root instead. A source path
+   lexically inside the configured project that resolves outside through a
+   symlink is rejected rather than treated as an external selection. HTTP
+   routes separately require submitted `source_file` values to remain inside
+   the configured project, so only direct/operator-controlled execution can
+   opt into the external-pipeline root.
+2. Every local runtime input field (`apiInput`/file or lakehouse `dataInput`,
+   `externalFile`, model-score feature-contract files, and file-sourced
+   optimiser artifacts) passes through `resolve_runtime_file_path(...,
+   enforce_project_root=True)`. Separator normalization happens before `Path`
+   construction and `resolve()` follows symlinks before containment is checked.
+3. `_execute_lazy` and `_execute_eager_core` run under
+   `runtime_project_root_scoped`. The decorator accepts the declared `graph`
+   argument positionally or by keyword and rejects a missing/non-`PipelineGraph`
+   value before opening the scope. `_builders._resolve_runtime_data_path` repeats
+   the containment check against that context-local root at the final read seam.
+   Database/Databricks/named-provider identifiers are not local path fields and
+   retain their provider-owned external-resource semantics.
 
 **`.gitignore` guard writer (`ensure_gitignore_guards`)**
 1. If `project_dir/.gitignore` doesn't exist, write all `GITIGNORE_GUARD_ENTRIES`
@@ -268,9 +286,9 @@ of `_FORMAT_METHOD_NAMES`. Receiver shapes:
 - **IPv6 `Host`/`Origin` parsing handles the bracketed literal form
   correctly**, including rejecting malformed variants (`[::1]evil`,
   `[::1]:notaport`, a bracketed non-IPv6 literal like `[localhost]`) rather than
-  silently accepting or crashing — `_normalise_host_value` returns `""` (never
-  matches) for any of these, and `_origin_host` catches `ValueError` from
-  `urlsplit` the same way.
+  silently accepting or crashing. `_normalise_authority` and
+  `_origin_authority` return `None` for those inputs and catch `urlsplit` port
+  failures.
 
 ## Error handling
 
@@ -358,13 +376,17 @@ of `_FORMAT_METHOD_NAMES`. Receiver shapes:
   authenticated (proving the guards aren't over-broad). Also covers the
   project-root path-escape rejection at the executor level
   (`execute_sink`/`ValueError` match) as a companion to the HTTP-level checks.
-- No dedicated file tests `_local_security.py`'s pure functions
-  (`_normalise_host_value`, `_origin_host`, `_token_matches`) in isolation
-  outside of the end-to-end `TestClient` coverage in `test_security_gaps.py`
-  and references from `tests/test_server.py`/`tests/conftest.py`; coverage of
-  the IPv6-parsing edge cases specifically comes through the parametrized
-  malformed-host/origin cases there rather than unit tests of the helpers
-  directly.
+- `tests/test_local_security.py` is the dedicated local-browser boundary suite:
+  exact bootstrap Origin/Host matching, HttpOnly/no-store cookie creation,
+  absent/mismatched/forwarded rejection, cookie-authenticated API/WebSocket
+  success, absent-Origin WebSocket and query-token rejection, and a secret-corpus
+  assertion over the served SPA and rejection surfaces.
+- `tests/test_path_resolution.py`, `tests/test_path_resolution_properties.py`,
+  `tests/test_execute_lazy_paths.py`, and the nested-input regressions cover
+  direct eager/lazy containment, HTTP source confinement across pipeline,
+  modelling, and optimiser route families, submodel flatten-before-validation,
+  mixed separators, absolute/traversal/symlink escapes, and the explicitly
+  selected direct-execution external-pipeline root exception.
 
 > NOTE: `test_env_lazy_accessors.py`'s `_ACCESSOR_CASES` table is a manually
 > maintained parallel list of migrated lazy-knob call sites; a new knob added

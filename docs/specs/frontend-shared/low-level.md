@@ -4,8 +4,8 @@
 
 | File | Responsibility |
 |---|---|
-| `frontend/src/main.tsx` | App bootstrap: mounts `App` inside `StrictMode` + a root `ErrorBoundary`. |
-| `frontend/src/api/client.ts` | Typed `fetch()` wrapper: retry/backoff, timeout, abort handling, session-expiry event, and one function per backend endpoint. Exports `request`/`post` so split-chunk endpoint modules can reuse the same fetch machinery, and an authenticated raw-stream helper (auth headers + `ApiError` mapping, no JSON parse) for split modules with non-JSON transports — the assistant SSE stream (see [frontend-assistant-ui](../frontend-assistant-ui/low-level.md)). `runFrontier` starts a frontier sweep then polls `getFrontierStatus` to a terminal state, preserving the old resolve-with-final-payload contract over what is now a backend background job. |
+| `frontend/src/main.tsx` | Local-session bootstrap: establishes the browser-managed HttpOnly cookie before mounting `App` inside `StrictMode` + a root `ErrorBoundary`; renders an actionable reload state if the local backend is unavailable. |
+| `frontend/src/api/client.ts` | Typed `fetch()` wrapper: same-origin cookie credentials, single-flight `bootstrapHauteSession`, retry/backoff, timeout, abort handling, session-expiry event, and one function per backend endpoint. Exports `request`/`post` so split-chunk endpoint modules can reuse the same fetch machinery, and a raw-stream helper (cookie credentials + `ApiError` mapping, no JSON parse) for split modules with non-JSON transports — the assistant SSE stream (see [frontend-assistant-ui](../frontend-assistant-ui/low-level.md)). `runFrontier` starts a frontier sweep then polls `getFrontierStatus` to a terminal state, preserving the old resolve-with-final-payload contract over what is now a backend background job. |
 | `frontend/src/api/dispersion.ts` | GLM dispersion-estimation endpoints (NB `theta` / Tweedie `var_power`): `estimateGlmDispersion`, `getDispersionStatus`, `cancelDispersion`, and `runDispersionEstimate` (starts + polls to completion, resolving with the estimated number). Split out of `client.ts` so its code — reachable only from the lazy-loaded modelling config panel — stays out of the initial JS bundle; built on `client.ts`'s exported `request`/`post` and owns its own runtime parsers (`parseDispersionEstimateResponse`, `parseDispersionStatusResponse`) rather than routing through `types/guards.ts`. |
 | `frontend/src/api/types.ts` | Request/response TypeScript interfaces mirrored from `src/haute/schemas.py`; re-exports canonical node/trace types. |
 | `frontend/src/types/node.ts` | `HauteNodeData`/`PipelineFlowNode`/`SubmodelNodeData` shapes, `ColumnInfo`, `BackendNodeStatus`/`NodeStatus`, the `nodeData()`/`effectiveNodeType()` accessors used everywhere a React Flow `Node.data` needs typed access. |
@@ -147,6 +147,15 @@ base·2ⁿ]`) before the next attempt, itself abortable by the external
 signal. A non-timeout `AbortError` from `backoffSleep`/`attemptFetch`
 propagates as-is.
 
+**Local session bootstrap (`main.tsx` + `api/client.ts`)**:
+`bootstrapHauteSession()` deduplicates concurrent calls, POSTs
+`/api/session/bootstrap` with `credentials:"same-origin"` and `cache:"no-store"`,
+and never reads a response token. The browser stores the HttpOnly cookie and
+ordinary API/raw-stream requests explicitly use same-origin credentials.
+`main.tsx` mounts `App` only after success; failure renders a local-server
+diagnostic with Reload. A forced bootstrap refresh is used by WebSocket
+reconnection after a backend restart.
+
 **Response parsing**: every exported client function pipes its raw
 `request<unknown>()` result through the matching `parse*` guard from
 `types/guards.ts` before returning — `previewNode`, `loadPipeline`, etc.
@@ -228,9 +237,9 @@ focus is restored to the element that was focused before the modal opened.
   `abortSource ??= source`; only a timeout-sourced abort becomes
   `ApiTimeoutError`, so a caller-cancelled request never gets misreported
   as a timeout even if both fire near-simultaneously.
-- **`hauteSessionToken()`** prefers `window.__HAUTE_SESSION_TOKEN__` over
-  the Vite env var — the former can be injected post-load (e.g. by a test
-  harness or embedding shell) without a rebuild.
+- **No browser-readable session token exists.** `api/client.ts` never reads a
+  window global or Vite token variable and never creates
+  `x-haute-session-token`; browser authentication is cookie-managed.
 - **Column cache freshness** (`useNodeResultsStore.getColumns`) is
   `structuralVersion === useGraphStore.getState().structuralVersion` — a
   direct cross-store read at call time, not a subscription, so a stale

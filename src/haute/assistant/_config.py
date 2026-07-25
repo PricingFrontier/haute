@@ -64,6 +64,8 @@ def _mutation_readiness(
 
     if status.state == "ready":
         return True, None
+    if status.state == "no-repository":
+        return False, "Initialise Git before using assistant mutations."
     if status.state == "unset":
         return (
             False,
@@ -75,6 +77,12 @@ def _mutation_readiness(
             "Resolve the working-branch divergence in the Git panel before using assistant "
             "mutations.",
         )
+    if status.state == "detached":
+        return (
+            False,
+            "Attach HEAD by selecting or creating a working branch in the Git panel before "
+            "using assistant mutations.",
+        )
     if status.state == "invalid":
         return False, "; ".join(status.errors)
     raise ValueError(f"Unknown working-branch state: {status.state!r}")
@@ -85,12 +93,10 @@ def mutations_readiness(
 ) -> tuple[bool, str | None]:
     """Return the mutation gate for *project_root* using the shared git status.
 
-    ``working_branch_status`` is not total: a project that is not a git
-    repository (or any other git-domain failure) raises a typed
-    ``HauteError`` rather than returning a state.  For readiness that is a
-    disabled-with-reason outcome, not an HTTP failure — the status endpoint
-    must always render, and the git error text ("Not a git repository. Run
-    'git init' first.") is exactly the analyst-facing reason.
+    ``working_branch_status`` is total for expected repository/readiness
+    states. Any unexpected typed ``HauteError`` is still a
+    disabled-with-reason outcome, not an HTTP failure, so the status endpoint
+    always renders.
     """
 
     root = _normalise_project_root(project_root)

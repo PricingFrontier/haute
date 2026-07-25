@@ -542,10 +542,9 @@ def _start_vite() -> subprocess.Popen[bytes]:
     node_env = _node_env()
     if node_env is not None:
         env.update(node_env)
-    token = ensure_local_session_token_env()
-    if token:
-        env["VITE_HAUTE_SESSION_TOKEN"] = token
-    env["HAUTE_DEV_BACKEND_URL"] = BACKEND_ORIGIN
+    ensure_local_session_token_env()
+    env.pop("VITE_HAUTE_SESSION_TOKEN", None)
+    env["HAUTE_BACKEND_URL"] = BACKEND_ORIGIN
     return subprocess.Popen(
         [
             _npm(),

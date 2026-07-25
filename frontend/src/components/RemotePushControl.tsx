@@ -13,6 +13,7 @@ import { ApiError, getGitRemotes, gitBranchAway, gitFastForward, gitPush } from 
 import type { GitPushRejection, GitRemote, GitRemoteLeg } from "../api/types"
 import { parseGitPushRejection } from "../types/guards"
 import useToastStore from "../stores/useToastStore"
+import { gitErrorMessage } from "../utils/gitError"
 import ModalShell from "./ModalShell"
 import Tooltip from "./Tooltip"
 
@@ -121,7 +122,7 @@ export default function RemotePushControl({
           return
         }
       }
-      const detail = err instanceof Error ? err.message : "unknown error"
+      const detail = gitErrorMessage(err, "unknown error")
       addToast("error", `Push failed: ${detail}`)
     } finally {
       setPushing(false)
@@ -146,7 +147,7 @@ export default function RemotePushControl({
       setRejection(null)
       await load()
     } catch (err) {
-      const detail = err instanceof Error ? err.message : "unknown error"
+      const detail = gitErrorMessage(err, "unknown error")
       addToast("error", `Couldn't catch up: ${detail}`)
     } finally {
       setCatchingUp(false)
@@ -175,7 +176,7 @@ export default function RemotePushControl({
       setRejection(null)
       await load()
     } catch (err) {
-      const detail = err instanceof Error ? err.message : "unknown error"
+      const detail = gitErrorMessage(err, "unknown error")
       addToast("error", `Couldn't spin off a copy: ${detail}`)
     } finally {
       setBranchingAway(false)

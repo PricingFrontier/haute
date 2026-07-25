@@ -144,7 +144,7 @@ function seedPipeline(): void {
   )
 }
 
-async function captureInitialGraph(page: Page): Promise<{ graph: NormalizedGraph; sessionToken?: string }> {
+async function captureInitialGraph(page: Page): Promise<NormalizedGraph> {
   const requestPromise = page.waitForRequest((request) =>
     request.method() === "GET" && /\/api\/pipeline(?:\?|$)/.test(request.url()),
   )
@@ -155,10 +155,11 @@ async function captureInitialGraph(page: Page): Promise<{ graph: NormalizedGraph
   await expect(page.getByRole("toolbar", { name: /pipeline toolbar/i })).toBeVisible()
   const [request, response] = await Promise.all([requestPromise, responsePromise])
   expect(response.status(), "initial pipeline request succeeds").toBe(200)
-  return {
-    graph: graphEnvelope((await response.json()) as GraphEnvelope),
-    sessionToken: request.headers()["x-haute-session-token"],
-  }
+  expect(
+    request.headers()["x-haute-session-token"],
+    "legacy session credential is not exposed to browser JavaScript",
+  ).toBeUndefined()
+  return graphEnvelope((await response.json()) as GraphEnvelope)
 }
 
 async function reloadAndCaptureGraph(page: Page): Promise<NormalizedGraph> {
@@ -269,8 +270,7 @@ test.describe("Edge Join insertion workflow", () => {
 
   test("inserts lookup and named API joins on rendered edges, persists them, and traces both", async ({ page }) => {
     test.slow()
-    const { graph: initialGraph, sessionToken } = await captureInitialGraph(page)
-    expect(sessionToken, "browser supplied a pipeline session token").toBeTruthy()
+    const initialGraph = await captureInitialGraph(page)
     const rawToEnriched = findEdge(initialGraph, "raw_rows", "enriched")
 
     await dragSourceToEdge(page, await sourceHandle(page, "lookup_rows"), rawToEnriched.id)

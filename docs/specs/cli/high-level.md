@@ -84,12 +84,10 @@ Invariants that hold across every command:
   env var (`GITHUB_ACTIONS`, `GITLAB_CI`, `CIRCLECI`, `TF_BUILD`, `BUILDKITE`, generic `CI`) is set
   truthily. This is a deliberate guardrail: production model changes must go through reviewed CI/CD,
   not an engineer's laptop.
-- **Loopback-only `serve` by default.** `haute serve` binds `127.0.0.1` unless the user explicitly
-  opts into a wider bind (CLI flag or `haute.toml`), because the dev server exposes a Polars
-  execution endpoint and file browser that must not be reachable by other machines on a LAN by
-  accident. A non-loopback bind still works, but always logs a structured `server_bind_non_loopback`
-  warning so the exposure is auditable — see the module docstring in
-  `src/haute/cli/_serve.py` for the full rationale.
+- **`serve` is loopback-only.** `haute serve` binds `127.0.0.1` by default and accepts only
+  `localhost`, IPv4 loopback addresses, or IPv6 `::1` from the CLI or `haute.toml`. Wildcard,
+  LAN/public IP, and custom-hostname values fail before port probing or process launch; this
+  command is a local editor surface, not an application-hosting surface.
 - **Command-scoped failure rules.** Missing Node/npm and a missing production frontend build
   fail rather than guessing; malformed TOML fails. `smoke`/`impact` require `haute.toml`, while
   deploy and explicit-model status have non-TOML paths. `serve` deliberately treats a missing
@@ -151,3 +149,12 @@ failure.
 > backend failure (e.g. a bug in the deploy backend itself) is reported identically to a legitimate
 > deploy-target error, which can make debugging backend bugs from the CLI output harder than
 > necessary.
+
+## Approved change contract — local UI serving
+
+`haute serve` is a local editor command, not an application-hosting surface.
+`ServeConfig` and the Click entry point reject every non-loopback host before
+port probing or process launch. `localhost`, the full IPv4 loopback range, and
+IPv6 `::1` remain supported. Wildcard, LAN, public, and unresolved hostname
+binds fail with an actionable CLI error; there is no warning-and-continue mode
+and no reverse-proxy configuration. Dev and built-UI modes share this rule.

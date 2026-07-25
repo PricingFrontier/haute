@@ -13,6 +13,7 @@ import hashlib
 import json
 import mimetypes
 import os
+import re
 import time
 import traceback
 import uuid
@@ -31,7 +32,9 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.routing import Route
 
 from haute._event_bus import default_bus
+from haute._execution_context import configure_execution_telemetry
 from haute._local_security import (
+    SESSION_TOKEN_COOKIE,
     TRUSTED_HOSTS_ENV,
     LocalSessionMiddleware,
     LocalTrustedHostMiddleware,
@@ -55,6 +58,7 @@ from haute.routes._helpers import (
     ws_clients_discard,
     ws_clients_lock,
 )
+from haute.routes._optimiser_service import reap_stale_optimiser_artifacts
 from haute.routes.assistant import router as assistant_router
 from haute.routes.databricks import router as databricks_router
 from haute.routes.explore import router as explore_router
@@ -356,6 +360,8 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     _clear_bytecache()
     configure_logging()
     _load_env(Path.cwd())
+    configure_execution_telemetry()
+    await asyncio.to_thread(reap_stale_optimiser_artifacts)
 
     # Prime the pipeline-name → path index so the first HTTP request doesn't
     # synchronously pay for discovery + parse of every pipeline in the
@@ -384,13 +390,34 @@ def _trusted_hosts() -> list[str]:
     return configured or list(_TRUSTED_LOCAL_HOSTS)
 
 
+_REQUEST_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,63}\Z", re.ASCII)
+
+
+def _select_request_id(value: str | None) -> tuple[str, dict[str, str | int] | None]:
+    """Return a safe correlation token plus bounded rejection metadata."""
+    if value is None:
+        return uuid.uuid4().hex[:12], None
+    length = len(value)
+    if length > 64:
+        return uuid.uuid4().hex[:12], {"reason": "too_long", "length": length}
+    try:
+        value.encode("ascii")
+    except UnicodeEncodeError:
+        return uuid.uuid4().hex[:12], {"reason": "non_ascii", "length": length}
+    if _REQUEST_ID_RE.fullmatch(value) is None:
+        return uuid.uuid4().hex[:12], {"reason": "invalid_format", "length": length}
+    return value, None
+
+
 class _RequestIdMiddleware(BaseHTTPMiddleware):
     """Bind request_id, log every request with timing, capture 500 tracebacks."""
 
     async def dispatch(self, request: Request, call_next: Any) -> Any:
-        rid = request.headers.get("x-request-id", uuid.uuid4().hex[:12])
+        rid, rejection = _select_request_id(request.headers.get("x-request-id"))
         structlog.contextvars.clear_contextvars()
         structlog.contextvars.bind_contextvars(request_id=rid)
+        if rejection is not None:
+            logger.warning("request_id_rejected", **rejection)
 
         method = request.method
         path = request.url.path
@@ -407,10 +434,12 @@ class _RequestIdMiddleware(BaseHTTPMiddleware):
                 duration_ms=duration_ms,
                 traceback=traceback.format_exc(),
             )
-            return JSONResponse(
+            response = JSONResponse(
                 status_code=500,
                 content={"detail": "Internal server error"},
             )
+            response.headers["x-request-id"] = rid
+            return response
 
         duration_ms = round((time.monotonic() - t0) * 1000, 1)
         status = response.status_code
@@ -434,18 +463,6 @@ app.add_middleware(
     allowed_hosts=_trusted_hosts(),
 )
 
-# CORS for dev mode — Vite dev server (port 5173) talks to FastAPI (port 8000)
-if not static_build_ready(STATIC_DIR):
-    from fastapi.middleware.cors import CORSMiddleware
-
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
-
 # ---------------------------------------------------------------------------
 # Include route modules
 # ---------------------------------------------------------------------------
@@ -454,6 +471,26 @@ if not static_build_ready(STATIC_DIR):
 @app.get("/api/session", response_model=SessionStatusResponse)
 async def get_session_status() -> SessionStatusResponse:
     """Protected no-op endpoint used by the frontend to verify its session token."""
+    return SessionStatusResponse()
+
+
+@app.post("/api/session/bootstrap", response_model=SessionStatusResponse)
+async def bootstrap_session(response: Response) -> SessionStatusResponse:
+    """Establish the browser-only session cookie after Origin validation."""
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    if local_session_auth_disabled():
+        response.delete_cookie(SESSION_TOKEN_COOKIE, path="/")
+    else:
+        response.set_cookie(
+            SESSION_TOKEN_COOKIE,
+            local_session_token(),
+            httponly=True,
+            samesite="strict",
+            secure=False,
+            path="/",
+        )
     return SessionStatusResponse()
 
 
@@ -518,7 +555,10 @@ app.router.routes.append(
 async def ws_sync(websocket: WebSocket) -> None:
     """WebSocket endpoint for live code ↔ GUI sync."""
     try:
-        rejection_reason = websocket_rejection_reason(websocket.headers, websocket.query_params)
+        rejection_reason = websocket_rejection_reason(
+            websocket.headers,
+            scope_scheme=str(websocket.scope.get("scheme", "ws")),
+        )
     except AttributeError:
         rejection_reason = "Missing WebSocket request metadata"
     if rejection_reason is not None:
@@ -770,22 +810,23 @@ async def _file_watcher() -> None:
 # Static file serving (built React frontend)
 # ---------------------------------------------------------------------------
 
+
+def _serve_index_html(static_dir: Path = STATIC_DIR) -> HTMLResponse:
+    """Serve the SPA shell without placing session credentials in browser-readable data."""
+    html = (static_dir / "index.html").read_text(encoding="utf-8")
+    return HTMLResponse(
+        html,
+        media_type="text/html",
+        headers={
+            "Cache-Control": "no-store",
+            "Pragma": "no-cache",
+            "Referrer-Policy": "no-referrer",
+        },
+    )
+
+
 if static_build_ready(STATIC_DIR):
     app.mount("/assets", StaticFiles(directory=STATIC_DIR / "assets"), name="assets")
-
-    def _serve_index_html() -> HTMLResponse:
-        html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
-        token = "" if local_session_auth_disabled() else local_session_token()
-        token_script = f"<script>window.__HAUTE_SESSION_TOKEN__ = {json.dumps(token)};</script>"
-        if "</head>" in html:
-            html = html.replace("</head>", f"    {token_script}\n  </head>", 1)
-        else:
-            html = f"{token_script}\n{html}"
-        return HTMLResponse(
-            html,
-            media_type="text/html",
-            headers={"Cache-Control": "no-store"},
-        )
 
     @app.get("/{full_path:path}", response_model=None)
     async def serve_spa(full_path: str) -> Response:
@@ -793,7 +834,7 @@ if static_build_ready(STATIC_DIR):
         file_path = (STATIC_DIR / full_path).resolve()
         if file_path.is_relative_to(STATIC_DIR) and file_path.is_file():
             if file_path.name == "index.html":
-                return _serve_index_html()
+                return _serve_index_html(STATIC_DIR)
             media_type = mimetypes.guess_type(file_path.name)[0] or "application/octet-stream"
             return FileResponse(file_path, media_type=media_type)
-        return _serve_index_html()
+        return _serve_index_html(STATIC_DIR)

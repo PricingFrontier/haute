@@ -450,7 +450,7 @@ Out of scope (owned by neighbouring components, linked where they exist):
   `markSaved()` on a successful save.
 - `frontend-shared` — `api/client.ts`'s typed HTTP/WebSocket functions
   (`loadPipeline`, `savePipeline`, `previewNode`, `createSubmodel`,
-  `loadSubmodel`, `dissolveSubmodel`, session-token helpers) are the
+  `loadSubmodel`, `dissolveSubmodel`, session-bootstrap helper) are the
   transport this component's hooks call directly; this component owns the
   orchestration (debounce, cache, cascade, retry-gating, reconnect/backoff)
   around those calls, not the transport itself.

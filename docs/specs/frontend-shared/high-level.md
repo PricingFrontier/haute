@@ -111,7 +111,11 @@ site instead of `undefined` propagating silently into a component. A 403
 whose detail matches the "missing/invalid session" reason fires a
 `window` `CustomEvent` (`HAUTE_SESSION_EXPIRED_EVENT`) rather than being
 handled locally — any part of the app can listen for session expiry without
-the client needing to know about auth UI. `request`/`post` are exported so
+the client needing to know about auth UI. Before `App` mounts,
+`bootstrapHauteSession()` makes one same-origin, no-store POST and lets the
+browser retain the returned HttpOnly cookie; concurrent callers share the
+same promise. The token never enters JavaScript, request headers assembled by
+the client, or a WebSocket URL. `request`/`post` are exported so
 bundle-split modules (`api/dispersion.ts`) can build endpoint functions on
 the same machinery without re-implementing fetch/retry. `api/dispersion.ts`
 does own its response parsing locally rather than adding to

@@ -15,10 +15,7 @@ import useToastStore from "../stores/useToastStore"
 import useUIStore from "../stores/useUIStore"
 import useGraphStore from "../stores/useGraphStore"
 import {
-  HAUTE_SESSION_EXPIRED_REASON,
-  checkHauteSession,
-  hauteSessionToken,
-  isHauteSessionExpiredError,
+  bootstrapHauteSession,
   isHauteSessionExpiredReason,
   notifyHauteSessionExpired,
 } from "../api/client"
@@ -131,9 +128,7 @@ export default function useWebSocketSync({
 
     setStatus("reconnecting")
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:"
-    const token = hauteSessionToken()
-    const tokenQuery = token ? `?haute_session_token=${encodeURIComponent(token)}` : ""
-    const wsUrl = `${protocol}//${window.location.host}/ws/sync${tokenQuery}`
+    const wsUrl = `${protocol}//${window.location.host}/ws/sync`
     let ws: WebSocket | null = null
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null
     let mounted = true
@@ -209,13 +204,10 @@ export default function useWebSocketSync({
 
     async function probeSessionThenReconnect() {
       try {
-        await checkHauteSession({ timeout: 5_000, retry: { maxRetries: 0, baseDelayMs: 100 } })
-      } catch (err) {
-        if (!mounted) return
-        if (isHauteSessionExpiredError(err)) {
-          markSessionExpired(HAUTE_SESSION_EXPIRED_REASON, false)
-          return
-        }
+        await bootstrapHauteSession(true)
+      } catch {
+        // A pre-accept close is also how a temporarily unavailable backend
+        // appears. Keep the bounded reconnect loop alive and retry bootstrap.
       }
       if (!mounted) return
       scheduleReconnect()
@@ -402,7 +394,13 @@ export default function useWebSocketSync({
       ws.onclose = (event) => {
         if (!mounted) return
         if (event.code === 1008 && isHauteSessionExpiredReason(event.reason)) {
-          markSessionExpired(event.reason)
+          void bootstrapHauteSession(true)
+            .then(() => {
+              if (mounted) scheduleReconnect()
+            })
+            .catch(() => {
+              if (mounted) markSessionExpired(event.reason)
+            })
           return
         }
         if (!opened && event.code === ABNORMAL_CLOSE) {

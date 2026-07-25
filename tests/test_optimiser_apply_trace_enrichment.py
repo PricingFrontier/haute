@@ -13,6 +13,8 @@ from tests.conftest import make_edge as _edge
 from tests.conftest import make_graph as _g
 from tests.conftest import make_source_node as _source_node
 
+pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
+
 
 def _online_artifact(version: str = "online_v1") -> dict:
     return {

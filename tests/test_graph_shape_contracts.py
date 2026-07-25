@@ -32,6 +32,8 @@ from tests.conftest import compile_node_code, make_output_config
 from tests.conftest import make_graph as _g
 from tests.conftest import make_node as _node
 
+pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
+
 
 def _edge(src: str, tgt: str) -> GraphEdge:
     return GraphEdge(id=f"e_{src}_{tgt}", source=src, target=tgt)
