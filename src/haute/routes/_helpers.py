@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json as _json
 import math
+import shutil
 import tempfile
 import threading
 import time
@@ -883,17 +884,18 @@ def parse_pipeline_to_graph(py_path: Path) -> PipelineGraph:
 
 def commit_pipeline_graph(sha: str) -> PipelineGraph:
     """Parse the active pipeline as it was at commit *sha* into a read-only graph
-    (S11). The commit's whole tree is materialised to a temp dir (no checkout, no
-    HEAD change) so its config files, submodels, and sidecar positions resolve
-    faithfully; the temp dir is discarded after parsing. Any number of visits."""
-    from haute._git import archive_commit
+    (S11). Only pipeline artifacts are materialised (no checkout, no HEAD
+    change). Parse failures are explicit rather than a successful empty graph."""
+    from haute._git import GitHistoryReadError, archive_commit
     from haute.discovery import discover_pipelines as _discover_in
 
-    with tempfile.TemporaryDirectory(prefix="haute-show-") as tmp:
-        root = Path(tmp)
+    root = Path(tempfile.mkdtemp(prefix="haute-show-"))
+    try:
         archive_commit(sha, root)
         best: PipelineGraph | None = None
-        for f in sorted(_discover_in(root=root)):
+        candidates = sorted(_discover_in(root=root))
+        parse_failures = 0
+        for f in candidates:
             try:
                 graph = parse_pipeline_to_graph(f)
                 graph.source_file = str(f.relative_to(root))
@@ -901,9 +903,28 @@ def commit_pipeline_graph(sha: str) -> PipelineGraph:
                     return graph
                 best = best if best is not None else graph
             except Exception as e:
+                parse_failures += 1
                 logger.warning("commit_parse_failed", file=f.name, error=str(e))
                 continue
-        return best if best is not None else PipelineGraph()
+        if best is not None:
+            return best
+        if parse_failures:
+            raise GitHistoryReadError("The selected version's pipeline could not be parsed.")
+        raise GitHistoryReadError(
+            "The selected version does not contain a readable Haute pipeline."
+        )
+    finally:
+        for attempt in range(3):
+            try:
+                shutil.rmtree(root)
+                break
+            except FileNotFoundError:
+                break
+            except OSError as exc:
+                if attempt == 2:
+                    logger.warning("commit_temp_cleanup_failed", path=str(root), error=str(exc))
+                else:
+                    time.sleep(0.02 * (attempt + 1))
 
 
 def _normalise_sidecar_sources(raw_sources: Any) -> list[str] | None:

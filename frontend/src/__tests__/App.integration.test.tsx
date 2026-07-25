@@ -115,7 +115,6 @@ vi.mock("../api/client", async () => {
     listFiles: vi.fn(() => Promise.resolve({ items: [] })),
     readJson: vi.fn(() => Promise.resolve({})),
     // Git
-    getGitStatus: vi.fn(() => Promise.resolve({ branch: "main", ahead: 0, behind: 0, dirty: false, files: [] })),
     getWorkingBranch: vi.fn(() =>
       Promise.resolve({
         working_branch: "dev",
@@ -407,7 +406,6 @@ beforeEach(() => {
   vi.mocked(api.cancelExplore).mockReset().mockResolvedValue({ status: "cancelled", progress: 1, message: "cancelled", result: null })
   vi.mocked(api.checkMlflow).mockReset().mockResolvedValue({ mlflow_installed: false, backend: "", databricks_host: "" })
   vi.mocked(api.listUtilityFiles).mockReset().mockResolvedValue({ files: [] })
-  vi.mocked(api.getGitStatus).mockReset().mockResolvedValue({ branch: "main", is_main: true, is_read_only: false, changed_files: [], main_ahead: false, main_ahead_by: 0, main_last_updated: null })
   // Default to a healthy clone so the startup modal stays closed; tests that
   // need unset/divergent override with mockResolvedValue inside the test.
   vi.mocked(api.getWorkingBranch).mockReset().mockResolvedValue({ working_branch: "dev", state: "ready", errors: [], current_branch: "dev-save", last_save_sha: "abc1234def", eligible_branches: ["dev"], identity_set: true, user_name: "Test User", user_email: "test@example.com" })
