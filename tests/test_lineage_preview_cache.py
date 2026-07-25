@@ -14,6 +14,8 @@ from haute._cache import (
 from haute.projection import prepare_graph
 from tests.conftest import make_edge, make_graph
 
+pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
+
 
 @pytest.fixture(autouse=True)
 def _clear_preview_cache():

@@ -4,8 +4,8 @@ import {
   ApiError,
   ApiTimeoutError,
   HAUTE_SESSION_EXPIRED_EVENT,
+  bootstrapHauteSession,
   checkHauteSession,
-  hauteSessionToken,
   isHauteSessionExpiredError,
   loadPipeline,
   previewNode,
@@ -321,7 +321,6 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.restoreAllMocks()
-  delete window.__HAUTE_SESSION_TOKEN__
 })
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -337,15 +336,49 @@ describe("request() core via loadPipeline", () => {
     expect(url).toBe("/api/pipeline")
   })
 
-  it("attaches the local session token header when present", async () => {
-    window.__HAUTE_SESSION_TOKEN__ = "frontend-session-token"
+  it("uses browser-managed same-origin credentials without a bearer header", async () => {
     mockFetch.mockReturnValue(jsonResponse({ nodes: [], edges: [] }))
 
     await loadPipeline()
 
     const [, options] = mockFetch.mock.calls[0]
-    expect(options.headers["x-haute-session-token"]).toBe("frontend-session-token")
-    expect(hauteSessionToken()).toBe("frontend-session-token")
+    expect(options.credentials).toBe("same-origin")
+    expect(options.headers["x-haute-session-token"]).toBeUndefined()
+  })
+
+  it("bootstraps one HttpOnly-cookie session for concurrent callers", async () => {
+    mockFetch.mockReturnValue(jsonResponse({ ok: true }))
+
+    await Promise.all([
+      bootstrapHauteSession(true),
+      bootstrapHauteSession(true),
+    ])
+
+    expect(mockFetch).toHaveBeenCalledTimes(1)
+    expect(mockFetch).toHaveBeenCalledWith(
+      "/api/session/bootstrap",
+      expect.objectContaining({
+        method: "POST",
+        credentials: "same-origin",
+        cache: "no-store",
+      }),
+    )
+    const [, options] = mockFetch.mock.calls[0]
+    expect(options.headers).toBeUndefined()
+    expect(options.body).toBeUndefined()
+  })
+
+  it("retries a normal bootstrap after a forced refresh fails", async () => {
+    mockFetch
+      .mockReturnValueOnce(jsonResponse({ ok: true }))
+      .mockReturnValueOnce(errorResponse(503, { detail: "temporarily unavailable" }))
+      .mockReturnValueOnce(jsonResponse({ ok: true }))
+
+    await bootstrapHauteSession(true)
+    await expect(bootstrapHauteSession(true)).rejects.toThrow(ApiError)
+    await bootstrapHauteSession()
+
+    expect(mockFetch).toHaveBeenCalledTimes(3)
   })
 
   it("returns parsed JSON on success", async () => {

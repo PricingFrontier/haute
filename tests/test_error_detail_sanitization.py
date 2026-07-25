@@ -432,6 +432,9 @@ class TestSafeDetailOnError:
         assert detail == _SAFE_DETAIL
 
     def test_pipeline_sink_500_no_leak(self, client: TestClient, tmp_path: Path) -> None:
+        from haute._sandbox import set_project_root
+
+        set_project_root(tmp_path)
         data_path = tmp_path / "data" / "input.parquet"
         graph = _minimal_source_graph(str(data_path))
         # Add a sink node

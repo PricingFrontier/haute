@@ -32,6 +32,8 @@ from haute.errors import ChunkPlanUnsupportedError, GroupByExecutionUnsupportedE
 from haute.executor import _build_node_fn
 from tests.conftest import make_edge, make_graph, make_output_config
 
+pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
+
 DEFAULT_OUTPUT_FIELDS = [
     "quote_id",
     "age_band",

@@ -53,6 +53,7 @@ def _make_scored_data(tmp_path, n_quotes: int = 50, n_steps: int = 5) -> str:
 
     Columns: quote_id, scenario_index, scenario_value, expected_income, volume
     """
+    set_project_root(tmp_path)
     rng = np.random.RandomState(42)
     quote_ids = []
     steps = []
@@ -1119,6 +1120,7 @@ class TestStatusRoute:
         assert data["elapsed_seconds"] >= 1.0
 
 
+@pytest.mark.usefixtures("_widen_sandbox_root")
 class TestEstimateRoute:
     """Exercises ``POST /api/optimiser/estimate`` — the input-volume preview
     consumed by the frontend's shared ``useStaleConfigEstimate`` hook.  Exact
@@ -6282,6 +6284,7 @@ class TestUnsupportedMode:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("_widen_sandbox_root")
 class TestExecutePipelineArgs:
     """Verify _execute_pipeline passes scenario, preamble_ns, and checkpoint_dir."""
 
@@ -7146,6 +7149,7 @@ class TestBuildGridBoundedSink:
         assert result is mock_grid
 
 
+@pytest.mark.usefixtures("_widen_sandbox_root")
 class TestExecutePipelineCleanup:
     """Verify checkpoint dir lifecycle: caller owns creation + cleanup."""
 
@@ -11852,6 +11856,7 @@ class TestSolveRatebookUnit:
         )
 
 
+@pytest.mark.usefixtures("_widen_sandbox_root")
 class TestExecutePipelineExtended:
     """Additional coverage for _execute_pipeline: preamble, streaming chunk."""
 
@@ -13536,6 +13541,7 @@ class TestSolveRatebookFallbackQuoteId:
         assert job["status"] == "completed"
 
 
+@pytest.mark.usefixtures("_widen_sandbox_root")
 class TestExecutePipelineHTTPExceptionPassthrough:
     """Test that HTTPException raised inside _execute_pipeline is re-raised directly."""
 

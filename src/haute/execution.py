@@ -46,7 +46,7 @@ from haute._execution_context import ExecutionContext, ExecutionProfile
 from haute._graph_utils import upstream_node_ids
 from haute._hashing import HASH_ALGO, content_hash, content_hash_bytes
 from haute._json_flatten import cache_state_signature_for_graph
-from haute._path_resolution import resolve_runtime_file_path
+from haute._path_resolution import _infer_project_root, resolve_runtime_file_path
 from haute._ram_estimate import (
     MaterialisationEstimate,
     MaterialisationEstimateState,
@@ -139,12 +139,6 @@ _DEFAULT_DATAFRAME_EXECUTION_CACHE: DataFrameExecutionCache | None = None
 _DEFAULT_DATAFRAME_EXECUTION_CACHE_LOCK = threading.Lock()
 _AUTO_MATERIALISATION_ESTIMATE = object()
 
-_GRAPH_PATH_CONFIG_BY_NODE_TYPE: dict[NodeType, str] = {
-    NodeType.API_INPUT: "path",
-    NodeType.DATA_INPUT: "path",
-    NodeType.EXTERNAL_FILE: "path",
-}
-
 _SOURCE_PATH_CONFIG_BY_NODE_TYPE: dict[NodeType, str] = {
     NodeType.API_INPUT: "path",
     NodeType.DATA_INPUT: "path",
@@ -154,10 +148,9 @@ _SOURCE_PATH_CONFIG_BY_NODE_TYPE: dict[NodeType, str] = {
 _LOCAL_RUNTIME_INPUT_PATH_FIELDS_BY_NODE_TYPE: dict[NodeType, tuple[str, ...]] = {
     NodeType.API_INPUT: ("path",),
     NodeType.EXTERNAL_FILE: ("path",),
-    NodeType.MODEL_SCORE: (
-        "artifact_path",
-        "feature_contract_path",
-    ),
+    # ``artifact_path`` is an MLflow artifact identifier (for example
+    # ``model/model.cbm``), not a path on the Haute project filesystem.
+    NodeType.MODEL_SCORE: ("feature_contract_path",),
 }
 
 
@@ -188,41 +181,44 @@ def invalidate_dataframe_execution_cache() -> None:
         cache.invalidate()
 
 
-def _graph_runtime_path_config_key(node: GraphNode) -> str | None:
-    config = node.data.config
-    if node.data.nodeType == NodeType.OPTIMISER_APPLY and config.get("sourceType") == "file":
-        return "artifact_path"
-    return _GRAPH_PATH_CONFIG_BY_NODE_TYPE.get(node.data.nodeType)
-
-
 def canonical_dataframe_execution_graph(graph: PipelineGraph) -> PipelineGraph:
-    """Return the graph shape used for lazy execution and dataframe cache keys."""
+    """Resolve and contain every local runtime input before execution."""
 
-    if not graph.source_file:
-        return graph
+    root = _infer_project_root(project_root=None, source_file=graph.source_file)
+    pipeline_dir = _cache_pipeline_dir(graph)
+    if pipeline_dir is None:
+        from haute._project import _toml_configured_pipeline
+
+        configured_pipeline = _toml_configured_pipeline(root)
+        pipeline_dir = configured_pipeline.parent if configured_pipeline is not None else None
     nodes: list[GraphNode] = []
     changed = False
     for node in graph.nodes:
         config = node.data.config
-        key = _graph_runtime_path_config_key(node)
-        if key is None:
-            nodes.append(node)
-            continue
-        raw_path = config.get(key)
-        if isinstance(raw_path, str) and raw_path:
-            resolved = str(
-                resolve_runtime_file_path(
-                    raw_path,
-                    source_file=graph.source_file,
-                    prefer="project",
+        resolved_config = dict(config)
+        node_changed = False
+        for key in _local_runtime_input_path_fields(node):
+            raw_path = config.get(key)
+            if isinstance(raw_path, str) and raw_path:
+                resolved = str(
+                    resolve_runtime_file_path(
+                        raw_path,
+                        source_file=graph.source_file,
+                        pipeline_dir=pipeline_dir,
+                        project_root=root,
+                        prefer="project",
+                        enforce_project_root=True,
+                    )
                 )
-            )
-            if resolved != raw_path:
-                data = node.data.model_copy(update={"config": {**config, key: resolved}})
-                nodes.append(node.model_copy(update={"data": data}))
-                changed = True
-                continue
-        nodes.append(node)
+                if resolved != raw_path:
+                    resolved_config[key] = resolved
+                    node_changed = True
+        if node_changed:
+            data = node.data.model_copy(update={"config": resolved_config})
+            nodes.append(node.model_copy(update={"data": data}))
+            changed = True
+        else:
+            nodes.append(node)
     if not changed:
         return graph
     return graph.model_copy(update={"nodes": nodes})
@@ -732,7 +728,8 @@ def _runtime_input_config_fields(node_type: NodeType) -> tuple[str, ...]:
     return ()
 
 
-def _runtime_input_path_fields(node: GraphNode) -> tuple[str, ...]:
+def _local_runtime_input_path_fields(node: GraphNode) -> tuple[str, ...]:
+    """Return config fields that cause reads from the local filesystem."""
     fields = list(_LOCAL_RUNTIME_INPUT_PATH_FIELDS_BY_NODE_TYPE.get(node.data.nodeType, ()))
     if node.data.nodeType == NodeType.DATA_INPUT and node.data.config.get("inputType") in {
         "file",
@@ -743,6 +740,19 @@ def _runtime_input_path_fields(node: GraphNode) -> tuple[str, ...]:
         node.data.nodeType == NodeType.OPTIMISER_APPLY
         and node.data.config.get("sourceType") == "file"
     ):
+        fields.append("artifact_path")
+    return tuple(fields)
+
+
+def _runtime_input_path_fields(node: GraphNode) -> tuple[str, ...]:
+    """Return path-shaped inputs that require request-boundary validation.
+
+    This includes the MLflow ``modelScore.artifact_path`` identifier so route
+    validation continues to reject traversal-shaped values, even though that
+    identifier must never be resolved as a local project file by execution.
+    """
+    fields = list(_local_runtime_input_path_fields(node))
+    if node.data.nodeType == NodeType.MODEL_SCORE:
         fields.append("artifact_path")
     return tuple(fields)
 
@@ -819,9 +829,10 @@ def _runtime_file_signature_paths(graph: PipelineGraph, node: GraphNode) -> dict
       source path; snapshot inputs sign the active generation pointer, so only
       an explicit refresh invalidates execution caches.
     * **everything else** — the per-node config path fields shared with
-      :func:`_runtime_input_path_fields`: ``externalFile`` paths,
-      ``modelScore`` artifact/feature-contract paths, and file-sourced
-      ``optimiserApply`` artifacts.
+      :func:`_local_runtime_input_path_fields`: ``externalFile`` paths,
+      ``modelScore`` feature-contract paths, and file-sourced
+      ``optimiserApply`` artifacts. MLflow artifact identifiers are config
+      identity, not local files.
     """
     node_type = node.data.nodeType
     config = node.data.config
@@ -856,7 +867,7 @@ def _runtime_file_signature_paths(graph: PipelineGraph, node: GraphNode) -> dict
                 return {"path": _runtime_path_from_graph_config(graph, raw_path)}
         return {}
     paths: dict[str, Path] = {}
-    for path_field in _runtime_input_path_fields(node):
+    for path_field in _local_runtime_input_path_fields(node):
         raw = config.get(path_field)
         if isinstance(raw, str) and raw:
             paths[path_field] = _runtime_path_from_graph_config(graph, raw)

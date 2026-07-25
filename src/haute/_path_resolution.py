@@ -2,10 +2,21 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
+from functools import wraps
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal, TypeVar, cast
+
+from haute._sandbox import _get_project_root
 
 PathPreference = Literal["project", "pipeline"]
+_CallableT = TypeVar("_CallableT", bound=Callable[..., Any])
+_RUNTIME_PROJECT_ROOT: ContextVar[Path | None] = ContextVar(
+    "haute_runtime_project_root",
+    default=None,
+)
 
 
 def _normalise_path_text(path: str | Path) -> str:  # pragma: no mutate
@@ -41,18 +52,50 @@ def _infer_project_root(
     if project_root is not None:
         return Path(project_root).resolve()
 
-    cwd = Path.cwd().resolve()
+    current_project = _get_project_root().resolve()
     if not source_file:
-        return cwd
+        return current_project
 
     source = Path(_normalise_path_text(source_file))
     if not source.is_absolute():
-        return cwd
+        return current_project
 
+    lexical_source = source.absolute()
     resolved_source = source.resolve()
-    if resolved_source.is_relative_to(cwd):
-        return cwd
+    if lexical_source.is_relative_to(current_project) and not resolved_source.is_relative_to(
+        current_project
+    ):
+        raise ValueError("Pipeline source resolves outside the project root")
+    if resolved_source.is_relative_to(current_project):
+        return current_project
     return resolved_source.parent
+
+
+def current_runtime_project_root() -> Path:
+    """Return the execution-scoped root, falling back to the current project."""
+    return _RUNTIME_PROJECT_ROOT.get() or _get_project_root().resolve()
+
+
+@contextmanager
+def runtime_project_root_scope(source_file: str | Path | None) -> Iterator[Path]:
+    """Scope all builder path reads to the selected pipeline's project root."""
+    root = _infer_project_root(project_root=None, source_file=source_file)
+    token = _RUNTIME_PROJECT_ROOT.set(root)
+    try:
+        yield root
+    finally:
+        _RUNTIME_PROJECT_ROOT.reset(token)
+
+
+def runtime_project_root_scoped(function: _CallableT) -> _CallableT:
+    """Decorate an execution entry point whose first argument is a graph."""
+
+    @wraps(function)
+    def wrapper(graph: Any, *args: Any, **kwargs: Any) -> Any:
+        with runtime_project_root_scope(getattr(graph, "source_file", None)):
+            return function(graph, *args, **kwargs)
+
+    return cast(_CallableT, wrapper)
 
 
 def _candidate_if_allowed(
@@ -74,7 +117,7 @@ def resolve_runtime_file_path(
     pipeline_dir: str | Path | None = None,  # pragma: no mutate
     project_root: str | Path | None = None,  # pragma: no mutate
     prefer: PathPreference = "project",
-    enforce_project_root: bool = False,
+    enforce_project_root: bool = True,
 ) -> Path:
     """Resolve a user-facing path for runtime execution.
 

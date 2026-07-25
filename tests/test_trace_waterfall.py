@@ -46,6 +46,8 @@ from haute._trace_waterfall import (
 from haute.trace import SchemaDiff, TraceStep, execute_trace
 from tests.conftest import make_edge, make_graph, make_node, make_source_node, make_transform_node
 
+pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
+
 # ---------------------------------------------------------------------------
 # Graph helpers
 # ---------------------------------------------------------------------------

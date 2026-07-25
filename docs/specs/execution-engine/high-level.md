@@ -96,6 +96,13 @@ running heavy work in a child process the parent can kill on timeout or memory l
   database output, instead uses `streaming_collect` and therefore materialises the
   result DataFrame before writing; it still refuses Polars' non-streaming broad-collect
   fallback for bounded profiles.
+- **Every local runtime input is contained before eager or lazy execution.**
+  `canonical_dataframe_execution_graph` normalizes separators, resolves symlinks,
+  and rejects absolute/traversal/mixed-separator paths outside the execution root.
+  The normal root is cwd; explicitly selecting an absolute pipeline outside cwd
+  establishes only that pipeline's parent as its root. The eager/lazy cores also
+  scope the final builder read to the same root. Named database/Databricks/provider
+  identifiers are not local paths and retain their external-resource semantics.
 - **Chunked map-reduce execution** (`chunking.chunk_plan` / `iter_chunked_frames`)
   proves, ahead of running anything, that a graph's tail from a chosen `chunk_start`
   node to the target is chunk-safe — a single-parent chain of node types whose

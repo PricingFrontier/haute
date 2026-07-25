@@ -159,7 +159,8 @@ sinker and returns `None`, `mode="write"` streaming-collects then calls the
    `cwd`).
 2. `_normalise_path_text` the raw path (backslash → forward slash, reject
    embedded NUL).
-3. Absolute `raw_path` returns immediately (after an `enforce_project_root`
+3. `enforce_project_root` defaults to `True`. Absolute `raw_path` returns
+   immediately (after that
    check); relative paths build two candidates — `root / raw` (project) and
    `pipeline_dir / raw` or `source_file`'s resolved parent `/ raw`
    (pipeline) — each filtered through `_candidate_if_allowed` (drops a

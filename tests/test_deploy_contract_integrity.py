@@ -32,6 +32,8 @@ from haute.modelling._feature_contract import (
 )
 from tests.conftest import make_output_config
 
+pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
+
 FIXTURE_DIR = Path("tests/fixtures")
 PIPELINE_FILE = FIXTURE_DIR / "pipeline.py"
 

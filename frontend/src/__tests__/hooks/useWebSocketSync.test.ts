@@ -148,7 +148,6 @@ describe("useWebSocketSync", () => {
     cleanup()
     vi.useRealTimers()
     globalThis.WebSocket = originalWebSocket
-    delete window.__HAUTE_SESSION_TOKEN__
   })
 
   // ────────────────────────────────────────────────────────────────
@@ -209,15 +208,13 @@ describe("useWebSocketSync", () => {
       expect(latestWS().url).toBe("ws://localhost:3000/ws/sync")
     })
 
-    it("includes the local session token when opening the WebSocket", () => {
-      window.__HAUTE_SESSION_TOKEN__ = "socket-session-token"
+    it("never places local-session credentials in the WebSocket URL", () => {
       const params = makeHookParams()
 
       renderHook(() => useWebSocketSync(params))
 
-      expect(latestWS().url).toBe(
-        "ws://localhost:3000/ws/sync?haute_session_token=socket-session-token",
-      )
+      expect(latestWS().url).toBe("ws://localhost:3000/ws/sync")
+      expect(latestWS().url).not.toContain("?")
     })
 
     it("sets status to connected when onopen fires", () => {
@@ -1079,43 +1076,63 @@ describe("useWebSocketSync", () => {
       expect(mockWSInstances.length).toBe(countBefore)
     })
 
-    it("stops reconnecting and emits session-expired on token mismatch close", () => {
+    it("refreshes the HttpOnly session and reconnects on an expired-session close", async () => {
+      const originalFetch = globalThis.fetch
+      const fetchMock = vi.fn(() => Promise.resolve({
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        json: () => Promise.resolve({ ok: true }),
+      } as Response))
+      globalThis.fetch = fetchMock as unknown as typeof fetch
       const listener = vi.fn()
       window.addEventListener(HAUTE_SESSION_EXPIRED_EVENT, listener)
       const params = makeHookParams()
       const { result } = renderHook(() => useWebSocketSync(params))
 
-      act(() => {
-        latestWS().onclose?.({
-          code: 1008,
-          reason: "Missing or invalid Haute session token",
-        } as CloseEvent)
-      })
+      try {
+        act(() => {
+          latestWS().onclose?.({
+            code: 1008,
+            reason: "Missing or invalid Haute session token",
+          } as CloseEvent)
+        })
 
-      expect(result.current).toBe("disconnected")
-      expect(listener).toHaveBeenCalledTimes(1)
-      act(() => {
-        vi.advanceTimersByTime(60_000)
-      })
-      expect(mockWSInstances).toHaveLength(1)
+        await act(async () => {
+          await Promise.resolve()
+          await Promise.resolve()
+        })
 
-      window.removeEventListener(HAUTE_SESSION_EXPIRED_EVENT, listener)
+        expect(fetchMock).toHaveBeenCalledWith(
+          "/api/session/bootstrap",
+          expect.objectContaining({ method: "POST", credentials: "same-origin" }),
+        )
+        expect(result.current).toBe("reconnecting")
+        expect(listener).not.toHaveBeenCalled()
+
+        act(() => {
+          vi.advanceTimersByTime(1_000)
+        })
+        expect(mockWSInstances).toHaveLength(2)
+      } finally {
+        window.removeEventListener(HAUTE_SESSION_EXPIRED_EVENT, listener)
+        globalThis.fetch = originalFetch
+      }
     })
 
-    it("probes session status and stops reconnecting when a pre-open close hides the auth reason", async () => {
+    it("refreshes the session before reconnecting when a pre-open close hides the reason", async () => {
       const originalFetch = globalThis.fetch
       const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
         void input
         void init
         return Promise.resolve({
-        ok: false,
-        status: 403,
-        statusText: "Forbidden",
-        json: () => Promise.resolve({ detail: "Missing or invalid Haute session token" }),
+          ok: true,
+          status: 200,
+          statusText: "OK",
+          json: () => Promise.resolve({ ok: true }),
         } as Response)
       })
       globalThis.fetch = fetchMock as unknown as typeof fetch
-      window.__HAUTE_SESSION_TOKEN__ = "stale-token"
 
       const listener = vi.fn()
       window.addEventListener(HAUTE_SESSION_EXPIRED_EVENT, listener)
@@ -1137,14 +1154,14 @@ describe("useWebSocketSync", () => {
         })
 
         expect(fetchMock).toHaveBeenCalledTimes(1)
-        expect(fetchMock.mock.calls[0][0]).toBe("/api/session")
-        expect(result.current).toBe("disconnected")
-        expect(listener).toHaveBeenCalledTimes(1)
+        expect(fetchMock.mock.calls[0][0]).toBe("/api/session/bootstrap")
+        expect(result.current).toBe("reconnecting")
+        expect(listener).not.toHaveBeenCalled()
 
         act(() => {
-          vi.advanceTimersByTime(60_000)
+          vi.advanceTimersByTime(1_000)
         })
-        expect(mockWSInstances).toHaveLength(1)
+        expect(mockWSInstances).toHaveLength(2)
       } finally {
         window.removeEventListener(HAUTE_SESSION_EXPIRED_EVENT, listener)
         globalThis.fetch = originalFetch
@@ -1159,7 +1176,6 @@ describe("useWebSocketSync", () => {
         return Promise.reject(new TypeError("Failed to fetch"))
       })
       globalThis.fetch = fetchMock as unknown as typeof fetch
-      window.__HAUTE_SESSION_TOKEN__ = "known-token"
 
       const params = makeHookParams()
       const { result } = renderHook(() => useWebSocketSync(params))

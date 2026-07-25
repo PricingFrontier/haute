@@ -6,6 +6,7 @@
 |---|---|
 | `src/haute/executor.py` | GUI-facing eager entry point: `execute_graph()` (preview, with the `_preview_cache` `FingerprintCache`), `execute_sink()` (batch/data-output writes), preamble compilation + single-flight cache (`_compile_preamble`), preview-column projection/schema-warning assembly, sink path resolution/containment. |
 | `src/haute/execution.py` | Stable internal facade re-exporting execution helpers (`execute_lazy_graph`, `plan_execution_strategy`, `build_dataframe_execution_cache_request`, graph/path/frame input-fingerprint helpers, `runtime_input_extra_keys`) so application code has one import boundary instead of reaching into `_execute_lazy`/`graph_utils` internals directly. |
+| `src/haute/_path_resolution.py` | Canonical local-runtime-path resolution: separator normalization, project/pipeline candidate choice, symlink-aware containment, selected-external-pipeline root inference, and the context-local root used by eager/lazy builders. |
 | `src/haute/_execute_lazy.py` | The shared execution core: `_prepare_graph`/`_prepare_graph_with_edges` (topo order + adjacency), `_build_funcs` (per-node callable construction, shared by eager and lazy), `_execute_lazy` (lazy plan + structural parquet checkpointing + dataframe-cache seeding), `_execute_eager_core`/`EagerResult` (eager materialisation with contract checks), column-contract assertion helpers, multi-frame (`dict[label, Frame]`) source routing (`_pick_source_frame`). |
 | `src/haute/projection.py` | Shared execution-strategy planner: backward column demand, strict-profile decisions, fan-in edge demands, materialisation/opaque boundaries, source-scan projection, and bounded strategy diagnostics. |
 | `src/haute/_execution_context.py` | `ExecutionContext`, `ExecutionProfile`, `ExecutionCancellationToken`, `ExecutionMetricsRecorder`, and RSS-sampling/memory-pressure-event machinery. Contexts created directly may be unbudgeted; admitted contexts carry the resolved limits. |
@@ -99,6 +100,19 @@ that re-executed successfully clears any stale cached error. On a full miss, exe
 from scratch. `_eager_execute()` compiles the preamble (`_compile_preamble`, tolerant
 of failure — the error is attached only to nodes whose builder actually consumes the
 preamble namespace) and delegates to `_execute_eager_core()`.
+
+Before fingerprinting or building functions,
+`canonical_dataframe_execution_graph()` resolves every local runtime input field
+with `enforce_project_root=True`. `_execute_eager_core` and `_execute_lazy` are
+wrapped by `runtime_project_root_scoped`, so `_resolve_runtime_data_path` repeats
+the same check at the final builder seam. Relative, absolute, traversal,
+mixed-separator, and symlink spellings therefore share one resolved containment
+decision on both strategies. An absolute selected pipeline outside cwd establishes
+its parent as the scoped root; it does not authorize sibling directories. A path
+spelled inside the configured project cannot acquire that exception by resolving
+through a symlink, and HTTP graph payloads are validated against the configured
+project before execution so only a direct/operator-controlled caller can select
+an external pipeline.
 
 **`_execute_eager_core()`** (`_execute_lazy.py`): prepares the graph
 (`_prepare_graph_with_edges` → `projection_planner.prepare_graph`, which topo-sorts via

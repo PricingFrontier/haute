@@ -341,8 +341,9 @@ is the authoritative module map for their responsibilities:
     `useGitStore`'s last-save SHA and notifies its history-changed
     subscribers. Never throws; resolves `false` on any failure after
     toasting the detail.
-19. **WebSocket sync (`useWebSocketSync`).** Connects to `/ws/sync` with the
-    session token in the query string; on open, sends a `resync` message
+19. **WebSocket sync (`useWebSocketSync`).** Connects to the credential-free
+    `/ws/sync` URL; the browser supplies its HttpOnly same-origin cookie during
+    the handshake. On open, sends a `resync` message
     carrying the last-applied graph fingerprint for the current source file
     (server skips replying if it already matches). On `graph_update`: source
     file must match the currently open one (`isCurrentSourceFile`, tolerant
@@ -355,11 +356,11 @@ is the authoritative module map for their responsibilities:
     during apply rolls back to the pre-update `nodes`/`edges`/`preamble`
     (best-effort) before re-throwing into the outer catch, which toasts.
     Reconnection backs off exponentially (`INITIAL_BACKOFF_MS` doubling to
-    `MAX_BACKOFF_MS`, capped at `MAX_RETRIES` = 50); a `1008` close with a
-    session-expired reason stops retrying and calls
-    `notifyHauteSessionExpired`; an abnormal (`1006`) close before the
-    socket ever opened probes session validity before deciding whether to
-    reconnect.
+    `MAX_BACKOFF_MS`, capped at `MAX_RETRIES` = 50). A `1008` close with a
+    session-expired reason force-refreshes the HttpOnly cookie, then reconnects;
+    only a failed refresh emits the session-expired event. An abnormal (`1006`)
+    pre-open close also attempts bootstrap before continuing the bounded retry
+    loop, covering local backend restarts without putting a secret in a URL.
 20. **Submodel drill-in (`useSubmodelNavigation.handleDrillIntoSubmodel`).**
     Loads the submodel's graph, snapshots the parent graph into
     `parentGraphRef` and the outgoing view-stack entry (`_savedNodes`/

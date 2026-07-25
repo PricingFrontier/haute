@@ -18,7 +18,7 @@ from haute.execution import ProjectionRequest, execute_lazy_graph, plan_executio
 from haute.executor import _build_node_fn
 from haute.routes._train_service import _build_training_feature_selection
 
-pytestmark = pytest.mark.perf
+pytestmark = [pytest.mark.perf, pytest.mark.usefixtures("_widen_sandbox_root")]
 
 _ROWS_BY_SCALE = {"ci": 20_000, "1m": 1_000_000, "10m": 10_000_000}
 _UNUSED_COLUMNS = 12

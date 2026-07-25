@@ -10,9 +10,19 @@ import pytest
 from fastapi import HTTPException
 
 from haute._types import GraphNode, NodeData, NodeType, PipelineGraph
+from haute.routes import modelling as modelling_routes
+from haute.routes import optimiser as optimiser_routes
 from haute.routes._save_pipeline import SavePipelineService
-from haute.routes.pipeline import _validate_runtime_input_paths
-from haute.schemas import SavePipelineRequest
+from haute.routes.pipeline import _prepare_runtime_graph, _validate_runtime_input_paths
+from haute.schemas import (
+    DispersionEstimateRequest,
+    OptimiserEstimateRequest,
+    OptimiserFrontierAutoRangeRequest,
+    OptimiserSolveRequest,
+    SavePipelineRequest,
+    TrainEstimateRequest,
+    TrainRequest,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -79,6 +89,115 @@ def test_validate_runtime_input_paths_maps_embedded_null_byte_to_400() -> None:
 
     assert exc_info.value.status_code == 400
     assert "null byte" in exc_info.value.detail
+
+
+@pytest.mark.parametrize(
+    "route_name",
+    ["train", "dispersion", "estimate"],
+)
+def test_modelling_execution_routes_reject_external_graph_source(
+    route_name: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    graph = PipelineGraph(source_file=str(tmp_path.parent / "external" / "pipeline.py"))
+
+    if route_name == "train":
+        monkeypatch.setattr(modelling_routes._train_service, "start", lambda _body: object())
+        route = modelling_routes.train_model
+        body = TrainRequest(graph=graph, node_id="model")
+    elif route_name == "dispersion":
+        monkeypatch.setattr(
+            modelling_routes._train_service,
+            "start_dispersion_estimate",
+            lambda _body: object(),
+        )
+        route = modelling_routes.estimate_dispersion
+        body = DispersionEstimateRequest(
+            graph=graph,
+            node_id="model",
+            param="theta",
+        )
+    else:
+        route = modelling_routes.estimate_training
+        body = TrainEstimateRequest(graph=graph, node_id="model")
+
+    with pytest.raises(HTTPException) as exc_info:
+        route(body)
+
+    assert exc_info.value.status_code == 403
+    assert "outside the project root" in exc_info.value.detail
+
+
+@pytest.mark.parametrize(
+    "route_name",
+    ["solve", "estimate", "auto-range", "auto-range-start"],
+)
+def test_optimiser_execution_routes_reject_external_graph_source(
+    route_name: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    graph = PipelineGraph(source_file=str(tmp_path.parent / "external" / "pipeline.py"))
+
+    if route_name == "solve":
+        monkeypatch.setattr(optimiser_routes._solve_service, "start", lambda _body: object())
+        route = optimiser_routes.solve
+        body = OptimiserSolveRequest(graph=graph, node_id="optimiser")
+    elif route_name == "estimate":
+        route = optimiser_routes.estimate_solve
+        body = OptimiserEstimateRequest(graph=graph, node_id="optimiser")
+    elif route_name == "auto-range":
+        monkeypatch.setattr(
+            optimiser_routes._solve_service,
+            "estimate_frontier_auto_range",
+            lambda _body: object(),
+        )
+        route = optimiser_routes.estimate_frontier_auto_range
+        body = OptimiserFrontierAutoRangeRequest(graph=graph, node_id="optimiser")
+    else:
+        monkeypatch.setattr(
+            optimiser_routes._solve_service,
+            "start_frontier_auto_range",
+            lambda _body: object(),
+        )
+        route = optimiser_routes.start_frontier_auto_range
+        body = OptimiserFrontierAutoRangeRequest(graph=graph, node_id="optimiser")
+
+    with pytest.raises(HTTPException) as exc_info:
+        route(body)
+
+    assert exc_info.value.status_code == 403
+    assert "outside the project root" in exc_info.value.detail
+
+
+def test_prepare_runtime_graph_validates_paths_inside_submodels() -> None:
+    child = GraphNode(
+        id="nested-input",
+        data=NodeData(
+            label="nested-input",
+            nodeType=NodeType.EXTERNAL_FILE,
+            config={"path": "../escape.parquet"},
+        ),
+    )
+    graph = PipelineGraph(
+        source_file="main.py",
+        submodels={
+            "nested": {
+                "file": "modules/nested.py",
+                "graph": {
+                    "nodes": [child.model_dump(mode="json")],
+                    "edges": [],
+                },
+            }
+        },
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        _prepare_runtime_graph(graph)
+
+    assert exc_info.value.status_code == 403
+    assert "outside the project root" in exc_info.value.detail
 
 
 @pytest.mark.parametrize(

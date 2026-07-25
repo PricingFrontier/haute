@@ -28,7 +28,7 @@ is covered by current specifications and ordinary regression tests.
 | [Optimiser](optimiser.md) | Apply/save correctness, scaling, lifecycle, workers | `OPT-P01` |
 | [Pipeline authoring](pipeline-authoring.md) | Parser, code generation, standalone and DSL contracts | `AUD-C05` |
 | [Rating](rating.md) | Key canonicalisation and persisted table round trips | `AUD-C06` |
-| [Security and supply chain](security-supply-chain.md) | Trust boundaries and dependency risk | `AUD-C18` |
+| [Security and supply chain](security-supply-chain.md) | Trust boundaries and dependency risk | `AUD-SEC-01` |
 | [Tracing and explainability](tracing-explainability.md) | Evaluation fidelity, row correlation, waterfall honesty | `AUD-C07` |
 
 ## Working protocol

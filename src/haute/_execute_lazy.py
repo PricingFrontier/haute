@@ -37,6 +37,7 @@ from haute._graph_utils import (
     upstream_node_ids,
 )
 from haute._logging import get_logger
+from haute._path_resolution import runtime_project_root_scoped
 from haute._polars_utils import _malloc_trim, bounded_sink, streaming_collect
 from haute._types import (
     GraphEdge,
@@ -705,6 +706,7 @@ def _prepare_graph_with_edges(
     )
 
 
+@runtime_project_root_scoped
 def _execute_lazy(
     graph: PipelineGraph,
     build_node_fn: Callable,
@@ -1645,6 +1647,7 @@ class EagerResult(NamedTuple):
     frame_columns: dict[tuple[str, str], list[tuple[str, str]]]
 
 
+@runtime_project_root_scoped
 def _execute_eager_core(
     graph: PipelineGraph,
     build_node_fn: Callable,

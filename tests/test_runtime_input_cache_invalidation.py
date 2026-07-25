@@ -56,6 +56,8 @@ from tests.conftest import (
     make_transform_node as _transform_node,
 )
 
+pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
+
 
 @pytest.fixture(autouse=True)
 def _fresh_caches():
@@ -694,10 +696,8 @@ class TestRuntimeInputExtraKeys:
         graph = _g({"nodes": [_transform_node("t", "df = df")], "edges": []})
         assert runtime_input_extra_keys(graph) == ()
 
-    def test_unset_optional_path_fields_sign_only_configured_files(self, tmp_path):
-        """A modelScore with only ``artifact_path`` signs that one file —
-        the unset ``feature_contract_path`` is skipped, not signed as
-        an empty placeholder."""
+    def test_remote_artifact_identifier_is_not_file_signed_without_contract(self, tmp_path):
+        """MLflow ``artifact_path`` is an identifier, not a project file path."""
         from haute.execution import runtime_input_extra_keys
 
         artifact = tmp_path / "model.cbm"
@@ -721,11 +721,11 @@ class TestRuntimeInputExtraKeys:
         )
 
         keys_v1 = runtime_input_extra_keys(graph)
-        assert keys_v1
+        assert keys_v1 == ()
 
         artifact.write_bytes(b"model-v2")
         _bump_mtime(artifact)
-        assert runtime_input_extra_keys(graph) != keys_v1
+        assert runtime_input_extra_keys(graph) == keys_v1
 
     def test_flat_file_api_input_path_is_signed(self, tmp_path):
         """Non-JSON apiInput paths are flat-file reads — signed like a
@@ -759,7 +759,7 @@ class TestRuntimeInputExtraKeys:
         keys_after = runtime_input_extra_keys(graph)
         assert keys_after != keys_before
 
-    def test_model_score_artifact_and_contract_are_signed(self, tmp_path):
+    def test_model_score_contract_is_signed_but_remote_artifact_identifier_is_not(self, tmp_path):
         from haute.execution import runtime_input_extra_keys
 
         artifact = tmp_path / "model.cbm"
@@ -789,12 +789,12 @@ class TestRuntimeInputExtraKeys:
         )
 
         keys_v1 = runtime_input_extra_keys(graph)
-        assert keys_v1, "a modelScore artifact must contribute extra-key material"
+        assert keys_v1, "a local feature contract must contribute extra-key material"
 
         artifact.write_bytes(b"model-v2-retrained")
         _bump_mtime(artifact)
         keys_v2 = runtime_input_extra_keys(graph)
-        assert keys_v2 != keys_v1
+        assert keys_v2 == keys_v1
 
         contract.write_text(json.dumps({"features": ["age", "region"]}), encoding="utf-8")
         _bump_mtime(contract)

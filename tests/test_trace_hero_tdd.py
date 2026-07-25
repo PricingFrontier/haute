@@ -40,6 +40,8 @@ from tests.conftest import (
     make_transform_node as _transform_node,
 )
 
+pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

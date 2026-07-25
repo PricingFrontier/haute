@@ -146,13 +146,27 @@ def _validate_runtime_input_paths(graph: PipelineGraph) -> None:
     """Reject API-submitted input paths that resolve outside the project root.
 
     The runtime-input path fields for each node are taken from the executor's
-    authoritative enumeration (:func:`haute.execution._runtime_input_path_fields`)
-    rather than a hand-maintained map, so the guard can never drift from what
-    execution actually reads.  This confines every file the executor consumes at
+    shared enumeration (:func:`haute.execution._runtime_input_path_fields`)
+    rather than a hand-maintained map. This confines every local file the
+    executor consumes at
     preview/trace time — flat-file ``apiInput`` / ``dataInput`` / ``externalFile``
-    ``path``, ``modelScore`` ``artifact_path`` / ``feature_contract_path``, and
-    file-sourced ``optimiserApply`` artifacts — to the project root.
+    ``path``, ``modelScore`` ``feature_contract_path``, and file-sourced
+    ``optimiserApply`` artifacts — to the project root. The same request check
+    rejects traversal-shaped MLflow ``modelScore.artifact_path`` identifiers;
+    execution leaves those external identifiers unchanged.
     """
+    if graph.source_file:
+        try:
+            resolve_runtime_file_path(
+                graph.source_file,
+                project_root=_get_project_root(),
+                prefer="project",
+                enforce_project_root=True,
+            )
+        except ValueError as exc:
+            status_code = 400 if "embedded null byte" in str(exc) else 403
+            raise HTTPException(status_code=status_code, detail=str(exc)) from None
+
     for node in graph.nodes:
         config = node.data.config
         for key in _runtime_input_path_fields(node):
@@ -291,6 +305,20 @@ def _ensure_source_file(graph: PipelineGraph) -> None:
             graph.source_file = configured
     except (OSError, tomllib.TOMLDecodeError, KeyError) as exc:
         logger.warning("source_file_fallback_failed", error=str(exc))
+
+
+def _prepare_runtime_graph(graph: PipelineGraph) -> PipelineGraph:
+    """Flatten and confine an API-submitted graph before any execution work.
+
+    HTTP graph bodies are untrusted local-client input. They may identify the
+    active pipeline within the configured project, but they must not use
+    ``source_file`` to redefine the process project root. Flattening first also
+    ensures path-bearing nodes embedded in submodels receive the same check.
+    """
+    prepared = flatten_graph(graph)
+    _ensure_source_file(prepared)
+    _validate_runtime_input_paths(prepared)
+    return prepared
 
 
 def _read_json_object_blocking(target: Path) -> dict[str, Any]:

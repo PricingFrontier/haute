@@ -211,6 +211,8 @@ def test_component_roadmaps_are_flat_complete_and_self_contained() -> None:
         "AUD-C03",
         "AUD-C04",
         "AUD-C11",
+        "AUD-C18",
+        "AUD-SEC-02",
         "AUD-TRACE-01",
     }
     expected_packages = (
@@ -237,7 +239,6 @@ def test_component_roadmaps_are_flat_complete_and_self_contained() -> None:
             "AUD-QUALITY-03",
             "AUD-RATING-01",
             "AUD-SEC-01",
-            "AUD-SEC-02",
             "CACHE-PERF-01",
             "RATING-PERF-01",
         }

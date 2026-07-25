@@ -24,8 +24,9 @@ In scope:
   middleware stack, static SPA serving, the `/ws/sync` live-sync WebSocket, and the
   filesystem watcher that drives it.
 - Local HTTP/WebSocket protection (`haute._local_security`): trusted Host parsing,
-  local-Origin checks, and the per-process session token accepted through the
-  `x-haute-session-token` header (or `haute_session_token` WebSocket query parameter).
+  exact local-Origin checks, the HttpOnly-cookie bootstrap, and the per-process
+  session token accepted through that cookie or the non-browser
+  `x-haute-session-token` header. URL token transport is unsupported.
 - The shared Pydantic contract layer: `haute.schemas` (the cross-route request/response models;
   OUTPUT dry-run keeps two route-local models). JSON-cache and output routes consume the
   v2 input/output schema modules owned by [json-shredding](../json-shredding/high-level.md).
@@ -90,17 +91,20 @@ request doesn't pay for a full filesystem discovery + parse), and starts the bac
 watcher as an `asyncio.Task`. Shutdown cancels the watcher task and awaits it. If the built
 frontend (`src/haute/static/`) is present and complete (`index.html` **and** `assets/` both
 exist — a partial build is treated as absent, not served broken), every unmatched `GET` falls
-through to the SPA `index.html`; otherwise CORS is opened for the Vite dev server on
-`:5173`.
+through to the SPA `index.html`. In dev mode Vite proxies `/api` and `/ws` while preserving
+the browser's Host authority, so the backend never opens a separate cross-origin API surface.
 
 **Middleware stack.** Starlette prepends each middleware registration, so runtime
-outer-to-inner order is (dev mode only) CORS → trusted-host validation → local-session-token
-and Origin validation → request-ID/timing/exception logging → route. In built-SPA mode CORS
-is absent. Host/auth rejections therefore occur before request-ID middleware and have no
-`x-request-id` header. Real `/api/*` requests require the session token unless
-`HAUTE_DISABLE_LOCAL_SESSION_AUTH` is truthy; `OPTIONS` preflight requests still require a
-trusted Origin but bypass the token check. WebSocket handshakes apply the same Origin/token
-policy and close with code 1008 on rejection.
+outer-to-inner order is trusted-host validation → local-session-token and Origin validation →
+request-ID/timing/exception logging → route in both dev and built-SPA modes. Host/auth
+rejections therefore occur before request-ID middleware and have no
+`x-request-id` header. `POST /api/session/bootstrap` requires an explicit Origin whose
+scheme/loopback authority/effective port exactly match Host, and returns only an HttpOnly,
+SameSite=Strict cookie plus `{ok:true}` under no-store headers. Other `/api/*` requests require
+that cookie or `x-haute-session-token`; an absent Origin is allowed only with a valid existing
+credential. `OPTIONS` still requires a trusted Origin but bypasses the token check. WebSocket
+handshakes always require an explicit matching Origin plus cookie/header credential and close
+with code 1008 on rejection. `HAUTE_DISABLE_LOCAL_SESSION_AUTH` bypasses only session auth.
 
 **Live sync.** A pricing analyst can edit a pipeline's `.py` file directly in an IDE while
 the canvas is open. A background watcher (debounced 300ms) detects the change, re-parses
@@ -251,8 +255,8 @@ the deploy-time render path.
   `validate_safe_path` and the `/pipeline/read-json` route.
 - **[frontend-shared](../frontend-shared/high-level.md)** — the sole consumer of every
   schema and route this component (and the routers it hosts) exposes; the WebSocket resync
-  protocol and the SPA session-token injection in `_serve_index_html` are frontend-facing
-  contracts owned here.
+  protocol and browser call to `/api/session/bootstrap` are frontend-facing contracts owned
+  here. `_serve_index_html` serves the static shell verbatim and never injects a credential.
 
 ## Failure model
 
@@ -404,3 +408,13 @@ Acceptance includes schema/guard parity, capability ordering and completeness, s
 cache single-flight/cancel/progress/status races, no orphaned job after timeout, cache corruption
 and identity mismatch, explicit output-write admission/cancellation/atomicity, and route absence
 for every removed endpoint.
+
+## Approved change contract — bounded request correlation
+
+An inbound `x-request-id` is retained only when it is a 1–64 character ASCII
+token matching `[A-Za-z0-9][A-Za-z0-9._:-]*`. Missing or invalid values are
+replaced with a server-generated identifier before structured context is bound.
+The rejection log records only a bounded reason and numeric input length, never
+the rejected bytes. Consequently oversized values and control characters cannot
+reach logs, error bodies, or response headers, while a valid caller identifier
+still correlates the response.

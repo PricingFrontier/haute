@@ -135,7 +135,8 @@ Out of scope (owned elsewhere):
   candidate roots — the project root and the owning pipeline's directory —
   preferring whichever candidate exists on disk, and preferring the
   project-root candidate when both exist or neither does (unless the
-  caller asks for pipeline-preference).
+  caller asks for pipeline-preference). Containment is enabled by default
+  and is checked after symlink resolution.
 - `warn_if_case_ambiguous` logs — but never blocks — when a resolved path
   has a case-equivalent sibling on disk, since Haute pins no Unicode/case
   normalisation on user-supplied data paths: a config that resolves cleanly

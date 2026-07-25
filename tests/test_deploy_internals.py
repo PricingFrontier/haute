@@ -34,6 +34,8 @@ from tests.conftest import make_output_config
 if TYPE_CHECKING:
     from haute.deploy._model_code import HauteModel
 
+pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
+
 # ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------
