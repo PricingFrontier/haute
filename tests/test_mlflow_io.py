@@ -101,6 +101,21 @@ class TestLoadRunBasedModel:
             with pytest.raises(ValueError, match="run_id is required"):
                 load_mlflow_model(source_type="run", run_id="", task="regression")
 
+    def test_run_artifact_identifier_rejects_traversal_before_resolution(self):
+        """MLflow identifiers stay external but cannot contain traversal."""
+        with (
+            patch("haute._mlflow_io.resolve_mlflow_source") as resolve,
+            pytest.raises(ValueError, match="Invalid artifact_path"),
+        ):
+            load_mlflow_model(
+                source_type="run",
+                run_id="abc123",
+                artifact_path="../model",
+                task="regression",
+            )
+
+        resolve.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # load_mlflow_model — registered

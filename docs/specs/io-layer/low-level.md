@@ -165,8 +165,9 @@ sinker and returns `None`, `mode="write"` streaming-collects then calls the
    execution-local context for builder calls; nested and concurrent executions
    restore/isolate their roots through `ContextVar` tokens.
 2. `_normalise_path_text` the raw path (backslash → forward slash, reject
-   embedded NUL).
-3. Absolute `raw_path` returns immediately (after an `enforce_project_root`
+   embedded NUL with `MalformedRuntimePathError`, a `ValueError` subclass).
+3. `enforce_project_root` defaults to `True`. Absolute `raw_path` returns
+   immediately (after that
    check); relative paths build two candidates — `root / raw` (project) and
    `pipeline_dir / raw` or `source_file`'s resolved parent `/ raw`
    (pipeline) — each filtered through `_candidate_if_allowed` (drops a
@@ -177,7 +178,9 @@ sinker and returns `None`, `mode="write"` streaming-collects then calls the
 4. Order the two candidates by `prefer` (`"project"` default puts the
    project candidate first), de-duplicate, return the first that
    `.exists()`; if none exist, return the first candidate; if there are no
-   candidates at all, raise `ValueError`.
+   candidates at all, raise `RuntimePathOutsideProjectError`, also a
+   `ValueError` subclass. Route adapters classify these concrete exception
+   types and never infer malformed-vs-forbidden status from message text.
 
 ### `discover_pipelines(root, *, strict)` (`discovery.py`)
 
@@ -299,9 +302,9 @@ sinker and returns `None`, `mode="write"` streaming-collects then calls the
   `importlib.util.find_spec` — the engines tuple is an OR-list of
   alternatives, not a required set.
 - `_path_resolution._normalise_path_text` rejects an embedded NUL byte
-  (`\x00`) with `ValueError` before any `Path` construction, since NUL is
-  invalid in filesystem paths on every supported OS and would otherwise
-  surface as a confusing OS-level error later.
+  (`\x00`) with `MalformedRuntimePathError` before any `Path` construction,
+  since NUL is invalid in filesystem paths on every supported OS and would
+  otherwise surface as a confusing OS-level error later.
 - `_path_case_audit._warned` is a process-lifetime, path-keyed cache of
   *positive* findings only — a path that comes back clean is re-scanned on
   every call (so a twin introduced later is still caught), but a path that
@@ -346,8 +349,8 @@ sinker and returns `None`, `mode="write"` streaming-collects then calls the
 | `best_effort_sink` called without `allow_broad=True` | `ValueError` | `_polars_utils.best_effort_sink`, before any I/O. `safe_sink` has no `allow_broad` parameter and always calls `best_effort_sink` with `allow_broad=True`, so it can never hit this error. |
 | `streaming_collect(allow_broad=True)` for a non-`PREVIEW_EAGER` profile | `ValueError` | `_polars_utils.streaming_collect`. |
 | Unreadable candidate file during pipeline discovery | Logged warning (default) or `ConfigError` (`strict=True`) | `discovery.discover_pipelines`. |
-| No valid path candidate at all | `ValueError` | `_path_resolution.resolve_runtime_file_path`. |
-| Embedded NUL byte in a path | `ValueError` | `_path_resolution._normalise_path_text`. |
+| No valid path candidate at all | `RuntimePathOutsideProjectError` (`ValueError` subclass) | `_path_resolution.resolve_runtime_file_path`. |
+| Embedded NUL byte in a path | `MalformedRuntimePathError` (`ValueError` subclass) | `_path_resolution._normalise_path_text`. |
 | Windows atomic-write rename blocked by a reader | `PermissionError` (propagated, not wrapped) | `_file_ops.atomic_write_bytes`. |
 
 All `SchemaMismatchError`/`BoundedMemoryUnsupportedError` instances are
@@ -594,7 +597,9 @@ unavailable, never guessed.
   `write_data_output(..., overwrite=False)` checks a file destination before
   graph execution and performs collision-safe publication after the write.
   `DataOutputDestinationExistsError` is translated to HTTP 409 with the
-  already-resolved display path only.
+  already-resolved display path only. `_prepare_data_output_request` supplies
+  `_get_project_root()` to the shared destination preview and write resolver,
+  so an unrelated process working directory cannot become path authority.
 - With overwrite disabled, Windows uses its create-only `os.rename` semantics;
   other platforms use `os.link(stage, target)` followed by unlinking the stage.
   Both publish a complete same-filesystem artifact only when the target is
@@ -615,3 +620,19 @@ unavailable, never guessed.
   and default-only rescans are rejected.
 - `_source_format` and `is_json_api_input_path` both recognise `.ndjson`.
   No compressed-CSV or new-format semantics are added in this change.
+
+## Approved partitioned-Parquet execution boundary
+
+- `read_polars_input` passes registry-validated Parquet scanner arguments unchanged.
+  `path` may resolve to a dataset directory; it is still rejected if it is a URL or contains a
+  parent traversal segment.
+- `hive_partitioning` is owned by the pinned `polars.scan_parquet` signature extracted into
+  `_polars_io_arguments.json`. No Haute-only duplicate argument or partition parser is added.
+- `_build_data_input` applies source projection and then the input Polars body to one lazy scan.
+  Projection analysis must retain columns referenced by a row-local partition predicate. Polars'
+  optimiser is responsible for pushing both the predicate and final column projection into the
+  scan.
+- The integration test creates `partition=value/*.parquet` children, filters one partition,
+  demands one payload column, and asserts the optimised plan names only the selected file and
+  reports a projected width smaller than the dataset schema. The collected result is checked for
+  semantic correctness.

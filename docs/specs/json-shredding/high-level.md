@@ -105,6 +105,14 @@ partials survive, and null-valued/empty-collection object fields are pruned
 from the rendered document (null or empty-list elements already inside arrays
 remain array elements).
 
+**Edge Join semantics.** The built-in `edgeJoin` accepts exactly the Polars
+strategies `inner`, `left`, `right`, `full`, `semi`, `anti`, and `cross`.
+`cross` rejects every key field. Every other strategy requires either a
+non-empty `on` key (one name or a list shared by both frames) or both
+non-empty `leftOn` and `rightOn` keys with equal lengths; `on` cannot coexist
+with the paired form. The base and join frames are explicit roles, not inferred
+from edge order, and both connected source ids must be distinct.
+
 ## Design rationale
 
 **Object nesting is relationally transparent; only arrays create tables.** This is a
@@ -232,7 +240,8 @@ strict build and raises a specific, column-named error instead.
   source directly. Raw-file decode, missing-file, and declared-type failures stay
   loud and specific; the direct path never replaces them with a cache prompt.
 - `edgeJoin` node misconfiguration (ambiguous/missing base or join role, unsupported
-  join strategy, mismatched key counts) raises `ConfigError` before any join runs.
+  join strategy, keys on `cross`, missing/conflicting key forms, or mismatched key
+  counts) raises `ConfigError` before any join runs.
 
 ## Polars backend contracts (0.6.0)
 

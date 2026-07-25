@@ -27,6 +27,8 @@ from haute.modelling._feature_contract import (
 )
 from tests.conftest import make_graph as _g
 
+pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
+
 # ===========================================================================
 # _canonical_dtype — every branch
 # ===========================================================================

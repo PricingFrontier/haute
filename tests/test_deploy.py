@@ -1125,9 +1125,15 @@ class TestScorer:
         input_df = pl.DataFrame({"x1": [1.0, 2.0]})
         remap = {"ms__model.cbm": str(cbm_path)}
 
-        with patch(
-            "haute._mlflow_io._load_catboost_model",
-            return_value=mock_model,
+        with (
+            patch(
+                "haute._mlflow_io._load_catboost_model",
+                return_value=mock_model,
+            ),
+            patch(
+                "haute._mlflow_io.load_mlflow_model",
+                side_effect=AssertionError("bundled scoring must not contact MLflow"),
+            ) as remote_loader,
         ):
             result = score_graph(
                 graph=graph,
@@ -1141,6 +1147,7 @@ class TestScorer:
         assert result["pred"].to_list() == [42.0, 43.0]
         # Model loaded from bundled path, not from MLflow
         mock_model.predict.assert_called_once()
+        remote_loader.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

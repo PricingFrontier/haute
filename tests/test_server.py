@@ -133,7 +133,13 @@ class TestSessionStatus:
     def test_session_status_rejects_missing_local_session_token(self, client: TestClient):
         from haute._local_security import SESSION_TOKEN_HEADER
 
-        resp = client.get("/api/session", headers={SESSION_TOKEN_HEADER: ""})
+        resp = client.get(
+            "/api/session",
+            headers={
+                "origin": "http://localhost",
+                SESSION_TOKEN_HEADER: "",
+            },
+        )
 
         assert resp.status_code == 403
         assert resp.json() == {"detail": "Missing or invalid Haute session token"}
@@ -503,6 +509,7 @@ class TestSavePipeline:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("_widen_sandbox_root")
 class TestExecuteSinkEndpoint:
     def test_output_destination_uses_backend_resolution_without_writing(
         self, client: TestClient, pipeline_dir: Path
@@ -547,6 +554,42 @@ class TestExecuteSinkEndpoint:
             "format": "parquet",
             "suffix_mismatch": True,
         }
+
+    def test_output_destination_uses_selected_project_root_when_cwd_differs(
+        self,
+        client: TestClient,
+        pipeline_dir: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        set_project_root(pipeline_dir)
+        unrelated_cwd = pipeline_dir / "unrelated-cwd"
+        unrelated_cwd.mkdir()
+        monkeypatch.chdir(unrelated_cwd)
+        graph = {
+            "source_file": str(pipeline_dir / "test_pipeline.py"),
+            "nodes": [
+                {
+                    "id": "sink",
+                    "type": "pipelineNode",
+                    "position": {"x": 0, "y": 0},
+                    "data": {
+                        "label": "sink",
+                        "nodeType": "dataOutput",
+                        "config": _file_output_config("report"),
+                    },
+                },
+            ],
+            "edges": [],
+        }
+
+        response = client.post(
+            "/api/pipeline/output-destination",
+            json={"graph": graph, "node_id": "sink"},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["path"] == "outputs/report.parquet"
+        assert not (unrelated_cwd / "outputs").exists()
 
     def test_sink_writes_output(self, client: TestClient, pipeline_dir: Path):
         out_path = pipeline_dir / "output" / "result.parquet"
@@ -930,7 +973,10 @@ class TestDissolveSubmodel:
 
 class TestWebSocket:
     def test_connect_and_disconnect(self, client: TestClient):
-        with client.websocket_connect("/ws/sync") as ws:
+        with client.websocket_connect(
+            "/ws/sync",
+            headers={"origin": "http://localhost"},
+        ) as ws:
             # Connection should be accepted -- sending a keep-alive message works
             ws.send_text("ping")
         # No error means connect + clean disconnect succeeded
@@ -944,7 +990,10 @@ class TestWebSocket:
         full HTTP flow still works with an active WebSocket connection."""
         from haute.routes._helpers import ws_clients
 
-        with client.websocket_connect("/ws/sync"):
+        with client.websocket_connect(
+            "/ws/sync",
+            headers={"origin": "http://localhost"},
+        ):
             assert len(ws_clients) >= 1
 
             # Use a save call to exercise the full stack (which calls mark_self_write)
@@ -990,9 +1039,11 @@ class TestWebSocketResync:
             self.headers = Headers(
                 {
                     "host": "localhost",
+                    "origin": "http://localhost",
                     SESSION_TOKEN_HEADER: local_session_token(),
                 }
             )
+            self.scope = {"scheme": "ws"}
             self.query_params = QueryParams("")
             self.frames: list[dict[str, object]] = []
 
@@ -2056,6 +2107,7 @@ class TestFileWatcher:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("_widen_sandbox_root")
 class TestPipelineTimeouts:
     """Timeout paths -- let asyncio.wait_for cancel pending route work."""
 
@@ -2135,6 +2187,7 @@ class TestPipelineTimeouts:
         assert resp.status_code == 504
 
 
+@pytest.mark.usefixtures("_widen_sandbox_root")
 class TestPipelineExceptions:
     """Exception paths -- mock execute_graph to raise RuntimeError -> 500."""
 
@@ -2477,6 +2530,7 @@ class TestMiddleware500:
 
         body = json.loads(resp.body)
         assert body == {"detail": "Internal server error"}
+        assert 1 <= len(resp.headers["x-request-id"]) <= 64
 
     def test_request_id_header_passthrough(self, client: TestClient):
         """Middleware adds x-request-id header to successful responses."""
@@ -2488,6 +2542,54 @@ class TestMiddleware500:
         """Client-supplied x-request-id is preserved in the response."""
         resp = client.get("/api/pipelines", headers={"x-request-id": "custom-123"})
         assert resp.headers["x-request-id"] == "custom-123"
+
+    @pytest.mark.parametrize(
+        "request_id",
+        [
+            "contains a space",
+            "x" * 65,
+            "line\x1fseparator",
+            "-cannot-start-with-punctuation",
+        ],
+    )
+    def test_invalid_request_id_is_replaced_before_reflection(
+        self,
+        client: TestClient,
+        request_id: str,
+    ):
+        """Untrusted correlation metadata never reaches a response header."""
+        if "\x1f" in request_id:
+            from haute.server import _select_request_id
+
+            selected, rejection = _select_request_id(request_id)
+            assert selected != request_id
+            assert rejection is not None
+            return
+
+        resp = client.get("/api/pipelines", headers={"x-request-id": request_id})
+        assert resp.status_code == 200
+        assert resp.headers["x-request-id"] != request_id
+        assert 1 <= len(resp.headers["x-request-id"]) <= 64
+
+    @pytest.mark.parametrize("length", [1, 64])
+    def test_request_id_ascii_token_boundaries_are_preserved(
+        self,
+        client: TestClient,
+        length: int,
+    ):
+        request_id = "a" * length
+        resp = client.get("/api/pipelines", headers={"x-request-id": request_id})
+        assert resp.headers["x-request-id"] == request_id
+
+    def test_rejected_request_id_log_does_not_contain_rejected_value(self):
+        from haute.server import _select_request_id
+
+        rejected = "secret-" + ("z" * 200)
+        selected, rejection = _select_request_id(rejected)
+
+        assert selected != rejected
+        assert rejection == {"reason": "too_long", "length": len(rejected)}
+        assert rejected not in repr(rejection)
 
 
 class TestFileWatcherJsonConfig:
@@ -3676,7 +3778,10 @@ class TestMiddlewareLogging:
 
 class TestWebSocketKeepAlive:
     def test_keep_alive_messages_accepted(self, client: TestClient):
-        with client.websocket_connect("/ws/sync") as ws:
+        with client.websocket_connect(
+            "/ws/sync",
+            headers={"origin": "http://localhost"},
+        ) as ws:
             ws.send_text("keep-alive")
             ws.send_text("ping")
             ws.send_text("")
@@ -3684,7 +3789,10 @@ class TestWebSocketKeepAlive:
     def test_dead_client_removed_from_set(self, client: TestClient):
         from haute.routes._helpers import ws_clients
 
-        with client.websocket_connect("/ws/sync"):
+        with client.websocket_connect(
+            "/ws/sync",
+            headers={"origin": "http://localhost"},
+        ):
             assert len(ws_clients) >= 1
         assert len(ws_clients) == 0
 

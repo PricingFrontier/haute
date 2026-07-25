@@ -20,6 +20,8 @@ from haute.trace import (
 )
 from tests.conftest import make_edge, make_graph, make_source_node, make_transform_node
 
+pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
+
 
 def test_ambiguous_relevant_parent_is_preserved_as_an_omission(tmp_path) -> None:
     source_path = tmp_path / "source.parquet"

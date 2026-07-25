@@ -41,6 +41,7 @@ from typing import Any
 
 import pytest
 
+from haute._path_resolution import RuntimePathOutsideProjectError
 from haute._sandbox import _get_project_root, set_project_root
 from haute._types import GraphNode, NodeData, NodeType, PipelineGraph
 from haute.executor import _preview_cache, execute_graph
@@ -153,10 +154,8 @@ def test_apiinput_flat_out_of_cwd_absolute_is_rejected(
         outside.write_text(_CSV_TEXT)
 
         graph = _api_input_graph(str(outside))
-        results = execute_graph(graph, target_node_id="src")
-
-        assert results["src"].status == "error"
-        assert "outside the project root" in (results["src"].error or "")
+        with pytest.raises(RuntimePathOutsideProjectError, match="outside the project root"):
+            execute_graph(graph, target_node_id="src")
     finally:
         set_project_root(original)
         _preview_cache.invalidate()

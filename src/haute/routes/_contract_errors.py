@@ -9,9 +9,12 @@ from fastapi import HTTPException
 from haute._api_input_schema import ApiInputSchemaError
 from haute._output_assembler import OutputNestingKeyError
 from haute.errors import (
+    ChunkMemoryRiskError,
+    ContractResolutionError,
     GroupByExecutionUnsupportedError,
     HauteError,
     LiveSwitchScenarioError,
+    PreambleError,
     RatingExtremaUndefinedError,
     RatingFactorMissingError,
     TraceCorrelationUnsupportedError,
@@ -25,6 +28,9 @@ CONTRACT_ERROR_TERMINAL_REASON = "contract_error"
 # tuple prevents synchronous and background adapters from drifting apart.
 PUBLIC_CONTRACT_ERROR_TYPES: tuple[type[HauteError], ...] = (
     ApiInputSchemaError,
+    PreambleError,
+    ContractResolutionError,
+    ChunkMemoryRiskError,
     GroupByExecutionUnsupportedError,
     TraceCorrelationUnsupportedError,
     RatingExtremaUndefinedError,

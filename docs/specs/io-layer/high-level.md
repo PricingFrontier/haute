@@ -135,9 +135,10 @@ Out of scope (owned elsewhere):
   candidate roots — the project root and the owning pipeline's directory —
   preferring whichever candidate exists on disk, and preferring the
   project-root candidate when both exist or neither does (unless the
-  caller asks for pipeline-preference). Resolution uses canonical targets
-  for containment and existence decisions but returns the chosen absolute
-  candidate with the user's path-segment spelling intact.
+  caller asks for pipeline-preference). Containment is enabled by default
+  and checked against canonical targets after symlink resolution. Existence
+  decisions also use canonical targets, while the returned absolute candidate
+  preserves the user's path-segment spelling.
 - `warn_if_case_ambiguous` logs — but never blocks — when a resolved path
   has a case-equivalent sibling on disk, since Haute pins no Unicode/case
   normalisation on user-supplied data paths: a config that resolves cleanly
@@ -426,7 +427,8 @@ The I/O layer implements the accepted parts of
   without executing the graph or changing the file. A confirmed retry with
   `overwrite=true` may atomically replace it. A race that creates the target
   between preflight and publication is still detected by a no-replace
-  publication primitive.
+  publication primitive. Destination preview and write resolve against the
+  selected Haute project root rather than the process working directory.
 - Single-file output writes use a unique same-directory staging path, flush
   and `fsync` the completed stage before publication, and sync the containing
   directory where the platform exposes that operation. Failures before
@@ -444,3 +446,18 @@ The current capability registry and capability-driven UI already satisfy the
 structural part of IO-IO12. No additional format is approved by this package:
 future formats still require an explicit use case, engine/capability metadata,
 validation, and supported/unsupported end-to-end tests.
+
+## Approved partitioned-Parquet execution boundary
+
+A direct File or Lakehouse `dataInput` using the Parquet scanner may point at a directory-backed
+dataset. Hive partition discovery is an explicit validated Polars argument, not a path-name guess
+owned by Haute. A partition predicate written in the input's Polars body participates in ordinary
+column-demand analysis; the predicate column is retained while unrelated payload columns are
+projected away. The resulting predicate and projection must be visible at the Parquet scan in the
+optimised lazy plan before any execution-engine checkpoint or materialisation.
+
+Haute does not enumerate and eagerly concatenate partition files, infer partition values itself,
+or promise pruning for opaque/global input code. Invalid directories, inconsistent partition
+schemas, or unsupported scanner arguments propagate as typed configuration/Polars failures.
+Regression tests use at least two partitions and an unrelated wide column, then prove both the
+selected file set and projected scan width.

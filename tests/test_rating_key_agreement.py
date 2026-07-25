@@ -51,6 +51,8 @@ from haute._rating_step_config import (
 from haute._trace_correlation import _jsonify_row
 from haute._trace_enrichment import _enrich_single_table
 
+pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
+
 # ---------------------------------------------------------------------------
 # Engine join semantics
 # ---------------------------------------------------------------------------

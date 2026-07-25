@@ -24,10 +24,27 @@ from haute.cli._init_cmd import InitConfig, handle_init
 REPO_ROOT = Path(__file__).resolve().parent.parent
 FRONTEND_DIR = REPO_ROOT / "frontend"
 E2E_PROJECT_DIR = REPO_ROOT / ".tmp-e2e-project"
-BACKEND_URL = "http://127.0.0.1:8000/api/pipeline"
-FRONTEND_URL = "http://127.0.0.1:5173/"
 READINESS_HOST = "127.0.0.1"
-READINESS_PORT = 5174
+
+
+def _local_port(name: str, default: int) -> int:
+    raw = os.environ.get(name, str(default))
+    try:
+        port = int(raw)
+    except ValueError as exc:
+        raise RuntimeError(f"{name} must be an integer port") from exc
+    if not 0 < port <= 65535:
+        raise RuntimeError(f"{name} must be between 1 and 65535")
+    return port
+
+
+BACKEND_PORT = _local_port("HAUTE_E2E_BACKEND_PORT", 8000)
+FRONTEND_PORT = _local_port("HAUTE_E2E_FRONTEND_PORT", 5173)
+READINESS_PORT = _local_port("HAUTE_E2E_READINESS_PORT", 5174)
+BACKEND_ORIGIN = f"http://127.0.0.1:{BACKEND_PORT}"
+FRONTEND_ORIGIN = f"http://127.0.0.1:{FRONTEND_PORT}"
+BACKEND_URL = f"{BACKEND_ORIGIN}/api/pipeline"
+FRONTEND_URL = f"{FRONTEND_ORIGIN}/"
 READINESS_URL = f"http://{READINESS_HOST}:{READINESS_PORT}/ready"
 _BROWSER_MODEL_BLOCK = """
 
@@ -405,9 +422,9 @@ def _start_vite() -> subprocess.Popen[bytes]:
     node_env = _node_env()
     if node_env is not None:
         env.update(node_env)
-    token = ensure_local_session_token_env()
-    if token:
-        env["VITE_HAUTE_SESSION_TOKEN"] = token
+    ensure_local_session_token_env()
+    env.pop("VITE_HAUTE_SESSION_TOKEN", None)
+    env["HAUTE_BACKEND_URL"] = BACKEND_ORIGIN
     return subprocess.Popen(
         [
             _npm(),
@@ -417,7 +434,7 @@ def _start_vite() -> subprocess.Popen[bytes]:
             "--host",
             "127.0.0.1",
             "--port",
-            "5173",
+            str(FRONTEND_PORT),
             "--strictPort",
         ],
         cwd=str(FRONTEND_DIR),
@@ -438,7 +455,7 @@ def _start_backend() -> subprocess.Popen[bytes]:
             "--host",
             "127.0.0.1",
             "--port",
-            "8000",
+            str(BACKEND_PORT),
             "--log-level",
             "warning",
         ],
@@ -563,8 +580,8 @@ def main() -> None:
     signal.signal(signal.SIGINT, _shutdown)
     signal.signal(signal.SIGTERM, _shutdown)
 
-    print("[e2e] Frontend -> http://127.0.0.1:5173")
-    print("[e2e] Backend  -> http://127.0.0.1:8000")
+    print(f"[e2e] Frontend -> {FRONTEND_ORIGIN}")
+    print(f"[e2e] Backend  -> {BACKEND_ORIGIN}")
     sys.stdout.flush()
 
     try:

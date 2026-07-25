@@ -28,7 +28,7 @@ pytestmark = pytest.mark.skipif(
 def test_server_import_succeeds_with_optional_extras_installed() -> None:
     import haute.server as server
 
-    route_paths = {route.path for route in server.app.routes}
+    route_paths = set(server.app.openapi()["paths"])
 
     assert "/api/mlflow/experiments" in route_paths
     assert "/api/databricks/warehouses" in route_paths

@@ -36,8 +36,9 @@ from fastapi.responses import JSONResponse
 from haute._api_input_schema import ApiInputSchemaError, is_v2_shape
 from haute._env import float_env
 from haute._logging import get_logger
-from haute._path_resolution import resolve_runtime_file_path
+from haute._path_resolution import RuntimePathError, resolve_runtime_file_path
 from haute.routes._helpers import _INTERNAL_ERROR_DETAIL, pipeline_dir
+from haute.routes._runtime_path_errors import runtime_path_http_exception
 from haute.routes._timeouts import run_blocking_with_response_timeout
 from haute.schemas import (
     JsonCacheBuildRequest,
@@ -148,17 +149,6 @@ def _no_schema_source_response() -> JSONResponse:
     )
 
 
-def _path_resolution_status(exc: ValueError) -> int:  # pragma: no mutate
-    """HTTP status for a runtime-path resolution failure.
-
-    An embedded null byte is a malformed request (400); every other
-    resolution failure is an out-of-root/forbidden path (403). Shared by
-    both the data and config funnels so the two report the same condition
-    with the same status code.
-    """
-    return 400 if "embedded null byte" in str(exc) else 403
-
-
 def _resolve_data_path(path: str) -> str:
     try:
         return str(
@@ -170,8 +160,8 @@ def _resolve_data_path(path: str) -> str:
                 enforce_project_root=True,
             )
         )
-    except ValueError as exc:
-        raise HTTPException(status_code=_path_resolution_status(exc), detail=str(exc)) from None
+    except RuntimePathError as exc:
+        raise runtime_path_http_exception(exc) from None
 
 
 def _resolve_config_path(path: str | None) -> str | None:  # pragma: no mutate
@@ -187,8 +177,8 @@ def _resolve_config_path(path: str | None) -> str | None:  # pragma: no mutate
                 enforce_project_root=True,
             )
         )
-    except ValueError as exc:
-        raise HTTPException(status_code=_path_resolution_status(exc), detail=str(exc)) from None
+    except RuntimePathError as exc:
+        raise runtime_path_http_exception(exc) from None
 
 
 def _read_v2_config(config_path: str | None) -> dict[str, Any] | None:  # pragma: no mutate

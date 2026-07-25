@@ -11,7 +11,7 @@
 | `docs/specs/ownership.toml` | Machine-checked ledger for files deliberately named by multiple component Module maps; records the single primary owner and all consumer components. |
 | `.pre-commit-config.yaml` | Runs Ruff fix/format plus local mypy and frontend typecheck/lint hooks on relevant source changes. |
 | `.github/workflows/ci.yml` | Defines PR/main CI jobs: canary, install/package smoke, dependency floors, static/type checks, coverage shards/gate, compatibility/probe, performance, optional dependencies, platform, mutation-config, frontend, and browser E2E lanes. Branch protection, outside this repository workflow file, determines which checks are required for merge. |
-| `.github/workflows/dependencies.yml` | Runs the scheduled/manual fresh unlocked-resolve monitor and raises/updates dependency-watch issues when it fails. |
+| `.github/workflows/dependencies.yml` | Runs the scheduled/manual fresh unlocked-resolve monitor plus the locked Python/frontend advisory gate on schedule, manual dispatch, main lock-policy changes, and relevant PRs; retains failed reports and raises/updates dependency-watch issues on eligible monitoring failures. |
 | `.github/workflows/frontend-shuffle.yml` | Runs the scheduled/manual shuffled Vitest monitor and raises/updates shuffle-watch issues with its seed on eligible failures. |
 | `.github/workflows/mutation.yml` | Plans changed mutation targets, runs separate CI-job shards whose mutants execute serially per runner, merges results, enforces target thresholds, and uploads mutation artifacts. |
 | `.github/workflows/performance.yml` | Runs scheduled/manual Python and browser-performance lanes and uploads their artifacts. |
@@ -21,6 +21,7 @@
 | `frontend/playwright.config.ts` | Configures serial browser E2E projects, retries, artifacts, and readiness-managed local E2E server. |
 | `frontend/e2e/core-flows.spec.ts` | Playwright coverage for core browser flows. |
 | `frontend/e2e/data-io-nodes.spec.ts` | Playwright coverage for data-I/O node browser flows. |
+| `frontend/e2e/edge-join.spec.ts` | Deterministic full-browser Edge Join workflow: compatible-edge feedback and insertion, configuration/preview, save/reload topology, repeated joins, named API-input source-handle preservation, and downstream trace highlighting. |
 | `frontend/e2e/data-preview-scroll.benchmark.spec.ts` | `@benchmark` Playwright coverage for data-preview scrolling. |
 | `frontend/e2e/git-graph.spec.ts` | Playwright coverage for the Git graph. |
 | `frontend/e2e/git-sidebar-regression.spec.ts` | Playwright regression coverage for the Git sidebar. |
@@ -39,6 +40,8 @@
 | `frontend/scripts/check-critical-coverage.mjs` | Reads Vitest coverage summary and enforces `frontend/package.json` critical entries. |
 | `frontend/scripts/check-ui-dependencies.mjs` | Audits UI dependency constraints used by the frontend bundle check. |
 | `scripts/check_critical_coverage.py` | Enforces configured backend per-file statement/branch coverage floors from coverage JSON. |
+| `scripts/check_dependency_audit.py` | Stdlib-only fail-closed advisory-policy orchestrator/parser: exports the exact locked Python graph, runs pinned `pip-audit` and full-tree `npm audit`, validates report schemas, and subtracts only current exact accepted-risk entries. |
+| `security/accepted-risks.toml` | Versioned exact advisory acceptance registry. Entries require ecosystem/package/advisory identity, owner, exposure, compensating control, approval date, and non-expired review date; stale, duplicate, malformed, mismatched, or unused entries fail the audit. |
 | `scripts/core_test_files.txt` | Curated core test-subset manifest and its selection/refresh rationale for canary/dependency lanes. |
 | `scripts/e2e_git_topologies.py` | Exercises Git topology scenarios used by repository-level verification. |
 | `scripts/extract_polars_io.py` | Extracts/checks Polars I/O information used by related verification and maintenance workflows. |
@@ -50,7 +53,7 @@
 | `scripts/regen_sanitize_parity_fixture.py` | Regenerates the committed sanitisation-parity fixture when deliberately requested. |
 | `scripts/run_frontend_e2e_server.py` | Starts and readiness-signals the backend/frontend process used by Playwright. |
 | `scripts/run_mutation_suite.py` | Implements mutation target selection, work planning, shard execution, merge, and survival-threshold reporting. |
-| `scripts/run_perf_suite.py` | Runs bounded Python performance tests and writes performance artifacts. |
+| `scripts/run_perf_suite.py` | Runs bounded Python performance tests and writes schema-3 workload, environment, resource, wall-time, and per-test evidence artifacts. |
 | `scripts/setup-worktree.sh` | Sets up a development worktree. |
 | `mutation/README.md` | Documents the maintained mutation-testing workflow and constraints. |
 | `mutation/targets.json` | Declares selected mutation targets, witness suites, and survival budgets. |
@@ -94,6 +97,12 @@
   Chromium is the normal project and Firefox is restricted to `@smoke` tests.
   CI retries twice, recording traces on first retry and screenshots/video on
   failure.
+- **Edge Join E2E fixture** is a project-isolated, generated pipeline with
+  deterministic small frames and one API-input frame whose raw label is the
+  persisted source handle. The workflow targets nodes, handles, and rendered
+  edge ids through stable locators and derives drag coordinates from live
+  handle bounds and rendered SVG path geometry; it does not use production
+  data, fixed sleeps, or hard-coded canvas coordinates.
 - **Pytest configuration** constrains collection to `tests/`, has strict
   markers/configuration/xfails, excludes `perf` by default, and recognises
   `slow`, `perf`, and `sandbox_strict` markers.
@@ -119,12 +128,26 @@
 5. The frontend CI job runs `npm ci` then the frontend-only preflight. Browser
    E2E additionally synchronises Python, installs Chromium/Firefox, and runs
    `npm run test:e2e`; Playwright calls `scripts/run_frontend_e2e_server.py` and
-   waits for its readiness URL.
+   waits for its readiness URL. The harness preserves the same-origin Vite
+   proxy and real HttpOnly-cookie bootstrap used by the product; it never
+   exports a browser-readable session-token variable or adds a browser bearer
+   header. Its out-of-browser readiness probe uses the supported non-browser
+   token header. `HAUTE_E2E_BACKEND_PORT`, `HAUTE_E2E_FRONTEND_PORT`, and
+   `HAUTE_E2E_READINESS_PORT` may select alternate loopback ports when a
+   developer already has Haute running; the harness and Playwright config
+   validate and share those values.
 6. Mutation CI calls `scripts/run_mutation_suite.py --phase plan`, executes
    each isolated target/shard, downloads all artifacts, and calls `--phase merge`
    to enforce total survivor budgets. Scheduled performance calls
    `scripts/run_perf_suite.py`; scheduled dependency/shuffle workflows use their
    own commands and issue-alarm paths.
+7. The locked advisory job exports all locked Python groups/extras without the
+   project itself, audits them with pinned `pip-audit`, audits the full frontend
+   tree (including dev/build dependencies) with `npm audit --ignore-scripts`,
+   parses both JSON reports, and evaluates `security/accepted-risks.toml`.
+   Every Python finding and every npm high/critical finding blocks unless its
+   exact current identity is accepted. Scanner/export/report-schema errors fail
+   closed; failed reports are uploaded for triage.
 
 ## Edge cases and invariants
 
@@ -175,6 +198,10 @@
 - Monitoring workflows deliberately create/update issues on their eligible
   failures. That notification is not a fallback for fixing a failed required
   check.
+- `check_dependency_audit.py` returns 1 for unaccepted findings and 2 for
+  policy/scanner/report failures. An acceptance is not a wildcard: an expired,
+  duplicate, wrong-package, or no-longer-observed entry makes the policy fail
+  so the registry cannot accumulate silent debt.
 
 ## Testing
 
@@ -189,6 +216,12 @@
   other exact frontend test-group directories listed in the module map, run by
   `npm run test` or `npm run test:coverage`. Browser coverage lives in `frontend/e2e/`, run by
   `npm run test:e2e`, `npm run test:e2e:smoke`, or the benchmark command.
+- `frontend/e2e/edge-join.spec.ts` asserts user-observable outcomes across the
+  real canvas and backend: pre-release candidate feedback, insertion and role
+  handles, same-name-key configuration, joined preview columns/rows, persisted
+  split topology/config after reload, two joins on one branch after a second
+  reload, exact named API-input `sourceHandle`, and an Edge Join retained and
+  highlighted in a downstream trace. Private React state is not an oracle.
 - `tests/test_check_critical_coverage.py`, `tests/test_mutation_suite_runner.py`,
   `tests/test_run_perf_suite.py`, `tests/test_perf_suite_script.py`,
   `tests/test_memory_smoke_script.py`, `tests/test_frontend_bundle_budget_ci.py`,
@@ -196,6 +229,10 @@
   repository-policy contracts. The documentation-accuracy checks also validate
   the flat component-roadmap inventory, required package shape, unique package
   ownership, local links, and absence of superseded review/plan Markdown.
+- `tests/test_dependency_audit.py` covers clean/blocking reports, npm
+  high/critical and transitive identities, valid/expired/malformed/duplicate/
+  unused acceptances, malformed fail-closed reports, and live-command return-code
+  orchestration without contacting advisory services.
 - `mutation/` is tested as configuration/orchestration through its active
   script/tests and CI workflow. `docs/roadmap/`, `repro/`, and generated
   artifacts are intentionally not claimed as a current test suite.
@@ -211,3 +248,25 @@ output semantics, chosen strategy, source-width propagation, no unintended full 
 budgeted rejection. Only the CI-small fixture belongs in ordinary CI; 1m/10m cases remain opt-in
 performance-harness work. Baselines are recorded as artifacts first: numeric throughput, latency
 or memory thresholds may not gate hardware-diverse CI until reproducible baselines are established.
+
+### Performance report schema 3
+
+- `scripts/run_perf_suite.py` emits `schema_version=3`.
+- Top-level `environment` records the Python and platform versions plus installed Haute, Polars,
+  and pytest package versions; an unavailable distribution version is explicit `null`.
+- Top-level `workload` contains deterministic scenario names/scales, the sorted execution-profile
+  set, and per-test input/schema descriptors supplied through `haute_perf_evidence`.
+- Top-level `resources` contains independent RSS, aggregate input/output bytes, collect/checkpoint/
+  chunk counts, temporary-disk peak bytes, admission states, and payload bytes. Every unavailable
+  numeric counter is present as `null`.
+- Top-level `wall_time` contains `total_seconds`, `reported_phase_seconds`,
+  `runner_overhead_seconds`, and `partition_tolerance_seconds`; the first two partition fields sum
+  to total within the tolerance or report construction fails.
+- The existing `tests` records retain their full bounded evidence maps. Evidence values must be
+  JSON-safe; malformed evidence fails the performance lane rather than being stringified.
+- `tests/performance/test_polars_scale_scenario.py` records the complete resource descriptor for
+  the generated join/training scenario. A CI-small cross-profile case uses a fixed graph and fixed
+  data and records every `ExecutionProfile` without multiplying the 1m/10m input generation.
+
+`tests/test_run_perf_suite.py` and `tests/test_perf_suite_script.py` pin schema completeness,
+explicit `null` values, deterministic profile ordering, and exact wall-time partitioning.

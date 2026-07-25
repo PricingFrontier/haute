@@ -28,6 +28,8 @@ from haute.execution import (
     materialize_lazy_frame_with_cache,
 )
 
+pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
+
 
 def _node(node_id: str, node_type: NodeType = NodeType.POLARS, **config: object) -> GraphNode:
     return GraphNode(

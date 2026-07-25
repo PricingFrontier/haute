@@ -19,6 +19,8 @@ from haute._model_scorer import (
 from haute.graph_utils import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from tests.conftest import make_file_input_config, make_output_config
 
+pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
+
 
 def _predicting_model(predictions: list[float]) -> MagicMock:
     model = MagicMock()

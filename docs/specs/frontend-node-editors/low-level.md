@@ -12,7 +12,7 @@
 | `frontend/src/panels/editors/index.ts` | Public editor exports. |
 | `frontend/src/panels/editors/_shared.tsx` | Shared editor types, styles, file browser, schema preview and the input-source bar (chips keyed by edge id, showing each edge's input name — the code argument — with the source node named in the tooltip). |
 | `frontend/src/panels/editors/CodeEditor.tsx`, `frontend/src/panels/editors/CodeMirrorEditor.tsx`, `frontend/src/panels/editors/shared/PolarsCodePanel.tsx` | Code-editor wrappers and Polars-specific panel. |
-| `frontend/src/panels/editors/ConstantEditor.tsx`, `frontend/src/panels/editors/TransformEditor.tsx`, `frontend/src/panels/editors/EdgeJoinEditor.tsx`, `frontend/src/panels/editors/LiveSwitchEditor.tsx`, `frontend/src/panels/editors/ScenarioExpanderEditor.tsx` | Editors for scalar, transform, join, conditional-switch and scenario nodes. |
+| `frontend/src/panels/editors/ConstantEditor.tsx`, `frontend/src/panels/editors/TransformEditor.tsx`, `frontend/src/panels/editors/EdgeJoinEditor.tsx`, `frontend/src/panels/editors/LiveSwitchEditor.tsx`, `frontend/src/panels/editors/ScenarioExpanderEditor.tsx` | Editors for scalar, transform, join, conditional-switch and scenario nodes. `EdgeJoinEditor` exposes fixed canvas-derived base/join roles, atomic swap, the seven supported join modes, mutually exclusive same-name/asymmetric key forms, and advanced Polars options. |
 | `frontend/src/panels/editors/ExternalFileEditor.tsx`, `frontend/src/panels/editors/DataInputEditor.tsx`, `frontend/src/panels/editors/DataOutputEditor.tsx` | External-object, grouped tabular input, and grouped tabular output configuration. |
 | `frontend/src/stores/useOutputWriteStore.ts` | Per-node output-write request identity, pending/terminal lifecycle, and overwrite-confirmation state retained across editor remounts. |
 | `frontend/src/panels/editors/_IoFormatEditor.tsx`, `frontend/src/panels/editors/_ioFormats.ts`, `frontend/src/panels/editors/_DatabricksSelector.tsx`, `frontend/src/panels/editors/_InputCacheControls.tsx` | Registry-driven IO arguments, cached capabilities, dedicated Databricks browsing, and shared input-cache lifecycle controls. |
@@ -88,6 +88,12 @@
 5. Format, file, catalog and MLflow controls issue their own API calls. Their request state is
    local to the editor; the editor never assumes an out-of-order response still describes a
    changed node unless its own effect/request guards accept it.
+6. `EdgeJoinEditor` derives its two role displays from canonical `base`/`join` incoming handles
+   and the matching `baseInput`/`joinInput` config. The swap callback is owned by the graph canvas
+   because handles and config must move in one graph transaction. Selecting `cross` clears
+   `on`/`leftOn`/`rightOn`; selecting another mode exposes either same-name rows (`on`) or paired
+   rows (`leftOn`/`rightOn`) and each key-mode switch clears the inactive representation. The
+   join type list is exactly `inner`, `left`, `right`, `full`, `semi`, `anti`, `cross`.
 
 ## Edge cases and invariants
 
@@ -137,6 +143,11 @@
   source label otherwise — so display and persisted identity cannot diverge. An unresolvable
   API-input edge renders the block header in the explicit unresolved state (parent label
   retained as identifying text plus a visible warning marker), never a normal-looking fallback.
+- Edge Join roles are never editable ids: they come from role-bound edges and can only be
+  exchanged by the atomic swap action. Cross joins persist no keys. Non-cross joins use either
+  a non-empty normalised `on` list or equal-length non-empty `leftOn`/`rightOn` lists; both forms
+  cannot coexist. The UI lists all and only the backend-supported modes: `inner`, `left`,
+  `right`, `full`, `semi`, `anti`, and `cross`.
 
 (The former NOTE here — two frames of one API input sharing one sanitised `varName`, leaving
 `input_scenario_map` unable to distinguish them — is resolved by the input-identity
@@ -160,6 +171,10 @@ React/Vitest tests cover editor interaction under `frontend/src/__tests__/editor
 schema paths, output paths, banding and rating editing, clipboard-related grid behaviour,
 Databricks/MLflow selection, panel dispatch/lazy loading and accessibility. There is no dedicated
 test file for every small barrel/style/helper module; those are covered through their consumers.
+`frontend/src/__tests__/editors/EdgeJoinEditor.test.tsx` pins fixed role displays and swap
+availability, all seven join options, same-name/asymmetric mode transitions, automatic key
+clearing for `cross`, advanced Polars options, and visible diagnostics for conflicting role/key
+state.
 
 The input-identity work is pinned by `frontend/src/panels/__tests__/NodePanel.test.tsx`
 (`name` derivation for API-frame edges — sole frame included — ordinary sources, and submodel

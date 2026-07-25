@@ -824,7 +824,7 @@ class TestW8bLocalSessionProtection:
 
     SESSION_TOKEN = "w8b-deterministic-test-token"
     LOCAL_HOST = "localhost:8000"
-    LOCAL_ORIGIN = "http://localhost:5173"
+    LOCAL_ORIGIN = "http://localhost:8000"
     FOREIGN_HOST = "attacker.example"
     FOREIGN_ORIGIN = "https://attacker.example"
     SESSION_HEADER = "x-haute-session-token"

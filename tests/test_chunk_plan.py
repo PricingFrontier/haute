@@ -16,9 +16,11 @@ from haute.chunking import (
     chunk_plan,
     validate_chunk_capability_declarations,
 )
-from haute.errors import ChunkPlanUnsupportedError
+from haute.errors import ChunkMemoryRiskError, ChunkPlanUnsupportedError
 from haute.graph_utils import NodeType
 from tests.conftest import make_edge, make_graph, make_output_config
+
+pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
 
 
 def _node(node_id: str, node_type: str, config: dict[str, object] | None = None):
@@ -346,6 +348,46 @@ def test_byte_budgeted_chunk_plan_costs_downstream_created_wide_column(
     # estimate could never exceed ~80 bytes for this row.
     assert plan.estimated_target_row_bytes >= 500
     assert plan.chunk_size == max(1, 8_192 // plan.estimated_target_row_bytes)
+
+
+def test_byte_budgeted_chunk_plan_rejects_one_target_row_wider_than_budget(
+    tmp_path: Path,
+) -> None:
+    source_path = _write_projected_source(tmp_path)
+    graph = make_graph(
+        {
+            "nodes": [
+                _node("source", "dataInput", {"path": str(source_path)}),
+                _node(
+                    "widen",
+                    "polars",
+                    {"code": "df = source.with_columns(pl.lit('x' * 500).alias('wide'))"},
+                ),
+                _node("out", "output", make_output_config(["quote_id", "wide"])),
+            ],
+            "edges": [
+                make_edge("source", "widen").model_dump(),
+                make_edge("widen", "out").model_dump(),
+            ],
+        }
+    )
+
+    with pytest.raises(ChunkMemoryRiskError) as exc_info:
+        chunk_plan(
+            ChunkPlanRequest(
+                graph=graph,
+                target_node_id="out",
+                target_chunk_bytes=128,
+                required_columns_by_node={"out": {"quote_id", "wide"}},
+            )
+        )
+
+    error = exc_info.value
+    assert not isinstance(error, ChunkPlanUnsupportedError)
+    assert error.target_node_id == "out"
+    assert error.reason_code == "single_row_exceeds_budget"
+    assert error.estimated_target_row_bytes > error.target_chunk_bytes == 128
+    assert error.to_payload()["error_code"] == "chunk_memory_risk"
 
 
 def test_byte_budget_target_build_failure_is_logged_before_reclassify(

@@ -11,6 +11,8 @@ from pathlib import Path
 import pytest
 
 from haute._path_resolution import (
+    MalformedRuntimePathError,
+    RuntimePathOutsideProjectError,
     _candidate_if_allowed,
     _infer_project_root,
     current_runtime_project_root,
@@ -173,6 +175,28 @@ def test_relative_source_does_not_override_selected_project_with_working_directo
     assert resolved == (selected_root / "inputs" / "data.parquet").resolve()
 
 
+def test_source_spelled_inside_project_cannot_resolve_outside(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_root = (tmp_path / "project").resolve()
+    project_root.mkdir()
+    set_project_root(project_root)
+    source = project_root / "linked-pipeline.py"
+    escaped_source = (tmp_path / "outside" / "pipeline.py").resolve()
+    original_resolve = Path.resolve
+
+    def resolve_with_symlink_escape(path: Path, *args: object, **kwargs: object) -> Path:
+        if path == source:
+            return escaped_source
+        return original_resolve(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", resolve_with_symlink_escape)
+
+    with pytest.raises(ValueError, match="outside the project root"):
+        _infer_project_root(project_root=None, source_file=source)
+
+
 def test_relative_source_file_pipeline_preference_uses_source_parent(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     pipeline_dir = project_root / "pipelines"
@@ -243,7 +267,7 @@ def test_backslash_path_is_normalized_before_resolution(tmp_path: Path) -> None:
 
 
 def test_embedded_null_byte_is_rejected(tmp_path: Path) -> None:
-    with pytest.raises(ValueError, match="null byte"):
+    with pytest.raises(MalformedRuntimePathError, match="null byte"):
         resolve_runtime_file_path(
             "bad\x00name.json",
             project_root=tmp_path,
@@ -257,7 +281,7 @@ def test_absolute_raw_path_outside_root_is_rejected_when_enforced(tmp_path: Path
     outside = tmp_path / "outside.json"
     outside.write_text("{}", encoding="utf-8")
 
-    with pytest.raises(ValueError, match="outside the project root"):
+    with pytest.raises(RuntimePathOutsideProjectError, match="outside the project root"):
         resolve_runtime_file_path(
             outside,
             project_root=project_root,
@@ -265,15 +289,14 @@ def test_absolute_raw_path_outside_root_is_rejected_when_enforced(tmp_path: Path
         )
 
 
-def test_absolute_raw_path_outside_root_allowed_by_default(tmp_path: Path) -> None:
+def test_absolute_raw_path_outside_root_is_rejected_by_default(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     project_root.mkdir()
     outside = tmp_path / "outside.json"
     outside.write_text("{}", encoding="utf-8")
 
-    resolved = resolve_runtime_file_path(outside, project_root=project_root)
-
-    assert resolved == outside.resolve()
+    with pytest.raises(ValueError, match="outside the project root"):
+        resolve_runtime_file_path(outside, project_root=project_root)
 
 
 def test_absolute_raw_path_inside_root_allowed_when_enforced(tmp_path: Path) -> None:

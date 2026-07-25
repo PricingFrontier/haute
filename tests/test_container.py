@@ -267,7 +267,10 @@ class TestGenerateAppSource:
         assert "from haute._execution_context import" in source
         assert "ExecutionCancelledError" in source
         assert "ExecutionMemoryLimitExceededError" in source
-        assert "from haute.errors import BoundedMemoryUnsupportedError" in source
+        assert "from haute.errors import" in source
+        assert "BoundedMemoryUnsupportedError" in source
+        assert "HauteError" in source
+        assert "is_public_contract_error" in source
         assert "read_limited_json_body" in source
         assert "RequestBodyLimitError" in source
         assert "await request.json()" not in source
@@ -371,6 +374,20 @@ class TestGenerateAppSource:
         assert response.status_code == 422
         assert response.json()["error_code"] == "bounded_streaming_unsupported"
         assert "Bounded streaming sink failed" in response.json()["detail"]
+
+    def test_quote_maps_public_preamble_failure_to_stable_422(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from haute.errors import PreambleError
+
+        module = _load_generated_app(tmp_path, monkeypatch, pl.DataFrame({"premium": [100.0]}))
+        error = PreambleError("invalid preamble", source_line=7)
+        monkeypatch.setattr(module, "score_graph", lambda **_kwargs: (_ for _ in ()).throw(error))
+
+        response = TestClient(module.app).post("/quote", json={"age": 30})
+
+        assert response.status_code == 422
+        assert response.json() == error.to_payload()
 
     def test_quote_maps_cancellation_to_typed_response(
         self,

@@ -128,6 +128,58 @@ class TestModelScoreColumnDetectionLoud:
         assert produced == {"pred"}
         assert referenced is None
 
+    def test_empty_deploy_model_inputs_stay_opaque_without_mlflow(self) -> None:
+        """A resolved bundled model with no feature metadata is opaque.
+
+        The explicit deploy marker must prevent a fallback to the graph's
+        obsolete external source even when it cannot provide concrete inputs.
+        """
+        from haute._builders import _model_score_columns
+        from haute._contracts import _DEPLOY_MODEL_INPUT_COLUMNS_CONFIG_KEY
+
+        config = {
+            "sourceType": "run",
+            "run_id": "obsolete-remote-run",
+            "artifact_path": "model.cbm",
+            "output_column": "pred",
+            _DEPLOY_MODEL_INPUT_COLUMNS_CONFIG_KEY: [],
+        }
+        with patch(
+            "haute._mlflow_io.load_mlflow_model",
+            side_effect=AssertionError("deploy contract must not contact MLflow"),
+        ) as remote_loader:
+            produced, referenced = _model_score_columns(config)
+
+        assert produced == {"pred"}
+        assert referenced is None
+        remote_loader.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "deploy_inputs",
+        [
+            "x",
+            ["x", "x"],
+            [""],
+        ],
+    )
+    def test_invalid_internal_deploy_model_inputs_raise(
+        self,
+        deploy_inputs: object,
+    ) -> None:
+        """Malformed scorer annotations fail instead of reaching MLflow."""
+        from haute._builders import _model_score_columns
+        from haute._contracts import _DEPLOY_MODEL_INPUT_COLUMNS_CONFIG_KEY
+
+        config = {
+            "sourceType": "run",
+            "run_id": "obsolete-remote-run",
+            "artifact_path": "model.cbm",
+            "output_column": "pred",
+            _DEPLOY_MODEL_INPUT_COLUMNS_CONFIG_KEY: deploy_inputs,
+        }
+        with pytest.raises(ConfigError, match="internal deploy model inputs"):
+            _model_score_columns(config)
+
 
 # ===========================================================================
 # Item #27 — Artifact download corruption must not loop silently

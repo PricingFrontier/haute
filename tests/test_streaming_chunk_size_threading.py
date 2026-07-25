@@ -11,9 +11,12 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import polars as pl
+import pytest
 
 from haute._polars_utils import DEFAULT_STREAMING_CHUNK_SIZE
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
+
+pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
 
 # ---------------------------------------------------------------------------
 # Helpers

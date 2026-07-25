@@ -233,6 +233,7 @@ mutation-artifacts/
 
 # Performance and package-smoke artifacts
 .perf-artifacts/
+dependency-audit-reports/
 dist-smoke/
 .opt-core/
 .opt-core-wheel/

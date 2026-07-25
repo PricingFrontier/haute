@@ -84,6 +84,7 @@ def streaming_collect(
         raise ValueError(f"allow_broad=True is not permitted for profile {profile_name!r}")
     try:
         if metrics_context is not None:
+            metrics_context.fault_point("collect_before_native")
             metrics_context.record_collect()
         return lf.collect(engine="streaming")
     except _POLARS_STREAMING_ERRORS as exc:
@@ -101,6 +102,7 @@ def streaming_collect(
             cause=type(exc).__name__,
         )
         if metrics_context is not None:
+            metrics_context.fault_point("collect_before_native")
             metrics_context.record_collect()
         return lf.collect()
 
@@ -131,6 +133,8 @@ def bounded_collect_batches(
     )
     profile_name = normalised_profile.value
     try:
+        if metrics_context is not None:
+            metrics_context.fault_point("collect_before_native", node_id=node_id)
         batches = lf.collect_batches(
             chunk_size=chunk_size,
             maintain_order=maintain_order,
@@ -262,9 +266,14 @@ def bounded_sink(
     of silently collecting a potentially huge frame.
     """
     path = Path(path)
+    metrics_context = current_execution_context()
     try:
+        if metrics_context is not None:
+            metrics_context.fault_point("sink_before_native")
         with temporary_streaming_chunk_size(streaming_chunk_size):
             streaming_sink(lf, path, fmt=fmt, fast_checkpoint=fast_checkpoint)
+        if metrics_context is not None:
+            metrics_context.fault_point("sink_after_native")
     except _POLARS_STREAMING_ERRORS as exc:
         if not _is_streaming_sink_error(exc):
             raise
@@ -275,7 +284,6 @@ def bounded_sink(
             fast_checkpoint=fast_checkpoint,
             cause=type(exc).__name__,
         ) from exc
-    metrics_context = current_execution_context()
     if metrics_context is not None:
         metrics_context.record_bytes_written(path.stat().st_size)
 
