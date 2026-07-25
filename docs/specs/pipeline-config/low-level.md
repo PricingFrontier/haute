@@ -187,9 +187,10 @@ artifact paths (from the `_CI_ARTIFACTS` map) and removes the resulting empty
   > and they diverge for a graph with several leaves and no explicit output: `run()` raises
   > naming every leaf, while `to_graph()` still assigns some type to the last-registered node
   > without checking degree at all.
-- A static `pipeline.connect()` naming an unknown source or target is silently omitted by
-  `haute._graph_builders._build_edges`; the live `Pipeline.connect()` rejects the same mistake
-  immediately. There is no graph-level warning for the static omission.
+- A static `pipeline.connect()` naming a non-root endpoint is deferred until submodel child ids
+  are known. Cross-boundary child references are accepted; every remaining unknown endpoint
+  raises `ParseError` from the parser's conservation gate. The live `Pipeline.connect()` rejects
+  the same mistake immediately because live submodel children are not registered there.
 - Duplicate node function names are rejected twice, independently: at live registration
   (`NodeRegistry._register_node`, `ValueError`) and at static parse time
   (`_extract_decorated_nodes`, `ParseError`) — because the function name becomes the graph
@@ -256,7 +257,8 @@ artifact paths (from the `_CI_ARTIFACTS` map) and removes the resulting empty
   `topo_sort_ids` through `Pipeline._topo_order` with the participating node names.
 - **`ExecutionError`** (`haute.errors`) — live node arity mismatch; multiple explicit output
   nodes; ambiguous terminal nodes; multiple or ambiguous `score()` seed sources; unresolved
-  `instanceOf`/`inputMapping` references in the standalone executor; a bare-frame `score()`
+  `@pipeline.instance` registrations in the standalone executor (identified by the decorator's
+  internal marker even when `instanceOf`/`inputMapping` are empty); a bare-frame `score()`
   seed against a source with two or more distinct connected `source_port`s; a dict seed whose
   keys do not exactly match the distinct connected ports (missing and unknown port names are
   both listed in the message — a one-port source accepts only the exact one-key dict); and a
@@ -311,8 +313,8 @@ API and real JSON round-trips rather than mocks:
   decorator kwarg parsing, `_build_node_config` per node type
   (`TestBuildNodeConfigExtended`), `_resolve_node_config` sidecar and contract paths
   (`TestResolveNodeConfig`), and edge/GraphNode building (`TestBuildEdges`,
-  `TestBuildRfNodes`), including the deliberate static omission of connects whose endpoint is
-  not a parsed node.
+  `TestBuildRfNodes`), including deferred cross-boundary endpoints and fail-loud rejection of
+  genuinely dangling connects.
 - **`test_graph_shape_contracts.py`** (14 tests) — Explore in/out-degree contracts
   (`TestExploreGraphShape`), single-node and empty-graph edge cases, submodel boundary handle
   matching, and round-trip drift (`TestRoundTripDrift`).
@@ -335,8 +337,7 @@ generated graphs.
 > Known gap: the live `Pipeline.to_graph()` path and the static `_graph_builders.py` path are
 > exercised by separate test files with no explicit cross-check asserting they produce
 > equivalent graphs for the same source pipeline — consistent with the type-inference
-> divergence noted above under Edge cases. The static unknown-endpoint omission is unit-tested
-> as current behaviour, but no end-to-end test requires it to produce a visible warning.
+> divergence noted above under Edge cases.
 
 ## Polars backend contracts (0.6.0)
 

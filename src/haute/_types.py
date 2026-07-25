@@ -24,7 +24,7 @@ from typing import (
 )
 
 import polars as pl
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator
 
 from haute._graph_utils import build_parents_of
 
@@ -721,8 +721,26 @@ class GraphEdge(BaseModel):
     target: str
     sourceHandle: str | None = None  # noqa: N815 — matches React Flow frontend convention
     targetHandle: str | None = None  # noqa: N815 — matches React Flow frontend convention
+    # A submodel placeholder consumes one handle per boundary side to encode
+    # ``in__<child>`` / ``out__<child>``. Preserve the authored connect port
+    # separately until flattening or codegen restores it. Ordinary edges omit
+    # these fields from serialized payloads.
+    sourcePort: str | None = Field(  # noqa: N815 — serialized graph convention
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
+    targetPort: str | None = Field(  # noqa: N815 — serialized graph convention
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
 
-    @field_validator("sourceHandle", "targetHandle", mode="before")
+    @field_validator(
+        "sourceHandle",
+        "targetHandle",
+        "sourcePort",
+        "targetPort",
+        mode="before",
+    )
     @classmethod
     def _reject_empty_handle(cls, v: object) -> object:
         """An edge handle is either a non-empty port name OR ``None``.
@@ -760,6 +778,7 @@ class PipelineGraph(BaseModel):
     warning: str | None = None
     sources: list[str] = Field(default_factory=lambda: ["live"])
     active_source: str = "live"
+    _parser_parameter_names: dict[str, list[str]] = PrivateAttr(default_factory=dict)
 
     # Names of ``@cached_property`` slots that must be invalidated when
     # ``model_copy`` produces a new instance with changed structure —

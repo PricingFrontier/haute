@@ -1032,12 +1032,19 @@ def graph_to_code_multi(
     all_child_ids: set[str] = set()
     submodel_node_ids: set[str] = set()
     submodel_child_ids: dict[str, set[str]] = {}
+    submodel_child_nodes: dict[str, dict[str, GraphNode]] = {}
     for sm_name, sm_meta in submodels.items():
         child_ids = set(sm_meta.get("childNodeIds", []))
         all_child_ids.update(child_ids)
         submodel_node_id = f"submodel__{sm_name}"
         submodel_node_ids.add(submodel_node_id)
         submodel_child_ids[submodel_node_id] = child_ids
+        raw_child_nodes = sm_meta.get("graph", {}).get("nodes", [])
+        parsed_child_nodes = [
+            GraphNode.model_validate(raw) if isinstance(raw, dict) else raw
+            for raw in raw_child_nodes
+        ]
+        submodel_child_nodes[submodel_node_id] = {child.id: child for child in parsed_child_nodes}
 
     nodes = graph.nodes
     node_map = {node.id: node for node in nodes}
@@ -1105,13 +1112,41 @@ def graph_to_code_multi(
                     submodel=sm_name,
                     known_children=sorted(sm_child_ids),
                 )
-            src_name = _edge_input_name_for_codegen(edge, node_map[edge.source])
+            source_id = edge.source
+            source_edge = edge
+            if source_id in submodel_node_ids:
+                source_handle = edge.sourceHandle or ""
+                if not source_handle.startswith("out__"):
+                    raise ParseError(
+                        "Submodel cross-boundary edge has missing or malformed "
+                        "sourceHandle; expected 'out__<child_id>'.",
+                        edge_id=edge.id,
+                        handle=edge.sourceHandle,
+                        source=edge.source,
+                        target=edge.target,
+                    )
+                source_id = source_handle.removeprefix("out__")
+                source_node = submodel_child_nodes.get(edge.source, {}).get(source_id)
+                if source_node is None:
+                    raise ParseError(
+                        "Submodel cross-boundary edge references a child node "
+                        "that does not exist in the source submodel.",
+                        edge_id=edge.id,
+                        child_id=source_id,
+                        submodel=edge.source.removeprefix("submodel__"),
+                    )
+                source_edge = edge.model_copy(
+                    update={"sourceHandle": edge.sourcePort},
+                )
+            else:
+                source_node = node_map[source_id]
+            src_name = _edge_input_name_for_codegen(source_edge, source_node)
             existing = sm_node_sources.setdefault(child_id, [])
             existing_ids = sm_node_source_ids.setdefault(child_id, [])
             existing.append(src_name)
-            existing_ids.append(edge.source)
+            existing_ids.append(source_id)
             sm_node_source_func_names.setdefault(child_id, []).append(
-                root_id_to_func.get(edge.source, _sanitize_func_name(edge.source))
+                root_id_to_func.get(source_id, _sanitize_func_name(source_node.data.label))
             )
         _validate_duplicate_node_inputs(sm_node_sources, sm_node_map)
         # Validate out__ cross-boundary edges early, during submodel-file
@@ -1267,9 +1302,13 @@ def graph_to_code_multi(
             continue
         if src in submodel_node_ids:
             source_node = submodel_node_maps[src][actual_src]
+            source_edge = edge.model_copy(
+                update={"sourceHandle": edge.sourcePort},
+            )
         else:
             source_node = node_map[src]
-        src_name = _edge_input_name_for_codegen(edge, source_node)
+            source_edge = edge
+        src_name = _edge_input_name_for_codegen(source_edge, source_node)
         root_node_sources.setdefault(actual_tgt, []).append(src_name)
         # Use the RESOLVED source id (child node id for a cross-boundary edge),
         # not the raw submodel placeholder id, so ids and names stay aligned
@@ -1282,13 +1321,9 @@ def graph_to_code_multi(
     _validate_duplicate_node_inputs(root_node_sources, node_map)
 
     # Build connect pairs for ALL edges (cross-boundary use real node names).
-    # Triple shape: (src_func, tgt_func, source_port).
-    # When the edge originates at a submodel boundary, the sourceHandle
-    # carries the `out__<child_id>` marker (resolved above into the
-    # child's func name) — no user-facing frame name to forward, so the
-    # third element is None. For non-boundary edges, the edge's
-    # sourceHandle is the user-facing frame string (or None for
-    # single-frame).
+    # Four-tuple shape: (src_func, tgt_func, source_port, target_port).
+    # Synthetic in__/out__ handles identify boundary children; sourcePort /
+    # targetPort retain any authored connect ports hidden by those markers.
     submodel_edge_join_target_roles = build_edge_join_boundary_target_roles(submodels)
     root_connect_pairs: list[_ConnectPair] = []
     for edge in edges:
@@ -1323,12 +1358,14 @@ def graph_to_code_multi(
         # table labelled e.g. "out__claims".
         is_submodel_boundary = src in submodel_node_ids
         is_submodel_target_boundary = tgt in submodel_node_ids
-        source_port = edge.sourceHandle if edge.sourceHandle and not is_submodel_boundary else None
+        source_port = edge.sourcePort if is_submodel_boundary else edge.sourceHandle
         target_port: str | None
         if edge.targetHandle and not is_submodel_target_boundary:
             target_port = edge.targetHandle
         elif is_submodel_target_boundary:
-            target_port = submodel_edge_join_target_roles.get((tgt, actual_tgt, actual_src))
+            target_port = edge.targetPort
+            if target_port is None:
+                target_port = submodel_edge_join_target_roles.get((tgt, actual_tgt, actual_src))
         else:
             target_port = None
         root_connect_pairs.append((src_func, tgt_func, source_port, target_port))

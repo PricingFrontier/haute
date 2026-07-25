@@ -6,7 +6,22 @@ Used by both ``_parser_submodels.py`` (parse-time hierarchical view) and
 
 from __future__ import annotations
 
+from hashlib import blake2b
+
 from haute.graph_utils import GraphEdge, GraphNode, NodeData, NodeType
+
+
+def _boundary_edge_id(
+    legacy_id: str,
+    source_port: str | None,
+    target_port: str | None,
+) -> str:
+    """Keep legacy ids for bare edges and disambiguate ported boundaries."""
+    if source_port is None and target_port is None:
+        return legacy_id
+    payload = "\0".join((source_port or "", target_port or "")).encode()
+    digest = blake2b(payload, digest_size=6).hexdigest()
+    return f"{legacy_id}_{digest}"
 
 
 def build_submodel_placeholder(
@@ -118,25 +133,49 @@ def rewire_edges(
             # source side's handle so a child-of-A → child-of-B edge (rewired
             # once per submodel) keeps the boundary handle set by the earlier
             # pass instead of clobbering it to None.
+            authored_source_port = (
+                e.sourcePort if e.source.startswith("submodel__") else e.sourceHandle
+            )
+            authored_target_port = e.targetPort if e.targetPort is not None else e.targetHandle
+            target_handle = f"in__{e.target}"
+            legacy_id = f"e_{e.source}_{sm_node_id}__{e.target}"
             result.append(
                 GraphEdge(
-                    id=f"e_{e.source}_{sm_node_id}__{e.target}",
+                    id=_boundary_edge_id(
+                        legacy_id,
+                        authored_source_port,
+                        authored_target_port,
+                    ),
                     source=e.source,
                     sourceHandle=e.sourceHandle,
                     target=sm_node_id,
-                    targetHandle=f"in__{e.target}",
+                    targetHandle=target_handle,
+                    sourcePort=e.sourcePort,
+                    targetPort=authored_target_port,
                 )
             )
         elif src_inside:
             # Internal → external: source becomes submodel node. Preserve the
             # target side's handle for the same cross-submodel rewire reason.
+            authored_source_port = e.sourcePort if e.sourcePort is not None else e.sourceHandle
+            authored_target_port = (
+                e.targetPort if e.target.startswith("submodel__") else e.targetHandle
+            )
+            source_handle = f"out__{e.source}"
+            legacy_id = f"e_{sm_node_id}_{e.target}__{e.source}"
             result.append(
                 GraphEdge(
-                    id=f"e_{sm_node_id}_{e.target}__{e.source}",
+                    id=_boundary_edge_id(
+                        legacy_id,
+                        authored_source_port,
+                        authored_target_port,
+                    ),
                     source=sm_node_id,
-                    sourceHandle=f"out__{e.source}",
+                    sourceHandle=source_handle,
                     target=e.target,
                     targetHandle=e.targetHandle,
+                    sourcePort=authored_source_port,
+                    targetPort=e.targetPort,
                 )
             )
         else:

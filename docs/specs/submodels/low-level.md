@@ -14,7 +14,8 @@ Related but external to this component:
 - `src/haute/_parser_submodels.py` (expression-parsing) — parses
   `pipeline.submodel(...)` calls and submodel `.py` files, and calls into
   `src/haute/_submodel_graph.py`'s same three helpers to build the hierarchical view at
-  parse time.
+  parse time. It rejects nested references and duplicate declared submodel names before invoking
+  the graph helpers, so this component never receives a deliberately truncated hierarchy.
 - `src/haute/routes/_save_pipeline.py::SavePipelineService` (server-api) —
   provides `save_graph_transactionally`, reused by both create and dissolve.
 
@@ -38,7 +39,10 @@ Related but external to this component:
 - Boundary edge handles: `targetHandle = f"in__{child_id}"` on an edge whose
   target is the placeholder; `sourceHandle = f"out__{child_id}"` on an edge
   whose source is the placeholder. These are the only two synthetic handle
-  shapes this component produces or consumes.
+  shapes this component produces or consumes. When one of those synthetic
+  handles replaces an authored connect port, `GraphEdge.targetPort` or
+  `GraphEdge.sourcePort` carries the hidden authored value until codegen or
+  flattening restores it; unset supplemental fields are omitted from payloads.
 - Pydantic request/response models (`src/haute/schemas.py`, owned by server-api):
   `CreateSubmodelRequest`
   (`name`, `node_ids: list[str]`, `graph: Graph`, `preamble`, `source_file`,
@@ -72,14 +76,18 @@ For each edge, classify `src_inside`/`tgt_inside` against `child_node_ids`:
   f"in__{e.target}"`, **`sourceHandle` is preserved from the original edge**
   (not cleared) so that a child-of-A → child-of-B edge, rewired once per
   submodel across two separate calls, keeps the boundary handle set by
-  whichever pass ran first.
+  whichever pass ran first; the replaced authored target handle moves to
+  `targetPort`.
 - source inside only → source becomes `sm_node_id`, `sourceHandle =
-  f"out__{e.source}"`, `targetHandle` preserved for the same reason.
+  f"out__{e.source}"`, `targetHandle` preserved for the same reason, and the
+  replaced authored source handle moves to `sourcePort`.
 - neither inside → passed through unchanged.
 
-New edge ids: `f"e_{e.source}_{sm_node_id}__{e.target}"` (inbound rewire) /
-`f"e_{sm_node_id}_{e.target}__{e.source}"` (outbound rewire) — deterministic
-given the same input edge and placeholder id.
+Bare rewired edges retain the legacy deterministic id. Ported boundary ids
+add a digest of the authored source/target ports, so edges sharing endpoints
+but carrying distinct hidden handles remain unique. Cross-boundary
+reconstruction likewise deduplicates only an exact endpoint-and-authored-port
+identity through hierarchical merge and flattening.
 
 ### `resolve_submodel_reference(rel_path, *, pipeline_dir, project_root)`
 
@@ -116,12 +124,14 @@ which file is authoritative.
    selected submodel's stored child nodes/internal edges. Dict entries are Pydantic-validated;
    existing `GraphNode`/`GraphEdge` objects are reused.
 4. For each edge, when its source is a selected placeholder and `sourceHandle` is non-empty, set
-   the source to `sourceHandle.removeprefix("out__")`, clear `sourceHandle`, and regenerate the id.
+   the source to `sourceHandle.removeprefix("out__")`, restore `sourceHandle` from `sourcePort`,
+   and regenerate the id.
    Apply the analogous `targetHandle.removeprefix("in__")` rewrite on selected placeholder
-   targets, restoring a target role from step 2 when available.
+   targets, restoring `targetPort` first or a target role from step 2 when no authored target
+   port was present.
 5. Drop any edge that still references a selected placeholder (notably a boundary edge with a
-   missing handle), then deduplicate by `(source, target, sourceHandle, targetHandle)` preserving
-   first occurrence.
+   missing handle), then deduplicate by rendered endpoint/handles plus any `sourcePort`/
+   `targetPort` still hidden behind an unflattened boundary, preserving first occurrence.
 6. Return `graph.model_copy(...)`, removing flattened metadata entries and setting `submodels=None`
    when none remain. Untargeted placeholders/metadata remain intact.
 
@@ -255,7 +265,8 @@ Acquires `save_lock`, runs the body in a threadpool:
   selected placeholder and the relevant handle being truthy, but does not check `in__`/`out__` or
   that the derived id belongs to the submodel. A wrong-prefix handle becomes an endpoint id
   verbatim; a missing handle leaves the placeholder reference in place and that edge is silently
-  discarded. Internal and rewired edges are then deduplicated by the four endpoint/handle fields.
+  discarded. Internal and rewired edges are then deduplicated by rendered endpoint/handle fields
+  plus any still-hidden authored ports.
 - **Inbound edge-join roles survive flattening.** An `in__<child>` boundary targeting an
   edge-join child recovers the base/join `targetHandle` through
   `build_edge_join_boundary_target_roles`; ordinary inbound boundaries clear the synthetic handle

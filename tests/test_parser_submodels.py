@@ -136,21 +136,20 @@ class TestParseSubmodelSource:
         graph = parse_submodel_source(_VALID_SUBMODEL, "modules/pricing.py")
         assert graph.source_file == "modules/pricing.py"
 
-    def test_syntax_error_returns_warning_graph(self) -> None:
+    def test_syntax_error_raises_instead_of_returning_empty_graph(self) -> None:
         bad_source = "def broken(:\n    pass\n"
-        graph = parse_submodel_source(bad_source, "broken.py")
-        assert graph.warning is not None
-        assert "syntax errors" in graph.warning
-        assert graph.pipeline_name == "unnamed"
+        with pytest.raises(ParseError, match="syntax errors") as exc_info:
+            parse_submodel_source(bad_source, "broken.py")
+
+        assert exc_info.value.context["source_file"] == "broken.py"
 
     def test_empty_source(self) -> None:
         graph = parse_submodel_source("", "empty.py")
         assert graph.nodes == []
         assert graph.edges == []
 
-    def test_nested_submodel_call_surfaces_warning(self) -> None:
-        """A ``pipeline.submodel(...)`` inside a submodel file is capped at one
-        level, but the drop must be visible as a warning, not silent."""
+    def test_nested_submodel_calls_raise_with_every_path(self) -> None:
+        """A submodel parser may not return a graph after dropping deeper references."""
         source = """\
 import polars as pl
 import haute
@@ -162,13 +161,15 @@ def base(df: pl.LazyFrame) -> pl.LazyFrame:
     return df
 
 pipeline.submodel("modules/inner.py")
+pipeline.submodel("modules/other.py")
 """
-        graph = parse_submodel_source(source, "modules/outer.py")
-        assert graph.warning is not None
-        assert "Nested submodels" in graph.warning
-        assert "modules/inner.py" in graph.warning
-        # The single authored node is still returned.
-        assert [n.id for n in graph.nodes] == ["base"]
+        with pytest.raises(ParseError, match="Nested submodels") as exc_info:
+            parse_submodel_source(source, "modules/outer.py")
+
+        assert exc_info.value.context == {
+            "source_file": "modules/outer.py",
+            "nested_paths": ["modules/inner.py", "modules/other.py"],
+        }
 
     def test_submodel_without_meta(self) -> None:
         source = """\
@@ -396,6 +397,60 @@ class TestMergeSubmodelsCrossBoundaryEdges:
             and e.targetHandle == "in__child_a"
         ]
         assert len(boundary) == 1
+
+    def test_handle_distinct_cross_edges_are_not_deduplicated_by_endpoint_pair(
+        self,
+    ) -> None:
+        parent = _make_parent_graph()
+        child = _make_child_graph()
+        result = merge_submodels(
+            parent,
+            {"sub": child},
+            {"sub": "modules/sub.py"},
+            parent_edges=[
+                ("load", "child_a", "quotes", None),
+                ("load", "child_a", "claims", None),
+                ("child_b", "output", None, "primary"),
+                ("child_b", "output", None, "audit"),
+            ],
+            flatten=False,
+        )
+
+        inbound = [
+            edge
+            for edge in result.edges
+            if edge.source == "load" and edge.target == "submodel__sub"
+        ]
+        outbound = [
+            edge
+            for edge in result.edges
+            if edge.source == "submodel__sub" and edge.target == "output"
+        ]
+
+        assert {edge.sourceHandle for edge in inbound} == {"quotes", "claims"}
+        assert {edge.targetHandle for edge in outbound} == {"primary", "audit"}
+        assert len({edge.id for edge in [*inbound, *outbound]}) == 4
+
+        flattened = merge_submodels(
+            parent,
+            {"sub": child},
+            {"sub": "modules/sub.py"},
+            parent_edges=[
+                ("load", "child_a", "quotes", None),
+                ("load", "child_a", "claims", None),
+                ("child_b", "output", None, "primary"),
+                ("child_b", "output", None, "audit"),
+            ],
+            flatten=True,
+        )
+        flat_boundary = [
+            edge
+            for edge in flattened.edges
+            if (edge.source, edge.target) in {("load", "child_a"), ("child_b", "output")}
+        ]
+
+        assert len(flat_boundary) == 4
+        assert len({edge.id for edge in flat_boundary}) == 4
 
     def test_three_tuple_output_side_source_port_reconstructed(self) -> None:
         """A 3-tuple whose *source* is a child node is reconstructed too.

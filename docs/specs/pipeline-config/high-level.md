@@ -68,10 +68,13 @@ the last edge resurrected it on reparse, a GUI save then materialised the invent
 source, and the fabricated chain disagreed with `run()`, which fails loudly on unwired
 transforms.)
 
-A static `connect()` whose source or target does not name a parsed node is omitted rather than
-raising. This differs from the live `Pipeline.connect()` API, which requires both endpoints to be
-registered and raises immediately. The static omission is covered as compatibility behaviour,
-but it means an invalid authored connect is not itself surfaced as a parse warning.
+A static `connect()` whose source or target does not name a root node is retained as unresolved
+until referenced submodels have been loaded, because cross-boundary connections legitimately name
+child node ids. After that merge opportunity, every endpoint must identify either a root node or
+a child of an authored submodel. Any remaining dangling endpoint raises `ParseError` with the
+complete edge and handle identity; it is never omitted from an otherwise healthy-looking graph.
+The live `Pipeline.connect()` API continues to require both endpoints to be registered
+immediately.
 
 The parameter-name rule belongs to static source parsing. A live `Pipeline` object records only
 edges added through `connect()`; its `run()`, `score()`, and `to_graph()` methods do not infer
@@ -100,6 +103,11 @@ pipelines take a bare frame), or a bare frame against a multi-port source all ra
 multiple ports. Both `run()` and `score()` resolve each edge's frame through the same
 port-aware selection the full executor uses (`_pick_source_frame` on
 `RegisteredEdge.source_port`), keeping the single-execution-engine invariant.
+`@pipeline.instance` registrations are not executable on this live-object surface: the
+decorator records an internal instance marker, and `run()`/`score()` raise `ExecutionError`
+before calling the node regardless of whether `instanceOf` or `inputMapping` is empty. Static
+codegen may resolve an instance into a concrete generated function; the live registry may not
+silently treat an unresolved instance as an ordinary Polars node.
 
 **Project & discovery.** A Haute project is a directory containing `haute.toml` that also
 sits inside a git repository. Every CLI command resolves "which pipeline file" through the
