@@ -18,10 +18,13 @@ from haute._execution_context import (
     ExecutionCancellationToken,
     ExecutionCancelledError,
     ExecutionContext,
+    ExecutionFaultPoint,
     ExecutionMemoryLimitExceededError,
     ExecutionMetricsRecorder,
     ExecutionProfile,
     ExecutionStageMetric,
+    ExecutionTelemetryEvent,
+    _bounded_telemetry_attributes,
 )
 from haute.graph_utils import NodeType, _execute_eager_core, _execute_lazy
 from haute.schemas import ExecutionMetricsPayload
@@ -508,6 +511,79 @@ def test_execution_context_releases_registered_cleanups_once() -> None:
         context.add_cleanup(lambda: None)
 
 
+def test_execution_context_cleanup_only_failure_runs_every_release_and_raises_first() -> None:
+    released: list[str] = []
+
+    def cleanup_first() -> None:
+        released.append("first")
+        raise RuntimeError("first cleanup failed")
+
+    def cleanup_second() -> None:
+        released.append("second")
+        raise ValueError("second cleanup failed")
+
+    def release_admission() -> None:
+        released.append("admission")
+        raise OSError("admission release failed")
+
+    context = ExecutionContext(
+        operation="cleanup-failure",
+        profile=ExecutionProfile.LAZY_SINK,
+        admission_release=release_admission,
+    )
+    context.add_cleanup(cleanup_first)
+    context.add_cleanup(cleanup_second)
+
+    with pytest.raises(ValueError, match="second cleanup failed") as exc_info:
+        context.release_admission()
+
+    assert released == ["second", "first", "admission"]
+    assert any("RuntimeError" in note for note in exc_info.value.__notes__)
+    assert any("OSError" in note for note in exc_info.value.__notes__)
+    context.release_admission()
+    assert released == ["second", "first", "admission"]
+
+
+def test_execution_context_cleanup_failures_do_not_replace_primary_error() -> None:
+    released: list[str] = []
+    context = ExecutionContext(
+        operation="primary-failure",
+        profile=ExecutionProfile.LAZY_SINK,
+        admission_release=lambda: released.append("admission"),
+    )
+
+    def cleanup() -> None:
+        released.append("cleanup")
+        raise RuntimeError("cleanup failed")
+
+    context.add_cleanup(cleanup)
+
+    with pytest.raises(KeyError, match="primary failed") as exc_info:
+        try:
+            raise KeyError("primary failed")
+        finally:
+            context.release_admission(preserve_primary_error=True)
+
+    assert released == ["cleanup", "admission"]
+    assert any("RuntimeError" in note for note in exc_info.value.__notes__)
+
+
+def test_cleanup_failure_is_not_silently_attached_to_an_unrelated_caught_error() -> None:
+    context = ExecutionContext(operation="cleanup-failure", profile=ExecutionProfile.LAZY_SINK)
+    context.add_cleanup(lambda: (_ for _ in ()).throw(RuntimeError("cleanup failed")))
+    caught_error: KeyError | None = None
+
+    try:
+        raise KeyError("unrelated")
+    except KeyError as caught:
+        caught_error = caught
+        with pytest.raises(RuntimeError, match="cleanup failed"):
+            context.release_admission()
+
+    assert caught_error is not None
+    assert not getattr(caught_error, "__notes__", [])
+
+
 def test_heavy_admission_releases_reservation_when_finalizer_registration_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -636,6 +712,197 @@ def test_execution_context_checkpoint_raises_when_cancelled() -> None:
     assert exc_info.value.job_id == "job-1"
 
 
+@pytest.mark.parametrize("profile", list(ExecutionProfile))
+def test_cancellation_latency_uses_first_request_and_meets_controlled_checkpoint_budget(
+    profile: ExecutionProfile,
+) -> None:
+    checkpoint_observation_budget_ms = 50.0
+    now = [10.0]
+    token = ExecutionCancellationToken(monotonic_clock=lambda: now[0])
+    context = ExecutionContext(
+        operation="training",
+        profile=profile,
+        cancellation_token=token,
+    )
+
+    token.cancel()
+    now[0] = 10.010
+    token.cancel()
+    now[0] = 10.025
+
+    with pytest.raises(ExecutionCancelledError) as exc_info:
+        context.checkpoint(label="before-native")
+
+    latency_ms = exc_info.value.cancellation_latency_ms
+    assert latency_ms is not None
+    assert latency_ms == pytest.approx(25.0)
+    assert latency_ms <= checkpoint_observation_budget_ms
+    payload = context.metrics_payload(
+        status="cancelled",
+        terminal_reason="cancelled",
+    )
+    assert payload["cancellation_latency_ms"] == pytest.approx(25.0)
+    assert ExecutionMetricsPayload.model_validate(payload).cancellation_latency_ms == pytest.approx(
+        25.0
+    )
+
+
+def test_execution_fault_points_are_ordered_and_include_bounded_context() -> None:
+    points: list[ExecutionFaultPoint] = []
+    context = ExecutionContext(
+        operation="fault-test",
+        profile=ExecutionProfile.LAZY_SINK,
+        fault_injector=points.append,
+    )
+
+    context.checkpoint(label="before-node", node_id="node-1")
+    context.fault_point("response_shaping", node_id="node-1")
+
+    assert points == [
+        ExecutionFaultPoint(
+            name="before-node",
+            operation="fault-test",
+            node_id="node-1",
+            sequence=1,
+        ),
+        ExecutionFaultPoint(
+            name="response_shaping",
+            operation="fault-test",
+            node_id="node-1",
+            sequence=2,
+        ),
+    ]
+
+
+def test_execution_fault_injector_failure_propagates_before_checkpoint_work() -> None:
+    def inject(point: ExecutionFaultPoint) -> None:
+        assert point.name == "before-native"
+        raise RuntimeError("deterministic fault")
+
+    context = ExecutionContext(
+        operation="fault-test",
+        profile=ExecutionProfile.LAZY_SINK,
+        fault_injector=inject,
+    )
+
+    with pytest.raises(RuntimeError, match="deterministic fault"):
+        context.checkpoint(label="before-native", node_id="node-1")
+
+    assert context.metrics_payload()["checkpoint_count"] == 0
+
+
+def test_execution_telemetry_disabled_mode_never_calls_sink() -> None:
+    events: list[ExecutionTelemetryEvent] = []
+    context = ExecutionContext(
+        operation="secret-operation",
+        profile=ExecutionProfile.LAZY_SINK,
+        job_id="secret-job",
+        telemetry_enabled=False,
+        telemetry_sink=events.append,
+    )
+
+    with patch.object(
+        ExecutionContext,
+        "_telemetry_attributes",
+        side_effect=AssertionError("disabled telemetry assembled attributes"),
+    ):
+        context.metrics_payload(status="completed")
+
+    assert events == []
+
+
+def test_execution_telemetry_is_bounded_redacted_and_emitted_once_per_terminal_state() -> None:
+    events: list[ExecutionTelemetryEvent] = []
+    context = ExecutionContext(
+        operation="secret-operation",
+        profile=ExecutionProfile.TRAINING_PREP,
+        job_id="secret-job",
+        telemetry_enabled=True,
+        telemetry_sink=events.append,
+    )
+    context.record_bytes_read(1_024)
+    context.record_bytes_written(512)
+    context.record_chunk()
+
+    terminal_reason = "bounded_reason_" + ("x" * 256)
+    context.metrics_payload(status="completed", terminal_reason=terminal_reason)
+    context.metrics_payload(status="completed", terminal_reason=terminal_reason)
+
+    assert len(events) == 1
+    event = events[0]
+    assert event.schema_version == 1
+    assert event.event == "execution_terminal"
+    assert len(event.attributes) <= 32
+    assert all(
+        not isinstance(value, str) or len(value) <= 128 for value in event.attributes.values()
+    )
+    assert event.attributes["profile"] == "training_prep"
+    assert event.attributes["bytes_read"] == 1_024
+    assert event.attributes["bytes_written"] == 512
+    assert event.attributes["chunk_count"] == 1
+    serialised = json.dumps(event.to_dict())
+    assert "secret-operation" not in serialised
+    assert "secret-job" not in serialised
+    assert not {"operation", "job_id", "node_id", "path", "columns"} & set(event.attributes)
+
+
+def test_execution_telemetry_sink_failure_does_not_change_metrics_result() -> None:
+    def fail_sink(_event: ExecutionTelemetryEvent) -> None:
+        raise RuntimeError("telemetry unavailable")
+
+    context = ExecutionContext(
+        operation="telemetry-failure",
+        profile=ExecutionProfile.LAZY_SINK,
+        telemetry_enabled=True,
+        telemetry_sink=fail_sink,
+    )
+
+    payload = context.metrics_payload(status="completed")
+
+    assert payload["status"] == "completed"
+
+
+def test_execution_telemetry_environment_rejects_ambiguous_boolean(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from haute._execution_context import configure_execution_telemetry
+
+    monkeypatch.setenv("HAUTE_EXECUTION_TELEMETRY", "sometimes")
+
+    with pytest.raises(ValueError, match="HAUTE_EXECUTION_TELEMETRY"):
+        configure_execution_telemetry()
+
+
+def test_execution_telemetry_environment_is_parsed_once_across_default_contexts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from haute import _execution_context as context_mod
+
+    context_mod._execution_telemetry_enabled.cache_clear()
+    monkeypatch.setenv("HAUTE_EXECUTION_TELEMETRY", "true")
+    ExecutionContext(operation="one", profile=ExecutionProfile.LAZY_SINK)
+    ExecutionContext(operation="two", profile=ExecutionProfile.LAZY_SINK)
+    assert context_mod._execution_telemetry_enabled.cache_info().misses == 1
+    context_mod._execution_telemetry_enabled.cache_clear()
+
+
+def test_bounded_telemetry_attributes_rejects_overflow_instead_of_slicing() -> None:
+    attributes = {f"key_{index}": index for index in range(32)}
+    assert _bounded_telemetry_attributes(attributes) == attributes
+    with pytest.raises(ValueError, match="32"):
+        _bounded_telemetry_attributes({**attributes, "overflow": 33})
+
+
+def test_telemetry_attribute_failure_does_not_change_metrics_payload() -> None:
+    context = ExecutionContext(
+        operation="telemetry", profile=ExecutionProfile.LAZY_SINK, telemetry_enabled=True
+    )
+    with patch.object(
+        ExecutionContext, "_telemetry_attributes", side_effect=RuntimeError("bad telemetry")
+    ):
+        assert context.metrics_payload(status="completed")["status"] == "completed"
+
+
 def test_preview_cache_unpins_entry_when_preview_projection_fails(tmp_path) -> None:
     from haute.executor import PreviewProjectionError, _preview_cache, execute_graph
 
@@ -652,6 +919,74 @@ def test_preview_cache_unpins_entry_when_preview_projection_fails(tmp_path) -> N
         )
 
     assert _preview_cache.stats()["pinned_entries"] == 0
+
+
+def test_execute_graph_response_shaping_fault_releases_preview_cache_pin(
+    tmp_path,
+) -> None:
+    from haute.executor import _preview_cache, execute_graph
+
+    data_path = tmp_path / "input.parquet"
+    pl.DataFrame({"a": [1, 2]}).write_parquet(data_path)
+    graph = make_graph({"nodes": [make_source_node("source", str(data_path))], "edges": []})
+
+    def inject(point: ExecutionFaultPoint) -> None:
+        if point.name == "response_shaping":
+            raise RuntimeError("response shaping fault")
+
+    context = ExecutionContext(
+        operation="preview",
+        profile=ExecutionProfile.PREVIEW_EAGER,
+        fault_injector=inject,
+    )
+
+    with pytest.raises(RuntimeError, match="response shaping fault"):
+        execute_graph(
+            graph,
+            target_node_id="source",
+            target_preview_only=True,
+            execution_context=context,
+        )
+
+    assert _preview_cache.stats()["pinned_entries"] == 0
+
+
+def test_bounded_eager_profile_propagates_preamble_failure_before_execution() -> None:
+    from haute.executor import PreambleError, _eager_execute
+
+    graph = make_graph(
+        {
+            "nodes": [
+                {
+                    "id": "source",
+                    "data": {
+                        "label": "source",
+                        "nodeType": NodeType.DATA_INPUT.value,
+                        "config": {},
+                    },
+                }
+            ],
+            "edges": [],
+            "preamble": "broken",
+        }
+    )
+    error = PreambleError("preamble failed")
+
+    with (
+        patch("haute.executor._compile_preamble", side_effect=error),
+        pytest.raises(PreambleError) as exc_info,
+    ):
+        _eager_execute(
+            graph,
+            target_node_id="source",
+            row_limit=None,
+            execution_context=ExecutionContext(
+                operation="training",
+                profile=ExecutionProfile.TRAINING_PREP,
+            ),
+        )
+
+    assert exc_info.value is error
 
 
 def test_preview_cache_does_not_pin_when_store_rejects_entry(

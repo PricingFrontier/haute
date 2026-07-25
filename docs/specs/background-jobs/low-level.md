@@ -4,6 +4,7 @@
 
 | File | Responsibility |
 | --- | --- |
+| `src/haute/_artifact_housekeeping.py` | Creates versioned ownership markers for crash-surviving artifact directories and safely reaps only stale, marked, direct children of an explicitly supplied root. |
 | `src/haute/routes/_job_store.py` | Thread-safe, TTL-evicting, dict-backed `JobStore`; per-prefix singleton factory `get_job_store`; artifact-cleanup hook registry. |
 | `src/haute/routes/_job_lifecycle.py` | `JobLifecycle.transition()` — the single race-safe path from `running` to a terminal status, with reason precedence; `require_job_status`; `bind_running_execution_metrics_publisher`. |
 | `src/haute/routes/_background_jobs.py` | `CancellableJobRegistry` (latest-wins supersession + cooperative cancellation), `SingleFlightCoordinator` (mutual exclusion per key), `IsolatedJobSupervisor` (isolated-worker → lifecycle adapter), `BackgroundJobStoppedError`. |
@@ -47,7 +48,8 @@
   memory_limited=30 < cancelled=40 < timed_out=50 < superseded=60`. Higher wins a
   race between two *already-terminal* reasons; `completed` is not in this map because
   it is handled as a separate, non-precedence special case (see Control flow).
-- **`JobLifecycle`** — a frozen dataclass wrapping one `store: JobStore`. It is a
+- **`JobLifecycle`** — a frozen dataclass wrapping one `store: JobStore` and an optional
+  test-only terminal-transition `fault_injector`. It is a
   privileged collaborator: `transition()` reaches into `store._write_lock`,
   `store.jobs`, `store._store_merged_job_locked`, and
   `store._schedule_heavy_object_cleanup_if_needed` directly (marked `# noqa: SLF001`
@@ -436,3 +438,38 @@ Remaining background-job improvement work is tracked in the
 - Extend focused background-job tests for the new prefix and direct
   `SingleFlightCoordinator` coverage. Input-cache route tests own join/start/cancel races,
   redaction, global concurrency, builder checkpoints, and job-TTL/snapshot independence.
+
+## Approved execution-housekeeping contract
+
+- `src/haute/_artifact_housekeeping.py` owns marker creation and startup reaping. The marker file
+  is `.haute-artifact.json` with integer `schema_version=1`, non-empty `owner`, and finite,
+  non-negative `created_at` epoch seconds.
+  `create_owned_artifact_directory(root, prefix, owner)` creates a
+  direct child under a non-symlink root from a single-component prefix and writes the marker before
+  returning; validation or marker-write failure removes any new child and propagates.
+- `reap_stale_artifact_directories(root, owner, stale_after_seconds, now=None)` inspects direct
+  children only. It skips the root itself, symlinks, non-direct paths, unmarked children, invalid
+  JSON/schema/time values, owner mismatches, and entries newer than the inclusive stale cutoff. It
+  returns bounded counts and reclaimed bytes; its age inputs must be finite, non-negative numeric
+  values, and cleanup failures are counted and logged without causing a broader unmarked sweep.
+- `_optimiser_service.py` creates apply-result and ratebook-factor artifact directories through
+  this helper. `reap_stale_optimiser_artifacts()` targets only
+  `_apply_artifact_root()` and `_ratebook_factors_artifact_root()`. `server._lifespan` calls it
+  once at startup through `asyncio.to_thread` and logs its bounded per-root report, so directory
+  traversal, recursive reclaimed-byte sizing, and deletion do not block the server event loop.
+  `HAUTE_ARTIFACT_STALE_SECONDS` is parsed strictly as a non-negative integer and defaults to
+  86,400 seconds.
+- `IsolatedJobSupervisor.launch` catches an unexpected `Exception` escaping the parent-side
+  isolation helper, transitions the job to `error` with a bounded generic message and
+  `worker_error_class`, then re-raises so the thread exception hook retains diagnostic visibility.
+  `BaseException` subclasses remain outside this conversion.
+- `JobLifecycle` exposes the execution fault-point seam immediately before the locked terminal
+  write and immediately before heavy-object cleanup scheduling. The seam is constructor-injected
+  and absent in production by default.
+
+Tests create marked, unmarked, malformed, wrong-owner, symlink, fresh, and stale directories and
+prove only a stale valid direct child is removed. Symlink targets sit outside the registered root;
+POSIX uses a real directory symlink while Windows deterministically exercises the same
+`Path.is_symlink()` classification without a privilege-dependent conditional skip. Optimiser
+tests prove new artifact directories are marked and live handle cleanup remains valid. Supervisor
+tests prove an unexpected parent-side exception cannot strand a running job.

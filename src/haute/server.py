@@ -31,6 +31,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.routing import Route
 
 from haute._event_bus import default_bus
+from haute._execution_context import configure_execution_telemetry
 from haute._local_security import (
     TRUSTED_HOSTS_ENV,
     LocalSessionMiddleware,
@@ -55,6 +56,7 @@ from haute.routes._helpers import (
     ws_clients_discard,
     ws_clients_lock,
 )
+from haute.routes._optimiser_service import reap_stale_optimiser_artifacts
 from haute.routes.assistant import router as assistant_router
 from haute.routes.databricks import router as databricks_router
 from haute.routes.explore import router as explore_router
@@ -356,6 +358,8 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     _clear_bytecache()
     configure_logging()
     _load_env(Path.cwd())
+    configure_execution_telemetry()
+    await asyncio.to_thread(reap_stale_optimiser_artifacts)
 
     # Prime the pipeline-name → path index so the first HTTP request doesn't
     # synchronously pay for discovery + parse of every pipeline in the

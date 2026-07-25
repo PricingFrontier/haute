@@ -438,7 +438,7 @@ def execute_trace(
                 execution_context=admitted_context,
             )
         finally:
-            admitted_context.release_admission()
+            admitted_context.release_admission(preserve_primary_error=True)
 
     requested_columns = _requested_preview_columns_from_row(row_values, column)
     execution_facade.plan_execution_strategy(

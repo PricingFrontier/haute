@@ -1308,6 +1308,58 @@ class TestScoreGraphOutputFields:
         assert execute.call_args.kwargs["dataframe_cache_request"] is None
         plan.cleanup(preserve_primary_error=False)
 
+    def test_score_graph_lazy_releases_supplied_context_when_preamble_compile_fails(self):
+        from haute._execution_context import ExecutionContext, ExecutionProfile
+        from haute.deploy import _scorer
+        from haute.errors import PreambleError
+
+        graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "src",
+                        "data": {
+                            "label": "src",
+                            "nodeType": "apiInput",
+                            "config": _single_frame_api_input_config("x", "float", label="src"),
+                        },
+                    },
+                    {
+                        "id": "out",
+                        "data": {
+                            "label": "out",
+                            "nodeType": "output",
+                            "config": make_output_config([]),
+                        },
+                    },
+                ],
+                "edges": [{"id": "e1", "source": "src", "target": "out", "sourceHandle": "src"}],
+                "preamble": "broken",
+            }
+        )
+        releases: list[str] = []
+        context = ExecutionContext(
+            operation="deploy-score",
+            profile=ExecutionProfile.DEPLOY_LIVE,
+            admission_release=lambda: releases.append("released"),
+        )
+        error = PreambleError("invalid preamble", source_line=7)
+
+        with patch("haute.executor._compile_preamble", side_effect=error):
+            with pytest.raises(PreambleError) as exc_info:
+                _scorer.score_graph_lazy(
+                    graph=graph,
+                    input_df=pl.DataFrame({"x": [1.0]}),
+                    input_node_ids=["src"],
+                    output_node_id="out",
+                    execution_context=context,
+                )
+
+        assert exc_info.value is error
+        assert releases == ["released"]
+        context.release_admission()
+        assert releases == ["released"]
+
     def test_score_graph_lazy_retains_output_field_parent_until_cleanup(self):
         """Selecting output_fields must not drop the cache-pinning source LazyFrame."""
         from haute.deploy import _scorer
@@ -2250,7 +2302,6 @@ class TestScoreGraphModelScoreRemap:
 
     def test_model_score_remap_loads_bundled_model(self, tmp_path):
         """modelScore with remap loads from bundled local path."""
-        from haute._mlflow_io import ScoringModel
         from haute.deploy._scorer import score_graph
 
         cbm_path = tmp_path / "model.cbm"
@@ -2259,12 +2310,6 @@ class TestScoreGraphModelScoreRemap:
         mock_model = MagicMock()
         mock_model.feature_names_ = ["x"]
         mock_model.predict.return_value = np.array([42.0])
-        scoring_model = ScoringModel(
-            model=mock_model,
-            feature_names=["x"],
-            cat_feature_names=frozenset(),
-            flavor="catboost",
-        )
 
         graph = _g(
             {
@@ -2317,7 +2362,10 @@ class TestScoreGraphModelScoreRemap:
 
         with (
             patch("haute._mlflow_io._load_catboost_model", return_value=mock_model),
-            patch("haute._mlflow_io.load_mlflow_model", return_value=scoring_model),
+            patch(
+                "haute._mlflow_io.load_mlflow_model",
+                side_effect=AssertionError("bundled scoring must not contact MLflow"),
+            ) as remote_loader,
         ):
             result = score_graph(
                 graph=graph,
@@ -2328,6 +2376,7 @@ class TestScoreGraphModelScoreRemap:
             )
 
         assert "pred" in result.columns
+        remote_loader.assert_not_called()
 
     def test_model_score_remap_with_output_fields_uses_bundled_contract(
         self,
@@ -3016,11 +3065,17 @@ class TestScoreGraphModelScoreRemap:
 
     def test_multi_row_model_score_uses_deploy_batch_source(self, tmp_path):
         """Multi-row deploy modelScore should use the batch scorer contract."""
+        from haute._mlflow_io import ScoringModel
         from haute.deploy._scorer import score_graph
 
         cbm_path = tmp_path / "model.cbm"
         cbm_path.write_bytes(b"fake")
-        scoring_model = MagicMock()
+        scoring_model = ScoringModel(
+            model=MagicMock(),
+            feature_names=["x"],
+            cat_feature_names=frozenset(),
+            flavor="catboost",
+        )
         captured: dict[str, object] = {}
 
         def fake_run_score_pipeline(*_args, **kwargs):
@@ -3075,11 +3130,10 @@ class TestScoreGraphModelScoreRemap:
 
         with (
             patch("haute._mlflow_io.load_local_model", return_value=scoring_model),
-            # The v2 OUTPUT references its mapped column (``pred``), so deploy
-            # batch projection planning resolves the modelScore column contract,
-            # which loads the model. Mock the planner's loader too (the v1
-            # passthrough OUTPUT seeded no projection, so this never fired).
-            patch("haute._mlflow_io.load_mlflow_model", return_value=scoring_model),
+            patch(
+                "haute._mlflow_io.load_mlflow_model",
+                side_effect=AssertionError("bundled scoring must not contact MLflow"),
+            ) as remote_loader,
             patch(
                 "haute._model_scorer._run_score_pipeline",
                 side_effect=fake_run_score_pipeline,
@@ -3095,14 +3149,21 @@ class TestScoreGraphModelScoreRemap:
 
         assert result["pred"].to_list() == [10.0, 20.0]
         assert captured["source"] == "deploy_batch"
+        remote_loader.assert_not_called()
 
     def test_single_row_model_score_keeps_live_source(self, tmp_path):
         """Single-row deploy modelScore should keep the eager live scorer path."""
+        from haute._mlflow_io import ScoringModel
         from haute.deploy._scorer import score_graph
 
         cbm_path = tmp_path / "model.cbm"
         cbm_path.write_bytes(b"fake")
-        scoring_model = MagicMock()
+        scoring_model = ScoringModel(
+            model=MagicMock(),
+            feature_names=["x"],
+            cat_feature_names=frozenset(),
+            flavor="catboost",
+        )
         captured: dict[str, object] = {}
 
         def fake_run_score_pipeline(*_args, **kwargs):
@@ -3157,7 +3218,10 @@ class TestScoreGraphModelScoreRemap:
 
         with (
             patch("haute._mlflow_io.load_local_model", return_value=scoring_model),
-            patch("haute._mlflow_io.load_mlflow_model", return_value=scoring_model),
+            patch(
+                "haute._mlflow_io.load_mlflow_model",
+                side_effect=AssertionError("bundled scoring must not contact MLflow"),
+            ) as remote_loader,
             patch(
                 "haute._model_scorer._run_score_pipeline",
                 side_effect=fake_run_score_pipeline,
@@ -3173,6 +3237,7 @@ class TestScoreGraphModelScoreRemap:
 
         assert result["pred"].to_list() == [10.0]
         assert captured["source"] == "live"
+        remote_loader.assert_not_called()
 
     def test_model_score_remap_forwards_required_output_columns(self, tmp_path):
         """Bundled deploy scoring should honour projection demand from output_fields."""
@@ -3535,11 +3600,10 @@ class TestScoreGraphModelScoreRemap:
 
         with (
             patch("haute._mlflow_io.load_local_model", return_value=scoring_model),
-            # The v2 OUTPUT references its mapped column (``pred``), so deploy
-            # batch projection planning resolves the modelScore column contract,
-            # which loads the model. Mock the planner's loader too (the v1
-            # passthrough OUTPUT seeded no projection, so this never fired).
-            patch("haute._mlflow_io.load_mlflow_model", return_value=scoring_model),
+            patch(
+                "haute._mlflow_io.load_mlflow_model",
+                side_effect=AssertionError("bundled scoring must not contact MLflow"),
+            ) as remote_loader,
             patch("haute._model_scorer._batch_score_to_parquet", side_effect=fake_batch_score),
         ):
             result = score_graph(
@@ -3552,6 +3616,108 @@ class TestScoreGraphModelScoreRemap:
 
         assert result["pred"].to_list() == [10.0, 20.0]
         assert not scored_path.exists()
+        remote_loader.assert_not_called()
+
+
+class TestBundledModelContractInputs:
+    """Tests for deploy-only contract metadata derived from bundled models."""
+
+    @staticmethod
+    def _graph():
+        return _g(
+            {
+                "nodes": [
+                    {
+                        "id": "ms",
+                        "data": {
+                            "label": "ms",
+                            "nodeType": "modelScore",
+                            "config": {
+                                "sourceType": "run",
+                                "run_id": "obsolete-run",
+                                "artifact_path": "model.cbm",
+                                "task": "regression",
+                                "output_column": "pred",
+                            },
+                        },
+                    }
+                ],
+                "edges": [],
+            }
+        )
+
+    def test_unmatched_remap_leaves_graph_unchanged(self):
+        from haute.deploy._scorer import _attach_bundled_model_contract_inputs
+
+        graph = self._graph()
+
+        result = _attach_bundled_model_contract_inputs(
+            graph,
+            {"other__model.cbm": "unused.cbm"},
+            {"ms"},
+        )
+
+        assert result is graph
+
+    @pytest.mark.parametrize(
+        ("feature_names", "offset_column", "message"),
+        [
+            ("x", None, "invalid feature or offset metadata"),
+            (None, None, "non-iterable feature metadata"),
+            (["x", "x"], None, "invalid feature or offset metadata"),
+            (["x"], object(), "invalid feature or offset metadata"),
+        ],
+    )
+    def test_invalid_bundled_metadata_fails_loud(
+        self,
+        feature_names,
+        offset_column,
+        message,
+    ):
+        from haute.deploy._scorer import _attach_bundled_model_contract_inputs
+        from haute.errors import DeployError
+
+        scoring_model = MagicMock(
+            feature_names=feature_names,
+            offset_column=offset_column,
+        )
+
+        with (
+            patch(
+                "haute.deploy._scorer._load_local_model_cached",
+                return_value=scoring_model,
+            ),
+            pytest.raises(DeployError, match=message),
+        ):
+            _attach_bundled_model_contract_inputs(
+                self._graph(),
+                {"ms__model.cbm": "model.cbm"},
+                {"ms"},
+            )
+
+    def test_model_offset_is_included_once_in_deploy_inputs(self):
+        from haute._contracts import _DEPLOY_MODEL_INPUT_COLUMNS_CONFIG_KEY
+        from haute.deploy._scorer import _attach_bundled_model_contract_inputs
+
+        scoring_model = MagicMock(
+            feature_names=["x"],
+            offset_column="exposure",
+        )
+
+        with patch(
+            "haute.deploy._scorer._load_local_model_cached",
+            return_value=scoring_model,
+        ):
+            result = _attach_bundled_model_contract_inputs(
+                self._graph(),
+                {"ms__model.cbm": "model.cbm"},
+                {"ms"},
+            )
+
+        assert result.node_map["ms"].data.config[_DEPLOY_MODEL_INPUT_COLUMNS_CONFIG_KEY] == [
+            "x",
+            "exposure",
+        ]
 
 
 class TestRemapArtifact:
