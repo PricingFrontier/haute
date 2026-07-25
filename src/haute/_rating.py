@@ -16,7 +16,7 @@ from decimal import Decimal, InvalidOperation
 from os import PathLike
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any
+from typing import Any, Literal, cast
 
 import polars as pl
 
@@ -384,6 +384,9 @@ _RATING_PRIMITIVE_DESCRIPTOR_KINDS = frozenset(
         "Null",
     }
 )
+_RATING_PRIMITIVE_DTYPES: Mapping[str, pl.DataType] = MappingProxyType(
+    {name: cast(pl.DataType, dtype) for dtype, name in _PRIMITIVE_RATING_DTYPE_NAMES.items()}
+)
 
 
 class RatingTableMissError(ValueError):
@@ -463,6 +466,40 @@ def is_rating_dtype_descriptor(value: object) -> bool:
     return False
 
 
+def rating_dtype_from_descriptor(descriptor: object) -> pl.DataType:
+    """Reconstruct a supported rating-factor dtype from its JSON descriptor."""
+    if not is_rating_dtype_descriptor(descriptor):
+        raise ValueError(f"invalid rating factor dtype descriptor {descriptor!r}")
+
+    # The predicate above narrows the descriptor's shape at runtime.  Keep
+    # the individual reads here so this remains the exact inverse of
+    # ``rating_dtype_descriptor`` rather than accepting loosely shaped JSON.
+    assert isinstance(descriptor, dict)
+    kind = descriptor["kind"]
+    assert isinstance(kind, str)
+    if kind in _RATING_PRIMITIVE_DESCRIPTOR_KINDS:
+        return _RATING_PRIMITIVE_DTYPES[kind]
+    if kind == "Datetime":
+        time_unit = cast(Literal["ms", "us", "ns"], descriptor["timeUnit"])
+        time_zone = descriptor["timeZone"]
+        assert time_zone is None or isinstance(time_zone, str)
+        return pl.Datetime(time_unit, time_zone)
+    if kind == "Duration":
+        time_unit = cast(Literal["ms", "us", "ns"], descriptor["timeUnit"])
+        return pl.Duration(time_unit)
+    if kind == "Decimal":
+        precision = descriptor["precision"]
+        scale = descriptor["scale"]
+        assert precision is None or isinstance(precision, int)
+        assert isinstance(scale, int)
+        return pl.Decimal(precision, scale)
+
+    assert kind == "Enum"
+    categories = descriptor["categories"]
+    assert isinstance(categories, list)
+    return pl.Enum(categories)
+
+
 def _duration_key_to_physical(value: str, time_unit: str) -> int:
     """Parse Polars' ISO-8601 duration display into an exact physical value."""
     match = _DURATION_KEY_RE.fullmatch(value)
@@ -526,26 +563,60 @@ def _coerce_rating_lookup_expr(
 
 def normalise_rating_key(
     value: Any,
-    dtype: pl.DataType | None = None,
+    dtype: pl.DataType,
 ) -> str | None:
     """Canonicalise one scalar through the runtime's exact typed key path.
 
     Supplying the originating dtype is mandatory at persistence and trace
     boundaries, where Python/JSON may otherwise widen a Float32 or erase
-    categorical and temporal type information.  The optional inference path
-    remains for callers whose Python scalar is itself the source of truth.
+    categorical and temporal type information.
     """
-    raw = pl.DataFrame({"__haute_rating_key__": [value]})
-    source_dtype = raw.schema["__haute_rating_key__"]
-    resolved_dtype = dtype if dtype is not None else source_dtype
-    typed = raw.select(
-        _coerce_rating_lookup_expr(
-            "__haute_rating_key__",
-            source_dtype,
-            resolved_dtype,
+    rating_dtype_descriptor(dtype)
+    raw = pl.Series("__haute_rating_key__", [value])
+    source_dtype = raw.dtype
+
+    # This is the eager scalar equivalent of _coerce_rating_lookup_expr.
+    # Keep the expression implementation as the engine oracle for frame
+    # operations; the scalar path must merely apply those same branches.
+    if dtype == pl.Null:
+        typed = pl.Series(raw.name, [None], dtype=pl.Null)
+    elif dtype == pl.Boolean and source_dtype == pl.String:
+        typed = raw.replace_strict({"true": True, "false": False}, return_dtype=pl.Boolean)
+    elif dtype == pl.Time and source_dtype == pl.String:
+        typed = raw.str.to_time(strict=True)
+    elif isinstance(dtype, pl.Datetime) and source_dtype == pl.String:
+        typed = raw.str.to_datetime(
+            time_unit=dtype.time_unit,
+            time_zone=dtype.time_zone,
+            strict=True,
         )
-    )
-    key = typed.select(_rating_key_expr("__haute_rating_key__", resolved_dtype)).item()
+    elif isinstance(dtype, pl.Duration) and source_dtype == pl.String:
+        typed = raw.map_elements(
+            lambda item: _duration_key_to_physical(item, dtype.time_unit),
+            return_dtype=pl.Int64,
+        ).cast(dtype)
+    else:
+        typed = raw.cast(dtype, strict=True)
+
+    # This is the eager scalar equivalent of _rating_key_expr.
+    if dtype in (pl.Float32, pl.Float64):
+        item = typed.item()
+        if item is None:
+            return None
+        is_int_like = (
+            typed.is_finite().item()
+            and item == typed.round().item()
+            and _INT64_MIN <= item < _INT64_MAX_EXCL
+        )
+        key = (
+            typed.cast(pl.Int64, strict=False).cast(pl.String).item()
+            if is_int_like
+            else typed.cast(pl.String).item()
+        )
+    elif dtype == pl.Time or isinstance(dtype, pl.Duration):
+        key = typed.dt.to_string().item()
+    else:
+        key = typed.cast(pl.String).item()
     return None if key is None else str(key)
 
 
@@ -617,7 +688,11 @@ def _validate_supported_factor_dtypes(
     for factor, dtype in original_dtypes.items():
         if _is_unsupported_factor_dtype(dtype):
             raise ValueError(
-                f"Rating table {table_label!r} factor {factor!r} has unsupported dtype {dtype}"
+                f"Rating table {table_label!r} factor {factor!r} has unsupported dtype {dtype}. "
+                "Supported scalar dtypes are Int8, Int16, Int32, Int64, Int128, "
+                "UInt8, UInt16, UInt32, UInt64, Float32, Float64, Boolean, String, "
+                "Categorical, Enum, Date, Time, Datetime, Duration, Decimal, and Null. "
+                "Cast this factor upstream to a supported scalar dtype."
             )
 
 

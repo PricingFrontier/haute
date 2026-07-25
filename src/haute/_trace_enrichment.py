@@ -139,10 +139,17 @@ def _enrich_single_table(
     # input key skips entry matching entirely.
     matched_entry: dict[str, Any] | None = None
     if entries:
+        resolved_dtypes = factor_input_dtypes or {}
+        missing_dtypes = [factor for factor in factors if resolved_dtypes.get(factor) is None]
+        if missing_dtypes:
+            raise ValueError(
+                "Cannot normalise rating lookup keys without an originating dtype for "
+                f"factor(s) {missing_dtypes!r}"
+            )
         input_keys = {
             factor: normalise_rating_key(
                 input_row.get(factor),
-                (factor_input_dtypes or {}).get(factor),
+                resolved_dtypes[factor],
             )
             for factor in factors
         }
@@ -153,7 +160,7 @@ def _enrich_single_table(
                 entry_keys = {
                     factor: normalise_rating_key(
                         entry.get(factor),
-                        (factor_input_dtypes or {}).get(factor),
+                        resolved_dtypes[factor],
                     )
                     for factor in factors
                 }

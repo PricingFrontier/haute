@@ -360,14 +360,15 @@ value (e.g. a Float64 `25.0` becomes the label `"25.0"`), while the runtime rati
 component's own apply path canonicalises keys via
 `normalise_rating_key(value, originating_dtype)` ([rating](../rating/high-level.md)). To make a
 saved ratebook artifact's factor tables actually joinable at apply time,
-`_canonical_ratebook_table_level` tries every combination of verbatim vs.
-float-collapsed candidate forms for each component of a (possibly composite) level label,
-against the counted level keys actually observed in the solved frame, and keeps the combination
-that collapses the *fewest* components — proven (per the function's docstring) to always be
-unique, since a canonical key never itself contains a float's verbatim `"25.0"`-shaped form. A
-level that matches zero candidate combinations, or — which the code treats as structurally
-impossible outside of stale/mismatched inputs — ties on the fewest-collapsed-components rule,
-raises `ValueError` rather than guessing.
+`_canonical_ratebook_table_level` receives the exact ordered factor dtypes read from the same
+persisted solved-factor schema as the counted levels. It splits a composite solver label into
+components, coerces each component directly through its corresponding originating dtype, joins
+the canonical components, and requires that exact key to exist in the counted keyset. In
+particular, a widened Python label such as a Float32 source value emitted as
+`"0.10000000149011612"` is reconstructed through Float32 and saves as `"0.1"`. The serializer
+does not infer Float64 from the Python value and does not search verbatim/collapsed candidates
+or apply a minimum-collapse tie-break. A level with the wrong component count or no exact
+counted key raises `ValueError` rather than guessing.
 
 `_ratebook_factor_level_counts` computes the per-level quote-exposure counts this
 canonicalisation is checked against, and deliberately raises rather than merging if two distinct
@@ -377,8 +378,10 @@ drop a solved rate.
 `_ratebook_factor_dtypes_from_artifact` reads the solved factor parquet schema and stores
 `factor_dtypes[table]` as an ordered list of
 `{"column": <name>, "dtype": <rating dtype descriptor>}` records in the job result and every
-saved/logged artifact. `_apply_ratebook` requires one descriptor record per join factor,
-validates the order/name and exact descriptor against its once-resolved apply schema, and raises
+saved/logged artifact. The same descriptor records are required by factor-table serialization
+and converted back to exact Polars dtypes before canonicalising solver labels.
+`_apply_ratebook` requires one descriptor record per join factor, validates the order/name and
+exact descriptor against its once-resolved apply schema, and raises
 `RatingFactorDtypeContractError` before lookup construction when metadata is absent or differs.
 It does not coerce an apply column to the saved dtype and does not run legacy artifacts through
 the neutral-miss path.

@@ -21,9 +21,9 @@ Canonicalisation contract (documented here, pinned below):
   cast formatting.
 * String keys are verbatim labels — never collapsed ("25.0" != "25").
 * Null keys never match (left-join semantics, ``join_nulls=False``).
-* The Python mirror is exact for Int*/Float64/Utf8/Boolean values; Float32
-  columns lose their dtype at the trace JSON boundary, so non-integer
-  Float32 keys are outside the enrichment-agreement guarantee.
+* The Python mirror requires the originating dtype and is exact for every
+  supported factor dtype, including Float32 values widened at Python/JSON
+  boundaries.
 """
 
 from __future__ import annotations
@@ -185,11 +185,9 @@ class TestEngineKeyNormalisation:
         assert out["f"].to_list() == [2.0]
         assert out["age"].dtype == pl.Float32
 
-    def test_float32_plain_decimal_canonicalises_through_float64(self) -> None:
-        """Float32 columns widen to Float64 before formatting, so the engine
-        key equals the Python mirror (which only ever sees the f64-promoted
-        value across the trace/JSON boundary).  A plain f32 decimal therefore
-        matches an entry authored at its Float64 promotion."""
+    def test_float32_promoted_decimal_entry_coerces_back_to_native_width(self) -> None:
+        """A widened Python/JSON decimal is reconstructed through Float32
+        before both lookup sides format their native-width key."""
         promoted = str(pl.Series("s", [0.1], dtype=pl.Float32).cast(pl.Float64)[0])
         assert promoted == "0.10000000149011612"
         table = {
@@ -281,12 +279,13 @@ def _expr_canonical(value: Any) -> str | None:
 class TestNormaliseRatingKeyMirrorsEngine:
     @pytest.mark.parametrize(("value", "expected"), _CANONICAL_GRID)
     def test_known_canonical_forms(self, value: Any, expected: str | None) -> None:
-        assert normalise_rating_key(value) == expected
+        dtype = pl.Series("k", [value]).dtype
+        assert normalise_rating_key(value, dtype) == expected
         assert _expr_canonical(value) == expected
 
     @pytest.mark.parametrize("value", _DELEGATED_FLOATS)
     def test_delegated_floats_agree_with_engine(self, value: float) -> None:
-        mirror = normalise_rating_key(value)
+        mirror = normalise_rating_key(value, pl.Float64)
         engine = _expr_canonical(value)
         assert mirror == engine
         if math.isnan(value):
@@ -295,8 +294,8 @@ class TestNormaliseRatingKeyMirrorsEngine:
     def test_int_like_collapse_boundary_is_int64_range(self) -> None:
         inside = 9223372036854774784.0  # largest float64 strictly below 2^63
         outside = 2.0**63
-        assert normalise_rating_key(inside) == "9223372036854774784"
-        assert normalise_rating_key(outside) != str(int(outside))
+        assert normalise_rating_key(inside, pl.Float64) == "9223372036854774784"
+        assert normalise_rating_key(outside, pl.Float64) != str(int(outside))
 
 
 def _expr_canonical_dtype(value: Any, dtype: pl.DataType) -> str | None:
@@ -332,7 +331,7 @@ class TestFloat32AndCrossDtypeAgreement:
     ) -> None:
         series = pl.Series("k", [value], dtype=dtype)
         engine = _expr_canonical_dtype(value, dtype)
-        mirror = normalise_rating_key(series.item())
+        mirror = normalise_rating_key(series.item(), dtype)
         assert engine == mirror
 
     @pytest.mark.parametrize("save_dtype", _DTYPES)
@@ -343,7 +342,7 @@ class TestFloat32AndCrossDtypeAgreement:
         """25 is representable in all four dtypes, so the canonical key agrees
         and the lookup matches regardless of save/apply dtype drift."""
         save_series = pl.Series("age", [25], dtype=save_dtype)
-        entry_key = normalise_rating_key(save_series.item())
+        entry_key = normalise_rating_key(save_series.item(), save_dtype)
         table = {
             "name": "X",
             "factors": ["age"],
@@ -366,7 +365,10 @@ class TestFloat32AndCrossDtypeAgreement:
         lookup either matches (keys agree) or raises RatingTableMissError —
         it must never silently return a neutral/None value."""
         value = 0.123456789
-        entry_key = normalise_rating_key(pl.Series("s", [value], dtype=save_dtype).item())
+        entry_key = normalise_rating_key(
+            pl.Series("s", [value], dtype=save_dtype).item(),
+            save_dtype,
+        )
         table = {
             "name": "X",
             "factors": ["s"],
@@ -834,7 +836,12 @@ def assert_engine_and_enrichment_agree(
     for index in range(out.height):
         input_row = _jsonify_row(frame.row(index, named=True))
         output_row = _jsonify_row(out.row(index, named=True))
-        detail = _enrich_single_table(table, input_row, output_row)
+        detail = _enrich_single_table(
+            table,
+            input_row,
+            output_row,
+            factor_input_dtypes={factor: frame.schema[factor] for factor in table["factors"]},
+        )
         details.append(detail)
         context = f"row {index}: input={input_row}, detail status={detail['status']!r}"
         if engine_matched[index]:

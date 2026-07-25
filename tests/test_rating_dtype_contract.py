@@ -13,12 +13,14 @@ from haute._rating import (
     _rating_key_expr,
     normalise_rating_key,
     rating_dtype_descriptor,
+    rating_dtype_from_descriptor,
 )
 from haute._trace_enrichment import _enrich_single_table
 from haute.errors import RatingFactorDtypeContractError
 from haute.routes._optimiser_service import (
     _ratebook_factor_dtypes,
     _ratebook_factor_level_counts,
+    _serialise_ratebook_factor_tables,
 )
 from tests.fixtures.rating_key_cases import RATING_KEY_CASES, RatingKeyCase
 
@@ -30,6 +32,17 @@ def test_python_key_uses_the_exact_engine_expression(case: RatingKeyCase) -> Non
 
     assert normalise_rating_key(series.item(), case.dtype) == engine_key
     assert rating_dtype_descriptor(case.dtype) == case.descriptor
+    assert rating_dtype_from_descriptor(case.descriptor) == case.dtype
+
+
+def test_python_key_requires_an_explicit_originating_dtype() -> None:
+    with pytest.raises(TypeError):
+        normalise_rating_key(0.1)  # type: ignore[call-arg]
+
+
+def test_rating_dtype_from_descriptor_rejects_noncanonical_shape() -> None:
+    with pytest.raises(ValueError, match="invalid rating factor dtype descriptor"):
+        rating_dtype_from_descriptor({"kind": "Float32", "extra": True})
 
 
 @pytest.mark.parametrize("case", RATING_KEY_CASES, ids=lambda case: case.name)
@@ -78,6 +91,22 @@ def test_trace_uses_the_same_originating_dtype(case: RatingKeyCase) -> None:
     )
 
     assert detail["status"] == ("matched" if case.matches else "no_match")
+
+
+def test_trace_refuses_to_infer_a_rating_factor_dtype() -> None:
+    table = {
+        "name": "float32",
+        "factors": ["factor"],
+        "outputColumn": "rate",
+        "entries": [{"factor": "0.1", "value": 2.0}],
+    }
+
+    with pytest.raises(ValueError, match=r"originating dtype.*factor"):
+        _enrich_single_table(
+            table,
+            {"factor": pl.Series([0.1], dtype=pl.Float32).item()},
+            {"rate": 2.0},
+        )
 
 
 @pytest.mark.parametrize("case", RATING_KEY_CASES, ids=lambda case: case.name)
@@ -219,6 +248,71 @@ def test_ratebook_save_metadata_and_level_keys_reuse_shared_matrix() -> None:
     }
 
 
+def test_ratebook_serialisation_reconstructs_widened_float32_solver_level() -> None:
+    solver_level = str(pl.Series([0.1], dtype=pl.Float32).item())
+    assert solver_level == "0.10000000149011612"
+
+    serialised = _serialise_ratebook_factor_tables(
+        {"factor": {solver_level: 1.25}},
+        {"factor": {"0.1": 3}},
+        {},
+        {
+            "factor": [
+                {
+                    "column": "factor",
+                    "dtype": {"kind": "Float32"},
+                }
+            ]
+        },
+    )
+
+    assert serialised == {
+        "factor": [
+            {
+                "__factor_group__": "0.1",
+                "optimal_scenario_value": 1.25,
+                "quote_count": 3,
+            }
+        ]
+    }
+
+
+def test_ratebook_serialisation_uses_each_composite_component_dtype() -> None:
+    widened_float32 = str(pl.Series([0.1], dtype=pl.Float32).item())
+    solver_level = f"{widened_float32}\x1f25.0"
+    canonical_level = "0.1\x1f25.0"
+
+    serialised = _serialise_ratebook_factor_tables(
+        {"float_factor:string_factor": {solver_level: 0.75}},
+        {"float_factor:string_factor": {canonical_level: 2}},
+        {},
+        {
+            "float_factor:string_factor": [
+                {
+                    "column": "float_factor",
+                    "dtype": {"kind": "Float32"},
+                },
+                {
+                    "column": "string_factor",
+                    "dtype": {"kind": "String"},
+                },
+            ]
+        },
+    )
+
+    assert serialised["float_factor:string_factor"][0]["__factor_group__"] == canonical_level
+
+
+def test_ratebook_serialisation_requires_dtype_metadata_for_each_table() -> None:
+    with pytest.raises(ValueError, match="factor_dtypes"):
+        _serialise_ratebook_factor_tables(
+            {"factor": {"0.1": 1.0}},
+            {"factor": {"0.1": 1}},
+            {},
+            {},
+        )
+
+
 @pytest.mark.parametrize(
     ("dtype", "value"),
     [
@@ -253,5 +347,8 @@ def test_unsupported_factor_dtype_fails_before_lookup(dtype: pl.DataType) -> Non
         "entries": [{"factor": value, "value": 2.0}],
     }
 
-    with pytest.raises(ValueError, match=r"unsupported.*factor.*dtype"):
+    with pytest.raises(
+        ValueError,
+        match=r"unsupported.*factor.*dtype.*Supported scalar dtypes.*Cast.*upstream",
+    ):
         _apply_rating_table(frame.lazy(), table)

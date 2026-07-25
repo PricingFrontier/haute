@@ -149,7 +149,16 @@ class TestMirrorAgreesWithEngine:
         """Documents the divergence the normalise_rating_key switch removes:
         plain str(25.0) is "25.0" and would have missed the "25" level."""
         entries = _table("age", {"25": 2.0})
-        assert _match_ratebook_entry(entries, ["age"], [25.0], "age") is not None
+        assert (
+            _match_ratebook_entry(
+                entries,
+                ["age"],
+                [25.0],
+                "age",
+                input_dtypes=[pl.Float64],
+            )
+            is not None
+        )
         assert str(25.0) != "25"  # the old comparison basis
 
     def test_int_frame_column_vs_string_levels(self) -> None:
@@ -199,7 +208,11 @@ class TestMirrorAgreesWithEngine:
         out = _apply_ratebook(frame.lazy(), _artifact({"channel:age_band": entries}), "", "__v__")
         engine_value = out.collect()["channel:age_band_optimised_factor"][0]
         matched = _match_ratebook_entry(
-            entries, ["channel", "age_band"], ["online", "18-25"], "channel:age_band"
+            entries,
+            ["channel", "age_band"],
+            ["online", "18-25"],
+            "channel:age_band",
+            input_dtypes=[pl.String, pl.String],
         )
         assert matched is not None
         assert engine_value == pytest.approx(1.20)
@@ -297,10 +310,15 @@ def real_ratebook_artifact_payload(real_ratebook_solve: dict[str, Any]) -> dict[
     counts = _ratebook_factor_level_counts(
         real_ratebook_solve["factors_df"], real_ratebook_solve["factor_columns"]
     )
-    serialised = _serialise_ratebook_factor_tables(solve_result.factor_tables, counts, {})
     factor_dtypes = _ratebook_factor_dtypes(
         real_ratebook_solve["factors_df"],
         real_ratebook_solve["factor_columns"],
+    )
+    serialised = _serialise_ratebook_factor_tables(
+        solve_result.factor_tables,
+        counts,
+        {},
+        factor_dtypes,
     )
     job = {
         "node_label": "Ratebook Opt",
@@ -517,6 +535,7 @@ class TestFloatEmittedLevelsCanonicalisedAtSave:
 
     def test_float64_levels_round_trip_solve_save_apply_with_zero_misses(self) -> None:
         from haute.routes._optimiser_service import (
+            _ratebook_factor_dtypes,
             _ratebook_factor_level_counts,
             _serialise_ratebook_factor_tables,
         )
@@ -527,7 +546,13 @@ class TestFloatEmittedLevelsCanonicalisedAtSave:
         assert set(solve_result.factor_tables["age"]) == {"25.0", "30.5"}
 
         counts = _ratebook_factor_level_counts(factors_df, [["age"]])
-        serialised = _serialise_ratebook_factor_tables(solve_result.factor_tables, counts, {})
+        factor_dtypes = _ratebook_factor_dtypes(factors_df, [["age"]])
+        serialised = _serialise_ratebook_factor_tables(
+            solve_result.factor_tables,
+            counts,
+            {},
+            factor_dtypes,
+        )
 
         # Save-time canonicalisation: int-like float labels collapse to the
         # canonical digit string; non-integer floats keep their digits.
@@ -555,11 +580,30 @@ class TestFloatEmittedLevelsCanonicalisedAtSave:
         entries = serialised["age"]
         assert _engine_matches(apply_frame, "age", entries) == [True, True]
         assert _mirror_matches(apply_frame, "age", entries) == [True, True]
-        assert _match_ratebook_entry(entries, ["age"], [25.0], "age") is not None
-        assert _match_ratebook_entry(entries, ["age"], [30.5], "age") is not None
+        assert (
+            _match_ratebook_entry(
+                entries,
+                ["age"],
+                [25.0],
+                "age",
+                input_dtypes=[pl.Float64],
+            )
+            is not None
+        )
+        assert (
+            _match_ratebook_entry(
+                entries,
+                ["age"],
+                [30.5],
+                "age",
+                input_dtypes=[pl.Float64],
+            )
+            is not None
+        )
 
     def test_composite_float_component_round_trips_with_zero_misses(self) -> None:
         from haute.routes._optimiser_service import (
+            _ratebook_factor_dtypes,
             _ratebook_factor_level_counts,
             _serialise_ratebook_factor_tables,
         )
@@ -573,7 +617,13 @@ class TestFloatEmittedLevelsCanonicalisedAtSave:
         }
 
         counts = _ratebook_factor_level_counts(factors_df, [["channel", "age"]])
-        serialised = _serialise_ratebook_factor_tables(solve_result.factor_tables, counts, {})
+        factor_dtypes = _ratebook_factor_dtypes(factors_df, [["channel", "age"]])
+        serialised = _serialise_ratebook_factor_tables(
+            solve_result.factor_tables,
+            counts,
+            {},
+            factor_dtypes,
+        )
 
         # Composite levels canonicalise per component: the string component
         # stays verbatim, the int-like float component collapses.

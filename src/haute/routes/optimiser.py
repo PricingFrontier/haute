@@ -783,6 +783,7 @@ def _materialised_ratebook_result_dict(
                 getattr(solve_result, "factor_tables", None),
                 factor_level_counts,
                 factor_level_order,
+                factor_dtypes,
             ),
             "factor_dtypes": factor_dtypes,
             "history": None,

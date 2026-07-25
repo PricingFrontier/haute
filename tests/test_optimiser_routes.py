@@ -11376,6 +11376,10 @@ class TestSolveRatebookUnit:
             {"age": {"25.0": 1.1, "30.5": 0.9}, "region": {"young": 1.2}},
             {"age": {"25": 3, "30.5": 2}, "region": {"young": 4}},
             {},
+            {
+                "age": [{"column": "age", "dtype": {"kind": "Float64"}}],
+                "region": [{"column": "region", "dtype": {"kind": "String"}}],
+            },
         )
 
         assert serialised["age"] == [
@@ -11394,6 +11398,7 @@ class TestSolveRatebookUnit:
             {"age": {"25": 1.1}},
             {"age": {"25": 3}},
             {},
+            {"age": [{"column": "age", "dtype": {"kind": "Float64"}}]},
         )
 
         assert serialised["age"] == [
@@ -11410,6 +11415,7 @@ class TestSolveRatebookUnit:
             {"age": {"25.0": 1.1}},
             {"age": {"25.0": 3}},
             {},
+            {"age": [{"column": "age", "dtype": {"kind": "String"}}]},
         )
 
         assert serialised["age"] == [
@@ -11426,6 +11432,12 @@ class TestSolveRatebookUnit:
             {"channel:age": {"online\x1f25.0": 1.1, "phone\x1f30.5": 0.9}},
             {"channel:age": {"online\x1f25": 2, "phone\x1f30.5": 1}},
             {},
+            {
+                "channel:age": [
+                    {"column": "channel", "dtype": {"kind": "String"}},
+                    {"column": "age", "dtype": {"kind": "Float64"}},
+                ]
+            },
         )
 
         assert [row["__factor_group__"] for row in serialised["channel:age"]] == [
@@ -11434,38 +11446,63 @@ class TestSolveRatebookUnit:
         ]
         assert [row["quote_count"] for row in serialised["channel:age"]] == [2, 1]
 
-    def test_serialise_ratebook_factor_tables_prefers_fewest_collapsed_components(self):
-        """3b.10: the counts can legitimately contain a NEIGHBOURING level
-        that also looks like a canonicalisation of the emitted label (a Utf8
-        column holding both "25.0" and "25" beside a Float64 column).  The
-        true key collapses only the float-sourced component — the candidate
-        collapsing the fewest components wins."""
+    def test_serialise_ratebook_factor_tables_uses_ordered_component_dtypes(self):
+        """3b.10: neighbouring counted keys cannot confuse canonicalisation;
+        each solver component is reconstructed through its exact dtype."""
         from haute.routes._optimiser_service import _serialise_ratebook_factor_tables
 
         serialised = _serialise_ratebook_factor_tables(
             {"code:age": {"25.0\x1f7.0": 1.1}},
             {"code:age": {"25.0\x1f7": 2, "25\x1f7": 5}},
             {},
+            {
+                "code:age": [
+                    {"column": "code", "dtype": {"kind": "String"}},
+                    {"column": "age", "dtype": {"kind": "Float64"}},
+                ]
+            },
         )
 
         assert serialised["code:age"] == [
             {"__factor_group__": "25.0\x1f7", "optimal_scenario_value": 1.1, "quote_count": 2},
         ]
 
-    def test_serialise_ratebook_factor_tables_rejects_ambiguous_canonicalisation(self):
-        """3b.10: if the counts match two equally-collapsed candidates and
-        neither is the verbatim label (impossible for counts built from a
-        single-dtype frame, so only hand-built/stale counts reach this), the
-        serialiser must fail loudly instead of guessing."""
+    @pytest.mark.parametrize(
+        ("dtypes", "expected"),
+        [
+            (
+                [
+                    {"column": "code", "dtype": {"kind": "Float64"}},
+                    {"column": "age", "dtype": {"kind": "String"}},
+                ],
+                "25\x1f7.0",
+            ),
+            (
+                [
+                    {"column": "code", "dtype": {"kind": "String"}},
+                    {"column": "age", "dtype": {"kind": "Float64"}},
+                ],
+                "25.0\x1f7",
+            ),
+        ],
+    )
+    def test_serialise_ratebook_factor_tables_has_no_candidate_ambiguity(
+        self,
+        dtypes,
+        expected,
+    ):
+        """Exact component dtypes select one key even when both old
+        heuristic candidates exist in the counts."""
         from haute.routes._optimiser_service import _serialise_ratebook_factor_tables
 
-        with pytest.raises(ValueError, match="ambiguous") as exc_info:
-            _serialise_ratebook_factor_tables(
-                {"code:age": {"25.0\x1f7.0": 1.1}},
-                {"code:age": {"25\x1f7.0": 1, "25.0\x1f7": 1}},
-                {},
-            )
-        assert "code:age" in str(exc_info.value)
+        serialised = _serialise_ratebook_factor_tables(
+            {"code:age": {"25.0\x1f7.0": 1.1}},
+            {"code:age": {"25\x1f7.0": 1, "25.0\x1f7": 1}},
+            {},
+            {"code:age": dtypes},
+        )
+
+        assert serialised["code:age"][0]["__factor_group__"] == expected
 
     def test_serialise_ratebook_factor_tables_rejects_colliding_levels(self):
         """3b.10 collision rule: a table carrying both "25" and "25.0"
@@ -11479,6 +11516,7 @@ class TestSolveRatebookUnit:
                 {"age": {"25": 1.1, "25.0": 1.2}},
                 {"age": {"25": 3}},
                 {},
+                {"age": [{"column": "age", "dtype": {"kind": "Float64"}}]},
             )
         detail = str(exc_info.value)
         assert "'25'" in detail
@@ -11496,6 +11534,7 @@ class TestSolveRatebookUnit:
                 {"age": {"99.0": 1.0}},
                 {"age": {"25": 1}},
                 {},
+                {"age": [{"column": "age", "dtype": {"kind": "Float64"}}]},
             )
 
     def test_serialise_ratebook_factor_tables_canonicalises_value_typed_levels(self):
@@ -11508,6 +11547,7 @@ class TestSolveRatebookUnit:
             {"age": {25.0: 1.1}},
             {"age": {"25": 3}},
             {},
+            {"age": [{"column": "age", "dtype": {"kind": "Float64"}}]},
         )
         assert serialised["age"] == [
             {"__factor_group__": "25", "optimal_scenario_value": 1.1, "quote_count": 3},
@@ -11518,6 +11558,7 @@ class TestSolveRatebookUnit:
                 {"age": {99.0: 1.0}},
                 {"age": {"25": 3}},
                 {},
+                {"age": [{"column": "age", "dtype": {"kind": "Float64"}}]},
             )
 
     def test_solve_ratebook_rejects_null_factor_values_before_solver(self):

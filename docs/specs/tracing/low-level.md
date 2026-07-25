@@ -287,7 +287,10 @@ one step's unforeseen failure cannot abort the whole enrichment pass) and:
    across frames with a different dtype must resolve in the *consumed* frame's
    dtype, not by dict-iteration order over frames the node never sees. Rating
    entry and input-row keys are both canonicalised through that exact dtype via
-   `normalise_rating_key(value, dtype)`.
+   `normalise_rating_key(value, dtype)`. A real rating table with entries cannot
+   fall back to Python-scalar dtype inference: missing factor dtype resolution
+   raises inside enrichment and is surfaced through the existing structured
+   node-enrichment error boundary.
 7. Classifies `step.row_lineage_type` via `detect_row_lineage_type()`, using the
    node type first (source nodes → `"created"`, `liveSwitch` → `"selected"`,
    `edgeJoin` → `"joined"` — checked before any code-sniffing because a join's

@@ -604,7 +604,7 @@ def _match_ratebook_entry(
     input_values: list[Any],
     table_name: str,
     *,
-    input_dtypes: list[pl.DataType] | None = None,
+    input_dtypes: list[pl.DataType],
 ) -> dict[str, Any] | None:
     """Mirror the engine's ratebook lookup for one input row.
 
@@ -621,34 +621,22 @@ def _match_ratebook_entry(
     entry at runtime; walking ``entries`` in reverse mirrors that — see
     ``test_ratebook_match_entry_uses_last_duplicate_to_match_runtime``.
     """
-    if input_dtypes is not None and len(input_dtypes) != len(join_columns):
+    if len(input_dtypes) != len(join_columns):
         raise OptimiserApplyTraceError(
             f"ratebook factor table {table_name!r} has misaligned dtype metadata"
         )
     input_keys = [
-        normalise_rating_key(
-            value,
-            input_dtypes[index] if input_dtypes is not None else None,
-        )
-        for index, value in enumerate(input_values)
+        normalise_rating_key(value, input_dtypes[index]) for index, value in enumerate(input_values)
     ]
     if any(key is None for key in input_keys):
         return None
     for entry in reversed(entries):
         level = entry.get("__factor_group__")
         if len(join_columns) == 1:
-            entry_keys = [
-                normalise_rating_key(
-                    level,
-                    input_dtypes[0] if input_dtypes is not None else None,
-                )
-            ]
+            entry_keys = [normalise_rating_key(level, input_dtypes[0])]
         else:
             entry_keys = [
-                normalise_rating_key(
-                    part,
-                    input_dtypes[index] if input_dtypes is not None else None,
-                )
+                normalise_rating_key(part, input_dtypes[index])
                 for index, part in enumerate(_split_ratebook_level(level, join_columns, table_name))
             ]
         if entry_keys == input_keys:

@@ -30,7 +30,9 @@ In scope:
 - The dtype-faithful canonical string form of a rating-table factor key
   (`normalise_rating_key(value, dtype)`) and its Polars-expression twin, shared
   with trace enrichment and the optimiser's ratebook save/apply path so every
-  consumer agrees on what a lookup match is.
+  consumer agrees on what a lookup match is. The originating dtype argument is
+  mandatory: a Python scalar is never treated as sufficient evidence of a
+  Float32, categorical, decimal, or temporal source dtype.
 
 Out of scope (owned by neighbouring components):
 
@@ -137,13 +139,15 @@ Out of scope (owned by neighbouring components):
   top-level `factors` value normalises to an empty no-op list.
 - **One dtype-faithful key form, shared everywhere.**
   `normalise_rating_key(value, dtype)` evaluates the same `_rating_key_expr`
-  primitive that the frame lookup uses. Trace enrichment supplies the exact
-  consumed parent-frame dtype. Saved ratebook artifacts carry an ordered
-  `factor_dtypes` descriptor for every factor table, and optimiser apply
-  rejects a missing descriptor or save/apply dtype mismatch before constructing
-  a lookup. This prevents a dtype boundary from becoming an accepted neutral
-  miss. Agreement is pinned by one real-Polars fixture matrix shared by runtime,
-  trace, and optimiser tests.
+  contract that the frame lookup uses, but does so with an eager scalar/Series
+  path rather than constructing and evaluating a one-row DataFrame expression
+  for every value. Every caller must supply the originating dtype; there is no
+  inference default. Trace enrichment supplies the exact consumed parent-frame
+  dtype. Saved ratebook artifacts carry an ordered `factor_dtypes` descriptor
+  for every factor table, and optimiser save/apply rejects missing metadata or
+  a save/apply dtype mismatch before constructing a lookup. This prevents a
+  dtype boundary from becoming an accepted neutral miss. Agreement is pinned by
+  one real-Polars fixture matrix shared by runtime, trace, and optimiser tests.
 - **Lossless canonical rating sidecars.** Rating-table entries persist as
   ordered row arrays rather than JSON object-key maps. JSON object keys erase
   the distinction between values such as numeric `25.0` and the string label
@@ -223,7 +227,8 @@ Out of scope (owned by neighbouring components):
   raise `ValueError` eagerly, before the frame is touched.
 - **Unsupported factor dtype** (nested/container, binary, object, or unknown
   dtype): raises `ValueError` naming the table, factor, and dtype before lookup
-  construction.
+  construction. The message also names the supported scalar dtype families and
+  tells the user to cast the factor upstream.
 - **Saved ratebook dtype contract missing or mismatched:** raises
   `RatingFactorDtypeContractError(SchemaMismatchError)` before lookup
   construction, identifying the table, factor, saved descriptor (or its
@@ -269,7 +274,13 @@ The completed rating improvements and their evidence are tracked in the
   originating Polars dtype as part of rating-key identity. The differential
   contract covers Float32/64, every signed/unsigned integer width, Boolean,
   String, Categorical/Enum, Decimal, Date, Datetime, Time, Duration, Null,
-  null values, and non-finite floats.
+  null values, and non-finite floats. Scalar key normalisation requires that
+  dtype explicitly; production callers cannot opt into Python-scalar inference.
+- Saved ratebook factor-table labels are canonicalised component-by-component
+  through the exact ordered dtypes read from the solved factor artifact. The
+  serializer does not infer Float64 from widened Python values and does not use
+  a candidate/minimum-collapse heuristic to guess which counted key a solver
+  label represents.
 - Rating sidecars write ordered entry rows as their only canonical shape.
   Legacy nested maps are read-only compatibility input. Canonical output is
   deterministic, and a failed validation occurs before staging a write so the

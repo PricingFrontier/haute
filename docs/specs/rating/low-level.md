@@ -4,7 +4,7 @@
 
 | File | Responsibility |
 |---|---|
-| `src/haute/_rating.py` | Pure-logic frame transforms: banding rule evaluation (`_apply_banding`, `_banding_condition`, `_breakpoints_to_rules`) and the banding-factor loop (`_apply_banding_factors`), rating-table lookup (`_apply_rating_table`), combining (`_combine_rating_columns`, `_combine_rating_output`), dtype descriptors plus the canonical factor-key form (`rating_dtype_descriptor`, `normalise_rating_key`, `_rating_key_expr`), the rating-step loop (`_apply_rating_step_outputs`) and the two generated-code entry points (`apply_banding_from_config`, `apply_rating_step_from_config`). |
+| `src/haute/_rating.py` | Pure-logic frame transforms: banding rule evaluation (`_apply_banding`, `_banding_condition`, `_breakpoints_to_rules`) and the banding-factor loop (`_apply_banding_factors`), rating-table lookup (`_apply_rating_table`), combining (`_combine_rating_columns`, `_combine_rating_output`), exact dtype descriptor round-tripping plus the canonical factor-key form (`rating_dtype_descriptor`, `rating_dtype_from_descriptor`, `normalise_rating_key`, `_rating_key_expr`), the rating-step loop (`_apply_rating_step_outputs`) and the two generated-code entry points (`apply_banding_from_config`, `apply_rating_step_from_config`). |
 | `src/haute/_rating_step_config.py` | Rating-table config normalisation: legacy nested-map → canonical ordered row-array migration (`expand_rating_step_config_from_sidecar`, `compact_rating_step_config_for_sidecar`, `normalise_rating_tables`), canonical row validation, deterministic legacy traversal, and optional `factorDtypes` descriptor validation/preservation. |
 | `src/haute/_banding_config.py` | Banding config normalisation: compact key/value-map ⟷ canonical row-array conversion for `categorical`/`breakpoints` rules (`expand_banding_config_from_sidecar`, `compact_banding_config_for_sidecar`, `normalise_banding_rules`, `normalise_banding_factors`). |
 
@@ -88,8 +88,17 @@
   fanning out the input.
 - **Float width is part of the key contract:** `_rating_key_expr` formats a
   Float32 in Float32 and a Float64 in Float64. The Python mirror reconstructs
-  the scalar through the supplied originating dtype and evaluates that same
-  expression, so JSON/Python widening cannot change the trace key.
+  the scalar through the required originating dtype and applies the same
+  coercion/formatting rules, so JSON/Python widening cannot change the trace
+  key. `normalise_rating_key` has no dtype-inference default; trace,
+  persistence, and optimiser helpers must resolve and pass a concrete dtype
+  before calling it.
+- **Scalar mirror cost is bounded:** `normalise_rating_key` may use eager
+  Polars Series coercion/string formatting to retain exact engine semantics,
+  but must not construct a one-row DataFrame and evaluate multiple expressions
+  per scalar. A representative performance regression compares it with that
+  historical DataFrame-expression reference while the shared dtype matrix
+  remains the semantic oracle.
 - **Int-like float collapse is range-bounded:** `normalise_rating_key`/`_rating_key_expr` only collapse a finite int-like float to its integer digit string when it is inside `[-(2**63), 2**63)` (the `Int64` range), because the cast to `Int64` on the engine side (`strict=False`) is only exact/lossless there. Outside that range (e.g. `1e300`), both sides fall through to Polars' `Utf8` cast instead, deliberately consistently.
 - **`Decimal` factor columns** are strictly cast through the column's declared
   precision/scale before key generation. Equivalent authored forms such as
@@ -127,7 +136,7 @@
 | >1 open-ended breakpoint, or a sole open-ended breakpoint with no bounded anchor, or a duplicate breakpoint boundary | `ValueError` | `_breakpoints_to_rules` | Eagerly |
 | Rating table entries contain NaN/Infinity `value` | `ValueError` | `_apply_rating_table` | Eagerly, before the join |
 | Rating table entries contain a null `value` | `ValueError` | `_apply_rating_table` | Eagerly, before the join |
-| Rating factor has an unsupported nested/binary/object/unknown dtype | `ValueError` | rating dtype validation in `_apply_rating_table` | Eagerly, before the join |
+| Rating factor has an unsupported nested/binary/object/unknown dtype | `ValueError` naming the table/factor/dtype, supported scalar families, and upstream-cast remediation | rating dtype validation in `_apply_rating_table` | Eagerly, before the join |
 | Saved ratebook lacks factor dtype metadata or apply dtype differs | `RatingFactorDtypeContractError` (`SchemaMismatchError`) | `_apply_ratebook` | Eagerly, before lookup construction; public contract adapters map it to HTTP 422/background `contract_error` |
 | Unsupported `onMissing` value | `ValueError` | `_normalise_on_missing` | Eagerly |
 | Unsupported combine `operation` | `ValueError` | `_normalise_combine_operation` | Eagerly, from both `_combine_rating_columns` and `_normalise_combined_outputs` |
@@ -171,6 +180,10 @@ Backend tests live under `tests/` (no dedicated subdirectory for this component)
 - **`tests/performance/test_rating_miss_guard_perf.py`** — representative
   miss-guard workload/evidence matrix and semantic oracle. It records timings
   but imposes no hardware-specific pass/fail latency threshold.
+- **`tests/performance/test_rating_key_normalisation_perf.py`** — representative
+  scalar-key benchmark comparing the production Series path with the historical
+  one-row DataFrame-expression reference, with the shared dtype matrix checked
+  for semantic equivalence before timings are accepted.
 - **`tests/test_rating_miss_fail_loud.py`** — the miss-policy contract: default (`error`) fails loud, no default + no miss stays silent, opt-in `onMissing: "neutral"`, and `_apply_rating_table`'s miss-guard wiring specifically.
 - **`tests/test_trace_banding_lineage.py`** — integration tests asserting a banding-created output continues the same lineage chain as other trace-calculated fields (through prior banding, through a computed upstream input, and for breakpoint-matched boundaries).
 
