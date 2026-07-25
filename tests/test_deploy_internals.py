@@ -3567,6 +3567,107 @@ class TestScoreGraphModelScoreRemap:
         remote_loader.assert_not_called()
 
 
+class TestBundledModelContractInputs:
+    """Tests for deploy-only contract metadata derived from bundled models."""
+
+    @staticmethod
+    def _graph():
+        return _g(
+            {
+                "nodes": [
+                    {
+                        "id": "ms",
+                        "data": {
+                            "label": "ms",
+                            "nodeType": "modelScore",
+                            "config": {
+                                "sourceType": "run",
+                                "run_id": "obsolete-run",
+                                "artifact_path": "model.cbm",
+                                "task": "regression",
+                                "output_column": "pred",
+                            },
+                        },
+                    }
+                ],
+                "edges": [],
+            }
+        )
+
+    def test_unmatched_remap_leaves_graph_unchanged(self):
+        from haute.deploy._scorer import _attach_bundled_model_contract_inputs
+
+        graph = self._graph()
+
+        result = _attach_bundled_model_contract_inputs(
+            graph,
+            {"other__model.cbm": "unused.cbm"},
+            {"ms"},
+        )
+
+        assert result is graph
+
+    @pytest.mark.parametrize(
+        ("feature_names", "offset_column", "message"),
+        [
+            ("x", None, "invalid feature or offset metadata"),
+            (None, None, "non-iterable feature metadata"),
+            (["x", "x"], None, "invalid feature or offset metadata"),
+            (["x"], object(), "invalid feature or offset metadata"),
+        ],
+    )
+    def test_invalid_bundled_metadata_fails_loud(
+        self,
+        feature_names,
+        offset_column,
+        message,
+    ):
+        from haute.deploy._scorer import _attach_bundled_model_contract_inputs
+        from haute.errors import DeployError
+
+        scoring_model = MagicMock(
+            feature_names=feature_names,
+            offset_column=offset_column,
+        )
+
+        with (
+            patch(
+                "haute.deploy._scorer._load_local_model_cached",
+                return_value=scoring_model,
+            ),
+            pytest.raises(DeployError, match=message),
+        ):
+            _attach_bundled_model_contract_inputs(
+                self._graph(),
+                {"ms__model.cbm": "model.cbm"},
+                {"ms"},
+            )
+
+    def test_model_offset_is_included_once_in_deploy_inputs(self):
+        from haute._contracts import _DEPLOY_MODEL_INPUT_COLUMNS_CONFIG_KEY
+        from haute.deploy._scorer import _attach_bundled_model_contract_inputs
+
+        scoring_model = MagicMock(
+            feature_names=["x"],
+            offset_column="exposure",
+        )
+
+        with patch(
+            "haute.deploy._scorer._load_local_model_cached",
+            return_value=scoring_model,
+        ):
+            result = _attach_bundled_model_contract_inputs(
+                self._graph(),
+                {"ms__model.cbm": "model.cbm"},
+                {"ms"},
+            )
+
+        assert result.node_map["ms"].data.config[_DEPLOY_MODEL_INPUT_COLUMNS_CONFIG_KEY] == [
+            "x",
+            "exposure",
+        ]
+
+
 class TestRemapArtifact:
     """Tests for the _remap_artifact helper function."""
 
