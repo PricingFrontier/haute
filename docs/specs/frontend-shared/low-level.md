@@ -33,7 +33,7 @@
 | `frontend/src/panels/ImportsPanel.tsx` | Active pipeline-imports right panel: `PanelShell` plus `CodeEditor`, explanatory always-included imports, and callback-only preamble mutation/close handling. `App.tsx` supplies the graph-store-backed preamble and selects it through `importsOpen`. |
 | `frontend/src/components/SettingsModal.tsx` | Legacy pipeline-imports/preamble editor dialog (custom overlay, not `ModalShell`). It has component tests but no production import or render site; `ImportsPanel` is the active UI. |
 | `frontend/src/components/BackgroundJobPolling.tsx` | Zero-render mount point (`memo`) that only invokes `useBackgroundJobs()`. |
-| `frontend/src/components/NodeSearch.tsx` | Ctrl+K command palette: filters/windows the current React Flow node list, arrow-key navigation, jumps the canvas viewport to the selected node. |
+| `frontend/src/components/NodeSearch.tsx` | Ctrl+K command palette: dynamically imported by `App.tsx` only while open, filters/windows the current React Flow node list, supports arrow-key navigation, and jumps the canvas viewport to the selected node. |
 | `frontend/src/components/BreadcrumbBar.tsx` | Pipeline → submodel navigation trail; renders nothing at stack depth ≤ 1. |
 | `frontend/src/hooks/useClickOutside.ts` | Attaches/detaches a `mousedown` listener that fires `onClose` when the click lands outside `ref`, only while `active`. |
 | `frontend/src/hooks/useDragResize.ts` | Bottom-panel drag-to-resize: DOM-direct mutation while dragging, commits to React state on mouseup. |
@@ -279,6 +279,9 @@ focus is restored to the element that was focused before the modal opened.
   keeps the currently-active result in the accessibility tree (visually
   hidden, off-screen-clipped) even when scrolled out of the rendered
   window, so `aria-activedescendant` always resolves to a real DOM node.
+  `App.tsx` dynamically imports the component and wraps only its conditional
+  render site in `Suspense`; a closed palette therefore contributes no
+  `NodeSearch` code to the initial chunk.
 - **`ModalShell`** guards the zero-focusable-elements case: if
   `querySelectorAll(FOCUSABLE_SELECTOR)` returns nothing, Tab is
   `preventDefault`ed and focus is forced back onto the container itself

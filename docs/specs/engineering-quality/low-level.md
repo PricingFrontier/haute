@@ -143,6 +143,13 @@
    246.2 KiB bundle, retaining less than 1 KiB of headroom while still catching
    accidental eager imports; CI may override it only through the documented
    `HAUTE_BUNDLE_MAX_INITIAL_GZIP_KIB` environment variable.
+   User-triggered surfaces such as the Ctrl+K `NodeSearch` palette remain
+   dynamically imported so their implementation is excluded from that initial
+   chunk. Canvas-assurance screenshots retain the shared 2% pixel-difference
+   ceiling; the narrow mixed-banding assertion selects a Linux-specific
+   baseline in Linux CI because system-font and native-select rasterisation
+   differs stably from the default developer baseline, rather than weakening
+   the assertion for every platform.
 6. Mutation CI calls `scripts/run_mutation_suite.py --phase plan`, executes
    each isolated target/shard, downloads all artifacts, and calls `--phase merge`
    to enforce total survivor budgets. Scheduled performance calls

@@ -25,6 +25,9 @@ const optimiserArtifactPath = resolve(
 )
 const desktopViewport = { width: 1440, height: 900 }
 const narrowViewport = { width: 1024, height: 768 }
+const mixedBandingNarrowSnapshot = process.platform === "linux"
+  ? "mixed-banding-narrow-1024x768-linux.png"
+  : "mixed-banding-narrow-1024x768.png"
 const saveShortcut = process.platform === "darwin" ? "Meta+s" : "Control+s"
 
 type JsonObject = Record<string, unknown>
@@ -128,7 +131,7 @@ test.describe("frontend canvas assurance", () => {
     await page.setViewportSize(narrowViewport)
     await expectCanvasScreenshot(
       bandingPanel,
-      "mixed-banding-narrow-1024x768.png",
+      mixedBandingNarrowSnapshot,
     )
     await page.setViewportSize(desktopViewport)
 

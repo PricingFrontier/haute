@@ -170,8 +170,10 @@ the right-click node menu with roving-tabindex arrow-key navigation.
 `Toolbar` is the app's top chrome: source selector, row-limit/chunk-size
 inputs, undo/redo, timing/memory breakdowns, save (with a "save & commit"
 split-button). `NodeSearch` is the Ctrl+K command palette, windowed to
-render only visible rows for large graphs. `BreadcrumbBar` shows the
-pipeline → submodel navigation stack and is hidden entirely at depth 1.
+render only visible rows for large graphs; the application loads its module
+only when the palette is opened, so this user-triggered surface is not part
+of the initial browser bundle. `BreadcrumbBar` shows the pipeline →
+submodel navigation stack and is hidden entirely at depth 1.
 
 **Reusable controls and style.** The global stylesheet establishes the initial dark canvas and
 semantic tokens that all panels consume; it also owns native-control, scrollbar, and React
