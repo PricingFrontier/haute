@@ -5,8 +5,6 @@ Covers:
         must not corrupt the set.
   - #28 JobStore.update_job is not atomic — all mutation paths must route
         through atomic_update so readers never see a partial state.
-  - #29 git fetch is not locked — concurrent /api/git/status calls must not
-        race on the underlying ``git fetch`` subprocess.
   - #30 Sync I/O blocks the async event loop — a long-running async route
         must not stall a second, lightweight request.
 
@@ -434,87 +432,6 @@ class TestJobStoreAtomicUpdateEnforced:
 
 
 # ---------------------------------------------------------------------------
-# #29 — git fetch not locked
-# ---------------------------------------------------------------------------
-
-
-class TestGitFetchLock:
-    """Concurrent calls to ``get_status`` must serialise the git-fetch
-    subprocess.  Currently ``_fetch_time_lock`` only guards the throttle
-    timestamp — the actual ``_run_git_ok("fetch", ...)`` call runs
-    unprotected, so two threads that both pass the throttle can launch
-    parallel ``git fetch`` subprocesses and race on the local index.
-    """
-
-    def test_concurrent_fetches_are_serialised(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """Two callers that both pass the cooldown window must not run
-        ``git fetch`` concurrently.  We count overlapping fetch invocations
-        via a monkeypatched ``_run_git_ok``; after the fix, the max
-        overlap is 1.
-        """
-        import haute._git as git_mod
-
-        # Cooldown 0 ⇒ every caller is eligible to fetch; clear any keyed state.
-        monkeypatch.setattr(git_mod, "_FETCH_COOLDOWN_SECONDS", 0.0)
-        git_mod._fetch_cooldowns.clear()
-
-        active = 0
-        max_active = 0
-        fetch_count = 0
-        state_lock = threading.Lock()
-
-        def tracked_fetch(*args: str, **kw) -> bool:
-            nonlocal active, max_active, fetch_count
-            with state_lock:
-                active += 1
-                max_active = max(max_active, active)
-                fetch_count += 1
-            try:
-                # Simulate slow fetch so an unserialised impl would race.
-                time.sleep(0.2)
-                return True
-            finally:
-                with state_lock:
-                    active -= 1
-
-        # The fetch now runs through `_fetch_refs` (hardened, timeout-bounded),
-        # serialised by `_fetch_exec_lock`; intercept it to count overlap.
-        monkeypatch.setattr(git_mod, "_fetch_refs", tracked_fetch)
-        # Force the remote-ahead path to exercise the fetch branch (X5: the fetch
-        # is now gated on the resolved canonical remote, not a bare has-remote).
-        monkeypatch.setattr(git_mod, "_canonical_remote", lambda *a, **kw: "origin")
-        monkeypatch.setattr(
-            git_mod,
-            "_get_current_branch",
-            lambda *a, **kw: "pricing/test/branch",
-        )
-        monkeypatch.setattr(git_mod, "_get_default_branch", lambda *a, **kw: "main")
-        monkeypatch.setattr(git_mod, "_get_user_slug", lambda *a, **kw: "test")
-        monkeypatch.setattr(git_mod, "_assert_git_repo", lambda *a, **kw: None)
-
-        barrier = threading.Barrier(4)
-
-        def call_status() -> None:
-            barrier.wait()
-            git_mod.get_status()
-
-        threads = [threading.Thread(target=call_status, daemon=True) for _ in range(4)]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join(timeout=10)
-
-        assert fetch_count >= 2, "test setup broken: expected at least two concurrent fetch calls"
-        assert max_active == 1, (
-            f"#29 requires git fetch to be serialised — observed {max_active} concurrent fetches"
-        )
-
-
-# ---------------------------------------------------------------------------
 # #30 — Sync I/O blocks async event loop
 # ---------------------------------------------------------------------------
 
@@ -537,7 +454,7 @@ class TestAsyncRouteDoesNotBlockEventLoop:
         """Fire two concurrent requests on a single asyncio event loop
         (via ``httpx.AsyncClient`` + ``ASGITransport``).  One hits a
         patched slow ``polars.scan_parquet`` that sleeps ~0.8 s; the
-        other is a fast trivial handler (/api/git/status).  After the
+        other reads a small schema.  After the
         fix, the fast request's round-trip latency (measured from the
         VERY start of the test, not from when the loop unblocks) is
         small because the blocking work was offloaded to a thread pool.

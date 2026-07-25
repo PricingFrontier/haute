@@ -341,6 +341,31 @@ def test_runtime_project_root_scope_accepts_keyword_graph(tmp_path: Path) -> Non
     assert selected_root(graph=graph) == source.parent.resolve()
 
 
+def test_runtime_project_root_scope_uses_first_positional_argument(tmp_path: Path) -> None:
+    source = tmp_path / "external" / "pipeline.py"
+    source.parent.mkdir()
+    graph = PipelineGraph(source_file=str(source))
+    marker = object()
+
+    @runtime_project_root_scoped
+    def selected_root(graph: PipelineGraph, value: object) -> tuple[Path, object]:
+        return current_runtime_project_root(), value
+
+    assert selected_root(graph, marker) == (source.parent.resolve(), marker)
+
+
+def test_runtime_project_root_scoped_preserves_wrapped_metadata() -> None:
+    def selected_root(graph: PipelineGraph) -> Path:
+        """Return the execution-scoped project root."""
+        return current_runtime_project_root()
+
+    decorated = runtime_project_root_scoped(selected_root)
+
+    assert decorated.__name__ == selected_root.__name__
+    assert decorated.__doc__ == selected_root.__doc__
+    assert decorated.__wrapped__ is selected_root
+
+
 def test_runtime_project_root_scope_rejects_non_graph_argument() -> None:
     @runtime_project_root_scoped
     def selected_root(graph: PipelineGraph) -> Path:

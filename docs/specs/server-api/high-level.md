@@ -229,7 +229,7 @@ the deploy-time render path.
   `DispersionEstimateStatusResponse`) are defined in `schemas.py`; the polling/job-
   runner mechanics live in that component's own routers.
 - **[git-integration](../git-integration/high-level.md)** — every `Git*` schema
-  (`GitStatusResponse`, `GitCommitResponse`, `GitGraphResponse`, etc.) is defined in
+  (`GitWorkingBranchResponse`, `GitCommitResponse`, `GitGraphResponse`, etc.) is defined in
   `schemas.py` and returned directly by that component's routes; `_save_pipeline.py` calls
   `haute._git.commit_save` to capture each successful save in the clone's ledger; the file
   watcher's `pause_watcher()` / `watcher_is_paused()` contract (`routes/_helpers.py`) lets

@@ -30,7 +30,6 @@ from haute._git import (
     fast_forward_pair,
     fetch_pair,
     get_identity,
-    get_status,
     is_eligible_working_branch,
     ledger_name,
     list_remotes,
@@ -2118,51 +2117,6 @@ class TestCanonicalRemote:
         _git(repo, "remote", "set-head", "upstream", "main")
         assert _get_default_branch(cwd=repo) == "main"
 
-    def test_status_main_ahead_measured_against_non_origin_remote(
-        self, repo: Path, tmp_path: Path
-    ) -> None:
-        import haute._git as git_mod
-
-        git_mod._fetch_cooldowns.clear()
-        git_mod._get_default_branch_cached.cache_clear()
-        bare = tmp_path / "upstream.git"
-        _git(repo, "init", "--bare", str(bare))
-        _git(repo, "remote", "add", "upstream", str(bare))
-        _git(repo, "push", "upstream", "main")
-        _git(repo, "remote", "set-head", "upstream", "main")
-        # Another clone advances the deploy branch by one commit and pushes it.
-        other = tmp_path / "other"
-        _git(repo, "clone", str(bare), str(other))
-        _git(other, "config", "user.name", "Other Dev")
-        _git(other, "config", "user.email", "other@example.com")
-        # The bare's default HEAD may not be 'main' (init.defaultBranch varies),
-        # so check it out explicitly before advancing it.
-        _git(other, "checkout", "main")
-        (other / "extra.py").write_text("y = 2\n")
-        _git(other, "add", "extra.py")
-        _git(other, "commit", "-m", "remote advance")
-        _git(other, "push", "origin", "main")
-        # HEAD sits on WORKING (forked from the OLD main tip); after the fetch the
-        # canonical-remote baseline must see the deploy branch one ahead — the
-        # hardcoded ``origin/<default>`` read would have reported nothing.
-        status = get_status(cwd=repo)
-        assert status.main_ahead is True
-        assert status.main_ahead_by == 1
-
-    def test_status_main_ahead_false_when_remote_ambiguous(
-        self, repo: Path, tmp_path: Path
-    ) -> None:
-        import haute._git as git_mod
-
-        git_mod._get_default_branch_cached.cache_clear()
-        # Two non-origin remotes ⇒ no canonical baseline ⇒ honest "not ahead"
-        # rather than a wrong count (and no fetch is attempted).
-        _git(repo, "remote", "add", "upstream", str(tmp_path / "u.git"))
-        _git(repo, "remote", "add", "fork", str(tmp_path / "f.git"))
-        status = get_status(cwd=repo)
-        assert status.main_ahead is False
-        assert status.main_ahead_by == 0
-
 
 class TestCreateWorkingBranch:
     """The P5d fork model (S38): create-at-milestone (default), crystallize at a
@@ -2532,7 +2486,6 @@ class TestRemotesAndPush:
         # F6: the two-machine save accident — the remote ledger advances while the
         # working leg stays level. It must surface on the LEDGER leg rather than be
         # structurally invisible (the pre-P7 engine only computed the working leg).
-        import haute._git as git_mod
 
         self._setup_pair(repo)
         bare = self._add_bare_remote(repo, tmp_path)
@@ -2547,8 +2500,8 @@ class TestRemotesAndPush:
         _git(other, "add", "x.txt")
         _git(other, "commit", "-m", "remote save")
         _git(other, "push", "origin", LEDGER)
-        # Let the pair fetch run (the throttle slot may be claimed from the push path).
-        git_mod._fetch_cooldowns.clear()
+        # Refresh is an explicit action; listing remotes reads local refs only.
+        fetch_pair("origin", WORKING, cwd=repo)
         r = next(x for x in list_remotes(repo, cwd=repo).remotes if x.name == "origin")
         assert r.working is not None and r.working.status == "synced"  # working level
         assert r.ledger is not None and r.ledger.status == "behind"  # ledger VISIBLE

@@ -2,11 +2,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 vi.mock("../../api/client", () => ({
   getWorkingBranch: vi.fn(),
+  getWorkingBranches: vi.fn(),
 }))
 
 import useGitStore from "../useGitStore"
-import { getWorkingBranch } from "../../api/client"
-import type { GitWorkingBranchResponse } from "../../api/types"
+import { getWorkingBranch, getWorkingBranches } from "../../api/client"
+import type { GitManagedBranch, GitWorkingBranchResponse } from "../../api/types"
 
 const READY: GitWorkingBranchResponse = {
   working_branch: "dev",
@@ -22,11 +23,17 @@ const READY: GitWorkingBranchResponse = {
 
 describe("useGitStore", () => {
   beforeEach(() => {
-    useGitStore.setState({ status: null, loading: false, modal: null, pendingAction: null })
+    useGitStore.setState({
+      status: null, loading: false, statusError: null, branches: [], branchesLoaded: false,
+      branchesLoading: false, branchesError: null, modal: null, pendingAction: null,
+    })
     vi.clearAllMocks()
   })
   afterEach(() => {
-    useGitStore.setState({ status: null, loading: false, modal: null, pendingAction: null })
+    useGitStore.setState({
+      status: null, loading: false, statusError: null, branches: [], branchesLoaded: false,
+      branchesLoading: false, branchesError: null, modal: null, pendingAction: null,
+    })
   })
 
   it("loadStatus stores the result and returns it", async () => {
@@ -37,12 +44,39 @@ describe("useGitStore", () => {
     expect(useGitStore.getState().loading).toBe(false)
   })
 
-  it("loadStatus swallows errors and leaves status null", async () => {
+  it("loadStatus records an error without discarding the previous good status", async () => {
+    useGitStore.setState({ status: READY })
     vi.mocked(getWorkingBranch).mockRejectedValue(new Error("not a git repo"))
     const result = await useGitStore.getState().loadStatus()
     expect(result).toBeNull()
-    expect(useGitStore.getState().status).toBeNull()
+    expect(useGitStore.getState().status).toEqual(READY)
+    expect(useGitStore.getState().statusError).toBe("not a git repo")
     expect(useGitStore.getState().loading).toBe(false)
+  })
+
+  it("de-duplicates concurrent status loads", async () => {
+    let resolve!: (value: GitWorkingBranchResponse) => void
+    vi.mocked(getWorkingBranch).mockReturnValue(new Promise((done) => { resolve = done }))
+    const first = useGitStore.getState().loadStatus()
+    const second = useGitStore.getState().loadStatus()
+    expect(getWorkingBranch).toHaveBeenCalledOnce()
+    resolve(READY)
+    await expect(Promise.all([first, second])).resolves.toEqual([READY, READY])
+  })
+
+  it("de-duplicates concurrent branch loads and publishes the shared listing", async () => {
+    const branches: GitManagedBranch[] = [{
+      name: "dev", is_current: true, is_archived: false, has_unmerged_saves: false,
+      has_uncommitted_changes: false, forked_from: null,
+    }]
+    let resolve!: (value: { current: string; branches: GitManagedBranch[] }) => void
+    vi.mocked(getWorkingBranches).mockReturnValue(new Promise((done) => { resolve = done }))
+    const first = useGitStore.getState().loadBranches()
+    const second = useGitStore.getState().loadBranches()
+    await vi.waitFor(() => expect(getWorkingBranches).toHaveBeenCalledOnce())
+    resolve({ current: "dev", branches })
+    await expect(Promise.all([first, second])).resolves.toEqual([branches, branches])
+    expect(useGitStore.getState()).toMatchObject({ branches, branchesLoaded: true, branchesLoading: false })
   })
 
   it("openModal with a pendingAction sets both", () => {

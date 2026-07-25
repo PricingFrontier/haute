@@ -236,7 +236,7 @@ function FlowEditor() {
   const setRenameDialog = useUIStore((s) => s.setRenameDialog)
   // Git working-branch model (P2)
   const gitModal = useGitStore((s) => s.modal)
-  const loadGitStatus = useGitStore((s) => s.loadStatus)
+  const loadGitReadiness = useGitStore((s) => s.loadStatus)
   const closeGitModal = useGitStore((s) => s.closeModal)
   // Read-only comparison view (S11): when set, the dual-canvas overlay replaces
   // the editor's content row (the toolbar stays, remaining interactive).
@@ -394,13 +394,14 @@ function FlowEditor() {
 
   // Save-gate (S5/S13): if no working branch is ready, the action opens the
   // selection modal first and runs once a branch is chosen. Divergence routes
-  // to its own modal. A genuinely null status (non-git project) saves ungated.
+  // to its own modal. Pipeline Save remains available when Git is absent or
+  // readiness could not be loaded; only Git Commit requires a ready repository.
   const requestSave = useCallback(async () => {
     // Resolve status before deciding: during the startup load (status null,
     // loading in-flight) a synchronous read would see null and save ungated,
     // bypassing the gate. Awaiting the in-flight/fresh load closes that race.
     const st = useGitStore.getState().status ?? (await useGitStore.getState().loadStatus())
-    if (st === null || st.state === "ready") {
+    if (st === null || st.state === "no-repository" || st.state === "ready") {
       void handleSave()
       return
     }
@@ -414,7 +415,14 @@ function FlowEditor() {
   const requestCommit = useCallback(async () => {
     const st = useGitStore.getState().status ?? (await useGitStore.getState().loadStatus())
     if (st === null) {
-      // No git repo (or status unreadable): committing is meaningless here.
+      const detail = useGitStore.getState().statusError
+      addToast(
+        "error",
+        detail ? `Git unavailable: ${detail}` : "Git readiness is unavailable — commit is disabled.",
+      )
+      return
+    }
+    if (st.state === "no-repository") {
       addToast("error", "No git repository — commit is unavailable.")
       return
     }
@@ -458,7 +466,8 @@ function FlowEditor() {
         sessionStorage.setItem(JUST_MOVED_KEY, target.label)
         window.location.reload()
       } catch (err: unknown) {
-        const detail = err instanceof Error ? err.message : "unknown error"
+        const { gitErrorMessage } = await import("./utils/gitError")
+        const detail = gitErrorMessage(err, "unknown error")
         addToast("error", `Could not move to this version: ${detail}`)
         useGitStore.getState().closeMove()
       }
@@ -475,15 +484,15 @@ function FlowEditor() {
   useEffect(() => {
     const justMoved = sessionStorage.getItem(JUST_MOVED_KEY)
     if (justMoved !== null) sessionStorage.removeItem(JUST_MOVED_KEY)
-    void loadGitStatus().then((st) => {
+    void loadGitReadiness().then((st) => {
       if (justMoved !== null) {
         addToast("info", `Moved to ${justMoved} — save to start a new version line here.`)
         return
       }
-      if (!st || st.state === "ready") return
+      if (!st || st.state === "ready" || st.state === "no-repository" || st.state === "detached") return
       useGitStore.getState().openModal(st.state === "divergent" ? "divergence" : "select")
     })
-  }, [loadGitStatus, addToast])
+  }, [loadGitReadiness, addToast])
 
   const wsStatus = useWebSocketSync({
     setNodesRaw, setEdgesRaw, setPreamble, preambleRef, graphRefreshingRef,
@@ -1029,7 +1038,7 @@ function FlowEditor() {
                     onClose={() => setComparisonInspectState(null)}
                   />
                 ) : (
-                  <GitPanel onClose={exitComparison} />
+                  <GitPanel onClose={exitComparison} onSave={handleSave} />
                 )}
               </Suspense>
             </ErrorBoundary>
@@ -1137,7 +1146,7 @@ function FlowEditor() {
           <ErrorBoundary name="NodePanel">
             {gitOpen ? (
               <Suspense fallback={null}>
-                <GitPanel onClose={() => setGitOpen(false)} />
+                <GitPanel onClose={() => setGitOpen(false)} onSave={handleSave} />
               </Suspense>
             ) : utilityOpen ? (
               <UtilityPanel

@@ -186,7 +186,7 @@ describe("RemotePushControl — error paths and catch-up matrix", () => {
     await waitFor(() => expect(screen.getByTestId("git-push-control")).toBeInTheDocument())
     fireEvent.click(screen.getByTestId("git-push-button"))
     await waitFor(() =>
-      expect(mockAddToast).toHaveBeenCalledWith("error", "Push failed: HTTP 409 conflict"),
+      expect(mockAddToast).toHaveBeenCalledWith("error", "Push failed: no body"),
     )
     expect(screen.queryByTestId("git-push-rejected")).not.toBeInTheDocument()
   })
