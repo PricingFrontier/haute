@@ -31,6 +31,9 @@ const mixedBandingNarrowSnapshot = process.platform === "linux"
 const rebuiltRatingNarrowSnapshot = process.platform === "linux"
   ? "rebuilt-three-factor-rating-narrow-1024x768-linux.png"
   : "rebuilt-three-factor-rating-narrow-1024x768.png"
+const selectedOptimiserDesktopSnapshot = process.platform === "linux"
+  ? "selected-optimiser-point-desktop-1440x900-linux.png"
+  : "selected-optimiser-point-desktop-1440x900.png"
 const saveShortcut = process.platform === "darwin" ? "Meta+s" : "Control+s"
 
 type JsonObject = Record<string, unknown>
@@ -324,7 +327,7 @@ test.describe("frontend canvas assurance", () => {
     const optimiserPreview = page.getByTestId("optimiser-preview-frame")
     await expectCanvasScreenshot(
       optimiserPreview,
-      "selected-optimiser-point-desktop-1440x900.png",
+      selectedOptimiserDesktopSnapshot,
     )
     await page.setViewportSize(narrowViewport)
     await expectCanvasScreenshot(

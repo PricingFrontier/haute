@@ -146,10 +146,11 @@
    User-triggered surfaces such as the Ctrl+K `NodeSearch` palette remain
    dynamically imported so their implementation is excluded from that initial
    chunk. Canvas-assurance screenshots retain the shared 2% pixel-difference
-   ceiling; narrow mixed-Banding and rebuilt-Rating assertions select reviewed
-   Linux-specific baselines in Linux CI when repeated captures prove that
-   system-font and native-select rasterisation differs stably from the default
-   developer baseline, rather than weakening the assertion for every platform.
+   ceiling; mixed-Banding, rebuilt-Rating, and selected-optimiser assertions
+   select reviewed Linux-specific baselines in Linux CI only when repeated
+   captures prove that system-font and native-control rasterisation differs
+   stably from the default developer baseline, rather than weakening the
+   assertion for every platform.
 6. Mutation CI calls `scripts/run_mutation_suite.py --phase plan`, executes
    each isolated target/shard, downloads all artifacts, and calls `--phase merge`
    to enforce total survivor budgets. Scheduled performance calls
@@ -286,9 +287,9 @@ This contract implements ROAD-UI-04 and ROAD-UI-05 in the
   result at 1440×900 and 1024×768. Each committed baseline name contains its state and viewport.
   Animations are disabled; dimensions and a bounded rendering tolerance are explicit at the
   assertion. Transient notifications and active text selections are cleared before capture.
-  Chromium uses the reviewed default developer baseline except where a narrow capture has a
-  separately reviewed Linux baseline backed by byte-stable CI retries. Every platform-specific
-  path retains the same rendering tolerance; Firefox remains restricted to `@smoke`.
+  Chromium uses the reviewed default developer baseline except where a capture has a separately
+  reviewed Linux baseline backed by byte-stable CI retries. Every platform-specific path retains
+  the same rendering tolerance; Firefox remains restricted to `@smoke`.
 - The keyboard scenario moves focus to the named rebuild/action controls, asserts focus, activates
   via Enter or Space, edits through labelled inputs, saves via the documented shortcut, and checks
   the resulting persisted state. This plus semantic role/name assertions is the current automated
