@@ -15,6 +15,7 @@ from haute.routes._train_service import (
     _check_gpu_vram,
     _job_elapsed_seconds,
     _string_list_config,
+    _training_metadata_reasons,
     _training_required_columns_by_node,
     _training_required_metadata_columns,
     _VramCheck,
@@ -70,12 +71,53 @@ class TestTrainingRequiredMetadataColumns:
         assert {"y", "w", "o", "f", "pid"} <= cols
 
 
+class TestTrainingMetadataReasons:
+    @pytest.mark.parametrize(
+        ("split", "column"),
+        [
+            ({"strategy": "temporal", "date_column": "asof"}, "asof"),
+            ({"strategy": "group", "group_column": "policy"}, "policy"),
+        ],
+    )
+    def test_split_columns_are_explained(self, split, column) -> None:
+        reasons = _training_metadata_reasons({"target": "y", "split": split})
+
+        assert reasons == {"y": "target", column: "split"}
+
+    def test_non_mapping_split_is_ignored_and_role_precedence_is_stable(self) -> None:
+        reasons = _training_metadata_reasons(
+            {
+                "target": "shared",
+                "weight": "shared",
+                "id_columns": ["shared"],
+                "split": "invalid",
+            }
+        )
+
+        assert reasons == {"shared": "target"}
+
+
 class TestTrainingRequiredColumnsByNode:
     def test_returns_none_without_target(self) -> None:
         assert _training_required_columns_by_node("n", {"algorithm": "catboost"}) is None
 
 
 class TestTrainingFeatureSelection:
+    @pytest.mark.parametrize(
+        ("schema", "message"),
+        [
+            (["target", ""], "non-empty column names"),
+            (["target", 1], "non-empty column names"),
+            (["target", "feature", "feature"], "duplicate column names"),
+        ],
+    )
+    def test_invalid_schema_metadata_fails_before_selection(self, schema, message) -> None:
+        with pytest.raises(ValueError, match=message):
+            _build_training_feature_selection(
+                {"algorithm": "catboost", "target": "target"},
+                schema,
+            )
+
     def test_explicit_features_preserve_config_order_and_explain_every_other_column(self) -> None:
         diagnostic = _build_training_feature_selection(
             {
@@ -137,6 +179,16 @@ class TestTrainingFeatureSelection:
                     "algorithm": "catboost",
                     "target": "target",
                     "feature_columns": ["missing"],
+                },
+                ["target", "feature"],
+            )
+
+        with pytest.raises(ValueError, match="GLM terms reference columns.*missing"):
+            _build_training_feature_selection(
+                {
+                    "algorithm": "glm",
+                    "target": "target",
+                    "params": {"terms": {"missing": {}}},
                 },
                 ["target", "feature"],
             )

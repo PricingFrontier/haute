@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import os
 import pickle
 import time
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import ANY, patch
 
+import polars as pl
 import pytest
 
 from haute._execution_context import ExecutionContext, ExecutionProfile
@@ -18,12 +21,15 @@ from haute._worker_protocol import (
     build_artifact_manifest,
     validate_result_manifest,
 )
+from haute.errors import PreambleError
 from haute.modelling._training_job import TrainResult, model_contract_filename
 from haute.routes._job_store import JobStore
 from haute.routes._train_service import (
     TrainService,
     _publish_training_artifacts,
+    _run_dispersion_process_job,
     _run_training_process_job,
+    _worker_timing,
 )
 
 
@@ -110,6 +116,55 @@ def _request(tmp_path: Path) -> WorkerRequest:
     )
 
 
+def _staged_training_manifest(tmp_path: Path) -> tuple[Path, Path, WorkerResultManifest]:
+    artifact_root = tmp_path / "artifacts"
+    staged_output = artifact_root / "output"
+    staged_output.mkdir(parents=True)
+    model_path = staged_output / "quoted.cbm"
+    contract_path = staged_output / model_contract_filename("quoted")
+    model_path.write_bytes(b"new-model")
+    contract_path.write_bytes(b"new-contract")
+    manifest = WorkerResultManifest(
+        metadata={},
+        artifacts=(
+            build_artifact_manifest(
+                artifact_root=artifact_root,
+                path=model_path,
+                kind="model",
+                lifetime="staged",
+            ),
+            build_artifact_manifest(
+                artifact_root=artifact_root,
+                path=contract_path,
+                kind="feature_contract",
+                lifetime="staged",
+            ),
+        ),
+    )
+    return artifact_root, staged_output, manifest
+
+
+def _dispersion_request(tmp_path: Path, **overrides: object) -> WorkerRequest:
+    payload: object = {
+        "job_kwargs": {
+            "target": "y",
+            "weight": "weight",
+            "offset": "offset",
+            "params": {
+                "family": "negbinomial",
+                "terms": {"x": {}},
+                "interactions": [["x", "x"]],
+            },
+        },
+        "param": "theta",
+        "profile": ExecutionProfile.TRAINING_PREP.value,
+        "memory_limit_bytes": None,
+    }
+    assert isinstance(payload, dict)
+    payload.update(overrides)
+    return WorkerRequest("job-1", "dispersion", payload)
+
+
 def test_training_entrypoint_stages_model_contract_and_plain_result(tmp_path: Path) -> None:
     queue = _ForwardingQueue()
     runtime = WorkerRuntime(queue, str(tmp_path / "artifacts"))
@@ -125,6 +180,175 @@ def test_training_entrypoint_stages_model_contract_and_plain_result(tmp_path: Pa
     }
     assert [event.sequence for event in queue.events] == [0, 1]
     assert [event.kind for event in queue.events] == ["progress", "iteration"]
+
+
+@pytest.mark.parametrize(
+    ("worker_request", "error_type", "reason"),
+    [
+        (
+            WorkerRequest(
+                "job-1",
+                "training",
+                {
+                    "job_kwargs": [],
+                    "profile": ExecutionProfile.TRAINING_PREP.value,
+                    "memory_limit_bytes": None,
+                },
+            ),
+            "ValueError",
+            "contract_error",
+        ),
+        (
+            _request(Path()),
+            "PreambleError",
+            "contract_error",
+        ),
+    ],
+)
+def test_training_entrypoint_maps_invalid_and_public_contract_failures(
+    tmp_path: Path,
+    worker_request: WorkerRequest,
+    error_type: str,
+    reason: str,
+) -> None:
+    class ContractFailingJob:
+        def __init__(self, **_kwargs) -> None:
+            raise PreambleError("invalid training preamble", source_line=7)
+
+    with patch("haute.modelling.TrainingJob", ContractFailingJob):
+        result = _run_training_process_job(
+            WorkerRuntime(_ForwardingQueue(), str(tmp_path / "artifacts")), worker_request
+        )
+
+    assert isinstance(result, WorkerFailurePayload)
+    assert result.error_type == error_type
+    assert result.terminal_reason == reason
+    if error_type == "PreambleError":
+        assert result.fields["error_code"] == "preamble_failed"
+        assert result.fields["http_status_code"] == 422
+
+
+def test_dispersion_entrypoint_runs_profile_search_and_emits_fit_events(
+    tmp_path: Path,
+) -> None:
+    data_path = tmp_path / "prepared.parquet"
+    frame = pl.DataFrame(
+        {"x": [1.0, 2.0], "y": [3.0, 4.0], "weight": [1.0, 1.0], "offset": [0.0, 0.0]}
+    )
+    frame.write_parquet(data_path)
+    queue = _ForwardingQueue()
+    captured: dict[str, object] = {}
+
+    class DispersionJob:
+        def __init__(self, **kwargs) -> None:
+            captured["job_kwargs"] = kwargs
+
+        def _prepare_data(self, progress, **_kwargs):
+            progress("Preparing", 0.1)
+            return SimpleNamespace(
+                features=["x", "unused"],
+                cat_features=["unused"],
+                data_path=data_path,
+            )
+
+    def fake_estimate(**kwargs):
+        captured["estimate"] = kwargs
+        kwargs["on_fit"](0)
+        kwargs["on_fit"](2)
+        return SimpleNamespace(param="theta", value=1.25, llf=-4.5, n_fits=3)
+
+    runtime = WorkerRuntime(queue, str(tmp_path / "artifacts"))
+    with (
+        patch("haute.modelling.TrainingJob", DispersionJob),
+        patch("haute.modelling._rustystats._resolve_glm_terms", return_value=["x"]),
+        patch("haute.modelling._rustystats._build_interactions", return_value=[("x", "x")]),
+        patch("haute.modelling._rustystats.estimate_glm_dispersion", side_effect=fake_estimate),
+        patch("haute._polars_utils.streaming_collect", return_value=frame) as collect,
+    ):
+        result = _run_dispersion_process_job(runtime, _dispersion_request(tmp_path))
+
+    assert isinstance(result, WorkerResultManifest)
+    assert result.metadata["param"] == "theta"
+    assert result.metadata["value"] == 1.25
+    assert result.metadata["n_fits"] == 3
+    assert [event.kind for event in queue.events] == [
+        "progress",
+        "progress",
+        "dispersion_fit",
+        "dispersion_fit",
+    ]
+    estimate = captured["estimate"]
+    assert isinstance(estimate, dict)
+    assert estimate["data"].equals(frame)
+    assert {key: value for key, value in estimate.items() if key != "data"} == {
+        "terms": ["x"],
+        "target": "y",
+        "family": "negbinomial",
+        "param": "theta",
+        "link": None,
+        "intercept": True,
+        "weight": "weight",
+        "offset": "offset",
+        "interactions": [("x", "x")],
+        "on_fit": ANY,
+    }
+    assert collect.call_args.kwargs["profile"] is ExecutionProfile.TRAINING_PREP
+
+
+@pytest.mark.parametrize(
+    ("worker_request", "reason"),
+    [
+        (WorkerRequest("job-1", "training", {}), "contract_error"),
+        (WorkerRequest("job-1", "dispersion", []), "contract_error"),
+        (_dispersion_request(Path(), job_kwargs=[]), "contract_error"),
+        (_dispersion_request(Path(), param="unknown"), "contract_error"),
+        (_dispersion_request(Path(), profile=123), "contract_error"),
+        (_dispersion_request(Path(), memory_limit_bytes=0), "contract_error"),
+    ],
+)
+def test_dispersion_entrypoint_maps_malformed_requests_to_contract_failures(
+    tmp_path: Path, worker_request: WorkerRequest, reason: str
+) -> None:
+    result = _run_dispersion_process_job(
+        WorkerRuntime(_ForwardingQueue(), str(tmp_path / "artifacts")), worker_request
+    )
+
+    assert isinstance(result, WorkerFailurePayload)
+    assert result.terminal_reason == reason
+    assert result.error_type in {"ValueError", "TypeError"}
+
+
+@pytest.mark.parametrize(
+    ("exception", "reason"),
+    [(MemoryError("full"), "memory_limited"), (RuntimeError("boom"), "error")],
+)
+def test_dispersion_entrypoint_maps_estimation_failures(
+    tmp_path: Path, exception: Exception, reason: str
+) -> None:
+    class FailingJob:
+        def __init__(self, **_kwargs) -> None:
+            pass
+
+        def _prepare_data(self, *_args, **_kwargs):
+            raise exception
+
+    with patch("haute.modelling.TrainingJob", FailingJob):
+        result = _run_dispersion_process_job(
+            WorkerRuntime(_ForwardingQueue(), str(tmp_path / "artifacts")),
+            _dispersion_request(tmp_path),
+        )
+
+    assert isinstance(result, WorkerFailurePayload)
+    assert result.terminal_reason == reason
+    assert result.error_type == type(exception).__name__
+
+
+@pytest.mark.parametrize(
+    "job", [{}, {"start_time": True, "timeout": 1}, {"start_time": 1, "timeout": 0}]
+)
+def test_worker_timing_rejects_invalid_values(job: dict[str, object]) -> None:
+    with pytest.raises(RuntimeError, match="job-1.*valid"):
+        _worker_timing(job, job_id="job-1")
 
 
 def test_train_service_publishes_validated_pair_and_cleans_parent_state(
@@ -307,6 +531,132 @@ def test_publication_rejects_model_name_not_declared_by_request(tmp_path: Path) 
     assert contract_path.exists()
 
 
+@pytest.mark.parametrize(
+    ("artifacts", "message"),
+    [
+        ("duplicate", "Duplicate training artifact kind"),
+        ("durable", "must have staged lifetime"),
+        ("incomplete", "exactly one model and feature contract"),
+        ("invalid_path", "not in the staged output"),
+    ],
+)
+def test_publication_rejects_invalid_artifact_manifests(
+    tmp_path: Path, artifacts: str, message: str
+) -> None:
+    artifact_root, _staged_output, complete = _staged_training_manifest(tmp_path)
+    model, contract = complete.artifacts
+    if artifacts == "duplicate":
+        malformed = WorkerResultManifest(metadata={}, artifacts=(model, model, contract))
+    elif artifacts == "durable":
+        malformed = WorkerResultManifest(
+            metadata={},
+            artifacts=(
+                build_artifact_manifest(
+                    artifact_root=artifact_root,
+                    path=artifact_root / model.relative_path,
+                    kind="model",
+                    lifetime="durable",
+                ),
+                contract,
+            ),
+        )
+    elif artifacts == "incomplete":
+        malformed = WorkerResultManifest(metadata={}, artifacts=(model,))
+    else:
+        malformed = WorkerResultManifest(
+            metadata={},
+            artifacts=(
+                type(model)(
+                    kind=model.kind,
+                    relative_path="elsewhere/quoted.cbm",
+                    size_bytes=model.size_bytes,
+                    sha256=model.sha256,
+                    lifetime=model.lifetime,
+                ),
+                contract,
+            ),
+        )
+
+    with pytest.raises(WorkerProtocolError, match=message):
+        _publish_training_artifacts(
+            malformed,
+            artifact_root=artifact_root,
+            output_root=tmp_path / "outputs",
+            job_id="job-1",
+            expected_model_name="quoted",
+        )
+
+
+def test_publication_warns_about_legacy_contract_and_rejects_backup_collision(
+    tmp_path: Path,
+) -> None:
+    artifact_root, _staged_output, manifest = _staged_training_manifest(tmp_path)
+    output_root = tmp_path / "outputs"
+    output_root.mkdir()
+    legacy_contract = output_root / "feature_contract.json"
+    legacy_contract.write_bytes(b"legacy")
+    final_model = output_root / "quoted.cbm"
+    final_model.write_bytes(b"old-model")
+    backup = output_root / ".quoted.cbm.job-1.haute-backup"
+    backup.write_bytes(b"existing backup")
+    warning = patch("haute.routes._train_service.logger.warning")
+
+    with warning as logger_warning, pytest.raises(FileExistsError, match="backup already exists"):
+        _publish_training_artifacts(
+            manifest,
+            artifact_root=artifact_root,
+            output_root=output_root,
+            job_id="job-1",
+            expected_model_name="quoted",
+        )
+
+    logger_warning.assert_called_once_with(
+        "legacy_shared_feature_contract_present",
+        legacy_path=str(legacy_contract),
+        per_model_path=str(output_root / model_contract_filename("quoted")),
+        model_name="quoted",
+    )
+    assert backup.read_bytes() == b"existing backup"
+    assert final_model.read_bytes() == b"old-model"
+    assert (artifact_root / "output" / "quoted.cbm").exists()
+
+
+def test_publication_rolls_back_pair_when_second_staged_artifact_fails(
+    tmp_path: Path,
+) -> None:
+    artifact_root, staged_output, manifest = _staged_training_manifest(tmp_path)
+    output_root = tmp_path / "outputs"
+    output_root.mkdir()
+    final_model = output_root / "quoted.cbm"
+    final_contract = output_root / model_contract_filename("quoted")
+    final_model.write_bytes(b"old-model")
+    final_contract.write_bytes(b"old-contract")
+    original_replace = os.replace
+    staged_contract = staged_output / model_contract_filename("quoted")
+
+    def fail_second_publication(source: Path | str, destination: Path | str) -> None:
+        if Path(source) == staged_contract and Path(destination) == final_contract:
+            raise OSError("second artifact cannot be published")
+        original_replace(source, destination)
+
+    with patch("haute.routes._train_service.os.replace", side_effect=fail_second_publication):
+        with pytest.raises(OSError, match="second artifact"):
+            _publish_training_artifacts(
+                manifest,
+                artifact_root=artifact_root,
+                output_root=output_root,
+                job_id="job-1",
+                expected_model_name="quoted",
+            )
+
+    assert final_model.read_bytes() == b"old-model"
+    assert final_contract.read_bytes() == b"old-contract"
+    assert not (output_root / ".quoted.cbm.job-1.haute-backup").exists()
+    assert not (output_root / f".{final_contract.name}.job-1.haute-backup").exists()
+    assert not (staged_output / "quoted.cbm").exists()
+    assert staged_contract.exists()
+
+
 def test_publication_keeps_new_pair_when_backup_deletion_is_denied(
     tmp_path: Path,
 ) -> None:
@@ -423,6 +773,53 @@ def test_train_service_keeps_completed_status_when_artifact_cleanup_is_denied(
     assert not prepared.exists()
     assert released == [True]
     assert list(output_dir.glob(".haute-training-*"))
+
+
+def test_parent_worker_cleanup_reports_all_failures_once(tmp_path: Path) -> None:
+    service = TrainService(JobStore())
+    tmp_parquet = tmp_path / "prepared.parquet"
+    tmp_parquet.write_bytes(b"prepared")
+    artifact_root = tmp_path / "artifacts"
+    artifact_root.mkdir()
+
+    def fail_admission_release() -> None:
+        raise RuntimeError("admission release failed")
+
+    context = ExecutionContext(
+        operation="training_pipeline",
+        profile=ExecutionProfile.TRAINING_PREP,
+        admission_release=fail_admission_release,
+    )
+    cleanup = service._parent_worker_cleanup(
+        "job-1",
+        execution_context=context,
+        tmp_parquet=tmp_parquet,
+        artifact_root=artifact_root,
+    )
+
+    with (
+        patch.object(
+            service._training_jobs,
+            "release",
+            side_effect=RuntimeError("registry release failed"),
+        ) as release,
+        patch(
+            "haute.routes._train_service.shutil.rmtree",
+            side_effect=OSError("artifact cleanup failed"),
+        ) as rmtree,
+    ):
+        with pytest.raises(RuntimeError, match="registry release failed") as raised:
+            cleanup()
+        cleanup()
+
+    assert getattr(raised.value, "__notes__", []) == [
+        "Additional cleanup failure: admission release failed",
+        "Additional cleanup failure: artifact cleanup failed",
+    ]
+    assert not tmp_parquet.exists()
+    assert artifact_root.exists()
+    release.assert_called_once_with("job-1")
+    rmtree.assert_called_once_with(artifact_root)
 
 
 def test_terminal_job_after_preparation_does_not_launch_worker(tmp_path: Path) -> None:

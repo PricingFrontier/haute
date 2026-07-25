@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -339,8 +340,16 @@ def test_launch_background_releases_admission_after_thread_completes(
     thread's finally, not by the synchronous prep handler, so the in-flight
     reservation stays held while training runs.
     """
+    started = threading.Event()
+    allow_finish = threading.Event()
+
+    def blocking_protocol_runner(*args: Any, **kwargs: Any) -> Any:
+        started.set()
+        assert allow_finish.wait(timeout=10)
+        return _inline_protocol_runner(*args, **kwargs)
+
     store = JobStore()
-    service = TrainService(store, protocol_runner=_inline_protocol_runner)
+    service = TrainService(store, protocol_runner=blocking_protocol_runner)
     job_id = _running_training_job(store)
     tmp_parquet = tmp_path / "training.parquet"
     tmp_parquet.write_bytes(b"placeholder")
@@ -363,11 +372,15 @@ def test_launch_background_releases_admission_after_thread_completes(
             execution_context=admitted,
         )
 
-        # Before background runs: admission still held (transferred to worker).
-        assert admission_calls["release"] == 0
+        assert thread is not None
+        try:
+            assert started.wait(timeout=10)
+            # While background runs: admission is still held by the worker.
+            assert admission_calls["release"] == 0
+        finally:
+            allow_finish.set()
 
         # Background completes -> admission released exactly once.
-        assert thread is not None
         thread.join_and_raise(timeout=10)
 
     assert admission_calls["release"] == 1
