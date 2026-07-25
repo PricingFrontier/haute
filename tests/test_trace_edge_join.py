@@ -21,9 +21,12 @@ in Wave 7).
 from __future__ import annotations
 
 import polars as pl
+import pytest
 
 from haute.trace import TraceResult, TraceStep, execute_trace
 from tests.conftest import make_edge, make_graph, make_node, make_source_node
+
+pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
 
 LEFT_ID = "left_src"
 RIGHT_ID = "right_src"

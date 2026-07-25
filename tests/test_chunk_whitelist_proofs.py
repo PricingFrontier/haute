@@ -52,6 +52,8 @@ from haute.errors import ChunkPlanUnsupportedError
 from haute.executor import _build_node_fn
 from tests.conftest import make_edge, make_graph, make_output_config
 
+pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
+
 
 def _node(node_id: str, node_type: str, config: dict[str, object] | None = None):
     config = dict(config or {})

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import itertools
 
+import pytest
+
 from haute._execution_context import ExecutionContext, ExecutionProfile
 from haute.routes._background_jobs import CancellableJobRegistry
 from haute.routes._job_lifecycle import (
@@ -102,6 +104,33 @@ def test_lifecycle_lower_precedence_reason_cannot_overwrite_race_winner() -> Non
         job = store.require_job(job_id)
         assert job["status"] == TERMINAL_REASON_TO_STATUS[higher]
         assert job["terminal_reason"] == higher
+
+
+@pytest.mark.parametrize(
+    "fault_point",
+    [
+        "terminal_transition_before_write",
+        "terminal_transition_before_cleanup_schedule",
+    ],
+)
+def test_lifecycle_exposes_terminal_transition_fault_points(fault_point: str) -> None:
+    store = JobStore()
+    job_id = store.create_job({"status": "running"})
+    seen: list[str] = []
+
+    def inject(point: str) -> None:
+        seen.append(point)
+        if point == fault_point:
+            raise RuntimeError(point)
+
+    with pytest.raises(RuntimeError, match=fault_point):
+        JobLifecycle(store, fault_injector=inject).transition(job_id, to="error")
+
+    if fault_point == "terminal_transition_before_write":
+        assert store.require_job(job_id)["status"] == "running"
+    else:
+        assert store.require_job(job_id)["status"] == "error"
+    assert seen[0] == "terminal_transition_before_write"
 
 
 def test_running_metrics_publisher_updates_job_on_memory_pressure() -> None:

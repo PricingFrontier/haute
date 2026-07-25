@@ -29,7 +29,7 @@ from haute._input_providers import (
     source_signature,
 )
 from haute._logging import get_logger
-from haute._path_resolution import resolve_runtime_file_path
+from haute._path_resolution import RuntimePathError, resolve_runtime_file_path
 from haute._polars_io_registry import PolarsIoConfigError, validate_data_input_config
 from haute._project import _toml_configured_pipeline
 from haute._source_cache import (
@@ -44,6 +44,7 @@ from haute._source_cache import (
 from haute.routes._background_jobs import CancellableJobRegistry, SingleFlightCoordinator
 from haute.routes._job_lifecycle import JobLifecycle, require_job_status
 from haute.routes._job_store import get_job_store
+from haute.routes._runtime_path_errors import runtime_path_http_exception
 from haute.schemas import (
     InputCacheBuildRequest,
     InputCacheBuildResponse,
@@ -123,9 +124,8 @@ def _safe_config(
                 prefer="pipeline",
                 enforce_project_root=True,
             )
-        except ValueError as exc:
-            status_code = 400 if "embedded null byte" in str(exc) else 403
-            raise HTTPException(status_code=status_code, detail=str(exc)) from None
+        except RuntimePathError as exc:
+            raise runtime_path_http_exception(exc) from None
 
     if config["inputType"] == "database" and "uri" in config:
         from haute._database_io import (

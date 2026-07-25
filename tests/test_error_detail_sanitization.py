@@ -146,7 +146,10 @@ def _source_and_transform_graph(
 @pytest.fixture()
 def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     """TestClient with cwd set to a temp directory and Databricks env set."""
+    from haute._sandbox import set_project_root
+
     monkeypatch.chdir(tmp_path)
+    set_project_root(tmp_path)
     monkeypatch.setenv("DATABRICKS_HOST", "https://test.cloud.databricks.com")
     monkeypatch.setenv("DATABRICKS_TOKEN", "dapi_test_token")
     (tmp_path / "main.py").write_text("")
@@ -432,6 +435,9 @@ class TestSafeDetailOnError:
         assert detail == _SAFE_DETAIL
 
     def test_pipeline_sink_500_no_leak(self, client: TestClient, tmp_path: Path) -> None:
+        from haute._sandbox import set_project_root
+
+        set_project_root(tmp_path)
         data_path = tmp_path / "data" / "input.parquet"
         graph = _minimal_source_graph(str(data_path))
         # Add a sink node

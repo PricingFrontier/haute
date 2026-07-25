@@ -1,4 +1,4 @@
-import { useEffect, useCallback, useState, useRef, lazy, Suspense } from "react"
+import { useEffect, useCallback, useMemo, useState, useRef, lazy, Suspense } from "react"
 import type { ReactNode } from "react"
 import {
   ReactFlow,
@@ -38,6 +38,8 @@ import UtilityPanel from "./panels/UtilityPanel"
 import ImportsPanel from "./panels/ImportsPanel"
 import type { ComparisonInspect } from "./components/ComparisonView"
 import NodeSearch from "./components/NodeSearch"
+import EdgeJoinInsertionFeedback from "./components/EdgeJoinInsertionFeedback"
+import { withEdgeJoinInsertionCandidate } from "./utils/edgeJoinInsertionFeedback"
 
 import useGraphCanvasState from "./hooks/useGraphCanvasState"
 import useWebSocketSync from "./hooks/useWebSocketSync"
@@ -806,6 +808,7 @@ function FlowEditor() {
   const findEdgeIdAtPoint = useCallback((point: { x: number; y: number }) => {
     const elements = document.elementsFromPoint(point.x, point.y)
     for (const element of elements) {
+      if (element.closest?.(".react-flow__handle, .react-flow__node")) return null
       const edgeElement = element.closest?.(".react-flow__edge[data-id]")
       const edgeId = edgeElement?.getAttribute("data-id")
       if (edgeId) return edgeId
@@ -832,7 +835,8 @@ function FlowEditor() {
 
   const {
     onConnect, onSelectionChange, onNodeClick, handleDeleteEdge,
-    onConnectEnd, onNodeContextMenu, onDragOver, onDrop,
+    onConnectStart, onConnectEnd, onConnectionPointerMove, clearEdgeJoinCandidate,
+    edgeJoinCandidateEdgeId, onNodeContextMenu, onDragOver, onDrop,
   } = useEdgeHandlers({
     selectedNode, graphRef, nodeIdCounter, lastSelectedNodeRef,
     setNodes, setEdges, setNodesRaw, setEdgesRaw, pushSnapshot,
@@ -847,6 +851,20 @@ function FlowEditor() {
     findEdgeIdAtPoint,
     validateConnection,
   })
+
+  const presentedEdgeJoinCandidateEdgeId = useMemo(
+    () => (
+      edgeJoinCandidateEdgeId
+        && edgesWithTrace.some((edge) => edge.id === edgeJoinCandidateEdgeId)
+        ? edgeJoinCandidateEdgeId
+        : null
+    ),
+    [edgeJoinCandidateEdgeId, edgesWithTrace],
+  )
+  const edgesWithEdgeJoinCandidate = useMemo(
+    () => withEdgeJoinInsertionCandidate(edgesWithTrace, presentedEdgeJoinCandidateEdgeId),
+    [edgesWithTrace, presentedEdgeJoinCandidateEdgeId],
+  )
 
   const handleSwapEdgeJoinInputs = useCallback((nodeId: string) => {
     const result = swapEdgeJoinInputs({
@@ -1070,15 +1088,21 @@ function FlowEditor() {
             </div>
           )}
           <ErrorBoundary name="Canvas">
-            <div className="flex-1 min-h-0 relative">
+            <div
+              className="flex-1 min-h-0 relative"
+              onPointerMove={(event) => onConnectionPointerMove(event)}
+              onPointerLeave={clearEdgeJoinCandidate}
+            >
               <BreadcrumbBar viewStack={viewStack} onNavigate={handleBreadcrumbNavigate} />
+              <EdgeJoinInsertionFeedback candidateEdgeId={presentedEdgeJoinCandidateEdgeId} />
               <ReactFlow
                 className={useLiteGraphEffects ? "graph-effects-lite" : undefined}
                 nodes={nodesWithStatus}
-                edges={edgesWithTrace}
+                edges={edgesWithEdgeJoinCandidate}
                 onNodesChange={onNodesChange}
                 onEdgesChange={onEdgesChange}
                 onConnect={onConnect}
+                onConnectStart={onConnectStart}
                 onConnectEnd={onConnectEnd}
                 onSelectionChange={onSelectionChange}
                 onNodeMouseEnter={(_event, node) => setHoveredNodeId(node.id)}

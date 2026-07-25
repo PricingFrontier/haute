@@ -22,6 +22,7 @@ from haute.routes._train_service import (
     _find_modelling_node,
     _VramCheck,
 )
+from haute.routes.pipeline import _prepare_runtime_graph
 from haute.schemas import (
     DispersionEstimateRequest,
     DispersionEstimateResponse,
@@ -57,7 +58,8 @@ def train_model(body: TrainRequest) -> TrainResponse:
     Executes the pipeline up to the modelling node to materialise the
     training DataFrame, then runs TrainingJob in a background thread.
     """
-    return _train_service.start(body)
+    graph = _prepare_runtime_graph(body.graph)
+    return _train_service.start(body.model_copy(update={"graph": graph}))
 
 
 @router.get("/train/status/{job_id}", response_model=TrainStatusResponse)
@@ -174,7 +176,8 @@ def estimate_dispersion(body: DispersionEstimateRequest) -> DispersionEstimateRe
     the training-objective gate still requires an explicit value; this
     endpoint never sets one silently.
     """
-    return _train_service.start_dispersion_estimate(body)
+    graph = _prepare_runtime_graph(body.graph)
+    return _train_service.start_dispersion_estimate(body.model_copy(update={"graph": graph}))
 
 
 @router.get("/dispersion/status/{job_id}", response_model=DispersionEstimateStatusResponse)
@@ -197,6 +200,8 @@ def estimate_training(body: TrainEstimateRequest) -> TrainEstimateResponse:
     dataset size analytically.  Returns immediately — typically <100 ms.
     Also estimates GPU VRAM if the node's params specify ``task_type: GPU``.
     """
+    graph = _prepare_runtime_graph(body.graph)
+    body = body.model_copy(update={"graph": graph})
     node = _find_modelling_node(body.graph, body.node_id)
 
     from haute._ram_estimate import estimate_safe_training_rows

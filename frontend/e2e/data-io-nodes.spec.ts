@@ -14,18 +14,13 @@ test.describe("data input/output nodes", () => {
   })
 
   test("cards render and the editor is capability-driven", async ({ page }) => {
-    // Capture the session token from the app's own first API request — the
-    // vite dev harness bakes it into the bundle (import.meta.env), so it is
-    // not readable from the page context directly.
-    const firstApiRequest = page.waitForRequest((r) => r.url().includes("/api/pipeline"))
     await page.goto("/")
     await expect(page.getByRole("toolbar", { name: /pipeline toolbar/i })).toBeVisible()
-    const sessionToken = (await firstApiRequest).headers()["x-haute-session-token"]
 
-    // Extend the seeded graph through the same save route the editor uses.
-    const saveStatus = await page.evaluate(async (token) => {
+    // Same-origin page fetches share the HttpOnly session cookie established
+    // by the real application bootstrap.
+    const saveStatus = await page.evaluate(async () => {
       const headers: Record<string, string> = { "Content-Type": "application/json" }
-      if (token) headers["x-haute-session-token"] = token
       const graphRes = await fetch("/api/pipeline", { headers })
       if (!graphRes.ok) throw new Error(`GET /api/pipeline ${graphRes.status}`)
       const graph = await graphRes.json()
@@ -76,7 +71,7 @@ test.describe("data input/output nodes", () => {
       })
       if (!res.ok) throw new Error(`POST /api/pipeline/save ${res.status}`)
       return (await res.json()).status
-    }, sessionToken)
+    })
     expect(saveStatus).toBe("saved")
 
     // Reload: the graph now comes from the generated code + sidecars.

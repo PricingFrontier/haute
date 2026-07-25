@@ -29,7 +29,7 @@ from haute._hashing import content_hash_bytes
 from haute._io import read_user_text
 from haute._json_safe import rows_to_json_safe
 from haute._logging import get_logger
-from haute._path_resolution import resolve_runtime_file_path
+from haute._path_resolution import RuntimePathError, resolve_runtime_file_path
 from haute._polars_io_registry import PolarsIoConfigError, validate_data_output_config
 from haute._polars_utils import DEFAULT_STREAMING_CHUNK_SIZE, temporary_streaming_chunk_size
 from haute._sandbox import _get_project_root
@@ -70,6 +70,7 @@ from haute.routes._helpers import (
     save_lock,
     validate_safe_path,
 )
+from haute.routes._runtime_path_errors import runtime_path_http_exception
 from haute.routes._save_pipeline import SavePipelineService
 from haute.routes._supersession import SupersededRequestError, SupersessionCoordinator
 from haute.routes._timeouts import (
@@ -146,13 +147,26 @@ def _validate_runtime_input_paths(graph: PipelineGraph) -> None:
     """Reject API-submitted input paths that resolve outside the project root.
 
     The runtime-input path fields for each node are taken from the executor's
-    authoritative enumeration (:func:`haute.execution._runtime_input_path_fields`)
-    rather than a hand-maintained map, so the guard can never drift from what
-    execution actually reads.  This confines every file the executor consumes at
+    shared enumeration (:func:`haute.execution._runtime_input_path_fields`)
+    rather than a hand-maintained map. This confines every local file the
+    executor consumes at
     preview/trace time — flat-file ``apiInput`` / ``dataInput`` / ``externalFile``
-    ``path``, ``modelScore`` ``artifact_path`` / ``feature_contract_path``, and
-    file-sourced ``optimiserApply`` artifacts — to the project root.
+    ``path``, ``modelScore`` ``feature_contract_path``, and file-sourced
+    ``optimiserApply`` artifacts — to the project root. The same request check
+    rejects traversal-shaped MLflow ``modelScore.artifact_path`` identifiers;
+    execution leaves those external identifiers unchanged.
     """
+    if graph.source_file:
+        try:
+            resolve_runtime_file_path(
+                graph.source_file,
+                project_root=_get_project_root(),
+                prefer="project",
+                enforce_project_root=True,
+            )
+        except RuntimePathError as exc:
+            raise runtime_path_http_exception(exc) from None
+
     for node in graph.nodes:
         config = node.data.config
         for key in _runtime_input_path_fields(node):
@@ -167,9 +181,8 @@ def _validate_runtime_input_paths(graph: PipelineGraph) -> None:
                     prefer="project",
                     enforce_project_root=True,
                 )
-            except ValueError as exc:
-                status_code = 400 if "embedded null byte" in str(exc) else 403
-                raise HTTPException(status_code=status_code, detail=str(exc)) from None
+            except RuntimePathError as exc:
+                raise runtime_path_http_exception(exc) from None
 
 
 def _validate_data_output_path(
@@ -187,9 +200,8 @@ def _validate_data_output_path(
             output_node.data.config,
             project_root=project_root,
         )
-    except ValueError as exc:
-        status_code = 400 if "embedded null byte" in str(exc) else 403
-        raise HTTPException(status_code=status_code, detail=str(exc)) from None
+    except RuntimePathError as exc:
+        raise runtime_path_http_exception(exc) from None
 
 
 def _memory_limit_http_exception(exc: ExecutionAdmissionError) -> HTTPException:
@@ -291,6 +303,20 @@ def _ensure_source_file(graph: PipelineGraph) -> None:
             graph.source_file = configured
     except (OSError, tomllib.TOMLDecodeError, KeyError) as exc:
         logger.warning("source_file_fallback_failed", error=str(exc))
+
+
+def _prepare_runtime_graph(graph: PipelineGraph) -> PipelineGraph:
+    """Flatten and confine an API-submitted graph before any execution work.
+
+    HTTP graph bodies are untrusted local-client input. They may identify the
+    active pipeline within the configured project, but they must not use
+    ``source_file`` to redefine the process project root. Flattening first also
+    ensures path-bearing nodes embedded in submodels receive the same check.
+    """
+    prepared = flatten_graph(graph)
+    _ensure_source_file(prepared)
+    _validate_runtime_input_paths(prepared)
+    return prepared
 
 
 def _read_json_object_blocking(target: Path) -> dict[str, Any]:
@@ -572,7 +598,7 @@ async def trace_row(body: TraceRequest) -> JSONResponse:
         raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
     finally:
         if trace_context is not None:
-            trace_context.release_admission()
+            trace_context.release_admission(preserve_primary_error=True)
 
 
 @router.post("/pipeline/preview", response_model=PreviewNodeResponse)
@@ -808,7 +834,7 @@ async def preview_node(body: PreviewNodeRequest) -> PreviewNodeResponse:
         raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
     finally:
         if preview_context is not None:
-            preview_context.release_admission()
+            preview_context.release_admission(preserve_primary_error=True)
 
 
 @router.post("/pipeline/write-output", response_model=WriteOutputResponse)
@@ -910,4 +936,4 @@ async def write_output_node(body: WriteOutputRequest) -> WriteOutputResponse:
         raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
     finally:
         if output_context is not None:
-            output_context.release_admission()
+            output_context.release_admission(preserve_primary_error=True)

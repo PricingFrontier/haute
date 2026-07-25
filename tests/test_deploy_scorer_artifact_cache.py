@@ -42,6 +42,8 @@ from haute.modelling._feature_contract import (
 )
 from tests.conftest import make_graph, make_output_config
 
+pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
+
 # ---------------------------------------------------------------------------
 # Fixtures / helpers
 # ---------------------------------------------------------------------------

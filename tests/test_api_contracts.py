@@ -590,6 +590,12 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
             "success_schema": {"$ref": "#/components/schemas/SessionStatusResponse"},
         },
     },
+    "/api/session/bootstrap": {
+        "POST": {
+            "request_ref": None,
+            "success_schema": {"$ref": "#/components/schemas/SessionStatusResponse"},
+        },
+    },
     "/api/submodel/create": {
         "POST": {
             "request_ref": "#/components/schemas/CreateSubmodelRequest",

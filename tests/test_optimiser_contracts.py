@@ -712,6 +712,7 @@ def test_explicit_frontier_route_rejects_bad_ranges_without_calling_solver(
     solver.frontier.assert_not_called()
 
 
+@pytest.mark.usefixtures("_widen_sandbox_root")
 def test_real_solve_apply_totals_match_selected_rows(
     client,
     tmp_path,

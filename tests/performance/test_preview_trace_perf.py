@@ -18,7 +18,7 @@ from haute.schemas import NodeResult, TraceResponse
 from haute.trace import TraceResult, execute_trace, trace_result_to_dict
 from haute.trace import _cache as _trace_cache
 
-pytestmark = pytest.mark.perf
+pytestmark = [pytest.mark.perf, pytest.mark.usefixtures("_widen_sandbox_root")]
 
 _ROW_LIMIT = 3_000
 _MAX_PREVIEW_ROWS = 128

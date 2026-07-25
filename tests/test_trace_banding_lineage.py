@@ -20,6 +20,8 @@ from tests.conftest import (
     make_transform_node as _transform_node,
 )
 
+pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
+
 
 def _step_by_id(result: TraceResult, node_id: str) -> TraceStep:
     for step in result.steps:
