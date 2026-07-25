@@ -67,7 +67,7 @@
 | `mutation/cosmic-ray.registry.toml` | Cosmic Ray configuration for registry mutation coverage. |
 | `tests/` | Active Python unit, integration, property, regression, contract, E2E-support, and repository-hygiene test corpus. |
 | `tests/fixtures/` | Checked-in input, golden, expected-contract, UI-contract, and data fixtures consumed by active tests. |
-| `tests/performance/` | `perf`-marked benchmark-style tests excluded from ordinary pytest and run by the performance harness. |
+| `tests/performance/` | `perf`-marked benchmark-style tests excluded from ordinary pytest and run by the performance harness, including the rating miss-guard evidence matrix (`test_rating_miss_guard_perf.py`). |
 | `frontend/src/__tests__/` | Frontend application-level unit, contract, regression, adversarial, and bundle/coverage gate tests. |
 | `frontend/src/api/__tests__/` | Frontend API-client test group. |
 | `frontend/src/components/__tests__/` and `frontend/src/components/form/__tests__/` | Frontend reusable-component and form-control test groups. |

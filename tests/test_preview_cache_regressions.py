@@ -181,6 +181,7 @@ def _ratebook_apply_preview(tmp_path: Path) -> dict[str, object]:
                         {"__factor_group__": "Manchester", "optimal_scenario_value": 0.98},
                     ],
                 },
+                "factor_dtypes": {"region": [{"column": "region", "dtype": {"kind": "String"}}]},
             }
         )
     )

@@ -3070,6 +3070,7 @@ class TestEnrichSingleTable:
             table,
             input_row={"region": "north"},
             output_row={"rate": 1.1},
+            factor_input_dtypes={"region": pl.String},
         )
         assert result["matched"] is True
         assert result["rate_value"] == 1.1
@@ -3093,6 +3094,7 @@ class TestEnrichSingleTable:
             table,
             input_row={"state": "CA", "vehicle_type": "sedan"},
             output_row={"territory_factor": 1.15},
+            factor_input_dtypes={"state": pl.String, "vehicle_type": pl.String},
         )
 
         assert result == {
@@ -3127,6 +3129,7 @@ class TestEnrichSingleTable:
             table,
             input_row={"region": "west"},
             output_row={"rate": 0.5},
+            factor_input_dtypes={"region": pl.String},
         )
         assert result["default_used"] is True
         assert result["matched"] is False
@@ -3145,6 +3148,7 @@ class TestEnrichSingleTable:
             table,
             input_row={"region": "west"},
             output_row={"rate": None},
+            factor_input_dtypes={"region": pl.String},
         )
         assert result["matched"] is False
         assert result["default_used"] is False
@@ -3163,6 +3167,7 @@ class TestEnrichSingleTable:
             table,
             input_row={"region": "west"},
             output_row={"rate": 0.5},
+            factor_input_dtypes={"region": pl.String},
         )
         # non-numeric default can't be parsed, so default_val is None
         assert result["default_value"] is None
@@ -3180,6 +3185,7 @@ class TestEnrichSingleTable:
             table,
             input_row={"region": "west"},
             output_row={"rate": 0.5},
+            factor_input_dtypes={"region": pl.String},
         )
         assert result["default_value"] is None
 
@@ -3196,6 +3202,7 @@ class TestEnrichSingleTable:
             table,
             input_row={"region": "west"},
             output_row={"rate": 0.5},
+            factor_input_dtypes={"region": pl.String},
         )
         # infinity is not finite, so default_val should be None
         assert result["default_value"] is None
@@ -3217,6 +3224,7 @@ class TestEnrichSingleTable:
             table,
             input_row={"region": "north", "tier": "silver"},
             output_row={"rate": 1.2},
+            factor_input_dtypes={"region": pl.String, "tier": pl.String},
         )
         assert result["matched"] is True
         assert result["matched_entry"]["tier"] == "silver"
@@ -3246,6 +3254,7 @@ class TestEnrichSingleTable:
             table,
             input_row={"region": "north"},
             output_row={"region_factor": 1.3},
+            factor_input_dtypes={"region": pl.String},
         )
         assert result["matched"] is True
         assert result["selected_value"] == 1.3
@@ -3266,6 +3275,7 @@ class TestEnrichSingleTable:
             table,
             input_row={"region": "west"},
             output_row={"region_factor": None},
+            factor_input_dtypes={"region": pl.String},
         )
         assert result["matched"] is False
         assert result["status"] == "no_match"
@@ -3284,6 +3294,7 @@ class TestEnrichSingleTable:
             table,
             input_row={"region": "west"},
             output_row={"region_factor": 1.0},
+            factor_input_dtypes={"region": pl.String},
         )
         assert result["default_used"] is True
         assert result["status"] == "default"
@@ -3313,6 +3324,7 @@ class TestEnrichRatingStepRealConfig:
             config,
             input_row={"region": "north"},
             output_row={"rate": 1.1},
+            factor_input_dtypes={"region": pl.String},
         )
         assert result["detail_type"] == "rating_step"
         assert result["matched_key"] == {"region": "north"}
@@ -3342,6 +3354,10 @@ class TestEnrichRatingStepRealConfig:
             config,
             input_row={"vehicle_age_band": "1-3", "cover_type": "comprehensive"},
             output_row={"vehicle_factor": 0.9},
+            factor_input_dtypes={
+                "vehicle_age_band": pl.String,
+                "cover_type": pl.String,
+            },
         )
 
         assert result["matched_key"] == {
@@ -3382,6 +3398,7 @@ class TestEnrichRatingStepRealConfig:
             config,
             input_row={"region": "north", "tier": "gold"},
             output_row={"rate_a": 1.1, "rate_b": 2.0, "combined_rate": 2.2},
+            factor_input_dtypes={"region": pl.String, "tier": pl.String},
         )
         assert result["detail_type"] == "rating_step"
         assert "combined" in result
@@ -3447,6 +3464,11 @@ class TestEnrichRatingStepRealConfig:
                 "channel_factor": 1.2,
                 "technical_premium_factor": 108.0,
                 "additive_adjustment": 12.1,
+            },
+            factor_input_dtypes={
+                "vehicle_age_band": pl.String,
+                "cover_type": pl.String,
+                "channel": pl.String,
             },
         )
 
@@ -3545,6 +3567,7 @@ class TestEnrichRatingStepRealConfig:
             config,
             input_row={"region": "north", "tier": "gold"},
             output_row={"rate_a": 1.1, "rate_b": 2.0},
+            factor_input_dtypes={"region": pl.String, "tier": pl.String},
         )
         assert "combined" not in result
 

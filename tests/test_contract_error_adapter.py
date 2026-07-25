@@ -12,6 +12,7 @@ from haute.errors import (
     LiveSwitchScenarioError,
     PreambleError,
     RatingExtremaUndefinedError,
+    RatingFactorDtypeContractError,
     RatingFactorMissingError,
     TraceCorrelationUnsupportedError,
 )
@@ -133,6 +134,23 @@ def _public_error_cases() -> list[tuple[BaseException, dict[str, object]]]:
                 "message": "rating factor is absent",
                 "table": "territory",
                 "factor": "region",
+            },
+        ),
+        (
+            RatingFactorDtypeContractError(
+                "saved rating factor dtype no longer matches the input",
+                table="territory",
+                factor="region",
+                saved_dtype={"kind": "String"},
+                input_dtype={"kind": "Categorical"},
+            ),
+            {
+                "error_code": "rating_factor_dtype_contract",
+                "message": "saved rating factor dtype no longer matches the input",
+                "table": "territory",
+                "factor": "region",
+                "saved_dtype": {"kind": "String"},
+                "input_dtype": {"kind": "Categorical"},
             },
         ),
         (

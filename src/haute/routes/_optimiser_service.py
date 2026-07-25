@@ -62,7 +62,11 @@ from haute._polars_utils import (
     streaming_collect,
     temporary_streaming_chunk_size,
 )
-from haute._rating import normalise_rating_key
+from haute._rating import (
+    normalise_rating_key,
+    rating_dtype_descriptor,
+    rating_dtype_from_descriptor,
+)
 from haute._types import (
     GraphNode,
     OnlineSolveResultLike,
@@ -1797,7 +1801,10 @@ def _ratebook_factor_table_name(columns: list[str]) -> str:
     return ":".join(columns)
 
 
-def _ratebook_factor_level_key(values: list[Any]) -> str:
+def _ratebook_factor_level_key(
+    values: list[Any],
+    dtypes: list[pl.DataType],
+) -> str:
     """Canonical level key for one observed factor-level tuple (3b.10).
 
     Components are canonicalised through the shared
@@ -1806,96 +1813,50 @@ def _ratebook_factor_level_key(values: list[Any]) -> str:
     (Float64 ``25.0`` -> ``"25"``; strings stay verbatim).
     """
     parts: list[str] = []
-    for value in values:
-        canonical = normalise_rating_key(value)
+    if len(dtypes) != len(values):
+        raise ValueError("Ratebook factor values and dtypes must have the same length.")
+    for value, dtype in zip(values, dtypes):
+        canonical = normalise_rating_key(value, dtype)
         if canonical is None:
             raise ValueError("Ratebook factor counts cannot be computed with null factor levels.")
         parts.append(canonical)
     return _RATEBOOK_FACTOR_LEVEL_SEPARATOR.join(parts)
 
 
-def _solver_level_component_candidates(component: str) -> list[tuple[str, int]]:
-    """Possible canonical forms of one solver-emitted level component.
-
-    Returns ``(candidate, collapsed)`` pairs: the verbatim component
-    (``collapsed == 0``) and, when the component parses as a float whose
-    canonical rating key differs (``"25.0"`` -> ``"25"``), the collapsed form
-    (``collapsed == 1``).  Which one is true depends on the source column's
-    dtype, which the emitted label alone cannot reveal — the canonical counts
-    keyset decides (see :func:`_canonical_ratebook_table_level`).
-    """
-    candidates = [(component, 0)]
-    try:
-        numeric = float(component)
-    except ValueError:
-        return candidates
-    collapsed = normalise_rating_key(numeric)
-    if collapsed is not None and collapsed != component:
-        candidates.append((collapsed, 1))
-    return candidates
-
-
 def _canonical_ratebook_table_level(
     name: str,
     level: Any,
     level_counts: dict[str, int],
+    dtypes: list[pl.DataType],
 ) -> str:
     """Save-time canonical key for a solver-emitted factor level (3b.10).
 
-    price-contour formats factor-table levels from the source values'
-    verbatim reprs, so a Float64 ``25.0`` arrives as the label ``"25.0"``
-    while the apply-side rating join canonicalises frame values to ``"25"``
-    (:func:`haute._rating.normalise_rating_key`).  ``level_counts`` is keyed
-    by those canonical forms, computed from the same typed factors frame the
-    solver grouped on — so the true canonical key for every emitted level is
-    present in it.
-
-    Resolution: each component (split on the unit separator) is either kept
-    verbatim or, when float-parseable, collapsed to its canonical rating key;
-    among the joined candidates present in ``level_counts``, the one
-    collapsing the FEWEST components wins.  That winner is unique and
-    correct: canonical keys never contain a float-typed component's verbatim
-    repr (``normalise_rating_key`` never formats a float as ``"25.0"``), so
-    every candidate found in the counts collapses at least the components the
-    true key collapses — the true key is the minimal one.  String labels that
-    were never numeric therefore stay verbatim (``"young"``; likewise a Utf8
-    column's literal ``"25.0"`` label, whose verbatim key IS in the counts).
-    A tie is impossible for counts built from a single-dtype frame and means
-    the counts no longer describe the solved frame — fail loudly.
+    price-contour stringifies typed factor values, which widens Float32 values
+    to Python Float64 representations. Reconstruct each emitted component
+    through the exact originating dtype from the solved factor artifact before
+    canonicalisation. ``level_counts`` was built from that same typed artifact,
+    so the resulting key must exist exactly; no candidate search or dtype
+    inference is permitted.
     """
-    if not isinstance(level, str):
-        # Hand-built tables may key levels with raw values; canonicalise the
-        # value exactly — no verbatim/collapsed ambiguity to resolve.
-        canonical = normalise_rating_key(level)
-        if canonical is None:
-            raise ValueError(f"Ratebook factor table {name!r} contains a null level.")
-        if canonical not in level_counts:
-            raise ValueError(
-                f"Ratebook factor counts missing for level {level!r} in factor table {name!r}."
-            )
-        return canonical
-
-    component_candidates = [
-        _solver_level_component_candidates(component)
-        for component in level.split(_RATEBOOK_FACTOR_LEVEL_SEPARATOR)
-    ]
-    matches: list[tuple[int, str]] = []
-    for combo in product(*component_candidates):
-        candidate = _RATEBOOK_FACTOR_LEVEL_SEPARATOR.join(part for part, _collapsed in combo)
-        if candidate in level_counts:
-            matches.append((sum(collapsed for _part, collapsed in combo), candidate))
-    if not matches:
+    if len(dtypes) == 1:
+        components = [level]
+    elif isinstance(level, str):
+        components = level.split(_RATEBOOK_FACTOR_LEVEL_SEPARATOR)
+    else:
+        raise ValueError(
+            f"Ratebook factor table {name!r} has a non-string composite level {level!r}."
+        )
+    if len(components) != len(dtypes):
+        raise ValueError(
+            f"Ratebook factor table {name!r} level {level!r} has {len(components)} "
+            f"component(s), expected {len(dtypes)}."
+        )
+    canonical = _ratebook_factor_level_key(components, dtypes)
+    if canonical not in level_counts:
         raise ValueError(
             f"Ratebook factor counts missing for level {level!r} in factor table {name!r}."
         )
-    min_collapsed = min(collapsed for collapsed, _candidate in matches)
-    winners = [candidate for collapsed, candidate in matches if collapsed == min_collapsed]
-    if len(winners) > 1:
-        raise ValueError(
-            f"Ratebook factor level {level!r} in factor table {name!r} is ambiguous after "
-            f"canonicalisation: it matches counted levels {sorted(winners)!r}."
-        )
-    return winners[0]
+    return canonical
 
 
 def _append_unique_factor_level(levels: list[str], seen: set[str], value: object) -> None:
@@ -2030,7 +1991,8 @@ def _ratebook_factor_level_counts(
         return {}
 
     is_lazy = isinstance(factors_df, pl.LazyFrame)
-    schema_names = set(factors_df.collect_schema().names()) if is_lazy else set(factors_df.columns)
+    schema = factors_df.collect_schema() if is_lazy else factors_df.schema
+    schema_names = set(schema.names())
     counts: dict[str, dict[str, int]] = {}
     for columns in factor_columns or []:
         if not columns:
@@ -2053,9 +2015,10 @@ def _ratebook_factor_level_counts(
             count_rows = grouped.to_dicts()
         table_counts: dict[str, int] = {}
         level_sources: dict[str, list[Any]] = {}
+        column_dtypes = [schema[column] for column in columns]
         for row in count_rows:
             values = [row[column] for column in columns]
-            level_key = _ratebook_factor_level_key(values)
+            level_key = _ratebook_factor_level_key(values, column_dtypes)
             if level_key in table_counts:
                 raise ValueError(
                     f"Ratebook factor levels {level_sources[level_key]!r} and {values!r} in "
@@ -2066,6 +2029,39 @@ def _ratebook_factor_level_counts(
             level_sources[level_key] = values
         counts[table_name] = table_counts
     return counts
+
+
+def _ratebook_factor_dtypes(
+    factors_df: Any | None,
+    factor_columns: list[list[str]] | None,
+) -> dict[str, list[dict[str, Any]]]:
+    """Describe every solved factor table's ordered originating dtypes."""
+    import polars as pl
+
+    if factors_df is None:
+        return {}
+    schema = (
+        factors_df.collect_schema() if isinstance(factors_df, pl.LazyFrame) else factors_df.schema
+    )
+    schema_names = set(schema.names())
+    result: dict[str, list[dict[str, Any]]] = {}
+    for columns in factor_columns or []:
+        if not columns:
+            continue
+        missing = [column for column in columns if column not in schema_names]
+        if missing:
+            raise ValueError(
+                "Ratebook factor dtype columns are missing from aligned factors "
+                f"dataframe: {missing}"
+            )
+        result[_ratebook_factor_table_name(columns)] = [
+            {
+                "column": column,
+                "dtype": rating_dtype_descriptor(schema[column]),
+            }
+            for column in columns
+        ]
+    return result
 
 
 def _ratebook_factor_level_counts_from_artifact(
@@ -2079,6 +2075,17 @@ def _ratebook_factor_level_counts_from_artifact(
         _scan_ratebook_factors_artifact(handle),
         factor_columns,
         streaming_chunk_size=streaming_chunk_size,
+    )
+
+
+def _ratebook_factor_dtypes_from_artifact(
+    handle: dict[str, Any],
+    factor_columns: list[list[str]] | None,
+) -> dict[str, list[dict[str, Any]]]:
+    """Read ratebook dtype metadata from the persisted solved-factor schema."""
+    return _ratebook_factor_dtypes(
+        _scan_ratebook_factors_artifact(handle),
+        factor_columns,
     )
 
 
@@ -2168,6 +2175,7 @@ def _serialise_ratebook_factor_table_rows(
     table: dict[Any, Any],
     level_counts: dict[str, int],
     factor_level_order: dict[str, list[str]],
+    factor_dtypes: list[pl.DataType],
 ) -> list[dict[str, Any]]:
     """Serialise one factor table's rows, ordered by configured level order.
 
@@ -2175,17 +2183,23 @@ def _serialise_ratebook_factor_table_rows(
     behind the ordered ones, matching the table-level ordering convention.
 
     Saved ``__factor_group__`` labels are CANONICAL (3b.10): solver-emitted
-    levels are translated through :func:`_canonical_ratebook_table_level`, so
-    a Float64 factor column's ``"25.0"`` saves as the ``"25"`` the apply join
-    will look up.  Two emitted levels collapsing to one canonical key fail
-    loudly — last-writer-wins would silently drop a solved rate.
+    levels are translated through :func:`_canonical_ratebook_table_level`
+    using the solved frame's exact ordered factor dtypes, so a Float32 value
+    widened by Python is reconstructed before the apply key is saved. Two
+    emitted levels collapsing to one canonical key fail loudly —
+    last-writer-wins would silently drop a solved rate.
     """
     configured_level_order = _ratebook_factor_table_level_order(name, factor_level_order)
     level_positions = {level: index for index, level in enumerate(configured_level_order)}
     ordered_rows: list[tuple[tuple[int, int], dict[str, Any]]] = []
     emitted_by_canonical: dict[str, Any] = {}
     for original_index, (level, scenario_value) in enumerate(table.items()):
-        level_key = _canonical_ratebook_table_level(name, level, level_counts)
+        level_key = _canonical_ratebook_table_level(
+            name,
+            level,
+            level_counts,
+            factor_dtypes,
+        )
         if level_key in emitted_by_canonical:
             raise ValueError(
                 f"Ratebook factor table {name!r} levels {emitted_by_canonical[level_key]!r} "
@@ -2214,10 +2228,46 @@ def _serialise_ratebook_factor_table_rows(
     return [row for _sort_key, row in sorted(ordered_rows, key=lambda item: item[0])]
 
 
+def _ratebook_serialisation_dtypes(
+    table_name: str,
+    records: object,
+) -> list[pl.DataType]:
+    """Validate and reconstruct one table's ordered factor dtype metadata."""
+    expected_columns = table_name.split(":")
+    if not isinstance(records, list) or len(records) != len(expected_columns):
+        raise ValueError(
+            f"Ratebook factor_dtypes for {table_name!r} must contain one ordered "
+            "record per factor column."
+        )
+    dtypes: list[pl.DataType] = []
+    for index, (expected_column, record) in enumerate(zip(expected_columns, records)):
+        if not isinstance(record, dict) or set(record) != {"column", "dtype"}:
+            raise ValueError(
+                f"Ratebook factor_dtypes for {table_name!r} has a malformed "
+                f"record at index {index}."
+            )
+        column = record.get("column")
+        descriptor = record.get("dtype")
+        if column != expected_column:
+            raise ValueError(
+                f"Ratebook factor_dtypes for {table_name!r} expected column "
+                f"{expected_column!r} at index {index}, got {column!r}."
+            )
+        try:
+            dtypes.append(rating_dtype_from_descriptor(descriptor))
+        except ValueError as exc:
+            raise ValueError(
+                f"Ratebook factor_dtypes for {table_name!r} has an invalid dtype "
+                f"descriptor at index {index}."
+            ) from exc
+    return dtypes
+
+
 def _serialise_ratebook_factor_tables(
     factor_tables: Any,
     factor_level_counts: dict[str, dict[str, int]],
     factor_level_order: dict[str, list[str]],
+    factor_dtypes: dict[str, list[dict[str, Any]]],
 ) -> dict[str, list[dict[str, Any]]]:
     """Serialise ratebook factor tables for the API, ordered by banding rules.
 
@@ -2226,6 +2276,8 @@ def _serialise_ratebook_factor_tables(
     """
     if not isinstance(factor_tables, dict):
         raise ValueError("Ratebook factor tables are invalid")
+    if not isinstance(factor_dtypes, dict):
+        raise ValueError("Ratebook factor_dtypes are invalid")
 
     serialised: dict[str, list[dict[str, Any]]] = {}
     for name, table in _sort_ratebook_factor_tables(factor_tables, factor_level_order):
@@ -2234,8 +2286,13 @@ def _serialise_ratebook_factor_tables(
         level_counts = factor_level_counts.get(name)
         if level_counts is None:
             raise ValueError(f"Ratebook factor counts missing for factor table {name!r}.")
+        table_dtypes = _ratebook_serialisation_dtypes(name, factor_dtypes.get(name))
         serialised[name] = _serialise_ratebook_factor_table_rows(
-            name, table, level_counts, factor_level_order
+            name,
+            table,
+            level_counts,
+            factor_level_order,
+            table_dtypes,
         )
     return serialised
 
@@ -2623,6 +2680,10 @@ def _solve_ratebook(
         factor_columns_valid,
         streaming_chunk_size=streaming_chunk_size,
     )
+    factor_dtypes = _ratebook_factor_dtypes_from_artifact(
+        ratebook_factors_handle,
+        factor_columns_valid,
+    )
     resolved_level_order = factor_level_order or {}
     existing_setup_chunking = store.require_job(job_id).get("setup_chunking")
     setup_chunking = (
@@ -2633,6 +2694,7 @@ def _solve_ratebook(
         solve_result.factor_tables,
         factor_level_counts,
         resolved_level_order,
+        factor_dtypes,
     )
 
     _finalize_solve_result(
@@ -2649,11 +2711,13 @@ def _solve_ratebook(
         extra_fields={
             "cd_iterations": solve_result.cd_iterations,
             "factor_tables": factor_tables_serialised,
+            "factor_dtypes": factor_dtypes,
             "clamp_rate": getattr(solve_result, "clamp_rate", None),
             "history": None,
         },
         extra_job_fields={
             "factor_level_counts": factor_level_counts,
+            "factor_dtypes": factor_dtypes,
             _RATEBOOK_FACTOR_LEVEL_ORDER_KEY: resolved_level_order,
             "setup_chunking": setup_chunking,
         },

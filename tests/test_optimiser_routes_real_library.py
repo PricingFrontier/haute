@@ -429,7 +429,8 @@ class TestRatebookApplyDetailContract:
             },
         )
         assert select_resp.status_code == 200, select_resp.text
-        tables = select_resp.json()["factor_tables"]
+        selected = select_resp.json()
+        tables = selected["factor_tables"]
         assert set(tables) == {"region"}
         rows = tables["region"]
         assert {row["__factor_group__"] for row in rows} == {"North", "South", "East"}
@@ -460,6 +461,9 @@ class TestRatebookApplyDetailContract:
         assert isinstance(saved["iterations"], int)
         assert isinstance(saved["cd_iterations"], int)
         assert saved["frontier_selection"]["point_index"] == 0
+        assert saved["factor_dtypes"] == {
+            "region": [{"column": "region", "dtype": {"kind": "String"}}]
+        }
         saved_rows = saved["factor_tables"]["region"]
         assert {row["__factor_group__"] for row in saved_rows} == {"North", "South", "East"}
 
@@ -478,6 +482,9 @@ class TestRatebookApplyDetailContract:
         assert isinstance(saved["cd_iterations"], int)
         assert saved["iterations"] is None
         assert isinstance(saved["clamp_rate"], float)
+        assert saved["factor_dtypes"] == {
+            "region": [{"column": "region", "dtype": {"kind": "String"}}]
+        }
         rows = saved["factor_tables"]["region"]
         assert {row["__factor_group__"] for row in rows} == {"North", "South", "East"}
         for row in rows:

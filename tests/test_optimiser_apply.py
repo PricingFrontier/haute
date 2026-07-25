@@ -16,6 +16,7 @@ import pytest
 from haute._parser_helpers import _build_node_config
 from haute._types import GraphNode, NodeData, NodeType
 from haute.codegen import _generate_node_code, _node_to_code
+from haute.errors import RatingFactorDtypeContractError
 from haute.executor import _apply_online, _apply_ratebook, _build_node_fn
 
 # ---------------------------------------------------------------------------
@@ -54,6 +55,9 @@ def _make_ratebook_artifact(version: str = "rb_v1") -> dict:
                 {"__factor_group__": "London", "optimal_scenario_value": 1.05},
                 {"__factor_group__": "Manchester", "optimal_scenario_value": 0.98},
             ],
+        },
+        "factor_dtypes": {
+            "region": [{"column": "region", "dtype": {"kind": "String"}}],
         },
     }
 
@@ -393,6 +397,9 @@ class TestExecutorRatebook:
             {"__factor_group__": "young", "optimal_scenario_value": 1.10},
             {"__factor_group__": "old", "optimal_scenario_value": 0.95},
         ]
+        artifact["factor_dtypes"]["age_band"] = [
+            {"column": "age_band", "dtype": {"kind": "String"}}
+        ]
         path = write_artifact(artifact)
         df = pl.DataFrame(
             {
@@ -510,6 +517,9 @@ class TestExecutorRatebook:
         artifact = _make_ratebook_artifact()
         artifact["factor_tables"]["age_band"] = [
             {"__factor_group__": "young", "optimal_scenario_value": 1.10},
+        ]
+        artifact["factor_dtypes"]["age_band"] = [
+            {"column": "age_band", "dtype": {"kind": "String"}}
         ]
         path = write_artifact(artifact)
         df = pl.DataFrame(
@@ -685,6 +695,12 @@ def _make_composite_artifact(version: str = "rb_comp_v1") -> dict:
                 },
             ],
         },
+        "factor_dtypes": {
+            "channel:age_band": [
+                {"column": "channel", "dtype": {"kind": "String"}},
+                {"column": "age_band", "dtype": {"kind": "String"}},
+            ],
+        },
     }
 
 
@@ -731,6 +747,13 @@ class TestExecutorRatebookComposite:
                     },
                 ],
             },
+            "factor_dtypes": {
+                "a:b:c": [
+                    {"column": "a", "dtype": {"kind": "String"}},
+                    {"column": "b", "dtype": {"kind": "String"}},
+                    {"column": "c", "dtype": {"kind": "String"}},
+                ]
+            },
         }
         df = pl.DataFrame({"a": ["x"], "b": ["y"], "c": ["z"]})
         result = _apply_ratebook(df.lazy(), artifact, "v1", "__ver__").collect()
@@ -741,6 +764,7 @@ class TestExecutorRatebookComposite:
         artifact["factor_tables"]["region"] = [
             {"__factor_group__": "London", "optimal_scenario_value": 1.20},
         ]
+        artifact["factor_dtypes"]["region"] = [{"column": "region", "dtype": {"kind": "String"}}]
         path = write_artifact(artifact)
         df = pl.DataFrame(
             {
@@ -791,6 +815,12 @@ class TestExecutorRatebookComposite:
                     {"__factor_group__": f"online{_SEP}25", "optimal_scenario_value": 1.15},
                 ],
             },
+            "factor_dtypes": {
+                "channel:age": [
+                    {"column": "channel", "dtype": {"kind": "String"}},
+                    {"column": "age", "dtype": {"kind": "Int64"}},
+                ]
+            },
         }
         df = pl.DataFrame({"channel": ["online"], "age": [25]})
         result = _apply_ratebook(df.lazy(), artifact, "v1", "__ver__").collect()
@@ -807,6 +837,9 @@ class TestExecutorRatebookComposite:
                 "channel:age_band": [
                     {"__factor_group__": "combo-1", "optimal_scenario_value": 1.30},
                 ],
+            },
+            "factor_dtypes": {
+                "channel:age_band": [{"column": "channel:age_band", "dtype": {"kind": "String"}}]
             },
         }
         df = pl.DataFrame({"channel:age_band": ["combo-1", "combo-2"]})
@@ -827,12 +860,18 @@ class TestRatebookCompositeContractErrors:
                     },
                 ],
             },
+            "factor_dtypes": {
+                "channel:age_band": [
+                    {"column": "channel", "dtype": {"kind": "String"}},
+                    {"column": "age_band", "dtype": {"kind": "String"}},
+                ]
+            },
         }
         df = pl.DataFrame({"channel": ["online"], "age_band": ["18-25"]})
         with pytest.raises(ValueError, match="channel:age_band"):
             _apply_ratebook(df.lazy(), artifact, "v1", "__ver__")
 
-    def test_separator_levels_under_non_composite_name_raise(self):
+    def test_separator_level_in_single_literal_column_is_unambiguous(self):
         artifact = {
             "version": "v1",
             "mode": "ratebook",
@@ -841,10 +880,11 @@ class TestRatebookCompositeContractErrors:
                     {"__factor_group__": f"north{_SEP}east", "optimal_scenario_value": 1.0},
                 ],
             },
+            "factor_dtypes": {"region": [{"column": "region", "dtype": {"kind": "String"}}]},
         }
-        df = pl.DataFrame({"region": ["north"]})
-        with pytest.raises(ValueError, match="'region'"):
-            _apply_ratebook(df.lazy(), artifact, "v1", "__ver__")
+        df = pl.DataFrame({"region": [f"north{_SEP}east"]})
+        result = _apply_ratebook(df.lazy(), artifact, "v1", "__ver__").collect()
+        assert result["region_optimised_factor"].to_list() == [1.0]
 
     def test_duplicate_component_columns_raise(self):
         artifact = {
@@ -855,9 +895,15 @@ class TestRatebookCompositeContractErrors:
                     {"__factor_group__": f"x{_SEP}y", "optimal_scenario_value": 1.0},
                 ],
             },
+            "factor_dtypes": {
+                "a:a": [
+                    {"column": "a", "dtype": {"kind": "String"}},
+                    {"column": "a", "dtype": {"kind": "String"}},
+                ]
+            },
         }
         df = pl.DataFrame({"a": ["x"]})
-        with pytest.raises(ValueError, match="'a:a'"):
+        with pytest.raises(RatingFactorDtypeContractError, match="'a:a'"):
             _apply_ratebook(df.lazy(), artifact, "v1", "__ver__")
 
     def test_empty_component_column_raises(self):
@@ -869,9 +915,15 @@ class TestRatebookCompositeContractErrors:
                     {"__factor_group__": f"online{_SEP}x", "optimal_scenario_value": 1.0},
                 ],
             },
+            "factor_dtypes": {
+                "channel:": [
+                    {"column": "channel", "dtype": {"kind": "String"}},
+                    {"column": "", "dtype": {"kind": "String"}},
+                ]
+            },
         }
         df = pl.DataFrame({"channel": ["online"]})
-        with pytest.raises(ValueError, match="'channel:'"):
+        with pytest.raises(RatingFactorDtypeContractError, match="'channel:'"):
             _apply_ratebook(df.lazy(), artifact, "v1", "__ver__")
 
     def test_missing_component_column_raises_named_error(self):
@@ -1034,6 +1086,7 @@ class TestApplyRatebookHelper:
                     {"bad_key": "X", "optimal_scenario_value": 0.8},
                 ],
             },
+            "factor_dtypes": {"area": [{"column": "area", "dtype": {"kind": "String"}}]},
         }
         df = pl.DataFrame({"area": ["London"]})
 

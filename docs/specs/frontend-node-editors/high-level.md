@@ -50,7 +50,9 @@ backend API modules own validation and persistence.
 The UI uses specialised editors rather than one schema-driven form because graph node contracts
 are structurally different. Shared helpers centralise the places where consistency matters:
 commit timing, clipboard parsing, path handling, rendered input-source chips, and normalisation
-of persisted banding/rating data. Lazy dispatch keeps editor code out of the initial canvas load.
+of persisted banding/rating data. Rating normalisation preserves optional factor-dtype
+descriptors and ordered entry rows so opening and saving a table cannot erase backend-owned
+lookup identity. Lazy dispatch keeps editor code out of the initial canvas load.
 
 Display identity and executable identity are one identity. `InputSource.name` is the input's
 single name — the chip text, the code argument, and the key persisted contracts use (the

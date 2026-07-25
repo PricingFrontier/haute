@@ -23,13 +23,16 @@ In scope:
   fill and a loud/quiet miss policy.
 - Combining multiple rating-table outputs (and an optional numeric base value)
   with `multiply` / `add` / `min` / `max`.
-- Config normalisation: expanding compact JSON-sidecar shapes (nested factor-value
-  maps for rating tables, key/value maps for categorical and breakpoints banding
-  rules) into the canonical row-array shape used at execution time, and compacting
-  the reverse direction for persistence.
-- The canonical string form of a rating-table factor key (`normalise_rating_key`)
-  and its Polars-expression twin, shared with trace enrichment and the optimiser's
-  ratebook apply path so every consumer agrees on what a lookup match is.
+- Config normalisation: rating-table entries persist in one canonical ordered
+  row-array shape; legacy nested factor-value maps remain readable and are
+  migrated to that shape on the next save. Categorical and breakpoints banding
+  rules retain their compact key/value-map sidecar shape.
+- The dtype-faithful canonical string form of a rating-table factor key
+  (`normalise_rating_key(value, dtype)`) and its Polars-expression twin, shared
+  with trace enrichment and the optimiser's ratebook save/apply path so every
+  consumer agrees on what a lookup match is. The originating dtype argument is
+  mandatory: a Python scalar is never treated as sufficient evidence of a
+  Float32, categorical, decimal, or temporal source dtype.
 
 Out of scope (owned by neighbouring components):
 
@@ -88,12 +91,19 @@ Out of scope (owned by neighbouring components):
   (3) the default policy, `onMissing: "error"`, raises
   `RatingTableMissError` naming the table, the missing key(s), and the
   affected row count.
-- Table lookup keys are compared as strings via a canonical form: booleans
-  become `"true"`/`"false"`, finite int-like floats inside the Int64 range
-  collapse to their integer digit string (`25.0` → `"25"`), other floats use
-  Polars' own float→string cast, and everything else is `str(value)`. This
-  lets a numeric factor column match string-keyed table entries deterministically.
-  `Date`/`Datetime` factor columns are rejected outright — not supported.
+- Table lookup keys are compared as strings through the factor column's
+  originating Polars dtype. Table-entry values are first coerced through that
+  dtype, then both the entry and input values use the same Polars expression:
+  booleans become `"true"`/`"false"`; finite int-like floats inside the Int64
+  range collapse to their integer digit string (`25.0` → `"25"`); other floats
+  use the originating width's own Polars string form; and exact, categorical,
+  string, decimal, and temporal values use Polars' cast for their declared
+  dtype. Null stays null and therefore never matches. Supported factor dtypes
+  are Float32/64, signed and unsigned integers, Boolean, String,
+  Categorical/Enum, Decimal, Date, Datetime, Time, Duration, and Null.
+- Lookup keys are materialised into collision-free temporary columns for the
+  join. The source factor columns are never overwritten and therefore never
+  need a lossy string-to-original-dtype revert.
 - Multiple entries sharing the same factor key keep the *last* one (matches
   the intent of "later edits win" in the entry list).
 - After the table stage, `combinedOutputs` combine named table output columns
@@ -127,21 +137,25 @@ Out of scope (owned by neighbouring components):
   each materialised batch containing misses. Banding rejects unknown operators;
   its remaining documented fail-soft behaviour is that a malformed non-list
   top-level `factors` value normalises to an empty no-op list.
-- **One canonical key form, shared everywhere.** `normalise_rating_key` (the
-  Python mirror) and `_rating_key_expr` (its Polars-expression twin, applied
-  to both join sides) are the single source of truth for "does this input
-  value match this table entry?" Trace enrichment and the optimiser's
-  ratebook-apply path import the same function rather than reimplementing key
-  comparison, so a trace's matched/default flag can never disagree with what
-  the actual join did. Agreement between the two forms is pinned by a
-  dedicated regression suite, `tests/test_rating_key_agreement.py` — see
-  [Testing](low-level.md#testing).
-- **Compact sidecar shapes for human-editable JSON.** Rating-table entries
-  persist as nested factor→factor→value maps (not flat row arrays) so a
-  hand-edited sidecar reads like a lookup table; categorical/breakpoints
-  banding rules persist as flat key→value maps for the same reason. Both
-  directions (`expand_*_from_sidecar` / `compact_*_for_sidecar`) are
-  round-trip symmetric — see [Edge cases](low-level.md#edge-cases-and-invariants).
+- **One dtype-faithful key form, shared everywhere.**
+  `normalise_rating_key(value, dtype)` evaluates the same `_rating_key_expr`
+  contract that the frame lookup uses, but does so with an eager scalar/Series
+  path rather than constructing and evaluating a one-row DataFrame expression
+  for every value. Every caller must supply the originating dtype; there is no
+  inference default. Trace enrichment supplies the exact consumed parent-frame
+  dtype. Saved ratebook artifacts carry an ordered `factor_dtypes` descriptor
+  for every factor table, and optimiser save/apply rejects missing metadata or
+  a save/apply dtype mismatch before constructing a lookup. This prevents a
+  dtype boundary from becoming an accepted neutral miss. Agreement is pinned by
+  one real-Polars fixture matrix shared by runtime, trace, and optimiser tests.
+- **Lossless canonical rating sidecars.** Rating-table entries persist as
+  ordered row arrays rather than JSON object-key maps. JSON object keys erase
+  the distinction between values such as numeric `25.0` and the string label
+  `"25.0"`, so the old nested shape cannot be a lossless canonical format.
+  Legacy nested maps are accepted on read, traversed in deterministic key order,
+  and written back as row arrays. Table order, factor order, entry order,
+  scalar identity, outputs, defaults, miss policy, and optional
+  `factorDtypes` metadata survive a canonical save/load round trip.
 - **Deduplicate before joining, not after.** A rating table's factor keys are
   deduplicated (`keep="last"`) before the join, so a left join can never fan
   out rows even if the config accidentally has two entries for the same
@@ -184,13 +198,15 @@ Out of scope (owned by neighbouring components):
 - **[tracing](../tracing/high-level.md)** — `_trace_enrichment.py` imports
   `normalise_rating_key` and `normalise_rating_tables`/`normalise_banding_factors`
   to build the structured `rating_step`/`banding` trace detail payloads shown
-  in the Calculation and Nodes tabs; it does not reimplement lookup or rule
-  matching.
+  in the Calculation and Nodes tabs. Rating enrichment also receives the exact
+  factor dtypes from the consumed parent frame; it does not reimplement lookup
+  or rule matching.
 - **modelling / optimiser** — the optimiser's ratebook-apply path is a
   downstream consumer, not a peer: it constructs synthetic rating-table specs
-  from a saved artifact's factor tables and feeds them through the same
-  `_apply_rating_table` primitive so optimised relativities are applied with
-  identical join/miss semantics to any other rating table.
+  from a saved artifact's factor tables and ordered `factor_dtypes` descriptors,
+  verifies those descriptors against the apply frame, and feeds the tables
+  through the same `_apply_rating_table` primitive so optimised relativities are
+  applied with identical join/miss semantics to any other rating table.
 
 ## Failure model
 
@@ -209,8 +225,16 @@ Out of scope (owned by neighbouring components):
   boundary, an unsupported combine operation, a non-finite/missing
   `combinedOutputs[].baseValue`, a duplicate `combinedOutputs[].outputColumn`):
   raise `ValueError` eagerly, before the frame is touched.
-- **Unsupported factor dtype** (`Date`/`Datetime`): raises `ValueError` naming
-  the table and factor.
+- **Unsupported factor dtype** (nested/container, binary, object, or unknown
+  dtype): raises `ValueError` naming the table, factor, and dtype before lookup
+  construction. The message also names the supported scalar dtype families and
+  tells the user to cast the factor upstream.
+- **Saved ratebook dtype contract missing or mismatched:** raises
+  `RatingFactorDtypeContractError(SchemaMismatchError)` before lookup
+  construction, identifying the table, factor, saved descriptor (or its
+  absence), and apply dtype. Legacy ratebook artifacts without
+  `factor_dtypes` must be re-solved and re-saved; they are not applied with
+  guesswork.
 - **Incomplete table or factor** (no factors, no entries, no output column, no
   rules): this is a *documented no-op*, not a failure — the frame passes
   through unchanged for that table/factor. When a rating table has an
@@ -224,11 +248,10 @@ Out of scope (owned by neighbouring components):
   > through `_apply_rating_step_outputs`, that skip is visible only through the
   > WARNING log.
 
-## Polars backend contracts (0.6.0)
+## Polars backend and rating-roadmap contracts (0.6.0)
 
-Remaining rating improvement work is tracked in the
-[rating roadmap](../../roadmap/rating.md). The following rating changes are approved before code
-work begins:
+The completed rating improvements and their evidence are tracked in the
+[rating roadmap](../../roadmap/rating.md). Their implementation contracts are:
 
 - A `min` or `max` combined output whose participating values are all null for any row
   raises `RatingExtremaUndefinedError(ExecutionError)` at runtime materialisation. The
@@ -247,7 +270,30 @@ work begins:
   collection; it is not an incomplete-table no-op. The transport contract maps this error
   to HTTP 422 and background `contract_error`.
 - A rating/combine plan resolves its input schema once and shares that resolved schema through every table and combined-output operation in that plan.
-- Optimising the miss guard (FR22) is conditional on a representative benchmark showing a material benefit. Any such change must retain lazy/streaming materialisation timing, exact `RatingTableMissError` type and message content, warning behaviour for `onMissing: "neutral"`, and missing-key/row-count reporting.
+- Runtime, trace, sidecar persistence, and optimiser save/apply use the
+  originating Polars dtype as part of rating-key identity. The differential
+  contract covers Float32/64, every signed/unsigned integer width, Boolean,
+  String, Categorical/Enum, Decimal, Date, Datetime, Time, Duration, Null,
+  null values, and non-finite floats. Scalar key normalisation requires that
+  dtype explicitly; production callers cannot opt into Python-scalar inference.
+- Saved ratebook factor-table labels are canonicalised component-by-component
+  through the exact ordered dtypes read from the solved factor artifact. The
+  serializer does not infer Float64 from widened Python values and does not use
+  a candidate/minimum-collapse heuristic to guess which counted key a solver
+  label represents.
+- Rating sidecars write ordered entry rows as their only canonical shape.
+  Legacy nested maps are read-only compatibility input. Canonical output is
+  deterministic, and a failed validation occurs before staging a write so the
+  prior sidecar remains byte-for-byte untouched.
+- Optimising the miss guard (FR22) is conditional on a representative benchmark
+  showing both at least 20% lookup-time overhead and at least 10 ms absolute
+  overhead at 100,000 or more rows in at least two repeated workload cells.
+  The workload spans one/three factors, hit-heavy/miss-heavy cases, and
+  eager/lazy entry points, and records environment, timings, semantic checks,
+  and an implement/no-change decision. Any accepted rewrite must retain
+  lazy/streaming materialisation timing, exact `RatingTableMissError` type and
+  message content, warning behaviour for `onMissing: "neutral"`, and
+  missing-key/row-count reporting.
 
 Required tests cover all-null `min`/`max` rows, mixed-null extrema, mixed valid/all-null
 batches, eager/lazy atomicity before publication and cache promotion, HTTP/background error
@@ -255,6 +301,6 @@ mapping, NaN rejection/non-masking after entry validation, absent factors for ev
 factor arity, one schema-resolution call across multi-table/combine plans, and error/warning
 parity for any benchmark-gated miss-guard change. The 0.6 pre-1.0 release notes must call out
 that all-null extrema and absent factors now fail loudly and name their exception and transport
-contracts. Non-goals:
-changing documented neutral-miss semantics, adding unsupported temporal factor support, or
-implementing a speculative miss-guard optimisation without benchmark evidence.
+contracts. Non-goals: changing documented neutral-miss semantics, coercing a
+mismatched saved ratebook dtype at apply, or implementing a speculative
+miss-guard optimisation without benchmark evidence.
