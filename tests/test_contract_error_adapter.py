@@ -4,9 +4,12 @@ import pytest
 
 from haute._output_assembler import OutputNestingKeyError
 from haute.errors import (
+    ChunkMemoryRiskError,
     ContractMismatchError,
+    ContractResolutionError,
     GroupByExecutionUnsupportedError,
     LiveSwitchScenarioError,
+    PreambleError,
     RatingExtremaUndefinedError,
     RatingFactorMissingError,
     TraceCorrelationUnsupportedError,
@@ -23,6 +26,41 @@ from haute.routes._contract_errors import (
 
 def _public_error_cases() -> list[tuple[BaseException, dict[str, object]]]:
     return [
+        (
+            PreambleError("preamble failed", source_line=7),
+            {"error_code": "preamble_failed", "message": "preamble failed", "source_line": 7},
+        ),
+        (
+            ContractResolutionError(
+                "Unable to resolve the node column contract.",
+                node_id="score",
+                node_type="modelScore",
+                failure_kind="artifact_store",
+            ),
+            {
+                "error_code": "contract_resolution_failed",
+                "message": "Unable to resolve the node column contract.",
+                "node_id": "score",
+                "node_type": "modelScore",
+                "failure_kind": "artifact_store",
+            },
+        ),
+        (
+            ChunkMemoryRiskError(
+                "One estimated target row exceeds the configured chunk byte budget.",
+                target_node_id="output",
+                estimated_target_row_bytes=2_048,
+                target_chunk_bytes=1_024,
+            ),
+            {
+                "error_code": "chunk_memory_risk",
+                "message": ("One estimated target row exceeds the configured chunk byte budget."),
+                "target_node_id": "output",
+                "reason_code": "single_row_exceeds_budget",
+                "estimated_target_row_bytes": 2_048,
+                "target_chunk_bytes": 1_024,
+            },
+        ),
         (
             GroupByExecutionUnsupportedError(
                 "group-by needs a full materialisation boundary",

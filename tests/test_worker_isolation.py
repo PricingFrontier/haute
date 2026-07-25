@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import threading
 import time
 from pathlib import Path
 
@@ -254,6 +255,36 @@ def test_isolated_job_supervisor_records_remote_failure() -> None:
     assert "bad input" in job["message"]
 
 
+def test_isolated_job_supervisor_terminalizes_unexpected_parent_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = JobStore()
+    job_id = store.create_job({"status": "running"})
+    supervisor = IsolatedJobSupervisor(JobLifecycle(store))
+    parent_error = RuntimeError("parent isolation bug")
+    reported: list[threading.ExceptHookArgs] = []
+
+    def raise_parent_error(*args: object, **kwargs: object) -> object:
+        raise parent_error
+
+    monkeypatch.setattr(threading, "excepthook", reported.append)
+    monkeypatch.setattr("haute.routes._background_jobs.run_isolated_worker", raise_parent_error)
+    thread = supervisor.launch(job_id, _return_payload, 2, 4)
+    thread.join_and_raise(timeout=10)
+
+    assert not thread.is_alive()
+    assert thread.infrastructure_failure is None
+    job = store.require_job(job_id)
+    assert job["status"] == "error"
+    assert job["terminal_reason"] == "error"
+    assert job["worker_error_class"] == "RuntimeError"
+    assert job["supervisor_error_class"] == "RuntimeError"
+    assert job["message"] == "Unexpected isolated worker supervisor failure."
+    assert "parent isolation bug" not in str(job)
+    assert len(reported) == 1
+    assert reported[0].exc_value is parent_error
+
+
 def test_isolated_job_supervisor_records_stopped_reason_and_runs_cleanup(
     tmp_path: Path,
 ) -> None:
@@ -284,33 +315,6 @@ def test_isolated_job_supervisor_records_stopped_reason_and_runs_cleanup(
     assert not temp_dir.exists()
 
 
-def test_isolated_job_supervisor_terminalises_unexpected_parent_error(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    store = JobStore()
-    job_id = store.create_job({"status": "running"})
-    supervisor = IsolatedJobSupervisor(JobLifecycle(store))
-
-    def fail_unexpectedly(*_args, **_kwargs):
-        raise RuntimeError("parent result collector broke")
-
-    monkeypatch.setattr(
-        "haute.routes._background_jobs.run_isolated_worker",
-        fail_unexpectedly,
-    )
-
-    thread = supervisor.launch(job_id, _return_payload, 1, 2)
-    thread.join_and_raise(timeout=10)
-
-    assert not thread.is_alive()
-    assert thread.infrastructure_failure is None
-    job = store.require_job(job_id)
-    assert job["status"] == "error"
-    assert job["terminal_reason"] == "error"
-    assert job["supervisor_error_class"] == "RuntimeError"
-    assert "parent result collector broke" in job["message"]
-
-
 def test_isolated_job_supervisor_preserves_higher_precedence_terminal_state(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -319,10 +323,12 @@ def test_isolated_job_supervisor_preserves_higher_precedence_terminal_state(
     lifecycle = JobLifecycle(store)
     assert lifecycle.transition(job_id, to="timed_out") is not None
     supervisor = IsolatedJobSupervisor(lifecycle)
+    reported: list[threading.ExceptHookArgs] = []
 
     def fail_late(*_args, **_kwargs):
         raise RuntimeError("late parent failure")
 
+    monkeypatch.setattr(threading, "excepthook", reported.append)
     monkeypatch.setattr("haute.routes._background_jobs.run_isolated_worker", fail_late)
 
     thread = supervisor.launch(job_id, _return_payload, 1, 2)
@@ -332,6 +338,8 @@ def test_isolated_job_supervisor_preserves_higher_precedence_terminal_state(
     assert job["status"] == "timed_out"
     assert job["terminal_reason"] == "timed_out"
     assert thread.infrastructure_failure is None
+    assert len(reported) == 1
+    assert str(reported[0].exc_value) == "late parent failure"
 
 
 def test_isolated_job_supervisor_rejects_incoherent_existing_terminal_state(

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 from typing import Any
@@ -11,6 +12,7 @@ import pytest
 from polars.testing import assert_frame_equal
 
 from haute._execution_context import ExecutionAdmission, ExecutionContext, ExecutionProfile
+from haute._polars_utils import streaming_collect
 from haute._ram_estimate import MaterialisationEstimate
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute.errors import GroupByExecutionUnsupportedError
@@ -18,7 +20,7 @@ from haute.execution import ProjectionRequest, execute_lazy_graph, plan_executio
 from haute.executor import _build_node_fn
 from haute.routes._train_service import _build_training_feature_selection
 
-pytestmark = pytest.mark.perf
+pytestmark = [pytest.mark.perf, pytest.mark.usefixtures("_widen_sandbox_root")]
 
 _ROWS_BY_SCALE = {"ci": 20_000, "1m": 1_000_000, "10m": 10_000_000}
 _UNUSED_COLUMNS = 12
@@ -158,6 +160,16 @@ def _semantic_summary(frame: pl.LazyFrame) -> pl.LazyFrame:
     )
 
 
+def _numeric_metric(metrics: dict[str, object], key: str) -> int:
+    value = metrics[key]
+    assert isinstance(value, int) and not isinstance(value, bool)
+    return value
+
+
+def _payload_size_bytes(value: object) -> int:
+    return len(json.dumps(value, separators=(",", ":"), sort_keys=True).encode("utf-8"))
+
+
 def _budget_rejection(graph: PipelineGraph) -> GroupByExecutionUnsupportedError:
     aggregate_graph = PipelineGraph(
         nodes=[
@@ -231,7 +243,11 @@ def test_generated_join_training_projection_scale_contract(
     assert set(joined_columns) == {*_TRAINING_COLUMNS, "region_key"}
     training_lf = joined_lf.select(_TRAINING_COLUMNS)
 
-    actual = _semantic_summary(training_lf).collect(engine="streaming")
+    actual = streaming_collect(
+        _semantic_summary(training_lf),
+        profile=context.profile,
+        execution_context=context,
+    )
     reference_lf = (
         pl.scan_parquet(base_path)
         .join(
@@ -272,22 +288,120 @@ def test_generated_join_training_projection_scale_contract(
     assert rejection.reason_code == "materialisation_exceeds_headroom"
     assert rejection.error_code == "group_by_execution_unsupported"
 
+    semantic_summary = actual.to_dicts()[0]
     request.node.user_properties.append(
         (
             "haute_perf_evidence",
             {
                 "scenario": "generated_join_training_projection",
                 "scale": scale,
-                "input_rows": rows,
-                "base_input_width": len(base_columns),
-                "lookup_input_width": len(lookup_columns),
+                "execution_profiles": [ExecutionProfile.TRAINING_PREP.value],
+                "input": {
+                    "rows": rows,
+                    "base_bytes": base_path.stat().st_size,
+                    "lookup_bytes": lookup_path.stat().st_size,
+                    "total_bytes": base_path.stat().st_size + lookup_path.stat().st_size,
+                    "schema_widths": {
+                        "base": len(base_columns),
+                        "lookup": len(lookup_columns),
+                        "training": len(_TRAINING_COLUMNS),
+                    },
+                },
                 "selected_strategy": strategy["strategy"],
                 "strategy_status": strategy["status"],
                 "source_widths": widths,
                 "feature_selection": feature_selection.model_dump(mode="json"),
-                "semantic_summary": actual.to_dicts()[0],
+                "semantic_summary": semantic_summary,
                 "product_observed_peak_rss_bytes": metrics["observed_peak_rss_bytes"],
+                "product_metrics": {
+                    "n_collects": _numeric_metric(metrics, "n_collects"),
+                    "n_checkpoints": _numeric_metric(metrics, "n_checkpoints"),
+                    "chunk_count": _numeric_metric(metrics, "chunk_count"),
+                    "output_bytes": actual.estimated_size(),
+                    "temp_disk_peak_bytes": None,
+                    "observed_peak_rss_bytes": metrics["observed_peak_rss_bytes"],
+                },
+                "admission": {"state": "not_admitted", "detail": None},
                 "budgeted_rejection": rejection.to_payload(),
+                "payload_bytes": _payload_size_bytes(semantic_summary),
+            },
+        )
+    )
+
+
+def test_ci_small_execution_profiles_smoke(
+    tmp_path: Path,
+    request: pytest.FixtureRequest,
+) -> None:
+    """Exercise every profile against one tiny shared input graph."""
+    base_path, lookup_path, base_columns, lookup_columns = _generate_inputs(tmp_path, 64)
+    graph = _scenario_graph(base_path, lookup_path, base_columns, lookup_columns)
+    profiles = sorted(profile.value for profile in ExecutionProfile)
+    profile_metrics: dict[str, dict[str, object]] = {}
+    output_bytes = 0
+    payload_bytes = 0
+    for profile_value in profiles:
+        context = ExecutionContext(
+            operation="polars_scale_cross_profile_smoke",
+            profile=ExecutionProfile(profile_value),
+        )
+        outputs, *_ = execute_lazy_graph(
+            graph,
+            _build_node_fn,
+            target_node_id="training_input",
+            source="batch",
+            required_columns_by_node={"training_input": frozenset(_TRAINING_COLUMNS)},
+            execution_context=context,
+        )
+        frame = streaming_collect(
+            outputs["training_input"].select(_TRAINING_COLUMNS),
+            profile=context.profile,
+            execution_context=context,
+        )
+        assert frame.height == 64
+        metrics = context.metrics_payload(status="completed")
+        profile_metrics[profile_value] = {
+            "n_collects": _numeric_metric(metrics, "n_collects"),
+            "n_checkpoints": _numeric_metric(metrics, "n_checkpoints"),
+            "chunk_count": _numeric_metric(metrics, "chunk_count"),
+            "observed_peak_rss_bytes": metrics["observed_peak_rss_bytes"],
+        }
+        output_bytes += frame.estimated_size()
+        payload_bytes += _payload_size_bytes(frame.to_dicts())
+
+    request.node.user_properties.append(
+        (
+            "haute_perf_evidence",
+            {
+                "scenario": "generated_join_training_cross_profile_smoke",
+                "scale": "ci-small",
+                "execution_profiles": profiles,
+                "input": {
+                    "rows": 64,
+                    "base_bytes": base_path.stat().st_size,
+                    "lookup_bytes": lookup_path.stat().st_size,
+                    "total_bytes": base_path.stat().st_size + lookup_path.stat().st_size,
+                    "schema_widths": {"base": len(base_columns), "lookup": len(lookup_columns)},
+                },
+                "profile_metrics": profile_metrics,
+                "product_metrics": {
+                    "n_collects": sum(
+                        _numeric_metric(metrics, "n_collects")
+                        for metrics in profile_metrics.values()
+                    ),
+                    "n_checkpoints": sum(
+                        _numeric_metric(metrics, "n_checkpoints")
+                        for metrics in profile_metrics.values()
+                    ),
+                    "chunk_count": sum(
+                        _numeric_metric(metrics, "chunk_count")
+                        for metrics in profile_metrics.values()
+                    ),
+                    "output_bytes": output_bytes,
+                    "temp_disk_peak_bytes": None,
+                },
+                "admission": {"state": "not_admitted", "detail": None},
+                "payload_bytes": payload_bytes,
             },
         )
     )

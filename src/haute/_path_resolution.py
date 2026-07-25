@@ -2,10 +2,34 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
+from functools import wraps
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal, TypeVar, cast
+
+from haute._sandbox import _get_project_root
+from haute._types import PipelineGraph
 
 PathPreference = Literal["project", "pipeline"]
+_CallableT = TypeVar("_CallableT", bound=Callable[..., Any])
+_RUNTIME_PROJECT_ROOT: ContextVar[Path | None] = ContextVar(  # pragma: no mutate
+    "haute_runtime_project_root",
+    default=None,
+)
+
+
+class RuntimePathError(ValueError):
+    """Base class for user-facing runtime path validation failures."""
+
+
+class MalformedRuntimePathError(RuntimePathError):
+    """Raised when a path cannot be parsed safely."""
+
+
+class RuntimePathOutsideProjectError(RuntimePathError):
+    """Raised when a runtime path resolves outside its execution root."""
 
 
 def _normalise_path_text(path: str | Path) -> str:  # pragma: no mutate
@@ -17,7 +41,7 @@ def _normalise_path_text(path: str | Path) -> str:  # pragma: no mutate
     """
     text = str(path)
     if "\x00" in text:
-        raise ValueError("Path contains an embedded null byte")
+        raise MalformedRuntimePathError("Path contains an embedded null byte")
     return text.replace("\\", "/")
 
 
@@ -41,18 +65,55 @@ def _infer_project_root(
     if project_root is not None:
         return Path(project_root).resolve()
 
-    cwd = Path.cwd().resolve()
+    current_project = _get_project_root().resolve()
     if not source_file:
-        return cwd
+        return current_project
 
     source = Path(_normalise_path_text(source_file))
     if not source.is_absolute():
-        return cwd
+        return current_project
 
+    lexical_source = source.absolute()
     resolved_source = source.resolve()
-    if resolved_source.is_relative_to(cwd):
-        return cwd
+    if lexical_source.is_relative_to(current_project) and not resolved_source.is_relative_to(
+        current_project
+    ):
+        raise RuntimePathOutsideProjectError("Pipeline source resolves outside the project root")
+    if resolved_source.is_relative_to(current_project):
+        return current_project
     return resolved_source.parent
+
+
+def current_runtime_project_root() -> Path:
+    """Return the execution-scoped root, falling back to the current project."""
+    return _RUNTIME_PROJECT_ROOT.get() or _get_project_root().resolve()
+
+
+@contextmanager
+def runtime_project_root_scope(
+    source_file: str | Path | None,  # pragma: no mutate
+) -> Iterator[Path]:
+    """Scope all builder path reads to the selected pipeline's project root."""
+    root = _infer_project_root(project_root=None, source_file=source_file)
+    token = _RUNTIME_PROJECT_ROOT.set(root)
+    try:
+        yield root
+    finally:
+        _RUNTIME_PROJECT_ROOT.reset(token)
+
+
+def runtime_project_root_scoped(function: _CallableT) -> _CallableT:
+    """Decorate an execution entry point whose first argument is a graph."""
+
+    @wraps(function)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        graph = args[0] if args else kwargs.get("graph")
+        if not isinstance(graph, PipelineGraph):
+            raise TypeError(f"{function.__name__} requires a PipelineGraph as its graph argument")
+        with runtime_project_root_scope(graph.source_file):
+            return function(*args, **kwargs)
+
+    return cast(_CallableT, wrapper)
 
 
 def _candidate_if_allowed(
@@ -60,7 +121,7 @@ def _candidate_if_allowed(
     project_root: Path,
     *,  # pragma: no mutate
     enforce_project_root: bool,  # pragma: no mutate
-) -> Path | None:
+) -> Path | None:  # pragma: no mutate
     resolved = candidate.resolve()
     if enforce_project_root and not resolved.is_relative_to(project_root):
         return None
@@ -74,7 +135,7 @@ def resolve_runtime_file_path(
     pipeline_dir: str | Path | None = None,  # pragma: no mutate
     project_root: str | Path | None = None,  # pragma: no mutate
     prefer: PathPreference = "project",
-    enforce_project_root: bool = False,
+    enforce_project_root: bool = True,
 ) -> Path:
     """Resolve a user-facing path for runtime execution.
 
@@ -89,7 +150,9 @@ def resolve_runtime_file_path(
     if raw.is_absolute():
         resolved = raw.resolve()
         if enforce_project_root and not resolved.is_relative_to(root):
-            raise ValueError(f"Path {raw_path!r} resolves outside the project root")
+            raise RuntimePathOutsideProjectError(
+                f"Path {raw_path!r} resolves outside the project root"
+            )
         return resolved
 
     pdir: Path | None
@@ -130,4 +193,4 @@ def resolve_runtime_file_path(
     if deduped:
         return deduped[0]
 
-    raise ValueError(f"Path {raw_path!r} resolves outside the project root")
+    raise RuntimePathOutsideProjectError(f"Path {raw_path!r} resolves outside the project root")

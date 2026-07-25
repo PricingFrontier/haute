@@ -172,7 +172,13 @@ directory before re-raising.
 **Runtime scoring (`_scorer.py::score_graph_lazy` → `score_graph`)**
 1. Resolve the graph's relative path configs against `graph.source_file`
    (`_resolve_runtime_graph_paths`) and attach bundled feature-contract paths to
-   `modelScore` node configs (`_attach_bundled_feature_contracts`).
+   `modelScore` node configs (`_attach_bundled_feature_contracts`). When a remapped
+   native model has no bundled feature-contract sidecar, load that local model through
+   the stat-gated deploy cache and attach its feature names plus any offset column as
+   the node's internal deploy-contract inputs before strategy planning. Projection and
+   boundary checks therefore describe the artifact actually served and never contact
+   the original MLflow run or registry merely to resolve a remapped model's columns.
+   A bundled feature contract remains authoritative when present.
 2. Build a `NodeBuildHooks(before_build=_intercept)` wrapper around the shared
    `_build_node_fn` builder. `_intercept` returns a replacement `(func_name, fn,
    returns_frame)` tuple — or `None` to fall through to the base builder — for six node
@@ -273,6 +279,11 @@ JSON have separate structured payloads. A body exactly at the configured limit i
 - **Container `output_fields` type check**: `score_graph_lazy` explicitly rejects
   `output_fields` passed as a bare `str`/`bytes` (which would otherwise silently iterate
   per-character) with `ValueError`.
+- **Deploy contract validity is row-count invariant.** `DEPLOY_LIVE` and `DEPLOY_BATCH` retain
+  different admission, cache, and bounded-I/O policies, but both use strict contract resolution.
+  A known builder-contract resolution failure therefore returns the same typed failure for a
+  single quote and a multi-row request. `score_graph_lazy` releases its owned execution context
+  when plan construction fails before a `DeployScorePlan` can be returned.
 - **Static sources must support bounded batch reads.** Schema-declared static plain JSON
   is rejected during bundle verification under `DEPLOY_BATCH`; undeclared JSON can pass an
   at-most-one-row `DEPLOY_LIVE` schema dry-run but fail when a multi-row request selects
@@ -303,6 +314,7 @@ JSON have separate structured payloads. A body exactly at the configured limit i
 | `RequestBodyLimitError` / `RequestBodyHeaderError` / `RequestBodyParseError` | `_request_limits.py::read_limited_json_body` | Caught explicitly in the generated container `app.py`'s `/quote` handler → HTTP 413 / 400 / 422 with a structured `to_payload()` body. |
 | `ExecutionAdmissionError` / `ExecutionMemoryLimitExceededError` | Raised by the execution-engine's admission layer, invoked via `admit_deploy_execution` | Caught in `/quote` → HTTP 507. |
 | `ExecutionCancelledError` | Execution engine | Caught in `/quote` → HTTP 499 with `job_id`/`operation` context. |
+| Public `HauteError` (`ContractResolutionError`, `PreambleError`, and other errors with a stable `error_code`) | Execution engine or preamble compilation during scoring | Caught in `/quote` → HTTP 422 with `to_payload()`; server routes use the same stable public payload contract. |
 | `NotImplementedError` | `__init__.py::_validate_target` (planned targets: `sagemaker`, `azure-ml`), `_container.py::_update_service` (platform-container service update not yet built) | Uncaught to caller; the `_update_service` message names the built image tag (which is pushed only when a registry was configured). |
 | Any other `Exception` | Runtime scoring inside `/quote` | Caught by the container's catch-all, logged via `logger.exception("deploy_quote_failed")`, returned as HTTP 500 with `error_code: "deploy_internal_error"`. The MLflow `pyfunc` predict path has no equivalent catch-all. |
 

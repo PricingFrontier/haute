@@ -31,6 +31,12 @@ OPAQUE_CONTRACT: ColumnContract = (None, None)
 #: sync with ``tests.fixtures.expected_contracts.OPAQUE_SENTINEL``.
 OPAQUE_CONTRACT_SENTINEL = "opaque"
 
+#: Private config key used only on the scorer's copied deploy graph. It
+#: carries the served model artifact's inputs into projection and boundary
+#: planning without changing the persisted graph or consulting its obsolete
+#: MLflow source.
+_DEPLOY_MODEL_INPUT_COLUMNS_CONFIG_KEY = "__haute_deploy_model_input_columns"
+
 
 @dataclass(frozen=True, slots=True)
 class Contract:

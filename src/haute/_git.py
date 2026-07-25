@@ -10,6 +10,8 @@ All git CLI interactions go through this module.  Routes never call
 
 from __future__ import annotations
 
+import getpass
+import inspect
 import io
 import os
 import re
@@ -18,10 +20,13 @@ import subprocess
 import tarfile
 import threading
 import time
+from collections.abc import Callable
 from datetime import UTC, datetime
-from functools import lru_cache
+from functools import lru_cache, wraps
 from pathlib import Path
+from typing import ParamSpec, TypeVar
 
+from haute._git_lock import repository_mutation
 from haute._gitignore_guard import ensure_gitignore_guards
 from haute._logging import get_logger
 from haute.errors import HauteError
@@ -56,7 +61,6 @@ from haute.schemas import (
     GitRestoreResponse,
     GitSetIdentityResponse,
     GitSetWorkingBranchResponse,
-    GitStatusResponse,
     GitUndeleteResponse,
     GitWorkingBranchesResponse,
     GitWorkingBranchResponse,
@@ -70,6 +74,9 @@ PROTECTED_BRANCHES = DEFAULT_PROTECTED_BRANCHES
 # Branch names created by haute follow: pricing/<user>/<slug>
 _BRANCH_PREFIX = "pricing"
 _ARCHIVE_PREFIX = "archive"
+
+_HISTORY_ARCHIVE_MAX_MEMBERS = 10_000
+_HISTORY_ARCHIVE_MAX_BYTES = 64 * 1024 * 1024
 
 # Minimum seconds between `git fetch` calls per (cwd, remote, kind).
 _FETCH_COOLDOWN_SECONDS: float = 30.0
@@ -165,6 +172,14 @@ class GitMilestoneForkError(GitDomainError):
         self.fork = fork
 
 
+class GitTransactionError(GitDomainError):
+    """A Git mutation failed and its compensating rollback also failed."""
+
+
+class GitHistoryReadError(GitDomainError):
+    """A historical pipeline could not be materialised or parsed safely."""
+
+
 # ---------------------------------------------------------------------------
 # Public result types
 # ---------------------------------------------------------------------------
@@ -177,6 +192,38 @@ class GitMilestoneForkError(GitDomainError):
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+_P = ParamSpec("_P")
+_R = TypeVar("_R")
+
+
+def _serialized_mutation(func: Callable[_P, _R]) -> Callable[_P, _R]:
+    """Run a public mutator under the repository's shared reentrant lock."""
+    signature = inspect.signature(func)
+
+    @wraps(func)
+    def wrapped(*args: _P.args, **kwargs: _P.kwargs) -> _R:
+        bound = signature.bind_partial(*args, **kwargs)
+        location = bound.arguments.get("cwd")
+        if location is None:
+            location = bound.arguments.get("project_root")
+        root = Path(location) if location is not None else Path.cwd()
+        with repository_mutation(root):
+            return func(*args, **kwargs)
+
+    return wrapped
+
+
+_GIT_LOCALE_ENV = {
+    "LC_ALL": "C",
+    "LANG": "C",
+    "LANGUAGE": "C",
+}
+
+
+def _git_env(overrides: dict[str, str] | None = None) -> dict[str, str]:
+    """Inherited process environment with stable Git output language."""
+    return {**os.environ, **_GIT_LOCALE_ENV, **(overrides or {})}
 
 
 def _run_git(
@@ -203,7 +250,7 @@ def _run_git(
         text=True,
         encoding="utf-8",
         cwd=cwd or Path.cwd(),
-        env={**os.environ, **env} if env else None,
+        env=_git_env(env),
     )
     if check and result.returncode != 0:
         stderr = result.stderr.strip()
@@ -221,6 +268,7 @@ def _run_git_ok(*args: str, cwd: Path | None = None) -> tuple[bool, str]:
         text=True,
         encoding="utf-8",
         cwd=cwd or Path.cwd(),
+        env=_git_env(),
     )
     return result.returncode == 0, result.stdout.strip()
 
@@ -240,17 +288,19 @@ def _run_git_rc(*args: str, cwd: Path | None = None) -> tuple[int, str]:
         text=True,
         encoding="utf-8",
         cwd=cwd or Path.cwd(),
+        env=_git_env(),
     )
     return result.returncode, result.stdout.strip()
 
 
 def _remote_env() -> dict[str, str]:
     """Environment for remote Git commands that must never prompt interactively."""
-    return {
-        **os.environ,
-        "GIT_TERMINAL_PROMPT": "0",
-        "GIT_SSH_COMMAND": "ssh -oBatchMode=yes -oConnectTimeout=10",
-    }
+    return _git_env(
+        {
+            "GIT_TERMINAL_PROMPT": "0",
+            "GIT_SSH_COMMAND": "ssh -oBatchMode=yes -oConnectTimeout=10",
+        }
+    )
 
 
 def _should_fetch(remote: str, cwd: Path | None = None, kind: str = "deploy") -> bool:
@@ -364,7 +414,7 @@ def _get_user_slug(cwd: Path | None = None) -> str:
     if ok and name:
         return _slugify(name)
     # Fallback to OS username
-    return _slugify(os.getlogin())
+    return _slugify(getpass.getuser())
 
 
 def _slugify(text: str) -> str:
@@ -504,77 +554,6 @@ def _generate_commit_message(changed_files: list[str]) -> str:
 def ensure_repo(cwd: Path | None = None) -> None:
     """Assert we're in a git repo."""
     _assert_git_repo(cwd)
-
-
-def get_status(cwd: Path | None = None) -> GitStatusResponse:
-    """Get the current git status for the panel."""
-    _assert_git_repo(cwd)
-
-    branch = _get_current_branch(cwd)
-    default = _get_default_branch(cwd)
-    user_slug = _get_user_slug(cwd)
-    is_main = _is_protected(branch)
-
-    # Read-only if on protected branch OR on someone else's branch
-    is_read_only = is_main or (not _is_own_branch(branch, user_slug) and branch != "HEAD")
-
-    # Changed files (both staged and unstaged)
-    ok, diff_output = _run_git_ok("status", "--porcelain", cwd=cwd)
-    changed_files: list[str] = []
-    if ok and diff_output:
-        for line in diff_output.splitlines():
-            # Porcelain format: "XY filename" — skip the 2-char status + space
-            if len(line) > 3:
-                changed_files.append(line[3:].strip().strip('"'))
-
-    # How far ahead is the default branch? Measured against the CANONICAL remote
-    # (X5: ``origin`` if present, else the sole remote, else none) so the baseline
-    # can't silently read a non-existent ``origin/<default>`` on a clone whose
-    # remote is named otherwise — that would report ``main_ahead=False`` (looks
-    # in-sync) when it genuinely can't tell.
-    main_ahead_by = 0
-    main_last_updated: str | None = None
-    remote = _canonical_remote(cwd)
-    if remote is not None and not is_main:
-        # Fetch silently — throttled per (cwd, remote) so frequent polls and
-        # concurrent worktrees neither hammer the remote nor starve each other
-        # (F7), and hardened so a slow / auth-walled remote can't hang the poll
-        # (F1). A failed fetch degrades to the last-known remote-tracking ref.
-        if _should_fetch(remote, cwd=cwd, kind="deploy"):
-            # Serialise the actual subprocess — git fetch races on the
-            # local object store if two processes run concurrently.
-            with _fetch_exec_lock:
-                _fetch_refs(remote, default, cwd=cwd)
-
-        ok_count, count_str = _run_git_ok(
-            "rev-list",
-            "--count",
-            f"HEAD..{remote}/{default}",
-            cwd=cwd,
-        )
-        if ok_count and count_str.isdigit():
-            main_ahead_by = int(count_str)
-
-        if main_ahead_by > 0:
-            ok_time, timestamp = _run_git_ok(
-                "log",
-                "-1",
-                "--format=%aI",
-                f"{remote}/{default}",
-                cwd=cwd,
-            )
-            if ok_time:
-                main_last_updated = timestamp
-
-    return GitStatusResponse(
-        branch=branch,
-        is_main=is_main,
-        is_read_only=is_read_only,
-        changed_files=changed_files,
-        main_ahead=main_ahead_by > 0,
-        main_ahead_by=main_ahead_by,
-        main_last_updated=main_last_updated,
-    )
 
 
 def _list_branches_with_tips(
@@ -862,6 +841,7 @@ def _clear_content_caches() -> None:
     _tree_of_cached.cache_clear()
 
 
+@_serialized_mutation
 def resolve_ledger(working: str, cwd: Path | None = None) -> str:
     """Find-or-create the ledger for *working* and check it out (HEAD-on-ledger).
 
@@ -886,6 +866,7 @@ def resolve_ledger(working: str, cwd: Path | None = None) -> str:
     return ledger
 
 
+@_serialized_mutation
 def commit_save(
     paths: list[str], working: str, cwd: Path | None = None, message: str | None = None
 ) -> str | None:
@@ -1002,6 +983,7 @@ def check_invariants(working: str, cwd: Path | None = None) -> list[str]:
     return violations
 
 
+@_serialized_mutation
 def merge_to_working(
     working: str,
     message: str,
@@ -1078,6 +1060,7 @@ def get_identity(cwd: Path | None = None) -> tuple[str | None, str | None]:
     )
 
 
+@_serialized_mutation
 def set_identity(
     user_name: str,
     user_email: str,
@@ -1140,7 +1123,9 @@ def working_branch_status(project_root: Path, cwd: Path | None = None) -> GitWor
     """Compute the working-branch readiness signal for a clone.
 
     state is one of:
+      - "no-repository" — the project has no Git repository
       - "unset"     — no working branch recorded
+      - "detached"  — HEAD resolves but is not attached to a branch
       - "invalid"   — recorded branch missing / ineligible / invariants violated
       - "divergent" — recorded branch fine, but HEAD is on neither it nor its
                       ledger (user moved the repo outside haute)
@@ -1148,8 +1133,16 @@ def working_branch_status(project_root: Path, cwd: Path | None = None) -> GitWor
     """
     from haute._git_state import read_working_branch
 
-    _assert_git_repo(cwd)
-    current = _get_current_branch(cwd)
+    if not _is_git_repo(cwd):
+        return GitWorkingBranchResponse(
+            state="no-repository",
+            current_branch="",
+            identity_set=False,
+        )
+
+    attached, current = _run_git_ok("symbolic-ref", "--short", "HEAD", cwd=cwd)
+    current = current if attached else ""
+    head_sha = _rev_parse("HEAD", cwd=cwd)
     name, email = get_identity(cwd)
     identity_set = name is not None and email is not None
     eligible = _eligible_working_branches(cwd)
@@ -1158,11 +1151,16 @@ def working_branch_status(project_root: Path, cwd: Path | None = None) -> GitWor
     base = GitWorkingBranchResponse(
         working_branch=working,
         current_branch=current,
+        head_sha=head_sha,
         eligible_branches=eligible,
         identity_set=identity_set,
         user_name=name,
         user_email=email,
     )
+
+    if not attached:
+        base.state = "detached"
+        return base
 
     if working is None:
         base.state = "unset"
@@ -1219,6 +1217,7 @@ _SEED_PATHSPECS: tuple[str, ...] = (
 )
 
 
+@_serialized_mutation
 def set_working_branch(
     branch: str,
     project_root: Path,
@@ -1236,12 +1235,17 @@ def set_working_branch(
     real ref.  The create path is all-or-nothing: a failure after the branch is
     created restores HEAD and deletes the half-created branch.
     """
-    from haute._git_state import write_working_branch
+    from haute._git_state import (
+        clear_working_branch,
+        read_working_branch,
+        write_working_branch,
+    )
 
     _assert_git_repo(cwd)
     _validate_ref_name(branch)
     _assert_eligible_working(branch)
 
+    previous_working = read_working_branch(project_root)
     exists = _rev_parse(branch, cwd=cwd) is not None
     if create:
         if exists:
@@ -1338,25 +1342,74 @@ def set_working_branch(
             _run_git("checkout", "-b", branch, cwd=cwd)
             resolve_ledger(branch, cwd=cwd)
             write_working_branch(project_root, branch)
-        except Exception:
+        except Exception as exc:
             # All-or-nothing: restore HEAD and delete the half-created branch so
             # a retry is not blocked and the repo is left in a coherent state.
             # Also drop the ledger resolve_ledger may have just spawned — leaving
             # it orphaned would let a later fork off an advanced default read as
             # `invalid` via check_invariants (tree mismatch vs the stale ledger).
-            if _rb_detach:
+            restored_head, _ = (
                 _run_git_ok("checkout", "--detach", _rb_ref, cwd=cwd)
-            else:
-                _run_git_ok("checkout", _rb_ref, cwd=cwd)
-            _run_git_ok("branch", "-D", branch, cwd=cwd)
-            _run_git_ok("branch", "-D", ledger_name(branch), cwd=cwd)
+                if _rb_detach
+                else _run_git_ok("checkout", _rb_ref, cwd=cwd)
+            )
+            removed_working = True
+            if _rev_parse(branch, cwd=cwd) is not None:
+                removed_working, _ = _run_git_ok("branch", "-D", branch, cwd=cwd)
+            removed_ledger = True
+            created_ledger = ledger_name(branch)
+            if _rev_parse(created_ledger, cwd=cwd) is not None:
+                removed_ledger, _ = _run_git_ok("branch", "-D", created_ledger, cwd=cwd)
+            try:
+                if previous_working is None:
+                    clear_working_branch(project_root)
+                else:
+                    write_working_branch(project_root, previous_working)
+                restored_state = True
+            except OSError:
+                restored_state = False
+            if not all((restored_head, removed_working, removed_ledger, restored_state)):
+                raise GitTransactionError(
+                    "Creating the working branch failed and automatic rollback was incomplete. "
+                    "Inspect the repository before retrying."
+                ) from exc
             raise
     else:
         if not exists:
             raise GitDomainError(f"Branch '{branch}' does not exist.")
-        # Adopt existing branch: spawn ledger if needed and move HEAD onto it.
-        resolve_ledger(branch, cwd=cwd)
-        write_working_branch(project_root, branch)
+        # Adopt existing branch transactionally: restore HEAD, association, and
+        # any newly-spawned ledger when either checkout or state replacement fails.
+        ledger = ledger_name(branch)
+        ledger_existed = _rev_parse(ledger, cwd=cwd) is not None
+        attached, previous_head = _run_git_ok("symbolic-ref", "--short", "HEAD", cwd=cwd)
+        if not attached:
+            previous_head = _run_git("rev-parse", "HEAD", cwd=cwd)
+        try:
+            resolve_ledger(branch, cwd=cwd)
+            write_working_branch(project_root, branch)
+        except Exception as exc:
+            restored_head, _ = (
+                _run_git_ok("checkout", previous_head, cwd=cwd)
+                if attached
+                else _run_git_ok("checkout", "--detach", previous_head, cwd=cwd)
+            )
+            removed_ledger = True
+            if not ledger_existed and _rev_parse(ledger, cwd=cwd) is not None:
+                removed_ledger, _ = _run_git_ok("branch", "-D", ledger, cwd=cwd)
+            try:
+                if previous_working is None:
+                    clear_working_branch(project_root)
+                else:
+                    write_working_branch(project_root, previous_working)
+                restored_state = True
+            except OSError:
+                restored_state = False
+            if not all((restored_head, removed_ledger, restored_state)):
+                raise GitTransactionError(
+                    "Selecting the working branch failed and automatic rollback was incomplete. "
+                    "Inspect the repository before retrying."
+                ) from exc
+            raise
 
     logger.info("working_branch_set", branch=branch, created=create)
 
@@ -1433,6 +1486,7 @@ def _wipe_volatile_artefacts(repo_root: Path) -> None:
             logger.warning("volatile_wipe_failed", path=name, error=str(exc))
 
 
+@_serialized_mutation
 def move_to_commit(sha: str, project_root: Path, cwd: Path | None = None) -> GitMoveResponse:
     """Move the working directory to *sha* — its tree becomes the repo state.
 
@@ -1527,6 +1581,11 @@ def _replay_onto(base: str, commits: list[str], cwd: Path | None = None) -> str:
     Empty *commits* returns base."""
     tip = base
     for c in commits:
+        if len(_commit_parents(c, cwd=cwd)) != 1:
+            raise GitDomainError(
+                "Create & Move cannot relocate history containing a merge commit. "
+                "Create a parallel branch instead so the merge topology is preserved."
+            )
         tree = _tree_of(c, cwd=cwd)
         msg = _run_git("log", "-1", "--format=%B", c, cwd=cwd)
         # \x1f (unit separator) can't appear in identity/date fields.
@@ -1545,21 +1604,27 @@ def _replay_onto(base: str, commits: list[str], cwd: Path | None = None) -> str:
     return tip
 
 
-def _rollback_fork(name: str, ledger: str, ledger_tip: str, cwd: Path | None = None) -> None:
-    """Best-effort undo of a partially-applied fork so a mid-sequence git failure
-    never leaves a half-forked, retry-blocked repo. Never raises: gets HEAD off
-    the new ledger, restores the spawning ledger to its prior tip, and drops the
-    new pair's refs."""
+def _rollback_fork(name: str, ledger: str, ledger_tip: str, cwd: Path | None = None) -> bool:
+    """Undo a partially-applied fork and report whether every step succeeded."""
+    succeeded = True
     new_ledger = ledger_name(name)
     if _get_current_branch(cwd) == new_ledger:
         # The spawning ledger isn't checked out → safe to restore it, then move
         # HEAD back so the new ledger can be deleted.
-        _run_git_ok("branch", "-f", ledger, ledger_tip, cwd=cwd)
-        _run_git_ok("checkout", ledger, cwd=cwd)
-    _run_git_ok("branch", "-D", new_ledger, cwd=cwd)
-    _run_git_ok("branch", "-D", name, cwd=cwd)
+        ok, _ = _run_git_ok("branch", "-f", ledger, ledger_tip, cwd=cwd)
+        succeeded &= ok
+        ok, _ = _run_git_ok("checkout", ledger, cwd=cwd)
+        succeeded &= ok
+    if _rev_parse(new_ledger, cwd=cwd) is not None:
+        ok, _ = _run_git_ok("branch", "-D", new_ledger, cwd=cwd)
+        succeeded &= ok
+    if _rev_parse(name, cwd=cwd) is not None:
+        ok, _ = _run_git_ok("branch", "-D", name, cwd=cwd)
+        succeeded &= ok
+    return succeeded
 
 
+@_serialized_mutation
 def create_working_branch(
     name: str,
     project_root: Path,
@@ -1686,8 +1751,18 @@ def create_working_branch(
         # has been relocated; the commits stay reachable via the new ledger).
         _run_git("branch", "-f", ledger, point, cwd=cwd)
         write_working_branch(project_root, name)
-    except (GitError, OSError):
-        _rollback_fork(name, ledger, ledger_tip, cwd=cwd)
+    except (GitError, OSError) as exc:
+        refs_restored = _rollback_fork(name, ledger, ledger_tip, cwd=cwd)
+        try:
+            write_working_branch(project_root, current)
+            state_restored = True
+        except OSError:
+            state_restored = False
+        if not refs_restored or not state_restored:
+            raise GitTransactionError(
+                "Creating and moving to the branch failed and automatic rollback was "
+                "incomplete. Inspect the repository before retrying."
+            ) from exc
         raise
     set_fork(project_root, name, point)  # back-link the spawning commit
     logger.info("working_branch_forked", name=name, at=point[:8], moved=True)
@@ -1705,6 +1780,7 @@ def create_working_branch(
 # ---------------------------------------------------------------------------
 
 
+@_serialized_mutation
 def commit_milestone(
     message: str,
     project_root: Path,
@@ -1833,17 +1909,48 @@ def _version_label_for(sha: str, cwd: Path | None = None) -> str | None:
 def _commit_meta(sha: str, cwd: Path | None = None) -> tuple[str, str, str, str]:
     """(full sha, short sha, subject, ISO author date) for *sha*.
 
-    Order is sha, short, subject, timestamp; the subject %s is the 3rd of 4
-    tab-separated fields and the timestamp %aI (4th) never contains a tab, so a
-    tab in the subject can't shift the columns when split with ``maxsplit=3``.
+    Fields are NUL-delimited and the subject is last, so tabs in an authored
+    commit message cannot shift metadata columns.
     Raises :class:`GitError` when git can't read the commit.
     """
-    ok, raw = _run_git_ok("show", "-s", "--format=%H%x09%h%x09%s%x09%aI", sha, cwd=cwd)
-    parts = raw.split("\t", 3)
+    ok, raw = _run_git_ok("show", "-s", "--format=%H%x00%h%x00%aI%x00%s", sha, cwd=cwd)
+    parts = raw.split("\0", 3)
     if not ok or len(parts) < 4:
         raise GitError(f"git show failed for {sha}")
-    full, short_sha, message, timestamp = parts
+    full, short_sha, timestamp, message = parts
     return full, short_sha, message, timestamp
+
+
+def _milestone_fold_points(
+    milestones: list[GitMilestoneEntry],
+    cwd: Path | None = None,
+) -> dict[str, str]:
+    """Return milestone → ledger fold-point from one parent-metadata query."""
+    if not milestones:
+        return {}
+    ok, raw = _run_git_ok(
+        "rev-list",
+        "--parents",
+        "--no-walk=unsorted",
+        *[milestone.sha for milestone in milestones],
+        cwd=cwd,
+    )
+    if not ok:
+        raise GitError("could not read milestone parent metadata")
+    parents_by_sha: dict[str, list[str]] = {}
+    for line in raw.splitlines():
+        fields = line.split()
+        if fields:
+            parents_by_sha[fields[0]] = fields[1:]
+    return {
+        milestone.sha: (
+            parents_by_sha[milestone.sha][1]
+            if len(parents_by_sha.get(milestone.sha, [])) >= 2
+            else milestone.sha
+        )
+        for milestone in milestones
+        if milestone.sha in parents_by_sha
+    }
 
 
 def _is_root_commit(sha: str, cwd: Path | None = None) -> bool:
@@ -1917,11 +2024,16 @@ def commit_context(
         # tip for a pending save). Distance is counted from that fold-point.
         latest: GitMilestoneEntry | None = None
         anchor: str | None = None
+        fold_points = _milestone_fold_points(milestones, cwd=cwd)
+        ok_ancestors, ancestors_raw = _run_git_ok("rev-list", full, cwd=cwd)
+        if not ok_ancestors:
+            raise GitError(f"could not read ancestors for {full}")
+        ancestors = set(ancestors_raw.split())
         for m in milestones:
             if m.sha == full:
                 continue
-            point = _ledger_point(m.sha, cwd=cwd)
-            if point != full and _is_ancestor(point, full, cwd=cwd):
+            point = fold_points.get(m.sha)
+            if point is not None and point != full and point in ancestors:
                 latest = m
                 anchor = point
                 break
@@ -1931,7 +2043,7 @@ def commit_context(
                 short_sha=latest.short_sha,
                 message=latest.message,
                 version_label=latest.version_label,
-                is_root=_is_root_commit(latest.sha, cwd=cwd),
+                is_root=latest.is_root,
             )
         else:
             # No milestone fold-point ancestor — anchor on the repo's root commit.
@@ -1999,9 +2111,8 @@ _SAVE_RECORD_SEP = "\x1e"
 def _parse_ledger_saves(range_spec: str, cwd: Path | None = None) -> list[GitLedgerSave]:
     """Parse ``git log -M --name-status`` over *range_spec* into save records.
 
-    Order in the format is sha, short, timestamp, **message last** so a tab in
-    the subject can't shift the columns (the name-status lines below use git's
-    own tab separators).
+    Commit metadata uses NUL-delimited fields; the name-status lines below keep
+    Git's own tab separators.
     """
     # core.quotepath=false: git otherwise octal-escapes + quotes non-ASCII paths
     # (e.g. a unicode config filename), which would surface as a mangled path in
@@ -2013,7 +2124,7 @@ def _parse_ledger_saves(range_spec: str, cwd: Path | None = None) -> list[GitLed
         "log",
         "-M",
         "--name-status",
-        f"--format={_SAVE_RECORD_SEP}%H%x09%h%x09%aI%x09%s",
+        f"--format={_SAVE_RECORD_SEP}%H%x00%h%x00%aI%x00%s",
         range_spec,
         cwd=cwd,
     )
@@ -2026,7 +2137,7 @@ def _parse_ledger_saves(range_spec: str, cwd: Path | None = None) -> list[GitLed
         if not block:
             continue
         lines = block.split("\n")
-        header = lines[0].split("\t", 3)
+        header = lines[0].split("\0", 3)
         if len(header) < 4:
             continue
         sha, short_sha, timestamp, message = header
@@ -2239,15 +2350,15 @@ _GraphLogRow = tuple[str, str, tuple[str, ...], str, str]
 
 
 def _graph_log_rows(tip: str, limit: int, cwd: Path | None = None) -> tuple[_GraphLogRow, ...]:
-    """Uncached windowed first-parent log below *tip*, parsed. The subject %s
-    sits LAST in the format so a tab in it can't shift the fixed columns.
+    """Uncached windowed first-parent log below *tip*, parsed. Commit fields
+    are NUL-delimited, so authored tabs cannot shift fixed metadata columns.
     Raises :class:`GitError` when the ref/object is unreadable (so the cached
     wrapper never memoises a failure)."""
     ok, raw = _run_git_ok(
         "log",
         "--first-parent",
         f"--max-count={limit}",
-        "--format=%H%x09%h%x09%P%x09%aI%x09%s",
+        "--format=%H%x00%h%x00%P%x00%aI%x00%s%x00",
         tip,
         "--",
         cwd=cwd,
@@ -2255,11 +2366,13 @@ def _graph_log_rows(tip: str, limit: int, cwd: Path | None = None) -> tuple[_Gra
     if not ok:
         raise GitError(f"git log failed for {tip}")
     rows: list[_GraphLogRow] = []
-    for line in raw.splitlines():
-        parts = line.split("\t", 4)
-        if len(parts) < 5:
-            continue
+    fields = raw.split("\0")
+    for index in range(0, len(fields) - 1, 5):
+        parts = fields[index : index + 5]
+        if len(parts) != 5:
+            break
         sha, short_sha, parents_raw, timestamp, message = parts
+        sha = sha.lstrip("\n")
         rows.append((sha, short_sha, tuple(parents_raw.split()), timestamp, message))
     return tuple(rows)
 
@@ -2416,28 +2529,99 @@ def graph_topology(
 # ---------------------------------------------------------------------------
 
 
+def _historical_artifact_paths(sha: str, cwd: Path | None = None) -> list[str]:
+    """Paths needed to discover and parse a historical pipeline."""
+    raw = _run_git("ls-tree", "-r", "-z", "--name-only", sha, cwd=cwd)
+    selected: list[str] = []
+    for name in raw.split("\0"):
+        if not name:
+            continue
+        path = Path(name)
+        parts = path.parts
+        if (
+            name == "haute.toml"
+            or path.suffix == ".py"
+            or name.endswith(".haute.json")
+            or "config" in parts
+            or (parts and parts[0] == "prompts")
+        ):
+            selected.append(name)
+    return selected
+
+
+def _extract_history_tar(payload: bytes, dest: Path) -> None:
+    """Portably extract regular files/directories after containment checks."""
+    root = dest.resolve()
+    try:
+        with tarfile.open(fileobj=io.BytesIO(payload)) as tar:
+            validated: list[tuple[tarfile.TarInfo, Path]] = []
+            extracted_bytes = 0
+            for member_number, member in enumerate(tar, start=1):
+                if member_number > _HISTORY_ARCHIVE_MAX_MEMBERS:
+                    raise GitHistoryReadError(
+                        "The selected version contains too many archived files."
+                    )
+                target = (dest / member.name).resolve()
+                if target != root and root not in target.parents:
+                    raise GitHistoryReadError(
+                        "The selected version contains an unsafe archive path."
+                    )
+                if member.isdir():
+                    validated.append((member, target))
+                    continue
+                if not member.isfile():
+                    raise GitHistoryReadError(
+                        "The selected version contains an unsupported linked or special file."
+                    )
+                if member.size < 0:
+                    raise GitHistoryReadError(
+                        "The selected version contains an invalid archived file size."
+                    )
+                extracted_bytes += member.size
+                if extracted_bytes > _HISTORY_ARCHIVE_MAX_BYTES:
+                    raise GitHistoryReadError(
+                        "The selected version's pipeline files are too large to extract safely."
+                    )
+                validated.append((member, target))
+
+            for member, target in validated:
+                if member.isdir():
+                    target.mkdir(parents=True, exist_ok=True)
+                    continue
+                source = tar.extractfile(member)
+                if source is None:
+                    raise GitHistoryReadError(
+                        "The selected version contains an unreadable archived file."
+                    )
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with source, target.open("wb") as output:
+                    shutil.copyfileobj(source, output)
+    except (tarfile.TarError, OSError) as exc:
+        raise GitHistoryReadError(
+            "The selected version's pipeline files could not be extracted."
+        ) from exc
+
+
 def archive_commit(sha: str, dest: Path, cwd: Path | None = None) -> None:
-    """Extract the whole tree of *sha* into *dest* via ``git archive`` — a pure
-    read of object storage that never touches HEAD, the index, or the working
-    tree (S11). *dest* must already exist. Used to parse a commit's pipeline
-    (with its config + submodel files) for a read-only view."""
+    """Extract only pipeline artifacts from *sha* without changing HEAD."""
     _assert_git_repo(cwd)
     _validate_ref_name(sha)
     if _rev_parse(sha, cwd=cwd) is None:
         raise GitDomainError(f"No commit found for '{sha}'.")
+    paths = _historical_artifact_paths(sha, cwd=cwd)
+    if not paths:
+        return
     proc = subprocess.run(
-        ["git", "archive", "--format=tar", sha],
+        ["git", "archive", "--format=tar", sha, "--", *[f":(literal){path}" for path in paths]],
         cwd=cwd or Path.cwd(),
         capture_output=True,
+        env=_git_env(),
     )
     if proc.returncode != 0:
         stderr = proc.stderr.decode(errors="replace").strip()
         logger.warning("git_archive_failed", sha=sha, stderr=stderr)
         raise GitError(stderr or "git archive failed")
-    # The archive is git-produced from our own repo (repo-relative paths); the
-    # data filter is belt-and-braces against absolute/traversal members.
-    with tarfile.open(fileobj=io.BytesIO(proc.stdout)) as tar:
-        tar.extractall(dest, filter="data")
+    _extract_history_tar(proc.stdout, dest)
 
 
 # ---------------------------------------------------------------------------
@@ -2493,6 +2677,7 @@ def _ahead_behind(
     return leg.ahead, leg.behind
 
 
+@_serialized_mutation
 def fetch_pair(remote: str, working: str, cwd: Path | None = None) -> bool:
     """Refresh the working pair's remote-tracking refs (oW + oL) so divergence
     detection reads fresh data (F5). Demand-driven and throttled per
@@ -2539,8 +2724,8 @@ def _redact_remote_url(url: str) -> str:
 def list_remotes(project_root: Path, cwd: Path | None = None) -> GitRemotesResponse:
     """Existing remotes for the push dropdown and the passive behind-remote
     surface, each annotated with the working branch's AND its ledger's divergence
-    vs that remote (F6). A throttled, hardened pair fetch (F5) freshens the
-    tracking refs first; the counts themselves read local refs only."""
+    vs that remote (F6), using only locally-known remote-tracking refs. Merely
+    opening or refreshing the panel never performs network I/O."""
     from haute._git_state import read_working_branch
 
     _assert_git_repo(cwd)
@@ -2551,7 +2736,6 @@ def list_remotes(project_root: Path, cwd: Path | None = None) -> GitRemotesRespo
         working_leg: GitRemoteLeg | None = None
         ledger_leg: GitRemoteLeg | None = None
         if working:
-            fetch_pair(name, working, cwd=cwd)  # F5: freshen oW + oL (throttled)
             working_leg = _leg_state(working, name, cwd=cwd)
             ledger_leg = _leg_state(ledger_name(working), name, cwd=cwd)
         remotes.append(
@@ -2900,6 +3084,7 @@ def _fetch_expected_default(remote: str, branch: str, cwd: Path | None = None) -
     return sha
 
 
+@_serialized_mutation
 def push_working_pair(remote: str, project_root: Path, cwd: Path | None = None) -> GitPushResponse:
     """Deliberately publish managed history to an existing *remote* atomically.
 
@@ -3018,6 +3203,7 @@ def push_working_pair(remote: str, project_root: Path, cwd: Path | None = None) 
     )
 
 
+@_serialized_mutation
 def fast_forward_pair(
     remote: str, project_root: Path, cwd: Path | None = None
 ) -> GitFastForwardResponse:
@@ -3078,18 +3264,43 @@ def fast_forward_pair(
     _wipe_volatile_artefacts(cwd or Path.cwd())
 
     fast_forwarded: list[str] = []
-    # Ledger first (it's HEAD; merge --ff-only advances it and the working tree).
-    if l_leg.status == "behind":
-        _run_git("merge", "--ff-only", f"refs/remotes/{remote}/{ledger}", cwd=cwd)
-        fast_forwarded.append(ledger)
-    # Working ref (not checked out): CAS-advance it to its remote tip.
-    if w_leg.status == "behind":
-        old = _rev_parse(working, cwd=cwd)
-        target = _rev_parse(f"refs/remotes/{remote}/{working}", cwd=cwd)
-        if old is None or target is None:
-            raise GitError("could not resolve refs for the working-branch fast-forward")
-        _run_git("update-ref", f"refs/heads/{working}", target, old, cwd=cwd)
-        fast_forwarded.append(working)
+    old_ledger = _rev_parse(ledger, cwd=cwd)
+    old_working = _rev_parse(working, cwd=cwd)
+    ledger_advanced = False
+    working_advanced = False
+    try:
+        # Ledger first (it's HEAD; merge --ff-only advances it and the working tree).
+        if l_leg.status == "behind":
+            _run_git("merge", "--ff-only", f"refs/remotes/{remote}/{ledger}", cwd=cwd)
+            ledger_advanced = True
+            fast_forwarded.append(ledger)
+        # Working ref (not checked out): CAS-advance it to its remote tip.
+        if w_leg.status == "behind":
+            target = _rev_parse(f"refs/remotes/{remote}/{working}", cwd=cwd)
+            if old_working is None or target is None:
+                raise GitError("could not resolve refs for the working-branch fast-forward")
+            _run_git("update-ref", f"refs/heads/{working}", target, old_working, cwd=cwd)
+            working_advanced = True
+            fast_forwarded.append(working)
+    except GitError as exc:
+        restored = True
+        if working_advanced and old_working is not None:
+            ok, _ = _run_git_ok(
+                "update-ref",
+                f"refs/heads/{working}",
+                old_working,
+                cwd=cwd,
+            )
+            restored &= ok
+        if ledger_advanced and old_ledger is not None:
+            ok, _ = _run_git_ok("reset", "--hard", old_ledger, cwd=cwd)
+            restored &= ok
+        if not restored:
+            raise GitTransactionError(
+                "Catch-up failed and automatic rollback was incomplete. Inspect the "
+                "repository before retrying."
+            ) from exc
+        raise
 
     logger.info("fast_forwarded_pair", remote=remote, refs=fast_forwarded)
     return GitFastForwardResponse(
@@ -3129,22 +3340,26 @@ def _rollback_branch_away(
     created_w: bool,
     created_l: bool,
     cwd: Path | None = None,
-) -> None:
-    """Best-effort undo of a partially-applied branch-away so a mid-sequence
-    failure never strands the pair under the dated name. Never raises: drop any
-    freshly-created canonical refs, rename the set-aside pair back, and restore
-    HEAD onto the original ledger."""
+) -> bool:
+    """Undo a partially-applied branch-away and report complete success."""
+    succeeded = True
     if created_l:
-        _run_git_ok("branch", "-D", ledger, cwd=cwd)
+        ok, _ = _run_git_ok("branch", "-D", ledger, cwd=cwd)
+        succeeded &= ok
     if created_w:
-        _run_git_ok("branch", "-D", working, cwd=cwd)
+        ok, _ = _run_git_ok("branch", "-D", working, cwd=cwd)
+        succeeded &= ok
     if renamed_l:
-        _run_git_ok("branch", "-m", aside_ledger, ledger, cwd=cwd)
+        ok, _ = _run_git_ok("branch", "-m", aside_ledger, ledger, cwd=cwd)
+        succeeded &= ok
     if renamed_w:
-        _run_git_ok("branch", "-m", aside, working, cwd=cwd)
-    _run_git_ok("checkout", ledger, cwd=cwd)
+        ok, _ = _run_git_ok("branch", "-m", aside, working, cwd=cwd)
+        succeeded &= ok
+    ok, _ = _run_git_ok("checkout", ledger, cwd=cwd)
+    return succeeded and ok
 
 
+@_serialized_mutation
 def branch_away(remote: str, project_root: Path, cwd: Path | None = None) -> GitBranchAwayResponse:
     """M3: resolve a remote fork by setting the local pair aside under a dated name
     and repointing the canonical name to the remote's tips — both lineages
@@ -3221,8 +3436,8 @@ def branch_away(remote: str, project_root: Path, cwd: Path | None = None) -> Git
             # X2: no remote ledger — respawn it at the adopted working tip + checkout.
             resolve_ledger(working, cwd=cwd)
         write_working_branch(project_root, working)  # canonical name unchanged
-    except (GitError, OSError):
-        _rollback_branch_away(
+    except (GitError, OSError) as exc:
+        restored = _rollback_branch_away(
             working,
             ledger,
             aside,
@@ -3233,6 +3448,11 @@ def branch_away(remote: str, project_root: Path, cwd: Path | None = None) -> Git
             created_l=created_l,
             cwd=cwd,
         )
+        if not restored:
+            raise GitTransactionError(
+                "Spinning off the local branch failed and automatic rollback was "
+                "incomplete. Inspect the repository before retrying."
+            ) from exc
         raise
 
     base = _merge_base(old_w, remote_w, cwd=cwd)
@@ -3322,15 +3542,16 @@ def _switch_away_if_active(
     project_root: Path,
     cwd: Path | None = None,
     discard: bool = False,
-) -> None:
+) -> bool:
     """Before archiving/deleting a pair, move HEAD off it (a checked-out branch
-    can't be renamed/deleted) and forget it as the working branch if recorded.
+    can't be renamed/deleted). Return whether clone state records this pair, so
+    the caller can clear that state inside its wider transaction.
 
     When *discard* (a confirmed delete — the branch is going away anyway), a
     dirty tree is force-discarded with the checkout. Otherwise tracked
     modifications refuse the move with actionable guidance, since a lossless
     archive must not silently throw away volatile work (S12/S38)."""
-    from haute._git_state import clear_working_branch, read_working_branch
+    from haute._git_state import read_working_branch
 
     recorded = read_working_branch(project_root)
     if recorded == working or _get_current_branch(cwd) in (working, ledger):
@@ -3344,12 +3565,20 @@ def _switch_away_if_active(
                     "You have unsaved changes on this branch. Save or discard "
                     "them before archiving it."
                 )
-            _run_git("checkout", _get_default_branch(cwd), cwd=cwd)
+        default = _get_default_branch(cwd)
+        if default not in (working, ledger) and _rev_parse(default, cwd=cwd) is not None:
+            checkout_args = (("-f",) if discard else ()) + (default,)
         else:
-            # Confirmed delete: discard the dirty tree along with the branch.
-            _run_git("checkout", "-f", _get_default_branch(cwd), cwd=cwd)
-        if recorded == working:
-            clear_working_branch(project_root)
+            # An adopted repository may have no branch outside its active pair.
+            # Detach at the pair's current commit so the refs can still be
+            # renamed/deleted without inventing a branch or failing checkout.
+            fallback = _rev_parse(ledger, cwd=cwd) or _rev_parse(working, cwd=cwd)
+            if fallback is None:
+                raise GitDomainError("No safe commit is available to leave the active branch.")
+            checkout_args = (("-f",) if discard else ()) + ("--detach", fallback)
+        _run_git("checkout", *checkout_args, cwd=cwd)
+        return recorded == working
+    return False
 
 
 def _unique_archive_name(working: str, cwd: Path | None = None) -> str:
@@ -3375,6 +3604,7 @@ def _unique_archive_name(working: str, cwd: Path | None = None) -> str:
     return candidate
 
 
+@_serialized_mutation
 def archive_working_pair(
     branch: str, project_root: Path, cwd: Path | None = None
 ) -> GitArchiveResponse:
@@ -3392,24 +3622,71 @@ def archive_working_pair(
     if working.startswith(f"{_ARCHIVE_PREFIX}/"):
         raise GitDomainError(f"'{working}' is already archived.")
 
+    from haute._git_state import (
+        clear_working_branch,
+        read_forks,
+        read_working_branch,
+        remove_fork,
+        rename_fork,
+        set_fork,
+        write_working_branch,
+    )
+
     ledger = ledger_name(working)
-    _switch_away_if_active(working, ledger, project_root, cwd=cwd)
-
-    # Both target names are guaranteed free, so neither rename collides; if the
-    # ledger rename still fails, roll back the working rename so we never leave a
-    # half-archived, mis-paired state.
+    previous_working = read_working_branch(project_root)
     archived = _unique_archive_name(working, cwd=cwd)
-    _run_git("branch", "-m", working, archived, cwd=cwd)
-    if _rev_parse(ledger, cwd=cwd) is not None:
-        try:
+    forks_before = read_forks(project_root)
+    fork_snapshot = {
+        working: forks_before.get(working),
+        archived: forks_before.get(archived),
+    }
+    head_attached, previous_head = _run_git_ok("symbolic-ref", "--short", "HEAD", cwd=cwd)
+    if not head_attached:
+        previous_head = _run_git("rev-parse", "HEAD", cwd=cwd)
+
+    renamed_working = renamed_ledger = False
+    try:
+        if _switch_away_if_active(working, ledger, project_root, cwd=cwd):
+            clear_working_branch(project_root)
+        _run_git("branch", "-m", working, archived, cwd=cwd)
+        renamed_working = True
+        if _rev_parse(ledger, cwd=cwd) is not None:
             _run_git("branch", "-m", ledger, ledger_name(archived), cwd=cwd)
-        except GitError:
-            _run_git_ok("branch", "-m", archived, working, cwd=cwd)
-            raise
+            renamed_ledger = True
+        rename_fork(project_root, working, archived)  # keep the back-link valid
+    except (GitError, OSError) as exc:
+        restored = True
+        if renamed_ledger:
+            ok, _ = _run_git_ok("branch", "-m", ledger_name(archived), ledger, cwd=cwd)
+            restored &= ok
+        if renamed_working:
+            ok, _ = _run_git_ok("branch", "-m", archived, working, cwd=cwd)
+            restored &= ok
+        try:
+            for name, value in fork_snapshot.items():
+                if value is None:
+                    remove_fork(project_root, name)
+                else:
+                    set_fork(project_root, name, value)
+            if previous_working is None:
+                clear_working_branch(project_root)
+            else:
+                write_working_branch(project_root, previous_working)
+            state_restored = True
+        except OSError:
+            state_restored = False
+        if head_attached:
+            ok, _ = _run_git_ok("checkout", previous_head, cwd=cwd)
+        else:
+            ok, _ = _run_git_ok("checkout", "--detach", previous_head, cwd=cwd)
+        restored &= ok and state_restored
+        if not restored:
+            raise GitTransactionError(
+                "Archiving the branch failed and automatic rollback was incomplete. "
+                "Inspect the repository before retrying."
+            ) from exc
+        raise
 
-    from haute._git_state import rename_fork
-
-    rename_fork(project_root, working, archived)  # keep the back-link valid
     logger.info("working_pair_archived", working=working, archived=archived)
     return GitArchiveResponse(archived_as=archived)
 
@@ -3422,6 +3699,7 @@ def _trash_ref(branch: str) -> str:
     return f"refs/haute/trash/{branch}"
 
 
+@_serialized_mutation
 def delete_working_pair(
     branch: str,
     project_root: Path,
@@ -3456,43 +3734,93 @@ def delete_working_pair(
             "deleting it loses them. Confirm to delete anyway."
         )
 
-    # A confirmed delete is destructive by intent — discard a dirty tree along
-    # with the branch rather than refusing (S38: deleting the lineage already
-    # dwarfs the uncommitted edits).
-    _switch_away_if_active(working, ledger, project_root, cwd=cwd, discard=True)
-
-    from haute._git_state import read_forks, record_trash, remove_fork
-
-    # Recovery net FIRST, refs second — a failure between the two leaves a
-    # harmless extra trash ref, never an unrecoverable deletion.
-    _run_git("update-ref", _trash_ref(working), working_tip, cwd=cwd)
-    if ledger_tip is not None:
-        _run_git("update-ref", _trash_ref(ledger), ledger_tip, cwd=cwd)
-    else:
-        # A re-deleted name whose ledger no longer exists must not leave the
-        # PREVIOUS delete's ledger pin behind to be mis-restored later.
-        _run_git_ok("update-ref", "-d", _trash_ref(ledger), cwd=cwd)
-    record_trash(
-        project_root,
-        working,
-        {
-            "branch_tip": working_tip,
-            "ledger_tip": ledger_tip,
-            "forked_from": read_forks(project_root).get(working),
-            "was_archived": working.startswith(f"{_ARCHIVE_PREFIX}/"),
-            "deleted_at": datetime.now(UTC).isoformat(),
-        },
+    from haute._git_state import (
+        clear_working_branch,
+        read_forks,
+        read_working_branch,
+        record_trash,
+        remove_fork,
+        remove_trash,
+        set_fork,
+        write_working_branch,
     )
 
-    _run_git("branch", "-D", working, cwd=cwd)
-    if ledger_tip is not None and _rev_parse(ledger, cwd=cwd) is not None:
-        _run_git("branch", "-D", ledger, cwd=cwd)
+    previous_working = read_working_branch(project_root)
+    forks_before = read_forks(project_root)
+    fork_snapshot = forks_before.get(working)
+    head_attached, previous_head = _run_git_ok("symbolic-ref", "--short", "HEAD", cwd=cwd)
+    if not head_attached:
+        previous_head = _run_git("rev-parse", "HEAD", cwd=cwd)
+    forked_from = fork_snapshot
 
-    remove_fork(project_root, working)
+    try:
+        # A confirmed delete is destructive by intent — discard a dirty tree
+        # along with the branch rather than refusing (S38).
+        if _switch_away_if_active(working, ledger, project_root, cwd=cwd, discard=True):
+            clear_working_branch(project_root)
+        # Recovery net FIRST, refs second — a failure between the two remains
+        # compensatable without making history unreachable.
+        _run_git("update-ref", _trash_ref(working), working_tip, cwd=cwd)
+        if ledger_tip is not None:
+            _run_git("update-ref", _trash_ref(ledger), ledger_tip, cwd=cwd)
+        else:
+            _run_git_ok("update-ref", "-d", _trash_ref(ledger), cwd=cwd)
+        record_trash(
+            project_root,
+            working,
+            {
+                "branch_tip": working_tip,
+                "ledger_tip": ledger_tip,
+                "forked_from": forked_from,
+                "was_archived": working.startswith(f"{_ARCHIVE_PREFIX}/"),
+                "deleted_at": datetime.now(UTC).isoformat(),
+            },
+        )
+
+        _run_git("branch", "-D", working, cwd=cwd)
+        if ledger_tip is not None and _rev_parse(ledger, cwd=cwd) is not None:
+            _run_git("branch", "-D", ledger, cwd=cwd)
+        remove_fork(project_root, working)
+    except (GitError, OSError) as exc:
+        restored = True
+        if _rev_parse(working, cwd=cwd) is None:
+            ok, _ = _run_git_ok("update-ref", f"refs/heads/{working}", working_tip, cwd=cwd)
+            restored &= ok
+        if ledger_tip is not None and _rev_parse(ledger, cwd=cwd) is None:
+            ok, _ = _run_git_ok("update-ref", f"refs/heads/{ledger}", ledger_tip, cwd=cwd)
+            restored &= ok
+        try:
+            if previous_working is None:
+                clear_working_branch(project_root)
+            else:
+                write_working_branch(project_root, previous_working)
+            if fork_snapshot is None:
+                remove_fork(project_root, working)
+            else:
+                set_fork(project_root, working, fork_snapshot)
+            remove_trash(project_root, working)
+            state_restored = True
+        except OSError:
+            state_restored = False
+        ok_trash_w, _ = _run_git_ok("update-ref", "-d", _trash_ref(working), cwd=cwd)
+        ok_trash_l, _ = _run_git_ok("update-ref", "-d", _trash_ref(ledger), cwd=cwd)
+        if head_attached:
+            ok_head, _ = _run_git_ok("checkout", previous_head, cwd=cwd)
+        else:
+            ok_head, _ = _run_git_ok("checkout", "--detach", previous_head, cwd=cwd)
+        restored &= state_restored and ok_trash_w and ok_trash_l and ok_head
+        if not restored:
+            raise GitTransactionError(
+                "Deleting the branch failed and automatic rollback was incomplete. "
+                "Inspect the repository before retrying."
+            ) from exc
+        raise
+
     logger.info("working_pair_deleted", working=working, confirmed=confirm)
     return GitDeleteBranchResponse(status="deleted", branch=working)
 
 
+@_serialized_mutation
 def undelete_working_pair(
     branch: str, project_root: Path, cwd: Path | None = None
 ) -> GitUndeleteResponse:
@@ -3511,7 +3839,14 @@ def undelete_working_pair(
     restored name already occupied, or the recorded commit no longer exists
     (tombstones can outlive their objects if the trash refs were hand-deleted
     and gc ran)."""
-    from haute._git_state import read_trash, remove_trash, set_fork
+    from haute._git_state import (
+        read_forks,
+        read_trash,
+        record_trash,
+        remove_fork,
+        remove_trash,
+        set_fork,
+    )
 
     _assert_git_repo(cwd)
     _validate_ref_name(branch)
@@ -3537,28 +3872,63 @@ def undelete_working_pair(
     if not (isinstance(ledger_tip, str) and _rev_parse(ledger_tip, cwd=cwd) is not None):
         ledger_tip = None  # pair deleted before its ledger ever spawned
 
-    _run_git("update-ref", f"refs/heads/{working}", branch_tip, cwd=cwd)
-    if ledger_tip is not None:
-        _run_git("update-ref", f"refs/heads/{ledger}", ledger_tip, cwd=cwd)
-
     forked_from = entry.get("forked_from")
-    if isinstance(forked_from, str) and forked_from:
-        set_fork(project_root, working, forked_from)
+    prior_fork = read_forks(project_root).get(working)
+    created_working = created_ledger = False
+    try:
+        _run_git("update-ref", f"refs/heads/{working}", branch_tip, cwd=cwd)
+        created_working = True
+        if ledger_tip is not None:
+            _run_git("update-ref", f"refs/heads/{ledger}", ledger_tip, cwd=cwd)
+            created_ledger = True
 
-    _run_git_ok("update-ref", "-d", _trash_ref(working), cwd=cwd)
-    _run_git_ok("update-ref", "-d", _trash_ref(ledger), cwd=cwd)
-    remove_trash(project_root, working)
+        if isinstance(forked_from, str) and forked_from:
+            set_fork(project_root, working, forked_from)
+
+        _run_git("update-ref", "-d", _trash_ref(working), cwd=cwd)
+        _run_git("update-ref", "-d", _trash_ref(ledger), cwd=cwd)
+        remove_trash(project_root, working)
+    except (GitError, OSError) as exc:
+        restored = True
+        if created_ledger:
+            ok, _ = _run_git_ok("update-ref", "-d", f"refs/heads/{ledger}", cwd=cwd)
+            restored &= ok
+        if created_working:
+            ok, _ = _run_git_ok("update-ref", "-d", f"refs/heads/{working}", cwd=cwd)
+            restored &= ok
+        ok, _ = _run_git_ok("update-ref", _trash_ref(working), branch_tip, cwd=cwd)
+        restored &= ok
+        if ledger_tip is not None:
+            ok, _ = _run_git_ok("update-ref", _trash_ref(ledger), ledger_tip, cwd=cwd)
+            restored &= ok
+        try:
+            if prior_fork is None:
+                remove_fork(project_root, working)
+            else:
+                set_fork(project_root, working, prior_fork)
+            if working not in read_trash(project_root):
+                record_trash(project_root, working, entry)
+            state_restored = True
+        except OSError:
+            state_restored = False
+        if not restored or not state_restored:
+            raise GitTransactionError(
+                "Restoring the deleted branch failed and automatic rollback was incomplete. "
+                "Inspect the repository before retrying."
+            ) from exc
+        raise
     logger.info("working_pair_undeleted", working=working)
     return GitUndeleteResponse(status="restored", branch=working)
 
 
+@_serialized_mutation
 def restore_working_pair(
     branch: str, project_root: Path, cwd: Path | None = None
 ) -> GitRestoreResponse:
     """Un-archive a pair: rename ``archive/<X>`` → ``<X>`` and its ledger back
     (the inverse of archive_working_pair). Bidirectional (accepts either archived
-    name); refuses if a live branch already occupies either restored name; rolls
-    back the working rename if the ledger rename fails."""
+    name); refuses if a live branch already occupies either restored name. Ref
+    and fork-state changes compensate as one transaction on failure."""
     _assert_git_repo(cwd)
     _validate_ref_name(branch)
     archived_working = _normalize_to_working(branch)
@@ -3576,18 +3946,45 @@ def restore_working_pair(
     if _rev_parse(restored_ledger, cwd=cwd) is not None:
         raise GitDomainError(f"Cannot restore: a branch named '{restored_ledger}' already exists.")
 
+    from haute._git_state import read_forks, remove_fork, rename_fork, set_fork
+
     archived_ledger = ledger_name(archived_working)
-    _run_git("branch", "-m", archived_working, restored, cwd=cwd)
-    if _rev_parse(archived_ledger, cwd=cwd) is not None:
-        try:
+    forks_before = read_forks(project_root)
+    fork_snapshot = {
+        archived_working: forks_before.get(archived_working),
+        restored: forks_before.get(restored),
+    }
+    renamed_working = renamed_ledger = False
+    try:
+        _run_git("branch", "-m", archived_working, restored, cwd=cwd)
+        renamed_working = True
+        if _rev_parse(archived_ledger, cwd=cwd) is not None:
             _run_git("branch", "-m", archived_ledger, restored_ledger, cwd=cwd)
-        except GitError:
-            _run_git_ok("branch", "-m", restored, archived_working, cwd=cwd)
-            raise
-
-    from haute._git_state import rename_fork
-
-    rename_fork(project_root, archived_working, restored)
+            renamed_ledger = True
+        rename_fork(project_root, archived_working, restored)
+    except (GitError, OSError) as exc:
+        restored_ok = True
+        if renamed_ledger:
+            ok, _ = _run_git_ok("branch", "-m", restored_ledger, archived_ledger, cwd=cwd)
+            restored_ok &= ok
+        if renamed_working:
+            ok, _ = _run_git_ok("branch", "-m", restored, archived_working, cwd=cwd)
+            restored_ok &= ok
+        try:
+            for name, value in fork_snapshot.items():
+                if value is None:
+                    remove_fork(project_root, name)
+                else:
+                    set_fork(project_root, name, value)
+            state_restored = True
+        except OSError:
+            state_restored = False
+        if not restored_ok or not state_restored:
+            raise GitTransactionError(
+                "Restoring the archived branch failed and automatic rollback was incomplete. "
+                "Inspect the repository before retrying."
+            ) from exc
+        raise
     logger.info("working_pair_restored", restored=restored)
     return GitRestoreResponse(restored_as=restored)
 
@@ -3608,6 +4005,7 @@ def get_prefs(project_root: Path) -> GitPrefs:
     return GitPrefs(skip_switch_confirm=bool(raw.get(_PREF_SKIP_SWITCH_CONFIRM, False)))
 
 
+@_serialized_mutation
 def set_prefs(prefs: GitPrefs, project_root: Path) -> GitPrefs:
     """Persist this clone's local UI preferences; returns the stored state."""
     from haute._git_state import write_pref

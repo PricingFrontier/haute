@@ -809,8 +809,12 @@ class TestExecuteAndSinkCleanupAbsentPaths:
             fd, path = real_mkstemp(*a, **k)
             if k.get("prefix") == "haute_train_":
                 # Drop the training temp immediately so the cleanup guards see it
-                # as already gone; the fd stays valid for the caller's os.close.
+                # as already gone. Windows cannot unlink an open mkstemp file,
+                # so replace its descriptor with another valid descriptor for
+                # the caller's unconditional os.close.
+                os.close(fd)
                 real_unlink(path)
+                fd = os.open(os.devnull, os.O_RDONLY)
             return fd, path
 
         p1, p2, p3, p4, p5 = _patch_execute_env()

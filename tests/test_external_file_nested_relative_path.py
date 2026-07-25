@@ -20,14 +20,10 @@ pipeline dir), and no absolute path anywhere. It exercises the builder through
 ``_build_node_fn`` — the same factory the executor calls — and invokes the
 returned callable, which is where ``load_external_object`` runs.
 
-NOTE ON THE ABSOLUTE GUARD. Unlike a dataInput read, ``load_external_object``
-independently enforces project-root containment via ``validate_project_path``, so
-an out-of-cwd ABSOLUTE object path is rejected there — a pre-existing gate this
-fix leaves untouched. The per-node-type out-of-cwd absolute-passthrough guard
-therefore targets the anchoring step the builder now applies
-(``_resolve_runtime_data_path``): it must pass an out-of-cwd absolute through
-unchanged, so the fix adds no new rejection. The in-project absolute case is
-covered end-to-end (loads, not re-anchored).
+NOTE ON THE ABSOLUTE GUARD. Runtime path resolution applies the configured
+project root consistently before the external object loader runs. An absolute
+object path inside that root remains unchanged; an absolute path outside it is
+rejected by the shared resolver before any file read.
 """
 
 from __future__ import annotations
@@ -127,24 +123,19 @@ def test_external_file_in_project_absolute_passthrough(nested_project) -> None:
     assert df["y"].to_list() == [20]
 
 
-def test_external_file_resolver_passes_out_of_cwd_absolute(
+def test_external_file_resolver_rejects_out_of_project_absolute(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The anchoring step the externalFile builder now applies
-    (``_resolve_runtime_data_path``) passes an out-of-cwd ABSOLUTE path through
-    unchanged — the fix adds no new rejection.
-
-    (Project-root containment for externalFile objects is still enforced
-    independently by ``load_external_object`` → ``validate_project_path``; that
-    pre-existing gate is untouched by this anchoring fix.)
-    """
+    """The shared runtime resolver rejects absolute paths outside the project."""
     from haute._builders import _resolve_runtime_data_path
 
     monkeypatch.chdir(tmp_path)
+    set_project_root(tmp_path)
     (tmp_path / "haute.toml").write_text('[project]\npipeline = "rating/main.py"\n')
 
     outside = tmp_path.parent / "elsewhere" / "models" / "factor.json"
     outside.parent.mkdir(parents=True, exist_ok=True)
     outside.write_text(json.dumps(_OBJECT))
 
-    assert _resolve_runtime_data_path(str(outside)) == str(outside)
+    with pytest.raises(ValueError, match="outside the project root"):
+        _resolve_runtime_data_path(str(outside))

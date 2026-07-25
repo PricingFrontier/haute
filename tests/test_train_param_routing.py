@@ -29,6 +29,8 @@ if TYPE_CHECKING:
 
 from tests.conftest import make_edge, make_file_input_config, make_graph
 
+pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
+
 _TERMINAL_JOB_STATUSES = {
     "completed",
     "error",

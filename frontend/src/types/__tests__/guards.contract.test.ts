@@ -14,8 +14,8 @@ import {
   parseGitDeleteBranchResponse,
   parseGitMoveResponse,
   parseGitPushResponse,
-  parseGitStatusResponse,
   parseGitRemotesResponse,
+  parseGitWorkingBranchResponse,
   parseGitFastForwardResponse,
   parseGitBranchAwayResponse,
   parseGitPushRejection,
@@ -1352,17 +1352,6 @@ describe("API response guards", () => {
     ).toThrow(/lambdas/i)
   })
 
-  it("rejects git status payloads missing readonly fields", () => {
-    const fixture = loadUiContractFixture<Record<string, unknown>>("git_status_response")
-
-    expect(() =>
-      parseGitStatusResponse({
-        ...fixture,
-        is_read_only: undefined,
-      }),
-    ).toThrow(/is_read_only/i)
-  })
-
   it("rejects incomplete json cache build payloads", () => {
     const fixture = loadUiContractFixture<Record<string, unknown>>("json_cache_build_response")
 
@@ -1455,6 +1444,41 @@ describe("API response guards", () => {
         import_line: 123,
       }),
     ).toThrow(/import_line/i)
+  })
+
+  it("parses every working-branch readiness state and detached commit context", () => {
+    const base = {
+      working_branch: null,
+      current_branch: "",
+      eligible_branches: [],
+      identity_set: false,
+    }
+
+    for (const state of [
+      "no-repository",
+      "unset",
+      "detached",
+      "invalid",
+      "divergent",
+      "ready",
+    ] as const) {
+      const parsed = parseGitWorkingBranchResponse({
+        ...base,
+        state,
+        head_sha: state === "detached" ? "a".repeat(40) : null,
+      })
+      expect(parsed.state).toBe(state)
+      if (state === "detached") expect(parsed.head_sha).toBe("a".repeat(40))
+    }
+  })
+
+  it("rejects an unknown working-branch readiness state", () => {
+    expect(() =>
+      parseGitWorkingBranchResponse({
+        state: "missing",
+        current_branch: "",
+      }),
+    ).toThrow(/expected field `state` to be one of/i)
   })
 
   // --- P7 remote catch-up surface: per-leg divergence, fast-forward, branch-away,

@@ -96,6 +96,13 @@ running heavy work in a child process the parent can kill on timeout or memory l
   database output, instead uses `streaming_collect` and therefore materialises the
   result DataFrame before writing; it still refuses Polars' non-streaming broad-collect
   fallback for bounded profiles.
+- **Every local runtime input is contained before eager or lazy execution.**
+  `canonical_dataframe_execution_graph` normalizes separators, resolves symlinks,
+  and rejects absolute/traversal/mixed-separator paths outside the execution root.
+  The normal root is cwd; explicitly selecting an absolute pipeline outside cwd
+  establishes only that pipeline's parent as its root. The eager/lazy cores also
+  scope the final builder read to the same root. Named database/Databricks/provider
+  identifiers are not local paths and retain their external-resource semantics.
 - **Chunked map-reduce execution** (`chunking.chunk_plan` / `iter_chunked_frames`)
   proves, ahead of running anything, that a graph's tail from a chosen `chunk_start`
   node to the target is chunk-safe — a single-parent chain of node types whose
@@ -450,3 +457,57 @@ unsupported for that hard cap: `best_effort` continues with process containment 
 RSS checkpoints, while `required` fails before process creation. Unknown enforcement values,
 missing required limits, malformed protocol data, and unavailable required caps fail loudly.
 No API or diagnostic calls best-effort RSS sampling a hard OS limit.
+
+## Approved execution-roadmap hardening contract
+
+The execution-engine roadmap packages improve the codebase and are accepted with the following
+bounded scope. The two audit packages retain their shipped behaviour where re-verification proves
+the contract already holds; they do not justify a second planner or execution path.
+
+- **One production contract-resolution policy.** Eager and lazy execution use the same
+  resolved-node contract result. Contract-resolution strictness is independent of projection and
+  materialisation policy: every profiled production execution fails before node work with one
+  typed `contract_resolution_failed` error when a builder contract cannot be resolved, including
+  both deploy-live and deploy-batch. Interactive preview and context-less low-level compatibility
+  calls may retain explicitly diagnosed opaque degradation. A broken preamble remains node-local
+  only for interactive preview; every non-preview profile propagates the typed
+  `preamble_failed` failure before materialisation.
+- **Partitioned Parquet remains a lazy source boundary.** A direct Parquet data input may identify
+  a directory-backed dataset and use Polars' declared Hive-partition arguments. A downstream
+  partition predicate and target-column demand must remain in the optimised scan: irrelevant
+  partitions and unrelated columns are pruned before any checkpoint, cache materialisation, or
+  eager response is built. No directory walk or eager concatenation is introduced in Haute.
+- **Target-width chunk bounds are authoritative.** Byte-budget planning continues to cost the
+  projected target schema and conservatively sample variable-width target columns. If one
+  estimated target row is already wider than the configured chunk budget, planning raises a
+  typed `chunk_memory_risk` error instead of manufacturing a one-row plan that still exceeds the
+  stated bound. A one-row plan bounds row count, not bytes, and therefore is not an equivalent
+  byte-bounded fallback. Stage/checkpoint RSS sampling remains coarse post-operation evidence; it
+  is not described as continuous native-memory enforcement.
+- **Projection attribution remains explicit.** Fan-in demand is assigned only from operand,
+  contract, join-key, or producer-schema evidence. Ambiguous ownership fails in strict profiles
+  and remains an observable boundary in the two non-strict profiles. A blocked caller seed has a
+  distinct diagnostic, and code generation omits stale parent attribution rather than guessing.
+- **Deterministic fault and cleanup evidence.** Execution contexts expose a testable fault-point
+  seam at native collect, sink/checkpoint, reducer, response-shaping, and lifecycle boundaries.
+  Cancellation records the monotonic delay from request to observed checkpoint. Cleanup always
+  releases every registered resource and admission reservation; a cleanup failure is raised when
+  it is the only failure. Preserving a propagating primary failure is explicit at the releasing
+  `finally` boundary; merely calling cleanup while an unrelated exception is being handled never
+  swallows a cleanup failure.
+- **Optional bounded telemetry.** `HAUTE_EXECUTION_TELEMETRY` is disabled by default. When enabled,
+  terminal metric publication emits one schema-versioned event containing only an allow-list of
+  aggregate profile, status, strategy, timing, RSS, byte, chunk, collect, checkpoint, and
+  truncation fields. It excludes job/node identifiers, paths, column names, plans, source values,
+  messages, and exception text. Configuration is parsed once and validated during server startup;
+  the attribute allow-list is emitted in full or rejected observably, never silently sliced.
+  Disabled mode performs no payload assembly or sink call. Telemetry assembly/sink failures do not
+  change execution status. Trace payloads remain in the existing bounded in-memory
+  caches/responses; this contract deliberately adds no persistent trace artifact.
+
+Acceptance evidence covers both execution strategies and every profile, proves identical typed
+resolution failures in bounded eager/lazy paths, proves directory-backed Parquet partition and
+column pruning from the optimised scan, rejects an over-budget single target row, preserves the
+existing projection-attribution diagnostics, measures deterministic cancellation latency, injects
+faults across all named boundaries while proving cleanup precedence, and verifies telemetry's
+disabled no-op and enabled redaction/caps.

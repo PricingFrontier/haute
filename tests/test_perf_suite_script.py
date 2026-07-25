@@ -109,7 +109,7 @@ def test_report_artifacts_include_summary_and_slowest_tests(tmp_path) -> None:
     payload = json.loads((tmp_path / "perf-report.json").read_text(encoding="utf-8"))
     markdown = (tmp_path / "perf-report.md").read_text(encoding="utf-8")
     assert payload["summary"]["collected"] == 2
-    assert payload["schema_version"] == 2
+    assert payload["schema_version"] == 3
     assert payload["scenario"]["polars_scale"] == "1m"
     assert payload["rss"]["peak_rss_bytes"] == 123_456
     assert payload["summary"]["slowest"][0]["nodeid"] == "tests/test_perf.py::test_slow"
@@ -118,3 +118,21 @@ def test_report_artifacts_include_summary_and_slowest_tests(tmp_path) -> None:
     assert "Independent peak RSS: 123,456 bytes" in markdown
     assert "Scenario Evidence" in markdown
     assert '"physical_width": 6' in markdown
+
+
+def test_report_rejects_non_json_safe_evidence() -> None:
+    import pytest
+
+    with pytest.raises(ValueError, match="JSON-safe"):
+        _build_report(
+            exit_code=0,
+            collected_count=1,
+            total_seconds=1.0,
+            results=[
+                PerfTestResult(
+                    "tests/test_perf.py::test_bad", "passed", 0.1, "call", evidence={"bad": {1}}
+                )
+            ],
+            budgets=PerfBudgets(max_total_seconds=10.0, max_test_seconds=5.0),
+            command=["pytest"],
+        )

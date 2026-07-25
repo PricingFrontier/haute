@@ -254,7 +254,9 @@ has a concrete consumer and preserves the existing HTTP contract.
   late outcome remains unable to replace a higher-precedence terminal reason. If the final
   lifecycle write itself cannot be persisted, the returned supervisor thread exposes a typed
   infrastructure failure through an inspectable property and a raising join method; it never
-  silently reports success.
+  silently reports success. After a terminal write succeeds, an unexpected parent-side
+  exception is re-raised from the thread so the thread exception hook retains the original
+  diagnostic.
 - **One bounded, versioned worker protocol.** Spawn workers exchange only a version-1 request,
   monotonic progress events, a progress-end marker, a result manifest, or a failure payload. The
   transport has a fixed queue bound and fixed per-event, delivered-event-count, result-metadata,
@@ -300,3 +302,29 @@ for every supported solver. Introducing opaque pickles or claiming restart recov
 that contract would be a regression. A future proposal must first specify solver-specific
 re-openable formats, compatibility/versioning, and rebuild cost independently of the generic
 worker transport.
+
+## Approved execution-housekeeping contract
+
+Execution-owned artifacts that can survive a process crash live only in explicitly named Haute
+artifact roots. Every reapable child directory contains a versioned ownership marker written at
+creation. Server startup may remove a child only when the root is explicitly registered, the child
+is a direct non-symlink descendant, its marker is valid for the expected owner, and its marker age
+exceeds the configured stale interval. Unmarked directories, malformed markers, symlinks,
+unexpected owners, and unrelated operating-system temporary data are preserved.
+
+Optimiser apply-result and ratebook-factor directories adopt this marker contract and are reaped
+from their existing dedicated roots during server lifespan startup. Ordinary job eviction and
+artifact-handle cleanup remain the primary live-process lifecycle; startup reaping is only the
+crash/restart backstop.
+
+Completed heavy runtime objects remain bounded by the existing closed key set and short TTL.
+Their expiry timestamp and clearing timestamp remain observable in job metadata, while artifact
+handles survive long enough for ordinary TTL eviction to invoke their typed cleaners. Repeated
+status reads may extend heavy-object retention only up to the existing metadata lifetime.
+
+An isolated-job supervisor must transition an unexpected parent-side exception to `error` with a
+bounded generic public message before reporting the original exception to the thread exception
+hook. The terminal record retains both the compatibility `worker_error_class` field and the
+protocol-aware `supervisor_error_class` field. No supported supervisor failure leaves a job
+permanently `running`. Terminal-transition fault tests cover status-store failure, supersession
+races, and cleanup scheduling without replacing the original worker error.

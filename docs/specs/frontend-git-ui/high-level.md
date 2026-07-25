@@ -34,8 +34,9 @@ In scope:
   including empty-remote default-branch bootstrap, fast-forward catch-up, and the non-fast-
   forward rejection recovery flow).
 - `CommitBreadcrumb`, the small version-relative label used on comparison canvases.
-- Client-side state for this surface: `useGitStore` (status, modal routing, peek/compare/
-  move targets, refresh nonces) and the session-lived read caches in `gitPanelCache.ts`.
+- Client-side state for this surface: `useGitStore` (readiness plus retryable load errors,
+  shared branch metadata, modal routing, peek/compare/move targets, refresh nonces) and the
+  session-lived read caches in `gitPanelCache.ts`.
 - Pure layout of the graph rail from the graph-topology payload (`panels/gitgraph/`).
 
 Out of scope (owned by neighbouring components):
@@ -59,12 +60,15 @@ Out of scope (owned by neighbouring components):
 
 ## Behaviour
 
-**Toolbar indicator.** Renders nothing until the first status load resolves. Once loaded,
-it shows either a muted "Set branch" prompt (branch state not `ready`) or the working
-branch name plus the last-save short SHA. Clicking the name opens the panel on the current
-branch; clicking the SHA opens the panel and selects the latest save in the history —
-unless a comparison is open, in which case it points at and selects the compared version
-instead.
+**Toolbar indicator.** While the first readiness request is in flight it shows a quiet
+checking state. A transport/server failure produces a visible "Git unavailable" state with
+the backend detail and a Retry action; it is not confused with a project that has no
+repository. Successful responses render distinct labels and remediation for no repository,
+unset working branch, invalid state, attached divergence, and detached HEAD (including its
+short SHA). A ready state shows the working branch name plus the last-save short SHA.
+Clicking the ready name opens the panel on the current branch; clicking the SHA opens the
+panel and selects the latest save in the history — unless a comparison is open, in which
+case it points at and selects the compared version instead.
 
 **Panel — save history.** The panel shows, top to bottom: the remote push control, the
 branch manager, an optional "peeking another branch" banner, out-of-version (pending)
@@ -92,7 +96,9 @@ another branch's history) never switches the working branch; switching, archivin
 deleting, and restoring do, each behind role-appropriate confirmation (switch has a
 persistable "don't ask again"; delete always confirms and names what it discards;
 archiving the current branch while dirty redirects to "commit a milestone first" instead
-of proceeding).
+of proceeding). A switch or Create & Move that would replace a dirty in-memory graph always
+requires Cancel, Discard, or Save first; the persisted clean-switch preference never bypasses
+this dirty-work guard. Save first must complete successfully before the Git mutation starts.
 
 **Modals.** `WorkingBranchModal` gates first use (and any save attempted with no working
 branch set): choose among eligible branches or create one, optionally set git identity
@@ -101,8 +107,9 @@ against the accumulated ledger saves; a 409 from the server surfaces a "committi
 would fork the remote" warning with an explicit "commit anyway" override rather than a
 dead-end error. `DivergenceModal` appears when the recorded working branch and the actual
 HEAD disagree (the repo was moved outside Haute) and offers three resolutions: return to
-the recorded branch, adopt the current one (only if eligible), or defer to the branch
-manager. `MoveConfirmModal` gates every move-to-version action (`GitPanel`'s row/lane
+the recorded branch, adopt the current one (only if attached and eligible), or defer to the
+branch manager. Detached HEAD is named as detached at its commit, never as a branch called
+`HEAD`. `MoveConfirmModal` gates every move-to-version action (`GitPanel`'s row/lane
 "move to this version" affordance): on a clean canvas it is a single confirm; when the
 canvas has unsaved edits it forces an explicit choice between saving them onto the
 current branch first or discarding them, because a move is a real checkout that replaces
@@ -111,9 +118,10 @@ otherwise be lost silently.
 
 **Remote push.** `RemotePushControl` requires a deliberate remote selection (no default
 push target unless exactly one remote exists), shows the working branch's and save-ledger's
-ahead/behind/diverged state per remote, and warns (overridably) before pushing out-of-version
-saves. Nothing remote is triggered by project initialization, server startup, or working-
-branch creation; only clicking Push calls the publication endpoint.
+last-known ahead/behind/diverged state per remote, and warns (overridably) before pushing
+out-of-version saves. Merely opening or refreshing the panel never fetches. Nothing remote
+is triggered by project initialization, server startup, working-branch creation, or a list
+request; Push, Catch up, and Spin off a copy are the deliberate freshness/network boundaries.
 
 The Push tooltip says: "Push your branch and save history. If the remote is empty, Haute
 also publishes the default branch as your merge target." When that explicit push reports
@@ -156,6 +164,20 @@ save must not disturb what the user is looking at; a milestone commit is a delib
 action whose result the user wants to see. Both refetch identically but only the latter
 drives a selection, so they're kept as separate store fields rather than one refresh
 signal with a flag.
+
+**One shared branch-list load.** `useGitStore` owns branch metadata and de-duplicates an
+in-flight request. `GitPanel` derives fork chips from that shared result and `BranchManager`
+renders it; they do not independently call the same endpoint. A mutation or save/commit
+event schedules one branch-list refresh and one history refresh, not a refetch chain from
+each mounted consumer.
+
+**One Git error-message policy.** Git UI actions use a shared formatter that prefers a
+human-readable string `ApiError.detail`, then ordinary `Error.message`, then a stable
+fallback. A serialized structured detail is reserved for the dedicated rejection parsers;
+if it does not match one of those contracts, the formatter uses the plain error message
+instead of displaying raw JSON. Consequently protected-branch, duplicate-label, ledger,
+and dirty-state messages authored by the backend survive every relevant toast and inline
+banner.
 
 **Peek is separate from working-branch state.** `peekBranch` lives in `useGitStore` (not
 component state) specifically so the toolbar indicator can return the panel to "current"
@@ -218,10 +240,10 @@ This codebase prefers loud failure over silent fallbacks; within that, this comp
 draws a hard line between **history/chrome reads**, which degrade silently because they
 are not the user's data, and **mutations**, which always surface an error.
 
-- **Status load (`loadStatus`)** is treated as best-effort: a non-git project or a
-  transient failure on the first load leaves `status` `null`, so every gated affordance
-  (indicator, save gate) simply renders nothing rather than blocking the editor; a later
-  transient failure leaves the previous `status` in place rather than clearing it.
+- **Readiness load (`loadStatus`)** distinguishes a successful `no-repository` response
+  from transport/server failure. The latter records a visible, retryable error while
+  retaining any previous successful status; Retry is always a user action. Pipeline Save
+  remains available without a repository, while Git Commit remains unavailable.
 - **History reads** (`getMilestones`, `getPendingSaves`, `getWorkingBranches`) on the
   panel's main `refresh()` path show an error toast on failure — this is the user's saved
   work, so a failure is not silent — but a *superseded* refresh's failure is dropped
@@ -248,7 +270,6 @@ are not the user's data, and **mutations**, which always surface an error.
 - Nothing in this component retries automatically; every recovery (catch-up, branch-away,
   retry a switch) is a distinct user-initiated action.
 
-> NOTE: `GitPanel.performSwitch` and `BranchManager.switchNow` implement two independent
-> in-app branch-switch code paths (the rail's lane context menu vs. the branch manager's
-> row/menu actions) with separate busy-state and error-toast handling. They are not
-> unified through a shared hook; see [low-level.md](low-level.md#module-map).
+> NOTE: `GitPanel.performSwitch` and `BranchManager.switchNow` remain separate mutation
+> entry points (rail lane menu vs. branch manager), but both use the same dirty-navigation
+> confirmation component, Save-first callback, and Git error formatter.

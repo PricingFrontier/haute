@@ -258,7 +258,7 @@ from haute._execution_context import ExecutionCancelledError, ExecutionMemoryLim
 from haute._output_assembler import render_output_document
 from haute._polars_utils import bounded_collect_batches
 from haute._types import PipelineGraph
-from haute.errors import BoundedMemoryUnsupportedError
+from haute.errors import HauteError, BoundedMemoryUnsupportedError, is_public_contract_error
 from haute.deploy._request_limits import (
     RequestBodyHeaderError,
     RequestBodyLimitError,
@@ -429,12 +429,25 @@ async def quote(request: Request) -> JSONResponse:
     except ExecutionMemoryLimitExceededError as exc:
         return JSONResponse(status_code=507, content=exc.to_payload())
     except BoundedMemoryUnsupportedError as exc:
+        if is_public_contract_error(exc):
+            return JSONResponse(status_code=422, content=exc.to_payload())
         return JSONResponse(
             status_code=422,
             content={{
                 "error_code": "bounded_streaming_unsupported",
                 "error": "Bounded streaming unsupported",
                 "detail": str(exc),
+            }},
+        )
+    except HauteError as exc:
+        if is_public_contract_error(exc):
+            return JSONResponse(status_code=422, content=exc.to_payload())
+        logger.exception("deploy_quote_failed")
+        return JSONResponse(
+            status_code=500,
+            content={{
+                "error_code": "deploy_internal_error",
+                "error": str(exc),
             }},
         )
     except Exception as exc:

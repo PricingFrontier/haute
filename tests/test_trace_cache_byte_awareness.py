@@ -31,6 +31,8 @@ from haute.trace import _cache as _trace_cache
 from haute.trace import execute_trace
 from tests.conftest import make_edge, make_graph, make_source_node, make_transform_node
 
+pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
+
 _TRACE_SLOTS = ("eager_outputs", "order", "parents_of", "node_map", "source_ids")
 
 

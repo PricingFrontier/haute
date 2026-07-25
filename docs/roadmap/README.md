@@ -17,9 +17,8 @@ is covered by current specifications and ordinary regression tests.
 | [Background jobs and API lifecycle](background-jobs-api.md) | Worker terminal states, artifacts, events, cleanup | `ROAD-WORKER-01` |
 | [Caching](caching.md) | Fingerprint completeness, invalidation, lifetime, concurrency | `AUD-CACHE-01` |
 | [Deploy and platform](deploy-platform.md) | Deployment paths, scaffolding, platform/resource boundaries | `AUD-DEPLOY-01` |
-| [Edge Join](edge-join.md) | Discoverability, browser workflow, supported join geometry | `ROAD-EDGE-01` |
 | [Engineering quality](engineering-quality.md) | Invariants, oracles, fixtures, CI, types, documentation truth | `ROAD-TEST-01` |
-| [Execution engine](execution-engine.md) | Execution boundary, projection, memory, faults, metrics | `ROAD-EXEC-01` |
+| [Execution engine](execution-engine.md) | Execution boundary, projection, memory, faults, metrics | — |
 | [Explore and EDA](explore-eda.md) | Report correctness, scale, UX, analysis, export | `EDA-E01` |
 | [Frontend and canvas](frontend-canvas.md) | Cache/sync correctness, journeys, visibility, accessibility | `AUD-C16` |
 | [Git integration](git-integration.md) | Mutation safety, history integrity, performance, feedback | `GIT-G01` |
@@ -28,7 +27,7 @@ is covered by current specifications and ordinary regression tests.
 | [Optimiser](optimiser.md) | Apply/save correctness, scaling, lifecycle, workers | `OPT-P01` |
 | [Pipeline authoring](pipeline-authoring.md) | Parser, code generation, standalone and DSL contracts | `AUD-C05` |
 | [Rating](rating.md) | Key canonicalisation and persisted table round trips | `AUD-C06` |
-| [Security and supply chain](security-supply-chain.md) | Trust boundaries and dependency risk | `AUD-C18` |
+| [Security and supply chain](security-supply-chain.md) | Trust boundaries and dependency risk | — |
 | [Tracing and explainability](tracing-explainability.md) | Evaluation fidelity, row correlation, waterfall honesty | `AUD-C07` |
 
 ## Working protocol

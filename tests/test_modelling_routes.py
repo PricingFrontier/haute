@@ -24,6 +24,8 @@ from haute.routes._train_service import (
 )
 from tests.conftest import make_edge, make_file_input_config, make_graph
 
+pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
+
 
 def _admitted_training_context_for_launch(job_id: str | None = None) -> ExecutionContext:
     """Build an admitted-like context for direct ``_launch_background`` calls."""

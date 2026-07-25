@@ -16,12 +16,16 @@ from functools import cache
 from pathlib import Path
 
 from haute._config_io import NODE_TYPE_TO_FOLDER
+from haute._edge_join import _ALLOWED_HOW
 from haute._scaffold import TARGETS, haute_toml
 from haute._types import NodeType
 
 ROOT = Path(__file__).resolve().parents[1]
 MKDOCS_CONFIG = ROOT / "mkdocs.yml"
 EXECUTION_STRATEGY_DOC = ROOT / "docs" / "building-models" / "execution-strategy.md"
+EDGE_JOIN_GUIDE = ROOT / "docs" / "building-models" / "nodes" / "edge-join.md"
+EDGE_JOIN_RUNTIME_SPEC = ROOT / "docs" / "specs" / "json-shredding" / "low-level.md"
+EDGE_JOIN_EDITOR_SPEC = ROOT / "docs" / "specs" / "frontend-node-editors" / "low-level.md"
 SPECS_README = ROOT / "docs" / "specs" / "README.md"
 PIPELINE_CONFIG_SPEC = ROOT / "docs" / "specs" / "pipeline-config" / "low-level.md"
 DEPLOYMENT_DOCS = sorted((ROOT / "docs" / "deployment").rglob("*.md"))
@@ -100,7 +104,6 @@ _EXPECTED_COMPONENT_ROADMAPS = (
     "background-jobs-api",
     "caching",
     "deploy-platform",
-    "edge-join",
     "engineering-quality",
     "execution-engine",
     "explore-eda",
@@ -150,6 +153,37 @@ def test_execution_strategy_guide_is_in_public_navigation_and_states_key_contrac
         assert claim in guide
 
 
+def test_edge_join_guide_matches_runtime_and_canvas_contract() -> None:
+    guide = EDGE_JOIN_GUIDE.read_text(encoding="utf-8")
+    normalised_guide = " ".join(guide.replace("**", "").split())
+
+    supported_modes = re.search(r"Supported join types are (.+?)\.", normalised_guide)
+    assert supported_modes is not None
+    documented_modes = set(_MARKDOWN_CODE_SPAN.findall(supported_modes.group(1)))
+    assert documented_modes == set(_ALLOWED_HOW)
+
+    for claim in (
+        "dragging a connection onto an existing edge",
+        "connecting the output of one node to the output of another node",
+        "base input on the left",
+        "join input above or below",
+        "output on the right",
+        "both the top and bottom join-handle candidates are available",
+        "Cross joins do not use keys",
+        "`on`, `leftOn`, and `rightOn` must all be absent",
+        '"on": ["quote_id"]',
+        '"leftOn": ["quote_id"]',
+        '"rightOn": ["id"]',
+    ):
+        assert claim in normalised_guide
+    assert "palette" not in guide.casefold()
+
+    for spec_path in (EDGE_JOIN_RUNTIME_SPEC, EDGE_JOIN_EDITOR_SPEC):
+        spec = spec_path.read_text(encoding="utf-8")
+        for mode in _ALLOWED_HOW:
+            assert f"`{mode}`" in spec
+
+
 def test_internal_engineering_docs_are_excluded_from_public_mkdocs_site() -> None:
     config = MKDOCS_CONFIG.read_text(encoding="utf-8")
     exclude_block = config.split("exclude_docs: |", maxsplit=1)[1].split("\ndev_addr:", maxsplit=1)[
@@ -184,7 +218,10 @@ def test_component_roadmaps_are_flat_complete_and_self_contained() -> None:
         assert f"({component}.md)" in index
 
         package_ids = _COMPONENT_PACKAGE_HEADING.findall(text)
-        assert package_ids, f"{path.relative_to(ROOT)} has no work packages"
+        if not package_ids:
+            assert "There are no active" in text, (
+                f"{path.relative_to(ROOT)} has no work packages without declaring that state"
+            )
         for package_id in package_ids:
             assert package_id not in package_owners, (
                 f"{package_id} is owned by both {package_owners[package_id]} and {component}"
@@ -210,11 +247,24 @@ def test_component_roadmaps_are_flat_complete_and_self_contained() -> None:
         "AUD-C02",
         "AUD-C03",
         "AUD-C04",
+        "AUD-C09",
         "AUD-C11",
+        "AUD-C13",
+        "AUD-C18",
+        "AUD-SEC-01",
+        "AUD-SEC-02",
         "AUD-TRACE-01",
+        "ROAD-EXEC-01",
+        "ROAD-EXEC-02",
+        "ROAD-EXEC-03",
+        "ROAD-EXEC-04",
+        "ROAD-EXEC-05",
+        "ROAD-EDGE-01",
+        "ROAD-EDGE-02",
+        "ROAD-EDGE-03",
     }
     expected_packages = (
-        ({f"AUD-C{number:02d}" for number in range(1, 21)} - retired_or_folded_packages)
+        {f"AUD-C{number:02d}" for number in range(1, 21)}
         | {f"EDA-E{number:02d}" for number in range(1, 14)}
         | {f"GIT-G{number:02d}" for number in range(1, 17)}
         | {f"IO-IO{number:02d}" for number in range(1, 13)}
@@ -224,7 +274,6 @@ def test_component_roadmaps_are_flat_complete_and_self_contained() -> None:
         | {f"ROAD-EXEC-{number:02d}" for number in range(1, 6)}
         | {f"ROAD-TEST-{number:02d}" for number in range(1, 6)}
         | {f"ROAD-UI-{number:02d}" for number in range(1, 6)}
-        | {f"ROAD-EDGE-{number:02d}" for number in range(1, 4)}
         | {
             "ASSIST-01",
             "ASSIST-02",
@@ -237,11 +286,10 @@ def test_component_roadmaps_are_flat_complete_and_self_contained() -> None:
             "AUD-QUALITY-03",
             "AUD-RATING-01",
             "AUD-SEC-01",
-            "AUD-SEC-02",
             "CACHE-PERF-01",
             "RATING-PERF-01",
         }
-    )
+    ) - retired_or_folded_packages
     assert set(package_owners) == expected_packages, (
         "component roadmaps and the expected consolidated package set differ: "
         f"missing={sorted(expected_packages - set(package_owners))}, "

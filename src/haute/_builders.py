@@ -27,7 +27,10 @@ from haute._code_extraction import _strip_generated_boilerplate_from_code
 # The Contract dataclass is defined canonically in haute._contracts; re-exported
 # here for back-compat (builder source files + the adoption tests import it via
 # haute._builders). The tuple aliases / OPAQUE_CONTRACT below stay local.
-from haute._contracts import Contract  # noqa: F401
+from haute._contracts import (  # noqa: F401
+    _DEPLOY_MODEL_INPUT_COLUMNS_CONFIG_KEY,
+    Contract,
+)
 from haute._edge_join import (
     build_edge_join_kwargs,
     execute_edge_join,
@@ -380,33 +383,17 @@ def _resolve_runtime_data_path(data_path: str) -> str:
         return data_path
 
     from haute._path_case_audit import warn_if_case_ambiguous
-    from haute._path_resolution import resolve_runtime_file_path
+    from haute._path_resolution import current_runtime_project_root, resolve_runtime_file_path
+
+    project_root = current_runtime_project_root()
 
     resolved = str(
         resolve_runtime_file_path(
             data_path,
             pipeline_dir=_configured_pipeline_dir(),
-            project_root=Path.cwd(),
+            project_root=project_root,
             prefer="project",
-            # NOTE: deliberately NOT enforce_project_root here. Only the
-            # ``pipeline_dir`` anchoring is the fix; the enforce flag is not.
-            # Unlike the cache-build route — which enforces a RAW GUI-relative
-            # path against the project root at the API boundary — this executor
-            # stage may receive a path ALREADY resolved by
-            # ``execution.canonical_dataframe_execution_graph`` against
-            # ``graph.source_file``, which can legitimately sit OUTSIDE cwd
-            # (``haute run <pipeline outside cwd>``, or a codegen round-trip
-            # re-execute as in tests/test_e2e.py::test_full_lifecycle).
-            # Enforcing against cwd would wrongly reject those valid, cached
-            # paths. Route-driven flows are still gated upstream by
-            # ``routes.pipeline._validate_runtime_input_paths``; the executor
-            # never enforced here pre-fix; cache hits and direct JSON fallback
-            # must both support an explicitly requested pipeline outside cwd,
-            # so leaving enforce off is status-quo-ante, not a new hole.
-            # (EXTERNAL_FILE additionally re-checks project-root containment
-            # inside ``load_external_object`` via
-            # ``_sandbox.validate_project_path``; that independent gate is
-            # unchanged by this anchoring.)
+            enforce_project_root=True,
         )
     )
     # Advisory only: no normalization is applied (pinned contract), but a
@@ -414,7 +401,7 @@ def _resolve_runtime_data_path(data_path: str) -> str:
     # will break when this checkout moves between case-sensitive and
     # case-insensitive filesystems — warn at the one seam every standard
     # input funnels through.
-    warn_if_case_ambiguous(resolved, stop=Path.cwd())
+    warn_if_case_ambiguous(resolved, stop=project_root)
     return resolved
 
 
@@ -1069,6 +1056,25 @@ def _model_score_columns(config: dict[str, Any]) -> ColumnContract:
             # upstream pruning must not drop it.
             referenced.add(contract.offset_column)
         return produced, referenced
+
+    if _DEPLOY_MODEL_INPUT_COLUMNS_CONFIG_KEY in config:
+        # The deploy scorer annotates its in-memory graph copy from the
+        # remapped local model. Keep this private transport strict: malformed
+        # internal state is an implementation defect, not a reason to fall
+        # through to the graph's now-obsolete MLflow source.
+        deploy_inputs = config[_DEPLOY_MODEL_INPUT_COLUMNS_CONFIG_KEY]
+        if (
+            not isinstance(deploy_inputs, list)
+            or any(not isinstance(column, str) or not column for column in deploy_inputs)
+            or len(set(deploy_inputs)) != len(deploy_inputs)
+        ):
+            from haute.errors import ConfigError
+
+            raise ConfigError(
+                "modelScore node has invalid internal deploy model inputs",
+                config_key=_DEPLOY_MODEL_INPUT_COLUMNS_CONFIG_KEY,
+            )
+        return produced, set(deploy_inputs) if deploy_inputs else None
 
     # Feature columns are only known after loading the model.
     source_type = config.get("sourceType", "")

@@ -30,6 +30,8 @@ from haute._types import (
 from haute.errors import ContractMismatchError, ProjectionImpossibleError
 from tests.conftest import make_output_config
 
+pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

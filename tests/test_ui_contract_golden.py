@@ -9,7 +9,6 @@ from typing import Any
 import pytest
 
 from haute.schemas import (
-    GitStatusResponse,
     OptimiserStatusResponse,
     PreviewNodeResponse,
     SavePipelineResponse,
@@ -36,7 +35,6 @@ def _load_fixture(name: str) -> dict[str, Any]:
         ("train_response", TrainResponse),
         ("train_status_response", TrainStatusResponse),
         ("optimiser_status_response", OptimiserStatusResponse),
-        ("git_status_response", GitStatusResponse),
     ],
 )
 def test_ui_contract_fixture_is_canonical_json_snapshot(

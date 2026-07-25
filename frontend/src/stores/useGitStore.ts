@@ -11,7 +11,9 @@
 import { create } from "zustand"
 
 import { getWorkingBranch } from "../api/client"
-import type { GitWorkingBranchResponse } from "../api/types"
+import type { GitManagedBranch, GitWorkingBranchResponse } from "../api/types"
+
+let statusInFlight: Promise<GitWorkingBranchResponse | null> | null = null
 
 /** Which modal is open. */
 export type GitModalMode = "select" | "divergence" | "milestone"
@@ -34,6 +36,11 @@ interface GitState {
   status: GitWorkingBranchResponse | null
   /** True while a status fetch is in flight (suppresses premature modal logic). */
   loading: boolean
+  statusError: string | null
+  branches: GitManagedBranch[]
+  branchesLoaded: boolean
+  branchesLoading: boolean
+  branchesError: string | null
   /** Which modal is open, or null. */
   modal: GitModalMode | null
   /** An action queued behind branch selection (the save-gate). */
@@ -75,6 +82,7 @@ interface GitState {
   moveTarget: GitComparison | null
 
   loadStatus: () => Promise<GitWorkingBranchResponse | null>
+  loadBranches: (options?: { refresh?: boolean }) => Promise<GitManagedBranch[]>
   openModal: (mode: GitModalMode, opts?: { pendingAction?: GitPendingAction }) => void
   closeModal: () => void
   clearPendingAction: () => void
@@ -106,6 +114,11 @@ interface GitState {
 const useGitStore = create<GitState>()((set, get) => ({
   status: null,
   loading: false,
+  statusError: null,
+  branches: [],
+  branchesLoaded: false,
+  branchesLoading: false,
+  branchesError: null,
   modal: null,
   pendingAction: null,
   peekBranch: null,
@@ -118,20 +131,33 @@ const useGitStore = create<GitState>()((set, get) => ({
   comparison: null,
   moveTarget: null,
 
-  loadStatus: async () => {
-    set({ loading: true })
-    try {
-      const status = await getWorkingBranch()
-      set({ status, loading: false })
-      return status
-    } catch {
-      // Git status is best-effort chrome — a non-git project or transient
-      // error must not break the editor. Leave status null; the indicator
-      // simply renders nothing and saves proceed ungated.
-      set({ loading: false })
-      return null
-    }
+  loadStatus: () => {
+    if (statusInFlight) return statusInFlight
+    set({ loading: true, statusError: null })
+    statusInFlight = getWorkingBranch()
+      .then((status) => {
+        set({ status, loading: false, statusError: null })
+        return status
+      })
+      .catch(async (error: unknown) => {
+        // Readiness is best-effort editor chrome. Keep the last successful
+        // state for gating, but expose this failure for an explicit retry.
+        const { gitErrorMessage } = await import("../utils/gitError")
+        set({
+          loading: false,
+          statusError: gitErrorMessage(error, "Unable to check Git status"),
+        })
+        return null
+      })
+      .finally(() => {
+        statusInFlight = null
+      })
+    return statusInFlight
   },
+
+  loadBranches: (options) =>
+    import("./gitBranchLoader").then(({ loadGitBranches }) =>
+      loadGitBranches(set, options?.refresh)),
 
   openModal: (mode, opts) =>
     set({

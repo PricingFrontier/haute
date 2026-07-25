@@ -298,13 +298,11 @@ function renameFrameHandle(
 
 async function extendStarterGraphWithFrameEdges(
   page: Page,
-  sessionToken: string | undefined,
   sourceHandles: readonly string[],
 ): Promise<void> {
   const saveStatus = await page.evaluate(
-    async ({ token, handles, source, target }) => {
+    async ({ handles, source, target }) => {
       const headers: Record<string, string> = { "Content-Type": "application/json" }
-      if (token) headers["x-haute-session-token"] = token
       const graphResponse = await fetch("/api/pipeline", { headers })
       if (!graphResponse.ok) {
         throw new Error(`GET /api/pipeline ${graphResponse.status}`)
@@ -341,7 +339,6 @@ async function extendStarterGraphWithFrameEdges(
       return (await saveResponse.json()).status as string
     },
     {
-      token: sessionToken,
       handles: sourceHandles,
       source: API_NODE_ID,
       target: DOWNSTREAM_NODE_ID,
@@ -550,12 +547,8 @@ test.describe("apiInput frame-row alignment and identity", () => {
     seedFrames(originalLabels)
     await installPreviewRoute(page)
 
-    const firstApiRequest = page.waitForRequest((request) =>
-      /\/api\/pipeline(?:\?|$)/.test(request.url()),
-    )
     await openCanvas(page)
-    const sessionToken = (await firstApiRequest).headers()["x-haute-session-token"]
-    await extendStarterGraphWithFrameEdges(page, sessionToken, originalLabels)
+    await extendStarterGraphWithFrameEdges(page, originalLabels)
 
     const initiallyReloadedGraph = await reloadAndCaptureGraph(page)
     expect(sourceHandles(initiallyReloadedGraph)).toEqual([...originalLabels].sort())
@@ -634,12 +627,8 @@ test.describe("apiInput frame-row alignment and identity", () => {
     seedFrames(labels)
     await installPreviewRoute(page)
 
-    const firstApiRequest = page.waitForRequest((request) =>
-      /\/api\/pipeline(?:\?|$)/.test(request.url()),
-    )
     await openCanvas(page)
-    const sessionToken = (await firstApiRequest).headers()["x-haute-session-token"]
-    await extendStarterGraphWithFrameEdges(page, sessionToken, labels)
+    await extendStarterGraphWithFrameEdges(page, labels)
 
     const reloadedGraph = await reloadAndCaptureGraph(page)
     expect(sourceHandles(reloadedGraph)).toEqual(labels)

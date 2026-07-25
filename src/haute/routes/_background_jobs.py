@@ -223,6 +223,7 @@ class _SupervisorOutcome:
     terminal_reason: TerminalReason
     message: str
     fields: dict[str, Any]
+    exception_to_report: BaseException | None = None
 
 
 class IsolatedJobSupervisor:
@@ -337,6 +338,9 @@ class IsolatedJobSupervisor:
                     error_type=type(exc).__name__,
                     exc_info=True,
                 )
+                return
+            if outcome.exception_to_report is not None:
+                raise outcome.exception_to_report
 
         thread = IsolatedSupervisorThread(target=run)
         try:
@@ -374,7 +378,11 @@ class IsolatedJobSupervisor:
                 fields=_isolated_worker_failure_fields(exc),
             )
         except BaseException as exc:
-            return _unexpected_supervisor_outcome(exc)
+            return _unexpected_supervisor_outcome(
+                exc,
+                generic_message=True,
+                report_exception=True,
+            )
         return _SupervisorOutcome(
             terminal_reason="completed",
             message=completed_message,
@@ -407,6 +415,7 @@ class IsolatedJobSupervisor:
                 terminal_reason=outcome.terminal_reason,
                 message=outcome.message,
                 fields=fields,
+                exception_to_report=outcome.exception_to_report,
             )
         return outcome
 
@@ -464,15 +473,26 @@ def _unexpected_supervisor_outcome(
     exc: BaseException,
     *,
     message_prefix: str = "",
+    generic_message: bool = False,
+    report_exception: bool = False,
 ) -> _SupervisorOutcome:
-    message = f"{message_prefix}{exc}"
+    message = (
+        "Unexpected isolated worker supervisor failure."
+        if generic_message
+        else f"{message_prefix}{exc}"
+    )
+    fields: dict[str, Any] = {
+        "supervisor_error_class": type(exc).__name__,
+    }
+    if generic_message:
+        fields["worker_error_class"] = type(exc).__name__
+    else:
+        fields["error"] = str(exc)
     return _SupervisorOutcome(
         terminal_reason="error",
         message=message,
-        fields={
-            "error": str(exc),
-            "supervisor_error_class": type(exc).__name__,
-        },
+        fields=fields,
+        exception_to_report=exc if report_exception else None,
     )
 
 

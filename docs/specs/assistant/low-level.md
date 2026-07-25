@@ -57,14 +57,16 @@ orphaned halves).
   `mutations_enabled: bool` / `mutations_reason: str | None` — driven by
   `haute._git.working_branch_status(...)`, the same readiness the GUI's Save gate requires.
   The state→reason mapping is owned in `_config.py` because not every non-ready state
-  carries its own message: `"ready"` → enabled, reason `None`; `"unset"` → fixed message
-  directing the analyst to create/select a working branch in the Git panel; `"divergent"` →
-  fixed message directing them to resolve divergence in the Git panel; `"invalid"` → the
-  response's `errors` list joined verbatim (the one state that carries git-layer text).
-  `working_branch_status` is not total: a git-domain `HauteError` raised by the call
-  itself (e.g. "Not a git repository. Run 'git init' first.") likewise maps to disabled
-  with that error's message as the reason — the status endpoint always renders
-  readiness; a git failure is a reason, never an HTTP error.
+  carries its own message: `"ready"` → enabled, reason `None`; `"no-repository"` → fixed
+  message directing the analyst to initialise Git; `"unset"` → fixed message directing the
+  analyst to create/select a working branch in the Git panel; `"detached"` → fixed message
+  directing them to attach HEAD in the Git panel; `"divergent"` → fixed message directing
+  them to resolve divergence in the Git panel; `"invalid"` → the response's `errors` list
+  joined verbatim (the one state that carries git-layer text). `working_branch_status` is
+  total for those six repository/readiness states. An unexpected git-domain `HauteError`
+  raised while computing readiness likewise maps to disabled with that error's message as
+  the reason — the assistant status endpoint always renders readiness; an infrastructure
+  failure is a reason, never an HTTP error.
 - **`ProviderEvent`** (internal union, `_providers.py`): `TextDelta(text)`,
   `ToolCallRequest(id, name, arguments)` — emitted only once a call's streamed argument
   fragments have been fully accumulated and JSON-parsed; several calls in one provider turn
@@ -369,8 +371,9 @@ fixture for route tests). The implemented coverage is:
 - **`tests/test_assistant_config.py`** — readiness matrix (absent table, unknown provider,
   missing model, missing key, missing SDK, fully configured); malformed TOML raises;
   `base_url` rejected for anthropic; `max_output_tokens` unset-defaults-to-8192 and
-  malformed/non-positive-fails-readiness behaviour (named reason, no silent default); `mutations_enabled`/`mutations_reason` across all four
-  `working_branch_status` states (ready, unset, divergent, invalid — asserting each state's
+  malformed/non-positive-fails-readiness behaviour (named reason, no silent default);
+  `mutations_enabled`/`mutations_reason` across all six `working_branch_status` states
+  (ready, no-repository, unset, detached, divergent, invalid — asserting each state's
   mapped reason, including invalid's joined `errors`).
 - **`tests/test_assistant_providers.py`** — adapters normalise scripted fake SDK streams to
   `ProviderEvent`s; SDK exception classes map to `AssistantProviderError` variants; lazy

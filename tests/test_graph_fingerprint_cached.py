@@ -32,6 +32,8 @@ from haute._cache import GraphFingerprintMemo, graph_fingerprint
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from tests.conftest import make_file_input_config
 
+pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

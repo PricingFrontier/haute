@@ -124,13 +124,88 @@ def test_build_report_records_artifact_ready_summary() -> None:
         command=["pytest", "-m", "perf"],
     )
 
-    assert report["schema_version"] == 2
+    assert report["schema_version"] == 3
     assert report["scenario"] == {"polars_scale": "ci"}
     assert report["rss"]["peak_rss_bytes"] is None
-    assert set(report["environment"]) == {"python", "platform", "polars"}
+    assert set(report["environment"]) == {
+        "python",
+        "platform",
+        "haute",
+        "polars",
+        "pytest",
+    }
     assert report["budgets"] == {"max_total_seconds": 60.0, "max_test_seconds": 5.0}
     assert report["summary"]["outcomes"] == {"passed": 1, "xfailed": 1}
     assert report["summary"]["slowest"][0]["nodeid"] == "tests/test_perf.py::test_fast"
+    assert report["resources"]["input_bytes"] is None
+    assert report["resources"]["temp_disk_peak_bytes"] is None
+    assert report["wall_time"] == {
+        "total_seconds": 0.3,
+        "reported_phase_seconds": 0.30000000000000004,
+        "runner_overhead_seconds": 0.0,
+        "partition_tolerance_seconds": 0.05,
+    }
+
+
+def test_build_report_aggregates_sorted_evidence_and_rejects_overlapping_wall_time() -> None:
+    budgets = run_perf_suite.PerfBudgets(max_total_seconds=60.0, max_test_seconds=5.0)
+    result = run_perf_suite.PerfTestResult(
+        nodeid="tests/test_perf.py::test_evidence",
+        outcome="passed",
+        duration_seconds=0.2,
+        phase="call",
+        evidence={
+            "scenario": "z_scenario",
+            "scale": "ci",
+            "execution_profiles": ["training_prep", "preview_eager"],
+            "input": {"rows": 2, "total_bytes": 12, "schema_widths": {"base": 3}},
+            "product_metrics": {
+                "n_collects": 1,
+                "n_checkpoints": None,
+                "chunk_count": 0,
+                "output_bytes": None,
+                "temp_disk_peak_bytes": None,
+            },
+            "admission": {"state": "admitted"},
+            "payload_bytes": None,
+        },
+    )
+    report = run_perf_suite._build_report(
+        exit_code=0,
+        collected_count=1,
+        total_seconds=0.25,
+        results=[result],
+        budgets=budgets,
+        command=["pytest"],
+    )
+
+    assert report["workload"]["scenarios"][0]["execution_profiles"] == [
+        "preview_eager",
+        "training_prep",
+    ]
+    assert report["workload"]["execution_profiles"] == ["preview_eager", "training_prep"]
+    assert report["resources"] == {
+        "rss": report["rss"],
+        "input_bytes": 12,
+        "output_bytes": None,
+        "n_collects": 1,
+        "n_checkpoints": None,
+        "chunk_count": 0,
+        "temp_disk_peak_bytes": None,
+        "admission_states": ["admitted"],
+        "payload_bytes": None,
+    }
+    import pytest
+
+    with pytest.raises(ValueError, match="overlap"):
+        run_perf_suite._build_report(
+            exit_code=0,
+            collected_count=1,
+            total_seconds=0.1,
+            results=[result],
+            budgets=budgets,
+            command=["pytest"],
+        )
 
 
 def test_process_rss_monitor_records_independent_peak() -> None:

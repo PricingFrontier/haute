@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 import weakref
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, Literal, cast
 
@@ -101,6 +101,7 @@ class JobLifecycle:
     """Typed transition helper for one ``JobStore`` namespace."""
 
     store: JobStore
+    fault_injector: Callable[[str], None] | None = None
 
     def transition(
         self,
@@ -139,6 +140,8 @@ class JobLifecycle:
 
         schedule_cleanup = False
         expires_at: float | None = None
+        if self.fault_injector is not None:
+            self.fault_injector("terminal_transition_before_write")
         with self.store._write_lock:  # noqa: SLF001 - lifecycle is a JobStore collaborator.
             old = self.store.jobs[job_id]
             old_status = old.get("status")
@@ -166,6 +169,8 @@ class JobLifecycle:
                     now=timestamp,
                 )
                 result = merged
+        if self.fault_injector is not None:
+            self.fault_injector("terminal_transition_before_cleanup_schedule")
         self.store._schedule_heavy_object_cleanup_if_needed(  # noqa: SLF001
             job_id,
             schedule_cleanup,

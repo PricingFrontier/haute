@@ -14,6 +14,7 @@ from pathlib import Path
 from threading import RLock
 
 from haute._file_ops import atomic_write_text
+from haute._git_lock import repository_mutation
 from haute._logging import get_logger
 
 logger = get_logger(component="git_state")
@@ -66,13 +67,14 @@ def read_working_branch(project_root: Path) -> str | None:
     preference, not data.
     """
     path = _state_path(project_root)
-    try:
-        raw = json.loads(path.read_text())
-    except FileNotFoundError:
-        return None
-    except (OSError, json.JSONDecodeError):
-        logger.warning("git_state_unreadable", path=str(path))
-        return None
+    with repository_mutation(project_root):
+        try:
+            raw = json.loads(path.read_text())
+        except FileNotFoundError:
+            return None
+        except (OSError, json.JSONDecodeError):
+            logger.warning("git_state_unreadable", path=str(path))
+            return None
     branch = raw.get(_WORKING_BRANCH_KEY) if isinstance(raw, dict) else None
     if isinstance(branch, str) and branch.strip():
         return branch
@@ -81,9 +83,10 @@ def read_working_branch(project_root: Path) -> str | None:
 
 def write_working_branch(project_root: Path, branch: str) -> None:
     """Record the clone's working branch (creates ``.haute/`` if needed)."""
-    path = _state_path(project_root)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({_WORKING_BRANCH_KEY: branch}, indent=2) + "\n")
+    with repository_mutation(project_root):
+        path = _state_path(project_root)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write_text(path, json.dumps({_WORKING_BRANCH_KEY: branch}, indent=2) + "\n")
     logger.info("git_state_written", branch=branch)
 
 
@@ -93,10 +96,11 @@ def clear_working_branch(project_root: Path) -> None:
     Leaves the clone in the 'unset' state — the next save re-prompts the
     working-branch chooser (S5/S13). A no-op when no state file exists.
     """
-    path = _state_path(project_root)
-    if path.exists():
-        path.unlink()
-        logger.info("git_state_cleared")
+    with repository_mutation(project_root):
+        path = _state_path(project_root)
+        if path.exists():
+            path.unlink()
+            logger.info("git_state_cleared")
 
 
 # ---------------------------------------------------------------------------
@@ -109,23 +113,25 @@ def clear_working_branch(project_root: Path) -> None:
 def read_prefs(project_root: Path) -> dict[str, object]:
     """All local preferences for this clone (empty dict when none/malformed)."""
     path = _prefs_path(project_root)
-    try:
-        raw = json.loads(path.read_text())
-    except FileNotFoundError:
-        return {}
-    except (OSError, json.JSONDecodeError):
-        logger.warning("git_prefs_unreadable", path=str(path))
-        return {}
+    with repository_mutation(project_root):
+        try:
+            raw = json.loads(path.read_text())
+        except FileNotFoundError:
+            return {}
+        except (OSError, json.JSONDecodeError):
+            logger.warning("git_prefs_unreadable", path=str(path))
+            return {}
     return raw if isinstance(raw, dict) else {}
 
 
 def write_pref(project_root: Path, key: str, value: object) -> None:
     """Set one preference, preserving the others (creates ``.haute/`` if needed)."""
-    prefs = read_prefs(project_root)
-    prefs[key] = value
-    path = _prefs_path(project_root)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(prefs, indent=2) + "\n")
+    with repository_mutation(project_root):
+        prefs = read_prefs(project_root)
+        prefs[key] = value
+        path = _prefs_path(project_root)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write_text(path, json.dumps(prefs, indent=2) + "\n")
     logger.info("git_pref_written", key=key)
 
 
@@ -139,13 +145,14 @@ def write_pref(project_root: Path, key: str, value: object) -> None:
 def read_forks(project_root: Path) -> dict[str, str]:
     """Map of working-branch name → the fork-point commit it was spawned at."""
     path = _forks_path(project_root)
-    try:
-        raw = json.loads(path.read_text())
-    except FileNotFoundError:
-        return {}
-    except (OSError, json.JSONDecodeError):
-        logger.warning("git_forks_unreadable", path=str(path))
-        return {}
+    with repository_mutation(project_root):
+        try:
+            raw = json.loads(path.read_text())
+        except FileNotFoundError:
+            return {}
+        except (OSError, json.JSONDecodeError):
+            logger.warning("git_forks_unreadable", path=str(path))
+            return {}
     if not isinstance(raw, dict):
         return {}
     return {k: v for k, v in raw.items() if isinstance(k, str) and isinstance(v, str)}
@@ -154,29 +161,32 @@ def read_forks(project_root: Path) -> dict[str, str]:
 def _write_forks(project_root: Path, forks: dict[str, str]) -> None:
     path = _forks_path(project_root)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(forks, indent=2) + "\n")
+    atomic_write_text(path, json.dumps(forks, indent=2) + "\n")
 
 
 def set_fork(project_root: Path, branch: str, sha: str) -> None:
     """Record *branch* as spawned from *sha*."""
-    forks = read_forks(project_root)
-    forks[branch] = sha
-    _write_forks(project_root, forks)
+    with repository_mutation(project_root):
+        forks = read_forks(project_root)
+        forks[branch] = sha
+        _write_forks(project_root, forks)
 
 
 def remove_fork(project_root: Path, branch: str) -> None:
     """Forget *branch*'s fork point (e.g. on delete)."""
-    forks = read_forks(project_root)
-    if forks.pop(branch, None) is not None:
-        _write_forks(project_root, forks)
+    with repository_mutation(project_root):
+        forks = read_forks(project_root)
+        if forks.pop(branch, None) is not None:
+            _write_forks(project_root, forks)
 
 
 def rename_fork(project_root: Path, old: str, new: str) -> None:
     """Move a fork entry when a branch is renamed (archive/restore)."""
-    forks = read_forks(project_root)
-    if old in forks:
-        forks[new] = forks.pop(old)
-        _write_forks(project_root, forks)
+    with repository_mutation(project_root):
+        forks = read_forks(project_root)
+        if old in forks:
+            forks[new] = forks.pop(old)
+            _write_forks(project_root, forks)
 
 
 # ---------------------------------------------------------------------------
@@ -195,13 +205,14 @@ def read_trash(project_root: Path) -> dict[str, dict[str, object]]:
     """Map of deleted working-branch name → its recovery tombstone
     (oldest-first; empty when the file is missing/malformed)."""
     path = _trash_path(project_root)
-    try:
-        raw = json.loads(path.read_text())
-    except FileNotFoundError:
-        return {}
-    except (OSError, json.JSONDecodeError):
-        logger.warning("git_trash_unreadable", path=str(path))
-        return {}
+    with repository_mutation(project_root):
+        try:
+            raw = json.loads(path.read_text())
+        except FileNotFoundError:
+            return {}
+        except (OSError, json.JSONDecodeError):
+            logger.warning("git_trash_unreadable", path=str(path))
+            return {}
     if not isinstance(raw, dict):
         return {}
     return {k: v for k, v in raw.items() if isinstance(k, str) and isinstance(v, dict)}
@@ -210,26 +221,28 @@ def read_trash(project_root: Path) -> dict[str, dict[str, object]]:
 def _write_trash(project_root: Path, trash: dict[str, dict[str, object]]) -> None:
     path = _trash_path(project_root)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(trash, indent=2) + "\n")
+    atomic_write_text(path, json.dumps(trash, indent=2) + "\n")
 
 
 def record_trash(project_root: Path, branch: str, entry: dict[str, object]) -> None:
     """Record *branch*'s tombstone as the newest entry, dropping the oldest
     beyond the cap (a re-deleted name replaces its old tombstone)."""
-    trash = read_trash(project_root)
-    trash.pop(branch, None)  # re-insert at the back so recency is honest
-    trash[branch] = entry
-    while len(trash) > _TRASH_MAX_ENTRIES:
-        trash.pop(next(iter(trash)))
-    _write_trash(project_root, trash)
+    with repository_mutation(project_root):
+        trash = read_trash(project_root)
+        trash.pop(branch, None)  # re-insert at the back so recency is honest
+        trash[branch] = entry
+        while len(trash) > _TRASH_MAX_ENTRIES:
+            trash.pop(next(iter(trash)))
+        _write_trash(project_root, trash)
     logger.info("git_trash_recorded", branch=branch)
 
 
 def remove_trash(project_root: Path, branch: str) -> None:
     """Forget *branch*'s tombstone (e.g. after a successful undelete)."""
-    trash = read_trash(project_root)
-    if trash.pop(branch, None) is not None:
-        _write_trash(project_root, trash)
+    with repository_mutation(project_root):
+        trash = read_trash(project_root)
+        if trash.pop(branch, None) is not None:
+            _write_trash(project_root, trash)
 
 
 # ---------------------------------------------------------------------------
@@ -257,7 +270,7 @@ def _read_pushed_shas_unlocked(project_root: Path) -> dict[str, str]:
 
 def read_pushed_shas(project_root: Path) -> dict[str, str]:
     """Map of ``<remote>/<ref>`` → the SHA this clone last pushed it to."""
-    with _pushed_state_lock:
+    with repository_mutation(project_root), _pushed_state_lock:
         return _read_pushed_shas_unlocked(project_root)
 
 
@@ -267,7 +280,7 @@ def record_pushed_shas(project_root: Path, pushed: dict[str, str]) -> None:
     needed)."""
     if not pushed:
         return
-    with _pushed_state_lock:
+    with repository_mutation(project_root), _pushed_state_lock:
         current = _read_pushed_shas_unlocked(project_root)
         current.update(pushed)
         path = _pushed_path(project_root)
