@@ -589,6 +589,28 @@ def checked_cache_inputs(
     return CheckedCacheInputs(consumer=consumer, values=values)
 
 
+def checked_cache_input_values(
+    consumer: CacheConsumer,
+    values: Mapping[str, object],
+) -> tuple[object, ...]:
+    """Validate one consumer payload and return its contract-ordered values.
+
+    Process-local hot keys do not need the canonical payload wrapper. Preserve
+    the same closed-field contract without allocating that wrapper on every
+    hit; mappings already written in contract order take the lightweight path,
+    while reordered or invalid mappings use the full builder.
+    """
+
+    if not isinstance(consumer, CacheConsumer):
+        raise TypeError("consumer must be a CacheConsumer")
+    if not isinstance(values, Mapping):
+        raise TypeError("cache fingerprint values must be a mapping")
+    contract = CACHE_CONSUMER_CONTRACTS[consumer]
+    if tuple(values) == contract.fields:
+        return tuple(values[field] for field in contract.fields)
+    return checked_cache_inputs(consumer, values).ordered_values
+
+
 @dataclass(frozen=True, slots=True)
 class CacheConfigFieldClassification:
     """Logical cache treatment of one recognised node-config field."""

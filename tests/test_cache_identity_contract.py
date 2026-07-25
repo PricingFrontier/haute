@@ -16,6 +16,7 @@ from haute._cache import (
     CacheInputClass,
     CacheInputDisposition,
     _consumer_contract,
+    checked_cache_input_values,
     checked_cache_inputs,
     graph_fingerprint,
     validate_cache_config_field_classifications,
@@ -204,13 +205,36 @@ def test_checked_payload_rejects_missing_and_unknown_dimensions() -> None:
 
     assert checked.values == MappingProxyType(valid)
     assert checked.ordered_values == (1, "file", {"path": "input.csv"})
+    assert checked_cache_input_values(CacheConsumer.INPUT_SNAPSHOT, valid) == (
+        1,
+        "file",
+        {"path": "input.csv"},
+    )
+    assert checked_cache_input_values(
+        CacheConsumer.INPUT_SNAPSHOT,
+        {
+            "descriptor": {"path": "input.csv"},
+            "provider": "file",
+            "schema_version": 1,
+        },
+    ) == (1, "file", {"path": "input.csv"})
     with pytest.raises(ValueError, match="missing.*descriptor"):
         checked_cache_inputs(
             CacheConsumer.INPUT_SNAPSHOT,
             {"schema_version": 1, "provider": "file"},
         )
+    with pytest.raises(ValueError, match="missing.*descriptor"):
+        checked_cache_input_values(
+            CacheConsumer.INPUT_SNAPSHOT,
+            {"schema_version": 1, "provider": "file"},
+        )
     with pytest.raises(ValueError, match="unknown.*extra"):
         checked_cache_inputs(
+            CacheConsumer.INPUT_SNAPSHOT,
+            {**valid, "extra": True},
+        )
+    with pytest.raises(ValueError, match="unknown.*extra"):
+        checked_cache_input_values(
             CacheConsumer.INPUT_SNAPSHOT,
             {**valid, "extra": True},
         )
@@ -371,17 +395,17 @@ def test_runtime_input_identity_is_composed_with_structural_node_config(
     assert (graph_fingerprint(changed), changed_runtime) != (graph_fingerprint(graph), runtime)
 
 
-def test_model_contract_key_routes_through_the_checked_contract(monkeypatch) -> None:
+def test_model_contract_key_routes_through_the_checked_value_projection(monkeypatch) -> None:
     import haute._model_scorer as scorer
 
     seen: list[CacheConsumer] = []
-    real = scorer.checked_cache_inputs
+    real = scorer.checked_cache_input_values
 
     def recording(consumer, values):
         seen.append(consumer)
         return real(consumer, values)
 
-    monkeypatch.setattr(scorer, "checked_cache_inputs", recording)
+    monkeypatch.setattr(scorer, "checked_cache_input_values", recording)
     model = SimpleNamespace(
         feature_names=["age", "region"],
         cat_feature_names=["region"],

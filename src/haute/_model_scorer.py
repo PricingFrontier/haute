@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Any, Literal, TypeAlias, cast
 import numpy as np
 import polars as pl
 
-from haute._cache import CacheConsumer, checked_cache_inputs
+from haute._cache import CacheConsumer, checked_cache_input_values
 from haute._hashing import content_hash_bytes
 from haute._logging import get_logger
 from haute._lru_cache import LRUCache
@@ -145,7 +145,7 @@ def _schema_validation_cache_key(schema: pl.Schema) -> _SchemaValidationKey:
 
 def _model_feature_contract_key(scoring_model: Any) -> _ModelFeatureContractKey:
     """Return the model-side contract that controls feature validation."""
-    inputs = checked_cache_inputs(
+    values = checked_cache_input_values(
         CacheConsumer.MODEL_CONTRACT,
         {
             "feature_names": tuple(scoring_model.feature_names),
@@ -153,7 +153,7 @@ def _model_feature_contract_key(scoring_model: Any) -> _ModelFeatureContractKey:
             "offset_column": _declared_offset_column(scoring_model),
         },
     )
-    return cast(_ModelFeatureContractKey, inputs.ordered_values)
+    return cast(_ModelFeatureContractKey, values)
 
 
 def _clear_feature_validation_cache() -> None:

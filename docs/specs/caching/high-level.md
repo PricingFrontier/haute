@@ -425,6 +425,9 @@ eviction, quota accounting, and direct-versus-snapshot schema/data equivalence.
   Model-contract and input-snapshot caches keep their specialised hot-key/hash
   representations, but construct them from the same checked completeness
   contract so their deliberately excluded input classes remain reviewable.
+  A process-local hot key may request the contract's ordered raw values without
+  constructing the canonical payload wrapper, but that projection still rejects
+  missing or unknown fields and follows the contract's declared field order.
 
 Changing the graph-identity or consumer payload schema bumps the corresponding
 algorithm version. Compatibility is cache-cold only: persisted source

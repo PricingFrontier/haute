@@ -566,7 +566,11 @@ contract through the following low-level boundaries.
 
 - `_cache.py` defines the closed logical-input enum, cache-consumer enum,
   immutable consumer-contract records, checked nested-record schemas, and the
-  checked input-payload builders.
+  checked input-payload builders. `checked_cache_input_values` is the
+  allocation-light projection for process-local hot keys: an already ordered
+  mapping returns raw values in contract order without constructing a
+  `CheckedCacheInputs` wrapper, while reordered mappings and invalid shapes
+  take the full checked-builder path for canonical ordering and diagnostics.
   Each consumer contract has a key-schema version, an exact ordered payload
   field set, and a total classification of logical input classes. Construction
   raises on a missing/extra payload field, an unknown referenced field, an
@@ -633,7 +637,9 @@ contract through the following low-level boundaries.
 - Consumer regressions prove preview/trace parity and immediate runtime-file
   invalidation, dataframe lineage invalidation, deploy-schema invalidation
   after direct-input or artifact replacement, model-contract schema/contract
-  separation, and input-cache provider/query/secret semantics.
+  separation, allocation-light model hot-key routing with unchanged
+  missing/unknown-field rejection, and input-cache provider/query/secret
+  semantics.
 - Stat-cache tests prove positive bound validation, LRU refresh/eviction,
   bounded idle load-gate retention, same-key single flight across concurrent
   misses, and unchanged torn-read/loader-exception semantics.
