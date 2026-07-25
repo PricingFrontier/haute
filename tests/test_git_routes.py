@@ -27,34 +27,6 @@ def _isolated_repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 # ---------------------------------------------------------------------------
-# GET /api/git/status
-# ---------------------------------------------------------------------------
-
-
-class TestGitStatus:
-    def test_returns_main(self, client: TestClient) -> None:
-        res = client.get("/api/git/status")
-        assert res.status_code == 200
-        body = res.json()
-        assert body["branch"] == "main"
-        assert body["is_main"] is True
-        assert body["is_read_only"] is True
-
-    def test_returns_changed_files(self, client: TestClient, tmp_path: Path) -> None:
-        (tmp_path / "new.py").write_text("x = 1\n")
-        res = client.get("/api/git/status")
-        assert "new.py" in res.json()["changed_files"]
-
-    def test_on_own_branch(self, client: TestClient, tmp_path: Path) -> None:
-        _git(tmp_path, "checkout", "-b", "pricing/test-user/feat")
-        res = client.get("/api/git/status")
-        body = res.json()
-        assert body["branch"] == "pricing/test-user/feat"
-        assert body["is_main"] is False
-        assert body["is_read_only"] is False
-
-
-# ---------------------------------------------------------------------------
 # POST /api/git/archive
 # ---------------------------------------------------------------------------
 
@@ -319,7 +291,6 @@ class TestGeneralExceptionHandling:
 
     # Map of (endpoint_function_to_patch, request_method, path, body)
     _ENDPOINTS: list[tuple[str, str, str, dict | None]] = [
-        ("get_status", "GET", "/api/git/status", None),
         ("archive_working_pair", "POST", "/api/git/archive", {"branch": "x"}),
         ("delete_working_pair", "DELETE", "/api/git/branches", {"branch": "x"}),
         ("push_working_pair", "POST", "/api/git/push", {"remote": "origin"}),
@@ -743,7 +714,6 @@ class TestGitErrorEndpointResponses:
     """Endpoints that receive a GitError (non-guardrail) must return 400."""
 
     _ENDPOINTS_FOR_GIT_ERROR: list[tuple[str, str, str, dict | None]] = [
-        ("get_status", "GET", "/api/git/status", None),
         ("archive_working_pair", "POST", "/api/git/archive", {"branch": "x"}),
         ("delete_working_pair", "DELETE", "/api/git/branches", {"branch": "x"}),
     ]

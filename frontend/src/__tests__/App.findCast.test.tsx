@@ -189,6 +189,12 @@ vi.mock("../api/client", () => ({
   HAUTE_SESSION_EXPIRED_EVENT: "haute:session-expired",
   HAUTE_SESSION_EXPIRED_REASON: "Missing or invalid Haute session token",
   checkMlflow: vi.fn(() => Promise.resolve({ mlflow_installed: false })),
+  getWorkingBranch: vi.fn(() => Promise.resolve({
+    state: "no-repository",
+    working_branch: null,
+    current_branch: "",
+    head_sha: null,
+  })),
 }))
 
 import App from "../App"

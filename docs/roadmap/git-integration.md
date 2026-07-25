@@ -9,9 +9,22 @@ understandable editor feedback.
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| GIT-G01–GIT-G03, GIT-G07–GIT-G08 | Active | P0 | Protect mutations, repository setup/lifecycle, and unsaved work. |
-| GIT-G04–GIT-G06, GIT-G09–GIT-G14 | Active | P1 | Preserve history and make operations efficient and recoverable. |
-| GIT-G15–GIT-G16 | Active | P2 | Keep documentation, fixtures, and polish aligned. |
+| GIT-G01–GIT-G03, GIT-G07–GIT-G08 | Complete | P0 | Mutations, repository setup/lifecycle, and unsaved work are protected. |
+| GIT-G04–GIT-G06, GIT-G09–GIT-G14 | Complete | P1 | History operations are bounded, explicit, and recoverable. |
+| GIT-G15 | Complete | P2 | Specifications, fixtures, and maintained symbols match the live contract. |
+| GIT-G16 | Standing quality gate | P2 | Apply only to a concrete, independently verified polish change. |
+
+## Audit outcome
+
+Every concrete item GIT-G01 through GIT-G15 is an improvement to correctness,
+performance, recoverability, or user experience and is now implemented. GIT-G02's safe
+unborn-repository seed and most of the backend batching in GIT-G05/GIT-G06 were already
+present; the audit retained and regression-tested them, then completed the remaining
+batching and client request de-duplication.
+
+GIT-G16 is not an independently implementable change: it is a selection rule for future
+small changes and deliberately names no behaviour to alter. Treating it as a standing
+quality gate avoids inventing speculative work merely to mark an umbrella item complete.
 
 ## Planned improvements
 
@@ -24,7 +37,7 @@ understandable editor feedback.
 
 **Dependencies:** Precedes lifecycle and state-file changes.
 
-**Evidence:** `src/haute/_git.py`; `tests/test_git.py`; `docs/specs/git-integration/high-level.md`.
+**Evidence:** `src/haute/_git_lock.py`; `src/haute/_git.py`; `tests/test_git_improvements.py`; `docs/specs/git-integration/high-level.md`.
 
 ### GIT-G02 — Unborn repository seeding
 **Why:** Initial commits can sweep application state, credentials, and datasets into history.
@@ -35,7 +48,7 @@ understandable editor feedback.
 
 **Dependencies:** GIT-G01.
 
-**Evidence:** `src/haute/_git.py`; `src/haute/cli.py`; `tests/test_git.py`.
+**Evidence:** `src/haute/_git.py`; `src/haute/cli.py`; `tests/test_git_engine.py`.
 
 ### GIT-G03 — Pair lifecycle edges
 **Why:** Active-pair deletion, switching, rollback, and fast-forward can leave adopted repositories inconsistent.
@@ -46,7 +59,7 @@ understandable editor feedback.
 
 **Dependencies:** GIT-G01.
 
-**Evidence:** `src/haute/_git.py`; `src/haute/_git_state.py`; `tests/test_git.py`.
+**Evidence:** `src/haute/_git.py`; `src/haute/_git_state.py`; `tests/test_git_lifecycle_improvements.py`.
 
 ### GIT-G04 — History integrity
 **Why:** Tabbed messages corrupt parsed milestone rows and move can linearise external merges.
@@ -57,7 +70,7 @@ understandable editor feedback.
 
 **Dependencies:** GIT-G01.
 
-**Evidence:** `src/haute/_git.py`; `tests/test_git.py`.
+**Evidence:** `src/haute/_git.py`; `tests/test_git_improvements.py`.
 
 ### GIT-G05 — Version-label batching
 **Why:** Milestone labels and context use one subprocess per history item.
@@ -68,7 +81,7 @@ understandable editor feedback.
 
 **Dependencies:** None.
 
-**Evidence:** `src/haute/_git.py`; `tests/test_git.py`.
+**Evidence:** `src/haute/_git.py`; `tests/test_git_content_caches.py`; `tests/test_git_improvements.py`.
 
 ### GIT-G06 — Working-branch batching
 **Why:** Branch listing and panel refetches multiply Git subprocesses.
@@ -79,7 +92,7 @@ understandable editor feedback.
 
 **Dependencies:** GIT-G05.
 
-**Evidence:** `src/haute/_git.py`; `frontend/src`; `tests/test_git.py`.
+**Evidence:** `src/haute/_git.py`; `frontend/src/stores/useGitStore.ts`; `tests/test_git_content_caches.py`; `frontend/src/stores/__tests__/useGitStore.test.ts`.
 
 ### GIT-G07 — Backend error surfacing
 **Why:** The client replaces actionable Git messages with generic HTTP text.
@@ -90,7 +103,7 @@ understandable editor feedback.
 
 **Dependencies:** None.
 
-**Evidence:** `frontend/src`; `src/haute/routes/git.py`; `frontend/src/**/*.test.tsx`.
+**Evidence:** `frontend/src/utils/gitError.ts`; `src/haute/routes/git.py`; `frontend/src/components/__tests__`; `frontend/src/panels/__tests__`.
 
 ### GIT-G08 — Dirty-switch guard
 **Why:** Switching or creating-and-moving can discard unsaved editor work.
@@ -101,7 +114,7 @@ understandable editor feedback.
 
 **Dependencies:** GIT-G07.
 
-**Evidence:** `frontend/src`; `frontend/src/**/*.test.tsx`; `docs/specs/git-integration/high-level.md`.
+**Evidence:** `frontend/src/components/GitNavigationConfirm.tsx`; `frontend/src/components/__tests__/BranchManager.test.tsx`; `frontend/src/panels/__tests__/GitPanel.test.tsx`; `docs/specs/frontend-git-ui/high-level.md`.
 
 ### GIT-G09 — Locale-independent errors
 **Why:** Parsing translated Git prose makes expected failure handling unreliable.
@@ -112,7 +125,7 @@ understandable editor feedback.
 
 **Dependencies:** GIT-G01.
 
-**Evidence:** `src/haute/_git.py`; `tests/test_git.py`.
+**Evidence:** `src/haute/_git.py`; `tests/test_git_improvements.py`; `tests/test_error_detail_sanitization.py`.
 
 ### GIT-G10 — Status surface
 **Why:** The unused status endpoint is fragile and has a login-name crash path.
@@ -123,7 +136,7 @@ understandable editor feedback.
 
 **Dependencies:** GIT-G11.
 
-**Evidence:** `src/haute/routes/git.py`; `src/haute/_git.py`; `frontend/src`; `tests/test_git.py`.
+**Evidence:** `src/haute/routes/git.py`; `src/haute/schemas.py`; `frontend/src/api/client.ts`; `tests/test_api_contracts.py`.
 
 ### GIT-G11 — Repository-state UX
 **Why:** Non-repository, invalid, divergent, and detached states are hidden or mislabelled.
@@ -134,7 +147,7 @@ understandable editor feedback.
 
 **Dependencies:** GIT-G07.
 
-**Evidence:** `frontend/src`; `src/haute/routes/git.py`; `frontend/src/**/*.test.tsx`.
+**Evidence:** `frontend/src/components/BranchIndicator.tsx`; `src/haute/routes/git.py`; `frontend/src/components/__tests__/BranchIndicator.test.tsx`; `tests/test_git_improvements.py`.
 
 ### GIT-G12 — Fetch off request paths
 **Why:** Routine requests synchronously fetch remotes and inherit network latency.
@@ -145,7 +158,7 @@ understandable editor feedback.
 
 **Dependencies:** GIT-G01.
 
-**Evidence:** `src/haute/_git.py`; `src/haute/routes/git.py`; `tests/test_git.py`.
+**Evidence:** `src/haute/_git.py`; `src/haute/routes/git.py`; `tests/test_git_improvements.py`; `tests/test_git_engine.py`.
 
 ### GIT-G13 — Show and compare robustness
 **Why:** Whole-tree archives, temp cleanup, and parse failure make version views costly or misleading.
@@ -156,7 +169,7 @@ understandable editor feedback.
 
 **Dependencies:** GIT-G09.
 
-**Evidence:** `src/haute/_git.py`; `src/haute/routes/git.py`; `tests/test_git.py`.
+**Evidence:** `src/haute/_git.py`; `src/haute/routes/_helpers.py`; `tests/test_git_improvements.py`; `tests/test_git_engine.py`.
 
 ### GIT-G14 — Atomic state files
 **Why:** Direct state-file writes can tear on crash or lose concurrent updates.
@@ -167,7 +180,7 @@ understandable editor feedback.
 
 **Dependencies:** GIT-G01.
 
-**Evidence:** `src/haute/_git_state.py`; `src/haute/_git.py`; `tests/test_git.py`.
+**Evidence:** `src/haute/_git_state.py`; `src/haute/_git.py`; `tests/test_git_improvements.py`; `tests/test_git_state_coverage.py`.
 
 ### GIT-G15 — Documentation and fixture truth
 **Why:** User promises and fixtures can diverge from supported Git behaviour.
@@ -178,7 +191,7 @@ understandable editor feedback.
 
 **Dependencies:** GIT-G02–GIT-G14.
 
-**Evidence:** `docs/specs/git-integration/high-level.md`; `tests/test_git.py`; `tests/fixtures`.
+**Evidence:** `docs/specs/git-integration/high-level.md`; `docs/specs/frontend-git-ui/high-level.md`; `tests/test_api_contracts.py`; `tests/fixtures`.
 
 ### GIT-G16 — Verified polish
 **Why:** Small UX, hygiene, test-gap, and CI improvements remain after behavioural work.
@@ -189,4 +202,4 @@ understandable editor feedback.
 
 **Dependencies:** GIT-G01–GIT-G15 as applicable.
 
-**Evidence:** `src/haute/_git.py`; `frontend/src`; `tests/test_git.py`.
+**Evidence:** Future concrete change, its focused regression, and the affected maintained specification.

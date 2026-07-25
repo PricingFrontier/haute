@@ -775,10 +775,10 @@ class TestDomainErrorsStillExposed:
         from haute._git import GitGuardrailError
 
         with patch(
-            "haute.routes.git.get_status",
+            "haute.routes.git.working_branch_status",
             side_effect=GitGuardrailError("Cannot push to protected branch 'main'"),
         ):
-            resp = client.get("/api/git/status")
+            resp = client.get("/api/git/working-branch")
         assert resp.status_code == 403
         assert "Cannot push to protected branch" in resp.json()["detail"]
 
@@ -795,10 +795,10 @@ class TestDomainErrorsStillExposed:
         from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
 
         with patch(
-            "haute.routes.git.get_status",
+            "haute.routes.git.working_branch_status",
             side_effect=GitError("No git repository found"),
         ):
-            resp = client.get("/api/git/status")
+            resp = client.get("/api/git/working-branch")
         assert resp.status_code == 400
         assert resp.json()["detail"] == _INTERNAL_ERROR_DETAIL
 
@@ -1000,18 +1000,18 @@ _LEAKAGE_CASES: list[tuple] = [
         ["python3.11", "x86_64", "lib-dynload"],
         id="platform-info-schema-read",
     ),
-    # GAP 2: Stack trace leakage -- git status
+    # GAP 2: Stack trace leakage -- Git working-branch status
     pytest.param(
         "get",
-        "/api/git/status",
+        "/api/git/working-branch",
         None,
-        "haute.routes.git.get_status",
+        "haute.routes.git.working_branch_status",
         "subprocess.CalledProcessError: Command git status returned "
         "non-zero exit status 128.\n"
         '  File "/usr/local/lib/python3.11/subprocess.py", line 571, in run',
         500,
         ["subprocess.py", "python3.11"],
-        id="stack-trace-git-status",
+        id="stack-trace-git-working-branch",
     ),
     # GAP 3: Environment variable leakage
     pytest.param(

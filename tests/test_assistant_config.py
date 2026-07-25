@@ -163,6 +163,19 @@ class TestMutationGate:
         assert "working branch" in (reason or "").lower()
         assert "Git panel" in (reason or "")
 
+    def test_no_repository_directs_to_git_initialisation(self, project_root: Path, patched_git):
+        patched_git(_git_state("no-repository"))
+        enabled, reason = _config.mutations_readiness()
+        assert enabled is False
+        assert "initialise git" in (reason or "").lower()
+
+    def test_detached_head_directs_to_git_panel(self, project_root: Path, patched_git):
+        patched_git(_git_state("detached"))
+        enabled, reason = _config.mutations_readiness()
+        assert enabled is False
+        assert "attach head" in (reason or "").lower()
+        assert "Git panel" in (reason or "")
+
     def test_divergent_directs_to_git_panel(self, project_root: Path, patched_git):
         patched_git(_git_state("divergent"))
         enabled, reason = _config.mutations_readiness()

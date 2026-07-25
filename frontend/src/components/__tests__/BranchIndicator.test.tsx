@@ -1,5 +1,5 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react"
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import BranchIndicator from "../BranchIndicator"
 import useGitStore from "../../stores/useGitStore"
@@ -21,14 +21,18 @@ function status(overrides: Partial<GitWorkingBranchResponse>): GitWorkingBranchR
   }
 }
 
+const realLoadStatus = useGitStore.getState().loadStatus
+
 describe("BranchIndicator", () => {
   beforeEach(() => {
     useGitStore.setState({
       status: null,
       loading: false,
+      statusError: null,
       modal: null,
       pendingAction: null,
       comparison: null,
+      loadStatus: realLoadStatus,
     })
     useUIStore.setState({ gitOpen: false })
   })
@@ -37,6 +41,41 @@ describe("BranchIndicator", () => {
   it("renders nothing until status is loaded", () => {
     const { container } = render(<BranchIndicator />)
     expect(container.querySelector("[data-testid='toolbar-branch-indicator']")).toBeNull()
+  })
+
+  it("shows a checking state while Git status is loading", () => {
+    useGitStore.setState({ loading: true })
+    render(<BranchIndicator />)
+    expect(screen.getByTestId("toolbar-branch-indicator")).toHaveTextContent("Checking Git")
+  })
+
+  it("shows a retryable Git-unavailable error", () => {
+    const loadStatus = vi.fn()
+    useGitStore.setState({ statusError: "Git service stopped", loadStatus })
+    render(<BranchIndicator />)
+    expect(screen.getByTestId("toolbar-branch-indicator")).toHaveTextContent("Git unavailable: Git service stopped")
+    fireEvent.click(screen.getByTestId("branch-indicator-retry"))
+    expect(loadStatus).toHaveBeenCalledOnce()
+  })
+
+  it("shows that Git has not been initialised when there is no repository", () => {
+    useGitStore.setState({ status: status({ state: "no-repository", working_branch: null }) })
+    render(<BranchIndicator />)
+    expect(screen.getByTestId("toolbar-branch-indicator")).toHaveTextContent("Git not initialised")
+  })
+
+  it("labels detached, invalid, and divergent Git states distinctly", () => {
+    const cases = [
+      [status({ state: "detached", head_sha: "1234567890" }), "Detached at 1234567"],
+      [status({ state: "invalid" }), "Git needs attention"],
+      [status({ state: "divergent" }), "Branch changed externally"],
+    ] as const
+    for (const [gitStatus, label] of cases) {
+      useGitStore.setState({ status: gitStatus })
+      const { unmount } = render(<BranchIndicator />)
+      expect(screen.getByTestId("toolbar-branch-indicator")).toHaveTextContent(label)
+      unmount()
+    }
   })
 
   it("shows branch name and short SHA when ready", () => {

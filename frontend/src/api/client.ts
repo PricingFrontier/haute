@@ -44,7 +44,6 @@ import type {
   GitMoveResponse,
   GitSetIdentityResponse,
   GitSetWorkingBranchResponse,
-  GitStatus,
   GitWorkingBranchResponse,
   GraphPayload,
   IoCapabilitiesResponse,
@@ -118,7 +117,6 @@ import {
   parseGitMoveResponse,
   parseGitSetIdentityResponse,
   parseGitSetWorkingBranchResponse,
-  parseGitStatusResponse,
   parseGitWorkingBranchResponse,
   parseIoCapabilitiesResponse,
   parseInputCacheBuildResponse,
@@ -1305,12 +1303,6 @@ export function readJson<T = unknown>(
 // ---------------------------------------------------------------------------
 // Git endpoints
 // ---------------------------------------------------------------------------
-
-export function getGitStatus(
-  options?: { signal?: AbortSignal },
-): Promise<GitStatus> {
-  return request<unknown>("/api/git/status", options).then(parseGitStatusResponse)
-}
 
 export function getWorkingBranch(
   options?: { signal?: AbortSignal },

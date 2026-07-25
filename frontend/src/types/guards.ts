@@ -69,7 +69,6 @@ import type {
   GitPushResponse,
   GitSetIdentityResponse,
   GitSetWorkingBranchResponse,
-  GitStatus,
   GitWorkingBranchResponse,
   IoCapabilitiesResponse,
   IoCapabilityGroup,
@@ -2270,20 +2269,7 @@ export function parseUtilityDeleteResponse(value: unknown): UtilityDeleteRespons
   }
 }
 
-export function parseGitStatusResponse(value: unknown): GitStatus {
-  const obj = expectPlainObject("parseGitStatusResponse", value)
-  return {
-    branch: expectString("parseGitStatusResponse", obj.branch, "field `branch`"),
-    is_main: expectBoolean("parseGitStatusResponse", obj.is_main, "field `is_main`"),
-    is_read_only: expectBoolean("parseGitStatusResponse", obj.is_read_only, "field `is_read_only`"),
-    changed_files: optionalStringArray("parseGitStatusResponse", obj, "changed_files"),
-    main_ahead: optionalBoolean("parseGitStatusResponse", obj, "main_ahead"),
-    main_ahead_by: optionalNumber("parseGitStatusResponse", obj, "main_ahead_by"),
-    main_last_updated: optionalNullableString("parseGitStatusResponse", obj, "main_last_updated"),
-  }
-}
-
-const WORKING_BRANCH_STATES = ["ready", "unset", "invalid", "divergent"] as const
+const WORKING_BRANCH_STATES = ["no-repository", "unset", "detached", "invalid", "divergent", "ready"] as const
 
 export function parseGitWorkingBranchResponse(value: unknown): GitWorkingBranchResponse {
   const obj = expectPlainObject("parseGitWorkingBranchResponse", value)
@@ -2310,6 +2296,7 @@ export function parseGitWorkingBranchResponse(value: unknown): GitWorkingBranchR
     identity_set: optionalBoolean("parseGitWorkingBranchResponse", obj, "identity_set"),
     user_name: optionalNullableString("parseGitWorkingBranchResponse", obj, "user_name"),
     user_email: optionalNullableString("parseGitWorkingBranchResponse", obj, "user_email"),
+    head_sha: optionalNullableString("parseGitWorkingBranchResponse", obj, "head_sha"),
   }
 }
 

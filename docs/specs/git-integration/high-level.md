@@ -7,8 +7,10 @@ version-control workflow — "save my work", "commit a milestone", "go back to a
 version", "push to share" — without exposing branches, merges, rebases, or conflict
 resolution as raw git concepts. Every git CLI interaction in the product goes through this
 one layer, so guardrails (no writing to protected branches, no force-push, no silent
-merges), user-friendly error translation, and safety nets (trash tombstones, best-effort
+merges), user-friendly error translation, and safety nets (trash tombstones, transactional
 rollback paths) are enforced in exactly one place rather than scattered across call sites.
+All mutations of one repository are serialized by one reentrant engine lock; read-only
+history and readiness work remains concurrent.
 
 The component owns the full lifecycle of a "working branch": creating one, saving
 incremental progress to it, promoting saves to a named milestone, forking a parallel
@@ -23,9 +25,10 @@ In scope:
 - Guardrails: protected-branch enforcement, ref-name injection prevention, unborn-repo
   seeding, git-op-in-progress detection, and the shared `.gitignore` deny-list asserted
   before a root commit can stage project files.
-- Read paths for the panel: status, branch listing, milestone history, ledger save
-  expansion, whole-forest graph topology, commit "breadcrumb" context.
-- Remote interaction: listing remotes, throttled/hardened background fetch, deliberate
+- Read paths for the panel: repository/working-branch readiness, branch listing, milestone
+  history, ledger save expansion, whole-forest graph topology, and commit "breadcrumb"
+  context. There is no separate generic status endpoint without a UI contract.
+- Remote interaction: listing locally-known remotes, deliberate hardened fetch, deliberate
   atomic publication of the resolved local default branch (only when bootstrapping an
   advertised-empty remote) plus the working+ledger pair, fast-forward catch-up, and
   "branch away" fork resolution — never an automatic push, fetch-and-merge, or force-push.
@@ -94,28 +97,42 @@ leg diverged, by how much) rather than a dead-end error. No path force-pushes.
 
 A remote fast-forward catch-up only ever advances refs when every leg is a clean fast-
 forward; anything else is refused so the user spins off a copy instead of triggering a
-silent merge. Background polling fetches (for the "main is ahead" badge, and for divergence
-detection) are throttled, time-bounded, and prompt-proof, so a slow or credential-walled
-remote can never hang a request. Remote URLs returned to the browser strip URL userinfo
+silent merge. Routine listing and readiness requests never fetch. They report divergence
+from locally-known remote-tracking refs; only deliberate Push, Catch up, or Spin off a copy
+operations perform prompt-proof, time-bounded network refreshes. Remote URLs returned to the browser strip URL userinfo
 (`user:password@`) while leaving scp-style `git@host:path` and local paths unchanged.
 
 **History as read-only.** Viewing a historical commit's pipeline (`GET /show/{sha}`) never
-touches HEAD or the working tree. Actually moving the working directory to a historical
-commit (`move`) is a distinct, explicit operation: a detached-HEAD checkout that clears the
-clone's working-branch association, so the very next save re-triggers the working-branch
-chooser rather than silently resuming an old branch.
+touches HEAD or the working tree. The view extracts only pipeline artifacts required for
+parsing, not unrelated datasets or build outputs, and malformed archives or an unparseable
+historical pipeline fail explicitly instead of returning a successful empty graph. Actually
+moving the working directory to a historical commit (`move`) is a distinct, explicit
+operation: a detached-HEAD checkout that clears the clone's working-branch association, so
+the very next save re-triggers the working-branch chooser rather than silently resuming an
+old branch. A create-and-move operation preserves pending save topology; when external merge
+commits make replay unsafe, it refuses and directs the user to create a parallel line.
 
 **Recoverability.** Deleting a working pair does not destroy it: both tips are pinned under
 a non-head ref namespace and a tombstone is recorded before the branch refs are removed, so
 `undelete` can rebuild one of the 20 most recently tombstoned pairs exactly. Older trash
 pins remain reachable but lose their API tombstone when the cap rolls over. Multi-step ref
-mutations (fork with move, branch-away, and branch-pair creation after any unborn-repository
-seed has succeeded) have best-effort rollback of HEAD and refs so a partial failure does not
-normally strand half a pair. The seed phase itself is outside that rollback boundary: it may
+mutations (branch selection, archive/delete/restore, fork with move, branch-away,
+fast-forward, and branch-pair creation after any unborn-repository seed has succeeded) keep
+an operation snapshot and compensate on failure. An incomplete compensation is an explicit
+transaction failure and is never reported as success. When the active pair is the
+only/default local pair, archive or delete detaches at a preserved commit rather than trying
+to check out the branch being removed. The seed phase itself is outside that rollback
+boundary: it may
 rename an unborn branch to `main`, append protective `.gitignore` entries, clear/rebuild the
 index, and create a permanent root commit before pair creation begins. A failure during that
 phase can leave those safe preparatory changes behind, although it does not deliberately
 remove working-tree files.
+
+**Crash-safe clone state.** Every `.haute/*.json` write is staged to a sibling temporary
+file and atomically replaced while holding the same per-repository mutation lock used by the
+engine. Read-modify-write helpers keep that lock for the whole transaction, so concurrent
+preference, fork, trash, and pushed-tip updates cannot lose one another and readers see a
+complete old or new document, never torn JSON.
 
 ## Design rationale
 
@@ -155,6 +172,10 @@ remove working-tree files.
 - **Guardrails as a distinct error subtype, not just a message string.** `GitGuardrailError`
   is a subtype of `GitDomainError` specifically so the HTTP layer can map it to 403 instead
   of 400 without string-matching the message.
+- **One repository mutation lock, not scattered operation locks.** Git's index, HEAD, refs,
+  working tree, and Haute's clone-state files form one logical engine state. A reentrant
+  per-repository lock lets compound operations call smaller mutators without deadlock while
+  preventing two request threads from interleaving successful-looking partial transactions.
 - **Untracked per-clone state.** The working-branch association, preferences, fork map,
   trash, and last-pushed SHAs all live in `.haute/*.json`, deliberately outside git's own
   history — HEAD itself cannot answer "which working branch does this clone serve" once
@@ -179,8 +200,8 @@ remove working-tree files.
 
 ## Failure model
 
-Every git-facing failure surfaces as one of three exception families, all subclasses of
-`GitError` (itself a subclass of the project-wide `HauteError`):
+Every git-facing failure surfaces through a `GitError` subclass (`GitError` itself is a
+subclass of the project-wide `HauteError`):
 
 - **`GitError`** — raw subprocess stderr. Treated as unsafe to show a user (it can embed
   absolute paths, remote URLs, SSL errors, or credentials); the HTTP layer collapses it to
@@ -191,6 +212,12 @@ Every git-facing failure surfaces as one of three exception families, all subcla
 - **`GitGuardrailError`** — a `GitDomainError` subtype specifically for guardrail blocks
   (protected branch, already-archived, save ledger used as a working branch). Surfaces
   verbatim as HTTP 403.
+- **`GitTransactionError`** — a `GitDomainError` subtype used when a mutation failed and
+  one or more compensating steps also failed. Its safe message tells the user that repository
+  repair may be required; the original and rollback failures remain server-side.
+- **`GitHistoryReadError`** — a `GitDomainError` subtype for a malformed archive or a
+  historical tree that cannot produce a pipeline graph. It is a failed read, never an empty
+  successful graph.
 
 Two operations carry structured, machine-readable failure payloads instead of a plain
 message, because the UI needs to *act* on the failure, not just display it:
@@ -209,11 +236,9 @@ detail constant, logged with a stack trace.
 This codebase prefers loud failure over silent fallbacks. Consistent with that: an
 unreadable object never populates a cache (every cached helper raises rather than memoizing
 a failure); a `_wipe_volatile_artefacts` failure is logged but not fatal, because volatile
-caches are reconstructable by definition; a failed background fetch degrades silently to
-the last-known remote-tracking refs, because fetches only ever advance `refs/remotes/*` and
-can never violate a local invariant by failing. The explicit Push preflight is intentionally
-different: it authorizes remote mutation, so inspection or validation failure aborts loudly
-and never degrades to an assumed-empty or assumed-related remote.
+caches are reconstructable by definition; and no routine read starts a network operation.
+Deliberate remote operations abort on a required refresh/inspection failure and never
+degrade to an assumed-empty, assumed-related, or successfully-updated remote.
 
 > NOTE: `_get_default_branch_cached` and the content-addressed caches
 > (`_merge_base_cached`, `_is_ancestor_cached`, `_first_parent_spine_cached`,
