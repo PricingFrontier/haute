@@ -350,7 +350,7 @@ class TestHistoricalPipelineReads:
     @staticmethod
     def _tar_payload(entries: list[tuple[str, bytes]]) -> bytes:
         payload = io.BytesIO()
-        with tarfile.open(fileobj=payload, mode="w") as archive:
+        with tarfile.TarFile(fileobj=payload, mode="w") as archive:
             for name, content in entries:
                 member = tarfile.TarInfo(name)
                 member.size = len(content)
