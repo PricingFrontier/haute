@@ -727,6 +727,46 @@ class TestRuntimeInputExtraKeys:
         _bump_mtime(artifact)
         assert runtime_input_extra_keys(graph) == keys_v1
 
+    def test_remote_artifact_identifier_remains_in_config_fingerprint(self):
+        """Repointing the MLflow identifier must invalidate dataframe caches."""
+        from haute.execution import dataframe_graph_input_fingerprint
+
+        def graph_for(artifact_path: str):
+            return _g(
+                {
+                    "nodes": [
+                        _n(
+                            {
+                                "id": "ms",
+                                "data": {
+                                    "label": "ms",
+                                    "nodeType": "modelScore",
+                                    "config": {
+                                        "sourceType": "run",
+                                        "run_id": "run-1",
+                                        "artifact_path": artifact_path,
+                                    },
+                                },
+                            }
+                        ),
+                    ],
+                    "edges": [],
+                }
+            )
+
+        first = dataframe_graph_input_fingerprint(
+            graph_for("models/v1/model.cbm"),
+            target_node_id="ms",
+            source="live",
+        )
+        second = dataframe_graph_input_fingerprint(
+            graph_for("models/v2/model.cbm"),
+            target_node_id="ms",
+            source="live",
+        )
+
+        assert first != second
+
     def test_flat_file_api_input_path_is_signed(self, tmp_path):
         """Non-JSON apiInput paths are flat-file reads — signed like a
         dataInput file, mirroring the builder's dispatch predicate."""

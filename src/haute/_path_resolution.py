@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Literal, TypeVar, cast
 
 from haute._sandbox import _get_project_root
+from haute._types import PipelineGraph
 
 PathPreference = Literal["project", "pipeline"]
 _CallableT = TypeVar("_CallableT", bound=Callable[..., Any])
@@ -17,6 +18,18 @@ _RUNTIME_PROJECT_ROOT: ContextVar[Path | None] = ContextVar(
     "haute_runtime_project_root",
     default=None,
 )
+
+
+class RuntimePathError(ValueError):
+    """Base class for user-facing runtime path validation failures."""
+
+
+class MalformedRuntimePathError(RuntimePathError):
+    """Raised when a path cannot be parsed safely."""
+
+
+class RuntimePathOutsideProjectError(RuntimePathError):
+    """Raised when a runtime path resolves outside its execution root."""
 
 
 def _normalise_path_text(path: str | Path) -> str:  # pragma: no mutate
@@ -28,7 +41,7 @@ def _normalise_path_text(path: str | Path) -> str:  # pragma: no mutate
     """
     text = str(path)
     if "\x00" in text:
-        raise ValueError("Path contains an embedded null byte")
+        raise MalformedRuntimePathError("Path contains an embedded null byte")
     return text.replace("\\", "/")
 
 
@@ -65,7 +78,7 @@ def _infer_project_root(
     if lexical_source.is_relative_to(current_project) and not resolved_source.is_relative_to(
         current_project
     ):
-        raise ValueError("Pipeline source resolves outside the project root")
+        raise RuntimePathOutsideProjectError("Pipeline source resolves outside the project root")
     if resolved_source.is_relative_to(current_project):
         return current_project
     return resolved_source.parent
@@ -91,9 +104,12 @@ def runtime_project_root_scoped(function: _CallableT) -> _CallableT:
     """Decorate an execution entry point whose first argument is a graph."""
 
     @wraps(function)
-    def wrapper(graph: Any, *args: Any, **kwargs: Any) -> Any:
-        with runtime_project_root_scope(getattr(graph, "source_file", None)):
-            return function(graph, *args, **kwargs)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        graph = args[0] if args else kwargs.get("graph")
+        if not isinstance(graph, PipelineGraph):
+            raise TypeError(f"{function.__name__} requires a PipelineGraph as its graph argument")
+        with runtime_project_root_scope(graph.source_file):
+            return function(*args, **kwargs)
 
     return cast(_CallableT, wrapper)
 
@@ -132,7 +148,9 @@ def resolve_runtime_file_path(
     if raw.is_absolute():
         resolved = raw.resolve()
         if enforce_project_root and not resolved.is_relative_to(root):
-            raise ValueError(f"Path {raw_path!r} resolves outside the project root")
+            raise RuntimePathOutsideProjectError(
+                f"Path {raw_path!r} resolves outside the project root"
+            )
         return resolved
 
     pdir: Path | None
@@ -173,4 +191,4 @@ def resolve_runtime_file_path(
     if deduped:
         return deduped[0]
 
-    raise ValueError(f"Path {raw_path!r} resolves outside the project root")
+    raise RuntimePathOutsideProjectError(f"Path {raw_path!r} resolves outside the project root")

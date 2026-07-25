@@ -11,11 +11,16 @@ from pathlib import Path
 import pytest
 
 from haute._path_resolution import (
+    MalformedRuntimePathError,
+    RuntimePathOutsideProjectError,
     _candidate_if_allowed,
     _infer_project_root,
+    current_runtime_project_root,
     resolve_runtime_file_path,
+    runtime_project_root_scoped,
 )
 from haute._sandbox import set_project_root
+from haute._types import PipelineGraph
 
 
 def test_prefers_project_candidate_when_both_exist(tmp_path: Path) -> None:
@@ -239,7 +244,7 @@ def test_backslash_path_is_normalized_before_resolution(tmp_path: Path) -> None:
 
 
 def test_embedded_null_byte_is_rejected(tmp_path: Path) -> None:
-    with pytest.raises(ValueError, match="null byte"):
+    with pytest.raises(MalformedRuntimePathError, match="null byte"):
         resolve_runtime_file_path(
             "bad\x00name.json",
             project_root=tmp_path,
@@ -253,7 +258,7 @@ def test_absolute_raw_path_outside_root_is_rejected_when_enforced(tmp_path: Path
     outside = tmp_path / "outside.json"
     outside.write_text("{}", encoding="utf-8")
 
-    with pytest.raises(ValueError, match="outside the project root"):
+    with pytest.raises(RuntimePathOutsideProjectError, match="outside the project root"):
         resolve_runtime_file_path(
             outside,
             project_root=project_root,
@@ -299,3 +304,24 @@ def test_candidate_if_allowed_returns_outside_path_when_not_enforced(tmp_path: P
     )
 
     assert resolved == outside.resolve()
+
+
+def test_runtime_project_root_scope_accepts_keyword_graph(tmp_path: Path) -> None:
+    source = tmp_path / "external" / "pipeline.py"
+    source.parent.mkdir()
+    graph = PipelineGraph(source_file=str(source))
+
+    @runtime_project_root_scoped
+    def selected_root(*, graph: PipelineGraph) -> Path:
+        return current_runtime_project_root()
+
+    assert selected_root(graph=graph) == source.parent.resolve()
+
+
+def test_runtime_project_root_scope_rejects_non_graph_argument() -> None:
+    @runtime_project_root_scoped
+    def selected_root(graph: PipelineGraph) -> Path:
+        return current_runtime_project_root()
+
+    with pytest.raises(TypeError, match="PipelineGraph"):
+        selected_root("not-a-graph")  # type: ignore[arg-type]

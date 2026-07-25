@@ -22,6 +22,7 @@
 | `src/haute/routes/_supersession.py` | `SupersessionCoordinator` / `_SupersessionState` — generation-counted "run latest, cancel/skip the rest" concurrency primitive used by preview and trace. |
 | `src/haute/routes/output_assemble.py` | `POST /api/output-assemble/dry-run` — validates an unsaved `outputMapping`, swaps it into the target node's in-memory config, executes up to that node, returns the rendered document. |
 | `src/haute/routes/_contract_errors.py` | Shared public-contract-error adapter: validates the closed public error set, emits stable payloads, maps synchronous failures to HTTP 422, and supplies the matching `contract_error` fields for background jobs. |
+| `src/haute/routes/_runtime_path_errors.py` | Closed HTTP mapping for runtime-path failures: malformed path → 400, project-root escape → 403, selected by concrete exception type rather than message text. |
 
 ## Key types and data structures
 
@@ -248,7 +249,10 @@ services. Pipeline preview/trace/write-output, Explore, and OUTPUT dry-run
 likewise flatten before validating the submitted source and runtime paths at
 their route boundary (and use the configured source when their execution
 contract requires it). An HTTP body therefore cannot select the
-direct-execution external-pipeline re-rooting behavior.
+direct-execution external-pipeline re-rooting behavior. Runtime path adapters
+map `MalformedRuntimePathError` to HTTP 400 and
+`RuntimePathOutsideProjectError` to HTTP 403 by concrete exception type; error
+message wording is not part of the status-selection contract.
 
 **Preview / trace supersession**, both routed through the same `SupersessionCoordinator`
 pattern (`_preview_supersession`, `_trace_supersession`, each bounded by its own

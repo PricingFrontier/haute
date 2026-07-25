@@ -9,9 +9,15 @@ from pathlib import Path
 import pytest
 from fastapi import HTTPException
 
+from haute._path_resolution import (
+    MalformedRuntimePathError,
+    RuntimePathError,
+    RuntimePathOutsideProjectError,
+)
 from haute._types import GraphNode, NodeData, NodeType, PipelineGraph
 from haute.routes import modelling as modelling_routes
 from haute.routes import optimiser as optimiser_routes
+from haute.routes._runtime_path_errors import runtime_path_http_exception
 from haute.routes._save_pipeline import SavePipelineService
 from haute.routes.pipeline import _prepare_runtime_graph, _validate_runtime_input_paths
 from haute.schemas import (
@@ -89,6 +95,28 @@ def test_validate_runtime_input_paths_maps_embedded_null_byte_to_400() -> None:
 
     assert exc_info.value.status_code == 400
     assert "null byte" in exc_info.value.detail
+
+
+@pytest.mark.parametrize(
+    ("error", "expected_status"),
+    [
+        (MalformedRuntimePathError("wording is deliberately irrelevant"), 400),
+        (RuntimePathOutsideProjectError("different wording"), 403),
+    ],
+)
+def test_runtime_path_http_status_uses_exception_type(
+    error: RuntimePathError,
+    expected_status: int,
+) -> None:
+    mapped = runtime_path_http_exception(error)
+
+    assert mapped.status_code == expected_status
+    assert mapped.detail == str(error)
+
+
+def test_runtime_path_http_status_rejects_unknown_subtype() -> None:
+    with pytest.raises(TypeError, match="Unsupported runtime path error"):
+        runtime_path_http_exception(RuntimePathError("unclassified"))
 
 
 @pytest.mark.parametrize(

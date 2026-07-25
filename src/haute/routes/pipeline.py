@@ -29,7 +29,7 @@ from haute._hashing import content_hash_bytes
 from haute._io import read_user_text
 from haute._json_safe import rows_to_json_safe
 from haute._logging import get_logger
-from haute._path_resolution import resolve_runtime_file_path
+from haute._path_resolution import RuntimePathError, resolve_runtime_file_path
 from haute._polars_io_registry import PolarsIoConfigError, validate_data_output_config
 from haute._polars_utils import DEFAULT_STREAMING_CHUNK_SIZE, temporary_streaming_chunk_size
 from haute._sandbox import _get_project_root
@@ -70,6 +70,7 @@ from haute.routes._helpers import (
     save_lock,
     validate_safe_path,
 )
+from haute.routes._runtime_path_errors import runtime_path_http_exception
 from haute.routes._save_pipeline import SavePipelineService
 from haute.routes._supersession import SupersededRequestError, SupersessionCoordinator
 from haute.routes._timeouts import (
@@ -163,9 +164,8 @@ def _validate_runtime_input_paths(graph: PipelineGraph) -> None:
                 prefer="project",
                 enforce_project_root=True,
             )
-        except ValueError as exc:
-            status_code = 400 if "embedded null byte" in str(exc) else 403
-            raise HTTPException(status_code=status_code, detail=str(exc)) from None
+        except RuntimePathError as exc:
+            raise runtime_path_http_exception(exc) from None
 
     for node in graph.nodes:
         config = node.data.config
@@ -181,9 +181,8 @@ def _validate_runtime_input_paths(graph: PipelineGraph) -> None:
                     prefer="project",
                     enforce_project_root=True,
                 )
-            except ValueError as exc:
-                status_code = 400 if "embedded null byte" in str(exc) else 403
-                raise HTTPException(status_code=status_code, detail=str(exc)) from None
+            except RuntimePathError as exc:
+                raise runtime_path_http_exception(exc) from None
 
 
 def _validate_data_output_path(
@@ -201,9 +200,8 @@ def _validate_data_output_path(
             output_node.data.config,
             project_root=project_root,
         )
-    except ValueError as exc:
-        status_code = 400 if "embedded null byte" in str(exc) else 403
-        raise HTTPException(status_code=status_code, detail=str(exc)) from None
+    except RuntimePathError as exc:
+        raise runtime_path_http_exception(exc) from None
 
 
 def _memory_limit_http_exception(exc: ExecutionAdmissionError) -> HTTPException:

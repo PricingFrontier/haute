@@ -203,7 +203,9 @@ of `_FORMAT_METHOD_NAMES`. Receiver shapes:
    enforce_project_root=True)`. Separator normalization happens before `Path`
    construction and `resolve()` follows symlinks before containment is checked.
 3. `_execute_lazy` and `_execute_eager_core` run under
-   `runtime_project_root_scoped`; `_builders._resolve_runtime_data_path` repeats
+   `runtime_project_root_scoped`. The decorator accepts the declared `graph`
+   argument positionally or by keyword and rejects a missing/non-`PipelineGraph`
+   value before opening the scope. `_builders._resolve_runtime_data_path` repeats
    the containment check against that context-local root at the final read seam.
    Database/Databricks/named-provider identifiers are not local path fields and
    retain their provider-owned external-resource semantics.

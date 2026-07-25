@@ -104,8 +104,10 @@ preamble namespace) and delegates to `_execute_eager_core()`.
 Before fingerprinting or building functions,
 `canonical_dataframe_execution_graph()` resolves every local runtime input field
 with `enforce_project_root=True`. `_execute_eager_core` and `_execute_lazy` are
-wrapped by `runtime_project_root_scoped`, so `_resolve_runtime_data_path` repeats
-the same check at the final builder seam. Relative, absolute, traversal,
+wrapped by `runtime_project_root_scoped`; its wrapper resolves the declared
+`graph` argument from either positional or keyword calls and fails clearly when
+the value is not a `PipelineGraph`. `_resolve_runtime_data_path` therefore
+repeats the same check at the final builder seam. Relative, absolute, traversal,
 mixed-separator, and symlink spellings therefore share one resolved containment
 decision on both strategies. An absolute selected pipeline outside cwd establishes
 its parent as the scoped root; it does not authorize sibling directories. A path
