@@ -505,12 +505,92 @@ class TestSavePipeline:
 
 
 # ---------------------------------------------------------------------------
-# POST /api/pipeline/write-output
+# POST /api/pipeline/output-destination and /api/pipeline/write-output
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.usefixtures("_widen_sandbox_root")
 class TestExecuteSinkEndpoint:
+    def test_output_destination_uses_backend_resolution_without_writing(
+        self, client: TestClient, pipeline_dir: Path
+    ) -> None:
+        graph = {
+            "nodes": [
+                {
+                    "id": "sink",
+                    "type": "pipelineNode",
+                    "position": {"x": 0, "y": 0},
+                    "data": {
+                        "label": "sink",
+                        "nodeType": "dataOutput",
+                        "config": _file_output_config("report"),
+                    },
+                },
+            ],
+            "edges": [],
+        }
+
+        response = client.post(
+            "/api/pipeline/output-destination",
+            json={"graph": graph, "node_id": "sink"},
+        )
+
+        assert response.status_code == 200
+        assert response.json() == {
+            "path": "outputs/report.parquet",
+            "format": "parquet",
+            "suffix_mismatch": False,
+        }
+        assert not (pipeline_dir / "outputs").exists()
+
+        graph["nodes"][0]["data"]["config"]["path"] = "report.csv"
+        mismatch = client.post(
+            "/api/pipeline/output-destination",
+            json={"graph": graph, "node_id": "sink"},
+        )
+        assert mismatch.status_code == 200
+        assert mismatch.json() == {
+            "path": "outputs/report.csv",
+            "format": "parquet",
+            "suffix_mismatch": True,
+        }
+
+    def test_output_destination_uses_selected_project_root_when_cwd_differs(
+        self,
+        client: TestClient,
+        pipeline_dir: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        set_project_root(pipeline_dir)
+        unrelated_cwd = pipeline_dir / "unrelated-cwd"
+        unrelated_cwd.mkdir()
+        monkeypatch.chdir(unrelated_cwd)
+        graph = {
+            "source_file": str(pipeline_dir / "test_pipeline.py"),
+            "nodes": [
+                {
+                    "id": "sink",
+                    "type": "pipelineNode",
+                    "position": {"x": 0, "y": 0},
+                    "data": {
+                        "label": "sink",
+                        "nodeType": "dataOutput",
+                        "config": _file_output_config("report"),
+                    },
+                },
+            ],
+            "edges": [],
+        }
+
+        response = client.post(
+            "/api/pipeline/output-destination",
+            json={"graph": graph, "node_id": "sink"},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["path"] == "outputs/report.parquet"
+        assert not (unrelated_cwd / "outputs").exists()
+
     def test_sink_writes_output(self, client: TestClient, pipeline_dir: Path):
         out_path = pipeline_dir / "output" / "result.parquet"
         data_path = pipeline_dir / "data" / "input.parquet"
@@ -552,6 +632,28 @@ class TestExecuteSinkEndpoint:
         assert data["status"] == "ok"
         assert data["row_count"] == 3
         assert out_path.exists()
+
+        collision = client.post(
+            "/api/pipeline/write-output",
+            json={"graph": graph, "node_id": "sink"},
+        )
+        assert collision.status_code == 409
+        assert collision.json()["detail"] == (
+            "Output destination already exists: output/result.parquet"
+        )
+
+        overwrite = client.post(
+            "/api/pipeline/write-output",
+            json={"graph": graph, "node_id": "sink", "overwrite": True},
+        )
+        assert overwrite.status_code == 200
+        assert overwrite.json()["row_count"] == 3
+
+        non_boolean = client.post(
+            "/api/pipeline/write-output",
+            json={"graph": graph, "node_id": "sink", "overwrite": "true"},
+        )
+        assert non_boolean.status_code == 422
 
     def test_invalid_output_config_returns_safe_400(
         self, client: TestClient, pipeline_dir: Path
@@ -2159,6 +2261,84 @@ class TestPipelineExceptions:
         assert resp.status_code == 500
         assert error_msg not in resp.json()["detail"]
         assert "Check the server logs" in resp.json()["detail"]
+
+    @pytest.mark.parametrize(
+        ("error_type", "detail_fragment"),
+        [
+            (
+                "publication",
+                "supports atomic create-only publication",
+            ),
+            (
+                "durability",
+                "Verify the file before retrying",
+            ),
+        ],
+    )
+    def test_output_publication_failures_return_safe_actionable_details(
+        self,
+        client: TestClient,
+        pipeline_dir: Path,
+        error_type: str,
+        detail_fragment: str,
+    ) -> None:
+        from unittest.mock import patch
+
+        from haute.executor import DataOutputDurabilityError, DataOutputPublicationError
+
+        error = (
+            DataOutputPublicationError("output/test_sink.parquet")
+            if error_type == "publication"
+            else DataOutputDurabilityError("output/test_sink.parquet")
+        )
+        error.__cause__ = OSError("secret raw filesystem failure")
+
+        with patch("haute.routes.pipeline.write_data_output", side_effect=error):
+            response = client.post(
+                "/api/pipeline/write-output",
+                json={"graph": self._sink_graph(pipeline_dir), "node_id": "sink"},
+            )
+
+        assert response.status_code == 500
+        assert detail_fragment in response.json()["detail"]
+        assert "secret raw filesystem failure" not in response.json()["detail"]
+
+    def test_api_input_schema_error_is_a_structured_422(
+        self,
+        client: TestClient,
+        pipeline_dir: Path,
+    ) -> None:
+        data_path = pipeline_dir / "data" / "input.json"
+        data_path.write_text('{"items": []}', encoding="utf-8")
+        graph = {
+            "nodes": [
+                {
+                    "id": "api",
+                    "type": "pipelineNode",
+                    "position": {"x": 0, "y": 0},
+                    "data": {
+                        "label": "api",
+                        "nodeType": "apiInput",
+                        "config": {"path": str(data_path)},
+                    },
+                }
+            ],
+            "edges": [],
+        }
+
+        response = client.post(
+            "/api/pipeline/preview",
+            json={"graph": graph, "node_id": "api"},
+        )
+
+        assert response.status_code == 422
+        assert response.json()["detail"] == {
+            "error_code": "api_input_schema_invalid",
+            "message": (
+                "API Input has no v2 schema (tables[]). Open the node and click "
+                "'Infer Tables' to populate the schema mapping, then preview again."
+            ),
+        }
 
 
 class TestPreviewEdgeCases:

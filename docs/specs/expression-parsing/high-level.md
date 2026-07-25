@@ -62,22 +62,49 @@ Out of scope (owned by neighbouring components, cross-linked below):
   a node carrying `config["_load_error"]`; the fallback graph's warning remains the file-level
   syntax-recovery message. The healthy parser's load-error warning aggregator only reports nodes
   already carrying `_load_error`; normal sidecar load failures do not enter that path.
+- A referenced submodel file is parsed atomically. If its module AST is invalid, parsing raises
+  `ParseError` naming the child file and syntax location rather than merging an empty warning
+  graph that has lost every child node and edge.
 - `pipeline.submodel(...)` references are resolved relative to the project root / pipeline
-  directory; a referenced file that does not exist is silently skipped.
-  > NOTE: unlike a config-load failure or an ignored nested submodel, a missing/typo'd submodel
-  > path produces no warning at all — the reference simply disappears from the graph.
-- A submodel name collision (two different files producing the same submodel name) logs a
-  warning and the later one wins.
+  directory. Every authored reference must resolve to a readable file. Missing files raise one
+  `ParseError` that lists every unresolved path instead of returning a graph with those
+  submodels omitted.
+- An in-memory `parse_pipeline_source` call that contains submodel references must supply
+  `_base_dir` or `_submodel_base_dir`. Without a resolution root the parser raises `ParseError`
+  with every unresolved authored path; returning only the root nodes would violate the same
+  conservation contract as a missing file.
+- Referencing the same resolved submodel file more than once raises a dedicated `ParseError`
+  naming that file and the authored references. This is distinct from two different files
+  declaring the same `Submodel(...)` name.
+- Two different submodel files may not declare the same `Submodel(...)` name. A collision raises
+  `ParseError` naming the shared pipeline name and every involved file; no file wins by load
+  order.
 - `flatten=True` dissolves nested submodel graphs into one flat graph (for the executor, trace,
   and deploy); the default `False` keeps hierarchical `submodel__<name>` placeholder nodes so the
   GUI can render a collapsed/expandable submodel box.
+- Parameter-name inference spans a submodel boundary after every child has been loaded. If a root
+  or child function parameter names a node in the parent or another loaded child graph, the parser
+  constructs the same implicit edge it would have constructed within one file; hierarchical and
+  flattened results preserve it.
 - Nested submodels (a submodel file itself calling `pipeline.submodel(...)`) are capped at one
-  level: the reference is ignored, but a graph-level warning names the ignored path(s) so the
-  drop is visible rather than silent.
+  level. Parsing raises `ParseError` naming the containing file and every nested path, because
+  returning the outer graph while omitting the nested references would not conserve authored
+  structure.
 - The regex fallback recovers everything it can locate and unambiguously reconstruct, and fails
   loud for content it can see but cannot safely recover (an unclosed `connect()` call, a
   non-literal decorator keyword argument, an `async def` pipeline node, a config sidecar folder
-  present without a matching `config=` kwarg) rather than silently dropping or guessing at it.
+  present without a matching `config=` kwarg, or an unrecoverable `pipeline.submodel(...)`
+  reference) rather than silently dropping or guessing at it. When several submodel references
+  are unrecoverable, the single error reports all of them.
+- Preamble boundaries recognise both module aliases (`import haute as ht`) and direct constructor
+  aliases (`from haute import Pipeline as BuildPipeline`), including multiline pipeline
+  construction. The syntax-error fallback applies the same alias boundary rules textually.
+- Before either parser path returns, a structure-conservation gate checks the authored node ids,
+  explicit edge endpoints and handles, implicit parameter edges, and submodel references against
+  the constructed graph. The gate permits a parent edge endpoint to name a loaded submodel child,
+  but rejects every other dangling endpoint with an actionable `ParseError`. Exact duplicate
+  `connect()` identities have their own diagnostic rather than being reported as a generic
+  conservation mismatch.
 
 **Expression parsing**
 - `parse_expression(code, target_column)` statically locates the `with_columns()`/`select()`
@@ -175,9 +202,13 @@ Out of scope (owned by neighbouring components, cross-linked below):
 - Structural parsing *does* raise `ParseError` for content the fallback scanner can see but cannot
   safely reconstruct: an unclosed `connect()`/`submodel()`/decorator argument list, a non-literal
   decorator keyword argument or (on the healthy path) a non-literal `submodel()` path, an
-  `async def` pipeline node, or a config sidecar folder with no `config=` kwarg. A parse that
-  silently returned a plausible-but-incomplete graph here would corrupt the file on the next save,
-  which this codebase treats as strictly worse than a loud failure.
+  `async def` pipeline node, a config sidecar folder with no `config=` kwarg, a missing submodel
+  file, a submodel reference without a resolution root, the same resolved submodel file referenced
+  more than once, two different submodel files declaring the same name, a nested submodel
+  reference, an exact duplicate edge identity, or any node/edge/handle identity rejected by the
+  conservation gate. A parse that silently returned a plausible-but-incomplete graph here would
+  corrupt the file on the next save, which this codebase treats as strictly worse than a loud
+  failure.
 - Config sidecar load/validation failures are raised as `ConfigError`. `_load_error` is used by
   regex recovery for a function body fragment that cannot be parsed, not as the normal sidecar
   failure transport.

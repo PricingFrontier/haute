@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from haute._api_input_schema import ApiInputSchemaError
 from haute._output_assembler import OutputNestingKeyError
 from haute.errors import (
     ChunkMemoryRiskError,
@@ -11,6 +12,7 @@ from haute.errors import (
     LiveSwitchScenarioError,
     PreambleError,
     RatingExtremaUndefinedError,
+    RatingFactorDtypeContractError,
     RatingFactorMissingError,
     TraceCorrelationUnsupportedError,
 )
@@ -26,6 +28,13 @@ from haute.routes._contract_errors import (
 
 def _public_error_cases() -> list[tuple[BaseException, dict[str, object]]]:
     return [
+        (
+            ApiInputSchemaError("API Input has no v2 schema (tables[])"),
+            {
+                "error_code": "api_input_schema_invalid",
+                "message": "API Input has no v2 schema (tables[])",
+            },
+        ),
         (
             PreambleError("preamble failed", source_line=7),
             {"error_code": "preamble_failed", "message": "preamble failed", "source_line": 7},
@@ -125,6 +134,23 @@ def _public_error_cases() -> list[tuple[BaseException, dict[str, object]]]:
                 "message": "rating factor is absent",
                 "table": "territory",
                 "factor": "region",
+            },
+        ),
+        (
+            RatingFactorDtypeContractError(
+                "saved rating factor dtype no longer matches the input",
+                table="territory",
+                factor="region",
+                saved_dtype={"kind": "String"},
+                input_dtype={"kind": "Categorical"},
+            ),
+            {
+                "error_code": "rating_factor_dtype_contract",
+                "message": "saved rating factor dtype no longer matches the input",
+                "table": "territory",
+                "factor": "region",
+                "saved_dtype": {"kind": "String"},
+                "input_dtype": {"kind": "Categorical"},
             },
         ),
         (

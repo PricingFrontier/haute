@@ -11,6 +11,7 @@ import {
   previewNode,
   savePipeline,
   traceCell,
+  resolveOutputDestination,
   writeOutput,
   buildInputCache,
   getInputCacheJob,
@@ -538,6 +539,23 @@ describe("endpoint contracts", () => {
     expect(body.target_node_id).toBe("n1")
   })
 
+  it("resolveOutputDestination posts to the backend path authority", async () => {
+    mockFetch.mockReturnValue(
+      jsonResponse({
+        path: "outputs/report.csv",
+        format: "csv",
+        suffix_mismatch: false,
+      }),
+    )
+    await resolveOutputDestination({ graph: dummyGraph, nodeId: "sink1" })
+    const [url, opts] = mockFetch.mock.calls[0]
+    expect(url).toBe("/api/pipeline/output-destination")
+    expect(JSON.parse(opts.body)).toEqual({
+      graph: dummyGraph,
+      node_id: "sink1",
+    })
+  })
+
   it("writeOutput posts to /api/pipeline/write-output", async () => {
     mockFetch.mockReturnValue(jsonResponse({ status: "ok" }))
     await writeOutput({ graph: dummyGraph, nodeId: "sink1" })
@@ -546,6 +564,7 @@ describe("endpoint contracts", () => {
     const body = JSON.parse(opts.body)
     expect(body.node_id).toBe("sink1")
     expect(body.source).toBe("live")
+    expect(body.overwrite).toBe(false)
   })
 
   it("fetchSchema GETs /api/schema with encoded path", async () => {

@@ -546,3 +546,44 @@ silently producing orphan/non-matching rows. No output-path grammar change,
 cache-layout migration, relaxation of cache content verification, or divergent-prefix
 feature is part of this work. Existing bag semantics for valid keys, deterministic
 cuts, pruning, and cache manifest fields remain unchanged.
+
+## I/O roadmap correctness hardening
+
+The corresponding high-level behaviour is
+[I/O roadmap correctness hardening](high-level.md#io-roadmap-correctness-hardening).
+
+- `assemble_output_from_config` constructs its final `LazyFrame` with
+  `infer_schema_length=None`. Tests use more than the default inference-window
+  number of null-first rows and a later nested struct field so the regression
+  cannot pass accidentally.
+- This full-document inference is a deliberate exemption from bounded source
+  inference: OUTPUT assembly has already materialised the complete response
+  document required by its contract, and a finite prefix cannot preserve a
+  field that first appears later. The constructor performs no additional
+  upstream read; request/output limits remain the boundary for response size.
+- `_emit_row` applies the shared scalar-to-string renderer to any declared
+  string column containing a genuine JSON scalar, not only the `$value`
+  sentinel. `_buffer_to_frame` remains strict and rejects list/dict values;
+  numeric/date silent-coercion guards are unchanged.
+- `_emit_at` distinguishes dictionaries, genuine JSON scalars, and lists.
+  Lists match neither object tables nor scalar tables and increment that
+  table's skip count. The explicit null-element branch remains a valid scalar
+  row.
+- `_jsonpath.is_identifier_name` owns the ASCII identifier predicate used by
+  the parser and inference. `_reject_unexpressible_key` uses it after its
+  sentinel/dot-specific diagnostics. `parse_path` rejects bracket-name
+  segments containing a dot before normalisation.
+- Sidecar loading rejects duplicate keys. Raw JSON/NDJSON records are decoded
+  once by the streaming record iterator and retain decoder-native duplicate-key
+  handling; inference and build deliberately share that iterator rather than
+  adding a second hot-path duplicate-key scan.
+- Per-table cache metadata records a `columns` name-to-dtype map.
+  `_aggregate_v2_tables` exposes each as `<label>.<column>`; a compatible
+  fallback reads the Parquet schema for an older valid metadata entry that
+  lacks the new map.
+- `_BUILD_LOCKS` is a `WeakValueDictionary[str, threading.Lock]` protected by
+  `_BUILD_LOCKS_GUARD`. Callers retain the returned lock while it is acquired.
+
+The existing `data_file_signature` argument remains the only intra-operation
+hash-reuse seam. Tests continue to prove that a separate operation recomputes
+SHA-256 and detects a same-size/same-mtime rewrite.

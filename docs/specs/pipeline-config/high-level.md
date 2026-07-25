@@ -68,10 +68,13 @@ the last edge resurrected it on reparse, a GUI save then materialised the invent
 source, and the fabricated chain disagreed with `run()`, which fails loudly on unwired
 transforms.)
 
-A static `connect()` whose source or target does not name a parsed node is omitted rather than
-raising. This differs from the live `Pipeline.connect()` API, which requires both endpoints to be
-registered and raises immediately. The static omission is covered as compatibility behaviour,
-but it means an invalid authored connect is not itself surfaced as a parse warning.
+A static `connect()` whose source or target does not name a root node is retained as unresolved
+until referenced submodels have been loaded, because cross-boundary connections legitimately name
+child node ids. After that merge opportunity, every endpoint must identify either a root node or
+a child of an authored submodel. Any remaining dangling endpoint raises `ParseError` with the
+complete edge and handle identity; it is never omitted from an otherwise healthy-looking graph.
+The live `Pipeline.connect()` API continues to require both endpoints to be registered
+immediately.
 
 The parameter-name rule belongs to static source parsing. A live `Pipeline` object records only
 edges added through `connect()`; its `run()`, `score()`, and `to_graph()` methods do not infer
@@ -100,6 +103,11 @@ pipelines take a bare frame), or a bare frame against a multi-port source all ra
 multiple ports. Both `run()` and `score()` resolve each edge's frame through the same
 port-aware selection the full executor uses (`_pick_source_frame` on
 `RegisteredEdge.source_port`), keeping the single-execution-engine invariant.
+`@pipeline.instance` registrations are not executable on this live-object surface: the
+decorator records an internal instance marker, and `run()`/`score()` raise `ExecutionError`
+before calling the node regardless of whether `instanceOf` or `inputMapping` is empty. Static
+codegen may resolve an instance into a concrete generated function; the live registry may not
+silently treat an unresolved instance as an ordinary Polars node.
 
 **Project & discovery.** A Haute project is a directory containing `haute.toml` that also
 sits inside a git repository. Every CLI command resolves "which pipeline file" through the
@@ -146,6 +154,13 @@ Sidecar writes pass every config dict through an allowlist derived from each nod
 `TypedDict` annotations before serialising, dropping (and logging) anything outside it. This
 catches off-spec keys smuggled in by external tooling, a not-yet-hardened code path, or a
 frontend bug, without failing the save itself.
+
+Rating-step sidecars have one canonical persisted entry shape: ordered row arrays. The loader
+still accepts the historical nested object-key maps, migrates them in deterministic key order,
+and the next save writes rows. This exception to compact object-key maps is required because a
+JSON object key cannot preserve the scalar identity or dtype metadata of a rating level.
+Validation and canonicalisation finish before the save service stages any file, so a malformed
+rating table leaves the prior sidecar untouched.
 
 Contract validation at parse time deliberately avoids contacting MLflow for model-scoring nodes:
 their input side is treated as opaque while the locally configured output column is still
@@ -271,3 +286,27 @@ sidecar save/load, standalone registration and explicit-output/ambiguous-leaf be
 scaffold parsing, and repository-wide assertions that `dataSource`, `dataSink`, `data_source`,
 and `data_sink` are absent outside the 0.7 plan, release note, and historical current-state spec
 text.
+
+## Retained input sidecar authority
+
+Retained input configuration implements [IO-IO02](../../roadmap/io-layer.md)
+by making each sidecar the sole declarative runtime source.
+
+`apiInput` and `externalFile` keep their existing sidecar folders, and that
+sidecar is the sole declarative runtime source for generated pipelines.
+Generated function bodies do not embed a second copy of path, source type,
+schema, external file type, or model class. Editing a valid sidecar after code
+generation therefore changes both parsing/editor state and the next standalone
+execution without regenerating Python.
+
+Shared config-driven helpers load duplicate-key-rejecting sidecars, validate
+the active shape, and resolve relative paths with the same project/pipeline
+candidate policy used by the executor, with the generated module directory as
+the pipeline candidate. They then perform the same source/object load used by
+the executor. Missing, malformed, or shape-incomplete sidecars fail before
+reading the data/object file. User code remains in the Python function body
+and runs after the object or input frame has been resolved.
+
+Acceptance saves and reloads each retained node, edits only its sidecar, runs
+the already-generated module, and proves that executor and generated results
+or diagnostics agree.

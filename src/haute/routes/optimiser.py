@@ -21,6 +21,7 @@ from haute._polars_utils import (
     streaming_collect,
     temporary_streaming_chunk_size,
 )
+from haute._rating import is_rating_dtype_descriptor
 from haute._sandbox import _get_project_root
 from haute._types import SolveResultLike
 from haute.errors import BoundedMemoryUnsupportedError
@@ -55,6 +56,7 @@ from haute.routes._optimiser_service import (
     _load_apply_result_artifact,
     _optimiser_solve_required_columns_by_node,
     _persist_apply_result_artifact,
+    _ratebook_factor_dtypes_from_artifact,
     _ratebook_factor_level_counts_from_artifact,
     _resolve_optimiser_data_input_id,
     _serialise_ratebook_factor_tables,
@@ -763,6 +765,7 @@ def _cached_materialised_ratebook_frontier_result(
         isinstance(result, dict)
         and _cached_result_matches_frontier_selection(result, point_index)
         and isinstance(result.get("factor_tables"), dict)
+        and isinstance(result.get("factor_dtypes"), dict)
         and _lambda_mappings_match(result.get("lambdas"), expected_lambdas)
     ):
         return result
@@ -774,6 +777,7 @@ def _materialised_ratebook_result_dict(
     solve_result: SolveResultLike,
     factor_level_counts: dict[str, dict[str, int]],
     factor_level_order: dict[str, list[str]],
+    factor_dtypes: dict[str, list[dict[str, Any]]],
 ) -> dict[str, Any]:
     materialised = dict(result_dict)
     materialised.update(
@@ -790,7 +794,9 @@ def _materialised_ratebook_result_dict(
                 getattr(solve_result, "factor_tables", None),
                 factor_level_counts,
                 factor_level_order,
+                factor_dtypes,
             ),
+            "factor_dtypes": factor_dtypes,
             "history": None,
         }
     )
@@ -905,11 +911,29 @@ def _materialise_ratebook_frontier_point(
             streaming_chunk_size=streaming_chunk_size,
         )
     factor_level_order = job.get(_RATEBOOK_FACTOR_LEVEL_ORDER_KEY) or {}
+    factor_dtypes = job.get("factor_dtypes")
+    if not isinstance(factor_dtypes, dict):
+        result_with_dtypes = job.get("result")
+        if isinstance(result_with_dtypes, dict):
+            factor_dtypes = result_with_dtypes.get("factor_dtypes")
+    if not isinstance(factor_dtypes, dict):
+        artifact_handles = _artifact_handles_or_raise(job)
+        factors_handle = artifact_handles.get(_RATEBOOK_FACTORS_HANDLE_KEY)
+        if not isinstance(factors_handle, dict):
+            raise HTTPException(
+                status_code=500,
+                detail="Ratebook factor dtype metadata is missing",
+            )
+        factor_dtypes = _ratebook_factor_dtypes_from_artifact(
+            factors_handle,
+            factor_columns,
+        )
     materialised = _materialised_ratebook_result_dict(
         result_dict,
         solve_result,
         factor_level_counts,
         factor_level_order,
+        factor_dtypes,
     )
     updated_job = _store.atomic_update(
         job_id,
@@ -1777,12 +1801,21 @@ def _build_artifact_payload(
             "n_frontier_points": frontier_data.get("n_points", 0),
         }
     if job_config.get("mode") == "ratebook":
+        result_payload = job.get("result")
         factor_tables = (
-            job["result"].get("factor_tables") if isinstance(job.get("result"), dict) else None
+            result_payload.get("factor_tables") if isinstance(result_payload, dict) else None
         )
         if factor_tables is None:
             factor_tables = getattr(solve_result, "factor_tables", None)
+        factor_dtypes = (
+            result_payload.get("factor_dtypes") if isinstance(result_payload, dict) else None
+        )
+        if factor_dtypes is None:
+            factor_dtypes = job.get("factor_dtypes")
+        if factor_dtypes is None:
+            factor_dtypes = getattr(solve_result, "factor_dtypes", None)
         payload["factor_tables"] = factor_tables
+        payload["factor_dtypes"] = factor_dtypes
         payload["clamp_rate"] = getattr(solve_result, "clamp_rate", None)
     return payload
 
@@ -1827,14 +1860,69 @@ def _validate_artifact_payload(payload: dict[str, Any]) -> None:
             status_code=400,
             detail="Solve result has no total objective. Re-run the solve before saving.",
         )
-    if payload.get("mode") == "ratebook" and not isinstance(payload.get("factor_tables"), dict):
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "Ratebook solve result has no factor tables, so the saved artifact "
-                "could not be applied for pricing. Re-run the solve before saving."
-            ),
-        )
+    if payload.get("mode") == "ratebook":
+        factor_tables = payload.get("factor_tables")
+        if not isinstance(factor_tables, dict):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Ratebook solve result has no factor tables, so the saved artifact "
+                    "could not be applied for pricing. Re-run the solve before saving."
+                ),
+            )
+        factor_dtypes = payload.get("factor_dtypes")
+        if not isinstance(factor_dtypes, dict):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Ratebook solve result has no factor dtype metadata, so the saved "
+                    "artifact could not be applied safely. Re-run the solve before saving."
+                ),
+            )
+        if list(factor_dtypes) != list(factor_tables):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Ratebook factor_dtypes tables do not match factor_tables in "
+                    "the same order. Re-run the solve before saving."
+                ),
+            )
+        for table_name, records in factor_dtypes.items():
+            if not isinstance(records, list) or not records:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Ratebook factor_dtypes for {table_name!r} must be a "
+                        "non-empty ordered list."
+                    ),
+                )
+            seen_columns: set[str] = set()
+            for index, record in enumerate(records):
+                if not isinstance(record, dict):
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            f"Ratebook factor_dtypes for {table_name!r} has a "
+                            f"malformed record at index {index}."
+                        ),
+                    )
+                column = record.get("column")
+                descriptor = record.get("dtype")
+                if (
+                    set(record) != {"column", "dtype"}
+                    or not isinstance(column, str)
+                    or not column
+                    or column in seen_columns
+                    or not is_rating_dtype_descriptor(descriptor)
+                ):
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            f"Ratebook factor_dtypes for {table_name!r} has a "
+                            f"malformed record at index {index}."
+                        ),
+                    )
+                seen_columns.add(column)
     bad_paths = _non_finite_paths(payload)
     if bad_paths:
         shown = ", ".join(bad_paths[:5])

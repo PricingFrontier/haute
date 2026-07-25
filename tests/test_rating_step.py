@@ -249,8 +249,8 @@ class TestRatingStepExecutor:
         result = fn(lf).collect()
         assert result.columns == ["x"]
 
-    def test_incomplete_table_skipped(self):
-        """Table with missing factors/entries/outputColumn is skipped."""
+    def test_partially_populated_table_rejected(self):
+        """Rows without a factor contract are malformed, not an empty draft."""
         tables = [
             {
                 "name": "bad",
@@ -261,10 +261,8 @@ class TestRatingStepExecutor:
             },
         ]
         node = _rating_node("r6", tables)
-        _, fn, _ = _build_node_fn(node)
-        lf = pl.DataFrame({"x": [1]}).lazy()
-        result = fn(lf).collect()
-        assert result.columns == ["x"]
+        with pytest.raises(ValueError, match=r"tables\[0\]\.factors"):
+            _build_node_fn(node)
 
     def test_incomplete_table_not_registered_for_combined_output(self):
         """F082: an incomplete table is a passthrough (no output column), so it
@@ -1318,7 +1316,9 @@ def rating(df: pl.LazyFrame) -> pl.LazyFrame:
         code = graph_to_code(graph)
         configs = collect_node_configs(graph)
         rating_config = json.loads(configs["config/rating_step/rating.json"])
-        assert rating_config["tables"][0]["entries"] == {"1-3": {"comprehensive": 0.9}}
+        assert rating_config["tables"][0]["entries"] == [
+            {"vehicle_age_band": "1-3", "cover_type": "comprehensive", "value": 0.9}
+        ]
         for rel_path, content in configs.items():
             config_file = tmp_path / rel_path
             config_file.parent.mkdir(parents=True, exist_ok=True)
@@ -1372,10 +1372,7 @@ def rating(df: pl.LazyFrame) -> pl.LazyFrame:
         code = graph_to_code(graph)
         configs = collect_node_configs(graph)
         rating_config = json.loads(configs["config/rating_step/rating.json"])
-        assert rating_config["tables"][0]["entries"] == {
-            "confused": {"comprehensive": {"1-3": 0.91}},
-            "compare_the_market": {"third_party_only": {"1-3": 1.08}},
-        }
+        assert rating_config["tables"][0]["entries"] == expected_entries
         for rel_path, content in configs.items():
             config_file = tmp_path / rel_path
             config_file.parent.mkdir(parents=True, exist_ok=True)

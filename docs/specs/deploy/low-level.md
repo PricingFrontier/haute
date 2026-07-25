@@ -441,3 +441,13 @@ Remaining deployment improvement work is tracked in the
   manifest, package contents, and offline execution. Concurrency tests pin one leased generation
   while refresh publishes another. Negative tests assert no removed-node recognition and no
   write invocation for `DATA_OUTPUT`.
+
+## Approved change contract — 0.8.0 deployment memory-policy declaration
+
+- `_generate_dockerfile` emits `ENV HAUTE_EXECUTION_MEMORY_POLICY=strict_server`.
+- The generated app keeps scoring in the API process and adds the stable health field
+  `memory_enforcement: "admission_rss_best_effort"`.
+- No generated source sets or implies `HAUTE_WORKER_MEMORY_ENFORCEMENT=required`, because the
+  scoring runtime does not launch a process worker per request.
+- Container-generation tests pin the environment line and health field. Execution-admission
+  tests continue to pin strict-server fixed budgets and API-visible 507 payloads.

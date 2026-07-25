@@ -66,6 +66,7 @@ import type {
   OptimiserSolveResponse,
   OptimiserStatusResponse,
   OutputAssembleDryRunResponse,
+  OutputDestinationResponse,
   PipelineGraph,
   PreviewNodeResponse,
   SaveOptimiserRequest,
@@ -132,6 +133,7 @@ import {
   parseSaveOptimiserResponse,
   parseSolveOptimiserResponse,
   parseOptimiserStatusResponse,
+  parseOutputDestinationResponse,
   parsePipelineResponse,
   parsePreviewNodeResponse,
   parseSavePipelineResponse,
@@ -697,8 +699,30 @@ export interface WriteOutputArgs {
   nodeId: string
   source?: string
   streamingChunkSize?: number
+  overwrite?: boolean
   signal?: AbortSignal
   timeout?: number
+}
+
+export interface ResolveOutputDestinationArgs {
+  graph: GraphPayload
+  nodeId: string
+  signal?: AbortSignal
+  timeout?: number
+}
+
+export function resolveOutputDestination(
+  args: ResolveOutputDestinationArgs,
+): Promise<OutputDestinationResponse> {
+  const { graph, nodeId, signal, timeout = 30_000 } = args
+  return post<unknown>(
+    "/api/pipeline/output-destination",
+    {
+      graph,
+      node_id: nodeId,
+    },
+    { signal, timeout },
+  ).then(parseOutputDestinationResponse)
 }
 
 export function writeOutput(args: WriteOutputArgs): Promise<WriteOutputResponse> {
@@ -707,6 +731,7 @@ export function writeOutput(args: WriteOutputArgs): Promise<WriteOutputResponse>
     nodeId,
     source,
     streamingChunkSize,
+    overwrite,
     signal,
     timeout = 300_000,
   } = args
@@ -716,6 +741,7 @@ export function writeOutput(args: WriteOutputArgs): Promise<WriteOutputResponse>
       graph,
       node_id: nodeId,
       source: source ?? "live",
+      overwrite: overwrite ?? false,
       ...(streamingChunkSize !== undefined ? { streaming_chunk_size: streamingChunkSize } : {}),
     },
     { signal, timeout },

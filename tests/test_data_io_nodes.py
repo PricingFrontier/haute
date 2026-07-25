@@ -27,7 +27,13 @@ from haute._polars_io_registry import PolarsIoConfigError
 from haute._registry import NODE_REGISTRY, ensure_registry_ready
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute.errors import SchemaMismatchError
-from haute.executor import resolve_data_output_path, write_data_output
+from haute.executor import (
+    DataOutputDestinationExistsError,
+    DataOutputDurabilityError,
+    DataOutputPublicationError,
+    resolve_data_output_path,
+    write_data_output,
+)
 
 ensure_registry_ready()
 
@@ -263,7 +269,7 @@ class TestExecuteSinkDataOutput:
             fail_after_partial_write,
         )
         with pytest.raises(RuntimeError, match="writer failed"):
-            write_data_output(graph, "dout")
+            write_data_output(graph, "dout", overwrite=True)
 
         assert out_path.read_bytes() == original
         assert list(haute_scratch.glob(".*.haute-stage-*")) == []
@@ -307,7 +313,7 @@ class TestExecuteSinkDataOutput:
 
         monkeypatch.setattr(pl, "scan_ndjson", fail_row_count)
         with pytest.raises(RuntimeError, match="row count failed"):
-            write_data_output(graph, "dout")
+            write_data_output(graph, "dout", overwrite=True)
 
         assert out_path.read_bytes() == original
         assert list(haute_scratch.glob(".*.haute-stage-*")) == []
@@ -366,11 +372,617 @@ class TestExecuteSinkDataOutput:
                 graph,
                 "dout",
                 project_root=haute_scratch,
+                overwrite=True,
             )
 
         assert validation_count == 2
         assert out_path.read_bytes() == original
         assert list(haute_scratch.glob(".*.haute-stage-*")) == []
+
+    def test_existing_destination_is_rejected_before_graph_execution(
+        self,
+        haute_scratch: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        struct_frame: pl.DataFrame,
+    ) -> None:
+        src_path = haute_scratch / "in.parquet"
+        struct_frame.write_parquet(src_path)
+        out_path = haute_scratch / "result.parquet"
+        original = b"existing-complete-output"
+        out_path.write_bytes(original)
+        graph = PipelineGraph(
+            nodes=[
+                _data_input_node(
+                    "din",
+                    {
+                        "inputType": "file",
+                        "format": "parquet",
+                        "cacheMode": "direct",
+                        "path": str(src_path),
+                    },
+                ),
+                _data_output_node(
+                    "dout",
+                    {
+                        "outputType": "file",
+                        "format": "parquet",
+                        "path": str(out_path),
+                    },
+                ),
+            ],
+            edges=[_edge("din", "dout")],
+        )
+
+        def unexpected_execution(*_args, **_kwargs):
+            raise AssertionError("graph execution started before collision preflight")
+
+        monkeypatch.setattr(executor_module, "_execute_lazy", unexpected_execution)
+
+        with pytest.raises(DataOutputDestinationExistsError) as exc:
+            write_data_output(graph, "dout")
+
+        assert exc.value.display_path == str(out_path)
+        assert out_path.read_bytes() == original
+
+    def test_overwrite_true_replaces_existing_destination(
+        self, haute_scratch: Path, struct_frame: pl.DataFrame
+    ) -> None:
+        src_path = haute_scratch / "in.parquet"
+        struct_frame.write_parquet(src_path)
+        out_path = haute_scratch / "result.parquet"
+        out_path.write_bytes(b"old")
+        graph = PipelineGraph(
+            nodes=[
+                _data_input_node(
+                    "din",
+                    {
+                        "inputType": "file",
+                        "format": "parquet",
+                        "cacheMode": "direct",
+                        "path": str(src_path),
+                    },
+                ),
+                _data_output_node(
+                    "dout",
+                    {
+                        "outputType": "file",
+                        "format": "parquet",
+                        "path": str(out_path),
+                    },
+                ),
+            ],
+            edges=[_edge("din", "dout")],
+        )
+
+        result = write_data_output(graph, "dout", overwrite=True)
+
+        assert result.row_count == 3
+        assert_frame_equal(pl.read_parquet(out_path), struct_frame)
+
+    def test_no_overwrite_publication_race_preserves_competing_file(
+        self,
+        haute_scratch: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        src_path = haute_scratch / "in.parquet"
+        pl.DataFrame({"x": [1]}).write_parquet(src_path)
+        out_path = haute_scratch / "result.parquet"
+        graph = PipelineGraph(
+            nodes=[
+                _data_input_node(
+                    "din",
+                    {
+                        "inputType": "file",
+                        "format": "parquet",
+                        "cacheMode": "direct",
+                        "path": str(src_path),
+                    },
+                ),
+                _data_output_node(
+                    "dout",
+                    {
+                        "outputType": "file",
+                        "format": "parquet",
+                        "path": str(out_path),
+                    },
+                ),
+            ],
+            edges=[_edge("din", "dout")],
+        )
+
+        def write_then_race(_frame, _config, *, resolved_path, **_kwargs):
+            pl.DataFrame({"x": [1]}).write_parquet(resolved_path)
+            out_path.write_bytes(b"competing-publisher")
+            return 1
+
+        monkeypatch.setattr(
+            "haute._polars_io_registry.write_polars_output",
+            write_then_race,
+        )
+
+        with pytest.raises(DataOutputDestinationExistsError):
+            write_data_output(graph, "dout")
+
+        assert out_path.read_bytes() == b"competing-publisher"
+        assert list(haute_scratch.glob(".*.haute-stage-*")) == []
+
+    def test_windows_create_only_publication_uses_rename_not_link(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        stage = tmp_path / "stage.parquet"
+        target = tmp_path / "result.parquet"
+        stage.write_bytes(b"output")
+        calls: list[tuple[Path, Path]] = []
+        cleanup_calls: list[Path] = []
+        original_rename = executor_module.os.rename
+
+        def record_rename(source: Path, destination: Path) -> None:
+            calls.append((source, destination))
+            original_rename(source, destination)
+
+        def unexpected_link(*_args: object, **_kwargs: object) -> None:
+            raise AssertionError("Windows publication must not use hard links")
+
+        def record_cleanup(path: Path, *, project_root: str | Path | None) -> None:
+            cleanup_calls.append(path)
+
+        monkeypatch.setattr(executor_module, "_IS_WINDOWS", True)
+        monkeypatch.setattr(executor_module.os, "rename", record_rename)
+        monkeypatch.setattr(executor_module.os, "link", unexpected_link)
+        monkeypatch.setattr(executor_module, "_cleanup_output_staging_path", record_cleanup)
+
+        executor_module._publish_output_create_only(stage, target, "result.parquet")
+
+        assert calls == [(stage, target)]
+        assert cleanup_calls == []
+        assert target.read_bytes() == b"output"
+
+    def test_non_windows_unsupported_link_raises_safe_publication_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        stage = tmp_path / "stage.parquet"
+        target = tmp_path / "result.parquet"
+        stage.write_bytes(b"output")
+
+        def unsupported_link(*_args: object, **_kwargs: object) -> None:
+            raise OSError("hard links are unsupported on this filesystem")
+
+        monkeypatch.setattr(executor_module, "_IS_WINDOWS", False)
+        monkeypatch.setattr(executor_module.os, "link", unsupported_link)
+
+        with pytest.raises(DataOutputPublicationError) as exc:
+            executor_module._publish_output_create_only(stage, target, "result.parquet")
+
+        assert "result.parquet" in str(exc.value)
+        assert "hard links are unsupported" not in str(exc.value)
+        assert isinstance(exc.value.__cause__, OSError)
+
+    def test_non_windows_stage_unlink_failure_does_not_turn_publication_into_failure(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        stage = tmp_path / "stage.parquet"
+        target = tmp_path / "result.parquet"
+        stage.write_bytes(b"output")
+        original_unlink = Path.unlink
+
+        def blocked_stage_unlink(path: Path, *args: object, **kwargs: object) -> None:
+            if path == stage:
+                raise PermissionError("temporarily locked")
+            original_unlink(path, *args, **kwargs)
+
+        monkeypatch.setattr(executor_module, "_IS_WINDOWS", False)
+        monkeypatch.setattr(Path, "unlink", blocked_stage_unlink)
+
+        executor_module._publish_output_create_only(stage, target, "result.parquet")
+
+        assert target.read_bytes() == b"output"
+        assert stage.exists()
+
+    def test_windows_artifact_sync_retries_transient_permission_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        artifact = tmp_path / "stage.parquet"
+        artifact.write_bytes(b"output")
+        attempts = 0
+        sleeps: list[float] = []
+        original_fsync = executor_module.os.fsync
+
+        def transient_fsync(descriptor: int) -> None:
+            nonlocal attempts
+            attempts += 1
+            if attempts < 3:
+                raise PermissionError("temporarily locked")
+            original_fsync(descriptor)
+
+        monkeypatch.setattr(executor_module, "_IS_WINDOWS", True)
+        monkeypatch.setattr(executor_module.os, "fsync", transient_fsync)
+        monkeypatch.setattr(executor_module.time, "sleep", sleeps.append)
+
+        executor_module._sync_output_artifact(artifact)
+
+        assert attempts == 3
+        assert sleeps == list(executor_module._WINDOWS_OUTPUT_SYNC_RETRY_DELAYS[:2])
+
+    def test_windows_artifact_sync_raises_after_permission_retry_exhaustion(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        artifact = tmp_path / "stage.parquet"
+        artifact.write_bytes(b"output")
+        attempts = 0
+
+        def blocked_fsync(_descriptor: int) -> None:
+            nonlocal attempts
+            attempts += 1
+            raise PermissionError("locked")
+
+        monkeypatch.setattr(executor_module, "_IS_WINDOWS", True)
+        monkeypatch.setattr(executor_module, "_WINDOWS_OUTPUT_SYNC_RETRY_DELAYS", (0.0, 0.0))
+        monkeypatch.setattr(executor_module.os, "fsync", blocked_fsync)
+        monkeypatch.setattr(executor_module.time, "sleep", lambda _delay: None)
+
+        with pytest.raises(PermissionError, match="locked"):
+            executor_module._sync_output_artifact(artifact)
+
+        assert attempts == 3
+
+    @pytest.mark.parametrize(
+        ("is_windows", "expected_mode"),
+        [(False, "rb"), (True, "rb+")],
+    )
+    def test_artifact_sync_uses_platform_appropriate_open_mode(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        is_windows: bool,
+        expected_mode: str,
+    ) -> None:
+        artifact = tmp_path / "stage.parquet"
+        artifact.write_bytes(b"output")
+        opened_modes: list[str] = []
+        original_open = Path.open
+
+        def record_open(path: Path, mode: str):
+            opened_modes.append(mode)
+            return original_open(path, "rb+")
+
+        monkeypatch.setattr(executor_module, "_IS_WINDOWS", is_windows)
+        monkeypatch.setattr(Path, "open", record_open)
+        monkeypatch.setattr(executor_module.os, "fsync", lambda _descriptor: None)
+
+        executor_module._sync_output_artifact(artifact)
+
+        assert opened_modes == [expected_mode]
+
+    def test_windows_directory_sync_is_a_noop(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def unexpected_open(*_args: object, **_kwargs: object) -> int:
+            raise AssertionError("Windows directory sync must not open a directory descriptor")
+
+        monkeypatch.setattr(executor_module, "_IS_WINDOWS", True)
+        monkeypatch.setattr(executor_module.os, "open", unexpected_open)
+
+        executor_module._sync_output_directory(tmp_path)
+
+    def test_posix_directory_sync_uses_directory_descriptor_flags(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        descriptor = 123
+        opened: list[tuple[Path, int]] = []
+        synced: list[int] = []
+        closed: list[int] = []
+
+        def record_open(path: Path, flags: int) -> int:
+            opened.append((path, flags))
+            return descriptor
+
+        monkeypatch.setattr(executor_module, "_IS_WINDOWS", False)
+        monkeypatch.setattr(executor_module.os, "open", record_open)
+        monkeypatch.setattr(executor_module.os, "fsync", synced.append)
+        monkeypatch.setattr(executor_module.os, "close", closed.append)
+
+        executor_module._sync_output_directory(tmp_path)
+
+        expected_flags = executor_module.os.O_RDONLY | getattr(
+            executor_module.os,
+            "O_DIRECTORY",
+            0,
+        )
+        assert opened == [(tmp_path, expected_flags)]
+        assert synced == [descriptor]
+        assert closed == [descriptor]
+
+    def test_directory_sync_failure_reports_published_but_unconfirmed_durability(
+        self, haute_scratch: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        src_path = haute_scratch / "in.parquet"
+        out_path = haute_scratch / "result.parquet"
+        pl.DataFrame({"x": [1]}).write_parquet(src_path)
+        graph = PipelineGraph(
+            nodes=[
+                _data_input_node(
+                    "din",
+                    {
+                        "inputType": "file",
+                        "format": "parquet",
+                        "cacheMode": "direct",
+                        "path": str(src_path),
+                    },
+                ),
+                _data_output_node(
+                    "dout",
+                    {
+                        "outputType": "file",
+                        "format": "parquet",
+                        "path": str(out_path),
+                    },
+                ),
+            ],
+            edges=[_edge("din", "dout")],
+        )
+
+        def failed_directory_sync(_path: Path) -> None:
+            assert out_path.exists()
+            raise OSError("directory fsync failed")
+
+        monkeypatch.setattr(executor_module, "_sync_output_directory", failed_directory_sync)
+
+        with pytest.raises(DataOutputDurabilityError, match="was published") as exc:
+            write_data_output(graph, "dout")
+
+        assert exc.value.display_path == str(out_path)
+        assert isinstance(exc.value.__cause__, OSError)
+        assert out_path.exists()
+
+    @pytest.mark.parametrize(
+        ("arguments", "has_bom"),
+        [
+            ({}, False),
+            ({"include_bom": True}, True),
+        ],
+    )
+    def test_csv_bom_policy_is_explicit_and_opt_in(
+        self,
+        haute_scratch: Path,
+        arguments: dict[str, object],
+        has_bom: bool,
+    ) -> None:
+        src_path = haute_scratch / f"in-{has_bom}.parquet"
+        pl.DataFrame({"city": ["Zürich"]}).write_parquet(src_path)
+        out_path = haute_scratch / f"out-{has_bom}.csv"
+        graph = PipelineGraph(
+            nodes=[
+                _data_input_node(
+                    "din",
+                    {
+                        "inputType": "file",
+                        "format": "parquet",
+                        "cacheMode": "direct",
+                        "path": str(src_path),
+                    },
+                ),
+                _data_output_node(
+                    "dout",
+                    {
+                        "outputType": "file",
+                        "format": "csv",
+                        "path": str(out_path),
+                        "arguments": arguments,
+                    },
+                ),
+            ],
+            edges=[_edge("din", "dout")],
+        )
+
+        write_data_output(graph, "dout")
+
+        assert out_path.read_bytes().startswith(b"\xef\xbb\xbf") is has_bom
+        assert pl.read_csv(out_path)["city"].to_list() == ["Zürich"]
+
+    def test_csv_streaming_row_count_handles_embedded_newlines(self, haute_scratch: Path) -> None:
+        src_path = haute_scratch / "in.parquet"
+        pl.DataFrame({"text": ["alpha\nbeta", "gamma"]}).write_parquet(src_path)
+        out_path = haute_scratch / "out.csv"
+        graph = PipelineGraph(
+            nodes=[
+                _data_input_node(
+                    "din",
+                    {
+                        "inputType": "file",
+                        "format": "parquet",
+                        "cacheMode": "direct",
+                        "path": str(src_path),
+                    },
+                ),
+                _data_output_node(
+                    "dout",
+                    {
+                        "outputType": "file",
+                        "format": "csv",
+                        "path": str(out_path),
+                    },
+                ),
+            ],
+            edges=[_edge("din", "dout")],
+        )
+
+        result = write_data_output(graph, "dout")
+
+        assert result.row_count == 2
+        assert pl.read_csv(out_path)["text"].to_list() == ["alpha\nbeta", "gamma"]
+
+    def test_csv_streaming_row_count_respects_header_and_dialect_arguments(
+        self, haute_scratch: Path
+    ) -> None:
+        src_path = haute_scratch / "in.parquet"
+        pl.DataFrame({"id": [1, 2, 3], "text": ["alpha", "beta", "gamma"]}).write_parquet(src_path)
+        out_path = haute_scratch / "out.csv"
+        graph = PipelineGraph(
+            nodes=[
+                _data_input_node(
+                    "din",
+                    {
+                        "inputType": "file",
+                        "format": "parquet",
+                        "cacheMode": "direct",
+                        "path": str(src_path),
+                    },
+                ),
+                _data_output_node(
+                    "dout",
+                    {
+                        "outputType": "file",
+                        "format": "csv",
+                        "path": str(out_path),
+                        "arguments": {
+                            "include_header": False,
+                            "line_terminator": "\r\n",
+                            "separator": ";",
+                            "quote_char": "'",
+                        },
+                    },
+                ),
+            ],
+            edges=[_edge("din", "dout")],
+        )
+
+        result = write_data_output(graph, "dout")
+
+        assert result.row_count == 3
+        assert (
+            pl.read_csv(
+                out_path,
+                has_header=False,
+                separator=";",
+                quote_char="'",
+                new_columns=["id", "text"],
+            ).height
+            == 3
+        )
+
+    def test_csv_row_count_scan_kwargs_preserve_writer_dialect(self) -> None:
+        scanner_name = "".join(("scan_", "csv"))
+        config = {
+            "arguments": {
+                "decimal_comma": True,
+                "quote_char": "'",
+                "separator": ";",
+                "include_header": False,
+                "line_terminator": "\r\n",
+            }
+        }
+
+        assert executor_module._output_row_count_scan_kwargs(config, scanner_name) == {
+            "raise_if_empty": False,
+            "decimal_comma": True,
+            "quote_char": "'",
+            "separator": ";",
+            "has_header": False,
+            "eol_char": "\n",
+        }
+
+    def test_non_csv_row_count_scan_does_not_receive_csv_options(self) -> None:
+        config = {"arguments": {"separator": ";", "include_header": False}}
+
+        assert executor_module._output_row_count_scan_kwargs(config, "scan_avro") == {}
+
+    @pytest.mark.parametrize("line_terminator", ["\t", "|"])
+    def test_csv_row_count_scan_preserves_single_byte_line_terminators(
+        self, line_terminator: str
+    ) -> None:
+        config = {"arguments": {"line_terminator": line_terminator}}
+
+        assert executor_module._output_row_count_scan_kwargs(config, "scan_csv") == {
+            "raise_if_empty": False,
+            "eol_char": line_terminator,
+        }
+
+    @pytest.mark.parametrize("include_header", [True, False])
+    def test_csv_streaming_row_count_handles_empty_output(
+        self, haute_scratch: Path, include_header: bool
+    ) -> None:
+        src_path = haute_scratch / f"empty-{include_header}.parquet"
+        pl.DataFrame({"id": pl.Series([], dtype=pl.Int64)}).write_parquet(src_path)
+        out_path = haute_scratch / f"empty-{include_header}.csv"
+        graph = PipelineGraph(
+            nodes=[
+                _data_input_node(
+                    "din",
+                    {
+                        "inputType": "file",
+                        "format": "parquet",
+                        "cacheMode": "direct",
+                        "path": str(src_path),
+                    },
+                ),
+                _data_output_node(
+                    "dout",
+                    {
+                        "outputType": "file",
+                        "format": "csv",
+                        "path": str(out_path),
+                        "arguments": {"include_header": include_header},
+                    },
+                ),
+            ],
+            edges=[_edge("din", "dout")],
+        )
+
+        result = write_data_output(graph, "dout")
+
+        assert result.row_count == 0
+        assert out_path.exists()
+
+    def test_file_publication_syncs_artifact_and_parent_directory(
+        self,
+        haute_scratch: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        src_path = haute_scratch / "in.parquet"
+        pl.DataFrame({"x": [1]}).write_parquet(src_path)
+        out_path = haute_scratch / "result.parquet"
+        graph = PipelineGraph(
+            nodes=[
+                _data_input_node(
+                    "din",
+                    {
+                        "inputType": "file",
+                        "format": "parquet",
+                        "cacheMode": "direct",
+                        "path": str(src_path),
+                    },
+                ),
+                _data_output_node(
+                    "dout",
+                    {
+                        "outputType": "file",
+                        "format": "parquet",
+                        "path": str(out_path),
+                    },
+                ),
+            ],
+            edges=[_edge("din", "dout")],
+        )
+        calls: list[tuple[str, Path]] = []
+        original_artifact_sync = executor_module._sync_output_artifact
+        original_directory_sync = executor_module._sync_output_directory
+
+        def record_artifact(path: Path) -> None:
+            calls.append(("artifact", path))
+            original_artifact_sync(path)
+
+        def record_directory(path: Path) -> None:
+            calls.append(("directory", path))
+            original_directory_sync(path)
+
+        monkeypatch.setattr(executor_module, "_sync_output_artifact", record_artifact)
+        monkeypatch.setattr(executor_module, "_sync_output_directory", record_directory)
+
+        write_data_output(graph, "dout")
+
+        assert calls[0][0] == "artifact"
+        assert calls[0][1].name.startswith(".result.haute-stage-")
+        assert calls[-1] == ("directory", out_path.parent)
 
 
 class TestResolveDataOutputPath:
@@ -500,6 +1112,23 @@ class TestResolveDataOutputPath:
         )
 
         assert outside_stage.read_bytes() == b"preserve"
+
+    def test_cleanup_of_missing_staging_path_is_silent(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        warnings: list[tuple[str, dict[str, object]]] = []
+
+        def record_warning(event: str, **details: object) -> None:
+            warnings.append((event, details))
+
+        monkeypatch.setattr(executor_module.logger, "warning", record_warning)
+
+        executor_module._cleanup_output_staging_path(
+            tmp_path / ".missing.haute-stage-token.parquet",
+            project_root=tmp_path,
+        )
+
+        assert warnings == []
 
 
 class TestDataInputBuilder:

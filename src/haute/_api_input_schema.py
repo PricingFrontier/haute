@@ -136,6 +136,8 @@ class ApiInputSchemaError(HauteError):
     detail.
     """
 
+    error_code = "api_input_schema_invalid"
+
 
 class ColumnV2(TypedDict, total=False):
     """One column entry inside ``tables[].columns[]``."""
@@ -198,7 +200,7 @@ def is_v2_shape(config: Any) -> bool:
     return isinstance(config.get(_V2_TABLES_KEY), list)
 
 
-_JSON_API_INPUT_SUFFIXES = (".json", ".jsonl")
+_JSON_API_INPUT_SUFFIXES = (".json", ".jsonl", ".ndjson")
 
 
 def is_json_api_input_path(path: str) -> bool:
@@ -208,10 +210,10 @@ def is_json_api_input_path(path: str) -> bool:
     executor's source builder (``haute._builders._build_api_input``) and
     the preview/trace cache-key signature
     (``haute.execution._runtime_file_signature_paths``) so the two can
-    never disagree about which file an apiInput actually reads: JSON /
-    JSONL paths use a valid per-port parquet cache when available and shred
-    the source directly otherwise; every other extension is read directly as
-    a flat file.
+    never disagree about which file an apiInput actually reads: JSON and
+    newline-delimited JSON (``.jsonl``/``.ndjson``) paths use a valid per-port
+    parquet cache when available and shred the source directly otherwise;
+    every other extension is read directly as a flat file.
     """
     return path.lower().endswith(_JSON_API_INPUT_SUFFIXES)
 

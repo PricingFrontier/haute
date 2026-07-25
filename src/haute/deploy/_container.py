@@ -300,6 +300,7 @@ def health() -> dict:
         "nodes_deployed": _manifest.get("nodes_deployed", 0),
         "input_schema": _manifest.get("input_schema", {{}}),
         "output_schema": _manifest.get("output_schema", {{}}),
+        "memory_enforcement": "admission_rss_best_effort",
     }}
 
 
@@ -478,6 +479,10 @@ def _generate_dockerfile(
 FROM {base_image}
 
 WORKDIR /app
+
+# Select fixed server budgets explicitly. This remains admission/RSS
+# enforcement; the hosting platform owns any outer hard container cap.
+ENV HAUTE_EXECUTION_MEMORY_POLICY=strict_server
 
 # Install Python dependencies
 RUN pip install --no-cache-dir {deps_line}

@@ -10,11 +10,13 @@ from __future__ import annotations
 
 import math
 import operator
-from collections.abc import Iterable
+import re
+from collections.abc import Iterable, Mapping
+from decimal import Decimal, InvalidOperation
 from os import PathLike
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any
+from typing import Any, Literal, cast
 
 import polars as pl
 
@@ -324,6 +326,67 @@ _MISS_KEY_DISPLAY_CAP = 10
 # range, where the cast on the engine side is exact and lossless.
 _INT64_MIN = -(2**63)
 _INT64_MAX_EXCL = 2**63
+_DURATION_KEY_RE = re.compile(
+    r"^(?P<sign>-)?P"
+    r"(?:(?P<days>\d+)D)?"
+    r"(?:T"
+    r"(?:(?P<hours>\d+)H)?"
+    r"(?:(?P<minutes>\d+)M)?"
+    r"(?:(?P<seconds>\d+(?:\.\d+)?)S)?"
+    r")?$"
+)
+_DURATION_UNITS_PER_SECOND = MappingProxyType(
+    {
+        "ms": Decimal(1_000),
+        "us": Decimal(1_000_000),
+        "ns": Decimal(1_000_000_000),
+    }
+)
+_PRIMITIVE_RATING_DTYPE_NAMES: Mapping[object, str] = MappingProxyType(
+    {
+        pl.Int8: "Int8",
+        pl.Int16: "Int16",
+        pl.Int32: "Int32",
+        pl.Int64: "Int64",
+        pl.Int128: "Int128",
+        pl.UInt8: "UInt8",
+        pl.UInt16: "UInt16",
+        pl.UInt32: "UInt32",
+        pl.UInt64: "UInt64",
+        pl.Float32: "Float32",
+        pl.Float64: "Float64",
+        pl.Boolean: "Boolean",
+        pl.String: "String",
+        pl.Categorical: "Categorical",
+        pl.Date: "Date",
+        pl.Time: "Time",
+        pl.Null: "Null",
+    }
+)
+_RATING_PRIMITIVE_DESCRIPTOR_KINDS = frozenset(
+    {
+        "Int8",
+        "Int16",
+        "Int32",
+        "Int64",
+        "Int128",
+        "UInt8",
+        "UInt16",
+        "UInt32",
+        "UInt64",
+        "Float32",
+        "Float64",
+        "Boolean",
+        "String",
+        "Categorical",
+        "Date",
+        "Time",
+        "Null",
+    }
+)
+_RATING_PRIMITIVE_DTYPES: Mapping[str, pl.DataType] = MappingProxyType(
+    {name: cast(pl.DataType, dtype) for dtype, name in _PRIMITIVE_RATING_DTYPE_NAMES.items()}
+)
 
 
 class RatingTableMissError(ValueError):
@@ -336,43 +399,225 @@ class RatingTableMissError(ValueError):
     """
 
 
-def normalise_rating_key(value: Any) -> str | None:
-    """Canonical string form of a rating-table factor key.
+def rating_dtype_descriptor(dtype: pl.DataType) -> dict[str, Any]:
+    """Return the stable JSON descriptor for a supported rating-factor dtype."""
+    if dtype == pl.Categorical:
+        return {"kind": "Categorical"}
+    primitive = _PRIMITIVE_RATING_DTYPE_NAMES.get(dtype)
+    if primitive is not None:
+        return {"kind": primitive}
+    if isinstance(dtype, pl.Datetime):
+        return {
+            "kind": "Datetime",
+            "timeUnit": dtype.time_unit,
+            "timeZone": dtype.time_zone,
+        }
+    if isinstance(dtype, pl.Duration):
+        return {"kind": "Duration", "timeUnit": dtype.time_unit}
+    if isinstance(dtype, pl.Decimal):
+        return {
+            "kind": "Decimal",
+            "precision": dtype.precision,
+            "scale": dtype.scale,
+        }
+    if isinstance(dtype, pl.Enum):
+        return {
+            "kind": "Enum",
+            "categories": dtype.categories.to_list(),
+        }
+    raise ValueError(f"unsupported rating factor dtype {dtype}")
 
-    Single source of truth shared by the rating engine (whose join sides
-    use the expression twin :func:`_rating_key_expr`), sidecar
-    persistence (``_rating_step_config``) and trace enrichment
-    (``_trace_enrichment._enrich_single_table``) — so the matched/default
-    flags shown in a trace agree with what the lookup join actually did.
 
-    Rules:
+def is_rating_dtype_descriptor(value: object) -> bool:
+    """Return whether *value* is one exact stable rating dtype descriptor."""
+    if not isinstance(value, dict):
+        return False
+    kind = value.get("kind")
+    if kind in _RATING_PRIMITIVE_DESCRIPTOR_KINDS:
+        return set(value) == {"kind"}
+    if kind == "Datetime":
+        return (
+            set(value) == {"kind", "timeUnit", "timeZone"}
+            and value.get("timeUnit") in {"ms", "us", "ns"}
+            and (value.get("timeZone") is None or isinstance(value.get("timeZone"), str))
+        )
+    if kind == "Duration":
+        return set(value) == {"kind", "timeUnit"} and value.get("timeUnit") in {"ms", "us", "ns"}
+    if kind == "Decimal":
+        precision = value.get("precision")
+        scale = value.get("scale")
+        return (
+            set(value) == {"kind", "precision", "scale"}
+            and (
+                precision is None
+                or (isinstance(precision, int) and not isinstance(precision, bool))
+            )
+            and isinstance(scale, int)
+            and not isinstance(scale, bool)
+        )
+    if kind == "Enum":
+        categories = value.get("categories")
+        return (
+            set(value) == {"kind", "categories"}
+            and isinstance(categories, list)
+            and all(isinstance(category, str) for category in categories)
+            and len(categories) == len(set(categories))
+        )
+    return False
 
-    * ``None`` stays ``None`` — null keys never match the lookup join.
-    * Booleans format as the engine casts them: ``"true"`` / ``"false"``.
-    * Finite int-like floats inside the Int64 range collapse to their
-      integer digit string (``25.0`` -> ``"25"``) so numeric factor
-      columns match string-keyed table entries deterministically.
-    * Other floats delegate to Polars' Utf8 cast so exotic values
-      (exponent-formatted, NaN, inf) have exactly one formatting.
-    * Everything else is ``str(value)``.
 
-    String keys are deliberately verbatim — ``"25.0"`` is a label, not a
-    number, and never collapses.  ``Float32`` engine columns are widened to
-    ``Float64`` by the expression twin before formatting, and this mirror
-    only ever sees a value already promoted to ``Float64`` across the
-    trace/JSON boundary (``Float32`` has no distinct Python scalar), so the
-    two agree for every float dtype (pinned in
-    ``tests/test_rating_key_agreement.py``).
+def rating_dtype_from_descriptor(descriptor: object) -> pl.DataType:
+    """Reconstruct a supported rating-factor dtype from its JSON descriptor."""
+    if not is_rating_dtype_descriptor(descriptor):
+        raise ValueError(f"invalid rating factor dtype descriptor {descriptor!r}")
+
+    # The predicate above narrows the descriptor's shape at runtime.  Keep
+    # the individual reads here so this remains the exact inverse of
+    # ``rating_dtype_descriptor`` rather than accepting loosely shaped JSON.
+    assert isinstance(descriptor, dict)
+    kind = descriptor["kind"]
+    assert isinstance(kind, str)
+    if kind in _RATING_PRIMITIVE_DESCRIPTOR_KINDS:
+        return _RATING_PRIMITIVE_DTYPES[kind]
+    if kind == "Datetime":
+        time_unit = cast(Literal["ms", "us", "ns"], descriptor["timeUnit"])
+        time_zone = descriptor["timeZone"]
+        assert time_zone is None or isinstance(time_zone, str)
+        return pl.Datetime(time_unit, time_zone)
+    if kind == "Duration":
+        time_unit = cast(Literal["ms", "us", "ns"], descriptor["timeUnit"])
+        return pl.Duration(time_unit)
+    if kind == "Decimal":
+        precision = descriptor["precision"]
+        scale = descriptor["scale"]
+        assert precision is None or isinstance(precision, int)
+        assert isinstance(scale, int)
+        return pl.Decimal(precision, scale)
+
+    assert kind == "Enum"
+    categories = descriptor["categories"]
+    assert isinstance(categories, list)
+    return pl.Enum(categories)
+
+
+def _duration_key_to_physical(value: str, time_unit: str) -> int:
+    """Parse Polars' ISO-8601 duration display into an exact physical value."""
+    match = _DURATION_KEY_RE.fullmatch(value)
+    if match is None or not any(
+        match.group(name) is not None for name in ("days", "hours", "minutes", "seconds")
+    ):
+        raise ValueError(f"invalid ISO-8601 duration rating key {value!r}")
+    try:
+        seconds = (
+            Decimal(match.group("days") or 0) * 86_400
+            + Decimal(match.group("hours") or 0) * 3_600
+            + Decimal(match.group("minutes") or 0) * 60
+            + Decimal(match.group("seconds") or 0)
+        )
+        physical = seconds * _DURATION_UNITS_PER_SECOND[time_unit]
+    except (InvalidOperation, KeyError) as exc:
+        raise ValueError(f"invalid {time_unit!r} duration rating key {value!r}") from exc
+    if physical != physical.to_integral_value():
+        raise ValueError(
+            f"duration rating key {value!r} is not exactly representable as {time_unit}"
+        )
+    result = int(physical)
+    return -result if match.group("sign") else result
+
+
+def _coerce_rating_lookup_expr(
+    name: str,
+    source_dtype: pl.DataType,
+    target_dtype: pl.DataType,
+) -> pl.Expr:
+    """Strictly coerce a sidecar factor column through its input-frame dtype."""
+    rating_dtype_descriptor(target_dtype)
+    col = pl.col(name)
+    if target_dtype == pl.Null:
+        return pl.lit(None, dtype=pl.Null).alias(name)
+    if target_dtype == pl.Boolean and source_dtype == pl.String:
+        return col.replace_strict(
+            {"true": True, "false": False},
+            return_dtype=pl.Boolean,
+        ).alias(name)
+    if target_dtype == pl.Time and source_dtype == pl.String:
+        return col.str.to_time(strict=True).alias(name)
+    if isinstance(target_dtype, pl.Datetime) and source_dtype == pl.String:
+        return col.str.to_datetime(
+            time_unit=target_dtype.time_unit,
+            time_zone=target_dtype.time_zone,
+            strict=True,
+        ).alias(name)
+    if isinstance(target_dtype, pl.Duration) and source_dtype == pl.String:
+        time_unit = target_dtype.time_unit
+        return (
+            col.map_elements(
+                lambda value: _duration_key_to_physical(value, time_unit),
+                return_dtype=pl.Int64,
+            )
+            .cast(target_dtype)
+            .alias(name)
+        )
+    return col.cast(target_dtype, strict=True).alias(name)
+
+
+def normalise_rating_key(
+    value: Any,
+    dtype: pl.DataType,
+) -> str | None:
+    """Canonicalise one scalar through the runtime's exact typed key path.
+
+    Supplying the originating dtype is mandatory at persistence and trace
+    boundaries, where Python/JSON may otherwise widen a Float32 or erase
+    categorical and temporal type information.
     """
-    if value is None:
-        return None
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    if isinstance(value, float):
-        if math.isfinite(value) and value.is_integer() and _INT64_MIN <= value < _INT64_MAX_EXCL:
-            return str(int(value))
-        return str(pl.Series([value], dtype=pl.Float64).cast(pl.Utf8).item())
-    return str(value)
+    rating_dtype_descriptor(dtype)
+    raw = pl.Series("__haute_rating_key__", [value])
+    source_dtype = raw.dtype
+
+    # This is the eager scalar equivalent of _coerce_rating_lookup_expr.
+    # Keep the expression implementation as the engine oracle for frame
+    # operations; the scalar path must merely apply those same branches.
+    if dtype == pl.Null:
+        typed = pl.Series(raw.name, [None], dtype=pl.Null)
+    elif dtype == pl.Boolean and source_dtype == pl.String:
+        typed = raw.replace_strict({"true": True, "false": False}, return_dtype=pl.Boolean)
+    elif dtype == pl.Time and source_dtype == pl.String:
+        typed = raw.str.to_time(strict=True)
+    elif isinstance(dtype, pl.Datetime) and source_dtype == pl.String:
+        typed = raw.str.to_datetime(
+            time_unit=dtype.time_unit,
+            time_zone=dtype.time_zone,
+            strict=True,
+        )
+    elif isinstance(dtype, pl.Duration) and source_dtype == pl.String:
+        typed = raw.map_elements(
+            lambda item: _duration_key_to_physical(item, dtype.time_unit),
+            return_dtype=pl.Int64,
+        ).cast(dtype)
+    else:
+        typed = raw.cast(dtype, strict=True)
+
+    # This is the eager scalar equivalent of _rating_key_expr.
+    if dtype in (pl.Float32, pl.Float64):
+        item = typed.item()
+        if item is None:
+            return None
+        is_int_like = (
+            typed.is_finite().item()
+            and item == typed.round().item()
+            and _INT64_MIN <= item < _INT64_MAX_EXCL
+        )
+        key = (
+            typed.cast(pl.Int64, strict=False).cast(pl.String).item()
+            if is_int_like
+            else typed.cast(pl.String).item()
+        )
+    elif dtype == pl.Time or isinstance(dtype, pl.Duration):
+        key = typed.dt.to_string().item()
+    else:
+        key = typed.cast(pl.String).item()
+    return None if key is None else str(key)
 
 
 def _rating_key_expr(name: str, dtype: pl.DataType) -> pl.Expr:
@@ -382,23 +627,18 @@ def _rating_key_expr(name: str, dtype: pl.DataType) -> pl.Expr:
     internally consistent by construction; agreement with the Python
     mirror is pinned by ``tests/test_rating_key_agreement.py``.
 
-    ``Float32`` columns are widened to ``Float64`` before any formatting.
-    The Python mirror only ever sees the value already promoted to
-    ``Float64`` across the trace/JSON boundary, so formatting the column at
-    native ``f32`` precision here made the engine key diverge from the mirror
-    — a trace could then report matched/default disagreeing with the join
-    (a silent neutral/default mispricing).  Widening keeps engine == mirror
-    for every float dtype.
+    Float widths remain native.  The Python mirror reconstructs its scalar
+    through the supplied originating dtype before evaluating this expression,
+    so Python/JSON widening cannot alter a Float32 key.
 
-    ``Decimal`` (and other exact) columns fall through to a plain ``Utf8``
-    cast at their declared scale: a ``Decimal`` factor level must be authored
-    at the column's scale (``"25.50"`` for a scale-2 column), because
-    ``"25.5"`` and ``"25.50"`` are distinct string keys.
+    ``Decimal`` (and other exact) columns retain their declared representation
+    in the final ``Utf8`` key. Lookup entries are coerced through that declared
+    dtype before this expression runs, so equivalent authored forms such as
+    ``"25.5"`` and ``"25.50"`` share the same scale-2 key.
     """
+    rating_dtype_descriptor(dtype)
     col = pl.col(name)
     if dtype in (pl.Float32, pl.Float64):
-        if dtype == pl.Float32:
-            col = col.cast(pl.Float64)
         int_like = (
             col.is_finite()
             & (col == col.round())
@@ -414,6 +654,8 @@ def _rating_key_expr(name: str, dtype: pl.DataType) -> pl.Expr:
             .otherwise(col.cast(pl.Utf8))
             .alias(name)
         )
+    if dtype == pl.Time or isinstance(dtype, pl.Duration):
+        return col.dt.to_string().alias(name)
     return col.cast(pl.Utf8).alias(name)
 
 
@@ -431,7 +673,11 @@ def _schema_names(schema: Any) -> list[str]:
 
 
 def _is_unsupported_factor_dtype(dtype: pl.DataType) -> bool:
-    return dtype in (pl.Date, pl.Datetime)
+    try:
+        rating_dtype_descriptor(dtype)
+    except ValueError:
+        return True
+    return False
 
 
 def _validate_supported_factor_dtypes(
@@ -442,8 +688,11 @@ def _validate_supported_factor_dtypes(
     for factor, dtype in original_dtypes.items():
         if _is_unsupported_factor_dtype(dtype):
             raise ValueError(
-                f"Rating table {table_label!r} factor {factor!r} has unsupported "
-                f"dtype {dtype}; date/datetime factor columns are not supported"
+                f"Rating table {table_label!r} factor {factor!r} has unsupported dtype {dtype}. "
+                "Supported scalar dtypes are Int8, Int16, Int32, Int64, Int128, "
+                "UInt8, UInt16, UInt32, UInt64, Float32, Float64, Boolean, String, "
+                "Categorical, Enum, Date, Time, Datetime, Duration, Decimal, and Null. "
+                "Cast this factor upstream to a supported scalar dtype."
             )
 
 
@@ -465,6 +714,8 @@ def _normalise_on_missing(value: object) -> str:
 def _rating_miss_guard_expr(
     factors: list[str],
     *,
+    key_columns: list[str] | None = None,
+    lookup_value_column: str = _LOOKUP_VAL,
     table_label: str,
     output_col: str,
     on_missing: str,
@@ -481,14 +732,23 @@ def _rating_miss_guard_expr(
     rows arrive in batches, so counts are per batch.
     """
 
+    resolved_key_columns = key_columns if key_columns is not None else factors
+    if len(resolved_key_columns) != len(factors):
+        raise ValueError("rating miss-guard key columns must align with public factors")
+
     def _check(batch: pl.Series) -> pl.Series:
         frame = batch.struct.unnest()
-        values = frame[_LOOKUP_VAL]
+        values = frame[lookup_value_column]
         miss_mask = values.is_null()
         miss_count = int(miss_mask.sum())
         if not miss_count:
             return values
-        missed = frame.filter(miss_mask).select(factors).unique(maintain_order=True)
+        missed = (
+            frame.filter(miss_mask)
+            .select(resolved_key_columns)
+            .rename(dict(zip(resolved_key_columns, factors)))
+            .unique(maintain_order=True)
+        )
         shown = missed.head(_MISS_KEY_DISPLAY_CAP).to_dicts()
         if on_missing == "neutral":
             logger.warning(
@@ -513,9 +773,9 @@ def _rating_miss_guard_expr(
         )
 
     return (
-        pl.struct([*factors, _LOOKUP_VAL])
+        pl.struct([*resolved_key_columns, lookup_value_column])
         .map_batches(_check, return_dtype=pl.Float64, is_elementwise=True)
-        .alias(_LOOKUP_VAL)
+        .alias(lookup_value_column)
     )
 
 
@@ -528,6 +788,15 @@ def _normalise_combine_operation(operation: object) -> str:
             f"expected one of {sorted(_SUPPORTED_COMBINE_OPERATIONS)!r}"
         )
     return normalised
+
+
+def _rating_internal_column(occupied: set[str], stem: str) -> str:
+    """Reserve a collision-free internal column name."""
+    candidate = stem
+    while candidate in occupied:
+        candidate = f"_{candidate}"
+    occupied.add(candidate)
+    return candidate
 
 
 def _apply_rating_table(
@@ -608,11 +877,19 @@ def _apply_rating_table(
             "finite number and was ignored."
         )
 
-    # Build lookup DataFrame — cast value to Float64
+    original_dtypes = {factor: frame_schema[factor] for factor in factors}
+    _validate_supported_factor_dtypes(
+        original_dtypes,
+        table_label=table_label,
+    )
+
+    # Build the lookup eagerly: rating tables are small configuration data,
+    # and strict factor/value conversion should fail before the lazy input
+    # plan is returned to a caller.
     lookup = pl.DataFrame(entries)
     if "value" not in lookup.columns:
         return lf
-    lookup = lookup.with_columns(pl.col("value").cast(pl.Float64))
+    lookup = lookup.with_columns(pl.col("value").cast(pl.Float64, strict=True))
 
     # Reject NaN/Inf in rating table entries — they corrupt pricing silently
     _bad_count = lookup.filter(pl.col("value").is_nan() | pl.col("value").is_infinite()).height
@@ -640,85 +917,86 @@ def _apply_rating_table(
         return lf
     lookup = lookup.select([*factors, "value"])
 
-    # Canonicalise factor keys on the lookup side (3a.4) BEFORE deduplication,
-    # so the dedup below operates on the *true* join key.  The same expression
-    # is applied to both join sides, so int-like float keys match their string
-    # form deterministically.  After the B15 select every factor is guaranteed
-    # to be a lookup column.
+    occupied = existing_cols | entry_cols | {output_col}
+    key_columns = [
+        _rating_internal_column(occupied, f"__haute_rating_key_{index}__")
+        for index, _factor in enumerate(factors)
+    ]
+    lookup_value_column = _rating_internal_column(occupied, _LOOKUP_VAL)
+
+    # Entry scalars are first coerced through the exact originating input
+    # dtype.  Canonical keys are then built from that typed value on both
+    # sides of the join; JSON scalar widening therefore cannot change a key.
     lookup_schema = lookup.schema
-    lookup = lookup.with_columns([_rating_key_expr(f, lookup_schema[f]) for f in factors])
+    lookup = lookup.with_columns(
+        [
+            _coerce_rating_lookup_expr(
+                factor,
+                lookup_schema[factor],
+                original_dtypes[factor],
+            )
+            for factor in factors
+        ]
+    ).select(
+        [
+            *[
+                _rating_key_expr(factor, original_dtypes[factor]).alias(key_column)
+                for factor, key_column in zip(factors, key_columns)
+            ],
+            pl.col("value"),
+        ]
+    )
 
     # B14: Deduplicate the factor keys so a left join cannot fan out rows.
     # keep="last" preserves the last-authored entry within a duplicate-key
     # group, matching trace enrichment which walks entries in reverse to
-    # report the same winning row.
-    #
-    # F084 ordering note: canonicalising before this unique is the
-    # structurally-correct form but is observationally a NO-OP for every
-    # constructible input, so no test can pin the order (verified: reverting
-    # it leaves the whole suite green, and an exhaustive pairwise entry sweep
-    # finds zero divergence).  Two reasons the "25.0 vs '25'" collision the
-    # reorder targeted cannot arise: (1) pl.DataFrame(entries) coerces a mixed
-    # float/string factor column to a single String column, and polars' own
-    # float->string cast already collapses the int-like 25.0 to "25", so the
-    # pair is one identical key before canonicalisation even runs; (2) within
-    # a homogeneous numeric column Polars unique groups raw values exactly as
-    # their canonical strings do (NaN and -0.0 included).  Canon-first is kept
-    # because it is the order that stays correct if that coercion ever changes.
-    # Pinned by tests/test_rating_key_agreement.py::TestDedupOnCanonicalKeys.
-    lookup = lookup.unique(subset=factors, keep="last")
+    # report the same winning row. Deduplication happens after strict
+    # originating-dtype coercion and key generation, so representational
+    # aliases such as Float64 entry strings "25.0" and "25.00" form one group.
+    lookup = lookup.unique(subset=key_columns, keep="last")
 
     # Rename "value" to an internal name to avoid collision with any
     # input "value" column in the input frame (Bug #1/#2).
-    lookup = lookup.rename({"value": _LOOKUP_VAL})
+    lookup = lookup.rename({"value": lookup_value_column})
 
-    # Canonicalise factor columns in the main frame too.  Collect the frame
-    # schema once: it gives both the existing-column set and the original
-    # dtypes needed to restore factor columns after the join.
-    original_dtypes = {f: frame_schema[f] for f in factors if f in existing_cols}
-    _validate_supported_factor_dtypes(
-        original_dtypes,
-        table_label=str(table.get("name") or "").strip() or output_col,
+    # Source factors stay untouched.  Temporary keys are collision-free and
+    # removed after the lookup.
+    lf = lf.with_columns(
+        [
+            _rating_key_expr(factor, original_dtypes[factor]).alias(key_column)
+            for factor, key_column in zip(factors, key_columns)
+        ]
     )
-
-    cast_exprs = [_rating_key_expr(f, original_dtypes[f]) for f in factors if f in existing_cols]
-    if cast_exprs:
-        lf = lf.with_columns(cast_exprs)
 
     # Left join.  Preserve the input row order explicitly because Polars
     # streaming joins may otherwise emit hash-partition order.
-    lf = lf.join(lookup.lazy(), on=factors, how="left", maintain_order="left")
+    lf = lf.join(lookup.lazy(), on=key_columns, how="left", maintain_order="left")
 
     # Miss guard (3a.3): only when no usable default exists — a usable
     # defaultValue fills every miss below, so nothing can be silent.
-    # Placed before the dtype revert so the error/warning shows the
-    # canonical key strings the join actually used.
+    # Diagnostics relabel temporary keys with the public factor names.
     if default_val is None:
         lf = lf.with_columns(
             _rating_miss_guard_expr(
                 factors,
-                table_label=str(table.get("name") or "").strip() or output_col,
+                key_columns=key_columns,
+                lookup_value_column=lookup_value_column,
+                table_label=table_label,
                 output_col=output_col,
                 on_missing=on_missing,
                 default_note=default_note,
             )
         )
 
-    # Revert factor columns to their original dtypes
-    revert_exprs = [pl.col(f).cast(dtype) for f, dtype in original_dtypes.items()]
-    if revert_exprs:
-        lf = lf.with_columns(revert_exprs)
-
     # Rename value → outputColumn, apply default
     if default_val is not None:
         lf = lf.with_columns(
-            pl.col(_LOOKUP_VAL).fill_null(default_val).alias(output_col),
+            pl.col(lookup_value_column).fill_null(default_val).alias(output_col),
         )
     else:
-        lf = lf.with_columns(pl.col(_LOOKUP_VAL).alias(output_col))
+        lf = lf.with_columns(pl.col(lookup_value_column).alias(output_col))
 
-    # Drop the internal lookup column (always; it can never collide now)
-    lf = lf.drop(_LOOKUP_VAL)
+    lf = lf.drop([*key_columns, lookup_value_column])
 
     return lf
 

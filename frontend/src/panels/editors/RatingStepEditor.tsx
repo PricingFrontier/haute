@@ -7,7 +7,7 @@ import ToggleButtonGroup from "../../components/ToggleButtonGroup"
 import { configField } from "../../utils/configField"
 import { withAlpha } from "../../utils/color"
 import { classifyBandingLevels } from "../../utils/banding"
-import type { RatingFactorColumn, RatingTable } from "./rating/ratingTableUtils"
+import type { RatingFactorColumn, RatingFactorDtype, RatingTable } from "./rating/ratingTableUtils"
 import {
   normaliseRatingTables,
   buildCartesianEntries,
@@ -306,7 +306,16 @@ export default function RatingStepEditor({
   const setFactors = (idx: number, newFactors: string[]) => {
     const t = tables[idx]
     const rebuilt = buildCartesianEntries(newFactors, factorLevels, t.entries, t.defaultValue)
-    updateTable(idx, { factors: newFactors, entries: rebuilt })
+    const factorDtypes = newFactors.reduce<Record<string, RatingFactorDtype>>((result, factor) => {
+      const descriptor = t.factorDtypes?.[factor]
+      if (descriptor) result[factor] = descriptor
+      return result
+    }, {})
+    updateTable(idx, {
+      factors: newFactors,
+      factorDtypes: Object.keys(factorDtypes).length > 0 ? factorDtypes : undefined,
+      entries: rebuilt,
+    })
   }
 
   const addFactor = (idx: number, col: string) => {

@@ -21,9 +21,9 @@ Canonicalisation contract (documented here, pinned below):
   cast formatting.
 * String keys are verbatim labels — never collapsed ("25.0" != "25").
 * Null keys never match (left-join semantics, ``join_nulls=False``).
-* The Python mirror is exact for Int*/Float64/Utf8/Boolean values; Float32
-  columns lose their dtype at the trace JSON boundary, so non-integer
-  Float32 keys are outside the enrichment-agreement guarantee.
+* The Python mirror requires the originating dtype and is exact for every
+  supported factor dtype, including Float32 values widened at Python/JSON
+  boundaries.
 """
 
 from __future__ import annotations
@@ -164,17 +164,16 @@ class TestEngineKeyNormalisation:
         out = _apply_rating_table(pl.DataFrame({"h": [1e300]}).lazy(), table).collect()
         assert out["f"].to_list() == [1.0]
 
-    def test_string_keys_are_verbatim_never_collapsed(self) -> None:
-        """A string key "25.0" is a label; the float 25.0 canonicalises to
-        "25" and must NOT match it — and the miss is loud (3a.3)."""
+    def test_numeric_string_entry_is_coerced_through_float_dtype(self) -> None:
+        """An entry scalar is interpreted in the originating factor dtype."""
         table = {
             "name": "Verbatim",
             "factors": ["age"],
             "outputColumn": "f",
             "entries": [{"age": "25.0", "value": 2.0}],
         }
-        with pytest.raises(RatingTableMissError, match="25"):
-            _apply_rating_table(pl.DataFrame({"age": [25.0]}).lazy(), table).collect()
+        out = _apply_rating_table(pl.DataFrame({"age": [25.0]}).lazy(), table).collect()
+        assert out["f"].to_list() == [2.0]
 
     def test_float32_int_like_column_matches_string_keys(self) -> None:
         table = {
@@ -188,11 +187,9 @@ class TestEngineKeyNormalisation:
         assert out["f"].to_list() == [2.0]
         assert out["age"].dtype == pl.Float32
 
-    def test_float32_plain_decimal_canonicalises_through_float64(self) -> None:
-        """Float32 columns widen to Float64 before formatting, so the engine
-        key equals the Python mirror (which only ever sees the f64-promoted
-        value across the trace/JSON boundary).  A plain f32 decimal therefore
-        matches an entry authored at its Float64 promotion."""
+    def test_float32_promoted_decimal_entry_coerces_back_to_native_width(self) -> None:
+        """A widened Python/JSON decimal is reconstructed through Float32
+        before both lookup sides format their native-width key."""
         promoted = str(pl.Series("s", [0.1], dtype=pl.Float32).cast(pl.Float64)[0])
         assert promoted == "0.10000000149011612"
         table = {
@@ -205,10 +202,8 @@ class TestEngineKeyNormalisation:
         out = _apply_rating_table(lf, table).collect()
         assert out["f"].to_list() == [9.0]
 
-    def test_float32_shortest_decimal_string_misses_loudly(self) -> None:
-        """The shortest-f32 spelling "0.1" no longer luck-matches an f32 0.1
-        column (that would make the trace mirror lie); the divergence is now a
-        LOUD miss, never a silent neutral/default."""
+    def test_float32_shortest_decimal_string_matches_natively(self) -> None:
+        """Entry strings are cast to Float32 before native-width formatting."""
         table = {
             "name": "F32",
             "factors": ["score"],
@@ -216,12 +211,10 @@ class TestEngineKeyNormalisation:
             "entries": [{"score": "0.1", "value": 9.0}],
         }
         lf = pl.DataFrame({"score": pl.Series("score", [0.1], dtype=pl.Float32)}).lazy()
-        with pytest.raises(RatingTableMissError):
-            _apply_rating_table(lf, table).collect()
+        out = _apply_rating_table(lf, table).collect()
+        assert out["f"].to_list() == [9.0]
 
-    def test_boolean_factor_column_fails_loudly(self) -> None:
-        """Characterisation: Boolean frame columns cannot round-trip the
-        Utf8 join (revert cast fails loudly at HEAD and still does)."""
+    def test_boolean_factor_column_matches_and_is_preserved(self) -> None:
         table = {
             "name": "B",
             "factors": ["b"],
@@ -229,8 +222,9 @@ class TestEngineKeyNormalisation:
             "entries": [{"b": "true", "value": 2.0}],
         }
         lf = pl.DataFrame({"b": [True]}).lazy()
-        with pytest.raises(pl.exceptions.InvalidOperationError):
-            _apply_rating_table(lf, table).collect()
+        out = _apply_rating_table(lf, table).collect()
+        assert out["f"].to_list() == [2.0]
+        assert out["b"].dtype == pl.Boolean
 
 
 # ---------------------------------------------------------------------------
@@ -287,12 +281,13 @@ def _expr_canonical(value: Any) -> str | None:
 class TestNormaliseRatingKeyMirrorsEngine:
     @pytest.mark.parametrize(("value", "expected"), _CANONICAL_GRID)
     def test_known_canonical_forms(self, value: Any, expected: str | None) -> None:
-        assert normalise_rating_key(value) == expected
+        dtype = pl.Series("k", [value]).dtype
+        assert normalise_rating_key(value, dtype) == expected
         assert _expr_canonical(value) == expected
 
     @pytest.mark.parametrize("value", _DELEGATED_FLOATS)
     def test_delegated_floats_agree_with_engine(self, value: float) -> None:
-        mirror = normalise_rating_key(value)
+        mirror = normalise_rating_key(value, pl.Float64)
         engine = _expr_canonical(value)
         assert mirror == engine
         if math.isnan(value):
@@ -301,8 +296,8 @@ class TestNormaliseRatingKeyMirrorsEngine:
     def test_int_like_collapse_boundary_is_int64_range(self) -> None:
         inside = 9223372036854774784.0  # largest float64 strictly below 2^63
         outside = 2.0**63
-        assert normalise_rating_key(inside) == "9223372036854774784"
-        assert normalise_rating_key(outside) != str(int(outside))
+        assert normalise_rating_key(inside, pl.Float64) == "9223372036854774784"
+        assert normalise_rating_key(outside, pl.Float64) != str(int(outside))
 
 
 def _expr_canonical_dtype(value: Any, dtype: pl.DataType) -> str | None:
@@ -328,7 +323,7 @@ class TestFloat32AndCrossDtypeAgreement:
         engine = _expr_canonical_dtype(value, pl.Float32)
         # The mirror sees the value already promoted to Float64 (f32 has no
         # distinct Python scalar) — this is what a trace/JSON row carries.
-        mirror = normalise_rating_key(s32.item())
+        mirror = normalise_rating_key(s32.item(), pl.Float32)
         assert engine == mirror
 
     @pytest.mark.parametrize("dtype", _DTYPES)
@@ -338,7 +333,7 @@ class TestFloat32AndCrossDtypeAgreement:
     ) -> None:
         series = pl.Series("k", [value], dtype=dtype)
         engine = _expr_canonical_dtype(value, dtype)
-        mirror = normalise_rating_key(series.item())
+        mirror = normalise_rating_key(series.item(), dtype)
         assert engine == mirror
 
     @pytest.mark.parametrize("save_dtype", _DTYPES)
@@ -349,7 +344,7 @@ class TestFloat32AndCrossDtypeAgreement:
         """25 is representable in all four dtypes, so the canonical key agrees
         and the lookup matches regardless of save/apply dtype drift."""
         save_series = pl.Series("age", [25], dtype=save_dtype)
-        entry_key = normalise_rating_key(save_series.item())
+        entry_key = normalise_rating_key(save_series.item(), save_dtype)
         table = {
             "name": "X",
             "factors": ["age"],
@@ -372,7 +367,10 @@ class TestFloat32AndCrossDtypeAgreement:
         lookup either matches (keys agree) or raises RatingTableMissError —
         it must never silently return a neutral/None value."""
         value = 0.123456789
-        entry_key = normalise_rating_key(pl.Series("s", [value], dtype=save_dtype).item())
+        entry_key = normalise_rating_key(
+            pl.Series("s", [value], dtype=save_dtype).item(),
+            save_dtype,
+        )
         table = {
             "name": "X",
             "factors": ["s"],
@@ -388,35 +386,16 @@ class TestFloat32AndCrossDtypeAgreement:
 
 
 class TestDedupOnCanonicalKeys:
-    """B14 / F084: the lookup deduplicates so a left join can never fan out,
-    and keep="last" makes the last-authored entry win within a duplicate-key
-    group.
-
-    F084 finding (verified no-op): canonicalising the lookup keys *before*
-    the dedup is the structurally-correct order but is observationally a
-    no-op for every constructible input, so no test can pin the ordering
-    (reverting it leaves the whole suite green; an exhaustive pairwise entry
-    sweep finds zero divergence).  The 25.0-vs-"25" "collision" the reorder
-    targeted cannot arise: ``pl.DataFrame(entries)`` coerces a mixed
-    float/string factor column to a single String column, and polars' own
-    float->string cast already collapses the int-like ``25.0`` to ``"25"`` —
-    so the two entries are one *identical* key before canonicalisation even
-    runs, deduped by keep="last" regardless of order.  Within a homogeneous
-    numeric column Polars unique likewise groups raw values exactly as
-    canonicalisation does (NaN and -0.0 included).  These tests therefore pin
-    the *reachable* dedup behaviour, not the unpinnable ordering.
-    """
+    """B14/F084: deduplicate final typed keys and keep the last authored row."""
 
     def test_mixed_float_string_entries_coerce_to_one_key_keep_last(self) -> None:
-        """The F084 "collision" is a non-event: polars coerces the float 25.0
-        and the string "25" to the SAME key "25", forming one duplicate group.
-        keep="last" keeps the last-authored value; the join yields one row and
-        does not fan out."""
+        """Mixed source scalars still deduplicate on the final Float64 key."""
         entries = [
             {"age": 25.0, "value": 1.0},
             {"age": "25", "value": 2.0},
         ]
-        # The coercion that makes the "collision" unreachable, pinned:
+        # Polars first constructs one lookup column; target-dtype coercion and
+        # canonical-key deduplication then preserve the same last-wins result.
         coerced = pl.DataFrame(entries)
         assert coerced.schema["age"] == pl.String
         assert coerced["age"].to_list() == ["25", "25"]
@@ -424,6 +403,25 @@ class TestDedupOnCanonicalKeys:
         out = _apply_rating_table(pl.DataFrame({"age": [25.0]}).lazy(), table).collect()
         assert out.height == 1  # no fan-out
         assert out["f"].to_list() == [2.0]  # last-authored entry wins
+
+    def test_target_dtype_aliases_dedup_after_coercion_keep_last(self) -> None:
+        table = {
+            "name": "Age",
+            "factors": ["age"],
+            "outputColumn": "f",
+            "entries": [
+                {"age": "25.0", "value": 1.0},
+                {"age": "25.00", "value": 2.0},
+            ],
+        }
+
+        out = _apply_rating_table(
+            pl.DataFrame({"age": pl.Series("age", [25.0], dtype=pl.Float64)}).lazy(),
+            table,
+        ).collect()
+
+        assert out.height == 1
+        assert out["f"].to_list() == [2.0]
 
     def test_exact_duplicate_keys_dedup_keep_last(self) -> None:
         """The reachable dedup case: two entries with the identical key "25"
@@ -459,9 +457,7 @@ class TestDedupOnCanonicalKeys:
 
 
 class TestDecimalFactorScale:
-    """Characterisation (documented in _rating_key_expr): Decimal columns
-    canonicalise at their declared scale, so a Decimal factor level must be
-    authored at that scale."""
+    """Decimal entries are coerced through the factor's declared scale."""
 
     def test_decimal_matches_entry_authored_at_declared_scale(self) -> None:
         from decimal import Decimal
@@ -476,7 +472,7 @@ class TestDecimalFactorScale:
         out = _apply_rating_table(pl.DataFrame({"amount": series}).lazy(), table).collect()
         assert out["f"].to_list() == [3.0]
 
-    def test_decimal_mismatched_scale_misses_loudly(self) -> None:
+    def test_decimal_entry_is_coerced_to_declared_scale(self) -> None:
         from decimal import Decimal
 
         table = {
@@ -486,8 +482,8 @@ class TestDecimalFactorScale:
             "entries": [{"amount": "25.5", "value": 3.0}],
         }
         series = pl.Series("amount", [Decimal("25.50")], dtype=pl.Decimal(scale=2))
-        with pytest.raises(RatingTableMissError):
-            _apply_rating_table(pl.DataFrame({"amount": series}).lazy(), table).collect()
+        out = _apply_rating_table(pl.DataFrame({"amount": series}).lazy(), table).collect()
+        assert out["f"].to_list() == [3.0]
 
 
 # ---------------------------------------------------------------------------
@@ -508,7 +504,7 @@ class TestSidecarKeyCanonicalisation:
             ]
         }
         compacted = compact_rating_step_config_for_sidecar(config)
-        assert compacted["tables"][0]["entries"] == {"25": 2.0}
+        assert compacted["tables"][0]["entries"] == [{"age": 25.0, "value": 2.0}]
 
     def test_round_trip_still_matches_float_column(self) -> None:
         """Save/load must not break what the engine matched before saving."""
@@ -631,37 +627,38 @@ class TestSidecarKeyCanonicalisation:
             expand_rating_step_config_from_sidecar(config)
 
 
-class TestUnsupportedTemporalFactorColumns:
+class TestTemporalFactorColumns:
     @pytest.mark.parametrize(
-        ("series", "dtype_name"),
+        ("series", "entry_value"),
         [
-            (pl.Series("inception", [date(2026, 1, 1)], dtype=pl.Date), "Date"),
+            (
+                pl.Series("inception", [date(2026, 1, 1)], dtype=pl.Date),
+                "2026-01-01",
+            ),
             (
                 pl.Series(
                     "inception",
                     [datetime(2026, 1, 1, 12, 30)],
                     dtype=pl.Datetime,
                 ),
-                "Datetime",
+                "2026-01-01 12:30:00",
             ),
         ],
     )
-    def test_date_and_datetime_factor_columns_fail_with_clear_error(
-        self, series: pl.Series, dtype_name: str
+    def test_date_and_datetime_factor_columns_match(
+        self, series: pl.Series, entry_value: str
     ) -> None:
         table = {
             "name": "Inception Rating",
             "factors": ["inception"],
             "outputColumn": "f",
-            "entries": [{"inception": "2026-01-01", "value": 2.0}],
+            "entries": [{"inception": entry_value, "value": 2.0}],
         }
         lf = pl.DataFrame({"inception": series}).lazy()
 
-        with pytest.raises(
-            ValueError,
-            match=rf"Inception Rating.*inception.*{dtype_name}.*not supported",
-        ):
-            _apply_rating_table(lf, table).collect()
+        result = _apply_rating_table(lf, table).collect()
+        assert result["f"].to_list() == [2.0]
+        assert result["inception"].dtype == series.dtype
 
 
 class TestRatebookSchemaCollection:
@@ -712,7 +709,12 @@ class TestRatebookSchemaCollection:
                 "age": [{"__factor_group__": "25", "optimal_scenario_value": 1.1}],
                 "region": [{"__factor_group__": "North", "optimal_scenario_value": 1.2}],
                 "channel": [{"__factor_group__": "online", "optimal_scenario_value": 1.3}],
-            }
+            },
+            "factor_dtypes": {
+                "age": [{"column": "age", "dtype": {"kind": "Float64"}}],
+                "region": [{"column": "region", "dtype": {"kind": "String"}}],
+                "channel": [{"column": "channel", "dtype": {"kind": "String"}}],
+            },
         }
 
         out = _apply_ratebook(
@@ -836,7 +838,12 @@ def assert_engine_and_enrichment_agree(
     for index in range(out.height):
         input_row = _jsonify_row(frame.row(index, named=True))
         output_row = _jsonify_row(out.row(index, named=True))
-        detail = _enrich_single_table(table, input_row, output_row)
+        detail = _enrich_single_table(
+            table,
+            input_row,
+            output_row,
+            factor_input_dtypes={factor: frame.schema[factor] for factor in table["factors"]},
+        )
         details.append(detail)
         context = f"row {index}: input={input_row}, detail status={detail['status']!r}"
         if engine_matched[index]:

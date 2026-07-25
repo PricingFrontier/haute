@@ -14,6 +14,7 @@
 | `frontend/src/panels/editors/CodeEditor.tsx`, `frontend/src/panels/editors/CodeMirrorEditor.tsx`, `frontend/src/panels/editors/shared/PolarsCodePanel.tsx` | Code-editor wrappers and Polars-specific panel. |
 | `frontend/src/panels/editors/ConstantEditor.tsx`, `frontend/src/panels/editors/TransformEditor.tsx`, `frontend/src/panels/editors/EdgeJoinEditor.tsx`, `frontend/src/panels/editors/LiveSwitchEditor.tsx`, `frontend/src/panels/editors/ScenarioExpanderEditor.tsx` | Editors for scalar, transform, join, conditional-switch and scenario nodes. `EdgeJoinEditor` exposes fixed canvas-derived base/join roles, atomic swap, the seven supported join modes, mutually exclusive same-name/asymmetric key forms, and advanced Polars options. |
 | `frontend/src/panels/editors/ExternalFileEditor.tsx`, `frontend/src/panels/editors/DataInputEditor.tsx`, `frontend/src/panels/editors/DataOutputEditor.tsx` | External-object, grouped tabular input, and grouped tabular output configuration. |
+| `frontend/src/stores/useOutputWriteStore.ts` | Per-node output-write request identity, pending/terminal lifecycle, and overwrite-confirmation state retained across editor remounts. |
 | `frontend/src/panels/editors/_IoFormatEditor.tsx`, `frontend/src/panels/editors/_ioFormats.ts`, `frontend/src/panels/editors/_DatabricksSelector.tsx`, `frontend/src/panels/editors/_InputCacheControls.tsx` | Registry-driven IO arguments, cached capabilities, dedicated Databricks browsing, and shared input-cache lifecycle controls. |
 | `frontend/src/panels/editors/ApiInputEditor.tsx`, `frontend/src/panels/editors/apiInputSchema.ts`, `frontend/src/panels/editors/apiInputInherit.ts`, `frontend/src/panels/editors/FrameTableActions.tsx` | API-input frame/schema editing, persisted/inferred schema conversion, reconciliation and row actions. |
 | `frontend/src/panels/editors/OutputEditor.tsx`, `frontend/src/panels/editors/outputMappingSchema.ts`, `frontend/src/panels/editors/outputPathTools.ts`, `frontend/src/panels/editors/jsonpath.ts`, `frontend/src/panels/editors/pathCanonicalWarning.ts`, `frontend/src/panels/editors/JsonPreview.tsx` | Output mappings, JSON-path validation/rewrites, canonical-path hints and preview. |
@@ -56,8 +57,11 @@
   Output mappings use the equivalent conversion boundary in
   `frontend/src/panels/editors/outputMappingSchema.ts`.
 - `RatingTable` and factor/entry structures are normalised by
-  `frontend/src/panels/editors/rating/ratingTableUtils.ts`; banding grids consume and update the
-  node's banding-rule records through `frontend/src/panels/editors/banding/bandingUtils.ts`.
+  `frontend/src/panels/editors/rating/ratingTableUtils.ts`. `RatingTable.factorDtypes` is an
+  optional factor-name → backend dtype-descriptor map that is preserved for selected factors.
+  The editor does not invent a descriptor when the backend has not supplied one.
+  Banding grids consume and update the node's banding-rule records through
+  `frontend/src/panels/editors/banding/bandingUtils.ts`.
 
 ## Control flow
 
@@ -83,7 +87,9 @@
    one-gesture boundary in their own controlled cells.
 4. Schema, mapping, banding and rating editors derive visible rows from persisted config, accept
    user changes, normalise only at their documented conversion/update boundary, then invoke the
-   panel callback. Clipboard/drag/dialog operations remain local until that callback.
+   panel callback. Rating factor changes filter `factorDtypes` atomically with `factors` and
+   `entries`; removing a factor removes its descriptor, while new descriptors are never invented.
+   Clipboard/drag/dialog operations remain local until that callback.
 5. Format, file, catalog and MLflow controls issue their own API calls. Their request state is
    local to the editor; the editor never assumes an out-of-order response still describes a
    changed node unless its own effect/request guards accept it.
@@ -103,6 +109,8 @@
   filtered/merged before persistence without making existing user rows disappear.
 - Rating table normalisation supports missing/malformed entries by producing the editable table
   contract; two-way grids keep their cartesian factor coordinates aligned with their entry values.
+  It preserves canonical row order and valid `factorDtypes` metadata instead of dropping either
+  during a view-only open/save cycle.
 - `frontend/src/panels/editors/shared/tableClipboard.ts` parses tab/newline data before applying
   it, while the rating/banding grids validate their target coordinates and numeric values.
 - Path tools preserve/rewrite only recognised path prefixes. JSON path validation and
@@ -279,3 +287,38 @@ The owned configuration-shape matrix is:
   1024×768; the snapshot name encodes state and viewport. Below 1024 CSS px is outside this
   assurance contract. Semantic locators, focus assertions, Enter/Space activation, and the save
   shortcut form the accessibility boundary; this package makes no whole-page WCAG claim.
+
+## I/O authoring feedback and output lifecycle
+
+- `DataInputEditor` calls `useSchemaFetch` with the configured file path only
+  when `format.input.needs_schema_when_bounded` is true. It imports
+  `SchemaPreview`, renders the hook's loading/error states, and merges
+  `Object.fromEntries(schema.columns.map(({name, dtype}) => ...))` into the
+  current arguments on confirmation.
+- `useSchemaFetch` recognises `ApiError` and stores `detail ?? message`.
+  `ApiInputEditor` consumes and renders its `error` return.
+- A small Zustand output-write store owns entries keyed by node id. Each entry
+  carries request id, full request identity, phase
+  (`writing | success | error | confirm_overwrite`), and structured result or
+  message. Terminal actions update only the matching request id.
+- `DataOutputEditor` asks `/api/pipeline/output-destination` for the display
+  destination and extension mismatch; it does not reimplement backend path or
+  default-extension rules. Stale destination responses cannot replace a newer
+  request's state.
+- The write identity covers the complete flattened graph, output node, active
+  source, and streaming chunk size. Overwrite confirmation remains visible and
+  actionable only while that whole request is unchanged. A graph or setting
+  edit invalidates the grant before an `overwrite=true` retry.
+- A node-level write remains mutually exclusive across config edits. While an
+  older identity is still writing, the editor continues to show that pending
+  state instead of presenting a disabled button with no explanation. Obsolete
+  terminal entries are cleared when the editor observes a different request
+  identity, and terminal state is removed when its editor unmounts so a deleted
+  and recreated node id cannot inherit an earlier overwrite grant.
+- The editor starts the API promise after recording store state; the promise
+  updates the store even if the component unmounts. It sends `overwrite=false`,
+  handles `ApiError.status === 409` as `confirm_overwrite`, and retries true
+  only from the confirmation action.
+- `WriteOutputArgs` adds `overwrite?: boolean` and serialises an explicit
+  boolean. Tests reset the write store between cases and exercise unmount/
+  remount while a deferred request is unresolved.

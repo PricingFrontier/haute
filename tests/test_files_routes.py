@@ -65,7 +65,30 @@ class TestBrowseFilesExtensionFiltering:
         assert "a.parquet" in names
         assert "b.csv" in names
         assert "c.json" in names
-        assert "d.txt" not in names
+        assert "d.txt" in names
+
+    def test_default_extensions_come_from_installed_input_capabilities(
+        self, client: TestClient, work_dir: Path
+    ) -> None:
+        (work_dir / "events.ndjson").write_text('{"x":1}\n', encoding="utf-8")
+        (work_dir / "legacy.xml").write_text("<x />", encoding="utf-8")
+
+        resp = client.get("/api/files")
+
+        assert resp.status_code == 200
+        names = {item["name"] for item in resp.json()["items"]}
+        assert "events.ndjson" in names
+        assert "legacy.xml" not in names
+
+    def test_extension_matching_is_case_insensitive(
+        self, client: TestClient, work_dir: Path
+    ) -> None:
+        (work_dir / "DATA.CSV").write_text("x\n1\n", encoding="utf-8")
+
+        resp = client.get("/api/files", params={"extensions": ".csv"})
+
+        assert resp.status_code == 200
+        assert [item["name"] for item in resp.json()["items"]] == ["DATA.CSV"]
 
     def test_custom_extensions_parameter(self, client: TestClient, work_dir: Path):
         (work_dir / "a.parquet").write_bytes(b"")
@@ -117,6 +140,32 @@ class TestBrowseFilesHiddenFiles:
         names = [i["name"] for i in resp.json()["items"]]
         assert ".secret" not in names
         assert "public" in names
+
+
+class TestBrowseFilesSymlinks:
+    def test_symlink_entries_are_not_advertised(
+        self,
+        client: TestClient,
+        work_dir: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        target = work_dir / "real.csv"
+        target.write_text("x\n1\n", encoding="utf-8")
+        link = work_dir / "linked.csv"
+        link.write_text("x\n2\n", encoding="utf-8")
+        original_is_symlink = Path.is_symlink
+        monkeypatch.setattr(
+            Path,
+            "is_symlink",
+            lambda path: path == link or original_is_symlink(path),
+        )
+
+        resp = client.get("/api/files")
+
+        assert resp.status_code == 200
+        names = {item["name"] for item in resp.json()["items"]}
+        assert "real.csv" in names
+        assert "linked.csv" not in names
 
 
 class TestBrowseFilesNonExistentDir:
@@ -361,17 +410,35 @@ class TestBrowseFilesLargeDirectory:
 
 class TestGetSchemaCorruptedParquet:
     def test_random_bytes_parquet_returns_error(self, client: TestClient, work_dir: Path):
-        """Phase 1C #11: the detail is sanitized (``_INTERNAL_ERROR_DETAIL``)
-        so parquet internals / paths never leak.  The real error is
-        captured in the ``schema_read_failed`` structured log with
-        ``exc_info=True``.
-        """
-        from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
+        """Known decoder failures return a safe format-specific diagnostic.
 
+        Parquet internals and absolute paths remain private in the structured
+        server log.
+        """
         (work_dir / "corrupt.parquet").write_bytes(b"\x00\x01\x02\x03\xff\xfe\xfd")
         resp = client.get("/api/schema", params={"path": "corrupt.parquet"})
-        assert resp.status_code == 500
-        assert resp.json()["detail"] == _INTERNAL_ERROR_DETAIL
+        assert resp.status_code == 400
+        detail = resp.json()["detail"]
+        assert detail == (
+            "Could not decode the .parquet file. Check that it is valid and "
+            "matches its file extension."
+        )
+        assert str(work_dir) not in detail
+
+
+class TestGetSchemaUnsupportedFormat:
+    def test_compound_suffix_returns_safe_actionable_400(
+        self, client: TestClient, work_dir: Path
+    ) -> None:
+        (work_dir / "quotes.csv.gz").write_bytes(b"x\n1\n")
+
+        resp = client.get("/api/schema", params={"path": "quotes.csv.gz"})
+
+        assert resp.status_code == 400
+        detail = resp.json()["detail"]
+        assert ".csv.gz" in detail
+        assert "Supported" in detail
+        assert str(work_dir) not in detail
 
 
 class TestGetSchemaEmptyJsonl:

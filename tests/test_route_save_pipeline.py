@@ -1351,14 +1351,32 @@ class TestValidateApiInputsHaveSchemas:
         svc._validate_api_inputs_have_schemas(graph, warnings)
         assert warnings == []
 
-    def test_warns_when_jsonl_api_input_has_no_tables(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize("path", ["input.jsonl", "input.ndjson", "INPUT.NDJSON"])
+    def test_warns_when_ndjson_api_input_has_no_tables(
+        self,
+        tmp_path: Path,
+        path: str,
+    ) -> None:
         svc = SavePipelineService(tmp_path)
         graph = _make_graph(
-            _make_node("api", "api_input", "apiInput", {"path": "input.jsonl"}),
+            _make_node("api", "api_input", "apiInput", {"path": path}),
         )
         warnings: list[str] = []
         svc._validate_api_inputs_have_schemas(graph, warnings)
         assert any("Infer Tables" in w for w in warnings)
+
+    def test_mirrors_ndjson_api_input_cache(self, tmp_path: Path) -> None:
+        svc = SavePipelineService(tmp_path)
+        graph = _make_graph(
+            _make_node("api", "api_input", "apiInput", {"path": "input.ndjson"}),
+        )
+
+        with patch("haute._json_flatten.mirror_cache_to_committed") as mirror:
+            svc._mirror_api_input_caches(graph)
+
+        mirror.assert_called_once_with(
+            str((tmp_path / "input.ndjson").resolve()), graph.nodes[0].data.config
+        )
 
     def test_skips_empty_path(self, tmp_path: Path) -> None:
         svc = SavePipelineService(tmp_path)

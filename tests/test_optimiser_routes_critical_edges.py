@@ -940,6 +940,7 @@ def test_mlflow_log_ratebook_falls_back_to_solve_result_factor_tables(
     ``result`` doesn't silently log empty factor tables to MLflow.
     """
     factor_tables = {"region": [{"__factor_group__": "North", "value": 1.0}]}
+    factor_dtypes = {"region": [{"column": "region", "dtype": {"kind": "String"}}]}
     solve_result = SimpleNamespace(
         total_objective=100.0,
         baseline_objective=90.0,
@@ -949,6 +950,7 @@ def test_mlflow_log_ratebook_falls_back_to_solve_result_factor_tables(
         converged=True,
         clamp_rate=0.02,
         factor_tables=factor_tables,
+        factor_dtypes=factor_dtypes,
         cd_iterations=3,
         iterations=5,
     )
@@ -1018,6 +1020,7 @@ def test_mlflow_log_ratebook_falls_back_to_solve_result_factor_tables(
     assert captured_payloads, "expected optimiser_result.json to be logged"
     payload = _json.loads(captured_payloads[-1])
     assert payload["factor_tables"] == factor_tables
+    assert payload["factor_dtypes"] == factor_dtypes
     assert payload["clamp_rate"] == 0.02
 
 
@@ -1078,6 +1081,7 @@ def test_ratebook_materialise_emits_non_converged_warning_in_response(
         "ratebook_factor_contexts": factor_contexts,
         "factor_columns_valid": [["region"]],
         "factor_level_counts": {"region": {"North": 1}},
+        "factor_dtypes": {"region": [{"column": "region", "dtype": {"kind": "String"}}]},
         "artifact_handles": {},
         "created_at": time.time(),
     }
@@ -1100,6 +1104,72 @@ def test_ratebook_materialise_emits_non_converged_warning_in_response(
     assert "did not converge" in clean_job_store.jobs["ratebook_warn"]["result"]["warning"].lower()
 
 
+def test_ratebook_materialise_rejects_missing_dtype_metadata(
+    client,
+    clean_job_store,
+):
+    """A persisted ratebook cannot be materialised without its dtype contract."""
+    factor_contexts = SimpleNamespace(n_quotes=1, factor_specs=[["region"]])
+    solver = MagicMock()
+    solver.solve.return_value = SimpleNamespace(
+        total_objective=120.0,
+        baseline_objective=90.0,
+        total_constraints={"volume": 0.93},
+        baseline_constraints={"volume": 0.85},
+        lambdas={"volume": 0.55},
+        converged=True,
+        cd_iterations=1,
+        clamp_rate=0.0,
+        factor_tables={"region": {"North": 1.0}},
+    )
+    point = {
+        "total_objective": 120.0,
+        "total_volume": 0.93,
+        "lambda_volume": 0.55,
+        "threshold_volume": 0.93,
+        "converged": True,
+    }
+    clean_job_store.jobs["ratebook_missing_dtypes"] = {
+        "status": "completed",
+        "config": {"mode": "ratebook", "constraints": {"volume": {"min": 0.9}}},
+        "frontier_data": {
+            "status": "ok",
+            "points": [point],
+            "n_points": 1,
+            "constraint_names": ["volume"],
+        },
+        "result": {
+            "mode": "ratebook",
+            "total_objective": 95.0,
+            "baseline_objective": 90.0,
+            "constraints": {"volume": 0.85},
+            "baseline_constraints": {"volume": 0.85},
+            "lambdas": {"volume": 0.0},
+            "converged": True,
+        },
+        "solver": solver,
+        "quote_grid": MagicMock(),
+        "ratebook_factor_contexts": factor_contexts,
+        "factor_columns_valid": [["region"]],
+        "factor_level_counts": {"region": {"North": 1}},
+        "artifact_handles": {},
+        "created_at": time.time(),
+    }
+
+    response = client.post(
+        "/api/optimiser/frontier/select",
+        json={
+            "job_id": "ratebook_missing_dtypes",
+            "point_index": 0,
+            "include_ratebook_tables": True,
+        },
+    )
+
+    assert response.status_code == 500
+    assert response.json()["detail"] == "Ratebook factor dtype metadata is missing"
+    solver.solve.assert_called_once()
+
+
 def test_ratebook_materialise_returns_cached_when_lambdas_match_and_no_dataframe_required(
     client,
     clean_job_store,
@@ -1109,6 +1179,7 @@ def test_ratebook_materialise_returns_cached_when_lambdas_match_and_no_dataframe
     this is the hot-path the UI hits when toggling between tabs.
     """
     factor_tables = {"region": [{"__factor_group__": "North", "value": 1.0}]}
+    factor_dtypes = {"region": [{"column": "region", "dtype": {"kind": "String"}}]}
     factor_contexts = SimpleNamespace(n_quotes=1, factor_specs=[["region"]])
     solver = MagicMock()  # Must NOT be called.
     point = {
@@ -1128,6 +1199,7 @@ def test_ratebook_materialise_returns_cached_when_lambdas_match_and_no_dataframe
         "converged": True,
         "selected_frontier_point": 0,
         "factor_tables": factor_tables,
+        "factor_dtypes": factor_dtypes,
     }
     clean_job_store.jobs["ratebook_cached"] = {
         "status": "completed",
@@ -1154,6 +1226,7 @@ def test_ratebook_materialise_returns_cached_when_lambdas_match_and_no_dataframe
         "ratebook_factor_contexts": factor_contexts,
         "factor_columns_valid": [["region"]],
         "factor_level_counts": {"region": {"North": 1}},
+        "factor_dtypes": factor_dtypes,
         "artifact_handles": {},
         "created_at": time.time(),
     }
@@ -1224,6 +1297,7 @@ def test_ratebook_materialise_returns_409_on_atomic_update_race(
         "ratebook_factor_contexts": factor_contexts,
         "factor_columns_valid": [["region"]],
         "factor_level_counts": {"region": {"North": 1}},
+        "factor_dtypes": {"region": [{"column": "region", "dtype": {"kind": "String"}}]},
         "artifact_handles": {},
         "created_at": time.time(),
     }

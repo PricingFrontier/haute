@@ -46,6 +46,7 @@ def test_rating_detail_separates_table_selection_from_post_code_output() -> None
         },
         {"region": "north"},
         {"region": "north", "factor": 2.2},
+        factor_input_dtypes={"region": pl.String},
     )
 
     table = detail["tables"][0]
@@ -69,6 +70,7 @@ def test_rating_selection_uses_the_runtime_numeric_value_before_post_code() -> N
         },
         {"region": "north"},
         {"region": "north", "factor": 1.1, "note": "unchanged"},
+        factor_input_dtypes={"region": pl.String},
     )
 
     table = detail["tables"][0]

@@ -34,6 +34,7 @@ import type { FetchPreviewOptions } from "./usePipelineAPI"
 import type { PreviewData } from "../panels/DataPreview"
 
 const OPTIMISER_CLICK_PREVIEW_DEBOUNCE_MS = 800
+const JSON_API_INPUT_SUFFIXES = [".json", ".jsonl", ".ndjson"] as const
 const NON_PREVIEWABLE_CLICK_TYPES = new Set<string>([
   NODE_TYPES.DATA_OUTPUT,
   NODE_TYPES.OUTPUT,
@@ -57,6 +58,14 @@ function wouldExceedMaxInputs(
 
 function previewOptionsForClick(node: Node): FetchPreviewOptions | null {
   const nodeType = effectiveNodeType(node)
+  if (nodeType === NODE_TYPES.API_INPUT) {
+    const config = nodeData(node).config
+    const path = config?.path
+    const isJsonInput =
+      typeof path === "string"
+      && JSON_API_INPUT_SUFFIXES.some((suffix) => path.toLowerCase().endsWith(suffix))
+    if (isJsonInput && !Array.isArray(config?.tables)) return null
+  }
   if (nodeType === NODE_TYPES.OPTIMISER) {
     return {
       debounceMs: OPTIMISER_CLICK_PREVIEW_DEBOUNCE_MS,

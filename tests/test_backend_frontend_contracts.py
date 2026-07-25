@@ -21,6 +21,7 @@ from haute.schemas import (
     GitArchiveResponse,
     GitDeleteBranchResponse,
     GitPushResponse,
+    GraphEdge,
     JsonCacheBuildResponse,
     LogExperimentResponse,
     MlflowCheckResponse,
@@ -99,6 +100,28 @@ def test_ui_contract_fixture_validates_against_backend_model(
     validated = model.model_validate(_load_fixture(fixture_name))
 
     assert isinstance(validated, model)
+
+
+def test_graph_edge_schema_exposes_authored_boundary_ports() -> None:
+    schema = GraphEdge.model_json_schema()
+
+    assert "sourcePort" in schema["properties"]
+    assert "targetPort" in schema["properties"]
+    assert GraphEdge(
+        id="e",
+        source="submodel__a",
+        target="submodel__b",
+        sourcePort="quotes",
+        targetPort="base",
+    ).model_dump() == {
+        "id": "e",
+        "source": "submodel__a",
+        "target": "submodel__b",
+        "sourceHandle": None,
+        "targetHandle": None,
+        "sourcePort": "quotes",
+        "targetPort": "base",
+    }
 
 
 def test_optimiser_status_result_is_typed_model_not_raw_blob() -> None:

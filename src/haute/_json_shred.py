@@ -18,7 +18,8 @@ On-disk layout in a cache directory (working/<hash>/ or committed/<hash>/):
 
 - one ``<sanitised_label>.parquet`` artifact per current emit-true table.
 - one ``meta.json`` carrying ``{schema_mode: "v2", schema_fingerprint,
-  tables: [{label, parquet, row_count, column_count, content_signature}, ...]}``.
+  tables: [{label, parquet, row_count, column_count, columns,
+  content_signature}, ...]}``.
 
 At runtime each compressed parquet is read exactly once, its signature is
 verified over those exact bytes, and Polars scans an in-memory compressed
@@ -45,6 +46,7 @@ from dataclasses import dataclass, field
 from itertools import islice
 from pathlib import Path
 from typing import Any, cast
+from weakref import WeakValueDictionary
 
 import orjson
 import polars as pl
@@ -66,6 +68,7 @@ from haute._api_input_schema import (
 from haute._api_input_schema import (
     sanitise_label_for_filesystem as _sanitise_label,
 )
+from haute._jsonpath import is_identifier_name
 from haute._logging import get_logger
 
 logger = get_logger(component="json_shred")
@@ -102,15 +105,14 @@ def _scalar_to_str(value: Any) -> str:
 
 
 def _coerce_scalar(value: Any, type_token: str) -> Any:
-    """Coerce a scalar-array element to its inferred ``value``-column type.
+    """Coerce a genuine JSON scalar to its inferred column type.
 
-    Used ONLY for scalar-array child tables, whose single ``value`` column
-    type was inferred from these very elements (see
-    :func:`infer_v2_schema_from_data`). When the elements were mixed and the
-    type widened (e.g. ``int`` + ``str`` → ``str``, ``int`` + ``float`` →
-    ``float``), this keeps the built column consistent with the declared
-    type. It is NOT a silent coercion of user-declared object columns — those
-    fail loud in :func:`_buffer_to_frame`.
+    Inference can widen mixed scalar observations (for example ``int`` +
+    ``str`` → ``str`` or ``int`` + ``float`` → ``float``). Emission applies
+    that same rule to object-table columns and scalar-array ``$value`` columns
+    so a schema accepted by inference builds consistently. Shape values
+    (dicts/lists) are not converted here; their callers reject or skip them
+    under the table-shape contract.
     """
     if value is None:
         return None
@@ -379,7 +381,7 @@ def _data_file_matches(
 # another schema's parquets; builds of different caches stay independent.
 # Process-local by design: the FastAPI routes are the only production
 # producer and run builds in threads of this process.
-_BUILD_LOCKS: dict[str, threading.Lock] = {}
+_BUILD_LOCKS: WeakValueDictionary[str, threading.Lock] = WeakValueDictionary()
 _BUILD_LOCKS_GUARD = threading.Lock()
 _RENAME_RETRY_DELAYS_SECONDS = (0.01, 0.025, 0.05, 0.1)  # pragma: no mutate
 
@@ -438,7 +440,7 @@ def _iter_records(
         if stats is not None:
             stats.count_record_skip()
 
-    if data_path.suffix.lower() == ".jsonl":
+    if data_path.suffix.lower() in (".jsonl", ".ndjson"):
         with data_path.open("r", encoding="utf-8") as f:
             for line in f:
                 stripped = line.strip()
@@ -593,7 +595,7 @@ def _iter_records_for_inference(
     if sample_size is None or sample_size <= 0:
         yield from _iter_records(data_path)
         return
-    if data_path.suffix.lower() == ".jsonl":  # pragma: no mutate
+    if data_path.suffix.lower() in (".jsonl", ".ndjson"):  # pragma: no mutate
         yield from islice(_iter_records(data_path), sample_size)
         return
     yield from _iter_sampled_json_array_records(data_path, sample_size)
@@ -828,7 +830,9 @@ def shred_to_buffers(
         for col_name, leaf, type_token, src_depth in col_specs:
             src = value if src_depth == depth else ancestors[src_depth]  # pragma: no mutate
             resolved = _resolve_leaf(src, leaf)
-            if leaf == _SCALAR_VALUE_LEAF:  # pragma: no mutate
+            if leaf == _SCALAR_VALUE_LEAF or (
+                type_token == "str" and not isinstance(resolved, (dict, list))
+            ):
                 resolved = _coerce_scalar(resolved, type_token)
             row[col_name] = resolved
         return row
@@ -841,6 +845,7 @@ def shred_to_buffers(
         # ancestor (W1) column's value from the right enclosing element.
         depth = array_depth(pos)
         is_dict = isinstance(record, dict)
+        is_scalar = not isinstance(record, (dict, list))
 
         # A scalar child table (single ``$value`` column) takes only scalar
         # elements; an object table takes only dict records. Skip the mismatched
@@ -848,7 +853,8 @@ def shred_to_buffers(
         # row for this table, and the loss must be surfaced, never silent.
         for label, col_specs in tables_by_pos.get(pos, []):
             is_scalar_table = any(leaf == _SCALAR_VALUE_LEAF for _n, leaf, _t, _d in col_specs)
-            if is_scalar_table != (not is_dict):  # pragma: no mutate
+            shape_matches = is_scalar if is_scalar_table else is_dict
+            if not shape_matches:
                 _count_row_skip(label)
                 continue
             buffers[label].append(_emit_row(col_specs, record, ancestors, depth))
@@ -1301,6 +1307,7 @@ def build_per_port_cache(
                         "parquet": parquet_path.name,
                         "row_count": frame.height,
                         "column_count": frame.width,
+                        "columns": {name: str(dtype) for name, dtype in frame.schema.items()},
                         "content_signature": content_signature,
                     },
                 )
@@ -1477,11 +1484,11 @@ def load_v2_api_source(
 ) -> dict[str, pl.LazyFrame]:  # pragma: no mutate
     """Load a v2 apiInput as an emit-gated per-port frame bundle.
 
-    The single runtime entry point shared by the executor's source builder
-    (:func:`haute._builders._make_api_source_v2`) and the generated/deploy
-    code (:func:`haute._codegen_builders._api_input_template`), so the two
-    can't drift. Validates *config* itself so direct callers receive the same
-    typed schema errors as the executor and generated module boundaries.
+    The shared frame-bundle loader reached through
+    :func:`haute._node_apply.resolve_api_input_from_config` by both executor
+    and generated/deploy code, so those paths cannot drift. Validates *config*
+    itself so direct callers receive the same typed schema errors as the
+    executor and generated module boundaries.
 
     Behaviour:
 
@@ -1709,18 +1716,18 @@ def _assign_column_names(object_paths: list[tuple[str, ...]]) -> dict[tuple[str,
 def _reject_unexpressible_key(key: str) -> None:
     """Fail loud on a source JSON key the v2 path grammar can't address cleanly.
 
-    Two keys parse as valid paths but resolve to the WRONG thing, silently
-    dropping the real value at shred time, so inference must not manufacture a
-    column path for them (W1):
+    Inference must not manufacture a column path for any key outside the
+    shared ASCII identifier grammar. Two cases receive more specific
+    diagnostics because they previously parsed but resolved to the wrong
+    value at shred time (W1):
 
     - ``$value`` collides with the reserved scalar-array sentinel — the shred
       would read it as "the element itself" and never touch the field.
     - a key containing ``.`` is split by the dotted-leaf walker into two
       object hops (``{"a.b": v}`` becomes ``value["a"]["b"]`` → ``None``).
 
-    Both must be renamed in the source data; there is no unambiguous mapping.
-    (Other non-identifier keys — hyphens, spaces, leading digits — already fail
-    loud downstream in :func:`validate_v2_schema` when the path is parsed.)
+    Every rejected key must be renamed in the source data; there is no
+    unambiguous mapping.
     """
     if key == _SCALAR_VALUE_LEAF:
         raise ApiInputSchemaError(
@@ -1734,6 +1741,13 @@ def _reject_unexpressible_key(key: str) -> None:
             f"source JSON key {key!r} contains '.', which the path grammar "
             "reserves as the object-nesting separator, so it cannot be expressed "
             "as a column path; rename this field in the source data",
+            column=key,
+        )
+    if not is_identifier_name(key):
+        raise ApiInputSchemaError(
+            f"source JSON key {key!r} is not an addressable identifier; keys "
+            "must match [A-Za-z_][A-Za-z0-9_]*, so rename this field in the "
+            "source data",
             column=key,
         )
 

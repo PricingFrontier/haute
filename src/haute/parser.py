@@ -29,13 +29,18 @@ from haute._graph_builders import (
 from haute._graph_shape import validate_pipeline_graph_shape_contracts
 from haute._io import read_user_text
 from haute._logging import get_logger
+from haute._parser_conservation import (
+    assert_parser_structure_conserved,
+    missing_submodel_error,
+)
 from haute._parser_regex import fallback_parse as _fallback_parse
+from haute._parser_submodels import build_unique_submodel_maps as _build_unique_submodel_maps
 from haute._parser_submodels import extract_submodel_calls as _extract_submodel_calls
 from haute._parser_submodels import merge_submodels as _merge_submodels
 from haute._parser_submodels import parse_submodel_source as _parse_submodel_source
 from haute._project import get_project_root
 from haute._submodel_paths import resolve_submodel_reference
-from haute.errors import ConfigError
+from haute.errors import ConfigError, ParseError
 from haute.graph_utils import PipelineGraph
 
 logger = get_logger(component="parser")
@@ -168,7 +173,7 @@ def parse_pipeline_source(
     explicit_connects = _extract_connect_calls(tree)
     edges = _build_edges(raw_nodes, explicit_connects) if raw_nodes else []
     rf_nodes = _build_rf_nodes(raw_nodes)
-    preamble = _extract_preamble(source)
+    preamble = _extract_preamble(source, tree=tree)
     preserved_blocks = _extract_preserved_blocks(source)
 
     # Surface config load errors as a graph-level warning for the GUI.
@@ -184,14 +189,26 @@ def parse_pipeline_source(
         source_file=source_file,
         warning=_format_load_error_warning(load_error_labels),
     )
+    graph._parser_parameter_names = {
+        str(node["func_name"]): [str(name) for name in node.get("param_names", ())]
+        for node in raw_nodes
+    }
 
     # --- Submodel handling ---------------------------------------------------
     submodel_paths = _extract_submodel_calls(tree)
     submodel_base_dir = _submodel_base_dir or _base_dir
-    if submodel_paths and submodel_base_dir is not None:
-        submodel_graphs: dict[str, PipelineGraph] = {}
-        submodel_files: dict[str, str] = {}
+    submodel_graphs: dict[str, PipelineGraph] = {}
+    submodel_files: dict[str, str] = {}
+    if submodel_paths:
+        if submodel_base_dir is None:
+            raise ParseError(
+                "pipeline.submodel() references require a source/base directory.",
+                unresolved_paths=list(submodel_paths),
+            )
+
         resolved_submodel_root = submodel_base_dir.resolve()
+        resolved: list[tuple[str, Path, Path]] = []
+        missing_paths: list[str] = []
 
         for rel_path in submodel_paths:
             sm_filepath, sm_base_dir = resolve_submodel_reference(
@@ -200,13 +217,19 @@ def parse_pipeline_source(
                 project_root=resolved_submodel_root,
             )
             if not sm_filepath.is_file():
+                missing_paths.append(rel_path)
                 continue
+            resolved.append((rel_path, sm_filepath, sm_base_dir))
+
+        if missing_paths:
+            raise missing_submodel_error(missing_paths)
+
+        parsed_submodels: list[tuple[str, PipelineGraph]] = []
+        for rel_path, sm_filepath, sm_base_dir in resolved:
             sm_graph = parse_submodel_file(sm_filepath, _base_dir=sm_base_dir)
-            sm_name = sm_graph.pipeline_name or sm_filepath.stem
-            if sm_name in submodel_graphs:
-                logger.warning("submodel_name_collision", name=sm_name)
-            submodel_graphs[sm_name] = sm_graph
-            submodel_files[sm_name] = rel_path
+            parsed_submodels.append((rel_path, sm_graph))
+
+        submodel_graphs, submodel_files = _build_unique_submodel_maps(parsed_submodels)
 
         if submodel_graphs:
             graph = _merge_submodels(
@@ -216,6 +239,16 @@ def parse_pipeline_source(
                 explicit_connects,
                 flatten=flatten,
             )
+
+    assert_parser_structure_conserved(
+        raw_nodes=raw_nodes,
+        explicit_connects=explicit_connects,
+        root_nodes=rf_nodes,
+        root_edges=edges,
+        submodel_paths=submodel_paths,
+        submodel_graphs=submodel_graphs,
+        submodel_files=submodel_files,
+    )
 
     validate_pipeline_graph_shape_contracts(
         graph,

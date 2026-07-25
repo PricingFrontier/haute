@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import re
 import threading
 import time
@@ -19,6 +20,21 @@ from haute.schemas import OptimiserFrontierRequest
 from tests.conftest import make_edge, make_file_input_config, make_graph, make_node
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_optimiser_service_never_reads_job_store_backing_mapping() -> None:
+    source_path = ROOT / "src" / "haute" / "routes" / "_optimiser_service.py"
+    tree = ast.parse(source_path.read_text(encoding="utf-8"))
+    offenders = [
+        node.lineno
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Attribute) and node.attr == "jobs"
+    ]
+
+    assert offenders == [], (
+        "Optimiser workers must read through JobStore.get_job() so concurrent "
+        f"eviction cannot race an unlocked backing-mapping access: {offenders}"
+    )
 
 
 @pytest.fixture()

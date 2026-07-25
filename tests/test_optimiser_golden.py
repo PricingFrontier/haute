@@ -125,7 +125,8 @@ def test_build_artifact_payload_matches_ratebook_golden_snapshot(
         "result": {
             "factor_tables": {
                 "region": [{"__factor_group__": "North", "optimal_scenario_value": 1.1}]
-            }
+            },
+            "factor_dtypes": {"region": [{"column": "region", "dtype": {"kind": "String"}}]},
         },
     }
     solve_result = SimpleNamespace(

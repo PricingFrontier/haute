@@ -152,6 +152,29 @@ def test_implicit_root_uses_configured_current_project(tmp_path: Path) -> None:
     assert resolved == (project_root / "inputs" / "data.parquet").resolve()
 
 
+def test_relative_source_does_not_override_selected_project_with_working_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    working_directory = tmp_path / "working-directory"
+    working_directory.mkdir()
+    source = working_directory / "pipelines" / "pricing.py"
+    source.parent.mkdir()
+    source.write_text("# pipeline", encoding="utf-8")
+    selected_root = tmp_path / "selected-project"
+    selected_root.mkdir()
+    set_project_root(selected_root)
+    monkeypatch.chdir(working_directory)
+
+    resolved = resolve_runtime_file_path(
+        "inputs/data.parquet",
+        source_file="pipelines/pricing.py",
+        enforce_project_root=True,
+    )
+
+    assert resolved == (selected_root / "inputs" / "data.parquet").resolve()
+
+
 def test_source_spelled_inside_project_cannot_resolve_outside(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -316,6 +339,31 @@ def test_runtime_project_root_scope_accepts_keyword_graph(tmp_path: Path) -> Non
         return current_runtime_project_root()
 
     assert selected_root(graph=graph) == source.parent.resolve()
+
+
+def test_runtime_project_root_scope_uses_first_positional_argument(tmp_path: Path) -> None:
+    source = tmp_path / "external" / "pipeline.py"
+    source.parent.mkdir()
+    graph = PipelineGraph(source_file=str(source))
+    marker = object()
+
+    @runtime_project_root_scoped
+    def selected_root(graph: PipelineGraph, value: object) -> tuple[Path, object]:
+        return current_runtime_project_root(), value
+
+    assert selected_root(graph, marker) == (source.parent.resolve(), marker)
+
+
+def test_runtime_project_root_scoped_preserves_wrapped_metadata() -> None:
+    def selected_root(graph: PipelineGraph) -> Path:
+        """Return the execution-scoped project root."""
+        return current_runtime_project_root()
+
+    decorated = runtime_project_root_scoped(selected_root)
+
+    assert decorated.__name__ == selected_root.__name__
+    assert decorated.__doc__ == selected_root.__doc__
+    assert decorated.__wrapped__ is selected_root
 
 
 def test_runtime_project_root_scope_rejects_non_graph_argument() -> None:

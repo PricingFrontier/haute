@@ -1950,9 +1950,10 @@ class TestCountSourceRowsForNode:
         result = _count_source_rows_for_node(node)
         assert result is None
 
-    def test_api_input_jsonl_uncached_file_exists(self, tmp_path) -> None:
-        """API_INPUT .jsonl with no cache but file exists uses line count."""
-        path = tmp_path / "data.jsonl"
+    @pytest.mark.parametrize("suffix", [".jsonl", ".ndjson", ".NDJSON"])
+    def test_api_input_ndjson_uncached_file_exists(self, tmp_path, suffix: str) -> None:
+        """API_INPUT NDJSON aliases with no cache use a physical line count."""
+        path = tmp_path / f"data{suffix}"
         path.write_bytes(b'{"a":1}\n{"a":2}\n{"a":3}\n{"a":4}\n')
         node = _make_source_node(
             node_type="apiInput",

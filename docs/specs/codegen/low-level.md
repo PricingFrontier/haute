@@ -378,3 +378,23 @@ Remaining code-generation improvement work is tracked in the
   parser fixtures are rewritten around the retained nodes. Add tests for cache-mode fields,
   branch-specific configs, code-before-return placement, path anchoring, multiple I/O nodes, and
   an exact search assertion that generated source never contains removed decorators.
+
+## Retained input sidecar execution parity
+
+- `_retained_api_input_template` takes a sidecar path and emits a call to
+  `resolve_api_input_from_config(config_path, base_dir=Path(__file__).parent)`.
+  It no longer emits `orjson` config loading, a portable baked data path, or a
+  baked flat-file config literal.
+- The retained-input resolver combines that concrete pipeline directory with
+  the execution-scoped project root. Both generated and canvas execution use
+  the same candidate order and enforce containment against that root, including
+  when the selected pipeline is outside the process working directory.
+- The source-code extractor recognises
+  `resolve_api_input_from_config(...)` as generated load boilerplate, so a
+  parse/save/reload cycle does not copy that call into the user's `code` field.
+- `_gen_external_file` obtains its config path with `config_path_for_node` and
+  emits `load_external_object_from_config`; `_RETAINED_EXTERNAL` does not
+  interpolate `path`, `fileType`, or `modelClass` into the body.
+- The `graph_utils` facade exports both helpers. Builder tests assert the
+  absence of baked data paths and execute generated functions after
+  sidecar-only edits.

@@ -9,8 +9,10 @@ from unittest.mock import MagicMock, patch
 import polars as pl
 import pytest
 
+from haute._api_input_schema import is_json_api_input_path
 from haute._execution_context import ExecutionProfile
 from haute._io import (
+    UnsupportedSourceFormatError,
     _load_cached,
     build_data_source_adapter,
     load_external_object,
@@ -159,6 +161,16 @@ class TestReadSourceJSONL:
         result = read_source(str(path)).collect()
         assert result["v"].to_list() == [10, 20]
 
+    def test_reads_ndjson_alias(self, tmp_path: Path) -> None:
+        path = tmp_path / "data.ndjson"
+        pl.DataFrame({"v": [10, 20]}).write_ndjson(str(path))
+        result = read_source(str(path)).collect()
+        assert result["v"].to_list() == [10, 20]
+
+    @pytest.mark.parametrize("path", ["data.ndjson", "DATA.NDJSON"])
+    def test_ndjson_alias_uses_json_api_input_codec(self, path: str) -> None:
+        assert is_json_api_input_path(path) is True
+
 
 class TestReadSourceProjectionAndSchema:
     def test_parquet_projection_pushes_into_scan_plan(self, tmp_path: Path) -> None:
@@ -297,6 +309,12 @@ class TestReadSourceErrors:
     def test_unknown_extension_raises(self) -> None:
         with pytest.raises(ValueError, match="Unsupported file type: .txt"):
             read_source("data.txt")
+
+    def test_compound_unsupported_extension_reports_the_compound_suffix(self) -> None:
+        with pytest.raises(UnsupportedSourceFormatError) as exc:
+            read_source("quotes.csv.gz")
+        assert exc.value.suffix == ".csv.gz"
+        assert ".csv.gz" in str(exc.value)
 
 
 # ---------------------------------------------------------------------------

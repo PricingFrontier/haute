@@ -1420,8 +1420,8 @@ class TestAdditionalPolarsCodeScaffoldSanitisation:
 
     def test_external_file_exec_strips_stale_loader_scaffold(self, tmp_path, monkeypatch):
         monkeypatch.setattr(
-            "haute._builders.load_external_object",
-            lambda _path, _file_type, _model_class: {"ok": True},
+            "haute._builders.load_external_object_from_config",
+            lambda _config, *, base_dir=None: {"ok": True},
         )
         model_path = tmp_path / "model.json"
         model_path.write_text(json.dumps({"ok": True}))

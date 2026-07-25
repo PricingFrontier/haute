@@ -182,8 +182,11 @@ The spawned solver thread updates progress to "Solving", then — inside
   `QuoteGrid`'s quote population passed in for cross-validation); constructs
   `price_contour.RatebookOptimiser(objective, constraints, factor_columns, max_iter,
   max_cd_iterations, cd_tolerance, tolerance)` and solves; after solving, computes per-level
-  quote-exposure counts and serialises the factor tables into their canonical, apply-joinable
-  level keys (`_ratebook_factor_level_counts_from_artifact` → `_serialise_ratebook_factor_tables`, see Edge cases).
+  quote-exposure counts and originating dtype descriptors, then serialises the factor tables
+  into their canonical, apply-joinable level keys
+  (`_ratebook_factor_level_counts_from_artifact` /
+  `_ratebook_factor_dtypes_from_artifact` → `_serialise_ratebook_factor_tables`, see Edge
+  cases).
 
 Both call the shared `_finalize_solve_result`, which builds the API-facing
 `result_dict`, optionally computes an efficient frontier inline (non-fatal on failure — a
@@ -359,22 +362,34 @@ Two artifact families, both rooted under a resolved subdirectory of the OS temp 
 
 `price-contour` emits factor-table level labels from the verbatim string form of the source
 value (e.g. a Float64 `25.0` becomes the label `"25.0"`), while the runtime rating join this
-component's own apply path uses canonicalises keys via `normalise_rating_key`
-([rating](../rating/high-level.md); `25.0` and `"25"` canonicalise to the same key). To make a
+component's own apply path canonicalises keys via
+`normalise_rating_key(value, originating_dtype)` ([rating](../rating/high-level.md)). To make a
 saved ratebook artifact's factor tables actually joinable at apply time,
-`_canonical_ratebook_table_level` tries every combination of verbatim vs.
-float-collapsed candidate forms for each component of a (possibly composite) level label,
-against the counted level keys actually observed in the solved frame, and keeps the combination
-that collapses the *fewest* components — proven (per the function's docstring) to always be
-unique, since a canonical key never itself contains a float's verbatim `"25.0"`-shaped form. A
-level that matches zero candidate combinations, or — which the code treats as structurally
-impossible outside of stale/mismatched inputs — ties on the fewest-collapsed-components rule,
-raises `ValueError` rather than guessing.
+`_canonical_ratebook_table_level` receives the exact ordered factor dtypes read from the same
+persisted solved-factor schema as the counted levels. It splits a composite solver label into
+components, coerces each component directly through its corresponding originating dtype, joins
+the canonical components, and requires that exact key to exist in the counted keyset. In
+particular, a widened Python label such as a Float32 source value emitted as
+`"0.10000000149011612"` is reconstructed through Float32 and saves as `"0.1"`. The serializer
+does not infer Float64 from the Python value and does not search verbatim/collapsed candidates
+or apply a minimum-collapse tie-break. A level with the wrong component count or no exact
+counted key raises `ValueError` rather than guessing.
 
 `_ratebook_factor_level_counts` computes the per-level quote-exposure counts this
 canonicalisation is checked against, and deliberately raises rather than merging if two distinct
 raw level tuples canonicalise to the same key — a last-writer-wins merge here would silently
 drop a solved rate.
+
+`_ratebook_factor_dtypes_from_artifact` reads the solved factor parquet schema and stores
+`factor_dtypes[table]` as an ordered list of
+`{"column": <name>, "dtype": <rating dtype descriptor>}` records in the job result and every
+saved/logged artifact. The same descriptor records are required by factor-table serialization
+and converted back to exact Polars dtypes before canonicalising solver labels.
+`_apply_ratebook` requires one descriptor record per join factor, validates the order/name and
+exact descriptor against its once-resolved apply schema, and raises
+`RatingFactorDtypeContractError` before lookup construction when metadata is absent or differs.
+It does not coerce an apply column to the saved dtype and does not run legacy artifacts through
+the neutral-miss path.
 
 ### Trace explainability (`src/haute/_optimiser_apply_explainability.py`)
 
@@ -449,8 +464,8 @@ bounded Python batch scan for cross-dtype/NaN-tolerant matching if the fast pred
 finds nothing), then walks the artifact's `factor_tables` in order, for each factor: resolves
 whether the table is a composite (joins on multiple columns, split via
 `_split_ratebook_level`) or single-column table, looks up the matching entry via
-`_match_ratebook_entry` (keys normalised through the same `normalise_rating_key` used at
-runtime; ties resolved by walking entries in *reverse* to mirror the engine's
+`_match_ratebook_entry` (keys normalised through the same dtype descriptor and
+`normalise_rating_key` used at runtime; ties resolved by walking entries in *reverse* to mirror the engine's
 `unique(keep="last")` deduplication), applies the multiplicative neutral element `1.0` and marks
 the factor `unseen` if no entry matches (the engine's own loud-neutral miss-path behaviour, not
 an error), and accumulates a running product. The ladder is reconciled against the actual output
@@ -677,6 +692,9 @@ timeout=30.0)` (posts to `/frontier`, asserts the immediate response is `status:
   ratebook path (`TestMirrorAgreesWithEngine`) and a real end-to-end solver run
   (`TestRealSolverEndToEnd`) produce identical priced factors, plus float-emitted-level
   canonicalisation pinning (`TestFloatEmittedLevelsCanonicalisedAtSave`).
+- **`tests/test_rating_dtype_contract.py`** + **`tests/fixtures/rating_key_cases.py`** —
+  the shared rating-dtype matrix, mandatory descriptor persistence, malformed/legacy-metadata
+  rejection, and exact save/apply dtype mismatch errors.
 - **`tests/test_optimiser_io.py`** — `load_optimiser_artifact`/`load_mlflow_optimiser_artifact`
   caching behaviour (content-hash cache hit/miss for file loads across the two MLflow source
   types) and version resolution.
@@ -690,9 +708,11 @@ timeout=30.0)` (posts to `/frontier`, asserts the immediate response is `status:
   that completed optimiser jobs get their heavy runtime objects slimmed and owned artifacts
   evicted (a job-store/memory-discipline test, not a wall-clock benchmark).
 
-Known coverage gaps: no property-based/fuzz testing of the ratebook level-canonicalisation
-tie-breaking logic beyond the specific fixture cases in
-`test_optimiser_ratebook_apply_agreement.py` and `test_optimiser_apply_trace_enrichment.py`.
+Known coverage gap: there is no property-based/fuzz testing of the
+price-contour-emitted level-label tie-breaking logic beyond the specific fixture cases in
+`test_optimiser_ratebook_apply_agreement.py` and
+`test_optimiser_apply_trace_enrichment.py`; the dtype agreement matrix itself is exhaustive
+over the supported dtype families.
 
 > NOTE: repository-wide reference checks find no caller in `src/` or `tests/` for
 > `OptimiserSolveService._build_streaming_auto_range_chain_functions` or

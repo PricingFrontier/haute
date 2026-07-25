@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from haute._edge_join import build_edge_join_boundary_target_roles
+from haute._graph_utils import _edge_id
 from haute._logging import get_logger
 from haute._types import GraphEdge, GraphNode, PipelineGraph
 
@@ -59,23 +60,35 @@ def flatten_graph(
         th = edge.targetHandle or ""
         new_sh = edge.sourceHandle
         new_th = edge.targetHandle
+        new_source_port = edge.sourcePort
+        new_target_port = edge.targetPort
+        boundary_rewired = False
 
         if src in submodel_node_ids and sh:
             # e.g. sourceHandle="out__frequency_model" → source="frequency_model"
             src = sh.removeprefix("out__")
             eid = f"e_{src}_{tgt}"
-            new_sh = None
+            new_sh = edge.sourcePort
+            new_source_port = None
+            boundary_rewired = True
 
         if tgt in submodel_node_ids and th:
             # e.g. targetHandle="in__frequency_model" → target="frequency_model"
             original_tgt = tgt
             tgt = th.removeprefix("in__")
             eid = f"e_{src}_{tgt}"
-            new_th = edge_join_boundary_target_roles.get((original_tgt, tgt, src))
+            new_th = edge.targetPort
+            if new_th is None:
+                new_th = edge_join_boundary_target_roles.get((original_tgt, tgt, src))
+            new_target_port = None
+            boundary_rewired = True
 
         # Skip edges that still reference a submodel node (shouldn't happen)
         if src in submodel_node_ids or tgt in submodel_node_ids:
             continue
+
+        if boundary_rewired and new_source_port is None and new_target_port is None:
+            eid = _edge_id(src, tgt, new_sh, new_th)
 
         rewired.append(
             GraphEdge(
@@ -84,14 +97,32 @@ def flatten_graph(
                 target=tgt,
                 sourceHandle=new_sh,
                 targetHandle=new_th,
+                sourcePort=new_source_port,
+                targetPort=new_target_port,
             )
         )
 
-    # Deduplicate edges by (source, target, sourceHandle, targetHandle)
-    seen: set[tuple[str, str, str | None, str | None]] = set()
+    # Include authored handles still hidden behind an unflattened boundary.
+    seen: set[
+        tuple[
+            str,
+            str,
+            str | None,
+            str | None,
+            str | None,
+            str | None,
+        ]
+    ] = set()
     deduped: list[GraphEdge] = []
     for e in rewired:
-        key = (e.source, e.target, e.sourceHandle, e.targetHandle)
+        key = (
+            e.source,
+            e.target,
+            e.sourceHandle,
+            e.targetHandle,
+            e.sourcePort,
+            e.targetPort,
+        )
         if key not in seen:
             seen.add(key)
             deduped.append(e)

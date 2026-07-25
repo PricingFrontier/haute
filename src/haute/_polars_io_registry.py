@@ -99,6 +99,19 @@ class IoFormat:
     # ``arguments`` dict (the first positional(s) of the polars callables).
     source_owned_args: frozenset[str] = frozenset()
 
+    def __post_init__(self) -> None:
+        for extension in self.extensions:
+            if (
+                len(extension) < 2
+                or not extension.startswith(".")
+                or extension != extension.casefold()
+                or "/" in extension
+                or "\\" in extension
+            ):
+                raise ValueError(
+                    f"{self.name} extension {extension!r} must be a lower-case leading-dot suffix"
+                )
+
 
 FORMATS: tuple[IoFormat, ...] = (
     IoFormat(

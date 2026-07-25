@@ -82,6 +82,24 @@ def _manifest_entry(label: str, *, parquet: str | None = None) -> dict[str, Any]
     }
 
 
+def test_build_lock_registry_releases_inactive_cache_directories(tmp_path: Path) -> None:
+    import gc
+    import os
+    import weakref
+
+    cache_dir = tmp_path / "one-off-cache"
+    lock = shred_mod._build_lock_for(cache_dir)
+    key = os.path.normcase(str(cache_dir.resolve()))
+    reference = weakref.ref(lock)
+    assert shred_mod._BUILD_LOCKS[key] is lock
+
+    del lock
+    gc.collect()
+
+    assert reference() is None
+    assert key not in shred_mod._BUILD_LOCKS
+
+
 def test_manifest_structure_rejects_bad_labels_and_label_sets() -> None:
     empty_label = _cache_manifest_structure_failure({"tables": [_manifest_entry("")]})
     assert empty_label == _CacheProbeFailure("malformed_manifest")

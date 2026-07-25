@@ -237,6 +237,34 @@ class RatingFactorMissingError(SchemaMismatchError):
         super().__init__(message, table=table, factor=factor)
 
 
+class RatingFactorDtypeContractError(SchemaMismatchError):
+    """Raised when a saved ratebook dtype contract cannot be applied safely."""
+
+    error_code = "rating_factor_dtype_contract"
+    public_fields = ("table", "factor", "saved_dtype", "input_dtype")
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        table: str,
+        factor: str,
+        saved_dtype: dict[str, Any] | None,
+        input_dtype: dict[str, Any] | None,
+    ) -> None:
+        self.table = table
+        self.factor = factor
+        self.saved_dtype = saved_dtype
+        self.input_dtype = input_dtype
+        super().__init__(
+            message,
+            table=table,
+            factor=factor,
+            saved_dtype=saved_dtype,
+            input_dtype=input_dtype,
+        )
+
+
 class RatingExtremaUndefinedError(ExecutionError):
     """Raised when a min/max rating combination has no defined value."""
 

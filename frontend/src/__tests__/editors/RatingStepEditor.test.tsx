@@ -1522,6 +1522,71 @@ describe("RatingStepEditor", () => {
     ]))
   })
 
+  it("retains selected factor dtype metadata when adding a factor", () => {
+    const onUpdate = vi.fn()
+    render(
+      <RatingStepEditor
+        config={{
+          tables: [{
+            name: "T1",
+            factors: ["age_band"],
+            factorDtypes: { age_band: { kind: "Categorical" } },
+            outputColumn: "age_factor",
+            defaultValue: "1.0",
+            entries: [],
+          }],
+        }}
+        onUpdate={onUpdate}
+        inputSources={[]}
+        accentColor="#14b8a6"
+      />,
+      { allNodes: BANDING_NODES },
+    )
+
+    fireEvent.change(screen.getAllByRole("combobox").at(-1)!, { target: { value: "region" } })
+
+    expect(onUpdate).toHaveBeenCalledWith("tables", expect.arrayContaining([
+      expect.objectContaining({
+        factors: ["age_band", "region"],
+        factorDtypes: { age_band: { kind: "Categorical" } },
+      }),
+    ]))
+  })
+
+  it("removes deselected factor dtype metadata with the factor", () => {
+    const onUpdate = vi.fn()
+    const { container } = render(
+      <RatingStepEditor
+        config={{
+          tables: [{
+            name: "T1",
+            factors: ["age_band", "region"],
+            factorDtypes: {
+              age_band: { kind: "Categorical" },
+              region: { kind: "String" },
+            },
+            outputColumn: "age_factor",
+            defaultValue: "1.0",
+            entries: [],
+          }],
+        }}
+        onUpdate={onUpdate}
+        inputSources={[]}
+        accentColor="#14b8a6"
+      />,
+      { allNodes: BANDING_NODES },
+    )
+
+    fireEvent.click(container.querySelector("button.icon-danger-btn")!)
+
+    expect(onUpdate).toHaveBeenCalledWith("tables", expect.arrayContaining([
+      expect.objectContaining({
+        factors: ["region"],
+        factorDtypes: { region: { kind: "String" } },
+      }),
+    ]))
+  })
+
   it("renders 3-way editor with slice dimension when 3 factors", () => {
     const config = {
       tables: [{

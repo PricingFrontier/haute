@@ -46,7 +46,7 @@
  * eliminates that entirely.
  */
 import { create } from "zustand"
-import type { Node, Edge } from "@xyflow/react"
+import type { Node } from "@xyflow/react"
 import {
   EMPTY_SNAPSHOT,
   serializeSnapshot,
@@ -55,12 +55,13 @@ import {
 } from "../utils/graphSnapshot"
 import { shallowNodeDataHash } from "../utils/shallowNodeHash"
 import { nodeData } from "../types/node"
+import type { PipelineEdge } from "../types/node"
 
 // ─── Types ───────────────────────────────────────────────────────────────
 
 export interface GraphSnapshot {
   nodes: Node[]
-  edges: Edge[]
+  edges: PipelineEdge[]
   preamble: string
   /** Present on snapshots created by this store; optional for legacy history entries. */
   submodels?: Record<string, unknown>
@@ -88,7 +89,7 @@ export const isVcEntry = (e: HistoryEntry): e is VcHistoryEntry =>
 export interface GraphStore {
   // State
   nodes: Node[]
-  edges: Edge[]
+  edges: PipelineEdge[]
   preamble: string
   /** History-only metadata; excluded from persisted dirty fingerprints. */
   submodels: Record<string, unknown>
@@ -107,7 +108,7 @@ export interface GraphStore {
 
   // History-aware actions
   setNodes: (updater: Node[] | ((nds: Node[]) => Node[])) => void
-  setEdges: (updater: Edge[] | ((eds: Edge[]) => Edge[])) => void
+  setEdges: (updater: PipelineEdge[] | ((eds: PipelineEdge[]) => PipelineEdge[])) => void
   /**
    * Mutate nodes AND edges in a single history-aware step: one snapshot, one
    * `set()`. Use this for any gesture that touches both (delete, paste, cut)
@@ -117,18 +118,18 @@ export interface GraphStore {
    */
   setNodesAndEdges: (
     nodes: Node[] | ((nds: Node[]) => Node[]),
-    edges: Edge[] | ((eds: Edge[]) => Edge[]),
+    edges: PipelineEdge[] | ((eds: PipelineEdge[]) => PipelineEdge[]),
   ) => void
   setNodesAndEdgesAndSubmodels: (
     nodes: Node[] | ((nds: Node[]) => Node[]),
-    edges: Edge[] | ((eds: Edge[]) => Edge[]),
+    edges: PipelineEdge[] | ((eds: PipelineEdge[]) => PipelineEdge[]),
     submodels: Record<string, unknown>,
   ) => void
   setPreamble: (value: string) => void
 
   // Raw actions (skip history push — for mid-drag, WS sync, load)
   setNodesRaw: (nodes: Node[] | ((nds: Node[]) => Node[])) => void
-  setEdgesRaw: (edges: Edge[] | ((eds: Edge[]) => Edge[])) => void
+  setEdgesRaw: (edges: PipelineEdge[] | ((eds: PipelineEdge[]) => PipelineEdge[])) => void
   setSubmodelsRaw: (submodels: Record<string, unknown>) => void
   setPreambleRaw: (value: string) => void
 
@@ -276,7 +277,7 @@ function hasOnlyNodePositionChanges(current: Node[], next: Node[]): boolean {
   return positionChanged
 }
 
-function hasOnlyEdgeUiFieldChanges(current: Edge[], next: Edge[]): boolean {
+function hasOnlyEdgeUiFieldChanges(current: PipelineEdge[], next: PipelineEdge[]): boolean {
   if (current.length !== next.length) return false
 
   let changed = false
@@ -371,7 +372,11 @@ export function computePanelContextFingerprint(
   return `nodes:${nodeParts.join("|")}||edges:${edgeParts.join("|")}`
 }
 
-function computePersistedFingerprint(nodes: Node[], edges: Edge[], preamble: string): string {
+function computePersistedFingerprint(
+  nodes: Node[],
+  edges: PipelineEdge[],
+  preamble: string,
+): string {
   return serializeSnapshot({ nodes, edges, preamble })
 }
 
@@ -417,7 +422,7 @@ function computeDirtyForPositionOnlyNodes(
 function computePanelContextPatch(
   state: Pick<GraphStore, "panelContextFingerprint" | "panelContextVersion">,
   nodes: Node[],
-  edges: Edge[],
+  edges: PipelineEdge[],
 ): Partial<Pick<GraphStore, "panelContextFingerprint" | "panelContextVersion">> {
   const nextFingerprint = computePanelContextFingerprint(nodes, edges)
   return nextFingerprint === state.panelContextFingerprint

@@ -1074,6 +1074,75 @@ describe("useEdgeHandlers", () => {
     expect(params.fetchPreview).not.toHaveBeenCalled()
   })
 
+  it("onNodeClick skips automatic preview for an API input without tables[]", () => {
+    const params = makeParams()
+    const node = {
+      id: "quotes",
+      position: { x: 0, y: 0 },
+      data: {
+        label: "Quotes",
+        nodeType: NODE_TYPES.API_INPUT,
+        config: { path: "data/quotes.json" },
+      },
+    } as Node
+    const event = {} as React.MouseEvent
+    const { result } = renderHook(() => useEdgeHandlers(params))
+
+    act(() => {
+      result.current.onNodeClick(event, node)
+    })
+
+    expect(params.setSelectedNode).toHaveBeenCalledWith(node)
+    expect(params.clearTrace).toHaveBeenCalled()
+    expect(params.cancelPreview).toHaveBeenCalledOnce()
+    expect(params.setPreviewData).toHaveBeenCalledWith(null)
+    expect(params.fetchPreview).not.toHaveBeenCalled()
+  })
+
+  it("onNodeClick previews an API input once tables[] exists", () => {
+    const params = makeParams()
+    const node = {
+      id: "quotes",
+      position: { x: 0, y: 0 },
+      data: {
+        label: "Quotes",
+        nodeType: NODE_TYPES.API_INPUT,
+        config: { path: "data/quotes.json", tables: [] },
+      },
+    } as Node
+    const event = {} as React.MouseEvent
+    const { result } = renderHook(() => useEdgeHandlers(params))
+
+    act(() => {
+      result.current.onNodeClick(event, node)
+    })
+
+    expect(params.fetchPreview).toHaveBeenCalledWith(node, {})
+    expect(params.setPreviewData).not.toHaveBeenCalled()
+  })
+
+  it("onNodeClick previews a flat-file API input without tables[]", () => {
+    const params = makeParams()
+    const node = {
+      id: "quotes",
+      position: { x: 0, y: 0 },
+      data: {
+        label: "Quotes",
+        nodeType: NODE_TYPES.API_INPUT,
+        config: { path: "data/quotes.parquet" },
+      },
+    } as Node
+    const event = {} as React.MouseEvent
+    const { result } = renderHook(() => useEdgeHandlers(params))
+
+    act(() => {
+      result.current.onNodeClick(event, node)
+    })
+
+    expect(params.fetchPreview).toHaveBeenCalledWith(node, {})
+    expect(params.setPreviewData).not.toHaveBeenCalled()
+  })
+
   it("onNodeClick skips automatic preview for submodel port nodes typed by React Flow", () => {
     const params = makeParams()
     const node = {

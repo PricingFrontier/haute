@@ -6,6 +6,7 @@
 |---|---|
 | `src/haute/parser.py` | Public entry points `parse_pipeline_file` / `parse_submodel_file` / `parse_pipeline_source`. Orchestrates the AST-vs-regex-fallback branch, pipeline metadata/node/edge extraction, submodel resolution + merge, graph-shape validation, and warning aggregation for a whole pipeline `.py` file. |
 | `src/haute/_parser_helpers.py` | Pure re-export facade. Aggregates `src/haute/_ast_helpers.py` and `src/haute/_code_extraction.py` from [codegen](../codegen/low-level.md), plus `src/haute/_config_builder.py` and `src/haute/_graph_builders.py` from [pipeline-config](../pipeline-config/low-level.md), behind one import surface. Contains **no logic of its own** — every name in its `__all__` is imported, not defined, here. Neither `src/haute/parser.py` nor `src/haute/_parser_regex.py` imports the facade; its consumers are tests that retain it as a stable import/patch target. |
+| `src/haute/_parser_conservation.py` | Shared fail-loud acceptance gate for both parser paths. Verifies that parsed root node IDs, ordered edge/handle identities, submodel references, and cross-boundary endpoints conserve the authored structure; also builds the deterministic missing-submodel diagnostic. |
 | `src/haute/_parser_regex.py` | `fallback_parse` and its helpers: a regex-anchored + AST-fragment recovery parser used when `ast.parse` fails on the whole file. Locates `@pipeline.<type>` decorator blocks, `pipeline.connect()`/`pipeline.submodel()` call sites, and pipeline metadata textually, then re-parses each recovered fragment with real `ast` wherever possible. |
 | `src/haute/_parser_submodels.py` | `extract_submodel_calls` / `parse_submodel_source` / `merge_submodels`: resolves `pipeline.submodel("path")` references, parses each referenced submodel file into its own `PipelineGraph`, and merges child graphs into the parent (hierarchical placeholder or flattened). |
 | `src/haute/_expression_parser.py` | `parse_expression` / `evaluate_expression` / `parse_expression_chain` and their supporting classes: AST-based conversion of a Polars `with_columns()` expression to human-readable text (`_ExprConverter`) and to a concrete, Polars-mirroring value (`_ExprEvaluator` / `_BranchTrackingEvaluator`). |
@@ -48,9 +49,11 @@
 → else extract pipeline meta / decorated nodes / connect edges / preamble / preserved blocks by
 importing their implementation modules directly (not through the `_parser_helpers` facade) →
 collect labels from any nodes already carrying `_load_error` into a graph-level `warning` → if any
-`pipeline.submodel()` calls were found and a base dir is available,
-resolve + parse each submodel file and call `_parser_submodels.merge_submodels` → run
-`validate_pipeline_graph_shape_contracts` (owned outside this component) → log `pipeline_parsed`.
+`pipeline.submodel()` calls were found, require `_base_dir` or `_submodel_base_dir` (otherwise
+raise with every unresolved authored path), resolve + parse each submodel file, reject repeated
+references to the same resolved file, and call `_parser_submodels.merge_submodels` → run
+the structure-conservation gate → `validate_pipeline_graph_shape_contracts` (owned outside this
+component) → log `pipeline_parsed`.
 
 **`fallback_parse`** (`_parser_regex.py`): recover pipeline metadata via
 `_RE_PIPELINE_META_ANCHOR` + a balanced-paren scan (`_scan_call_end`) → find every
@@ -69,8 +72,9 @@ the shared `_build_edges`/`_build_rf_nodes` helpers, so both parse paths emit id
 output → recover `# haute:preserve` blocks via `_extract_preserved_blocks` — a pure line scan, so
 it works unchanged on the syntactically-broken source that triggered the fallback in the first
 place — and populate `preserved_blocks` on the result, mirroring the healthy path's preamble
-extraction → optionally recover and merge submodels via `_recover_submodels`, mirroring the
-healthy path's submodel step.
+extraction → recover and merge every authored submodel via `_recover_submodels`, collecting
+unrecoverable/missing references into one `ParseError` rather than skipping individual calls →
+run the same structure-conservation gate as the healthy path.
 
 > NOTE: prior to this fix, `fallback_parse` built its `PipelineParseResult` without
 > `preserved_blocks` at all, so any file that hit the regex-fallback path (e.g. a save while the
@@ -84,11 +88,10 @@ tolerated, for pre-port and ported edge forms) and rewired via `rewire_edges`/`c
 (owned by [submodels](../submodels/low-level.md)) — then, only if `flatten=True`, hands the
 hierarchical graph to `flatten_graph` (`_flatten.py`) to dissolve every placeholder at once. This
 keeps a single source of truth for the flatten algorithm rather than letting it exist in two
-places. If a submodel file being parsed itself contains a `pipeline.submodel(...)` call, that
-nested call is detected and skipped with a `nested_submodel_ignored` warning log rather than
-recursed into or raised as an error — nesting is one level deep by construction (see
-[submodels](../submodels/high-level.md#design-rationale)), so this is the parser's half of
-preventing a cycle, not a TODO.
+places. If a submodel file being parsed itself contains a `pipeline.submodel(...)` call, parsing
+raises `ParseError` naming the containing file and every nested reference. Nesting remains one
+level deep by construction (see [submodels](../submodels/high-level.md#design-rationale)); the
+parser enforces that producer contract rather than returning a truncated child graph.
 
 **`parse_expression`** (`_expression_parser.py`): strip a leading BOM → `_cached_parse(code)` →
 bail to `_opaque(...)` on empty input or `SyntaxError` → `_has_control_flow_wrapping_target`: if
@@ -178,14 +181,39 @@ appended before the column that depends on it) → return the parsed expressions
   `(\npipeline.connect(...)\n)` parenthesised statement (still top-level, should behave like the
   healthy AST parser) from an assignment/list/dict continuation like
   `disabled = [\npipeline.connect(...)\n]` (must stay rejected — it is not a top-level call).
-- **Nested submodels capped at one level**: a submodel file's own `pipeline.submodel(...)` calls
-  are detected and ignored with a graph-level warning (`parse_submodel_source`), not recursed into.
-- **Missing submodel file, no warning**: `sm_filepath.is_file()` is checked before parsing a
-  resolved submodel path; a `False` result silently skips that submodel in both the healthy and
-  fallback merge paths.
-  > NOTE: this is the one place in the component that drops content without any user-visible
-  > signal — contrast with nested-submodel references (graph warning) and config-sidecar failures
-  > (`ConfigError`).
+- **Preamble boundaries are alias-aware**: a valid module uses AST statement line spans to stop
+  before an aliased or multiline `Pipeline(...)` construction; the syntax fallback recognises
+  both `import haute as <alias>` and `from haute import Pipeline as <alias>` textually so it
+  preserves the same user preamble without capturing the constructor.
+- **Nested submodels capped at one level**: a submodel file's own
+  `pipeline.submodel(...)` calls raise `ParseError` as a group; they are never recursed into or
+  omitted from an otherwise healthy-looking graph.
+- **Missing submodel files are aggregated**: all resolved paths are checked before merge. One or
+  more missing files produce one `ParseError` with deterministic `missing_paths` detail in
+  authored order.
+- **Submodel resolution roots are mandatory**: healthy in-memory parsing cannot conserve a
+  `pipeline.submodel()` reference without `_base_dir` or `_submodel_base_dir`, so it raises with
+  `unresolved_paths` instead of returning a root-only graph. `fallback_parse` always has a
+  resolution root: `_base_dir`, else `Path(source_file).parent`, else `Path.cwd()`.
+- **Repeated submodel files are diagnosed separately**: `build_unique_submodel_maps` groups
+  parsed children by resolved `PipelineGraph.source_file` before grouping by declared name. If
+  one file was authored more than once, the error reports that file and its reference spellings;
+  it does not claim that multiple files were involved.
+- **Submodel names are unique**: before inserting a parsed child graph, the parser compares its
+  declared pipeline name with every previously loaded child from a different file. A collision
+  raises with the shared name and all authored file references instead of overwriting a dictionary
+  entry.
+- **Implicit edges cross loaded submodel boundaries**: parser-private function parameter metadata
+  is retained only long enough for `merge_submodels` to infer root-to-child, child-to-root, and
+  child-to-child edges whose parameter name resolves to a loaded node id. Explicit connects still
+  suppress an inferred edge with the same endpoint pair. The metadata is not emitted in graph
+  payloads or generated source.
+- **Conservation is an acceptance gate**: the parser compares raw decorated-function ids with
+  graph-node ids; locally resolvable explicit edges with their source/target handles and inferred
+  parameter edges with the built edge set; dangling explicit endpoints with the loaded submodel
+  child-id set; and authored submodel paths with merged submodel metadata. Exact duplicate
+  `connect()` identities are checked explicitly and raise the dedicated duplicate-edge diagnostic;
+  every other difference raises `ParseError` before graph-shape validation or return.
 
 ## Error handling
 
@@ -195,11 +223,15 @@ appended before the column that depends on it) → return the parsed expressions
 - **`ParseError`** (raised, not caught, by this component) for: an unclosed
   `pipeline.connect()`/`pipeline.submodel()`/`Pipeline(...)`/decorator-argument-list scan
   (`_scan_call_end` exhausts the source without balancing); a decorator/submodel/metadata call
-  with trailing text after its closing paren; a decorator keyword argument or (healthy-path only)
-  `pipeline.submodel()` path that is not a literal (only Python literals and the sanctioned
-  `Contract(...)` constructor are resolvable at parse time); `**kwargs` expansion in a decorator
-  in the regex fallback; an `async def` pipeline node function; a config sidecar folder present
-  for a node type with no matching `config=` kwarg (`_sidecar_required_error`, defined in
+  with trailing text after its closing paren; a decorator keyword argument or
+  `pipeline.submodel()` path that is not a literal (on both healthy and fallback paths; only
+  Python literals and the sanctioned `Contract(...)` constructor are resolvable at parse time);
+  `**kwargs` expansion in a decorator in the regex fallback; an `async def` pipeline node
+  function; a syntactically invalid referenced submodel file; a missing submodel file; a
+  submodel reference without a resolution root; a repeated resolved submodel file; duplicate
+  declared submodel names across different files; nested submodel references; an exact duplicate
+  edge identity; a structure-conservation mismatch; or a config sidecar folder present for a node
+  type with no matching `config=` kwarg (`_sidecar_required_error`, defined in
   `src/haute/_config_builder.py` and owned by
   [pipeline-config](../pipeline-config/low-level.md), but raised from this component's fallback
   path).
@@ -242,8 +274,9 @@ Tests live under `tests/`, split by concern:
   `merge_submodels`, and cross-boundary-edge reconstruction.
 - **`test_parser_conservation.py`** — regression tests asserting that parsing (and the implicit
   regeneration path) conserves source structure: boilerplate, docstrings, parameter buckets, node
-  function shape, alias awareness, implicit-edge dedup, and parity between the fallback scan/
-  submodel-recovery/contract-validation and the healthy path.
+  function shape, alias awareness, implicit-edge dedup, exact node/edge/handle/submodel identity,
+  aggregated missing/unrecoverable submodel diagnostics, duplicate submodel-name rejection, and
+  parity between the fallback scan/submodel-recovery/contract-validation and the healthy path.
 - **`test_parser_fail_loudly.py`** — a fail-loud sweep pinning config-path failures, stale
   instance mapping, submodel cross-boundary handle validation, extend-path staleness, and empty
   Polars code to *raise* rather than silently degrade.

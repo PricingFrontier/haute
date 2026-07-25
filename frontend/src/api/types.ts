@@ -2,12 +2,13 @@
 
 // Re-export canonical types from their source locations
 import type { BackendNodeStatus, ColumnInfo } from "../types/node"
+import type { PipelineEdge } from "../types/node"
 export type { BackendNodeStatus, ColumnInfo, NodeStatus } from "../types/node"
 export type { TraceResult, TraceStep, TraceSchemaDiff } from "../types/trace"
 
 export interface PipelineGraph {
   nodes: import("@xyflow/react").Node[]
-  edges: import("@xyflow/react").Edge[]
+  edges: PipelineEdge[]
   pipeline_name?: string | null
   pipeline_description?: string | null
   preamble?: string | null
@@ -299,6 +300,12 @@ export interface WriteOutputResponse {
   execution_metrics?: ExecutionMetrics | null
 }
 
+export interface OutputDestinationResponse {
+  path: string
+  format: string
+  suffix_mismatch: boolean
+}
+
 /** Schema info returned by the schema endpoint. */
 export interface SchemaResult {
   path: string
@@ -444,10 +451,10 @@ export interface InputCacheCancelResponse {
 // Graph payload — internal to the API client layer
 // ---------------------------------------------------------------------------
 
-import type { Node, Edge } from "@xyflow/react"
+import type { Node } from "@xyflow/react"
 
 /** Graph payload accepted by most pipeline endpoints. */
-export type GraphPayload = { nodes: Node[]; edges: Edge[]; submodels?: Record<string, unknown>; preamble?: string }
+export type GraphPayload = { nodes: Node[]; edges: PipelineEdge[]; submodels?: Record<string, unknown>; preamble?: string }
 
 // ---------------------------------------------------------------------------
 // OUTPUT assemble dry-run (/api/output-assemble/dry-run)

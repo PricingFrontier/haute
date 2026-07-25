@@ -340,3 +340,62 @@ def test_banding_factor_dtypes_scoped_to_consumed_frame(
     assert set(dtypes) == {"policy_id", "driver_id", "main", "age_band"}
     # And the shared ancestor key resolves in the CONSUMED frame's dtype.
     assert dtypes["policy_id"] == pl.Float64
+
+
+def test_rating_factor_dtypes_scoped_to_consumed_frame(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Rating enrichment uses the same consumed-frame dtype scoping."""
+    config = copy.deepcopy(_api_input_config(project))
+    drivers_table = next(t for t in config["tables"] if t["label"] == "drivers")
+    next(c for c in drivers_table["columns"] if c["name"] == "policy_id")["type"] = "float"
+    build_per_port_cache(project, config, _json_cache_dir(project, "working"))
+    _preview_cache.invalidate()
+
+    graph = make_graph(
+        {
+            "nodes": [
+                {
+                    "id": "api",
+                    "data": {
+                        "label": "api",
+                        "nodeType": NodeType.API_INPUT.value,
+                        "config": config,
+                    },
+                },
+                {
+                    "id": "rating",
+                    "data": {
+                        "label": "rating",
+                        "nodeType": NodeType.RATING_STEP.value,
+                        "config": {"tables": []},
+                    },
+                },
+            ],
+            "edges": [
+                {
+                    "id": "e1",
+                    "source": "api",
+                    "target": "rating",
+                    "sourceHandle": "drivers",
+                },
+            ],
+        }
+    )
+
+    captured: dict[str, Any] = {}
+
+    def _spy_enrich_rating_step(*args: Any, **kwargs: Any) -> None:
+        captured["factor_input_dtypes"] = kwargs.get("factor_input_dtypes")
+        return None
+
+    import haute.trace as trace_mod
+
+    monkeypatch.setattr(trace_mod, "enrich_rating_step", _spy_enrich_rating_step)
+
+    execute_trace(graph, row_index=0, target_node_id="rating")
+
+    dtypes = captured["factor_input_dtypes"]
+    assert dtypes is not None
+    assert set(dtypes) == {"policy_id", "driver_id", "main", "age_band"}
+    assert dtypes["policy_id"] == pl.Float64

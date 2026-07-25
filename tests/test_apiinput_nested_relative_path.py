@@ -196,20 +196,22 @@ def test_output_dry_run_route_with_pipeline_relative_path(nested_project) -> Non
 
 def test_configured_pipeline_dir_reads_haute_toml(tmp_path, monkeypatch) -> None:
     """``_configured_pipeline_dir`` returns the parent of ``[project].pipeline``
-    from cwd's haute.toml — the pipeline-dir anchor the cache route also uses."""
+    from the selected project's haute.toml — the cache route's anchor."""
     from haute._builders import _configured_pipeline_dir
 
     monkeypatch.chdir(tmp_path)
+    set_project_root(tmp_path)
     (tmp_path / "haute.toml").write_text('[project]\npipeline = "rating/main.py"\n')
     assert _configured_pipeline_dir() == (tmp_path / "rating")
 
 
 def test_configured_pipeline_dir_none_without_toml(tmp_path, monkeypatch) -> None:
     """No haute.toml (or no ``[project].pipeline``) → ``None``, so resolution
-    falls back to source_file / cwd rather than guessing a pipeline dir."""
+    falls back to the selected project root rather than guessing a pipeline dir."""
     from haute._builders import _configured_pipeline_dir
 
     monkeypatch.chdir(tmp_path)
+    set_project_root(tmp_path)
     assert _configured_pipeline_dir() is None
 
 

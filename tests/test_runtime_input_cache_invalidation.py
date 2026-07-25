@@ -271,6 +271,7 @@ class TestPreviewRuntimeFileInvalidation:
                         {"__factor_group__": "Manchester", "optimal_scenario_value": 0.98},
                     ],
                 },
+                "factor_dtypes": {"region": [{"column": "region", "dtype": {"kind": "String"}}]},
             }
 
         artifact.write_text(json.dumps(_artifact(1.05)), encoding="utf-8")
