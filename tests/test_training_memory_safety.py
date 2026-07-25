@@ -541,11 +541,11 @@ def test_start_keeps_admission_held_after_successful_launch(
 
 def test_catboost_gpu_vram_limit_refuses_before_launch(
     client,
-    tmp_path: Path,
+    haute_scratch: Path,
 ) -> None:
     from tests.test_modelling_routes import _fast_training_params, _make_modelling_graph
 
-    data_path = tmp_path / "training.parquet"
+    data_path = haute_scratch / "training.parquet"
     pl.DataFrame(
         {
             "x1": [float(i) for i in range(20)],

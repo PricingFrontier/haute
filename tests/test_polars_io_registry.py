@@ -33,9 +33,9 @@ from tests.conftest import make_graph
 
 
 def test_partitioned_parquet_prunes_partition_and_columns_before_execution(
-    tmp_path: Path,
+    haute_scratch: Path,
 ) -> None:
-    dataset = tmp_path / "partitioned"
+    dataset = haute_scratch / "partitioned"
     for year, value in ((2024, 10), (2025, 20)):
         partition = dataset / f"year={year}"
         partition.mkdir(parents=True)

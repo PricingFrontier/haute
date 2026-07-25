@@ -146,7 +146,10 @@ def _source_and_transform_graph(
 @pytest.fixture()
 def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     """TestClient with cwd set to a temp directory and Databricks env set."""
+    from haute._sandbox import set_project_root
+
     monkeypatch.chdir(tmp_path)
+    set_project_root(tmp_path)
     monkeypatch.setenv("DATABRICKS_HOST", "https://test.cloud.databricks.com")
     monkeypatch.setenv("DATABRICKS_TOKEN", "dapi_test_token")
     (tmp_path / "main.py").write_text("")
