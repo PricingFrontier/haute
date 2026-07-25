@@ -52,9 +52,9 @@ def _isolate_json_cache(tmp_path, monkeypatch, _widen_sandbox_root):
 
     import haute._json_flatten as jf
     from haute._json_shred import build_per_port_cache
-    from haute._sandbox import set_project_root
 
-    set_project_root(Path(__file__).resolve().parents[1])
+    # Keep the root supplied by _widen_sandbox_root: this fixture executes
+    # both repository fixtures and absolute tmp_path-backed lifecycle graphs.
 
     cache_dir = str(tmp_path / "json_cache")
     monkeypatch.setattr(jf, "_CACHE_DIR", cache_dir)

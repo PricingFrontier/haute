@@ -231,9 +231,13 @@ Out of scope (owned by neighbouring components, linked where they exist):
   drag-carried JSON config and creates a node at the drop position; a
   malformed payload never creates a node with an empty config.
   Clicking a node opens/updates the inspector panel and, unless the node
-  type is non-previewable or a preview pane is about to render instead,
+  type is non-previewable, a preview pane is about to render instead, or a
+  JSON API-input has not yet acquired its required `tables[]` schema,
   triggers a debounced preview fetch (a longer debounce for Optimiser
-  nodes).
+  nodes). Selecting that incomplete API-input still opens its editor and
+  clears any prior node's preview, but does not issue a predictably failing
+  execution request; Infer Tables followed by an explicit refresh is the
+  normal first-preview flow.
 - **Pipeline load and save.** The pipeline loads once on mount with a
   cold-start retry policy; a backend-contract violation in the response
   throws before it reaches the graph, surfacing as a load-failure toast
