@@ -11,7 +11,8 @@
  * do not read from any store.  Consumers compose them with whatever
  * source of graph state they already hold.
  */
-import type { Node, Edge } from "@xyflow/react"
+import type { Node } from "@xyflow/react"
+import type { PipelineEdge } from "../types/node"
 
 // ---------------------------------------------------------------------------
 // Field stripping
@@ -42,7 +43,7 @@ function stripNodeUiFields(n: Node): Record<string, unknown> {
   return out
 }
 
-function stripEdgeUiFields(e: Edge): Record<string, unknown> {
+function stripEdgeUiFields(e: PipelineEdge): Record<string, unknown> {
   const out: Record<string, unknown> = {}
   for (const [k, v] of Object.entries(e as unknown as Record<string, unknown>)) {
     if ((REACT_FLOW_EDGE_UI_FIELDS as readonly string[]).includes(k)) continue
@@ -71,7 +72,7 @@ function stripGraphMetadataTransientFields(value: unknown): unknown {
     return stripNodeUiFields(record as unknown as Node)
   }
   if (typeof record.source === "string" && typeof record.target === "string") {
-    return stripEdgeUiFields(record as unknown as Edge)
+    return stripEdgeUiFields(record as unknown as PipelineEdge)
   }
 
   const stripped: Record<string, unknown> = {}
@@ -145,7 +146,7 @@ export function canonicalize(value: unknown): unknown {
  */
 export function serializeSnapshot(input: {
   nodes: readonly Node[]
-  edges: readonly Edge[]
+  edges: readonly PipelineEdge[]
   preamble: string
 }): string {
   return JSON.stringify(
@@ -164,13 +165,20 @@ export function serializeSnapshot(input: {
  */
 export function cloneGraphSnapshot(input: {
   nodes: readonly Node[]
-  edges: readonly Edge[]
+  edges: readonly PipelineEdge[]
   preamble: string
   submodels?: Record<string, unknown>
-}): { nodes: Node[]; edges: Edge[]; preamble: string; submodels: Record<string, unknown> } {
+}): {
+  nodes: Node[]
+  edges: PipelineEdge[]
+  preamble: string
+  submodels: Record<string, unknown>
+} {
   return {
     nodes: input.nodes.map((node) => cloneGraphValue(stripNodeUiFields(node)) as Node),
-    edges: input.edges.map((edge) => cloneGraphValue(stripEdgeUiFields(edge)) as Edge),
+    edges: input.edges.map(
+      (edge) => cloneGraphValue(stripEdgeUiFields(edge)) as PipelineEdge,
+    ),
     preamble: input.preamble,
     submodels: cloneGraphValue(
       stripGraphMetadataTransientFields(input.submodels ?? {}),

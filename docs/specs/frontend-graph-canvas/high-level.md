@@ -182,6 +182,10 @@ Out of scope (owned by neighbouring components, linked where they exist):
   preamble. History snapshots carry `submodels` alongside nodes/edges/
   preamble, and undo/redo restores all four together (older snapshots
   without the field restore an empty metadata map).
+- **Authored boundary ports survive the client.** `PipelineEdge` extends the React Flow edge shape
+  with optional `sourcePort`/`targetPort` fields used while a submodel placeholder occupies the
+  visible handle. Response parsing, edge normalisation, graph snapshots, and save payloads retain
+  those fields unchanged; they are persisted metadata, not React Flow presentation state.
 - **Undo/redo** operates over a single stack that can hold either a graph
   snapshot or a version-control history entry, so a branch switch and a
   graph edit interleave and reverse in the order they actually happened.
@@ -227,7 +231,9 @@ Out of scope (owned by neighbouring components, linked where they exist):
   edge-join wiring first — a broken edge-join blocks the save outright with
   an error toast, while broken config references only warn. A concurrent
   second save can never let an older response's `markSaved` clobber a newer
-  one's.
+  one's. Backend edge metadata that is not a React Flow UI-only field,
+  including authored submodel `sourcePort`/`targetPort`, remains present in
+  the captured save snapshot and outgoing graph payload.
 - **Preview fetching.** Selecting or refreshing a node debounces, then
   fetches its preview; a cache hit for the same structural version, source,
   and row limit paints instantly and skips the network call, otherwise

@@ -438,7 +438,58 @@ class TestFallbackSubmodelRecovery:
         ]
 
 
+class TestSubmodelResolutionRoot:
+    def test_in_memory_submodel_parse_without_base_fails_loudly(self) -> None:
+        source = textwrap.dedent(
+            """\
+            import haute
+
+            pipeline = haute.Pipeline("main")
+            pipeline.submodel("modules/scoring.py")
+            """
+        )
+
+        with pytest.raises(ParseError, match="source/base directory") as exc_info:
+            parse_pipeline_source(source)
+
+        assert exc_info.value.context["unresolved_paths"] == [
+            "modules/scoring.py",
+        ]
+
+
 class TestGraphStructureConservationGate:
+    def test_duplicate_connect_uses_specific_diagnostic(self) -> None:
+        source = textwrap.dedent(
+            """\
+            import haute
+
+            pipeline = haute.Pipeline("duplicates")
+
+            @pipeline.polars
+            def source():
+                return None
+
+            @pipeline.polars
+            def sink(source):
+                return source
+
+            pipeline.connect("source", "sink", source_port="quotes")
+            pipeline.connect("source", "sink", source_port="quotes")
+            """
+        )
+
+        with pytest.raises(ParseError, match="duplicate edge identities") as exc_info:
+            parse_pipeline_source(source, source_file="duplicates.py")
+
+        assert exc_info.value.context["duplicate_edges"] == [
+            {
+                "source": "source",
+                "target": "sink",
+                "source_handle": "quotes",
+                "target_handle": None,
+            }
+        ]
+
     def test_implicit_parameter_edge_into_submodel_child_survives_both_views(
         self,
         tmp_path: Path,

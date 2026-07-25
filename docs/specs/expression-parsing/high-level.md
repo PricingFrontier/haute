@@ -69,6 +69,13 @@ Out of scope (owned by neighbouring components, cross-linked below):
   directory. Every authored reference must resolve to a readable file. Missing files raise one
   `ParseError` that lists every unresolved path instead of returning a graph with those
   submodels omitted.
+- An in-memory `parse_pipeline_source` call that contains submodel references must supply
+  `_base_dir` or `_submodel_base_dir`. Without a resolution root the parser raises `ParseError`
+  with every unresolved authored path; returning only the root nodes would violate the same
+  conservation contract as a missing file.
+- Referencing the same resolved submodel file more than once raises a dedicated `ParseError`
+  naming that file and the authored references. This is distinct from two different files
+  declaring the same `Submodel(...)` name.
 - Two different submodel files may not declare the same `Submodel(...)` name. A collision raises
   `ParseError` naming the shared pipeline name and every involved file; no file wins by load
   order.
@@ -95,7 +102,9 @@ Out of scope (owned by neighbouring components, cross-linked below):
 - Before either parser path returns, a structure-conservation gate checks the authored node ids,
   explicit edge endpoints and handles, implicit parameter edges, and submodel references against
   the constructed graph. The gate permits a parent edge endpoint to name a loaded submodel child,
-  but rejects every other dangling endpoint with an actionable `ParseError`.
+  but rejects every other dangling endpoint with an actionable `ParseError`. Exact duplicate
+  `connect()` identities have their own diagnostic rather than being reported as a generic
+  conservation mismatch.
 
 **Expression parsing**
 - `parse_expression(code, target_column)` statically locates the `with_columns()`/`select()`
@@ -194,10 +203,12 @@ Out of scope (owned by neighbouring components, cross-linked below):
   safely reconstruct: an unclosed `connect()`/`submodel()`/decorator argument list, a non-literal
   decorator keyword argument or (on the healthy path) a non-literal `submodel()` path, an
   `async def` pipeline node, a config sidecar folder with no `config=` kwarg, a missing submodel
-  file, two submodel files declaring the same name, a nested submodel reference, or any
-  node/edge/handle identity rejected by the conservation gate. A parse that silently returned a
-  plausible-but-incomplete graph here would corrupt the file on the next save, which this
-  codebase treats as strictly worse than a loud failure.
+  file, a submodel reference without a resolution root, the same resolved submodel file referenced
+  more than once, two different submodel files declaring the same name, a nested submodel
+  reference, an exact duplicate edge identity, or any node/edge/handle identity rejected by the
+  conservation gate. A parse that silently returned a plausible-but-incomplete graph here would
+  corrupt the file on the next save, which this codebase treats as strictly worse than a loud
+  failure.
 - Config sidecar load/validation failures are raised as `ConfigError`. `_load_error` is used by
   regex recovery for a function body fragment that cannot be parsed, not as the normal sidecar
   failure transport.

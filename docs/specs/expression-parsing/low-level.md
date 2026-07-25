@@ -48,8 +48,9 @@
 → else extract pipeline meta / decorated nodes / connect edges / preamble / preserved blocks by
 importing their implementation modules directly (not through the `_parser_helpers` facade) →
 collect labels from any nodes already carrying `_load_error` into a graph-level `warning` → if any
-`pipeline.submodel()` calls were found and a base dir is available,
-resolve + parse each submodel file and call `_parser_submodels.merge_submodels` → run
+`pipeline.submodel()` calls were found, require `_base_dir` or `_submodel_base_dir` (otherwise
+raise with every unresolved authored path), resolve + parse each submodel file, reject repeated
+references to the same resolved file, and call `_parser_submodels.merge_submodels` → run
 the structure-conservation gate → `validate_pipeline_graph_shape_contracts` (owned outside this
 component) → log `pipeline_parsed`.
 
@@ -189,9 +190,18 @@ appended before the column that depends on it) → return the parsed expressions
 - **Missing submodel files are aggregated**: all resolved paths are checked before merge. One or
   more missing files produce one `ParseError` with deterministic `missing_paths` detail in
   authored order.
+- **Submodel resolution roots are mandatory**: healthy in-memory parsing cannot conserve a
+  `pipeline.submodel()` reference without `_base_dir` or `_submodel_base_dir`, so it raises with
+  `unresolved_paths` instead of returning a root-only graph. `fallback_parse` always has a
+  resolution root: `_base_dir`, else `Path(source_file).parent`, else `Path.cwd()`.
+- **Repeated submodel files are diagnosed separately**: `build_unique_submodel_maps` groups
+  parsed children by resolved `PipelineGraph.source_file` before grouping by declared name. If
+  one file was authored more than once, the error reports that file and its reference spellings;
+  it does not claim that multiple files were involved.
 - **Submodel names are unique**: before inserting a parsed child graph, the parser compares its
-  declared pipeline name with every previously loaded child. A collision raises with the shared
-  name and both authored file references instead of overwriting a dictionary entry.
+  declared pipeline name with every previously loaded child from a different file. A collision
+  raises with the shared name and all authored file references instead of overwriting a dictionary
+  entry.
 - **Implicit edges cross loaded submodel boundaries**: parser-private function parameter metadata
   is retained only long enough for `merge_submodels` to infer root-to-child, child-to-root, and
   child-to-child edges whose parameter name resolves to a loaded node id. Explicit connects still
@@ -200,8 +210,9 @@ appended before the column that depends on it) → return the parsed expressions
 - **Conservation is an acceptance gate**: the parser compares raw decorated-function ids with
   graph-node ids; locally resolvable explicit edges with their source/target handles and inferred
   parameter edges with the built edge set; dangling explicit endpoints with the loaded submodel
-  child-id set; and authored submodel paths with merged submodel metadata. Any difference raises
-  `ParseError` before graph-shape validation or return.
+  child-id set; and authored submodel paths with merged submodel metadata. Exact duplicate
+  `connect()` identities are checked explicitly and raise the dedicated duplicate-edge diagnostic;
+  every other difference raises `ParseError` before graph-shape validation or return.
 
 ## Error handling
 
@@ -215,9 +226,10 @@ appended before the column that depends on it) → return the parsed expressions
   `pipeline.submodel()` path that is not a literal (on both healthy and fallback paths; only
   Python literals and the sanctioned `Contract(...)` constructor are resolvable at parse time);
   `**kwargs` expansion in a decorator in the regex fallback; an `async def` pipeline node
-  function; a syntactically invalid referenced submodel file; a missing submodel file; duplicate
-  declared submodel names; nested submodel
-  references; a structure-conservation mismatch; or a config sidecar folder present for a node
+  function; a syntactically invalid referenced submodel file; a missing submodel file; a
+  submodel reference without a resolution root; a repeated resolved submodel file; duplicate
+  declared submodel names across different files; nested submodel references; an exact duplicate
+  edge identity; a structure-conservation mismatch; or a config sidecar folder present for a node
   type with no matching `config=` kwarg (`_sidecar_required_error`, defined in
   `src/haute/_config_builder.py` and owned by
   [pipeline-config](../pipeline-config/low-level.md), but raised from this component's fallback

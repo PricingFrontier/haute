@@ -10,6 +10,7 @@ Handles:
 from __future__ import annotations
 
 import ast
+from os.path import normcase
 from pathlib import Path
 from typing import Any
 
@@ -44,10 +45,39 @@ def build_unique_submodel_maps(
     """Index parsed submodels by declared name, rejecting every collision.
 
     ``parsed`` preserves authored reference order as ``(path, graph)`` pairs.
-    Grouping before constructing the dictionaries prevents the historical
-    later-file-wins overwrite and lets one diagnostic name every involved
-    file for every colliding submodel name.
+    Resolved source files are grouped first so a repeated reference is not
+    misreported as several files declaring one name. Grouping names before
+    constructing the dictionaries then prevents the historical later-file-
+    wins overwrite and lets one diagnostic name every genuinely distinct
+    file involved in a declared-name collision.
     """
+    by_source_file: dict[str, dict[str, Any]] = {}
+    for rel_path, graph in parsed:
+        source_file = graph.source_file or rel_path
+        source_key = normcase(str(Path(source_file).resolve()))
+        entry = by_source_file.setdefault(
+            source_key,
+            {
+                "source_file": source_file,
+                "references": [],
+            },
+        )
+        entry["references"].append(rel_path)
+
+    duplicate_files = [entry for entry in by_source_file.values() if len(entry["references"]) > 1]
+    if duplicate_files:
+        duplicate_context: dict[str, Any] = {"duplicate_files": duplicate_files}
+        if len(duplicate_files) == 1:
+            duplicate_file = duplicate_files[0]
+            duplicate_context.update(
+                source_file=duplicate_file["source_file"],
+                references=duplicate_file["references"],
+            )
+        raise ParseError(
+            "The same submodel file is referenced more than once.",
+            **duplicate_context,
+        )
+
     by_name: dict[str, list[tuple[str, PipelineGraph]]] = {}
     for rel_path, graph in parsed:
         name = graph.pipeline_name or Path(rel_path).stem

@@ -7,6 +7,7 @@ import ast
 import pytest
 
 from haute._parser_submodels import (
+    build_unique_submodel_maps,
     extract_submodel_calls,
     merge_submodels,
     parse_submodel_source,
@@ -184,6 +185,28 @@ def only_node(df: pl.LazyFrame) -> pl.LazyFrame:
 """
         graph = parse_submodel_source(source, "test.py")
         assert len(graph.nodes) == 1
+
+
+class TestBuildUniqueSubmodelMaps:
+    def test_repeated_resolved_file_has_specific_diagnostic(self) -> None:
+        graph = PipelineGraph(
+            pipeline_name="pricing",
+            source_file="modules/pricing.py",
+        )
+
+        with pytest.raises(ParseError, match="same submodel file") as exc_info:
+            build_unique_submodel_maps(
+                [
+                    ("modules/pricing.py", graph),
+                    ("modules/pricing.py", graph),
+                ]
+            )
+
+        assert exc_info.value.context["source_file"] == "modules/pricing.py"
+        assert exc_info.value.context["references"] == [
+            "modules/pricing.py",
+            "modules/pricing.py",
+        ]
 
 
 # ---------------------------------------------------------------------------

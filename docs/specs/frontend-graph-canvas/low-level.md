@@ -66,12 +66,16 @@ is the authoritative module map for their responsibilities:
 | `frontend/src/utils/nodeTypeRegistry.ts` | React Flow node-type registry built from the canonical metadata, shared by the editable and read-only comparison canvases. |
 | `frontend/src/utils/graphSnapshot.ts` | Snapshot serialization/cloning helpers which omit transient node data so undo/redo and persisted fingerprints describe graph state rather than preview/UI residue. |
 | `frontend/src/utils/shallowNodeHash.ts` | Stable shallow data hashing used by the graph store's structural and persisted fingerprint calculations. |
-| `frontend/src/types/node.ts` | Canonical React Flow node, edge, submodel-port, column, and status shapes plus `nodeData()`/`effectiveNodeType()` accessors used at the untyped React Flow boundary. |
+| `frontend/src/types/node.ts` | Canonical React Flow node, `PipelineEdge` (including authored submodel boundary-port metadata), submodel-port, column, and status shapes plus `nodeData()`/`effectiveNodeType()` accessors used at the untyped React Flow boundary. |
 
 ## Key types and data structures
 
-- **`GraphSnapshot`** (`{ nodes: Node[]; edges: Edge[]; preamble: string }`,
+- **`GraphSnapshot`** (`{ nodes: Node[]; edges: PipelineEdge[]; preamble: string }`,
   `useGraphStore.ts`) — the unit of undo/redo for a graph edit.
+- **`PipelineEdge`** (`types/node.ts`) — React Flow's `Edge` plus optional
+  `sourcePort`/`targetPort`. Those fields retain an authored connect port while a submodel
+  boundary temporarily consumes `sourceHandle`/`targetHandle`; API response types and outgoing
+  `GraphPayload` use this shape explicitly.
 - **`VcHistoryEntry`** (`{ kind: "vc"; label: string; undo: () => Promise<void>; redo: () => Promise<void> }`)
   — a version-control operation riding the same history stacks; carries its
   own async inverse. `HistoryEntry = GraphSnapshot | VcHistoryEntry`;
@@ -334,7 +338,9 @@ is the authoritative module map for their responsibilities:
     into a submodel. Runs `validateConfigRefs` (warns, does not block) and
     `findFirstInvalidEdgeJoin` (blocks with an error toast if invalid).
     Snapshots the exact graph/preamble/submodels that will be sent
-    (`captureGraphSnapshot`, `structuredClone`) and stamps the attempt with
+    (`captureGraphSnapshot`, `structuredClone`); snapshot cloning strips only
+    React Flow UI fields and therefore retains `PipelineEdge.sourcePort`/
+    `targetPort`. It then stamps the attempt with
     `++saveRequestSeq.current`. On a successful `savePipeline()` response,
     calls `markSaved(savedSnapshot)` only if this request's id is still the
     newest applied (`saveRequestId > appliedSaveSeq.current`), then updates
@@ -841,8 +847,8 @@ The pure connection/frame helpers are defended by `frontend/src/utils/__tests__/
   - `graphHelpers.test.ts` — `computeNextNodeId` (empty array, single/
     multiple suffixes, non-numeric-suffix nodes ignored, single- and
     multi-digit and zero suffixes); `normalizeEdges` (empty input, type/
-    animated normalisation, other fields preserved, no source-array
-    mutation, multiple edges).
+    animated normalisation, authored `sourcePort`/`targetPort` and other
+    fields preserved, no source-array mutation, multiple edges).
   - `graphPerformance.test.ts` — below/at-threshold behaviour for the
     shared lite-effects size limit.
   - `makePreviewData.test.ts` — defaults, overrides, nodeId/nodeLabel

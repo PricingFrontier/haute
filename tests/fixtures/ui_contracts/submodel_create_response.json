@@ -9,9 +9,36 @@
         "type": "custom",
         "position": { "x": 0, "y": 0 },
         "data": { "label": "Pricing" }
+      },
+      {
+        "id": "source",
+        "type": "custom",
+        "position": { "x": -200, "y": 0 },
+        "data": { "label": "Source" }
+      },
+      {
+        "id": "sink",
+        "type": "custom",
+        "position": { "x": 200, "y": 0 },
+        "data": { "label": "Sink" }
       }
     ],
-    "edges": [],
+    "edges": [
+      {
+        "id": "e_source_pricing",
+        "source": "source",
+        "target": "submodel__pricing",
+        "targetHandle": "in__child1",
+        "targetPort": "base"
+      },
+      {
+        "id": "e_pricing_sink",
+        "source": "submodel__pricing",
+        "target": "sink",
+        "sourceHandle": "out__child1",
+        "sourcePort": "quotes"
+      }
+    ],
     "submodels": {
       "pricing": {
         "path": "pricing.py"
