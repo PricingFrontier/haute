@@ -18,9 +18,13 @@ from pathlib import Path
 from typing import Any
 
 from haute._cache import (
+    CACHE_CONFIG_FIELD_CLASSIFICATIONS,
+    CacheConsumer,
+    CacheInputClass,
     GraphFingerprintMemo,
     LineageCacheKeyRequest,
     canonical_json,
+    checked_cache_inputs,
     lineage_cache_key,
     preamble_execution_fingerprint,
     selected_live_switch_path,
@@ -52,9 +56,8 @@ from haute._ram_estimate import (
     MaterialisationEstimateState,
     estimate_materialisation_boundary,
 )
+from haute._stat_gated_cache import StatGatedCache, artifact_cache_key
 from haute._types import (
-    MODEL_SCORE_CONFIG_KEYS,
-    OPTIMISER_APPLY_CONFIG_KEYS,
     GraphEdge,
     GraphNode,
     NodeType,
@@ -138,6 +141,7 @@ _DEFAULT_DATAFRAME_EXECUTION_CACHE_ROOT: Path | None = None
 _DEFAULT_DATAFRAME_EXECUTION_CACHE: DataFrameExecutionCache | None = None
 _DEFAULT_DATAFRAME_EXECUTION_CACHE_LOCK = threading.Lock()
 _AUTO_MATERIALISATION_ESTIMATE = object()
+_DATAFRAME_ROW_HASH_ENCODING = "polars-u64-le:v1"
 
 _GRAPH_PATH_CONFIG_BY_NODE_TYPE: dict[NodeType, str] = {
     NodeType.API_INPUT: "path",
@@ -598,11 +602,9 @@ def _runtime_path_fingerprint(path: Path) -> Mapping[str, object]:
     }
 
 
-_RUNTIME_PATH_FINGERPRINT_MEMO_LOCK = threading.Lock()
-# resolved path -> (mtime_ns, size, fingerprint payload).  One slot per
-# path — replaced when the stat gate changes — so the memo stays bounded
-# by the number of distinct file-backed inputs this process fingerprints.
-_runtime_path_fingerprint_memo: dict[str, tuple[int, int, Mapping[str, object]]] = {}
+_runtime_path_fingerprint_cache: StatGatedCache[str, Mapping[str, object]] = StatGatedCache(
+    artifact_kind="Runtime input file"
+)
 
 
 def _stat_gated_runtime_path_fingerprint(path: Path) -> Mapping[str, object]:
@@ -612,8 +614,7 @@ def _stat_gated_runtime_path_fingerprint(path: Path) -> Mapping[str, object]:
     hashing every file-backed input per preview would scale request cost
     with data size instead of edit rate.  When ``(mtime_ns, size)`` is
     unchanged the memoised payload is reused; any metadata change re-hashes
-    content, with the same double-stat race guard as
-    ``haute._cache._utility_file_hash``.
+    content through the shared, single-flight double-stat race guard.
 
     File metadata is not a complete correctness boundary: a rewrite that
     preserves both size and mtime while changing bytes is below the gate's
@@ -626,21 +627,11 @@ def _stat_gated_runtime_path_fingerprint(path: Path) -> Mapping[str, object]:
     resolved = path.resolve()
     if not resolved.is_file():
         return _runtime_path_fingerprint(resolved)
-    memo_key = str(resolved)
-    for _ in range(2):
-        stat = resolved.stat()
-        stat_gate = (stat.st_mtime_ns, stat.st_size)
-        with _RUNTIME_PATH_FINGERPRINT_MEMO_LOCK:
-            memoised = _runtime_path_fingerprint_memo.get(memo_key)
-        if memoised is not None and (memoised[0], memoised[1]) == stat_gate:
-            return memoised[2]
-        fingerprint = _runtime_path_fingerprint(resolved)
-        after = resolved.stat()
-        if (after.st_mtime_ns, after.st_size) == stat_gate:
-            with _RUNTIME_PATH_FINGERPRINT_MEMO_LOCK:
-                _runtime_path_fingerprint_memo[memo_key] = (*stat_gate, fingerprint)
-            return fingerprint
-    raise RuntimeError(f"Runtime input file changed while hashing: {resolved!s}")
+    return _runtime_path_fingerprint_cache.get_or_load(
+        artifact_cache_key(resolved),
+        str(resolved),
+        lambda: _runtime_path_fingerprint(resolved),
+    )
 
 
 def dataframe_paths_input_fingerprint(paths: Mapping[str, str]) -> Mapping[str, object]:
@@ -665,13 +656,15 @@ def dataframe_frame_input_fingerprint(input_df: Any) -> Mapping[str, object]:
     if not isinstance(input_df, pl.DataFrame):
         raise TypeError("input_df must be a polars DataFrame")
     schema = {name: str(dtype) for name, dtype in input_df.schema.items()}
+    row_hash_bytes = (
+        input_df.hash_rows(seed=0).to_numpy().astype("<u8", copy=False).tobytes(order="C")
+    )
     return {
         "height": input_df.height,
         "width": input_df.width,
         "schema": schema,
-        "row_hash": content_hash_bytes(
-            ",".join(str(value) for value in input_df.hash_rows(seed=0).to_list()).encode()
-        ),
+        "row_hash_encoding": _DATAFRAME_ROW_HASH_ENCODING,
+        "row_hash": content_hash_bytes(row_hash_bytes),
     }
 
 
@@ -699,37 +692,17 @@ def _config_subset(config: Mapping[str, Any], keys: Iterable[str]) -> Mapping[st
 
 
 def _runtime_input_config_fields(node_type: NodeType) -> tuple[str, ...]:
-    if node_type == NodeType.API_INPUT:
-        return (
-            "sourceType",
-            "table",
-            "catalog",
-            "schema",
-            "query",
-            "http_path",
-            "code",
-        )
-    if node_type == NodeType.DATA_INPUT:
-        return (
-            "inputType",
-            "format",
-            "cacheMode",
-            "mode",
-            "path",
-            "connection",
-            "uri",
-            "query",
-            "http_path",
-            "table",
-            "code",
-        )
-    if node_type == NodeType.EXTERNAL_FILE:
-        return ("fileType", "modelClass", "code")
-    if node_type == NodeType.MODEL_SCORE:
-        return (*MODEL_SCORE_CONFIG_KEYS, "feature_contract_path")
-    if node_type == NodeType.OPTIMISER_APPLY:
-        return OPTIMISER_APPLY_CONFIG_KEYS
-    return ()
+    included_classes = {
+        CacheInputClass.SOURCE_SELECTION,
+        CacheInputClass.RUNTIME_FILES,
+        CacheInputClass.ARTIFACTS,
+        CacheInputClass.USER_CODE,
+    }
+    return tuple(
+        field_name
+        for field_name, classification in CACHE_CONFIG_FIELD_CLASSIFICATIONS[node_type].items()
+        if classification.input_class in included_classes
+    )
 
 
 def _runtime_input_path_fields(node: GraphNode) -> tuple[str, ...]:
@@ -773,8 +746,13 @@ def dataframe_graph_input_fingerprint(
     source: str,
     extra_fingerprints: Mapping[str, object] | None = None,
     ignore_node_ids: Iterable[str] = (),
+    memo: GraphFingerprintMemo | None = None,
 ) -> str:
-    """Fingerprint source-side inputs that sit outside the graph structure."""
+    """Fingerprint source-side inputs that sit outside graph structure.
+
+    The target lineage is scoped once and every maintained runtime-input
+    class is routed through the checked ``RUNTIME_GRAPH_INPUT`` contract.
+    """
 
     graph = canonical_dataframe_execution_graph(graph)
     if target_node_id is not None and target_node_id not in graph.node_map:
@@ -786,23 +764,41 @@ def dataframe_graph_input_fingerprint(
         if target_node_id is not None
         else {node.id for node in graph.nodes}
     )
+    included_node_ids -= ignored
+    scoped_graph = graph.model_copy(
+        update={
+            "nodes": [node for node in graph.nodes if node.id in included_node_ids],
+            "edges": [
+                edge
+                for edge in graph.edges
+                if edge.source in included_node_ids and edge.target in included_node_ids
+            ],
+        }
+    )
     runtime_input_node_types = set(_SOURCE_PATH_CONFIG_BY_NODE_TYPE) | {
         NodeType.MODEL_SCORE,
         NodeType.OPTIMISER_APPLY,
     }
     source_entries = [
-        _runtime_input_fingerprint_entry(graph, node)
-        for node in sorted(graph.nodes, key=lambda item: item.id)
-        if node.id in included_node_ids
-        and node.id not in ignored
-        and node.data.nodeType in runtime_input_node_types
+        _runtime_input_fingerprint_entry(scoped_graph, node)
+        for node in sorted(scoped_graph.nodes, key=lambda item: item.id)
+        if node.data.nodeType in runtime_input_node_types
     ]
-    payload = {
-        "source": source,
-        "sources": source_entries,
-        "extra": dict(sorted((extra_fingerprints or {}).items())),
-    }
-    return content_hash_bytes(canonical_json(payload).encode())
+    inputs = checked_cache_inputs(
+        CacheConsumer.RUNTIME_GRAPH_INPUT,
+        {
+            "source": source,
+            "sources": source_entries,
+            "json_cache_signature": cache_state_signature_for_graph(scoped_graph),
+            "preamble_fingerprint": preamble_execution_fingerprint(
+                scoped_graph.preamble,
+                pipeline_dir=_cache_pipeline_dir(scoped_graph),
+                memo=memo,
+            ),
+            "extra": dict(sorted((extra_fingerprints or {}).items())),
+        },
+    )
+    return f"runtime-input:v{inputs.contract.version}:{content_hash_bytes(inputs.canonical_bytes)}"
 
 
 def _runtime_file_signature_paths(graph: PipelineGraph, node: GraphNode) -> dict[str, Path]:
@@ -895,14 +891,11 @@ def _runtime_file_inputs_signature(graph: PipelineGraph) -> str:
 
 
 def runtime_input_extra_keys(graph: PipelineGraph) -> tuple[str, ...]:
-    """Graph-fingerprint extra keys for runtime inputs outside the graph JSON.
+    """Return the legacy diagnostic tuple for runtime inputs outside graph JSON.
 
-    The single source of truth for the runtime-input key material shared
-    by the preview cache (``executor.py``) and the trace cache
-    (``trace.py``); both pass the result straight into
-    :func:`haute._cache.graph_fingerprint` as extra keys.  Two
-    components, each omitted when empty so graphs without that input
-    class keep byte-identical keys:
+    Maintained cache consumers use :func:`dataframe_graph_input_fingerprint`
+    and its checked contract. This compatibility helper remains available to
+    callers that inspect the two historical component signatures:
 
     * ``runtime_files=…`` — file-backed input state
       (:func:`_runtime_file_inputs_signature`), so an out-of-band
@@ -959,18 +952,16 @@ def _lineage_runtime_input_fingerprint(
     graph: PipelineGraph,
     prepared: PreparedGraph,
     *,
+    source: str,
     memo: GraphFingerprintMemo | None,
 ) -> str:
     relevant_graph = _lineage_runtime_graph(graph, prepared)
-    payload = {
-        "runtime_input_keys": list(runtime_input_extra_keys(relevant_graph)),
-        "preamble_execution": preamble_execution_fingerprint(
-            relevant_graph.preamble,
-            pipeline_dir=_cache_pipeline_dir(relevant_graph),
-            memo=memo,
-        ),
-    }
-    return "runtime-input-v1:" + content_hash_bytes(canonical_json(payload).encode())
+    return dataframe_graph_input_fingerprint(
+        relevant_graph,
+        target_node_id=None,
+        source=source,
+        memo=memo,
+    )
 
 
 def preview_lineage_cache_key(
@@ -1005,6 +996,7 @@ def preview_lineage_cache_key(
         runtime_input_fingerprint=_lineage_runtime_input_fingerprint(
             graph,
             prepared,
+            source=source,
             memo=memo,
         ),
         execution_semantics_version=PREVIEW_EXECUTION_SEMANTICS_VERSION,

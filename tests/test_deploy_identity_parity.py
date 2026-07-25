@@ -185,9 +185,11 @@ class TestOutputSchemaCacheFoldsArtifactIdentity:
         assert r2 == {"prediction": "Int64"}
 
     def test_no_artifacts_keeps_cache_key_stable(self, tmp_path, monkeypatch):
-        """No bundled artifacts → key unchanged from the bare graph fingerprint."""
-        from haute._cache import graph_fingerprint
-        from haute.deploy._schema import infer_output_schema
+        """No bundled artifacts still produce a stable checked schema identity."""
+        from haute.deploy._schema import (
+            deploy_schema_cache_fingerprint,
+            infer_output_schema,
+        )
 
         monkeypatch.chdir(tmp_path)
         pq = tmp_path / "data.parquet"
@@ -195,7 +197,12 @@ class TestOutputSchemaCacheFoldsArtifactIdentity:
         graph = _passthrough_schema_graph(pq)
 
         # Pre-seed the cache under the plain graph fingerprint (no artifacts).
-        fp = graph_fingerprint(graph, "out", "src")
+        fp = deploy_schema_cache_fingerprint(
+            graph,
+            output_node_id="out",
+            input_node_ids=["src"],
+            artifact_paths={},
+        )
         cache_dir = tmp_path / ".haute_cache"
         cache_dir.mkdir()
         (cache_dir / "output_schema.json").write_text(
@@ -207,6 +214,51 @@ class TestOutputSchemaCacheFoldsArtifactIdentity:
 
         score.assert_not_called()  # cache hit — key unchanged
         assert result == {"premium": "Float64"}
+
+    def test_cache_identity_changes_when_direct_input_bytes_change(self, tmp_path):
+        from haute.deploy._schema import deploy_schema_cache_fingerprint
+
+        pq = tmp_path / "data.parquet"
+        pl.DataFrame({"x": [1.0]}).write_parquet(pq)
+        graph = _passthrough_schema_graph(pq)
+        first = deploy_schema_cache_fingerprint(
+            graph,
+            output_node_id="out",
+            input_node_ids=["src"],
+            artifact_paths={},
+        )
+
+        pl.DataFrame({"renamed": ["new schema"]}).write_parquet(pq)
+        second = deploy_schema_cache_fingerprint(
+            graph,
+            output_node_id="out",
+            input_node_ids=["src"],
+            artifact_paths={},
+        )
+
+        assert second != first
+
+    def test_cache_identity_is_stable_for_input_node_order(self, tmp_path):
+        from haute.deploy._schema import deploy_schema_cache_fingerprint
+
+        pq = tmp_path / "data.parquet"
+        pl.DataFrame({"x": [1.0]}).write_parquet(pq)
+        graph = _passthrough_schema_graph(pq)
+
+        first = deploy_schema_cache_fingerprint(
+            graph,
+            output_node_id="out",
+            input_node_ids=["src", "other"],
+            artifact_paths={},
+        )
+        second = deploy_schema_cache_fingerprint(
+            graph,
+            output_node_id="out",
+            input_node_ids=["other", "src"],
+            artifact_paths={},
+        )
+
+        assert second == first
 
 
 # ---------------------------------------------------------------------------

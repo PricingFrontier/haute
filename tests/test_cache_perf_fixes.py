@@ -751,7 +751,7 @@ class TestCacheKeyAlgorithmContract:
         import haute._cache as cache
 
         calls: list[bytes] = []
-        digests = iter(("b" * 16, "c" * 16))
+        digests = iter(("b" * 16, "c" * 16, "d" * 16))
 
         def fake_content_hash_bytes(data: bytes) -> str:
             calls.append(data)
@@ -761,9 +761,11 @@ class TestCacheKeyAlgorithmContract:
 
         g = _make_graph({"x": 1})
 
-        assert cache.graph_fingerprint(g) == f"v{cache.ALGO_VERSION}:{'b' * 16}"
-        assert cache.graph_fingerprint(g, "target") == f"v{cache.ALGO_VERSION}:{'c' * 16}"
-        assert len(calls) == 2
+        assert cache.graph_fingerprint(g) == f"v{cache.ALGO_VERSION}:{'c' * 16}"
+        assert cache.graph_fingerprint(g, "target") == f"v{cache.ALGO_VERSION}:{'d' * 16}"
+        # The checked structural payload is hashed once and memoised on the
+        # graph; each graph-execution contract is then hashed independently.
+        assert len(calls) == 3
 
 
 @pytest.mark.perf

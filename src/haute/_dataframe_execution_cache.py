@@ -16,7 +16,14 @@ from weakref import WeakValueDictionary
 
 import polars as pl
 
-from haute._cache import GraphFingerprintMemo, canonical_json, graph_fingerprint
+from haute._cache import (
+    CACHE_CONSUMER_CONTRACTS,
+    CacheConsumer,
+    GraphFingerprintMemo,
+    canonical_json,
+    checked_cache_inputs,
+    graph_fingerprint,
+)
 from haute._execution_context import ExecutionProfile
 from haute._graph_utils import upstream_node_ids
 from haute._hashing import content_hash_bytes
@@ -34,7 +41,9 @@ logger = get_logger(component="dataframe_execution_cache")
 # edge-handle serialization (3→4) and W2.13's canonical-encoder
 # unification (4→5) — rolls every cache key automatically.  Bump this
 # only when the payload's own field set / semantics change.
-DATAFRAME_EXECUTION_CACHE_VERSION = 1
+DATAFRAME_EXECUTION_CACHE_VERSION = CACHE_CONSUMER_CONTRACTS[
+    CacheConsumer.DATAFRAME_EXECUTION
+].version
 DEFAULT_DATAFRAME_EXECUTION_CACHE_MAX_BYTES: int | None = None
 DEFAULT_DATAFRAME_EXECUTION_CACHE_MAX_ENTRIES = 16
 
@@ -274,7 +283,6 @@ def dataframe_execution_cache_key(
     # mapping-key sorting) with the SAME rules as every other digest site,
     # so the raw policy goes straight into the payload.
     payload: dict[str, object] = {
-        "version": DATAFRAME_EXECUTION_CACHE_VERSION,
         "namespace": namespace,
         "node_id": node_id,
         "lineage_fingerprint": lineage_fingerprint,
@@ -285,7 +293,8 @@ def dataframe_execution_cache_key(
         "extra_keys": extra,
         "execution_policy": execution_policy,
     }
-    payload_digest = content_hash_bytes(canonical_json(payload).encode())
+    inputs = checked_cache_inputs(CacheConsumer.DATAFRAME_EXECUTION, payload)
+    payload_digest = content_hash_bytes(inputs.canonical_bytes)
     cache_key = f"dfexec:v{DATAFRAME_EXECUTION_CACHE_VERSION}:{payload_digest}"
     return DataFrameExecutionCacheKey(
         cache_key=cache_key,

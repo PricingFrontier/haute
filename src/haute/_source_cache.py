@@ -18,7 +18,7 @@ from urllib.parse import urlsplit
 
 import polars as pl
 
-from haute._cache import canonical_json
+from haute._cache import CacheConsumer, canonical_json, checked_cache_inputs
 from haute._file_ops import atomic_write_text
 from haute._polars_utils import bounded_sink
 
@@ -96,11 +96,15 @@ class SourceCacheIdentity:
 
     @property
     def payload(self) -> dict[str, object]:
-        return {
-            "schema_version": self.schema_version,
-            "provider": self.provider,
-            "descriptor": dict(self.descriptor),
-        }
+        inputs = checked_cache_inputs(
+            CacheConsumer.INPUT_SNAPSHOT,
+            {
+                "schema_version": self.schema_version,
+                "provider": self.provider,
+                "descriptor": dict(self.descriptor),
+            },
+        )
+        return dict(inputs.values)
 
     @property
     def canonical_bytes(self) -> bytes:

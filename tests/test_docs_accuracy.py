@@ -114,6 +114,7 @@ _EXPECTED_COMPONENT_ROADMAPS = (
     "security-supply-chain",
     "tracing-explainability",
 )
+_COMPONENTS_WITHOUT_OPEN_PACKAGES = frozenset({"caching"})
 _COMPONENT_PACKAGE_HEADING = re.compile(
     r"^###\s+([A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+)\b",
     flags=re.MULTILINE,
@@ -184,7 +185,12 @@ def test_component_roadmaps_are_flat_complete_and_self_contained() -> None:
         assert f"({component}.md)" in index
 
         package_ids = _COMPONENT_PACKAGE_HEADING.findall(text)
-        assert package_ids, f"{path.relative_to(ROOT)} has no work packages"
+        if component in _COMPONENTS_WITHOUT_OPEN_PACKAGES:
+            assert not package_ids, (
+                f"{path.relative_to(ROOT)} is marked complete but still has work packages"
+            )
+        else:
+            assert package_ids, f"{path.relative_to(ROOT)} has no work packages"
         for package_id in package_ids:
             assert package_id not in package_owners, (
                 f"{package_id} is owned by both {package_owners[package_id]} and {component}"
@@ -211,7 +217,9 @@ def test_component_roadmaps_are_flat_complete_and_self_contained() -> None:
         "AUD-C03",
         "AUD-C04",
         "AUD-C11",
+        "AUD-CACHE-01",
         "AUD-TRACE-01",
+        "CACHE-PERF-01",
     }
     expected_packages = (
         ({f"AUD-C{number:02d}" for number in range(1, 21)} - retired_or_folded_packages)
@@ -228,7 +236,6 @@ def test_component_roadmaps_are_flat_complete_and_self_contained() -> None:
         | {
             "ASSIST-01",
             "ASSIST-02",
-            "AUD-CACHE-01",
             "AUD-DEPLOY-01",
             "AUD-DEPLOY-02",
             "AUD-PIPE-01",
@@ -238,7 +245,6 @@ def test_component_roadmaps_are_flat_complete_and_self_contained() -> None:
             "AUD-RATING-01",
             "AUD-SEC-01",
             "AUD-SEC-02",
-            "CACHE-PERF-01",
             "RATING-PERF-01",
         }
     )

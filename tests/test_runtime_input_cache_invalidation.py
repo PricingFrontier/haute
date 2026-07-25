@@ -94,16 +94,16 @@ def _csv_input_node(nid: str, path: Path):
 
 
 def test_graph_input_fingerprint_uses_canonical_json(monkeypatch, tmp_path: Path) -> None:
-    from haute import execution
+    from haute import _cache, execution
 
     seen: list[object] = []
-    canonical = execution.canonical_json
+    canonical = _cache.canonical_json
 
     def recording_canonical_json(payload: object) -> str:
         seen.append(payload)
         return canonical(payload)
 
-    monkeypatch.setattr(execution, "canonical_json", recording_canonical_json)
+    monkeypatch.setattr(_cache, "canonical_json", recording_canonical_json)
     first = execution.dataframe_graph_input_fingerprint(
         _csv_graph(tmp_path / "source.csv"), target_node_id=None, source="live"
     )
@@ -678,7 +678,7 @@ class TestStatGatedFingerprintMemo:
 
         monkeypatch.setattr(execution_mod, "content_hash", perpetually_racing_content_hash)
 
-        with pytest.raises(RuntimeError, match="changed while hashing"):
+        with pytest.raises(RuntimeError, match="changed on disk while loading"):
             execution_mod._stat_gated_runtime_path_fingerprint(p)
 
 
