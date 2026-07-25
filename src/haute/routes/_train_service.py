@@ -577,9 +577,10 @@ def _bounded_loss_history(
 def _worker_request_payload(request: WorkerRequest, *, expected_kind: str) -> dict[str, Any]:
     if request.kind != expected_kind:
         raise ValueError(f"Worker request kind must be {expected_kind!r}, got {request.kind!r}")
-    if not isinstance(request.payload, dict):
+    payload = request.payload
+    if not isinstance(payload, dict):
         raise ValueError("Worker request payload must be an object")
-    return request.payload
+    return payload
 
 
 def _child_execution_context(
@@ -1081,8 +1082,26 @@ def _publish_training_artifacts(
         raise
 
     for backup in backups.values():
-        backup.unlink()
-    shutil.rmtree(root)
+        try:
+            backup.unlink()
+        except OSError as exc:
+            logger.warning(
+                "training_artifact_post_commit_cleanup_failed",
+                path=str(backup),
+                cleanup_kind="backup",
+                error=str(exc),
+                error_type=type(exc).__name__,
+            )
+    try:
+        shutil.rmtree(root)
+    except OSError as exc:
+        logger.warning(
+            "training_artifact_post_commit_cleanup_failed",
+            path=str(root),
+            cleanup_kind="staging_root",
+            error=str(exc),
+            error_type=type(exc).__name__,
+        )
     return {kind: final for kind, (_staged, final) in staged_and_final.items()}
 
 
@@ -1739,6 +1758,7 @@ class TrainService:
         execution_context: ExecutionContext,
         tmp_parquet: Path,
         artifact_root: Path | None,
+        artifact_publication_committed: Callable[[], bool] | None = None,
     ) -> Callable[[], None]:
         """Return an idempotent parent cleanup that attempts every owned resource."""
         lock = threading.Lock()
@@ -1751,23 +1771,43 @@ class TrainService:
                     return
                 finished = True
             errors: list[BaseException] = []
-            for action in (
-                lambda: self._training_jobs.release(job_id),
-                execution_context.release_admission,
-                lambda: (
-                    tmp_parquet.unlink()
-                    if tmp_parquet.exists() or tmp_parquet.is_symlink()
-                    else None
+            for cleanup_kind, action in (
+                ("registry", lambda: self._training_jobs.release(job_id)),
+                ("admission", execution_context.release_admission),
+                (
+                    "prepared_data",
+                    lambda: (
+                        tmp_parquet.unlink()
+                        if tmp_parquet.exists() or tmp_parquet.is_symlink()
+                        else None
+                    ),
                 ),
-                lambda: (
-                    shutil.rmtree(artifact_root)
-                    if artifact_root is not None and artifact_root.exists()
-                    else None
+                (
+                    "artifact_root",
+                    lambda: (
+                        shutil.rmtree(artifact_root)
+                        if artifact_root is not None and artifact_root.exists()
+                        else None
+                    ),
                 ),
             ):
                 try:
                     action()
                 except BaseException as exc:
+                    if (
+                        cleanup_kind == "artifact_root"
+                        and isinstance(exc, OSError)
+                        and artifact_publication_committed is not None
+                        and artifact_publication_committed()
+                    ):
+                        logger.warning(
+                            "training_artifact_post_commit_cleanup_failed",
+                            path=str(artifact_root),
+                            cleanup_kind="staging_root_retry",
+                            error=str(exc),
+                            error_type=type(exc).__name__,
+                        )
+                        continue
                     errors.append(exc)
             if errors:
                 primary = errors[0]
@@ -2263,11 +2303,13 @@ class TrainService:
             launch_cleanup()
             raise
 
+        artifact_publication_committed = threading.Event()
         cleanup = self._parent_worker_cleanup(
             job_id,
             execution_context=execution_context,
             tmp_parquet=Path(tmp_parquet),
             artifact_root=artifact_root,
+            artifact_publication_committed=artifact_publication_committed.is_set,
         )
         # The first closure may have been constructed before the staging root.
         # It has not run; use only the complete owner from this point onward.
@@ -2396,6 +2438,7 @@ class TrainService:
                 job_id=job_id,
                 expected_model_name=str(job_kwargs["name"]),
             )
+            artifact_publication_committed.set()
             response_fields["model_path"] = str(published["model"])
             response = TrainResponse.model_validate(response_fields)
             _assert_json_finite(response)

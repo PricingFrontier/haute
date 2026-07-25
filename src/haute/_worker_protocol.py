@@ -12,10 +12,11 @@ import multiprocessing as mp
 import pickle
 import queue
 import re
+import threading
 import time
 import traceback
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Literal, cast
 
@@ -88,23 +89,38 @@ class WorkerProcessTerminationError(IsolatedWorkerError):
         super().__init__("worker process remained alive after termination", terminal_reason="error")
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, init=False)
 class WorkerRequest:
     request_id: str
     kind: str
-    payload: Any
+    _payload_bytes: bytes = field(repr=False)
     schema_version: int = SCHEMA_VERSION
 
-    def __post_init__(self) -> None:
-        _require_version(self.schema_version)
-        _require_identifier(self.request_id, "request_id")
-        _require_identifier(self.kind, "kind")
-        _validate_plain_data(self.payload, "payload")
-        if (
-            len(pickle.dumps(self.payload, protocol=pickle.HIGHEST_PROTOCOL))
-            > WORKER_MAX_METADATA_BYTES
-        ):
-            raise WorkerProtocolError("serialized request payload exceeds byte limit")
+    def __init__(
+        self,
+        request_id: str,
+        kind: str,
+        payload: Any,
+        schema_version: int = SCHEMA_VERSION,
+    ) -> None:
+        _require_version(schema_version)
+        _require_identifier(request_id, "request_id")
+        _require_identifier(kind, "kind")
+        _validate_plain_data(payload, "payload")
+        payload_bytes = _serialize_bounded(
+            payload,
+            limit=WORKER_MAX_METADATA_BYTES,
+            error_message="serialized request payload exceeds byte limit",
+        )
+        object.__setattr__(self, "request_id", request_id)
+        object.__setattr__(self, "kind", kind)
+        object.__setattr__(self, "_payload_bytes", payload_bytes)
+        object.__setattr__(self, "schema_version", schema_version)
+
+    @property
+    def payload(self) -> Any:
+        """Return a fresh plain-data value decoded from the immutable transport."""
+        return _decode_request_payload(self._payload_bytes)
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,6 +130,7 @@ class WorkerProgressEvent:
     message: str
     kind: str
     fields: Any
+    dropped_events: int = 0
     schema_version: int = SCHEMA_VERSION
 
     def __post_init__(self) -> None:
@@ -129,8 +146,19 @@ class WorkerProgressEvent:
         _require_message(self.message, "message")
         _require_identifier(self.kind, "kind")
         _validate_plain_data(self.fields, "fields")
-        if len(pickle.dumps(self, protocol=pickle.HIGHEST_PROTOCOL)) > WORKER_MAX_EVENT_BYTES:
-            raise WorkerProtocolError("serialized progress event exceeds byte limit")
+        _require_nonnegative_integer(self.dropped_events, "dropped_events")
+
+
+@dataclass(frozen=True, slots=True)
+class WorkerProgressEnd:
+    sequence: int
+    dropped_events: int
+    schema_version: int = SCHEMA_VERSION
+
+    def __post_init__(self) -> None:
+        _require_version(self.schema_version)
+        _require_nonnegative_integer(self.sequence, "sequence")
+        _require_nonnegative_integer(self.dropped_events, "dropped_events")
 
 
 @dataclass(frozen=True, slots=True)
@@ -204,15 +232,49 @@ class WorkerRuntime:
         self._progress_queue = progress_queue
         self._artifact_root = Path(artifact_root).resolve()
         self._sequence = 0
+        self._dropped_events = 0
+        self._closed = False
+        self._lock = threading.Lock()
 
     def emit_progress(
         self, *, progress: float, message: str, kind: str, fields: Any = None
-    ) -> None:
-        if self._sequence >= WORKER_MAX_EVENTS:
-            raise WorkerProtocolError("progress event limit exceeded")
-        event = WorkerProgressEvent(self._sequence, progress, message, kind, fields)
-        self._progress_queue.put(event)
-        self._sequence += 1
+    ) -> bool:
+        """Attempt to emit one event without allowing telemetry to stall work."""
+        with self._lock:
+            if self._closed:
+                raise WorkerProtocolError("progress runtime is closed")
+            event = WorkerProgressEvent(
+                sequence=self._sequence,
+                progress=progress,
+                message=message,
+                kind=kind,
+                fields=fields,
+                dropped_events=self._dropped_events,
+            )
+            if self._sequence >= WORKER_MAX_EVENTS:
+                self._dropped_events += 1
+                return False
+            serialized = _serialize_progress_item(event)
+            try:
+                self._progress_queue.put_nowait(serialized)
+            except queue.Full:
+                self._dropped_events += 1
+                return False
+            self._sequence += 1
+            self._dropped_events = 0
+            return True
+
+    def close(self) -> None:
+        """Close the progress stream exactly once after all worker callbacks return."""
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+            end = WorkerProgressEnd(
+                sequence=self._sequence,
+                dropped_events=self._dropped_events,
+            )
+            self._progress_queue.put(_serialize_progress_item(end))
 
     def staged_path(self, relative_path: str) -> Path:
         _validate_relative_path(relative_path)
@@ -239,12 +301,7 @@ def run_worker_protocol(
     config: IsolatedWorkerConfig | None = None,
 ) -> WorkerResultManifest:
     """Run a protocol worker, forwarding validated progress and validated result."""
-    request = WorkerRequest(
-        request.request_id,
-        request.kind,
-        request.payload,
-        request.schema_version,
-    )
+    _validate_worker_request(request)
     if type(max_artifact_size_bytes) is not int or max_artifact_size_bytes < 0:
         raise ValueError("max_artifact_size_bytes must be non-negative")
     if any(type(kind) is not str or not kind for kind in artifact_kinds):
@@ -451,10 +508,11 @@ def _protocol_entrypoint(
     artifact_root: str,
     memory_limit_bytes: int | None,
 ) -> None:
+    runtime = WorkerRuntime(progress_queue, artifact_root)
     try:
         if memory_limit_bytes is not None and process_memory_caps_supported():
             _apply_address_space_limit(memory_limit_bytes)
-        result = function(WorkerRuntime(progress_queue, artifact_root), request)
+        result = function(runtime, request)
         if isinstance(result, WorkerFailurePayload):
             result_queue.put(("error", result))
             return
@@ -477,38 +535,21 @@ def _protocol_entrypoint(
             )
         )
     finally:
-        progress_queue.put(None)
+        runtime.close()
 
 
 def _drain_progress(
     progress_queue: Any, expected: int, callback: Callable[[WorkerProgressEvent], None] | None
 ) -> tuple[int, bool]:
-    while True:
+    for _ in range(WORKER_EVENT_QUEUE_CAPACITY):
         try:
-            event = progress_queue.get_nowait()
+            item = _decode_progress_item(progress_queue.get_nowait())
         except queue.Empty:
             return expected, False
-        if event is None:
+        expected, ended = _consume_progress_item(item, expected, callback)
+        if ended:
             return expected, True
-        if not isinstance(event, WorkerProgressEvent):
-            raise WorkerProtocolError("progress queue contains a non-event payload")
-        WorkerProgressEvent(
-            event.sequence,
-            event.progress,
-            event.message,
-            event.kind,
-            event.fields,
-            event.schema_version,
-        )
-        if event.sequence != expected:
-            raise WorkerProtocolError(
-                f"progress sequence {event.sequence} does not match expected {expected}"
-            )
-        if expected >= WORKER_MAX_EVENTS:
-            raise WorkerProtocolError("progress event limit exceeded")
-        if callback is not None:
-            callback(event)
-        expected += 1
+    return expected, False
 
 
 def _drain_progress_until_end(
@@ -522,30 +563,98 @@ def _drain_progress_until_end(
         if ended:
             return
         try:
-            event = progress_queue.get(timeout=1.0)
+            item = _decode_progress_item(progress_queue.get(timeout=1.0))
         except queue.Empty as exc:
             raise WorkerProtocolError("worker progress stream ended without an end marker") from exc
-        if event is None:
+        expected, ended = _consume_progress_item(item, expected, callback)
+        if ended:
             return
-        if not isinstance(event, WorkerProgressEvent):
-            raise WorkerProtocolError("progress queue contains a non-event payload")
-        WorkerProgressEvent(
-            event.sequence,
-            event.progress,
-            event.message,
-            event.kind,
-            event.fields,
-            event.schema_version,
+
+
+def _consume_progress_item(
+    item: WorkerProgressEvent | WorkerProgressEnd,
+    expected: int,
+    callback: Callable[[WorkerProgressEvent], None] | None,
+) -> tuple[int, bool]:
+    if item.sequence != expected:
+        raise WorkerProtocolError(
+            f"progress sequence {item.sequence} does not match expected {expected}"
         )
-        if event.sequence != expected:
-            raise WorkerProtocolError(
-                f"progress sequence {event.sequence} does not match expected {expected}"
-            )
-        if expected >= WORKER_MAX_EVENTS:
-            raise WorkerProtocolError("progress event limit exceeded")
-        if callback is not None:
-            callback(event)
-        expected += 1
+    if isinstance(item, WorkerProgressEnd):
+        return expected, True
+    if expected >= WORKER_MAX_EVENTS:
+        raise WorkerProtocolError("progress event limit exceeded")
+    if callback is not None:
+        callback(item)
+    return expected + 1, False
+
+
+def _serialize_progress_item(item: WorkerProgressEvent | WorkerProgressEnd) -> bytes:
+    return _serialize_bounded(
+        item,
+        limit=WORKER_MAX_EVENT_BYTES,
+        error_message="serialized progress event exceeds byte limit",
+    )
+
+
+def _decode_progress_item(value: Any) -> WorkerProgressEvent | WorkerProgressEnd:
+    if type(value) is not bytes:
+        raise WorkerProtocolError("progress queue contains a non-event payload")
+    if len(value) > WORKER_MAX_EVENT_BYTES:
+        raise WorkerProtocolError("serialized progress event exceeds byte limit")
+    try:
+        item = pickle.loads(value)
+    except Exception as exc:
+        raise WorkerProtocolError("progress queue contains an undecodable payload") from exc
+    if isinstance(item, WorkerProgressEvent):
+        return WorkerProgressEvent(
+            sequence=item.sequence,
+            progress=item.progress,
+            message=item.message,
+            kind=item.kind,
+            fields=item.fields,
+            dropped_events=item.dropped_events,
+            schema_version=item.schema_version,
+        )
+    if isinstance(item, WorkerProgressEnd):
+        return WorkerProgressEnd(
+            sequence=item.sequence,
+            dropped_events=item.dropped_events,
+            schema_version=item.schema_version,
+        )
+    raise WorkerProtocolError("progress queue contains a non-event payload")
+
+
+def _validate_worker_request(request: WorkerRequest) -> None:
+    if not isinstance(request, WorkerRequest):
+        raise WorkerProtocolError("worker request has an invalid type")
+    _require_version(cast(int, getattr(request, "schema_version", None)))
+    _require_identifier(cast(str, getattr(request, "request_id", None)), "request_id")
+    _require_identifier(cast(str, getattr(request, "kind", None)), "kind")
+    _decode_request_payload(getattr(request, "_payload_bytes", None))
+
+
+def _decode_request_payload(value: Any) -> Any:
+    if type(value) is not bytes:
+        raise WorkerProtocolError("serialized request payload is invalid")
+    if len(value) > WORKER_MAX_METADATA_BYTES:
+        raise WorkerProtocolError("serialized request payload exceeds byte limit")
+    try:
+        payload = pickle.loads(value)
+    except Exception as exc:
+        raise WorkerProtocolError("serialized request payload is invalid") from exc
+    _validate_plain_data(payload, "payload")
+    return payload
+
+
+def _serialize_bounded(value: Any, *, limit: int, error_message: str) -> bytes:
+    try:
+        serialized = pickle.dumps(value, protocol=pickle.HIGHEST_PROTOCOL)
+    except Exception as exc:
+        raise WorkerProtocolError("protocol payload could not be serialized") from exc
+    if len(serialized) > limit:
+        raise WorkerProtocolError(error_message)
+    return serialized
 
 
 def _validate_plain_data(value: Any, name: str, *, depth: int = 0) -> None:
@@ -573,6 +682,11 @@ def _validate_plain_data(value: Any, name: str, *, depth: int = 0) -> None:
 def _require_version(version: int) -> None:
     if type(version) is not int or version != SCHEMA_VERSION:
         raise WorkerProtocolError("unsupported schema version")
+
+
+def _require_nonnegative_integer(value: Any, name: str) -> None:
+    if type(value) is not int or value < 0:
+        raise WorkerProtocolError(f"{name} must be a non-negative integer")
 
 
 def _require_nonempty(value: str, name: str) -> None:

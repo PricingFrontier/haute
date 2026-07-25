@@ -256,23 +256,30 @@ has a concrete consumer and preserves the existing HTTP contract.
   infrastructure failure through an inspectable property and a raising join method; it never
   silently reports success.
 - **One bounded, versioned worker protocol.** Spawn workers exchange only a version-1 request,
-  monotonic progress events, a result manifest, or a failure payload. The transport has a fixed
-  queue bound and fixed per-event, event-count, result-metadata, and artifact-count limits.
-  Parent-side validation rejects unknown versions, malformed payloads, duplicate or
-  out-of-order event sequences, unknown artifact kinds, integrity mismatches, and paths outside
-  the parent-created artifact root. JobStore, callbacks, open frames, solvers, and route-owned
-  mutable objects never cross into the child.
+  monotonic progress events, a progress-end marker, a result manifest, or a failure payload. The
+  transport has a fixed queue bound and fixed per-event, delivered-event-count, result-metadata,
+  and artifact-count limits. Progress is non-blocking telemetry: a full queue or exhausted
+  delivered-event budget drops an update instead of stalling or failing the worker, and the next
+  delivered event (or the end marker for trailing drops) carries the number dropped. Parent-side
+  validation rejects unknown versions, malformed payloads, duplicate or out-of-order delivered
+  event sequences, unknown artifact kinds, integrity mismatches, and paths outside the
+  parent-created artifact root. JobStore, callbacks, open frames, solvers, and route-owned mutable
+  objects never cross into the child.
 - **Parent-owned publication and cleanup.** A child may write only staged artifacts below the
   supplied root and returns relative manifest entries containing kind, size, SHA-256, and
-  lifetime. The parent validates before publishing. Staging is removed after publication and
-  after every failure, timeout, cancellation, crash, or malformed result. Durable model outputs
-  are not tied to job TTL; job-lifetime artifacts use the existing typed JobStore cleanup path.
+  lifetime. The parent validates before publishing. Moving the complete validated artifact set
+  into its final paths is the publication commit point. Cleanup before that point participates in
+  rollback and may fail the job; failed backup cleanup after that point is logged, while staging
+  cleanup receives the normal owner's second attempt and is logged if it still fails. Neither can
+  turn a committed model into an `error` job. Staging is removed after every failure, timeout,
+  cancellation, crash, or malformed result. Durable model outputs are not tied to job TTL;
+  job-lifetime artifacts use the existing typed JobStore cleanup path.
 - **Training fit and dispersion isolation.** The crash-prone fit/evaluation/model-write phase
   and GLM dispersion search run in spawn children. Request validation and pipeline materialisation
   remain in the parent so existing immediate HTTP validation errors and admission ownership do
-  not change. Progress is reconstructed from protocol events, bounded loss history remains
-  bounded in the parent, cancellation/timeout terminate the child, and only a validated manifest
-  can complete the job.
+  not change. Best-effort progress is reconstructed from delivered protocol events, dropped
+  updates never fail or throttle fitting, bounded loss history remains bounded in the parent,
+  cancellation/timeout terminate the child, and only a validated manifest can complete the job.
 - **Coherent timeout and publication correction.** Training jobs stamp their monotonic start
   time and timeout in the original locked create operation, so preparation time counts and a
   poll can time out work before fit launch. Optimiser workers no longer subscript the exposed

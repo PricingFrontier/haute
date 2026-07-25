@@ -252,9 +252,12 @@ spawn child through the shared worker protocol.
 
 The child receives plain configuration and paths, never the route's `JobStore`,
 `ExecutionContext`, callbacks, dataframes, or cancellation registry. Progress and iteration
-events reconstruct the existing status response in the parent; history remains capped. A model
-is visible at its configured final path only after the parent verifies its staged size/digest
-and publishes the model and per-model feature contract. Cancellation, timeout, memory-limit,
-child crash, malformed result, and publication failure preserve truthful terminal state and
-remove prepared/staged files. The existing response DTOs and immediate pre-launch validation
-errors do not change.
+events reconstruct the existing status response in the parent; they are non-blocking,
+loss-accounted telemetry, so a slow observer or a training run beyond the delivered-event budget
+cannot stall or fail fitting. History remains capped. A model is visible at its configured final
+path only after the parent verifies its staged size/digest and publishes the model and per-model
+feature contract. Cancellation, timeout, memory-limit, child crash, malformed result, and
+pre-commit publication failure preserve truthful terminal state and remove prepared/staged
+files. A post-commit backup or staging cleanup error is logged without misreporting the already
+published model as failed. The existing response DTOs and immediate pre-launch validation errors
+do not change.

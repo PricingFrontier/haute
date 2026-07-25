@@ -442,10 +442,16 @@ Remaining background-job improvement work is tracked in the
   `_worker_isolation.py` continues to own process caps, termination, and the legacy one-result
   primitive; routes use the protocol runner for migrated work.
 - `WorkerRequest` contains exactly `schema_version=1`, a non-empty `request_id`, a non-empty
-  `kind`, and bounded plain-data `payload`.
+  `kind`, and bounded plain-data `payload`. Construction serializes the payload once into its
+  immutable transport representation; the parent validates that representation without
+  serializing the payload again before spawn.
 - `WorkerProgressEvent` contains `schema_version=1`, a zero-based `sequence`, a finite
   `progress` in `[0, 1]`, a bounded message, a non-empty event kind, and bounded plain-data
-  fields. The child runtime assigns the sequence; callers cannot supply it.
+  fields, plus a non-negative `dropped_events` count for updates omitted since the preceding
+  delivered event. The child runtime assigns the sequence; callers cannot supply it.
+- `WorkerProgressEnd` contains `schema_version=1`, the next delivered sequence, and the number of
+  trailing dropped updates. Closing the child runtime publishes this marker exactly once and
+  prevents later emitters from writing behind it.
 - `WorkerArtifactManifest` contains `schema_version=1`, a declared `kind`, a normalized relative
   path, non-negative `size_bytes`, a lowercase SHA-256 hex digest, and lifetime
   `staged|job|durable`. The manifest never contains an absolute path.
@@ -458,19 +464,26 @@ Remaining background-job improvement work is tracked in the
 
 ### Bounds and validation
 
-The version-1 constants are part of the contract: event queue capacity 64, at most 10,000 events,
-64 KiB per serialized event, 4 MiB result metadata, 64 artifacts, 512-character identifiers and
-human messages, 4,096-character relative paths, and a maximum plain-data nesting depth of 64.
-Plain data is recursively limited to `None`, booleans, finite numbers, strings, lists/tuples, and
-string-keyed mappings; frames, models, arbitrary class instances, excessive nesting, and
-non-finite floats are contract errors.
+The version-1 constants are part of the contract: event queue capacity 64, at most 10,000
+delivered events, 64 KiB per serialized event, 4 MiB result metadata, 64 artifacts,
+512-character identifiers and human messages, 4,096-character relative paths, and a maximum
+plain-data nesting depth of 64. Plain data is recursively limited to `None`, booleans, finite
+numbers, strings, lists/tuples, and string-keyed mappings; frames, models, arbitrary class
+instances, excessive nesting, and non-finite floats are contract errors.
 
-The parent drains both events and any available result envelope while the child is alive, so it
-never joins a process whose queue feeder is blocked on a pipe-sized result. The bounded event
-queue applies back-pressure without deadlocking ordinary progress. Event validation accepts
-sequence `0` first and then exactly `previous + 1`; gaps, duplicates, and reordering terminate
-the run as `contract_error`. Every payload is validated again in the parent even though the
-child runtime constructs it.
+The child serializes each progress item once, checks the byte bound, and attempts a non-blocking
+queue write. A full queue or exhausted delivered-event budget increments the pending drop count
+and returns to the workload; it never raises merely because progress capacity was consumed. The
+next delivered event reports the pending count, while the end marker reports any trailing drops.
+Only malformed event data or an oversized individual event is a `contract_error`.
+
+The parent drains a bounded batch of events plus any available result envelope while the child is
+alive, so it never joins a process whose queue feeder is blocked on a pipe-sized result and it
+returns to cancellation/timeout checks between batches. Event validation accepts delivered
+sequence `0` first and then exactly `previous + 1`; gaps, duplicates, reordering, malformed drop
+counts, and an inconsistent end marker terminate the run as `contract_error`. Serialized event
+bytes are length-checked before decoding and each decoded payload is validated again in the
+parent even though the child runtime constructs it.
 
 For each artifact, the parent rejects absolute or non-normalized paths, `.`/`..`, symlink
 escapes, unknown kinds, missing/non-regular files, size mismatches, digest mismatches, and
@@ -505,7 +518,11 @@ handlers perform compare-and-swap running updates; iteration events append to th
 history. Parent completion validates and atomically publishes staged model/contract files,
 builds the existing response DTO, records child metrics, then transitions to completed. A
 parent `finally` releases registry/admission ownership and removes prepared/staged temporary
-data on all outcomes.
+data on all outcomes. Once both validated files have been replaced into their final paths,
+publication is committed: failure to unlink an obsolete backup is logged, and failure to remove
+the now-empty staging root is logged before parent cleanup retries it. Neither replaces the
+successful worker outcome. Artifact-root cleanup failure before publication remains an ordinary
+cleanup failure.
 
 `JobLifecycle.transition(..., expected_status="completed", to="error")` is the sole explicit
 publication-correction path. Default transitions still treat completed as sticky. Optimiser
@@ -514,11 +531,12 @@ elapsed reporting uses a locked snapshot/helper or a worker-local start time; it
 
 ### Verification
 
-`tests/test_worker_protocol.py` pins spawn pickling, event ordering/bounds, malformed versions,
-plain-data rejection, cancellation with progress in flight, crash/timeout cleanup, artifact
-containment, symlink/traversal rejection, partial/tampered manifests, unknown kinds, and digest
-validation. `tests/test_worker_isolation.py` pins total supervisor terminalisation, precedence,
-cleanup plus primary failure, and raising join behavior. Focused modelling tests pin progress,
-bounded loss history, completion publication, cancellation, timeout, crash, invalid manifest,
-and cleanup. Lifecycle/route tests pin create-time timeout and coherent publication correction;
-optimiser tests assert that no production source path subscripts `JobStore.jobs`.
+`tests/test_worker_protocol.py` pins spawn pickling, event ordering/bounds, non-blocking drops and
+loss accounting, budget exhaustion, malformed versions, plain-data rejection, cancellation with
+progress in flight, crash/timeout cleanup, artifact containment, symlink/traversal rejection,
+partial/tampered manifests, unknown kinds, and digest validation. `tests/test_worker_isolation.py`
+pins total supervisor terminalisation, precedence, cleanup plus primary failure, and raising join
+behavior. Focused modelling tests pin progress, bounded loss history, completion publication,
+post-commit cleanup failure, cancellation, timeout, crash, invalid manifest, and cleanup.
+Lifecycle/route tests pin create-time timeout and coherent publication correction; optimiser
+tests assert that no production source path subscripts `JobStore.jobs`.

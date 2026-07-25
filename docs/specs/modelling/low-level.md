@@ -557,7 +557,13 @@ tracked in the [modelling roadmap](../../roadmap/modelling.md).
   manifest, the model stem must equal the requested training-job name, and the feature-contract
   filename must be the canonical companion for that model stem. The response's `model_path` is
   rewritten to the final path. MLflow logging consumes the staged model before publication; a
-  failed run never exposes a partial final model.
+  failed run never exposes a partial final model. Replacing the complete pair is the commit point:
+  rollback remains mandatory before it, while failure to delete old backups or the empty staging
+  root after it is logged and cannot downgrade the committed job.
+- Progress emission is non-blocking. The shared protocol drops updates when its queue is full or
+  its 10,000-delivered-event budget is exhausted, reports loss counts on the next event/end
+  marker, and continues fitting. Parent draining is batch-bounded so timeout and cancellation
+  checks are not starved by a fast producer.
 - Dispersion returns bounded scalar metadata and no artifact. Candidate-fit progress uses typed
   events; the parent writes `param`, `value`, `llf`, and `n_fits` only on validated completion.
 - Child exceptions are translated to stable terminal reasons before transport:

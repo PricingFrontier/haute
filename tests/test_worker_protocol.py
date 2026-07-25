@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import os
+import pickle
+import queue
 import time
 from pathlib import Path
 
@@ -15,8 +17,10 @@ from haute._worker_isolation import (
     IsolatedWorkerTimeoutError,
 )
 from haute._worker_protocol import (
+    WORKER_MAX_EVENTS,
     WorkerArtifactManifest,
     WorkerFailurePayload,
+    WorkerProgressEnd,
     WorkerProgressEvent,
     WorkerProtocolError,
     WorkerRemoteFailureError,
@@ -62,6 +66,17 @@ def _slow_worker(runtime, request):
 def _large_result_worker(runtime, request):
     del runtime, request
     return WorkerResultManifest(metadata={"payload": "x" * (1024 * 1024)})
+
+
+def _progress_budget_worker(runtime, request):
+    del request
+    for index in range(WORKER_MAX_EVENTS + 10):
+        runtime.emit_progress(
+            progress=index / (WORKER_MAX_EVENTS + 10),
+            message="working",
+            kind="iteration",
+        )
+    return WorkerResultManifest(metadata={"ok": True})
 
 
 def _crash_worker(runtime, request):
@@ -119,7 +134,11 @@ def test_parent_revalidates_a_forged_request_before_spawning(tmp_path: Path) -> 
     forged = object.__new__(WorkerRequest)
     object.__setattr__(forged, "request_id", "request")
     object.__setattr__(forged, "kind", "kind")
-    object.__setattr__(forged, "payload", {})
+    object.__setattr__(
+        forged,
+        "_payload_bytes",
+        pickle.dumps({}, protocol=pickle.HIGHEST_PROTOCOL),
+    )
     object.__setattr__(forged, "schema_version", True)
 
     with pytest.raises(WorkerProtocolError, match="schema"):
@@ -132,6 +151,38 @@ def test_parent_revalidates_a_forged_request_before_spawning(tmp_path: Path) -> 
         )
 
 
+def test_request_payload_is_serialized_once_before_spawn(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from haute import _worker_protocol
+
+    payload = {"marker": "serialize-once"}
+    real_dumps = pickle.dumps
+    payload_serializations = 0
+
+    def counting_dumps(value, *args, **kwargs):
+        nonlocal payload_serializations
+        if value is payload:
+            payload_serializations += 1
+        return real_dumps(value, *args, **kwargs)
+
+    monkeypatch.setattr(_worker_protocol.pickle, "dumps", counting_dumps)
+    request = WorkerRequest("request", "kind", payload)
+
+    result = run_worker_protocol(
+        _large_result_worker,
+        request,
+        artifact_root=tmp_path / "artifacts",
+        artifact_kinds=frozenset(),
+        max_artifact_size_bytes=0,
+        config=IsolatedWorkerConfig(timeout_seconds=10),
+    )
+
+    assert result.metadata["payload"].startswith("x")
+    assert payload_serializations == 1
+
+
 def test_parent_rejects_non_monotonic_progress(tmp_path: Path) -> None:
     # The private queue reader is exercised with forged queue contents; a spawn
     # worker cannot be instructed to emit a duplicate through WorkerRuntime.
@@ -141,7 +192,10 @@ def test_parent_rejects_non_monotonic_progress(tmp_path: Path) -> None:
 
     class Queue:
         def __init__(self):
-            self.values = [first, duplicate]
+            self.values = [
+                pickle.dumps(first, protocol=pickle.HIGHEST_PROTOCOL),
+                pickle.dumps(duplicate, protocol=pickle.HIGHEST_PROTOCOL),
+            ]
 
         def get_nowait(self):
             if not self.values:
@@ -152,6 +206,35 @@ def test_parent_rejects_non_monotonic_progress(tmp_path: Path) -> None:
 
     with pytest.raises(WorkerProtocolError, match="does not match"):
         _drain_progress(Queue(), 0, None)
+
+
+def test_parent_drain_batch_is_bounded() -> None:
+    from haute._worker_protocol import WORKER_EVENT_QUEUE_CAPACITY, _drain_progress
+
+    class Queue:
+        def __init__(self) -> None:
+            self.values = [
+                pickle.dumps(
+                    WorkerProgressEvent(index, 0.5, "event", "phase", {}),
+                    protocol=pickle.HIGHEST_PROTOCOL,
+                )
+                for index in range(WORKER_EVENT_QUEUE_CAPACITY + 1)
+            ]
+
+        def get_nowait(self):
+            if not self.values:
+                raise queue.Empty
+            return self.values.pop(0)
+
+    progress_queue = Queue()
+    received: list[WorkerProgressEvent] = []
+
+    expected, ended = _drain_progress(progress_queue, 0, received.append)
+
+    assert expected == WORKER_EVENT_QUEUE_CAPACITY
+    assert ended is False
+    assert len(received) == WORKER_EVENT_QUEUE_CAPACITY
+    assert len(progress_queue.values) == 1
 
 
 def test_post_exit_drain_validates_feeder_delayed_event() -> None:
@@ -170,12 +253,130 @@ def test_post_exit_drain_validates_feeder_delayed_event() -> None:
             value = self.values.pop(0)
             return value
 
-        values = [event, None]
+        values = [
+            pickle.dumps(event, protocol=pickle.HIGHEST_PROTOCOL),
+            pickle.dumps(WorkerProgressEnd(1, 0), protocol=pickle.HIGHEST_PROTOCOL),
+        ]
 
     received: list[WorkerProgressEvent] = []
     _drain_progress_until_end(Queue(), 0, received.append)
 
     assert received == [event]
+
+
+def test_progress_emission_is_non_blocking_and_reports_drops(tmp_path: Path) -> None:
+    from haute._worker_protocol import WorkerRuntime
+
+    class ToggleQueue:
+        def __init__(self) -> None:
+            self.full = True
+            self.items: list[bytes] = []
+
+        def put_nowait(self, item: bytes) -> None:
+            if self.full:
+                raise queue.Full
+            self.items.append(item)
+
+        def put(self, item: bytes) -> None:
+            self.items.append(item)
+
+    progress_queue = ToggleQueue()
+    runtime = WorkerRuntime(progress_queue, str(tmp_path))
+
+    assert runtime.emit_progress(progress=0.1, message="dropped", kind="iteration") is False
+    progress_queue.full = False
+    assert runtime.emit_progress(progress=0.2, message="delivered", kind="iteration") is True
+    runtime.close()
+
+    event, end = (pickle.loads(item) for item in progress_queue.items)
+    assert isinstance(event, WorkerProgressEvent)
+    assert event.sequence == 0
+    assert event.dropped_events == 1
+    assert isinstance(end, WorkerProgressEnd)
+    assert end.sequence == 1
+    assert end.dropped_events == 0
+    with pytest.raises(WorkerProtocolError, match="closed"):
+        runtime.emit_progress(progress=0.3, message="late", kind="iteration")
+
+
+def test_progress_budget_exhaustion_drops_instead_of_failing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from haute import _worker_protocol
+
+    class CollectingQueue:
+        def __init__(self) -> None:
+            self.items: list[bytes] = []
+
+        def put_nowait(self, item: bytes) -> None:
+            self.items.append(item)
+
+        def put(self, item: bytes) -> None:
+            self.items.append(item)
+
+    monkeypatch.setattr(_worker_protocol, "WORKER_MAX_EVENTS", 2)
+    progress_queue = CollectingQueue()
+    runtime = _worker_protocol.WorkerRuntime(progress_queue, str(tmp_path))
+
+    assert runtime.emit_progress(progress=0.1, message="one", kind="iteration") is True
+    assert runtime.emit_progress(progress=0.2, message="two", kind="iteration") is True
+    assert runtime.emit_progress(progress=0.3, message="three", kind="iteration") is False
+    assert runtime.emit_progress(progress=0.4, message="four", kind="iteration") is False
+    runtime.close()
+
+    first, second, end = (pickle.loads(item) for item in progress_queue.items)
+    assert isinstance(first, WorkerProgressEvent)
+    assert isinstance(second, WorkerProgressEvent)
+    assert isinstance(end, WorkerProgressEnd)
+    assert [first.sequence, second.sequence] == [0, 1]
+    assert end.sequence == 2
+    assert end.dropped_events == 2
+
+
+def test_progress_event_size_is_measured_only_at_transport(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from haute import _worker_protocol
+
+    real_dumps = pickle.dumps
+    serialized: list[object] = []
+
+    def counting_dumps(value, *args, **kwargs):
+        serialized.append(value)
+        return real_dumps(value, *args, **kwargs)
+
+    monkeypatch.setattr(_worker_protocol.pickle, "dumps", counting_dumps)
+    WorkerProgressEvent(0, 0.5, "constructed", "phase", {})
+    assert serialized == []
+
+    class Queue:
+        def put_nowait(self, item: bytes) -> None:
+            self.item = item
+
+    runtime = _worker_protocol.WorkerRuntime(Queue(), str(tmp_path))
+    assert runtime.emit_progress(progress=0.5, message="emitted", kind="phase") is True
+    assert len(serialized) == 1
+    assert isinstance(serialized[0], WorkerProgressEvent)
+
+
+def test_oversized_progress_event_still_fails_at_transport(tmp_path: Path) -> None:
+    from haute._worker_protocol import WorkerRuntime
+
+    class Queue:
+        def put_nowait(self, item: bytes) -> None:
+            raise AssertionError("oversized events must not reach the queue")
+
+    runtime = WorkerRuntime(Queue(), str(tmp_path))
+
+    with pytest.raises(WorkerProtocolError, match="serialized progress event"):
+        runtime.emit_progress(
+            progress=0.5,
+            message="large",
+            kind="phase",
+            fields={"blob": "x" * (64 * 1024)},
+        )
 
 
 def test_termination_helper_rejects_a_process_that_remains_alive(
@@ -292,6 +493,24 @@ def test_real_spawn_forwards_validated_progress_and_result(tmp_path: Path) -> No
 
     assert result.metadata == {"ok": True}
     assert [event.sequence for event in events] == [0, 1]
+
+
+def test_real_spawn_progress_budget_exhaustion_does_not_fail(tmp_path: Path) -> None:
+    events: list[WorkerProgressEvent] = []
+
+    result = run_worker_protocol(
+        _progress_budget_worker,
+        _request(),
+        artifact_root=tmp_path / "artifacts",
+        artifact_kinds=frozenset(),
+        max_artifact_size_bytes=0,
+        on_progress=events.append,
+        config=IsolatedWorkerConfig(timeout_seconds=20),
+    )
+
+    assert result.metadata == {"ok": True}
+    assert 0 < len(events) <= WORKER_MAX_EVENTS
+    assert [event.sequence for event in events] == list(range(len(events)))
 
 
 def test_real_spawn_drains_large_result_before_joining_child(tmp_path: Path) -> None:

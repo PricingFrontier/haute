@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pickle
 import time
 from pathlib import Path
 from unittest.mock import patch
@@ -35,6 +36,9 @@ class _ForwardingQueue:
         self.events.append(event)
         if self.callback is not None:
             self.callback(event)
+
+    def put_nowait(self, payload: bytes) -> None:
+        self.put(pickle.loads(payload))
 
 
 def _inline_protocol_runner(
@@ -301,6 +305,124 @@ def test_publication_rejects_model_name_not_declared_by_request(tmp_path: Path) 
     assert not output_dir.exists()
     assert model_path.exists()
     assert contract_path.exists()
+
+
+def test_publication_keeps_new_pair_when_backup_deletion_is_denied(
+    tmp_path: Path,
+) -> None:
+    artifact_root = tmp_path / "artifacts"
+    staged_output = artifact_root / "output"
+    staged_output.mkdir(parents=True)
+    model_path = staged_output / "quoted.cbm"
+    contract_path = staged_output / model_contract_filename("quoted")
+    model_path.write_bytes(b"new-model")
+    contract_path.write_bytes(b"new-contract")
+    manifest = WorkerResultManifest(
+        metadata={},
+        artifacts=(
+            build_artifact_manifest(
+                artifact_root=artifact_root,
+                path=model_path,
+                kind="model",
+                lifetime="staged",
+            ),
+            build_artifact_manifest(
+                artifact_root=artifact_root,
+                path=contract_path,
+                kind="feature_contract",
+                lifetime="staged",
+            ),
+        ),
+    )
+    output_dir = tmp_path / "outputs"
+    output_dir.mkdir()
+    final_model = output_dir / "quoted.cbm"
+    final_contract = output_dir / model_contract_filename("quoted")
+    final_model.write_bytes(b"old-model")
+    final_contract.write_bytes(b"old-contract")
+    original_unlink = Path.unlink
+
+    def deny_backup_unlink(path: Path, *args, **kwargs) -> None:
+        if path.name.endswith(".haute-backup"):
+            raise PermissionError("backup is temporarily locked")
+        original_unlink(path, *args, **kwargs)
+
+    with patch.object(Path, "unlink", autospec=True, side_effect=deny_backup_unlink):
+        _publish_training_artifacts(
+            manifest,
+            artifact_root=artifact_root,
+            output_root=output_dir,
+            job_id="job-1",
+            expected_model_name="quoted",
+        )
+
+    assert final_model.read_bytes() == b"new-model"
+    assert final_contract.read_bytes() == b"new-contract"
+    assert (output_dir / ".quoted.cbm.job-1.haute-backup").exists()
+    assert (output_dir / f".{model_contract_filename('quoted')}.job-1.haute-backup").exists()
+
+
+def test_train_service_keeps_completed_status_when_artifact_cleanup_is_denied(
+    tmp_path: Path,
+) -> None:
+    store = JobStore()
+    service = TrainService(store, protocol_runner=_inline_protocol_runner)
+    output_dir = tmp_path / "outputs"
+    prepared = tmp_path / "prepared.parquet"
+    prepared.write_bytes(b"prepared")
+    released: list[bool] = []
+    context = ExecutionContext(
+        operation="training_pipeline",
+        profile=ExecutionProfile.TRAINING_PREP,
+        admission_release=lambda: released.append(True),
+    )
+    job_id = store.create_job(
+        {
+            "status": "running",
+            "job_type": "training",
+            "start_time": time.monotonic(),
+            "timeout": 60,
+        }
+    )
+    import shutil
+
+    original_rmtree = shutil.rmtree
+
+    def deny_artifact_cleanup(path, *args, **kwargs) -> None:
+        if Path(path).name.startswith(".haute-training-"):
+            raise PermissionError("artifact directory is temporarily locked")
+        original_rmtree(path, *args, **kwargs)
+
+    with (
+        patch("haute.modelling.TrainingJob", _SuccessfulTrainingJob),
+        patch("haute.routes._train_service.shutil.rmtree", side_effect=deny_artifact_cleanup),
+    ):
+        thread = service._launch_background(
+            job_id,
+            "quoted",
+            {
+                "name": "quoted",
+                "target": "y",
+                "algorithm": "catboost",
+                "loss_function": "RMSE",
+                "output_dir": str(output_dir),
+            },
+            {"iterations": 2},
+            str(prepared),
+            None,
+            10,
+            execution_context=context,
+        )
+        assert thread is not None
+        thread.join_and_raise(timeout=10)
+
+    job = store.require_job(job_id)
+    assert job["status"] == "completed"
+    assert (output_dir / "quoted.cbm").read_bytes() == b"model"
+    assert (output_dir / model_contract_filename("quoted")).exists()
+    assert not prepared.exists()
+    assert released == [True]
+    assert list(output_dir.glob(".haute-training-*"))
 
 
 def test_terminal_job_after_preparation_does_not_launch_worker(tmp_path: Path) -> None:
