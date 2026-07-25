@@ -513,6 +513,7 @@ class TestExecuteSinkDataOutput:
         target = tmp_path / "result.parquet"
         stage.write_bytes(b"output")
         calls: list[tuple[Path, Path]] = []
+        cleanup_calls: list[Path] = []
         original_rename = executor_module.os.rename
 
         def record_rename(source: Path, destination: Path) -> None:
@@ -522,13 +523,18 @@ class TestExecuteSinkDataOutput:
         def unexpected_link(*_args: object, **_kwargs: object) -> None:
             raise AssertionError("Windows publication must not use hard links")
 
+        def record_cleanup(path: Path, *, project_root: str | Path | None) -> None:
+            cleanup_calls.append(path)
+
         monkeypatch.setattr(executor_module, "_IS_WINDOWS", True)
         monkeypatch.setattr(executor_module.os, "rename", record_rename)
         monkeypatch.setattr(executor_module.os, "link", unexpected_link)
+        monkeypatch.setattr(executor_module, "_cleanup_output_staging_path", record_cleanup)
 
         executor_module._publish_output_create_only(stage, target, "result.parquet")
 
         assert calls == [(stage, target)]
+        assert cleanup_calls == []
         assert target.read_bytes() == b"output"
 
     def test_non_windows_unsupported_link_raises_safe_publication_error(
@@ -618,6 +624,73 @@ class TestExecuteSinkDataOutput:
             executor_module._sync_output_artifact(artifact)
 
         assert attempts == 3
+
+    @pytest.mark.parametrize(
+        ("is_windows", "expected_mode"),
+        [(False, "rb"), (True, "rb+")],
+    )
+    def test_artifact_sync_uses_platform_appropriate_open_mode(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        is_windows: bool,
+        expected_mode: str,
+    ) -> None:
+        artifact = tmp_path / "stage.parquet"
+        artifact.write_bytes(b"output")
+        opened_modes: list[str] = []
+        original_open = Path.open
+
+        def record_open(path: Path, mode: str):
+            opened_modes.append(mode)
+            return original_open(path, "rb+")
+
+        monkeypatch.setattr(executor_module, "_IS_WINDOWS", is_windows)
+        monkeypatch.setattr(Path, "open", record_open)
+        monkeypatch.setattr(executor_module.os, "fsync", lambda _descriptor: None)
+
+        executor_module._sync_output_artifact(artifact)
+
+        assert opened_modes == [expected_mode]
+
+    def test_windows_directory_sync_is_a_noop(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def unexpected_open(*_args: object, **_kwargs: object) -> int:
+            raise AssertionError("Windows directory sync must not open a directory descriptor")
+
+        monkeypatch.setattr(executor_module, "_IS_WINDOWS", True)
+        monkeypatch.setattr(executor_module.os, "open", unexpected_open)
+
+        executor_module._sync_output_directory(tmp_path)
+
+    def test_posix_directory_sync_uses_directory_descriptor_flags(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        descriptor = 123
+        opened: list[tuple[Path, int]] = []
+        synced: list[int] = []
+        closed: list[int] = []
+
+        def record_open(path: Path, flags: int) -> int:
+            opened.append((path, flags))
+            return descriptor
+
+        monkeypatch.setattr(executor_module, "_IS_WINDOWS", False)
+        monkeypatch.setattr(executor_module.os, "open", record_open)
+        monkeypatch.setattr(executor_module.os, "fsync", synced.append)
+        monkeypatch.setattr(executor_module.os, "close", closed.append)
+
+        executor_module._sync_output_directory(tmp_path)
+
+        expected_flags = executor_module.os.O_RDONLY | getattr(
+            executor_module.os,
+            "O_DIRECTORY",
+            0,
+        )
+        assert opened == [(tmp_path, expected_flags)]
+        assert synced == [descriptor]
+        assert closed == [descriptor]
 
     def test_directory_sync_failure_reports_published_but_unconfirmed_durability(
         self, haute_scratch: Path, monkeypatch: pytest.MonkeyPatch
@@ -786,6 +859,43 @@ class TestExecuteSinkDataOutput:
             ).height
             == 3
         )
+
+    def test_csv_row_count_scan_kwargs_preserve_writer_dialect(self) -> None:
+        scanner_name = "".join(("scan_", "csv"))
+        config = {
+            "arguments": {
+                "decimal_comma": True,
+                "quote_char": "'",
+                "separator": ";",
+                "include_header": False,
+                "line_terminator": "\r\n",
+            }
+        }
+
+        assert executor_module._output_row_count_scan_kwargs(config, scanner_name) == {
+            "raise_if_empty": False,
+            "decimal_comma": True,
+            "quote_char": "'",
+            "separator": ";",
+            "has_header": False,
+            "eol_char": "\n",
+        }
+
+    def test_non_csv_row_count_scan_does_not_receive_csv_options(self) -> None:
+        config = {"arguments": {"separator": ";", "include_header": False}}
+
+        assert executor_module._output_row_count_scan_kwargs(config, "scan_avro") == {}
+
+    @pytest.mark.parametrize("line_terminator", ["\t", "|"])
+    def test_csv_row_count_scan_preserves_single_byte_line_terminators(
+        self, line_terminator: str
+    ) -> None:
+        config = {"arguments": {"line_terminator": line_terminator}}
+
+        assert executor_module._output_row_count_scan_kwargs(config, "scan_csv") == {
+            "raise_if_empty": False,
+            "eol_char": line_terminator,
+        }
 
     @pytest.mark.parametrize("include_header", [True, False])
     def test_csv_streaming_row_count_handles_empty_output(
@@ -1002,6 +1112,23 @@ class TestResolveDataOutputPath:
         )
 
         assert outside_stage.read_bytes() == b"preserve"
+
+    def test_cleanup_of_missing_staging_path_is_silent(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        warnings: list[tuple[str, dict[str, object]]] = []
+
+        def record_warning(event: str, **details: object) -> None:
+            warnings.append((event, details))
+
+        monkeypatch.setattr(executor_module.logger, "warning", record_warning)
+
+        executor_module._cleanup_output_staging_path(
+            tmp_path / ".missing.haute-stage-token.parquet",
+            project_root=tmp_path,
+        )
+
+        assert warnings == []
 
 
 class TestDataInputBuilder:
