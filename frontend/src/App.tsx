@@ -37,7 +37,6 @@ import BackgroundJobPolling from "./components/BackgroundJobPolling"
 import UtilityPanel from "./panels/UtilityPanel"
 import ImportsPanel from "./panels/ImportsPanel"
 import type { ComparisonInspect } from "./components/ComparisonView"
-import NodeSearch from "./components/NodeSearch"
 import EdgeJoinInsertionFeedback from "./components/EdgeJoinInsertionFeedback"
 import { withEdgeJoinInsertionCandidate } from "./utils/edgeJoinInsertionFeedback"
 
@@ -87,6 +86,7 @@ const GitPanel = lazy(() => import("./panels/GitPanel"))
 const AssistantPanel = lazy(() => import("./panels/assistant/AssistantPanel"))
 const ComparisonView = lazy(() => import("./components/ComparisonView"))
 const ComparisonInspector = lazy(() => import("./components/ComparisonInspector"))
+const NodeSearch = lazy(() => import("./components/NodeSearch"))
 // Optimiser results are produced only after a user-triggered solve, so keep
 // the comparatively heavy charts out of the initial application bundle.
 const OptimiserPreview = lazy(() => import("./panels/OptimiserPreview"))
@@ -1289,20 +1289,22 @@ function FlowEditor() {
       )}
 
       {nodeSearchOpen && (
-        <NodeSearch
-          onClose={() => setNodeSearchOpen(false)}
-          onSelectNode={(nodeId) => {
-            const node = graphRef.current.nodes.find((n) => n.id === nodeId) ?? null
-            if (node) {
-              setSelectedNode(node)
-              setLastSelectedId(node.id)
-              lastSelectedNodeRef.current = node
-              setUtilityOpen(false)
-              setImportsOpen(false)
-              setGitOpen(false)
-            }
-          }}
-        />
+        <Suspense fallback={null}>
+          <NodeSearch
+            onClose={() => setNodeSearchOpen(false)}
+            onSelectNode={(nodeId) => {
+              const node = graphRef.current.nodes.find((n) => n.id === nodeId) ?? null
+              if (node) {
+                setSelectedNode(node)
+                setLastSelectedId(node.id)
+                lastSelectedNodeRef.current = node
+                setUtilityOpen(false)
+                setImportsOpen(false)
+                setGitOpen(false)
+              }
+            }}
+          />
+        </Suspense>
       )}
 
       <ErrorBoundary name="Toast">

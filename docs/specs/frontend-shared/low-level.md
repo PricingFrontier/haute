@@ -33,7 +33,7 @@
 | `frontend/src/panels/ImportsPanel.tsx` | Active pipeline-imports right panel: `PanelShell` plus `CodeEditor`, explanatory always-included imports, and callback-only preamble mutation/close handling. `App.tsx` supplies the graph-store-backed preamble and selects it through `importsOpen`. |
 | `frontend/src/components/SettingsModal.tsx` | Legacy pipeline-imports/preamble editor dialog (custom overlay, not `ModalShell`). It has component tests but no production import or render site; `ImportsPanel` is the active UI. |
 | `frontend/src/components/BackgroundJobPolling.tsx` | Zero-render mount point (`memo`) that only invokes `useBackgroundJobs()`. |
-| `frontend/src/components/NodeSearch.tsx` | Ctrl+K command palette: filters/windows the current React Flow node list, arrow-key navigation, jumps the canvas viewport to the selected node. |
+| `frontend/src/components/NodeSearch.tsx` | Ctrl+K command palette: dynamically imported by `App.tsx` only while open, filters/windows the current React Flow node list, supports arrow-key navigation, and jumps the canvas viewport to the selected node. |
 | `frontend/src/components/BreadcrumbBar.tsx` | Pipeline → submodel navigation trail; renders nothing at stack depth ≤ 1. |
 | `frontend/src/hooks/useClickOutside.ts` | Attaches/detaches a `mousedown` listener that fires `onClose` when the click lands outside `ref`, only while `active`. |
 | `frontend/src/hooks/useDragResize.ts` | Bottom-panel drag-to-resize: DOM-direct mutation while dragging, commits to React state on mouseup. |
@@ -279,6 +279,9 @@ focus is restored to the element that was focused before the modal opened.
   keeps the currently-active result in the accessibility tree (visually
   hidden, off-screen-clipped) even when scrolled out of the rendered
   window, so `aria-activedescendant` always resolves to a real DOM node.
+  `App.tsx` dynamically imports the component and wraps only its conditional
+  render site in `Suspense`; a closed palette therefore contributes no
+  `NodeSearch` code to the initial chunk.
 - **`ModalShell`** guards the zero-focusable-elements case: if
   `querySelectorAll(FOCUSABLE_SELECTOR)` returns nothing, Tab is
   `preventDefault`ed and focus is forced back onto the container itself
@@ -471,3 +474,33 @@ input-cache job/status, and output-write models; delete `fetchIoFormats` and leg
 cache/sink clients. The settings/cache stores key remote work by safe identity digest and job id,
 not table spelling. Guard tests cover every union leg, order retention, unknown versions,
 readiness/freshness separation, error/redaction fields, and malformed payload rejection.
+
+## Approved change contract — exact frontend result-cache identity
+
+This contract implements AUD-C16 in the
+[frontend canvas roadmap](../../roadmap/frontend-canvas.md).
+
+- `stores/useNodeResultsStore.ts::hashConfig` retains its call signature but returns canonical
+  JSON identity rather than a fixed-width DJB2 digest. It removes `_nodeId`, `_columns`,
+  `_schemaWarnings`, and `_availableColumns` only from the root config, normalises through
+  `JSON.stringify`/`JSON.parse`, recursively sorts the resulting JSON object keys, preserves array
+  order, and serialises the canonical value. Ordinary undefined/non-finite/toJSON inputs therefore
+  keep JSON's established semantics; nested keys with reserved spellings remain semantic. A real
+  serialization failure is never mapped to an empty or guessed value.
+- The exact canonical string is the deliberate collision-free comparison value. It is retained
+  only by the bounded solve, train, and explore result families plus their active jobs; the known
+  DJB2 collision test prevents replacing it with the former digest under the existing API name.
+- Solve, train, explore, estimate, and preview freshness use the dimensions applicable to their
+  request. Preview additionally compares `rowLimit`; source and structural generation are never
+  inferred from config identity. `useSettingsStore` source changes continue to clear
+  source-dependent column/schema state.
+- Cache recency changes on a successful read and on insertion/update. Over-limit insertion evicts
+  exactly the least-recently-used entry; invalid non-positive limits still throw. Re-fetching an
+  evicted identity produces a miss rather than reviving hidden state.
+- `src/__tests__/stores/useNodeResultsStore.test.ts` owns canonical identity and all bounded-store
+  eviction cases, including root-only ephemeral stripping and JSON normalization.
+  `hooks/__tests__/usePipelineAPI.gaps.test.ts`,
+  `hooks/__tests__/previewCache.test.ts`, and
+  `hooks/__tests__/columnStashSourceIdentity.test.ts` own the source, row-limit, structural, and
+  schema-stash dimensions. A regression fixture contains two literal configs that collide under
+  the removed digest so collision resistance is executable rather than probabilistic.

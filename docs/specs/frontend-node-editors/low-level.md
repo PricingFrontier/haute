@@ -253,6 +253,41 @@ provider grouping, snapshot refresh, cached offline execution, multiple format l
 write, and removed-node absence. The legacy node-continuity migration suite is deleted rather
 than adapted.
 
+## Approved change contract — Banding-to-Rating canvas assurance
+
+This contract implements ROAD-UI-01 through ROAD-UI-04 in the
+[frontend canvas roadmap](../../roadmap/frontend-canvas.md).
+
+The owned configuration-shape matrix is:
+
+| Shape | Fixture | Owner and tier |
+|---|---|---|
+| Continuous factor | Minimal literal factor with labelled rules | `src/__tests__/utils/banding.test.ts` — unit |
+| Categorical factor | Minimal literal value groups | `src/__tests__/utils/banding.test.ts` — unit |
+| Breakpoint factor | Minimal literal thresholds | `src/__tests__/utils/banding.test.ts` — unit |
+| Mixed three-factor output | Frozen, production-shaped Banding sidecar | `e2e/canvas-assurance.spec.ts` — browser |
+| Zero-level and malformed/partial factors | Explicit component literals, including blank drafts | `src/__tests__/editors/RatingStepEditor.test.tsx` — component |
+| Persisted three-factor Rating table | Deterministic generated project and sidecar | `e2e/canvas-assurance.spec.ts` — browser |
+
+- `utils/banding.ts` exposes a typed classification in addition to level extraction. A factor is
+  classifiable only when it is a plain object with a recognised continuous, categorical, or
+  breakpoint mode. Blank output names are drafts. For each recognised, non-blank output it
+  returns ordered valid levels and, when that list is empty, a named issue. Invalid containers and
+  unknown modes return no invented levels and do not throw.
+- `RatingStepEditor.tsx` uses the classification's complete configured-output set when deciding
+  whether raw preview/saved-table levels may fill a column. A zero-level configured output is not
+  repopulated from stale data: it is absent from selectors and named in a single `role="alert"`
+  warning. Healthy outputs from the same or other Banding nodes remain in the selectors.
+- `frontend/e2e/canvas-assurance.spec.ts` uses a generated, project-isolated pipeline with three
+  visibly named factor modes and deterministic two-level outputs. Rebuild produces exactly eight
+  Cartesian entries. The test edits one relativity through its accessible label, saves with the
+  keyboard, reloads, and verifies both the UI value and persisted sidecar.
+- Browser snapshots are element-scoped and animation-disabled for the mixed Banding editor and
+  rebuilt Rating table. They run in Chromium at 1440×900 and the supported narrow viewport
+  1024×768; the snapshot name encodes state and viewport. Below 1024 CSS px is outside this
+  assurance contract. Semantic locators, focus assertions, Enter/Space activation, and the save
+  shortcut form the accessibility boundary; this package makes no whole-page WCAG claim.
+
 ## I/O authoring feedback and output lifecycle
 
 - `DataInputEditor` calls `useSchemaFetch` with the configured file path only

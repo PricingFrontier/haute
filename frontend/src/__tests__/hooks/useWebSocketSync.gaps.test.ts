@@ -14,7 +14,8 @@ import type { Node } from "@xyflow/react"
 
 // ── Mock dependencies BEFORE importing the hook ──────────────────
 
-vi.mock("../../utils/layout.ts", () => ({
+vi.mock("../../utils/layout.ts", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../utils/layout.ts")>(),
   getLayoutedElements: vi.fn(async (nodes: unknown[]) => nodes),
 }))
 
@@ -400,7 +401,9 @@ describe("useWebSocketSync — gap tests", () => {
       })
       vi.mocked(getLayoutedElements)
         .mockImplementationOnce(async () => firstLayout)
-        .mockImplementationOnce(async (nodes: Node[]) => nodes)
+        .mockImplementationOnce(async (nodes: Node[]) =>
+          nodes.map(node => ({ ...node, position: { x: 20, y: 20 } })),
+        )
 
       const params = makeHookParams()
       renderHook(() => useWebSocketSync(params))
@@ -415,7 +418,11 @@ describe("useWebSocketSync — gap tests", () => {
           data: JSON.stringify({
             type: "graph_update",
             graph: {
-              nodes: [{ id: "node_99", position: { x: 0, y: 0 }, data: { label: "old" } }],
+              nodes: [{
+                id: "node_99",
+                position: { x: Number.NaN, y: Number.NaN },
+                data: { label: "old" },
+              }],
               edges: [],
             },
           }),
@@ -428,7 +435,11 @@ describe("useWebSocketSync — gap tests", () => {
           data: JSON.stringify({
             type: "graph_update",
             graph: {
-              nodes: [{ id: "node_2", position: { x: 0, y: 0 }, data: { label: "new" } }],
+              nodes: [{
+                id: "node_2",
+                position: { x: Number.NaN, y: Number.NaN },
+                data: { label: "new" },
+              }],
               edges: [],
             },
           }),
@@ -504,7 +515,11 @@ describe("useWebSocketSync — gap tests", () => {
           data: JSON.stringify({
             type: "graph_update",
             graph: {
-              nodes: [{ id: "after-unmount", position: { x: 0, y: 0 }, data: {} }],
+              nodes: [{
+                id: "after-unmount",
+                position: { x: Number.NaN, y: Number.NaN },
+                data: {},
+              }],
               edges: [],
             },
           }),

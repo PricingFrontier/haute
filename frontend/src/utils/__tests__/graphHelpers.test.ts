@@ -1,7 +1,35 @@
 import { describe, it, expect } from "vitest"
 import type { Node, Edge } from "@xyflow/react"
 import type { PipelineEdge } from "../../types/node"
-import { computeNextNodeId, normalizeEdges } from "../graphHelpers"
+import {
+  computeNextNodeId,
+  filterIncomingEdges,
+  normalizeEdges,
+} from "../graphHelpers"
+import { NODE_TYPES } from "../nodeTypes"
+
+function graphNode(
+  id: string,
+  nodeType: string,
+  config: Record<string, unknown> = {},
+  data: Record<string, unknown> = {},
+): Node {
+  return {
+    id,
+    position: { x: 1, y: 1 },
+    data: { label: id, nodeType, config, ...data },
+  } as Node
+}
+
+function graphEdge(
+  id: string,
+  source: string,
+  target: string,
+  sourceHandle: string | null = null,
+  targetHandle: string | null = null,
+): Edge {
+  return { id, source, target, sourceHandle, targetHandle } as Edge
+}
 
 // ---------------------------------------------------------------------------
 // computeNextNodeId
@@ -123,5 +151,155 @@ describe("normalizeEdges", () => {
     expect(result).toHaveLength(2)
     expect(result[0].type).toBe("default")
     expect(result[1].type).toBe("default")
+  })
+})
+
+// ---------------------------------------------------------------------------
+// filterIncomingEdges
+// ---------------------------------------------------------------------------
+
+describe("filterIncomingEdges", () => {
+  it("retains ordinary live edges and reports missing endpoint nodes", () => {
+    const nodes = [
+      graphNode("source", NODE_TYPES.POLARS),
+      graphNode("target", NODE_TYPES.RATING_STEP),
+    ]
+    const result = filterIncomingEdges(nodes, [
+      graphEdge("valid", "source", "target"),
+      graphEdge("missing-source", "gone", "target"),
+      graphEdge("missing-target", "source", "gone"),
+    ])
+
+    expect(result.validEdges.map(edge => edge.id)).toEqual(["valid"])
+    expect(result.rejectedEdges.map(({ edge }) => edge.id)).toEqual([
+      "missing-source",
+      "missing-target",
+    ])
+    expect(result.rejectedEdges.map(({ reason }) => reason)).toEqual([
+      expect.stringContaining("source node"),
+      expect.stringContaining("target node"),
+    ])
+  })
+
+  it("checks API Input frame handles against runtime-eligible emitted tables", () => {
+    const nodes = [
+      graphNode("api", NODE_TYPES.API_INPUT, {
+        tables: [
+          {
+            label: "quotes",
+            emit: true,
+            columns: [{ name: "quote_id", selected: true }],
+          },
+          {
+            label: "not_emitted",
+            emit: false,
+            columns: [{ name: "ignored", selected: true }],
+          },
+        ],
+      }),
+      graphNode("target", NODE_TYPES.POLARS),
+    ]
+    const result = filterIncomingEdges(nodes, [
+      graphEdge("valid-frame", "api", "target", "quotes"),
+      graphEdge("stale-frame", "api", "target", "not_emitted"),
+      graphEdge("missing-frame", "api", "target"),
+    ])
+
+    expect(result.validEdges.map(edge => edge.id)).toEqual(["valid-frame"])
+    expect(result.rejectedEdges.map(({ edge }) => edge.id)).toEqual([
+      "stale-frame",
+      "missing-frame",
+    ])
+  })
+
+  it("checks Edge Join roles and rejects handles that are not rendered", () => {
+    const nodes = [
+      graphNode("source", NODE_TYPES.POLARS),
+      graphNode("join", NODE_TYPES.EDGE_JOIN),
+    ]
+    const result = filterIncomingEdges(nodes, [
+      graphEdge("base", "source", "join", null, "base"),
+      graphEdge("join", "source", "join", null, "join"),
+      graphEdge("join-bottom", "source", "join", null, "join-bottom"),
+      graphEdge("default", "source", "join"),
+      graphEdge("stale", "source", "join", null, "lookup"),
+    ])
+
+    expect(result.validEdges.map(edge => edge.id)).toEqual([
+      "base",
+      "join",
+      "join-bottom",
+    ])
+    expect(result.rejectedEdges.map(({ edge }) => edge.id)).toEqual([
+      "default",
+      "stale",
+    ])
+  })
+
+  it("checks configured submodel ports and Submodel Port direction", () => {
+    const nodes = [
+      graphNode("source", NODE_TYPES.POLARS),
+      graphNode("target", NODE_TYPES.POLARS),
+      graphNode("submodel", NODE_TYPES.SUBMODEL, {
+        inputPorts: ["features"],
+        outputPorts: ["priced"],
+      }),
+      graphNode("input-port", NODE_TYPES.SUBMODEL_PORT, {}, { portDirection: "input" }),
+      graphNode("output-port", NODE_TYPES.SUBMODEL_PORT, {}, { portDirection: "output" }),
+    ]
+    const result = filterIncomingEdges(nodes, [
+      graphEdge("submodel-in", "source", "submodel", null, "in__features"),
+      graphEdge("submodel-out", "submodel", "target", "out__priced"),
+      graphEdge("submodel-visible-default-in", "source", "submodel"),
+      graphEdge("stale-submodel-in", "source", "submodel", null, "in__gone"),
+      graphEdge("stale-submodel-out", "submodel", "target", "out__gone"),
+      graphEdge("input-port-source", "input-port", "target"),
+      graphEdge("output-port-target", "source", "output-port"),
+      graphEdge(
+        "stale-output-port-handle",
+        "source",
+        "output-port",
+        null,
+        "__default_target",
+      ),
+      graphEdge("wrong-input-port-direction", "source", "input-port"),
+      graphEdge("wrong-output-port-direction", "output-port", "target"),
+    ])
+
+    expect(result.validEdges.map(edge => edge.id)).toEqual([
+      "submodel-in",
+      "submodel-out",
+      "submodel-visible-default-in",
+      "input-port-source",
+      "output-port-target",
+    ])
+    expect(result.rejectedEdges.map(({ edge }) => edge.id)).toEqual([
+      "stale-submodel-in",
+      "stale-submodel-out",
+      "stale-output-port-handle",
+      "wrong-input-port-direction",
+      "wrong-output-port-direction",
+    ])
+  })
+
+  it("rejects source handles on ordinary nodes and connections against unavailable directions", () => {
+    const nodes = [
+      graphNode("source", NODE_TYPES.DATA_INPUT),
+      graphNode("transform", NODE_TYPES.POLARS),
+      graphNode("sink", NODE_TYPES.OUTPUT),
+    ]
+    const result = filterIncomingEdges(nodes, [
+      graphEdge("ordinary-handle", "transform", "sink", "stale"),
+      graphEdge("into-source-only", "transform", "source"),
+      graphEdge("out-of-sink-only", "sink", "transform"),
+      graphEdge("valid-source-to-sink", "source", "sink"),
+    ])
+
+    expect(result.validEdges.map(edge => edge.id)).toEqual(["valid-source-to-sink"])
+    expect(result.rejectedEdges.map(({ edge }) => edge.id)).toEqual([
+      "ordinary-handle",
+      "into-source-only",
+      "out-of-sink-only",
+    ])
   })
 })

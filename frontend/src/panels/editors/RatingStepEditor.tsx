@@ -6,7 +6,7 @@ import { CodeEditor } from "./CodeEditor"
 import ToggleButtonGroup from "../../components/ToggleButtonGroup"
 import { configField } from "../../utils/configField"
 import { withAlpha } from "../../utils/color"
-import { extractBandingLevels } from "../../utils/banding"
+import { classifyBandingLevels } from "../../utils/banding"
 import type { RatingFactorColumn, RatingFactorDtype, RatingTable } from "./rating/ratingTableUtils"
 import {
   normaliseRatingTables,
@@ -138,11 +138,11 @@ function combinedOutputHasIssue(
 
 function onlyNonBandedLevels(
   levels: Record<string, string[]>,
-  bandingLevels: Record<string, string[]>,
+  configuredBandingOutputs: string[],
 ): Record<string, string[]> {
   const result: Record<string, string[]> = {}
   for (const [name, values] of Object.entries(levels)) {
-    if (bandingLevels[name]) continue
+    if (configuredBandingOutputs.includes(name)) continue
     result[name] = values
   }
   return result
@@ -194,12 +194,13 @@ export default function RatingStepEditor({
   const [tableSearch, setTableSearch] = useState("")
   const [tableFilter, setTableFilter] = useState<"all" | "problems">("all")
   const tables = normaliseRatingTables(config)
-  const bandingLevels = extractBandingLevels(allNodes)
+  const bandingClassification = classifyBandingLevels(allNodes)
+  const bandingLevels = bandingClassification.levels
   const rawStringLevels = extractPreviewCategoricalLevels(previewRows, upstreamColumns)
   const savedEntryLevels = extractTableEntryFactorLevels(tables)
   const rawFactorLevels = mergeFactorLevels(
-    onlyNonBandedLevels(rawStringLevels, bandingLevels),
-    onlyNonBandedLevels(savedEntryLevels, bandingLevels),
+    onlyNonBandedLevels(rawStringLevels, bandingClassification.configuredOutputs),
+    onlyNonBandedLevels(savedEntryLevels, bandingClassification.configuredOutputs),
   )
   const factorLevels = mergeFactorLevels(bandingLevels, rawFactorLevels)
   const combinedOutputs = normaliseCombinedOutputs(config)
@@ -424,6 +425,19 @@ export default function RatingStepEditor({
     <div className="px-4 py-3 space-y-3 overflow-y-auto">
       <InputSourcesBar inputSources={inputSources} onDeleteInput={onDeleteInput} />
 
+      {bandingClassification.zeroLevelOutputs.length > 0 && (
+        <div
+          role="alert"
+          className="px-3 py-2 rounded-lg text-xs"
+          style={{
+            background: "var(--warning-soft)",
+            border: "1px solid var(--warning-border)",
+          }}
+        >
+          Banding outputs {bandingClassification.zeroLevelOutputs.join(", ")} have no valid levels. Add a labelled Banding rule before using them as rating factors.
+        </div>
+      )}
+
       <div>
         <label className="text-[11px] font-bold uppercase tracking-[0.08em]" style={{ color: "var(--text-muted)" }}>Rating Section</label>
         <div className="mt-1">
@@ -615,6 +629,7 @@ export default function RatingStepEditor({
             <div key={fi} className="flex items-center gap-1.5">
               <span className="text-[10px] font-bold w-4 text-center" style={{ color: 'var(--text-muted)' }}>{fi + 1}</span>
               <select key={`fsel-${safeIdx}-${fi}`} value={f}
+                aria-label={`Factor ${fi + 1}`}
                 onChange={(e) => {
                   const next = [...table.factors]
                   next[fi] = e.target.value
@@ -627,14 +642,16 @@ export default function RatingStepEditor({
                   <option key={c} value={c}>{c} ({(factorLevels[c] || []).length} levels)</option>
                 ))}
               </select>
-              <button onClick={() => removeFactor(safeIdx, fi)}
+              <button type="button" aria-label={`Remove factor ${fi + 1}: ${f}`}
+                onClick={() => removeFactor(safeIdx, fi)}
                 className="icon-danger-btn p-1 rounded">
                 <X size={11} />
               </button>
             </div>
           ))}
           {factorCount < 3 && (
-            <select value="" onChange={(e) => { if (e.target.value) addFactor(safeIdx, e.target.value) }}
+            <select aria-label="Add factor" value=""
+              onChange={(e) => { if (e.target.value) addFactor(safeIdx, e.target.value) }}
               className="w-full px-2 py-1.5 text-xs rounded-lg focus:outline-none"
               style={{ ...INPUT_STYLE, color: 'var(--text-muted)' }}>
               <option value="">+ Add factor...</option>
@@ -707,7 +724,8 @@ export default function RatingStepEditor({
             <label className="text-[11px] font-bold uppercase tracking-[0.08em]" style={{ color: 'var(--text-muted)' }}>
               {sliceFactor}
             </label>
-            <select value={safeSliceIdx} onChange={(e) => setSliceIdx(Number(e.target.value))}
+            <select aria-label={`${sliceFactor} slice`} value={safeSliceIdx}
+              onChange={(e) => setSliceIdx(Number(e.target.value))}
               className="flex-1 px-2 py-1.5 text-xs font-mono rounded-lg focus:outline-none"
               style={INPUT_STYLE}>
               {sliceLevels.map((level, i) => (

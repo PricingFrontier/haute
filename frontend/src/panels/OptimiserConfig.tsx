@@ -28,7 +28,7 @@ import {
 import { configField, safeParseFloat, safeParseInt } from "../utils/configField"
 import { CommittedTextField } from "../components/form"
 import { withAlpha } from "../utils/color"
-import { extractBandingLevelsForNode } from "../utils/banding"
+import { classifyBandingNode } from "../utils/banding"
 import { buildGraph } from "../utils/buildGraph"
 import { useGraph } from "./useGraph"
 import { formatOptimiserIterationSummary } from "./optimiser/iterationSummary"
@@ -372,8 +372,10 @@ export default function OptimiserConfig({
     () => nodeId ? findInputBandingNodes(nodeId, allNodes, edges) : [],
     [nodeId, allNodes, edges],
   )
-  const bandingSource = configField(config, "banding_source", "")
-  const effectiveBandingSource = bandingSource || (bandingNodes.length > 0 ? bandingNodes[0].id : "")
+  const bandingSource = configField(config, "banding_source", "").trim()
+  const selectedBandingNode = bandingNodes.find(node => node.id === bandingSource)
+  const missingExplicitBandingSource = !!bandingSource && !selectedBandingNode
+  const effectiveBandingSource = selectedBandingNode?.id || (!bandingSource && bandingNodes.length === 1 ? bandingNodes[0].id : "")
 
   // Auto-persist the effective banding source so the backend can read it
   useEffect(() => {
@@ -382,10 +384,11 @@ export default function OptimiserConfig({
     }
   }, [mode, bandingSource, effectiveBandingSource, onUpdate])
 
-  const bandingLevels = useMemo(
-    () => effectiveBandingSource ? extractBandingLevelsForNode(allNodes, effectiveBandingSource) : {},
+  const bandingClassification = useMemo(
+    () => classifyBandingNode(allNodes.find(node => node.id === effectiveBandingSource), { includeDefault: true }),
     [allNodes, effectiveBandingSource],
   )
+  const bandingLevels = bandingClassification.levels
   const bandingFactorNames = useMemo(() => Object.keys(bandingLevels).sort(), [bandingLevels])
   const inferredFactorColumns = useMemo(
     () => singleFactorColumnsFromLevels(bandingLevels),
@@ -414,7 +417,10 @@ export default function OptimiserConfig({
   // When banding source changes, auto-select all its factors
   const handleBandingSourceChange = useCallback((bandingNodeId: string) => {
     onUpdate("banding_source", bandingNodeId)
-    const levels = extractBandingLevelsForNode(allNodes, bandingNodeId)
+    const levels = classifyBandingNode(
+      allNodes.find(node => node.id === bandingNodeId),
+      { includeDefault: true },
+    ).levels
     onUpdate("factor_columns", singleFactorColumnsFromLevels(levels))
   }, [allNodes, onUpdate])
 
@@ -583,6 +589,7 @@ export default function OptimiserConfig({
         return (
           <div key={name} data-testid="constraint-bound-row" className="grid grid-cols-[90px_64px] items-center gap-1.5">
             <select
+              aria-label={`${name} constraint bound type`}
               value={constraintType}
               onChange={(e) => handleConstraintValueChange(name, e.target.value, constraintValue)}
               className="px-1 py-1 rounded text-[10px]"
@@ -591,6 +598,7 @@ export default function OptimiserConfig({
               {CONSTRAINT_TYPES.map(ct => <option key={ct.value} value={ct.value}>{ct.label}</option>)}
             </select>
             <input
+              aria-label={`${name} constraint value`}
               type="number"
               step="any"
               value={constraintValue}
@@ -694,6 +702,26 @@ export default function OptimiserConfig({
             )}
           </div>
 
+          {(missingExplicitBandingSource || bandingClassification.zeroLevelOutputs.length > 0) && (
+            <div
+              role="alert"
+              className="px-3 py-2 rounded-lg text-xs"
+              style={{
+                background: "var(--warning-soft)",
+                border: "1px solid var(--warning-border)",
+              }}
+            >
+              {[
+                missingExplicitBandingSource
+                  ? `Selected Banding source ${bandingSource} is no longer directly connected.`
+                  : null,
+                bandingClassification.zeroLevelOutputs.length > 0
+                  ? `Banding outputs ${bandingClassification.zeroLevelOutputs.join(", ")} have no valid levels. Add labelled rules before selecting them.`
+                  : null,
+              ].filter(Boolean).join(" ")}
+            </div>
+          )}
+
           {/* Factor toggles from selected banding node */}
           {bandingFactorNames.length > 0 && (
             <div>
@@ -779,6 +807,7 @@ export default function OptimiserConfig({
                   return (
                     <div key={name} data-testid="constraint-row" className="flex items-center gap-1.5">
                       <select
+                        aria-label={`${name} constraint column`}
                         value={name}
                         onChange={(e) => handleConstraintColumnChange(name, e.target.value)}
                         className="flex-1 min-w-0 px-1.5 py-1 rounded text-[11px] font-mono"
@@ -790,6 +819,8 @@ export default function OptimiserConfig({
                         ))}
                       </select>
                       <button
+                        type="button"
+                        aria-label={`Remove ${name} constraint`}
                         onClick={() => handleRemoveConstraint(name)}
                         className="p-0.5 rounded transition-colors shrink-0"
                         style={{ color: "var(--text-muted)" }}

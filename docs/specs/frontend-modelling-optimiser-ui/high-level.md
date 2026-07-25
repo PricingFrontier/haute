@@ -88,3 +88,30 @@ Remaining frontend modelling and optimiser improvement work is tracked in the
 Acceptance covers multiple Data Input roots/direct parents, explicit selection, direct/cached
 column discovery including post-input code, missing-snapshot diagnostics, no implicit build, and
 absence of legacy candidates.
+
+## Approved change contract — deterministic optimiser canvas journey
+
+This contract implements the optimiser portions of ROAD-UI-02 and ROAD-UI-03 in the
+[frontend canvas roadmap](../../roadmap/frontend-canvas.md).
+
+- **Current limitation.** Existing browser coverage solves an optimiser, selects a frontier point,
+  and applies it locally, but does not jointly prove constraint/range persistence, source identity,
+  reload behaviour, and the MLflow selection boundary. A deleted or disconnected explicitly
+  selected Banding source, or a selected source whose configured outputs contain no valid levels,
+  can leave downstream choices silently incomplete.
+- **Target behaviour.** One deterministic journey configures and reloads objective/constraint
+  ranges, runs a fixed frontier, selects a point by backend `point_index`, applies that exact
+  solution locally, and verifies the MLflow boundary through a deterministic intercepted contract
+  rather than a live tracking service. The configured Banding source remains identified by node
+  id. Missing explicit sources and zero-level configured outputs produce an accessible aggregated
+  warning while healthy factor choices remain available.
+- **Non-goals.** This change does not test optimiser quality, MLflow itself, network availability,
+  or canvas pixel coordinates, and it does not broaden the existing sole-direct-Banding fallback.
+- **Failure and compatibility.** No warning is shown for an unconfigured source or an ordinary
+  empty graph. A non-blank explicit source id is considered missing when that node no longer
+  exists as a directly connected Banding candidate. Point-index mismatches and malformed backend
+  results continue to fail at their existing guarded boundaries.
+- **Acceptance.** Component tests cover missing-source and mixed healthy/zero-level warnings.
+  Browser evidence pins saved constraint/range fields across reload, frontier point identity,
+  local apply identity, and the intercepted MLflow request/response identity without a live
+  service.

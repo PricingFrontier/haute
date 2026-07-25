@@ -36,9 +36,9 @@ shared visual, keyboard, and accessibility evidence.
 
 **Why:** Fail-open source matching, ordering, edge validation, and graph-wide position heuristics can apply an old or wrong graph to the canvas.
 
-**Plan:** Reverify each message path; invalidate in-flight updates after parse errors, compare source identity fail-closed, reject dangling endpoint/handle edges with a visible warning, and lay out only nodes lacking real positions.
+**Plan:** Reverify each message path; invalidate in-flight updates after parse errors, compare source identity fail-closed, retain dangling endpoint/handle edges with a visible warning while excluding them from automatic layout, and lay out only nodes lacking real positions.
 
-**Acceptance:** A stale/wrong update cannot clear a newer error or alter another pipeline; imported edges reference live nodes/ports; origin-positioned and new nodes do not overlap from a global heuristic.
+**Acceptance:** A stale/wrong update cannot clear a newer error or alter another pipeline; valid imported edges reference live nodes/ports, unresolved topology is never silently deleted, and every finite persisted position—including the origin—remains authoritative.
 
 **Dependencies:** Canvas import/export and API sync boundaries.
 

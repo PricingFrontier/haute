@@ -170,8 +170,10 @@ the right-click node menu with roving-tabindex arrow-key navigation.
 `Toolbar` is the app's top chrome: source selector, row-limit/chunk-size
 inputs, undo/redo, timing/memory breakdowns, save (with a "save & commit"
 split-button). `NodeSearch` is the Ctrl+K command palette, windowed to
-render only visible rows for large graphs. `BreadcrumbBar` shows the
-pipeline → submodel navigation stack and is hidden entirely at depth 1.
+render only visible rows for large graphs; the application loads its module
+only when the palette is opened, so this user-triggered surface is not part
+of the initial browser bundle. `BreadcrumbBar` shows the pipeline →
+submodel navigation stack and is hidden entirely at depth 1.
 
 **Reusable controls and style.** The global stylesheet establishes the initial dark canvas and
 semantic tokens that all panels consume; it also owns native-control, scrollbar, and React
@@ -318,3 +320,38 @@ visible unavailable/error state rather than guessed defaults. Cache readiness, f
 job progress are separate typed values, and all payloads are checked for the absence of secret
 fields before feature panels consume them. Removed format/sink/provider-cache endpoints and
 legacy node types have no client compatibility wrappers.
+
+## Approved change contract — exact frontend result-cache identity
+
+This contract implements AUD-C16 in the
+[frontend canvas roadmap](../../roadmap/frontend-canvas.md).
+
+- **Current limitation.** Result entries include the relevant source and structural generation,
+  preview entries include the row limit, source changes invalidate column-schema stashes, and
+  cache families are bounded; however, configuration identity is represented by a 32-bit digest.
+  Two distinct JSON configurations can therefore collide and make a stale visible result appear
+  current.
+- **Target behaviour.** Configuration identity is the exact deterministic canonical form of the
+  JSON-shaped configuration: object keys are recursively sorted, array order is retained, and
+  the existing top-level ephemeral UI-only fields are excluded. Nested fields with the same names
+  remain semantic configuration. Every cache lookup must match every dimension that can affect
+  that operation's visible result — canonical config, active
+  source, structural generation and, for previews, row limit. Column/schema stashes remain scoped
+  to their source generation. Each cache family retains deterministic least-recently-used
+  eviction at its documented bound.
+- **Non-goals.** This change does not persist frontend caches, share them between browser
+  sessions, hash source-file contents, or make transport chunk size part of semantic preview
+  identity.
+- **Failure and compatibility.** Canonicalisation first follows normal `JSON.stringify`
+  semantics: undefined object properties are omitted, non-finite numbers become `null`, arrays
+  retain JSON's null placeholders, and serialisable class/toJSON values remain accepted. Cycles,
+  BigInt values, and other genuine serialization failures still fail visibly rather than
+  receiving a fallback identity. The public store shape and cache limits remain compatible, but
+  callers may no longer assume that the `configHash` field is a short digest. Retaining the exact
+  identity is intentional: restoring the removed 32-bit digest would restore its executable
+  collision, while the result families holding identities are entry-count bounded.
+- **Acceptance.** Store and hook tests cover distinct configurations with a known legacy digest
+  collision, object-key-order equivalence, nested/array semantics, top-level-only ephemeral
+  stripping, ordinary JSON normalization, source and structural changes, preview row-limit
+  changes, source-scoped schema invalidation, cache hits, and deterministic eviction at every
+  bound.

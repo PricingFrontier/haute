@@ -24,27 +24,30 @@ from haute.cli._init_cmd import InitConfig, handle_init
 REPO_ROOT = Path(__file__).resolve().parent.parent
 FRONTEND_DIR = REPO_ROOT / "frontend"
 E2E_PROJECT_DIR = REPO_ROOT / ".tmp-e2e-project"
-READINESS_HOST = "127.0.0.1"
 
 
-def _local_port(name: str, default: int) -> int:
-    raw = os.environ.get(name, str(default))
+def _port_from_env(name: str, default: int) -> int:
+    raw_value = os.environ.get(name)
+    if raw_value is None:
+        return default
     try:
-        port = int(raw)
+        port = int(raw_value)
     except ValueError as exc:
-        raise RuntimeError(f"{name} must be an integer port") from exc
-    if not 0 < port <= 65535:
-        raise RuntimeError(f"{name} must be between 1 and 65535")
+        raise ValueError(f"{name} must be an integer port, got {raw_value!r}") from exc
+    if not 1 <= port <= 65535:
+        raise ValueError(f"{name} must be between 1 and 65535, got {port}")
     return port
 
 
-BACKEND_PORT = _local_port("HAUTE_E2E_BACKEND_PORT", 8000)
-FRONTEND_PORT = _local_port("HAUTE_E2E_FRONTEND_PORT", 5173)
-READINESS_PORT = _local_port("HAUTE_E2E_READINESS_PORT", 5174)
-BACKEND_ORIGIN = f"http://127.0.0.1:{BACKEND_PORT}"
-FRONTEND_ORIGIN = f"http://127.0.0.1:{FRONTEND_PORT}"
+FRONTEND_HOST = "127.0.0.1"
+FRONTEND_PORT = _port_from_env("HAUTE_E2E_FRONTEND_PORT", 15173)
+FRONTEND_URL = f"http://{FRONTEND_HOST}:{FRONTEND_PORT}/"
+BACKEND_HOST = "127.0.0.1"
+BACKEND_PORT = _port_from_env("HAUTE_E2E_BACKEND_PORT", 18000)
+BACKEND_ORIGIN = f"http://{BACKEND_HOST}:{BACKEND_PORT}"
 BACKEND_URL = f"{BACKEND_ORIGIN}/api/pipeline"
-FRONTEND_URL = f"{FRONTEND_ORIGIN}/"
+READINESS_HOST = "127.0.0.1"
+READINESS_PORT = _port_from_env("HAUTE_E2E_READINESS_PORT", 15174)
 READINESS_URL = f"http://{READINESS_HOST}:{READINESS_PORT}/ready"
 _BROWSER_MODEL_BLOCK = """
 
@@ -53,6 +56,36 @@ _BROWSER_MODEL_BLOCK = """
 def browser_model(raw_rows: pl.LazyFrame) -> pl.LazyFrame:
     \"\"\"Browser E2E training node for async modelling flows.\"\"\"
     return raw_rows
+"""
+_BROWSER_CANVAS_BLOCK = """
+
+
+@pipeline.banding(config="config/banding/browser_mixed_banding.json")
+def browser_mixed_banding(enriched: pl.LazyFrame) -> pl.LazyFrame:
+    \"\"\"Browser E2E mixed-mode Banding fixture for Rating discovery.\"\"\"
+    from pathlib import Path
+
+    from haute.graph_utils import apply_banding_from_config
+
+    return apply_banding_from_config(
+        enriched,
+        "config/banding/browser_mixed_banding.json",
+        base_dir=Path(__file__).parent,
+    )
+
+
+@pipeline.rating_step(config="config/rating_step/browser_rating.json")
+def browser_rating(browser_mixed_banding: pl.LazyFrame) -> pl.LazyFrame:
+    \"\"\"Browser E2E three-factor Rating table fixture.\"\"\"
+    from pathlib import Path
+
+    from haute.graph_utils import apply_rating_step_from_config
+
+    return apply_rating_step_from_config(
+        browser_mixed_banding,
+        "config/rating_step/browser_rating.json",
+        base_dir=Path(__file__).parent,
+    )
 """
 _BROWSER_OPTIMISER_BLOCK = """
 
@@ -76,9 +109,9 @@ def browser_optimiser(browser_optimiser_rows: pl.LazyFrame) -> pl.LazyFrame:
 
 
 @pipeline.optimiser_apply(config="config/apply_optimisation/browser_apply.json")
-def browser_apply(browser_optimiser: pl.LazyFrame) -> pl.LazyFrame:
+def browser_apply(browser_optimiser_rows: pl.LazyFrame) -> pl.LazyFrame:
     \"\"\"Browser E2E optimiser-apply node backed by saved optimiser artifacts.\"\"\"
-    return browser_optimiser
+    return browser_optimiser_rows
 """
 _BROWSER_MODEL_CONFIG = """{
   "name": "browser_model",
@@ -101,6 +134,74 @@ _BROWSER_MODEL_CONFIG = """{
   ],
   "row_limit": 30,
   "output_dir": ".haute_cache/browser_training"
+}
+"""
+_BROWSER_MIXED_BANDING_CONFIG = """{
+  "factors": [
+    {
+      "banding": "continuous",
+      "column": "proposer_age",
+      "outputColumn": "proposer_age_band",
+      "rules": [
+        {
+          "op1": "<=",
+          "val1": "40",
+          "op2": "",
+          "val2": "",
+          "assignment": "Age 40 or below"
+        },
+        {
+          "op1": ">",
+          "val1": "40",
+          "op2": "",
+          "val2": "",
+          "assignment": "Age over 40"
+        }
+      ],
+      "default": "Age other"
+    },
+    {
+      "banding": "categorical",
+      "column": "channel",
+      "outputColumn": "channel_band",
+      "rules": {
+        "direct": "Direct",
+        "broker": "Broker"
+      },
+      "default": "Other channel"
+    },
+    {
+      "banding": "breakpoints",
+      "column": "vehicle_age",
+      "outputColumn": "vehicle_age_band",
+      "rules": {
+        "5": "Vehicle 0-5",
+        "": "Vehicle 6+"
+      },
+      "rightClosed": true,
+      "default": "Vehicle other"
+    }
+  ]
+}
+"""
+_BROWSER_RATING_CONFIG = """{
+  "tables": [
+    {
+      "name": "Browser three-factor relativity",
+      "factors": [
+        "proposer_age_band",
+        "channel_band",
+        "vehicle_age_band"
+      ],
+      "outputColumn": "browser_relativity",
+      "defaultValue": 1.0,
+      "entries": []
+    }
+  ],
+  "operation": "multiply",
+  "combinedColumn": "",
+  "combinedOutputs": [],
+  "code": ""
 }
 """
 _BROWSER_OPTIMISER_CONFIG = """{
@@ -258,6 +359,8 @@ def _augment_starter_pipeline() -> None:
     )
     if "def browser_model(" not in source:
         source = source.rstrip() + _BROWSER_MODEL_BLOCK
+    if "def browser_mixed_banding(" not in source:
+        source = source.rstrip() + _BROWSER_CANVAS_BLOCK
     if "def browser_optimiser(" not in source:
         source = source.rstrip() + _BROWSER_OPTIMISER_BLOCK
     if "def quotes(" not in source:
@@ -294,6 +397,20 @@ def _augment_starter_pipeline() -> None:
     config_dir = E2E_PROJECT_DIR / "rating" / "config" / "model_training"
     config_dir.mkdir(parents=True, exist_ok=True)
     (config_dir / "browser_model.json").write_text(_BROWSER_MODEL_CONFIG, encoding="utf-8")
+
+    banding_dir = E2E_PROJECT_DIR / "rating" / "config" / "banding"
+    banding_dir.mkdir(parents=True, exist_ok=True)
+    (banding_dir / "browser_mixed_banding.json").write_text(
+        _BROWSER_MIXED_BANDING_CONFIG,
+        encoding="utf-8",
+    )
+
+    rating_step_dir = E2E_PROJECT_DIR / "rating" / "config" / "rating_step"
+    rating_step_dir.mkdir(parents=True, exist_ok=True)
+    (rating_step_dir / "browser_rating.json").write_text(
+        _BROWSER_RATING_CONFIG,
+        encoding="utf-8",
+    )
 
     optimisation_dir = E2E_PROJECT_DIR / "rating" / "config" / "optimisation"
     optimisation_dir.mkdir(parents=True, exist_ok=True)
@@ -332,6 +449,9 @@ def _scaffold_e2e_project() -> None:
         {
             "id": ids,
             "value": values,
+            "proposer_age": [24 if i % 2 else 52 for i in ids],
+            "channel": ["direct" if i % 2 else "broker" for i in ids],
+            "vehicle_age": [2 if i % 4 < 2 else 9 for i in ids],
         }
     )
     data_dir = E2E_PROJECT_DIR / "data"
@@ -432,7 +552,7 @@ def _start_vite() -> subprocess.Popen[bytes]:
             "dev",
             "--",
             "--host",
-            "127.0.0.1",
+            FRONTEND_HOST,
             "--port",
             str(FRONTEND_PORT),
             "--strictPort",
@@ -453,7 +573,7 @@ def _start_backend() -> subprocess.Popen[bytes]:
             "uvicorn",
             "haute.server:app",
             "--host",
-            "127.0.0.1",
+            BACKEND_HOST,
             "--port",
             str(BACKEND_PORT),
             "--log-level",
@@ -580,7 +700,7 @@ def main() -> None:
     signal.signal(signal.SIGINT, _shutdown)
     signal.signal(signal.SIGTERM, _shutdown)
 
-    print(f"[e2e] Frontend -> {FRONTEND_ORIGIN}")
+    print(f"[e2e] Frontend -> {FRONTEND_URL}")
     print(f"[e2e] Backend  -> {BACKEND_ORIGIN}")
     sys.stdout.flush()
 

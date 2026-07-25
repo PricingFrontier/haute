@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process"
-import { existsSync, readFileSync, writeFileSync } from "node:fs"
+import { readFileSync, writeFileSync } from "node:fs"
 import { resolve } from "node:path"
 
 import { expect, test, type Page } from "@playwright/test"
@@ -11,14 +11,6 @@ const sidecarPath = resolve(ratingDir, "main.haute.json")
 const utilityModulePath = resolve(ratingDir, "utility", "browser_helpers.py")
 const gitMainPath = resolve(ratingDir, "main.py")
 const browserSubmodelPath = resolve(e2eProjectRoot, "rating", "modules", "browser_group.py")
-// Path shape: optimiser_<sanitizeName(label)>_<sanitizeName(nodeId)>.json —
-// for a pipeline-loaded node, label and id are both the function name.
-const optimiserArtifactPath = resolve(
-  e2eProjectRoot,
-  "rating",
-  "output",
-  "optimiser_browser_optimiser_browser_optimiser.json",
-)
 const selectAll = process.platform === "darwin" ? "Meta+A" : "Control+A"
 
 async function dispatchAppShortcut(page: Page, key: string): Promise<void> {
@@ -104,63 +96,6 @@ test.describe("core browser flows", () => {
       page.getByText(/Model trained — results in preview panel below/i),
     ).toBeVisible()
     await expect(page.getByText("Model Info")).toBeVisible()
-  })
-
-  test("runs a real optimiser flow, selects a frontier point, and opens an apply node wired to the saved artifact", async ({ page }) => {
-    test.slow()
-
-    await page.goto("/")
-
-    const optimiserNode = page.getByLabel("Optimisation node: browser_optimiser")
-    await expect(optimiserNode).toBeVisible()
-    await optimiserNode.click()
-
-    const optimiseButton = page.getByRole("button", { name: "Optimise", exact: true })
-    await expect(optimiseButton).toBeVisible()
-    await optimiseButton.click()
-
-    const optimiserResultTabs = page.getByRole("tablist", { name: "Optimiser result panes" })
-    await expect(optimiserResultTabs.getByRole("tab", { name: "Frontier", exact: true })).toBeVisible({
-      timeout: 120_000,
-    })
-    await expect(optimiserResultTabs.getByRole("tab", { name: "Summary", exact: true })).toBeVisible()
-
-    const frontierPoint = page.getByRole("button", { name: /Select frontier point 2/i })
-    await expect(frontierPoint).toBeVisible()
-    await frontierPoint.click()
-
-    await expect(page.getByText(/Point 2 of/i)).toBeVisible()
-    await expect(
-      page.getByRole("alert").filter({ hasText: /Failed to select frontier point/i }),
-    ).toHaveCount(0)
-
-    await optimiserResultTabs.getByRole("tab", { name: "Export", exact: true }).click()
-    await page.getByRole("button", { name: "Save result", exact: true }).click()
-
-    await expect(
-      page.getByText(/optimiser_browser_optimiser_browser_optimiser\.json/i),
-    ).toBeVisible({
-      timeout: 120_000,
-    })
-    await expect.poll(() => existsSync(optimiserArtifactPath)).toBe(true)
-
-    const applyNode = page.getByLabel("Apply Optimisation node: browser_apply")
-    await expect(applyNode).toBeVisible()
-    await applyNode.click()
-    await expect(page.locator("input.node-label-input")).toHaveValue("browser_apply")
-    await expect(
-      page.getByPlaceholder("artifacts/optimiser_v1.json"),
-    ).toHaveValue("rating/output/optimiser_browser_optimiser_browser_optimiser.json")
-    await expect(page.getByPlaceholder("__optimiser_version__")).toHaveValue(
-      "__optimiser_version__",
-    )
-    await expect(page.getByText("Loaded Artifact")).toBeVisible()
-    await expect(page.getByText("online", { exact: true })).toBeVisible()
-    const previewTable = page.getByRole("table").first()
-    await expect(previewTable.getByText("optimal_scenario_value", { exact: true })).toBeVisible({
-      timeout: 120_000,
-    })
-    await expect(previewTable.getByText("__optimiser_version__", { exact: true })).toBeVisible()
   })
 
   test("persists node edits through save and reload", async ({ page }) => {

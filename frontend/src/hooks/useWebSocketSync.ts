@@ -1,7 +1,16 @@
 import { useEffect, useRef, useState } from "react"
 import type { Node, Edge } from "@xyflow/react"
-import { getLayoutedElements } from "../utils/layout"
-import { computeNextNodeId, normalizeEdges } from "../utils/graphHelpers"
+import {
+  getLayoutedElements,
+  mergeLayoutedNodePositions,
+  nodeIdsNeedingLayout,
+} from "../utils/layout"
+import {
+  computeNextNodeId,
+  filterIncomingEdges,
+  normalizeEdges,
+  type RejectedIncomingEdge,
+} from "../utils/graphHelpers"
 import useToastStore from "../stores/useToastStore"
 import useUIStore from "../stores/useUIStore"
 import useGraphStore from "../stores/useGraphStore"
@@ -34,9 +43,26 @@ const INITIAL_BACKOFF_MS = 1_000
 const MAX_BACKOFF_MS = 30_000
 const ABNORMAL_CLOSE = 1006
 const GRAPH_FINGERPRINT_FIELD = "graph_fingerprint"
+const MAX_REJECTED_EDGE_WARNING_DETAILS = 3
+const MAX_REJECTED_EDGE_WARNING_DETAIL_LENGTH = 120
 
 function formatSyncError(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
+}
+
+function formatRejectedEdgeWarning(rejectedEdges: RejectedIncomingEdge[]): string {
+  const details = rejectedEdges
+    .slice(0, MAX_REJECTED_EDGE_WARNING_DETAILS)
+    .map(({ edge, reason }) => {
+      const detail = `${edge.id} (${reason})`
+      if (detail.length <= MAX_REJECTED_EDGE_WARNING_DETAIL_LENGTH) return detail
+      return `${detail.slice(0, MAX_REJECTED_EDGE_WARNING_DETAIL_LENGTH - 3)}...`
+    })
+    .join(", ")
+  const omitted = rejectedEdges.length - MAX_REJECTED_EDGE_WARNING_DETAILS
+  const omittedSummary = omitted > 0 ? `; ${omitted} more omitted` : ""
+  const edgeLabel = rejectedEdges.length === 1 ? "edge" : "edges"
+  return `Retained ${rejectedEdges.length} unresolved synced ${edgeLabel} to prevent data loss; only valid edges were used for layout. ${details}${omittedSummary}. Saving may fail until they are repaired.`
 }
 
 function normalizeSourceFile(value: unknown): string | null {
@@ -65,7 +91,7 @@ function isAbsoluteRelativeMatch(absoluteSource: string, relativeSource: string)
 function isCurrentSourceFile(incoming: unknown, current: string | undefined): boolean {
   const incomingSource = normalizeSourceFile(incoming)
   const currentSource = normalizeSourceFile(current)
-  if (!incomingSource || !currentSource) return true
+  if (!incomingSource || !currentSource) return incomingSource === currentSource
   if (incomingSource === currentSource) return true
   const incomingIsAbsolute = isAbsoluteSourceFile(incomingSource)
   const currentIsAbsolute = isAbsoluteSourceFile(currentSource)
@@ -251,12 +277,18 @@ export default function useWebSocketSync({
           try {
             const newNodes = g.nodes || []
             const newEdges = normalizeEdges(g.edges || [])
-            const hasPositions = newNodes.some(
-              (n: Node) => n.position && (n.position.x !== 0 || n.position.y !== 0),
-            )
-            const nodesToApply = hasPositions
-              ? newNodes
-              : await getLayoutedElements(newNodes, newEdges)
+            const {
+              validEdges: layoutEdges,
+              rejectedEdges,
+            } = filterIncomingEdges(newNodes, newEdges)
+            const missingNodeIds = nodeIdsNeedingLayout(newNodes)
+            const nodesToApply = missingNodeIds.size > 0
+              ? mergeLayoutedNodePositions(
+                  newNodes,
+                  await getLayoutedElements(newNodes, layoutEdges),
+                  missingNodeIds,
+                )
+              : newNodes
 
             if (!mounted || updateSeq !== graphUpdateSeq) {
               return
@@ -328,6 +360,12 @@ export default function useWebSocketSync({
             }
 
             addToast("info", "Pipeline updated from file")
+            if (rejectedEdges.length > 0) {
+              addToast(
+                "warning",
+                formatRejectedEdgeWarning(rejectedEdges),
+              )
+            }
             if (g.warning) addToast("warning", g.warning)
             scheduleDelayed(() => {
               if (mounted && updateSeq === graphUpdateSeq) {
@@ -347,6 +385,7 @@ export default function useWebSocketSync({
           if (!isCurrentSourceFile(msg.source_file, sourceFileRef?.current)) {
             return
           }
+          ++graphUpdateSeq
           appliedGraphFingerprintRef.current = null
           setSyncBanner(String(msg.error || "Parse error in pipeline file"))
         }

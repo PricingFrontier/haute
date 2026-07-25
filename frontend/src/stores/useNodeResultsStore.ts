@@ -174,26 +174,41 @@ interface ActiveExploreJob {
 
 // ─── Config hashing ──────────────────────────────────────────────
 
-/** Fast djb2 string hash — good enough for staleness detection. */
-function djb2(s: string): string {
-  let hash = 5381
-  for (let i = 0; i < s.length; i++) {
-    hash = ((hash << 5) + hash + s.charCodeAt(i)) | 0
-  }
-  return (hash >>> 0).toString(36)
-}
-
 export function hashConfig(config: Record<string, unknown>): string {
-  // Strip internal keys that don't affect computation
-  const { _nodeId, _columns, _schemaWarnings, _availableColumns, ...rest } = config
-  void _nodeId; void _columns; void _schemaWarnings; void _availableColumns
-  const sortKeys = (o: unknown): unknown => {
-    if (o === null || typeof o !== "object") return o
-    if (Array.isArray(o)) return o.map(sortKeys)
-    const sorted = Object.keys(o as Record<string, unknown>).sort()
-    return Object.fromEntries(sorted.map(k => [k, sortKeys((o as Record<string, unknown>)[k])]))
+  const {
+    _nodeId,
+    _columns,
+    _schemaWarnings,
+    _availableColumns,
+    ...semanticConfig
+  } = config
+  void _nodeId
+  void _columns
+  void _schemaWarnings
+  void _availableColumns
+
+  // Normalise through JSON first so identity follows the same value semantics
+  // as persisted config: undefined object fields are omitted, non-finite
+  // numbers become null, and serialisable values may use toJSON.
+  const json = JSON.stringify(semanticConfig)
+  const jsonValue: unknown = JSON.parse(json)
+
+  const sortObjectKeys = (value: unknown): unknown => {
+    if (Array.isArray(value)) {
+      return value.map(sortObjectKeys)
+    }
+    if (value !== null && typeof value === "object") {
+      const object = value as Record<string, unknown>
+      return Object.fromEntries(
+        Object.keys(object)
+          .sort()
+          .map(key => [key, sortObjectKeys(object[key])]),
+      )
+    }
+    return value
   }
-  return djb2(JSON.stringify(sortKeys(rest)))
+
+  return JSON.stringify(sortObjectKeys(jsonValue))
 }
 
 // ─── Derived-getter caches (Issue #13) ──────────────────────────

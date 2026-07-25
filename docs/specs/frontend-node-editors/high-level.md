@@ -131,6 +131,36 @@ placement, inactive-key removal and undo, output Write gating/status, and unavai
 Browser coverage creates, configures, saves, reloads, executes, snapshots, and writes the
 retained node types and asserts that no Data Source/Data Sink palette/editor affordance exists.
 
+## Approved change contract — Banding-to-Rating canvas assurance
+
+This contract implements ROAD-UI-01, ROAD-UI-02, ROAD-UI-03 and the node-editor portion of
+ROAD-UI-04 in the [frontend canvas roadmap](../../roadmap/frontend-canvas.md).
+
+- **Current limitation.** Continuous, categorical, and breakpoint Banding shapes have focused
+  helper tests, but there is no owned cross-shape assurance matrix or deterministic browser
+  journey into a persisted Rating table. A configured Banding output with no valid levels can
+  silently disappear from downstream Rating choices.
+- **Target behaviour.** One explicit matrix assigns continuous, categorical, breakpoint, mixed,
+  zero-level, malformed/partial, and persisted-table shapes to named fixtures, test owners, and
+  tiers. Rating discovery accepts all healthy configured Banding outputs, rebuilding three named
+  factors creates their complete Cartesian table, an edited relativity survives save/reload, and
+  malformed inputs never crash the panel. Once a recognised factor has a non-blank output name,
+  zero valid levels produce one accessible aggregated warning naming the affected outputs while
+  healthy choices remain usable.
+- **Warning boundary.** No warning is shown merely because the graph has no Banding node, a
+  Banding node is still an unnamed draft, a factor output is blank, or every configured output is
+  healthy. A loaded factor with a recognised mode and non-blank output is configured even when
+  its rules are empty or malformed, so that state warns instead of silently reusing stale raw or
+  saved levels for that output.
+- **Non-goals and compatibility.** The change does not alter Banding execution semantics,
+  relativity mathematics, table JSON shape, or existing raw/saved-level fallback for columns that
+  are not claimed by configured Banding factors. Existing one-factor and two-factor Rating tables
+  remain editable.
+- **Acceptance.** Unit/component tests pin every matrix row and warning boundary. The
+  deterministic browser journey proves three named factors, all Cartesian entries, a keyboard
+  rebuild/edit/save path, and the edited value after reload. Stable screenshots cover the mixed
+  Banding editor and rebuilt Rating state at desktop and the supported narrow viewport.
+
 ## I/O authoring feedback and output lifecycle
 
 The retained editors implement the editor portion of

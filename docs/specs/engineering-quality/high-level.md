@@ -134,6 +134,32 @@ strategy selection, source-width handling, absence of unintended full collection
 rejection. The 10m case is never default CI, and no hardware-specific numeric performance gate is
 introduced until stable baselines exist.
 
+## Approved change contract — risk-based frontend canvas evidence
+
+This contract implements ROAD-UI-04 and ROAD-UI-05 in the
+[frontend canvas roadmap](../../roadmap/frontend-canvas.md).
+
+- **Current limitation.** The full browser lane is authoritative and retains failure artifacts,
+  but canvas journey variants, screenshot ownership, supported viewport intent, and the policy for
+  converting user-reported UI bugs into regression evidence are implicit.
+- **Target behaviour.** Fast helper/component tests own configuration-shape and warning branches;
+  one project-isolated Chromium browser module owns cross-node persistence, optimiser/MLflow
+  boundaries, keyboard operation, and stable element screenshots. Desktop is 1440×900 and the
+  supported narrow viewport is 1024×768. Firefox remains a smoke-compatibility project, not a
+  visual oracle.
+- **CI boundary.** These tests run in the existing authoritative pull-request browser job; no
+  additional lane is introduced without measured runtime evidence. Existing Playwright report,
+  trace, screenshot, and video uploads are the failure artifacts and remain owned by that job.
+  Visual baselines are reviewed source artifacts, not regenerated automatically in CI.
+- **Accessibility boundary.** Selected high-risk canvas journeys assert semantic names, visible
+  focus, and keyboard completion. No general accessibility scanner or whole-product conformance
+  claim is introduced until a separate baseline maps scanner rules to component owners and an
+  actionable failure policy.
+- **Regression policy and acceptance.** A user-reported canvas bug first receives the smallest
+  failing regression at the owning tier; the shape matrix is updated when the bug exposes a
+  missing variant. CI documentation names every new test owner, tier, artifact, and failure owner,
+  and the unchanged full browser command collects the new evidence.
+
 ## Approved reproducible execution-evidence contract
 
 The Python performance report is a comparison artifact, not just a pass/fail wrapper. Its next

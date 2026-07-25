@@ -30,9 +30,14 @@ vi.mock("../../utils/buildGraph", () => ({
 
 // ── Mock banding utilities ──
 vi.mock("../../utils/banding", () => ({
-  extractBandingLevelsForNode: vi.fn(() => ({})),
+  classifyBandingNode: vi.fn(() => ({
+    levels: {},
+    configuredOutputs: [],
+    zeroLevelOutputs: [],
+    zeroLevelIssues: [],
+  })),
 }))
-import { extractBandingLevelsForNode } from "../../utils/banding"
+import { classifyBandingNode } from "../../utils/banding"
 
 // ── Mock hooks ──
 const mockHandleAddConstraint = vi.fn()
@@ -190,8 +195,13 @@ beforeEach(() => {
   mockHandleRemoveConstraint.mockReset()
   mockHandleConstraintColumnChange.mockReset()
   mockHandleConstraintValueChange.mockReset()
-  vi.mocked(extractBandingLevelsForNode).mockReset()
-  vi.mocked(extractBandingLevelsForNode).mockReturnValue({})
+  vi.mocked(classifyBandingNode).mockReset()
+  vi.mocked(classifyBandingNode).mockReturnValue({
+    levels: {},
+    configuredOutputs: [],
+    zeroLevelOutputs: [],
+    zeroLevelIssues: [],
+  })
 })
 
 afterEach(() => {
@@ -394,8 +404,41 @@ describe("OptimiserConfig", () => {
       expect(screen.getByText(/No Banding nodes found/)).toBeInTheDocument()
     })
 
+    it("warns when an explicit Banding source is no longer directly connected", () => {
+      renderConfig(makeProps({
+        config: { _nodeId: "opt_1", mode: "ratebook", objective: "premium", constraints: {}, banding_source: "removed_banding" },
+        allNodes: [
+          { id: "input_1", data: { label: "Data Input", description: "", nodeType: "dataInput", config: {} } },
+          { id: "banding_1", data: { label: "Banding", description: "", nodeType: "banding", config: {} } },
+        ],
+        edges: [{ id: "e1", source: "banding_1", target: "opt_1" }],
+      }))
+      expect(screen.getByRole("alert")).toHaveTextContent(/removed_banding/)
+    })
+
+    it("warns for zero-level outputs while keeping healthy factor controls", () => {
+      vi.mocked(classifyBandingNode).mockReturnValue({
+        levels: { healthy_band: ["Yes"] }, configuredOutputs: ["healthy_band", "empty_band"],
+        zeroLevelOutputs: ["empty_band"], zeroLevelIssues: [{ outputColumn: "empty_band" }],
+      })
+      renderConfig(makeProps({
+        config: { _nodeId: "opt_1", mode: "ratebook", objective: "premium", constraints: {}, banding_source: "banding_1" },
+        allNodes: [
+          { id: "banding_1", data: { label: "Banding", description: "", nodeType: "banding", config: {} } },
+        ],
+        edges: [{ id: "e1", source: "banding_1", target: "opt_1" }],
+      }))
+      expect(screen.getByRole("alert")).toHaveTextContent(/empty_band/)
+      expect(screen.getByText("healthy_band")).toBeInTheDocument()
+    })
+
     it("shows banding source selector when banding nodes are connected", () => {
-      vi.mocked(extractBandingLevelsForNode).mockReturnValue({ age: ["1", "2", "3"], region: ["A", "B"] })
+      vi.mocked(classifyBandingNode).mockReturnValue({
+        levels: { age: ["1", "2", "3"], region: ["A", "B"] },
+        configuredOutputs: ["age", "region"],
+        zeroLevelOutputs: [],
+        zeroLevelIssues: [],
+      })
 
       renderConfig(makeProps({
             config: { _nodeId: "opt_1", mode: "ratebook", objective: "premium", constraints: {} },
@@ -414,10 +457,15 @@ describe("OptimiserConfig", () => {
     })
 
     it("auto-selects all banding factors for a loaded ratebook config with no factor_columns key", async () => {
-      vi.mocked(extractBandingLevelsForNode).mockReturnValue({
-        channel_band: ["direct", "broker"],
-        proposer_age_band: ["20-27"],
-        vehicle_age_band: ["1-3"],
+      vi.mocked(classifyBandingNode).mockReturnValue({
+        levels: {
+          channel_band: ["direct", "broker"],
+          proposer_age_band: ["20-27"],
+          vehicle_age_band: ["1-3"],
+        },
+        configuredOutputs: ["channel_band", "proposer_age_band", "vehicle_age_band"],
+        zeroLevelOutputs: [],
+        zeroLevelIssues: [],
       })
       const onUpdate = vi.fn()
 
@@ -453,9 +501,14 @@ describe("OptimiserConfig", () => {
     })
 
     it("leaves an explicitly empty factor_columns list disabled", () => {
-      vi.mocked(extractBandingLevelsForNode).mockReturnValue({
-        channel_band: ["direct", "broker"],
-        proposer_age_band: ["20-27"],
+      vi.mocked(classifyBandingNode).mockReturnValue({
+        levels: {
+          channel_band: ["direct", "broker"],
+          proposer_age_band: ["20-27"],
+        },
+        configuredOutputs: ["channel_band", "proposer_age_band"],
+        zeroLevelOutputs: [],
+        zeroLevelIssues: [],
       })
 
       renderConfig(makeProps({
@@ -543,6 +596,12 @@ describe("OptimiserConfig", () => {
       expect(screen.getByText(/Constraints \(1\)/)).toBeInTheDocument()
       const settingsCard = screen.getByTestId("constraint-settings-card")
       expect(within(settingsCard).getByTestId("constraint-row")).toBeInTheDocument()
+      expect(within(settingsCard).getByRole("combobox", {
+        name: "loss_ratio constraint column",
+      })).toHaveValue("loss_ratio")
+      expect(within(settingsCard).getByRole("button", {
+        name: "Remove loss_ratio constraint",
+      })).toBeInTheDocument()
       // Should not show "No constraints added"
       expect(screen.queryByText(/No constraints added/)).not.toBeInTheDocument()
     })
@@ -818,8 +877,9 @@ describe("OptimiserConfig", () => {
               constraints: { loss_ratio: { max: 1.05 } },
             },
           }))
-      const numberInputs = document.querySelectorAll('input[type="number"]')
-      const valueInput = Array.from(numberInputs).find(i => (i as HTMLInputElement).value === "1.05")!
+      const valueInput = screen.getByRole("spinbutton", {
+        name: "loss_ratio constraint value",
+      })
       fireEvent.change(valueInput, { target: { value: "0.95" } })
       expect(mockHandleConstraintValueChange).toHaveBeenCalledWith("loss_ratio", "max", 0.95)
     })
@@ -833,11 +893,9 @@ describe("OptimiserConfig", () => {
               constraints: { loss_ratio: { max: 1.05 } },
             },
           }))
-      const selects = document.querySelectorAll("select")
-      const typeSelect = Array.from(selects).find(s =>
-        Array.from(s.querySelectorAll("option")).some(o => o.textContent === "Maximum") &&
-        (s as HTMLSelectElement).value === "max",
-      )!
+      const typeSelect = screen.getByRole("combobox", {
+        name: "loss_ratio constraint bound type",
+      })
       fireEvent.change(typeSelect, { target: { value: "min" } })
       expect(mockHandleConstraintValueChange).toHaveBeenCalledWith("loss_ratio", "min", 1.05)
     })

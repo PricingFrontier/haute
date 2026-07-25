@@ -1,15 +1,22 @@
 import { defineConfig, devices } from "@playwright/test"
 
-function localPort(name: string, fallback: number): number {
-  const value = Number(process.env[name] ?? fallback)
-  if (!Number.isInteger(value) || value < 1 || value > 65_535) {
-    throw new Error(`${name} must be an integer port between 1 and 65535`)
+const portFromEnv = (name: string, fallback: number): number => {
+  const rawValue = process.env[name]
+  if (rawValue === undefined) {
+    return fallback
   }
-  return value
+  if (!/^\d+$/.test(rawValue)) {
+    throw new Error(`${name} must be an integer port, got ${JSON.stringify(rawValue)}`)
+  }
+  const port = Number(rawValue)
+  if (!Number.isSafeInteger(port) || port < 1 || port > 65_535) {
+    throw new Error(`${name} must be between 1 and 65535, got ${rawValue}`)
+  }
+  return port
 }
 
-const frontendPort = localPort("HAUTE_E2E_FRONTEND_PORT", 5173)
-const readinessPort = localPort("HAUTE_E2E_READINESS_PORT", 5174)
+const frontendPort = portFromEnv("HAUTE_E2E_FRONTEND_PORT", 15_173)
+const readinessPort = portFromEnv("HAUTE_E2E_READINESS_PORT", 15_174)
 
 export default defineConfig({
   testDir: "./e2e",
@@ -18,6 +25,9 @@ export default defineConfig({
   timeout: 60_000,
   expect: {
     timeout: 15_000,
+    toHaveScreenshot: {
+      pathTemplate: "{testDir}/{testFilePath}-snapshots/{arg}{-projectName}{ext}",
+    },
   },
   fullyParallel: false,
   forbidOnly: true,

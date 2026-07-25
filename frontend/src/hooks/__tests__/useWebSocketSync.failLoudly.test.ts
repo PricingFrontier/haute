@@ -21,7 +21,8 @@ import { type Mock } from "vitest"
 
 // ── Mocks ────────────────────────────────────────────────────────
 
-vi.mock("../../utils/layout.ts", () => ({
+vi.mock("../../utils/layout.ts", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../utils/layout.ts")>(),
   getLayoutedElements: vi.fn(),
 }))
 
@@ -163,13 +164,13 @@ describe("useWebSocketSync — partial failure rolls back consistently (#37)", (
     renderHook(() => useWebSocketSync(params))
     act(() => { latestWS().onopen?.(new Event("open")) })
 
-    // Graph update with NO positions → layout will be invoked → throws
+    // Graph update with non-finite positions → layout will be invoked → throws
     await act(async () => {
       latestWS().onmessage?.(new MessageEvent("message", {
         data: JSON.stringify({
           type: "graph_update",
           graph: {
-            nodes: [{ id: "n1", position: { x: 0, y: 0 }, data: {} }],
+            nodes: [{ id: "n1", position: { x: Number.NaN, y: Number.NaN }, data: {} }],
             edges: [],
           },
         }),
@@ -196,7 +197,7 @@ describe("useWebSocketSync — partial failure rolls back consistently (#37)", (
         data: JSON.stringify({
           type: "graph_update",
           graph: {
-            nodes: [{ id: "n1", position: { x: 0, y: 0 }, data: {} }],
+            nodes: [{ id: "n1", position: { x: Number.NaN, y: Number.NaN }, data: {} }],
             edges: [],
           },
         }),
@@ -228,7 +229,7 @@ describe("useWebSocketSync — partial failure rolls back consistently (#37)", (
         data: JSON.stringify({
           type: "graph_update",
           graph: {
-            nodes: [{ id: "n1", position: { x: 0, y: 0 }, data: {} }],
+            nodes: [{ id: "n1", position: { x: Number.NaN, y: Number.NaN }, data: {} }],
             edges: [{ id: "e1", source: "n1", target: "n2" }],
           },
         }),
@@ -335,7 +336,7 @@ describe("useWebSocketSync — partial failure rolls back consistently (#37)", (
         data: JSON.stringify({
           type: "graph_update",
           graph: {
-            nodes: [{ id: "bad", position: { x: 0, y: 0 }, data: {} }],
+            nodes: [{ id: "bad", position: { x: Number.NaN, y: Number.NaN }, data: {} }],
             edges: [],
           },
         }),

@@ -1,4 +1,16 @@
 import type { Node, Edge } from "@xyflow/react"
+import { apiInputFrameLabels } from "./apiInputPorts"
+import {
+  NODE_TYPES,
+  SINK_ONLY_TYPES,
+  SOURCE_ONLY_TYPES,
+} from "./nodeTypes"
+import {
+  EDGE_JOIN_BASE_HANDLE,
+  EDGE_JOIN_JOIN_BOTTOM_HANDLE,
+  EDGE_JOIN_JOIN_HANDLE,
+} from "./edgeJoinRoles"
+import { DEFAULT_TARGET_HANDLE } from "./flowHandles"
 
 /**
  * Compute the next node ID counter from an array of nodes.
@@ -23,4 +35,165 @@ export function computeNextNodeId(nodes: Node[]): number {
  */
 export function normalizeEdges<T extends Edge>(edges: T[]): T[] {
   return edges.map((e) => ({ ...e, type: "default", animated: false }))
+}
+
+export type RejectedIncomingEdge = {
+  edge: Edge
+  reason: string
+}
+
+export type FilterIncomingEdgesResult = {
+  validEdges: Edge[]
+  rejectedEdges: RejectedIncomingEdge[]
+}
+
+type HandleDirection = "source" | "target"
+type NodeDataRecord = Record<string, unknown>
+
+function nodeData(node: Node): NodeDataRecord {
+  return node.data && typeof node.data === "object"
+    ? node.data as NodeDataRecord
+    : {}
+}
+
+function nodeType(node: Node): string {
+  const value = nodeData(node).nodeType
+  return typeof value === "string" ? value : ""
+}
+
+function nodeConfig(node: Node): Record<string, unknown> {
+  const value = nodeData(node).config
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {}
+}
+
+function configuredPortNames(config: Record<string, unknown>, field: string): string[] {
+  const value = config[field]
+  if (!Array.isArray(value)) return []
+  return value.filter(
+    (port): port is string => typeof port === "string" && port.length > 0,
+  )
+}
+
+function normalizedHandle(handle: string | null | undefined): string | null {
+  return handle ?? null
+}
+
+/**
+ * Return the exact handle ids rendered by the current node component.
+ *
+ * An empty set means the node does not render a handle in that direction.
+ * `null` represents React Flow's default id-less handle.
+ */
+function liveHandles(node: Node, direction: HandleDirection): Set<string | null> {
+  const type = nodeType(node)
+
+  if (type === NODE_TYPES.API_INPUT) {
+    if (direction === "target") return new Set()
+    return new Set(apiInputFrameLabels(nodeConfig(node)))
+  }
+
+  if (type === NODE_TYPES.EDGE_JOIN && direction === "target") {
+    return new Set([
+      EDGE_JOIN_BASE_HANDLE,
+      EDGE_JOIN_JOIN_HANDLE,
+      EDGE_JOIN_JOIN_BOTTOM_HANDLE,
+    ])
+  }
+
+  if (type === NODE_TYPES.SUBMODEL) {
+    const config = nodeConfig(node)
+    if (direction === "target") {
+      return new Set<string | null>([
+        null,
+        ...configuredPortNames(config, "inputPorts").map(port => `in__${port}`),
+      ])
+    }
+    const outputPorts = configuredPortNames(config, "outputPorts")
+    return outputPorts.length > 0
+      ? new Set(outputPorts.map(port => `out__${port}`))
+      : new Set([null])
+  }
+
+  if (type === NODE_TYPES.SUBMODEL_PORT) {
+    const isInput = nodeData(node).portDirection === "input"
+    if (isInput) return direction === "source" ? new Set([null]) : new Set()
+    return direction === "target" ? new Set([null]) : new Set()
+  }
+
+  if (direction === "source") {
+    if (SINK_ONLY_TYPES.has(type)) return new Set()
+    return new Set([null])
+  }
+
+  if (SOURCE_ONLY_TYPES.has(type)) return new Set()
+  return new Set([null, DEFAULT_TARGET_HANDLE])
+}
+
+function unavailableHandleReason(
+  node: Node,
+  direction: HandleDirection,
+  handle: string | null,
+): string {
+  const rendered = liveHandles(node, direction)
+  if (rendered.size === 0) {
+    return `${direction} node "${node.id}" has no ${direction} handle`
+  }
+  const label = handle === null ? "<default>" : `"${handle}"`
+  return `${direction} handle ${label} is not available on node "${node.id}"`
+}
+
+/**
+ * Partition imported edges by whether both endpoint nodes and both endpoint
+ * handles exist in the incoming graph's live node configuration.
+ */
+export function filterIncomingEdges(
+  nodes: Node[],
+  edges: Edge[],
+): FilterIncomingEdgesResult {
+  const nodesById = new Map(nodes.map(node => [node.id, node]))
+  const validEdges: Edge[] = []
+  const rejectedEdges: RejectedIncomingEdge[] = []
+
+  for (const edge of edges) {
+    const sourceNode = nodesById.get(edge.source)
+    if (!sourceNode) {
+      rejectedEdges.push({
+        edge,
+        reason: `source node "${edge.source}" is missing`,
+      })
+      continue
+    }
+    const targetNode = nodesById.get(edge.target)
+    if (!targetNode) {
+      rejectedEdges.push({
+        edge,
+        reason: `target node "${edge.target}" is missing`,
+      })
+      continue
+    }
+
+    const sourceHandle = normalizedHandle(edge.sourceHandle)
+    if (!liveHandles(sourceNode, "source").has(sourceHandle)) {
+      rejectedEdges.push({
+        edge,
+        reason: unavailableHandleReason(sourceNode, "source", sourceHandle),
+      })
+      continue
+    }
+
+    const targetHandle = normalizedHandle(edge.targetHandle)
+    if (!liveHandles(targetNode, "target").has(targetHandle)) {
+      rejectedEdges.push({
+        edge,
+        reason: unavailableHandleReason(targetNode, "target", targetHandle),
+      })
+      continue
+    }
+
+    validEdges.push(edge)
+  }
+
+  return { validEdges, rejectedEdges }
 }
