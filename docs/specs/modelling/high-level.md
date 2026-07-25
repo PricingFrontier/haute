@@ -63,9 +63,10 @@ Out of scope, owned elsewhere:
   (CatBoost hyperparameters, or GLM terms/family/link/regularization/interactions).
 - Starting training (`POST /api/modelling/train`) validates the config, estimates
   memory requirements, executes the upstream pipeline to materialise training data,
-  derives the exact feature choice from the materialised schema, and runs the full train
-  pipeline in a background thread. The response includes a bounded, versioned diagnostic
-  describing the feature choice and why other columns were retained as metadata or excluded.
+  and derives the exact feature choice from the materialised schema in the request
+  process. It then runs fit, evaluation, diagnostics, and model staging in a supervised
+  spawn child. The response includes a bounded, versioned diagnostic describing the
+  feature choice and why other columns were retained as metadata or excluded.
   A configuration that leaves no feature columns is rejected with HTTP 422 before a sink
   or trainer runs.
   The training job store has
@@ -75,7 +76,7 @@ Out of scope, owned elsewhere:
   progress, an incrementally-growing loss/iteration history, and — on completion — the
   full result: metrics, feature importances, and every diagnostic chart's underlying
   data. Polling also enforces the configured/default training timeout: an overdue
-  running job is cooperatively cancelled and atomically transitions to `timed_out`.
+  running job requests child termination and atomically transitions to `timed_out`.
 - `POST /api/modelling/estimate` returns a RAM/row-limit and (for GPU CatBoost) VRAM
   estimate without starting a job, so the UI can warn the user before they commit.
 - `POST /api/modelling/export` returns a standalone Python script that trains the
@@ -84,15 +85,16 @@ Out of scope, owned elsewhere:
 - `POST /api/modelling/mlflow/log` logs an already-completed job's results to MLflow
   after the fact (the "Log to MLflow" button), reusing the persisted feature contract
   so the logged model's signature matches what was actually trained.
-- `POST /api/modelling/train/cancel/{job_id}` cooperatively stops an in-flight run.
+- `POST /api/modelling/train/cancel/{job_id}` marks an in-flight run cancelled and asks
+  its supervisor to terminate and join the child process.
 - `POST /api/modelling/dispersion/estimate` estimates a GLM node's Negative Binomial
   `theta` or Tweedie `var_power` by profile likelihood over the node's own training
   data, as a background job the client polls
   (`GET /api/modelling/dispersion/status/{job_id}`) and can cancel
   (`POST /api/modelling/dispersion/cancel/{job_id}`); the resolved value is returned
-  for the user to accept into the node config, never written there automatically. Unlike
-  training-status polling, dispersion-status polling does not enforce a timeout; an estimate
-  runs until it completes, fails, or is explicitly cancelled.
+  for the user to accept into the node config, never written there automatically. Its
+  process supervisor enforces the timeout stamped at job creation; status polling is
+  not required to trigger that timeout.
 
 Invariants that always hold:
 - Live training and script export always produce the same model for the same config —
@@ -240,3 +242,22 @@ execution-plan facade. Remaining modelling improvement work is tracked in the
 Its final feature include/exclude decision and deterministic provenance diagnostics
 accompany modelling validation and execution. Modelling does not reimplement planning
 or infer a competing feature set.
+
+## Approved change contract — 0.8.0 isolated fit and dispersion
+
+Training request validation, RAM estimation, graph execution, projection, and bounded Parquet
+materialisation keep their current synchronous HTTP behavior. Once that prepared artifact
+exists, fit/evaluation/diagnostics/model staging and GLM dispersion profiling execute in a
+spawn child through the shared worker protocol.
+
+The child receives plain configuration and paths, never the route's `JobStore`,
+`ExecutionContext`, callbacks, dataframes, or cancellation registry. Progress and iteration
+events reconstruct the existing status response in the parent; they are non-blocking,
+loss-accounted telemetry, so a slow observer or a training run beyond the delivered-event budget
+cannot stall or fail fitting. History remains capped. A model is visible at its configured final
+path only after the parent verifies its staged size/digest and publishes the model and per-model
+feature contract. Cancellation, timeout, memory-limit, child crash, malformed result, and
+pre-commit publication failure preserve truthful terminal state and remove prepared/staged
+files. A post-commit backup or staging cleanup error is logged without misreporting the already
+published model as failed. The existing response DTOs and immediate pre-launch validation errors
+do not change.

@@ -2321,8 +2321,8 @@ def _finalize_solve_result(
     # ── Compute efficient frontier when explicitly requested (non-fatal) ────
     frontier_data = None
     frontier_error = None
-    # M6: Use direct dict access to avoid _evict_stale() from background thread
-    job_snapshot = store.jobs.get(job_id, {})
+    # Read through JobStore so concurrent eviction cannot race this snapshot.
+    job_snapshot = store.get_job(job_id) or {}
     config = job_snapshot.get("config", {})
     constraints = config.get("constraints")
     if constraints and config.get("frontier_enabled") is True:
@@ -2390,7 +2390,7 @@ def _finalize_solve_result(
     completion_fields: dict[str, Any] = {
         "progress": 1.0,
         "elapsed_seconds": _job_elapsed_seconds(
-            store.jobs.get(job_id, job_snapshot),
+            store.get_job(job_id) or job_snapshot,
             elapsed,
         ),
         "solver": solver,
@@ -3487,6 +3487,10 @@ class OptimiserSolveService:
             },
         )
 
+    def _job_elapsed(self, job_id: str, fallback: float = 0.0) -> float:
+        """Read elapsed time through the store API without exposing its backing mapping."""
+        return _job_elapsed_seconds(self._store.get_job(job_id) or {}, fallback)
+
     def _record_setup_failure(
         self,
         job_id: str,
@@ -3630,7 +3634,7 @@ class OptimiserSolveService:
                     {
                         "message": "Executing pipeline",
                         "progress": 0.05,
-                        "elapsed_seconds": _job_elapsed_seconds(self._store.jobs[job_id]),
+                        "elapsed_seconds": self._job_elapsed(job_id),
                     },
                     expected_status="running",
                 )
@@ -3648,7 +3652,7 @@ class OptimiserSolveService:
                     {
                         "message": "Projecting auto-range columns",
                         "progress": 0.65,
-                        "elapsed_seconds": _job_elapsed_seconds(self._store.jobs[job_id]),
+                        "elapsed_seconds": self._job_elapsed(job_id),
                     },
                     expected_status="running",
                 )
@@ -3675,7 +3679,7 @@ class OptimiserSolveService:
                     {
                         "message": "Aggregating scenario envelope",
                         "progress": 0.75,
-                        "elapsed_seconds": _job_elapsed_seconds(self._store.jobs[job_id]),
+                        "elapsed_seconds": self._job_elapsed(job_id),
                     },
                     expected_status="running",
                 )
@@ -3708,7 +3712,7 @@ class OptimiserSolveService:
                     message="Completed",
                     fields={
                         "progress": 1.0,
-                        "elapsed_seconds": _job_elapsed_seconds(self._store.jobs[job_id]),
+                        "elapsed_seconds": self._job_elapsed(job_id),
                         "result": response.model_dump(),
                         "execution_metrics": execution_context.metrics_payload(status="completed"),
                     },
@@ -3726,7 +3730,7 @@ class OptimiserSolveService:
                 to="memory_limited",
                 fields=_memory_limit_job_update(
                     detail=http_exc.detail,
-                    elapsed_seconds=_job_elapsed_seconds(self._store.jobs[job_id]),
+                    elapsed_seconds=self._job_elapsed(job_id),
                     execution_context=execution_context,
                 ),
             )
@@ -3738,7 +3742,7 @@ class OptimiserSolveService:
                     to="memory_limited",
                     fields=_memory_limit_job_update(
                         detail=exc.detail,
-                        elapsed_seconds=_job_elapsed_seconds(self._store.jobs[job_id]),
+                        elapsed_seconds=self._job_elapsed(job_id),
                         execution_context=execution_context,
                     ),
                 )
@@ -3751,14 +3755,14 @@ class OptimiserSolveService:
                 to=terminal_reason,
                 fields=_http_exception_job_update(
                     exc=exc,
-                    elapsed_seconds=_job_elapsed_seconds(self._store.jobs[job_id]),
+                    elapsed_seconds=self._job_elapsed(job_id),
                     execution_context=execution_context,
                     terminal_reason=terminal_reason,
                 ),
             )
             raise
         except PUBLIC_CONTRACT_ERROR_TYPES as exc:
-            elapsed_seconds = _job_elapsed_seconds(self._store.jobs[job_id])
+            elapsed_seconds = self._job_elapsed(job_id)
             fields = contract_error_job_fields(exc)
             fields["elapsed_seconds"] = elapsed_seconds
             fields["execution_metrics"] = execution_context.metrics_payload(
@@ -3781,7 +3785,7 @@ class OptimiserSolveService:
                 fields=_http_error_job_update(
                     status_code=422,
                     detail=detail,
-                    elapsed_seconds=_job_elapsed_seconds(self._store.jobs[job_id]),
+                    elapsed_seconds=self._job_elapsed(job_id),
                     execution_context=execution_context,
                     terminal_reason="contract_error",
                 ),
@@ -3795,7 +3799,7 @@ class OptimiserSolveService:
                 fields=_http_error_job_update(
                     status_code=400,
                     detail=detail,
-                    elapsed_seconds=_job_elapsed_seconds(self._store.jobs[job_id]),
+                    elapsed_seconds=self._job_elapsed(job_id),
                     execution_context=execution_context,
                     terminal_reason="contract_error",
                 ),
@@ -3813,7 +3817,7 @@ class OptimiserSolveService:
                 to="error",
                 fields={
                     "message": f"Frontier auto range failed: {exc}",
-                    "elapsed_seconds": _job_elapsed_seconds(self._store.jobs[job_id]),
+                    "elapsed_seconds": self._job_elapsed(job_id),
                     "execution_metrics": execution_context.metrics_payload(status="error"),
                 },
             )
@@ -3858,7 +3862,7 @@ class OptimiserSolveService:
                     {
                         "message": "Executing base pipeline",
                         "progress": 0.05,
-                        "elapsed_seconds": _job_elapsed_seconds(self._store.jobs[job_id]),
+                        "elapsed_seconds": self._job_elapsed(job_id),
                     },
                     expected_status="running",
                 )
@@ -3902,7 +3906,7 @@ class OptimiserSolveService:
                     {
                         "message": "Streaming scenario chunks",
                         "progress": 0.30,
-                        "elapsed_seconds": _job_elapsed_seconds(self._store.jobs[job_id]),
+                        "elapsed_seconds": self._job_elapsed(job_id),
                     },
                     expected_status="running",
                 )
@@ -3973,7 +3977,7 @@ class OptimiserSolveService:
                             {
                                 "message": f"Streaming scenario chunks ({chunk_index})",
                                 "progress": 0.30,
-                                "elapsed_seconds": _job_elapsed_seconds(self._store.jobs[job_id]),
+                                "elapsed_seconds": self._job_elapsed(job_id),
                             },
                             expected_status="running",
                         )
@@ -3983,7 +3987,7 @@ class OptimiserSolveService:
                     {
                         "message": "Combining scenario envelope",
                         "progress": 0.85,
-                        "elapsed_seconds": _job_elapsed_seconds(self._store.jobs[job_id]),
+                        "elapsed_seconds": self._job_elapsed(job_id),
                     },
                     expected_status="running",
                 )
@@ -4009,7 +4013,7 @@ class OptimiserSolveService:
                     message="Completed",
                     fields={
                         "progress": 1.0,
-                        "elapsed_seconds": _job_elapsed_seconds(self._store.jobs[job_id]),
+                        "elapsed_seconds": self._job_elapsed(job_id),
                         "result": response.model_dump(),
                         "execution_metrics": execution_context.metrics_payload(status="completed"),
                     },
@@ -4027,7 +4031,7 @@ class OptimiserSolveService:
                 to="memory_limited",
                 fields=_memory_limit_job_update(
                     detail=http_exc.detail,
-                    elapsed_seconds=_job_elapsed_seconds(self._store.jobs[job_id]),
+                    elapsed_seconds=self._job_elapsed(job_id),
                     execution_context=execution_context,
                 ),
             )
@@ -4039,7 +4043,7 @@ class OptimiserSolveService:
                     to="memory_limited",
                     fields=_memory_limit_job_update(
                         detail=exc.detail,
-                        elapsed_seconds=_job_elapsed_seconds(self._store.jobs[job_id]),
+                        elapsed_seconds=self._job_elapsed(job_id),
                         execution_context=execution_context,
                     ),
                 )
@@ -4052,14 +4056,14 @@ class OptimiserSolveService:
                 to=terminal_reason,
                 fields=_http_exception_job_update(
                     exc=exc,
-                    elapsed_seconds=_job_elapsed_seconds(self._store.jobs[job_id]),
+                    elapsed_seconds=self._job_elapsed(job_id),
                     execution_context=execution_context,
                     terminal_reason=terminal_reason,
                 ),
             )
             raise
         except PUBLIC_CONTRACT_ERROR_TYPES as exc:
-            elapsed_seconds = _job_elapsed_seconds(self._store.jobs[job_id])
+            elapsed_seconds = self._job_elapsed(job_id)
             fields = contract_error_job_fields(exc)
             fields["elapsed_seconds"] = elapsed_seconds
             fields["execution_metrics"] = execution_context.metrics_payload(
@@ -4082,7 +4086,7 @@ class OptimiserSolveService:
                 fields=_http_error_job_update(
                     status_code=422,
                     detail=detail,
-                    elapsed_seconds=_job_elapsed_seconds(self._store.jobs[job_id]),
+                    elapsed_seconds=self._job_elapsed(job_id),
                     execution_context=execution_context,
                     terminal_reason="contract_error",
                 ),
@@ -4096,7 +4100,7 @@ class OptimiserSolveService:
                 fields=_http_error_job_update(
                     status_code=400,
                     detail=detail,
-                    elapsed_seconds=_job_elapsed_seconds(self._store.jobs[job_id]),
+                    elapsed_seconds=self._job_elapsed(job_id),
                     execution_context=execution_context,
                     terminal_reason="contract_error",
                 ),
@@ -4114,7 +4118,7 @@ class OptimiserSolveService:
                 to="error",
                 fields={
                     "message": f"Streaming frontier auto range failed: {exc}",
-                    "elapsed_seconds": _job_elapsed_seconds(self._store.jobs[job_id]),
+                    "elapsed_seconds": self._job_elapsed(job_id),
                     "execution_metrics": execution_context.metrics_payload(status="error"),
                 },
             )

@@ -13,7 +13,8 @@ import shutil
 import tempfile
 import threading
 import time
-from collections.abc import Iterable, Mapping
+import traceback
+from collections.abc import Callable, Iterable, Mapping
 from numbers import Real
 from pathlib import Path
 from typing import Any
@@ -32,10 +33,24 @@ from haute._execution_context import (
     ExecutionContext,
     ExecutionMemoryLimitExceededError,
     ExecutionProfile,
+    current_rss_bytes,
 )
 from haute._graph_utils import upstream_node_ids
 from haute._logging import get_logger
 from haute._types import GraphNode, PipelineGraph
+from haute._worker_isolation import worker_config_for_memory_policy
+from haute._worker_protocol import (
+    WORKER_MAX_MESSAGE_LENGTH,
+    WORKER_MAX_TRACEBACK_LENGTH,
+    WorkerArtifactManifest,
+    WorkerFailurePayload,
+    WorkerProgressEvent,
+    WorkerProtocolError,
+    WorkerRequest,
+    WorkerResultManifest,
+    WorkerRuntime,
+    build_artifact_manifest,
+)
 from haute.errors import BoundedMemoryUnsupportedError
 from haute.execution import (
     AllExceptColumns,
@@ -51,7 +66,11 @@ from haute.modelling._train_config import (
     build_training_job_kwargs,
     training_objective_issue,
 )
-from haute.routes._background_jobs import BackgroundJobStoppedError, CancellableJobRegistry
+from haute.routes._background_jobs import (
+    CancellableJobRegistry,
+    IsolatedJobSupervisor,
+    IsolatedSupervisorThread,
+)
 from haute.routes._contract_errors import (
     PUBLIC_CONTRACT_ERROR_TYPES,
     contract_error_http_exception,
@@ -104,6 +123,10 @@ def _default_train_timeout() -> int:
 
 def _max_train_loss_history() -> int:
     return int_env("HAUTE_TRAIN_LOSS_HISTORY_LIMIT", 200)
+
+
+def _max_training_artifact_bytes() -> int:
+    return int_env("HAUTE_TRAIN_ARTIFACT_MAX_BYTES", 4 * 1024**3)
 
 
 # Deterministic seed for the RAM/row-limit training downsample. A fixed
@@ -551,6 +574,537 @@ def _bounded_loss_history(
     return rows[-_max_train_loss_history() :], True
 
 
+def _worker_request_payload(request: WorkerRequest, *, expected_kind: str) -> dict[str, Any]:
+    if request.kind != expected_kind:
+        raise ValueError(f"Worker request kind must be {expected_kind!r}, got {request.kind!r}")
+    payload = request.payload
+    if not isinstance(payload, dict):
+        raise ValueError("Worker request payload must be an object")
+    return payload
+
+
+def _child_execution_context(
+    request: WorkerRequest,
+    payload: dict[str, Any],
+    *,
+    operation: str,
+) -> ExecutionContext:
+    raw_profile = payload.get("profile")
+    if not isinstance(raw_profile, str):
+        raise ValueError("Worker profile must be a string")
+    profile = ExecutionProfile(raw_profile)
+    raw_limit = payload.get("memory_limit_bytes")
+    if raw_limit is not None and (
+        isinstance(raw_limit, bool) or not isinstance(raw_limit, int) or raw_limit <= 0
+    ):
+        raise ValueError("Worker memory_limit_bytes must be a positive integer or null")
+    baseline = current_rss_bytes()
+    rss_limit = (
+        baseline + raw_limit if baseline is not None and isinstance(raw_limit, int) else raw_limit
+    )
+    return ExecutionContext(
+        operation=operation,
+        profile=profile,
+        job_id=request.request_id,
+        memory_limit_bytes=raw_limit,
+        memory_baseline_bytes=baseline,
+        rss_limit_bytes=rss_limit,
+    )
+
+
+def _worker_failure_payload(
+    exc: Exception,
+    *,
+    terminal_reason: str,
+    message: str | None = None,
+    fields: dict[str, Any] | None = None,
+) -> WorkerFailurePayload:
+    detail = message if message is not None else str(exc)
+    detail = detail[:WORKER_MAX_MESSAGE_LENGTH] or type(exc).__name__
+    remote_traceback = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))[
+        :WORKER_MAX_TRACEBACK_LENGTH
+    ]
+    return WorkerFailurePayload(
+        terminal_reason=terminal_reason,
+        error_type=type(exc).__name__,
+        message=detail,
+        traceback=remote_traceback or type(exc).__name__,
+        fields=fields or {"error": detail},
+    )
+
+
+def _known_training_worker_failure(
+    exc: Exception,
+    *,
+    bounded_memory_prefix: str,
+) -> WorkerFailurePayload | None:
+    if isinstance(exc, ExecutionCancelledError):
+        return _worker_failure_payload(exc, terminal_reason="cancelled")
+    if isinstance(exc, ExecutionMemoryLimitExceededError):
+        payload = exc.to_payload()
+        return _worker_failure_payload(
+            exc,
+            terminal_reason="memory_limited",
+            fields={
+                "error": str(exc),
+                "error_detail": payload,
+                "error_code": "memory_limit",
+                "http_status_code": 507,
+            },
+        )
+    if isinstance(exc, PUBLIC_CONTRACT_ERROR_TYPES):
+        return _worker_failure_payload(
+            exc,
+            terminal_reason="contract_error",
+            fields=contract_error_job_fields(exc),
+        )
+    if isinstance(exc, BoundedMemoryUnsupportedError):
+        message = f"{bounded_memory_prefix}: {exc}"
+        return _worker_failure_payload(
+            exc,
+            terminal_reason="contract_error",
+            message=message,
+            fields={"error": message},
+        )
+    if isinstance(exc, ValueError):
+        return _worker_failure_payload(exc, terminal_reason="contract_error")
+    if isinstance(exc, MemoryError):
+        return _worker_failure_payload(
+            exc,
+            terminal_reason="memory_limited",
+            fields={"error": str(exc), "error_code": "memory_limit"},
+        )
+    return None
+
+
+def _with_worker_failure_metrics(
+    failure: WorkerFailurePayload,
+    execution_context: ExecutionContext | None,
+) -> WorkerFailurePayload:
+    if execution_context is None:
+        return failure
+    fields = dict(failure.fields) if isinstance(failure.fields, dict) else {}
+    fields["execution_metrics"] = execution_context.metrics_payload(
+        status=failure.terminal_reason,
+        terminal_reason=failure.terminal_reason,
+    )
+    return WorkerFailurePayload(
+        terminal_reason=failure.terminal_reason,
+        error_type=failure.error_type,
+        message=failure.message,
+        traceback=failure.traceback,
+        fields=fields,
+    )
+
+
+def _training_response_payload(
+    train_result: Any,
+    *,
+    job_id: str,
+    model_path: str,
+) -> dict[str, Any]:
+    loss_history, loss_history_truncated = _bounded_loss_history(
+        train_result.loss_history,
+    )
+    response = TrainResponse(
+        status="completed",
+        job_id=job_id,
+        metrics=train_result.metrics,
+        feature_importance=train_result.feature_importance,
+        model_path=model_path,
+        train_rows=train_result.train_rows,
+        test_rows=train_result.test_rows,
+        holdout_rows=train_result.holdout_rows,
+        holdout_metrics=train_result.holdout_metrics,
+        diagnostics_set=train_result.diagnostics_set,
+        features=train_result.features,
+        cat_features=train_result.cat_features,
+        best_iteration=train_result.best_iteration,
+        loss_history=loss_history,
+        loss_history_truncated=loss_history_truncated,
+        double_lift=train_result.double_lift,
+        shap_summary=train_result.shap_summary,
+        feature_importance_loss=train_result.feature_importance_loss,
+        ave_per_feature=train_result.ave_per_feature,
+        residuals_histogram=train_result.residuals_histogram,
+        residuals_stats=train_result.residuals_stats,
+        actual_vs_predicted=train_result.actual_vs_predicted,
+        lorenz_curve=train_result.lorenz_curve,
+        lorenz_curve_perfect=train_result.lorenz_curve_perfect,
+        pdp_data=train_result.pdp_data,
+        glm_coefficients=train_result.glm_coefficients,
+        glm_relativities=train_result.glm_relativities,
+        glm_fit_statistics=train_result.glm_fit_statistics,
+        glm_regularization_path=train_result.glm_regularization_path,
+        diagnostics_errors=train_result.diagnostics_errors,
+    )
+    _assert_json_finite(response)
+    return response.model_dump(mode="json")
+
+
+def _run_training_process_job(
+    runtime: WorkerRuntime,
+    request: WorkerRequest,
+) -> WorkerResultManifest | WorkerFailurePayload:
+    """Spawn entrypoint for fit, evaluation, diagnostics, and staged artifacts."""
+    execution_context: ExecutionContext | None = None
+    try:
+        payload = _worker_request_payload(request, expected_kind="training")
+        raw_kwargs = payload.get("job_kwargs")
+        if not isinstance(raw_kwargs, dict):
+            raise ValueError("Training worker job_kwargs must be an object")
+        job_kwargs = dict(raw_kwargs)
+        staged_output = runtime.staged_path("output")
+        staged_output.mkdir()
+        job_kwargs["output_dir"] = str(staged_output)
+
+        from haute.modelling import TrainingJob
+        from haute.modelling._training_job import model_contract_filename
+
+        execution_context = _child_execution_context(
+            request,
+            payload,
+            operation="training_job",
+        )
+        job = TrainingJob(**job_kwargs)
+
+        def progress(message: str, fraction: float) -> None:
+            execution_context.checkpoint(label="training_progress")
+            runtime.emit_progress(
+                progress=fraction,
+                message=message,
+                kind="progress",
+                fields={},
+            )
+
+        def iteration(
+            iteration_number: int,
+            total: int,
+            metrics: dict[str, float],
+        ) -> None:
+            execution_context.checkpoint(label="training_iteration")
+            runtime.emit_progress(
+                progress=(min(max(iteration_number / total, 0.0), 1.0) if total > 0 else 0.0),
+                message=f"Iteration {iteration_number}",
+                kind="iteration",
+                fields={
+                    "iteration": iteration_number,
+                    "total": total,
+                    "metrics": metrics,
+                },
+            )
+
+        train_result = job.run(
+            progress,
+            iteration,
+            check_cancelled=lambda: execution_context.checkpoint(
+                label="training_cancel_checkpoint"
+            ),
+            execution_context=execution_context,
+        )
+        model_path = Path(train_result.model_path).resolve()
+        contract_path = model_path.parent / model_contract_filename(model_path.stem)
+        model_manifest = build_artifact_manifest(
+            artifact_root=staged_output.parent,
+            path=model_path,
+            kind="model",
+            lifetime="staged",
+        )
+        contract_manifest = build_artifact_manifest(
+            artifact_root=staged_output.parent,
+            path=contract_path,
+            kind="feature_contract",
+            lifetime="staged",
+        )
+        response = _training_response_payload(
+            train_result,
+            job_id=request.request_id,
+            model_path=model_manifest.relative_path,
+        )
+        return WorkerResultManifest(
+            metadata={
+                "response": response,
+                "execution_metrics": execution_context.metrics_payload(
+                    status="completed",
+                    terminal_reason="completed",
+                ),
+            },
+            artifacts=(model_manifest, contract_manifest),
+        )
+    except Exception as exc:
+        known = _known_training_worker_failure(
+            exc,
+            bounded_memory_prefix="Training cannot run in bounded streaming mode",
+        )
+        if known is not None:
+            return _with_worker_failure_metrics(known, execution_context)
+        return _with_worker_failure_metrics(
+            _worker_failure_payload(
+                exc,
+                terminal_reason="error",
+                message=_friendly_error(exc),
+            ),
+            execution_context,
+        )
+
+
+def _run_dispersion_process_job(
+    runtime: WorkerRuntime,
+    request: WorkerRequest,
+) -> WorkerResultManifest | WorkerFailurePayload:
+    """Spawn entrypoint for the bounded GLM profile-likelihood search."""
+    execution_context: ExecutionContext | None = None
+    try:
+        payload = _worker_request_payload(request, expected_kind="dispersion")
+        raw_kwargs = payload.get("job_kwargs")
+        param = payload.get("param")
+        if not isinstance(raw_kwargs, dict):
+            raise ValueError("Dispersion worker job_kwargs must be an object")
+        if param not in _DISPERSION_PARAM_FAMILIES:
+            raise ValueError(f"Unknown dispersion parameter {param!r}")
+
+        from haute.modelling import TrainingJob
+        from haute.modelling._rustystats import (
+            _build_interactions,
+            _resolve_glm_terms,
+            estimate_glm_dispersion,
+        )
+
+        execution_context = _child_execution_context(
+            request,
+            payload,
+            operation="dispersion_estimate",
+        )
+        job_kwargs = dict(raw_kwargs)
+        job = TrainingJob(**job_kwargs)
+        train_params = job_kwargs["params"]
+
+        def progress(message: str, fraction: float) -> None:
+            execution_context.checkpoint(label="dispersion_progress")
+            runtime.emit_progress(
+                progress=fraction,
+                message=message,
+                kind="progress",
+                fields={},
+            )
+
+        prepared = job._prepare_data(progress, execution_context=execution_context)
+        features = prepared.features
+        cat_features = prepared.cat_features
+        raw_terms = train_params.get("terms") or {}
+        if raw_terms:
+            term_names = set(raw_terms)
+            missing = term_names - set(features)
+            if missing:
+                raise ValueError(
+                    "GLM terms reference columns not present in the training data: "
+                    f"{sorted(missing)}."
+                )
+            features = [feature for feature in features if feature in term_names]
+            cat_features = [feature for feature in cat_features if feature in term_names]
+
+        terms = _resolve_glm_terms(train_params, features, cat_features)
+        interactions = _build_interactions(
+            train_params.get("interactions", []) or [],
+            terms,
+        )
+        target = str(job_kwargs["target"])
+        weight = job_kwargs.get("weight") or None
+        offset = job_kwargs.get("offset") or None
+        needed = list(
+            dict.fromkeys(
+                [
+                    *terms,
+                    target,
+                    *([weight] if weight else []),
+                    *([offset] if offset else []),
+                ]
+            )
+        )
+        progress("Loading estimation sample", 0.35)
+        from haute._polars_utils import streaming_collect
+
+        frame = streaming_collect(
+            pl.scan_parquet(prepared.data_path).filter(pl.col(target).is_not_null()).select(needed),
+            profile=ExecutionProfile.TRAINING_PREP,
+            execution_context=execution_context,
+        )
+
+        def on_fit(fit_index: int) -> None:
+            execution_context.checkpoint(label="dispersion_fit")
+            runtime.emit_progress(
+                progress=0.4 + 0.55 * min(fit_index / 30.0, 1.0),
+                message=f"Profile likelihood fit {fit_index + 1}",
+                kind="dispersion_fit",
+                fields={"fit_index": fit_index},
+            )
+
+        estimate = estimate_glm_dispersion(
+            data=frame,
+            terms=terms,
+            target=target,
+            family=str(train_params.get("family")),
+            param=param,
+            link=train_params.get("link") or None,
+            intercept=bool(train_params.get("intercept", True)),
+            weight=weight,
+            offset=offset,
+            interactions=interactions or None,
+            on_fit=on_fit,
+        )
+        return WorkerResultManifest(
+            metadata={
+                "param": estimate.param,
+                "value": estimate.value,
+                "llf": estimate.llf,
+                "n_fits": estimate.n_fits,
+                "execution_metrics": execution_context.metrics_payload(
+                    status="completed",
+                    terminal_reason="completed",
+                ),
+            }
+        )
+    except Exception as exc:
+        known = _known_training_worker_failure(
+            exc,
+            bounded_memory_prefix=("Dispersion estimation cannot run in bounded streaming mode"),
+        )
+        if known is not None:
+            return _with_worker_failure_metrics(known, execution_context)
+        return _with_worker_failure_metrics(
+            _worker_failure_payload(
+                exc,
+                terminal_reason="error",
+                message=_friendly_error(exc),
+            ),
+            execution_context,
+        )
+
+
+def _worker_timing(job: Mapping[str, Any], *, job_id: str) -> tuple[float, float]:
+    raw_start = job.get("start_time")
+    if isinstance(raw_start, bool) or not isinstance(raw_start, int | float):
+        raise RuntimeError(f"Background job {job_id!r} has no valid start_time")
+    raw_timeout = job.get("timeout")
+    if (
+        isinstance(raw_timeout, bool)
+        or not isinstance(raw_timeout, int | float)
+        or raw_timeout <= 0
+    ):
+        raise RuntimeError(f"Background job {job_id!r} has no valid timeout")
+    return float(raw_start), float(raw_timeout)
+
+
+def _publish_training_artifacts(
+    manifest: WorkerResultManifest,
+    *,
+    artifact_root: Path,
+    output_root: Path,
+    job_id: str,
+    expected_model_name: str,
+) -> dict[str, Path]:
+    """Publish a validated model/contract pair with same-filesystem rollback."""
+    by_kind: dict[str, WorkerArtifactManifest] = {}
+    for artifact in manifest.artifacts:
+        if artifact.kind in by_kind:
+            raise WorkerProtocolError(f"Duplicate training artifact kind {artifact.kind!r}")
+        if artifact.lifetime != "staged":
+            raise WorkerProtocolError("Training artifacts must have staged lifetime")
+        by_kind[artifact.kind] = artifact
+    if set(by_kind) != {"model", "feature_contract"}:
+        raise WorkerProtocolError(
+            "Training completion requires exactly one model and feature contract"
+        )
+
+    root = artifact_root.resolve()
+    destination_root = output_root.resolve()
+    staged_and_final: dict[str, tuple[Path, Path]] = {}
+    for kind, artifact in by_kind.items():
+        relative = Path(artifact.relative_path)
+        if len(relative.parts) != 2 or relative.parts[0] != "output":
+            raise WorkerProtocolError(
+                f"Training artifact {artifact.relative_path!r} is not in the staged output"
+            )
+        staged = (root / relative).resolve()
+        final = (destination_root / relative.name).resolve()
+        if not final.is_relative_to(destination_root):
+            raise WorkerProtocolError("Training artifact destination escapes output root")
+        staged_and_final[kind] = (staged, final)
+
+    from haute.modelling._feature_contract import CONTRACT_FILENAME
+    from haute.modelling._training_job import model_contract_filename
+
+    model_staged, _model_final = staged_and_final["model"]
+    contract_staged, _contract_final = staged_and_final["feature_contract"]
+    if model_staged.stem != expected_model_name:
+        raise WorkerProtocolError("Training model filename does not match the requested name")
+    if contract_staged.name != model_contract_filename(model_staged.stem):
+        raise WorkerProtocolError("Training model and feature contract filenames do not match")
+    destination_root.mkdir(parents=True, exist_ok=True)
+    legacy_contract = destination_root / CONTRACT_FILENAME
+    if legacy_contract.exists():
+        logger.warning(
+            "legacy_shared_feature_contract_present",
+            legacy_path=str(legacy_contract),
+            per_model_path=str(staged_and_final["feature_contract"][1]),
+            model_name=model_staged.stem,
+        )
+
+    backups: dict[Path, Path] = {}
+    published: list[Path] = []
+    try:
+        for _staged, final in staged_and_final.values():
+            if final.exists() or final.is_symlink():
+                backup = final.with_name(f".{final.name}.{job_id}.haute-backup")
+                if backup.exists() or backup.is_symlink():
+                    raise FileExistsError(f"Training artifact backup already exists: {backup}")
+                os.replace(final, backup)
+                backups[final] = backup
+        for staged, final in staged_and_final.values():
+            os.replace(staged, final)
+            published.append(final)
+    except BaseException as exc:
+        rollback_errors: list[BaseException] = []
+        for final in reversed(published):
+            try:
+                if final.exists() or final.is_symlink():
+                    final.unlink()
+            except BaseException as rollback_exc:
+                rollback_errors.append(rollback_exc)
+        for final, backup in reversed(tuple(backups.items())):
+            try:
+                if backup.exists() or backup.is_symlink():
+                    os.replace(backup, final)
+            except BaseException as rollback_exc:
+                rollback_errors.append(rollback_exc)
+        for rollback_error in rollback_errors:
+            exc.add_note(f"Artifact rollback failed: {rollback_error}")
+        raise
+
+    for backup in backups.values():
+        try:
+            backup.unlink()
+        except OSError as exc:
+            logger.warning(
+                "training_artifact_post_commit_cleanup_failed",
+                path=str(backup),
+                cleanup_kind="backup",
+                error=str(exc),
+                error_type=type(exc).__name__,
+            )
+    try:
+        shutil.rmtree(root)
+    except OSError as exc:
+        logger.warning(
+            "training_artifact_post_commit_cleanup_failed",
+            path=str(root),
+            cleanup_kind="staging_root",
+            error=str(exc),
+            error_type=type(exc).__name__,
+        )
+    return {kind: final for kind, (_staged, final) in staged_and_final.items()}
+
+
 def _check_gpu_vram(
     effective_rows: int,
     probe_columns: int,
@@ -596,9 +1150,18 @@ class TrainService:
         The in-memory job store used to track training jobs.
     """
 
-    def __init__(self, store: JobStore) -> None:
+    def __init__(
+        self,
+        store: JobStore,
+        *,
+        protocol_runner: Any | None = None,
+    ) -> None:
         self._store = store
         self._lifecycle = JobLifecycle(store)
+        self._supervisor = IsolatedJobSupervisor(
+            self._lifecycle,
+            protocol_runner=protocol_runner,
+        )
         self._training_jobs = CancellableJobRegistry()
         self._start_lock = threading.Lock()
 
@@ -607,7 +1170,7 @@ class TrainService:
     # ------------------------------------------------------------------
 
     def start(self, body: TrainRequest) -> TrainResponse:
-        """Validate config, execute pipeline, and launch training in a background thread.
+        """Validate, prepare data, and launch training in a supervised spawn worker.
 
         Returns a ``TrainResponse`` with status ``"started"`` and the job ID.
         Raises ``HTTPException`` on validation or pipeline execution failures.
@@ -626,6 +1189,7 @@ class TrainService:
 
         with self._start_lock:
             self._check_no_concurrent_jobs()
+            start_time = time.monotonic()
             job_id = self._store.create_job(
                 {
                     "status": "running",
@@ -634,6 +1198,8 @@ class TrainService:
                     "message": "Starting",
                     "config": dict(config),
                     "node_label": node.data.label,
+                    "start_time": start_time,
+                    "timeout": config.get("timeout", _default_train_timeout()),
                 }
             )
 
@@ -803,8 +1369,18 @@ class TrainService:
             message="Cancelled",
             elapsed_seconds=_job_elapsed_seconds(job),
         )
-        self._training_jobs.release(job_id)
         return updated_job if updated_job is not None else self._store.require_job(job_id)
+
+    def reject_completed_result(self, job_id: str, *, message: str) -> dict[str, Any]:
+        """Correct a completed job whose result cannot satisfy the API contract."""
+        corrected = self._lifecycle.transition(
+            job_id,
+            to="error",
+            message=message,
+            fields={"result": None},
+            expected_status="completed",
+        )
+        return corrected if corrected is not None else self._store.require_job(job_id)
 
     def timeout(self, job_id: str, *, timeout: int, start_time: float) -> dict[str, Any]:
         """Mark a running training job as timed out and request worker cancellation."""
@@ -817,7 +1393,6 @@ class TrainService:
             ),
             elapsed_seconds=time.monotonic() - start_time,
         )
-        self._training_jobs.release(job_id)
         return updated_job if updated_job is not None else self._store.require_job(job_id)
 
     # ------------------------------------------------------------------
@@ -831,7 +1406,7 @@ class TrainService:
 
         Materialises the training frame exactly as ``start()`` would (same
         pipeline execution, projection, and seeded row sampling), then runs
-        a profile-likelihood search in a background thread. The estimate is
+        a profile-likelihood search in a supervised spawn worker. The estimate is
         an explicit user action: the resolved value lands in the node config
         where the training-objective gate requires it — never as a hidden
         default (RustyStats fits silently at theta=1.0 / var_power=1.5).
@@ -842,6 +1417,7 @@ class TrainService:
 
         with self._start_lock:
             self._check_no_concurrent_jobs()
+            start_time = time.monotonic()
             job_id = self._store.create_job(
                 {
                     "status": "running",
@@ -850,6 +1426,8 @@ class TrainService:
                     "message": "Starting",
                     "param": body.param,
                     "node_label": node.data.label,
+                    "start_time": start_time,
+                    "timeout": config.get("timeout", _default_train_timeout()),
                 }
             )
 
@@ -956,7 +1534,6 @@ class TrainService:
             message="Cancelled",
             elapsed_seconds=_job_elapsed_seconds(job),
         )
-        self._training_jobs.release(job_id)
         return updated_job if updated_job is not None else self._store.require_job(job_id)
 
     def _validate_dispersion_config(self, config: dict[str, Any], param: str) -> None:
@@ -1001,6 +1578,159 @@ class TrainService:
         if issue is not None:
             raise HTTPException(status_code=400, detail=issue)
 
+    def _launch_dispersion_protocol(
+        self,
+        job_id: str,
+        node_id: str,
+        config: dict[str, Any],
+        param: str,
+        tmp_parquet: str,
+        *,
+        execution_context: ExecutionContext,
+    ) -> IsolatedSupervisorThread | None:
+        stored_job = self._store.require_job(job_id)
+        start_time, timeout_seconds = _worker_timing(stored_job, job_id=job_id)
+        self._training_jobs.register_latest(
+            (_DISPERSION_JOB_TYPE, job_id),
+            job_id,
+            execution_token=execution_context.cancellation_token,
+        )
+        launch_cleanup = self._parent_worker_cleanup(
+            job_id,
+            execution_context=execution_context,
+            tmp_parquet=Path(tmp_parquet),
+            artifact_root=None,
+        )
+        try:
+            if self._store.require_job(job_id).get("status") != "running":
+                launch_cleanup()
+                return None
+        except BaseException:
+            launch_cleanup()
+            raise
+        try:
+            artifact_root = Path(
+                tempfile.mkdtemp(
+                    prefix=f".haute-dispersion-{job_id}-",
+                    dir=Path(tmp_parquet).resolve().parent,
+                )
+            )
+        except Exception:
+            launch_cleanup()
+            raise
+        cleanup = self._parent_worker_cleanup(
+            job_id,
+            execution_context=execution_context,
+            tmp_parquet=Path(tmp_parquet),
+            artifact_root=artifact_root,
+        )
+        remaining = timeout_seconds - (time.monotonic() - start_time)
+        if remaining <= 0:
+            self.timeout(
+                job_id,
+                timeout=int(timeout_seconds),
+                start_time=start_time,
+            )
+            cleanup()
+            return None
+
+        try:
+            stub_config = {**config, param: _DISPERSION_PARAM_STUBS[param]}
+            job_kwargs = build_training_job_kwargs(
+                stub_config,
+                data=str(Path(tmp_parquet).resolve()),
+                default_name=node_id,
+            )
+            request = WorkerRequest(
+                request_id=job_id,
+                kind="dispersion",
+                payload={
+                    "job_kwargs": job_kwargs,
+                    "param": param,
+                    "profile": ExecutionProfile.TRAINING_PREP.value,
+                    "memory_limit_bytes": execution_context.memory_limit_bytes,
+                },
+            )
+        except Exception:
+            cleanup()
+            raise
+
+        def on_progress(event: WorkerProgressEvent) -> None:
+            if event.kind not in {"progress", "dispersion_fit"}:
+                raise WorkerProtocolError(f"Unknown dispersion progress event kind {event.kind!r}")
+            self._store.atomic_update(
+                job_id,
+                {
+                    "progress": event.progress,
+                    "message": event.message,
+                    "elapsed_seconds": time.monotonic() - start_time,
+                },
+                expected_status="running",
+            )
+
+        def completed_fields(result: WorkerResultManifest) -> dict[str, Any]:
+            if not isinstance(result.metadata, dict):
+                raise WorkerProtocolError("Dispersion result metadata must be an object")
+            metadata = result.metadata
+            if metadata.get("param") != param:
+                raise WorkerProtocolError("Dispersion result parameter does not match request")
+            value = metadata.get("value")
+            llf = metadata.get("llf")
+            n_fits = metadata.get("n_fits")
+            execution_metrics = metadata.get("execution_metrics")
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, int | float)
+                or isinstance(llf, bool)
+                or not isinstance(llf, int | float)
+                or isinstance(n_fits, bool)
+                or not isinstance(n_fits, int)
+                or n_fits < 0
+                or not isinstance(execution_metrics, dict)
+            ):
+                raise WorkerProtocolError("Dispersion result metadata is malformed")
+            fields = {
+                "param": metadata["param"],
+                "value": value,
+                "llf": llf,
+                "n_fits": n_fits,
+                "execution_metrics": execution_metrics,
+                "progress": 1.0,
+            }
+            _assert_json_finite(fields)
+            return fields
+
+        try:
+            worker_config = worker_config_for_memory_policy(
+                memory_limit_bytes=execution_context.memory_limit_bytes,
+                timeout_seconds=remaining,
+                stop_reason=lambda: self._training_jobs.cancellation_reason(job_id),
+                process_name=f"haute-dispersion-{job_id}",
+            )
+            return self._supervisor.launch_protocol(
+                job_id,
+                _run_dispersion_process_job,
+                request,
+                artifact_root=artifact_root,
+                artifact_kinds=frozenset(),
+                max_artifact_size_bytes=0,
+                config=worker_config,
+                on_progress=on_progress,
+                completed_fields=completed_fields,
+                on_finished=cleanup,
+                start_time=start_time,
+            )
+        except Exception as exc:
+            cleanup()
+            logger.error("dispersion_worker_start_failed", error=str(exc), node_id=node_id)
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    "Dispersion estimation worker failed to start. "
+                    "Check the server logs for details."
+                ),
+            ) from exc
+
     def _launch_dispersion_background(
         self,
         job_id: str,
@@ -1010,210 +1740,82 @@ class TrainService:
         tmp_parquet: str,
         *,
         execution_context: ExecutionContext,
-    ) -> None:
-        """Run the profile-likelihood search in a background thread."""
-        from haute.modelling import TrainingJob
-        from haute.modelling._rustystats import (
-            _build_interactions,
-            _resolve_glm_terms,
-            estimate_glm_dispersion,
-        )
-
-        start_time = time.monotonic()
-        self._training_jobs.register_latest(
-            (_DISPERSION_JOB_TYPE, job_id),
+    ) -> IsolatedSupervisorThread | None:
+        """Delegate profile likelihood to the supervised process protocol."""
+        return self._launch_dispersion_protocol(
             job_id,
-            execution_token=execution_context.cancellation_token,
+            node_id,
+            config,
+            param,
+            tmp_parquet,
+            execution_context=execution_context,
         )
-        self._store.atomic_update(job_id, {"start_time": start_time})
 
-        # ``build_training_job_kwargs`` shares data prep with real training so
-        # the estimate is profiled on exactly the frame training would see.
-        # The stub never reaches a fit — the search overrides the parameter
-        # at every candidate value.
-        stub_config = {**config, param: _DISPERSION_PARAM_STUBS[param]}
-        job_kwargs = build_training_job_kwargs(stub_config, data=tmp_parquet, default_name=node_id)
-        job = TrainingJob(**job_kwargs)
-        train_params = job_kwargs["params"]
-
-        def _progress(msg: str, frac: float) -> None:
-            self._raise_if_training_stopped(job_id, execution_context=execution_context)
-            self._store.atomic_update(
-                job_id,
-                {
-                    "progress": frac,
-                    "message": msg,
-                    "elapsed_seconds": time.monotonic() - start_time,
-                },
-                expected_status="running",
-            )
-
-        def _worker() -> None:
-            try:
-                prepared = job._prepare_data(_progress, execution_context=execution_context)
-
-                features = prepared.features
-                cat_features = prepared.cat_features
-                raw_terms = train_params.get("terms") or {}
-                if raw_terms:
-                    # Mirror TrainingJob.run's GLM narrowing: the design only
-                    # carries the columns the user's terms reference.
-                    term_names = set(raw_terms)
-                    missing = term_names - set(features)
-                    if missing:
-                        raise ValueError(
-                            f"GLM terms reference columns not present in the "
-                            f"training data: {sorted(missing)}."
-                        )
-                    features = [f for f in features if f in term_names]
-                    cat_features = [f for f in cat_features if f in term_names]
-
-                terms = _resolve_glm_terms(train_params, features, cat_features)
-                interactions = _build_interactions(
-                    train_params.get("interactions", []) or [],
-                    terms,
-                )
-                target = str(job_kwargs["target"])
-                weight = job_kwargs.get("weight") or None
-                offset = job_kwargs.get("offset") or None
-                needed = list(
-                    dict.fromkeys(
-                        [
-                            *terms,
-                            target,
-                            *([weight] if weight else []),
-                            *([offset] if offset else []),
-                        ]
-                    )
-                )
-                _progress("Loading estimation sample", 0.35)
-                from haute._polars_utils import streaming_collect
-
-                frame = streaming_collect(
-                    pl.scan_parquet(prepared.data_path)
-                    .filter(pl.col(target).is_not_null())
-                    .select(needed),
-                    profile=ExecutionProfile.TRAINING_PREP,
-                    execution_context=execution_context,
-                )
-
-                family = str(train_params.get("family"))
-
-                def _on_fit(fit_index: int) -> None:
-                    self._raise_if_training_stopped(job_id, execution_context=execution_context)
-                    # A bounded 1-D search converges in ~10-30 fits.
-                    frac = 0.4 + 0.55 * min(fit_index / 30.0, 1.0)
-                    self._store.atomic_update(
-                        job_id,
-                        {
-                            "progress": frac,
-                            "message": f"Profile likelihood fit {fit_index + 1}",
-                            "elapsed_seconds": time.monotonic() - start_time,
-                        },
-                        expected_status="running",
-                    )
-
-                estimate = estimate_glm_dispersion(
-                    data=frame,
-                    terms=terms,
-                    target=target,
-                    family=family,
-                    param=param,
-                    link=train_params.get("link") or None,
-                    intercept=bool(train_params.get("intercept", True)),
-                    weight=weight,
-                    offset=offset,
-                    interactions=interactions or None,
-                    on_fit=_on_fit,
-                )
-                self._lifecycle.transition(
-                    job_id,
-                    to="completed",
-                    message="Completed",
-                    fields={
-                        "param": estimate.param,
-                        "value": estimate.value,
-                        "llf": estimate.llf,
-                        "n_fits": estimate.n_fits,
-                        "elapsed_seconds": time.monotonic() - start_time,
-                    },
-                )
-            except BackgroundJobStoppedError as exc:
-                logger.info(
-                    "dispersion_worker_stopped",
-                    job_id=job_id,
-                    terminal_reason=exc.terminal_reason,
-                )
-            except ExecutionCancelledError:
-                self._lifecycle.transition(
-                    job_id,
-                    to="cancelled",
-                    message="Cancelled",
-                    elapsed_seconds=time.monotonic() - start_time,
-                )
-            except ValueError as exc:
-                error_msg = str(exc)
-                logger.warning("dispersion_validation_error", error=error_msg, node_id=node_id)
-                self._lifecycle.transition(
-                    job_id,
-                    to="contract_error",
-                    message=error_msg,
-                    fields={"error": error_msg},
-                    elapsed_seconds=time.monotonic() - start_time,
-                )
-            except Exception as exc:
-                error_msg = _friendly_error(exc)
-                logger.error("dispersion_estimate_failed", error=str(exc), node_id=node_id)
-                self._lifecycle.transition(
-                    job_id,
-                    to="error",
-                    message=error_msg,
-                    fields={"error": error_msg},
-                    elapsed_seconds=time.monotonic() - start_time,
-                )
-            finally:
-                self._training_jobs.release(job_id)
-                execution_context.release_admission()
-                if Path(tmp_parquet).exists():
-                    os.unlink(tmp_parquet)
-
-        try:
-            thread = threading.Thread(target=_worker, daemon=True)
-            thread.start()
-        except Exception as exc:
-            if Path(tmp_parquet).exists():
-                os.unlink(tmp_parquet)
-            logger.error("dispersion_worker_start_failed", error=str(exc), node_id=node_id)
-            self._lifecycle.transition(
-                job_id,
-                to="error",
-                message=f"Failed to start dispersion estimation worker: {exc}",
-                elapsed_seconds=time.monotonic() - start_time,
-            )
-            self._training_jobs.release(job_id)
-            execution_context.release_admission()
-            raise HTTPException(
-                status_code=500,
-                detail=(
-                    "Dispersion estimation worker failed to start. "
-                    "Check the server logs for details."
-                ),
-            ) from exc
-
-    def _raise_if_training_stopped(
+    def _parent_worker_cleanup(
         self,
         job_id: str,
         *,
         execution_context: ExecutionContext,
-    ) -> None:
-        reason = self._training_jobs.cancellation_reason(job_id)
-        if reason is not None:
-            raise BackgroundJobStoppedError(job_id, reason)
-        execution_context.checkpoint(label="training_worker_checkpoint")
-        job = self._store.require_job(job_id)
-        status = str(job.get("status", "running"))
-        if status != "running":
-            raise BackgroundJobStoppedError(job_id, str(job.get("terminal_reason", status)))
+        tmp_parquet: Path,
+        artifact_root: Path | None,
+        artifact_publication_committed: Callable[[], bool] | None = None,
+    ) -> Callable[[], None]:
+        """Return an idempotent parent cleanup that attempts every owned resource."""
+        lock = threading.Lock()
+        finished = False
+
+        def cleanup() -> None:
+            nonlocal finished
+            with lock:
+                if finished:
+                    return
+                finished = True
+            errors: list[BaseException] = []
+            for cleanup_kind, action in (
+                ("registry", lambda: self._training_jobs.release(job_id)),
+                ("admission", execution_context.release_admission),
+                (
+                    "prepared_data",
+                    lambda: (
+                        tmp_parquet.unlink()
+                        if tmp_parquet.exists() or tmp_parquet.is_symlink()
+                        else None
+                    ),
+                ),
+                (
+                    "artifact_root",
+                    lambda: (
+                        shutil.rmtree(artifact_root)
+                        if artifact_root is not None and artifact_root.exists()
+                        else None
+                    ),
+                ),
+            ):
+                try:
+                    action()
+                except BaseException as exc:
+                    if (
+                        cleanup_kind == "artifact_root"
+                        and isinstance(exc, OSError)
+                        and artifact_publication_committed is not None
+                        and artifact_publication_committed()
+                    ):
+                        logger.warning(
+                            "training_artifact_post_commit_cleanup_failed",
+                            path=str(artifact_root),
+                            cleanup_kind="staging_root_retry",
+                            error=str(exc),
+                            error_type=type(exc).__name__,
+                        )
+                        continue
+                    errors.append(exc)
+            if errors:
+                primary = errors[0]
+                for extra in errors[1:]:
+                    primary.add_note(f"Additional cleanup failure: {extra}")
+                raise primary
+
+        return cleanup
 
     # ------------------------------------------------------------------
     # Private orchestration steps
@@ -1649,6 +2251,231 @@ class TrainService:
 
         return tmp_parquet
 
+    def _launch_training_protocol(
+        self,
+        job_id: str,
+        node_id: str,
+        config: dict[str, Any],
+        train_params: dict[str, Any],
+        tmp_parquet: str,
+        ram_warning: str | None,
+        total_source_rows: int | None,
+        *,
+        execution_context: ExecutionContext,
+        feature_selection: TrainingFeatureSelectionDiagnosticPayload | None = None,
+    ) -> IsolatedSupervisorThread | None:
+        stored_job = self._store.require_job(job_id)
+        start_time, timeout_seconds = _worker_timing(stored_job, job_id=job_id)
+        self._training_jobs.register_latest(
+            (_TRAINING_JOB_TYPE, job_id),
+            job_id,
+            execution_token=execution_context.cancellation_token,
+        )
+        launch_cleanup = self._parent_worker_cleanup(
+            job_id,
+            execution_context=execution_context,
+            tmp_parquet=Path(tmp_parquet),
+            artifact_root=None,
+        )
+        try:
+            if self._store.require_job(job_id).get("status") != "running":
+                launch_cleanup()
+                return None
+        except BaseException:
+            launch_cleanup()
+            raise
+        try:
+            job_kwargs = build_training_job_kwargs(
+                config,
+                data=str(Path(tmp_parquet).resolve()),
+                default_name=node_id,
+            )
+            job_kwargs["params"] = train_params
+            output_root = Path(str(job_kwargs.pop("output_dir"))).expanduser().resolve()
+            output_root.mkdir(parents=True, exist_ok=True)
+            artifact_root = Path(
+                tempfile.mkdtemp(
+                    prefix=f".haute-training-{job_id}-",
+                    dir=output_root,
+                )
+            )
+        except Exception:
+            launch_cleanup()
+            raise
+
+        artifact_publication_committed = threading.Event()
+        cleanup = self._parent_worker_cleanup(
+            job_id,
+            execution_context=execution_context,
+            tmp_parquet=Path(tmp_parquet),
+            artifact_root=artifact_root,
+            artifact_publication_committed=artifact_publication_committed.is_set,
+        )
+        # The first closure may have been constructed before the staging root.
+        # It has not run; use only the complete owner from this point onward.
+        remaining = timeout_seconds - (time.monotonic() - start_time)
+        if remaining <= 0:
+            self.timeout(
+                job_id,
+                timeout=int(timeout_seconds),
+                start_time=start_time,
+            )
+            cleanup()
+            return None
+
+        try:
+            request = WorkerRequest(
+                request_id=job_id,
+                kind="training",
+                payload={
+                    "job_kwargs": job_kwargs,
+                    "profile": ExecutionProfile.TRAINING_PREP.value,
+                    "memory_limit_bytes": execution_context.memory_limit_bytes,
+                },
+            )
+        except Exception:
+            cleanup()
+            raise
+
+        def on_progress(event: WorkerProgressEvent) -> None:
+            if event.kind == "progress":
+                self._store.atomic_update(
+                    job_id,
+                    {
+                        "progress": event.progress,
+                        "message": event.message,
+                        "elapsed_seconds": time.monotonic() - start_time,
+                    },
+                    expected_status="running",
+                )
+                return
+            if event.kind != "iteration" or not isinstance(event.fields, dict):
+                raise WorkerProtocolError(f"Unknown training progress event kind {event.kind!r}")
+            iteration = event.fields.get("iteration")
+            total = event.fields.get("total")
+            metrics = event.fields.get("metrics")
+            if (
+                isinstance(iteration, bool)
+                or not isinstance(iteration, int)
+                or iteration < 0
+                or isinstance(total, bool)
+                or not isinstance(total, int)
+                or total < 0
+                or not isinstance(metrics, dict)
+                or any(
+                    isinstance(value, bool)
+                    or not isinstance(value, int | float)
+                    or not math.isfinite(float(value))
+                    for value in metrics.values()
+                )
+            ):
+                raise WorkerProtocolError("Training iteration event fields are malformed")
+            current_job = self._store.get_job(job_id)
+            if current_job is None:
+                raise KeyError(f"Training job {job_id!r} disappeared during progress")
+            history = list(current_job.get("train_loss_history") or [])
+            history.append({"iteration": float(iteration), **metrics})
+            truncated = bool(current_job.get("train_loss_history_truncated"))
+            if len(history) > _max_train_loss_history():
+                history = history[-_max_train_loss_history() :]
+                truncated = True
+            self._store.atomic_update(
+                job_id,
+                {
+                    "progress": event.progress,
+                    "message": event.message,
+                    "iteration": iteration,
+                    "total_iterations": total,
+                    "train_loss": metrics,
+                    "train_loss_history": history,
+                    "train_loss_history_truncated": truncated,
+                    "elapsed_seconds": time.monotonic() - start_time,
+                },
+                expected_status="running",
+            )
+
+        def completed_fields(result: WorkerResultManifest) -> dict[str, Any]:
+            if not isinstance(result.metadata, dict):
+                raise WorkerProtocolError("Training result metadata must be an object")
+            raw_response = result.metadata.get("response")
+            if not isinstance(raw_response, dict):
+                raise WorkerProtocolError("Training result response must be an object")
+            response_fields = dict(raw_response)
+            response_fields.update(
+                {
+                    "warning": ram_warning,
+                    "total_source_rows": total_source_rows,
+                    "feature_selection": (
+                        feature_selection.model_dump(mode="json")
+                        if feature_selection is not None
+                        else None
+                    ),
+                }
+            )
+            staged_response = TrainResponse.model_validate(response_fields)
+            _assert_json_finite(staged_response)
+            if staged_response.status != "completed" or staged_response.job_id != job_id:
+                raise WorkerProtocolError(
+                    "Training response status or job identifier does not match request"
+                )
+            model_artifacts = [
+                artifact for artifact in result.artifacts if artifact.kind == "model"
+            ]
+            if (
+                len(model_artifacts) != 1
+                or staged_response.model_path != model_artifacts[0].relative_path
+            ):
+                raise WorkerProtocolError(
+                    "Training response model path does not match the staged model manifest"
+                )
+            execution_metrics = result.metadata.get("execution_metrics")
+            if not isinstance(execution_metrics, dict):
+                raise WorkerProtocolError("Training execution metrics must be an object")
+            published = _publish_training_artifacts(
+                result,
+                artifact_root=artifact_root,
+                output_root=output_root,
+                job_id=job_id,
+                expected_model_name=str(job_kwargs["name"]),
+            )
+            artifact_publication_committed.set()
+            response_fields["model_path"] = str(published["model"])
+            response = TrainResponse.model_validate(response_fields)
+            _assert_json_finite(response)
+            return {
+                "result": response,
+                "execution_metrics": execution_metrics,
+                "progress": 1.0,
+            }
+
+        try:
+            worker_config = worker_config_for_memory_policy(
+                memory_limit_bytes=execution_context.memory_limit_bytes,
+                timeout_seconds=remaining,
+                stop_reason=lambda: self._training_jobs.cancellation_reason(job_id),
+                process_name=f"haute-training-{job_id}",
+            )
+            return self._supervisor.launch_protocol(
+                job_id,
+                _run_training_process_job,
+                request,
+                artifact_root=artifact_root,
+                artifact_kinds=frozenset({"model", "feature_contract"}),
+                max_artifact_size_bytes=_max_training_artifact_bytes(),
+                config=worker_config,
+                on_progress=on_progress,
+                completed_fields=completed_fields,
+                on_finished=cleanup,
+                start_time=start_time,
+            )
+        except Exception as exc:
+            cleanup()
+            logger.error("training_worker_start_failed", error=str(exc), node_id=node_id)
+            raise HTTPException(
+                status_code=500,
+                detail="Training worker failed to start. Check the server logs for details.",
+            ) from exc
+
     def _launch_background(
         self,
         job_id: str,
@@ -1661,228 +2488,16 @@ class TrainService:
         *,
         execution_context: ExecutionContext,
         feature_selection: TrainingFeatureSelectionDiagnosticPayload | None = None,
-    ) -> None:
-        """Run TrainingJob in a background thread, owning admission release."""
-        # Ownership of ``execution_context`` transfers here from ``start()``;
-        # the worker's ``finally`` releases admission so the in-flight
-        # reservation and memory ceiling stay armed across fit/eval/MLflow.
-        from haute.modelling import TrainingJob
-
-        start_time = time.monotonic()
-        self._training_jobs.register_latest(
-            (_TRAINING_JOB_TYPE, job_id),
+    ) -> IsolatedSupervisorThread | None:
+        """Delegate fit/evaluation to the supervised process protocol."""
+        return self._launch_training_protocol(
             job_id,
-            execution_token=execution_context.cancellation_token,
+            node_id,
+            config,
+            train_params,
+            tmp_parquet,
+            ram_warning,
+            total_source_rows,
+            execution_context=execution_context,
+            feature_selection=feature_selection,
         )
-        self._store.atomic_update(
-            job_id,
-            {
-                "start_time": start_time,
-                "timeout": config.get("timeout", _default_train_timeout()),
-            },
-        )
-
-        def _progress(msg: str, frac: float) -> None:
-            self._raise_if_training_stopped(job_id, execution_context=execution_context)
-            self._store.atomic_update(
-                job_id,
-                {
-                    "progress": frac,
-                    "message": msg,
-                    "elapsed_seconds": time.monotonic() - start_time,
-                },
-                expected_status="running",
-            )
-
-        def _on_iteration(iteration: int, total: int, metrics: dict[str, float]) -> None:
-            self._raise_if_training_stopped(job_id, execution_context=execution_context)
-            current_job = self._store.get_job(job_id) or {}
-            history = list(current_job.get("train_loss_history") or [])
-            history.append({"iteration": float(iteration), **metrics})
-            truncated = bool(current_job.get("train_loss_history_truncated"))
-            if len(history) > _max_train_loss_history():
-                history = history[-_max_train_loss_history() :]
-                truncated = True
-            self._store.atomic_update(
-                job_id,
-                {
-                    "iteration": iteration,
-                    "total_iterations": total,
-                    "train_loss": metrics,
-                    "train_loss_history": history,
-                    "train_loss_history_truncated": truncated,
-                    "elapsed_seconds": time.monotonic() - start_time,
-                },
-                expected_status="running",
-            )
-
-        # Shared config→kwargs builder (also used by script export) so live
-        # training and exported scripts can never train different models.
-        job_kwargs = build_training_job_kwargs(config, data=tmp_parquet, default_name=node_id)
-        # ``train_params`` is the canonical params dict built in ``start()``
-        # and threaded through the GPU feasibility check (which may adjust it
-        # in place) — it supersedes the freshly built copy.
-        job_kwargs["params"] = train_params
-        job = TrainingJob(**job_kwargs)
-
-        def _train_background() -> None:
-            try:
-                train_result = job.run(
-                    _progress,
-                    _on_iteration,
-                    check_cancelled=lambda: self._raise_if_training_stopped(
-                        job_id,
-                        execution_context=execution_context,
-                    ),
-                    execution_context=execution_context,
-                )
-                loss_history, loss_history_truncated = _bounded_loss_history(
-                    train_result.loss_history,
-                )
-                response = TrainResponse(
-                    status="completed",
-                    job_id=job_id,
-                    metrics=train_result.metrics,
-                    feature_importance=train_result.feature_importance,
-                    model_path=train_result.model_path,
-                    train_rows=train_result.train_rows,
-                    test_rows=train_result.test_rows,
-                    holdout_rows=train_result.holdout_rows,
-                    holdout_metrics=train_result.holdout_metrics,
-                    diagnostics_set=train_result.diagnostics_set,
-                    features=train_result.features,
-                    cat_features=train_result.cat_features,
-                    best_iteration=train_result.best_iteration,
-                    loss_history=loss_history,
-                    loss_history_truncated=loss_history_truncated,
-                    double_lift=train_result.double_lift,
-                    shap_summary=train_result.shap_summary,
-                    feature_importance_loss=train_result.feature_importance_loss,
-                    ave_per_feature=train_result.ave_per_feature,
-                    residuals_histogram=train_result.residuals_histogram,
-                    residuals_stats=train_result.residuals_stats,
-                    actual_vs_predicted=train_result.actual_vs_predicted,
-                    lorenz_curve=train_result.lorenz_curve,
-                    lorenz_curve_perfect=train_result.lorenz_curve_perfect,
-                    pdp_data=train_result.pdp_data,
-                    glm_coefficients=train_result.glm_coefficients,
-                    glm_relativities=train_result.glm_relativities,
-                    glm_fit_statistics=train_result.glm_fit_statistics,
-                    glm_regularization_path=train_result.glm_regularization_path,
-                    diagnostics_errors=train_result.diagnostics_errors,
-                    warning=ram_warning,
-                    total_source_rows=total_source_rows,
-                    feature_selection=feature_selection,
-                )
-                _assert_json_finite(response)
-                self._lifecycle.transition(
-                    job_id,
-                    to="completed",
-                    message="Completed",
-                    fields={
-                        "result": response,
-                        "elapsed_seconds": time.monotonic() - start_time,
-                    },
-                )
-            except BackgroundJobStoppedError as exc:
-                logger.info(
-                    "training_worker_stopped",
-                    job_id=job_id,
-                    terminal_reason=exc.terminal_reason,
-                )
-            except ExecutionCancelledError:
-                self._lifecycle.transition(
-                    job_id,
-                    to="cancelled",
-                    message="Cancelled",
-                    elapsed_seconds=time.monotonic() - start_time,
-                )
-            except ExecutionMemoryLimitExceededError as exc:
-                payload = exc.to_payload()
-                self._lifecycle.transition(
-                    job_id,
-                    to="memory_limited",
-                    message=str(exc),
-                    fields={
-                        "error": str(exc),
-                        "error_detail": payload,
-                        "error_code": "memory_limit",
-                        "http_status_code": 507,
-                    },
-                    elapsed_seconds=time.monotonic() - start_time,
-                )
-            except PUBLIC_CONTRACT_ERROR_TYPES as exc:
-                self._lifecycle.transition(
-                    job_id,
-                    to="contract_error",
-                    message=str(exc),
-                    fields=contract_error_job_fields(exc),
-                    elapsed_seconds=time.monotonic() - start_time,
-                )
-            except BoundedMemoryUnsupportedError as exc:
-                error_msg = f"Training cannot run in bounded streaming mode: {exc}"
-                self._lifecycle.transition(
-                    job_id,
-                    to="contract_error",
-                    message=error_msg,
-                    fields={"error": error_msg},
-                    elapsed_seconds=time.monotonic() - start_time,
-                )
-            except ValueError as exc:
-                error_msg = str(exc)
-                logger.warning("training_validation_error", error=error_msg, node_id=node_id)
-                self._lifecycle.transition(
-                    job_id,
-                    to="contract_error",
-                    message=error_msg,
-                    elapsed_seconds=time.monotonic() - start_time,
-                )
-            except Exception as exc:
-                error_msg = _friendly_error(exc)
-                logger.error("training_failed", error=str(exc), node_id=node_id)
-                self._lifecycle.transition(
-                    job_id,
-                    to="error",
-                    message=error_msg,
-                    elapsed_seconds=time.monotonic() - start_time,
-                )
-            finally:
-                current = self._store.get_job(job_id)
-                if current is not None:
-                    self._store.update_job(
-                        job_id,
-                        execution_metrics=execution_context.metrics_payload(
-                            status=str(current.get("status"))
-                            if current.get("status") is not None
-                            else None,
-                            terminal_reason=(
-                                str(current.get("terminal_reason"))
-                                if current.get("terminal_reason") is not None
-                                else None
-                            ),
-                        ),
-                    )
-                self._training_jobs.release(job_id)
-                execution_context.release_admission()
-                if Path(tmp_parquet).exists():
-                    os.unlink(tmp_parquet)
-
-        try:
-            thread = threading.Thread(target=_train_background, daemon=True)
-            thread.start()
-        except Exception as exc:
-            if Path(tmp_parquet).exists():
-                os.unlink(tmp_parquet)
-            logger.error("training_worker_start_failed", error=str(exc), node_id=node_id)
-            self._lifecycle.transition(
-                job_id,
-                to="error",
-                message=f"Failed to start training worker: {exc}",
-                elapsed_seconds=time.monotonic() - start_time,
-            )
-            self._training_jobs.release(job_id)
-            execution_context.release_admission()
-            raise HTTPException(
-                status_code=500,
-                detail="Training worker failed to start. Check the server logs for details.",
-            ) from exc

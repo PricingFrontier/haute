@@ -63,6 +63,47 @@ def test_lifecycle_completed_status_is_immutable_to_error_races() -> None:
     assert job["completed_at"] == 1.0
 
 
+def test_lifecycle_explicit_completed_publication_correction_is_coherent() -> None:
+    store = JobStore()
+    lifecycle = JobLifecycle(store)
+    job_id = store.create_job({"status": "running"})
+    assert lifecycle.transition(
+        job_id,
+        to="completed",
+        fields={"result": {"value": "invalid"}},
+        now=1.0,
+    )
+
+    corrected = lifecycle.transition(
+        job_id,
+        to="error",
+        expected_status="completed",
+        fields={"result": None},
+        message="Result could not be published",
+        now=2.0,
+    )
+
+    assert corrected is not None
+    assert corrected["status"] == "error"
+    assert corrected["terminal_reason"] == "error"
+    assert corrected["result"] is None
+    assert corrected["message"] == "Result could not be published"
+
+
+def test_lifecycle_rejects_other_direct_terminal_corrections() -> None:
+    store = JobStore()
+    lifecycle = JobLifecycle(store)
+    job_id = store.create_job({"status": "running"})
+    assert lifecycle.transition(job_id, to="completed") is not None
+
+    with pytest.raises(ValueError, match="only be corrected to 'error'"):
+        lifecycle.transition(
+            job_id,
+            to="cancelled",
+            expected_status="completed",
+        )
+
+
 def test_lifecycle_stale_completed_cannot_overwrite_terminal_stop() -> None:
     for reason in _ORDERED_REASONS:
         store = JobStore()

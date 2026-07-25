@@ -133,19 +133,19 @@
    projects away excluded columns, and streams the result to a temp parquet with
    `bounded_sink`;
    `_launch_background` builds the `TrainingJob` via `build_training_job_kwargs`
-   (`params` overridden by the GPU-adjusted `train_params`) and starts a daemon thread
-   running `TrainingJob.run()`.
-3. In the background thread: on success, build a `TrainResponse`, run
-   `_assert_json_finite` over it, and transition the job to `"completed"`. Exceptions
-   are mapped to terminal states: `BackgroundJobStoppedError` → silent (already logged
-   at cancellation/timeout time), `ExecutionCancelledError` → `cancelled`,
-   `ExecutionMemoryLimitExceededError` → `memory_limited`,
-   `BoundedMemoryUnsupportedError` → `contract_error`, bare `ValueError` →
-   `contract_error`, everything else → `error` with `_friendly_error(exc)`. The
-   `finally` block always republishes `execution_metrics`, releases the cancellation
-   registry entry and RAM admission, and deletes the temp parquet.
+   (`params` overridden by the GPU-adjusted `train_params`), creates a same-filesystem
+   staging root, and starts a daemon supervisor thread around a spawn child.
+3. In the child, `_run_training_process_job` reconstructs `TrainingJob` and a fresh
+   bounded `ExecutionContext`, then runs fit/evaluation/diagnostics and stages the model
+   plus per-model feature contract. It returns progress events and a validated result
+   manifest containing a bounded `TrainResponse` payload. In the parent, the supervisor
+   validates the staged pair, publishes it with rollback, rewrites `model_path` to the
+   durable destination, and transitions the job to `"completed"`. Typed child,
+   protocol, crash, cancellation, timeout, cleanup, and unexpected supervisor failures
+   map through `JobLifecycle`; parent cleanup always releases the cancellation registry
+   and RAM admission and removes the prepared/staged temporary data.
 4. `GET /train/status/{job_id}` first compares a running job's `start_time` with its
-   configured/default timeout; an overdue job is cooperatively cancelled and atomically
+   configured/default timeout; an overdue job requests child termination and atomically
    transitioned to `timed_out` before the response is assembled. It then returns
    progress/loss history/result. On the first read of a completed result,
    `_assert_json_finite` re-validates it and the outcome
@@ -227,11 +227,11 @@ decides whether `variance_power` needs to be rendered (CatBoost `Tweedie` loss, 
    (200,000): the profile search runs ~10-30 IRLS fits, so it samples rather than
    paying full-data cost per candidate — 200k rows pins a single dispersion scalar far
    tighter than the search's own tolerance.
-5. `_launch_dispersion_background` builds a stub `TrainingJob` via
+5. `_launch_dispersion_background` builds a plain request for a stub `TrainingJob` via
    `build_training_job_kwargs` with the parameter being estimated set to its RustyStats
    silent default (`_DISPERSION_PARAM_STUBS`: `theta=1.0`, `var_power=1.5`) so the
    shared config machinery can run; the stub value never reaches a fit — the search
-   overrides it at every candidate. A daemon thread then: runs `job._prepare_data`
+   overrides it at every candidate. A spawn child then runs `job._prepare_data`
    (identical to training), narrows `features`/`cat_features` to the GLM terms exactly
    as `TrainingJob.run` does, resolves the effective terms via `_resolve_glm_terms`
    (shared with `GLMAlgorithm.fit`, so the profiled design can never drift from what
@@ -243,20 +243,20 @@ decides whether `variance_power` needs to be rendered (CatBoost `Tweedie` loss, 
    parameter — `theta` searched in log-space over `_DISPERSION_BOUNDS`. Each candidate
    fit that raises is treated as `-inf` log-likelihood rather than aborting the search;
    only a search where every candidate fails raises `ValueError`. An `on_fit` callback
-   fires before each candidate fit, used here as both a progress signal
-   (`job_id`'s `progress`/`message` updated per fit, capped visually at fit 30) and a
-   cancellation checkpoint (`_raise_if_training_stopped`).
+   fires before each candidate fit, checks the child execution budget, and emits a
+   bounded progress event (capped visually at fit 30); the parent event handler updates
+   `job_id`'s `progress`/`message`.
 7. On success, the job transitions to `"completed"` with `param`/`value`/`llf`/`n_fits`
    fields. `ValueError` (including "no candidate converged") maps to `contract_error`;
-   `ExecutionCancelledError`/`BackgroundJobStoppedError` map identically to the training
-   background thread's handling; anything else maps to `error` via `_friendly_error`.
-   The `finally` block always releases the job registry entry and the RAM admission,
-   and deletes the temp parquet the estimation frame was sunk to.
+   execution cancellation maps to `cancelled`, memory exhaustion maps to
+   `memory_limited`, and anything else maps to `error` via `_friendly_error`. The
+   parent supervisor always releases the job registry entry and RAM admission and
+   deletes the temp parquet and staging root.
 8. `GET /dispersion/status/{job_id}` and `POST /dispersion/cancel/{job_id}` mirror the
    training job's status/cancel routes, scoped to `job_type="dispersion_estimate"` via
-   `TrainService.dispersion_job`. The status route does not call `TrainService.timeout` and the
-   dispersion worker stores no timeout field, so this job type has no automatic/poll-driven
-   timeout; cancellation is explicit.
+   `TrainService.dispersion_job`. The original job record carries `start_time` and
+   `timeout`; the process supervisor enforces the remaining duration without depending
+   on status polling.
 
 ### Shared MLflow tracking/experiment-name resolution
 
@@ -312,15 +312,16 @@ native CatBoost flavor.
 - Only one job may be `"running"` in the process-wide training namespace; `_start_lock`
   serialises the check-then-create so concurrent training/dispersion submissions cannot
   both pass `_check_no_concurrent_jobs`.
-- Training timeouts are poll-driven: no watcher thread changes an overdue job until a
-  status request observes the elapsed time. The timeout transition and late worker
-  progress/completion writes are CAS-guarded, so a timed-out job cannot become completed.
-- Dispersion estimates share the single running slot and cancellation registry with training but
-  not its timeout policy: they record `start_time` only and run until completion, failure, or
-  explicit cancellation.
-- Each job's pipeline runs on a single daemon background thread; progress/iteration
-  callbacks and cancellation checks go through the job store's `atomic_update`, so
-  status polling from other threads/requests is race-free.
+- Training's process supervisor enforces the create-time deadline; status polling can
+  independently observe and win the same timeout transition. The timeout transition and
+  late worker progress/completion writes are CAS-guarded, so a timed-out job cannot
+  become completed.
+- Dispersion estimates share the single running slot and cancellation registry with training;
+  their supervisor enforces the create-time timeout even without a status poll.
+- Pipeline materialisation runs synchronously in the route request. The heavy training or
+  dispersion phase runs in one spawn child supervised by one daemon parent thread;
+  validated progress/iteration callbacks use the job store's `atomic_update`, so status
+  polling from other threads/requests is race-free.
 - GPU CatBoost fits run on a nested worker thread
   (`_run_gpu_fit_with_metric_polling`, `_algorithms.py`) because CatBoost has no
   progress-callback support under GPU; the caller thread polls
@@ -427,21 +428,22 @@ native CatBoost flavor.
 - **`ValueError`** — the dominant validation error across the package: bad split
   config, missing required columns, an empty training DataFrame, all-non-finite metric
   inputs, a missing offset column at predict time, GLM terms referencing absent
-  columns. `TrainService._train_background` specifically maps a bare `ValueError` from
-  `TrainingJob.run()` to the job terminal state `contract_error` (distinct from the
-  catch-all `error`).
+  columns. `_run_training_process_job` maps a bare `ValueError` from
+  `TrainingJob.run()` to a `contract_error` failure payload (distinct from the
+  catch-all `error`), and the parent supervisor persists that terminal reason.
 - **Execution-engine exceptions** (`ExecutionCancelledError`,
-  `BackgroundJobStoppedError`, `ExecutionMemoryLimitExceededError`,
-  `BoundedMemoryUnsupportedError`) — each mapped to a distinct job terminal state
-  (`cancelled`, silent stop, `memory_limited`, `contract_error` respectively) inside
-  `_train_background`'s exception handling.
+  `ExecutionMemoryLimitExceededError`, `BoundedMemoryUnsupportedError`) — each maps to
+  a distinct failure payload (`cancelled`, `memory_limited`, `contract_error`
+  respectively); parent-side cancellation/timeout additionally terminates the child
+  through the supervisor stop callback.
 - **`HTTPException`** — raised directly by route handlers and by `TrainService.start`
   for 400/409/422/500/507. `TrainService.start`'s `except HTTPException` block
   additionally transitions the job record to the matching terminal state
   (`memory_limited` for 507, `contract_error` for other 4xx, `error` otherwise) before
   re-raising, so the job store and the HTTP response can never disagree about outcome.
-- **Generic `Exception`** catch-all in `_train_background` maps to job state `error`
-  with the message produced by `_friendly_error(exc)` — a heuristic translator that
+- **Generic `Exception`** catch-all in each process entrypoint maps to an `error`
+  failure payload with the message produced by `_friendly_error(exc)` — a heuristic
+  translator that
   returns `ValueError` messages verbatim, prefixes `FileNotFoundError`, special-cases
   CatBoost-flavoured exceptions (NaN/Inf hint, feature-count mismatch), prefixes
   `OSError` as a model-save failure, and otherwise falls back to
@@ -460,10 +462,9 @@ native CatBoost flavor.
   pairing mismatch, a missing target, or any other incomplete training objective;
   raised before any job record is created. Inside `estimate_glm_dispersion`, `ValueError`
   covers an unrecognised or mismatched `param` and "every candidate fit failed"; inside
-  the background worker, `ValueError` maps the job to `contract_error`,
-  `ExecutionCancelledError`/`BackgroundJobStoppedError` map identically to training's
-  handling, and any other exception maps to `error` via `_friendly_error` — the same
-  taxonomy `_train_background` uses.
+  the process worker, `ValueError` maps the job to `contract_error`,
+  `ExecutionCancelledError` maps to `cancelled`, and any other exception maps to
+  `error` via `_friendly_error` — the same taxonomy the training entrypoint uses.
 
 ## Testing
 
@@ -540,3 +541,34 @@ than selecting collection strategy themselves. Their response and job diagnostic
 the final feature inclusion/exclusion and provenance supplied by that result; execution
 engine remains the sole owner of planning mechanics. Remaining modelling improvement work is
 tracked in the [modelling roadmap](../../roadmap/modelling.md).
+
+## Approved change contract — 0.8.0 isolated fit and dispersion
+
+- Add module-level, spawn-picklable `_run_training_process_job` and
+  `_run_dispersion_process_job` entrypoints. They reconstruct `TrainingJob` and a child
+  `ExecutionContext` from versioned plain requests.
+- `TrainService._launch_background` and `_launch_dispersion_background` delegate process
+  supervision to `IsolatedJobSupervisor`; parent callbacks only consume validated events and
+  manifests. Existing registries still own stop reasons and the parent admitted context still
+  owns its reservation until supervisor completion.
+- Training stages model and feature-contract files below a hidden parent-created directory in
+  the configured output filesystem. Completion validates both manifests and publishes with
+  same-filesystem replaces plus rollback. The staged response model path must name the model
+  manifest, the model stem must equal the requested training-job name, and the feature-contract
+  filename must be the canonical companion for that model stem. The response's `model_path` is
+  rewritten to the final path. MLflow logging consumes the staged model before publication; a
+  failed run never exposes a partial final model. Replacing the complete pair is the commit point:
+  rollback remains mandatory before it, while failure to delete old backups or the empty staging
+  root after it is logged and cannot downgrade the committed job.
+- Progress emission is non-blocking. The shared protocol drops updates when its queue is full or
+  its 10,000-delivered-event budget is exhausted, reports loss counts on the next event/end
+  marker, and continues fitting. Parent draining is batch-bounded so timeout and cancellation
+  checks are not starved by a fast producer.
+- Dispersion returns bounded scalar metadata and no artifact. Candidate-fit progress uses typed
+  events; the parent writes `param`, `value`, `llf`, and `n_fits` only on validated completion.
+- Child exceptions are translated to stable terminal reasons before transport:
+  public contract/`ValueError` to `contract_error`, execution memory to `memory_limited`,
+  execution cancellation to `cancelled`, and unexpected exceptions to `error`.
+- Tests use real spawn only for protocol/entrypoint contract cases. Service unit tests inject a
+  deterministic protocol runner rather than depending on fork inheritance or patching objects
+  inside a child.
