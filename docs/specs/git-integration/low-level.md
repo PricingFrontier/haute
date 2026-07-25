@@ -5,7 +5,7 @@
 | File | Responsibility |
 |---|---|
 | `src/haute/_git.py` | All git CLI interaction. Subprocess wrappers, guardrails, the working/ledger branch-pair engine, content-addressed caches, deliberate remote fetch/push/fast-forward, branch manager operations (archive/delete/undelete/restore), and read paths (repository readiness, graph, milestones, ledger expansion, commit context). |
-| `src/haute/_git_lock.py` | Reentrant per-repository mutation-lock registry shared by the engine and clone-state helpers. Resolves linked worktrees to their common Git directory without invoking Git. |
+| `src/haute/_git_lock.py` | Reentrant per-repository mutation-lock registry shared by the engine and clone-state helpers. Uses a bounded marker-aware identity cache, a stable project-path key across `git init`, a common-Git-directory key for linked worktrees, and weak lock values so idle repositories are evicted. It never invokes Git. |
 | `src/haute/_git_state.py` | Per-clone, untracked JSON state under `<project_root>/.haute/`: working-branch association (`state.json`), UI preferences (`prefs.json`), fork-point back-links (`forks.json`), last-pushed SHAs (`pushed.json`), delete tombstones (`trash.json`). Fail-soft parsing plus lock-scoped atomic replace; no git subprocess calls. |
 | `src/haute/_gitignore_guard.py` | Shared `.gitignore` deny-list and append-only `ensure_gitignore_guards()` used both by project initialization and unborn-repository seeding; preserves tracked `*.haute.json` sidecars while excluding per-clone/cache/data/venv state. |
 | `src/haute/routes/git.py` | FastAPI router at `/api/git`. One `def` (sync) handler per endpoint, each a thin `try/except` around a single `_git` call; converts `_git`'s typed exceptions to HTTP responses via `_handle_git_error`. |
@@ -55,6 +55,17 @@ order = recency). Every writer holds the repository mutation lock, stages a comp
 document beside its destination, and atomically replaces the target. Every read-modify-write
 helper holds that lock across both phases, preserving concurrent entries while readers
 observe either the old complete document or the new complete document.
+
+**Mutation-lock identity and lifetime** (`_git_lock.py`): the normalized absolute caller
+path is a stable local key. Once `.git` exists, the resolved common Git directory is a
+second key acquired after the local key; linked worktrees therefore meet on the common key,
+while a mutation that began before `git init` still blocks a post-init mutation on the
+unchanged local key. Path resolution and marker-aware identity lookup use separate bounded
+256-entry LRU caches; the identity cache key includes the direct `.git` marker fingerprint.
+In steady state a clone-state read performs one marker `stat` plus cache lookup, not
+`resolve()` plus an ancestor walk and marker/`commondir` reads. The lock registry is a
+`WeakValueDictionary`: active and waiting contexts retain a strong reference, while a
+repository with no callers leaves no permanent registry entry.
 
 **Gitignore guards** (`_gitignore_guard.py`): `GITIGNORE_GUARD_ENTRIES` is exactly
 `.env`, `.haute/`, `impact_report.md`, `.haute_cache/`, `mlruns/`, `data/`, and `.venv/`.
@@ -350,9 +361,12 @@ refs + tombstone. The restored pair is NOT auto-adopted as the working branch.
 enumerates the selected commit and filters to `haute.toml`, Python modules, Haute sidecars,
 and files below `config/` or `prompts/`; `git archive` receives only those literal paths.
 Tar extraction is implemented with Python-3.11-compatible regular-file/directory handling
-and rejects traversal and unsupported members. Malformed tar data raises
-`GitHistoryReadError`. Parsing tries each discovered pipeline, but if every candidate fails
-it raises the same typed failure rather than returning `PipelineGraph()`. Temporary
+and validates the complete member list before writing. It rejects traversal, unsupported
+members, more than `_HISTORY_ARCHIVE_MAX_MEMBERS = 10_000` entries, and cumulative
+regular-file size above `_HISTORY_ARCHIVE_MAX_BYTES = 64 * 1024 * 1024`. Malformed or
+over-limit tar data raises `GitHistoryReadError`. Parsing tries each discovered pipeline,
+but if every candidate fails it raises the same typed failure rather than returning
+`PipelineGraph()`. Temporary
 directory cleanup retries transient Windows sharing violations and logs an exhausted cleanup
 without replacing a successfully parsed response with a cleanup error.
 
@@ -370,10 +384,12 @@ without replacing a successfully parsed response with a cleanup error.
   (the fork-gate then degrades OPEN, never blocking a local-only user). Remote listings
   remain explicitly last-known rather than claiming an in-sync result.
 - **Concurrent worktrees sharing one process** — linked worktrees resolve through their
-  `.git` indirection and `commondir` to the same mutation lock because they share refs and
-  object storage. Distinct repositories use distinct locks, and their reads/mutations may
-  proceed concurrently. `_fetch_exec_lock` remains process-wide because Git object writes
-  for a shared store must not race.
+  `.git` indirection and `commondir` to the same common-dir mutation key because they share
+  refs and object storage. Every call also acquires its stable local-path key first; that
+  key does not change when a previously uninitialized project gains `.git`, closing the
+  pre-init/post-init identity transition. Distinct repositories use distinct locks, and
+  their reads/mutations may proceed concurrently. `_fetch_exec_lock` remains process-wide
+  because Git object writes for a shared store must not race.
 - **Concurrent git mutations are serialized per repository** — FastAPI may run synchronous
   handlers on different worker threads, but only one can cross a repository's mutation
   boundary. Successful saves cannot be orphaned by an interleaved checkout, and state-file
@@ -478,10 +494,12 @@ process failures, and precise ref-movement races deterministic.
   auto-follow during a refused preflight,
   inspection/auth/timeout failure, or any ref rejection.
 - **`tests/test_git_improvements.py`** — focused roadmap regressions for the shared
-  repository lock, concurrent real saves, lock-scoped atomic clone-state updates,
+  repository lock (including cached lookup, `git init` identity stability, and weak-registry
+  eviction), concurrent real saves, lock-scoped atomic clone-state updates,
   six-state readiness, locale-stable Git execution, NUL-delimited history fields,
   batched commit context, merge-replay refusal, network-free remote listing, targeted
-  historical extraction, typed archive/parse failures, and Windows cleanup retries.
+  historical extraction, archive member/byte ceilings, typed archive/parse failures, and
+  Windows cleanup retries.
 - **`tests/test_git_lifecycle_improvements.py`** — failure-injection coverage for
   adopting an existing pair, deleting the only active pair, partial fast-forward,
   archive state replacement, archive restore, undelete, and explicit incomplete-

@@ -31,9 +31,12 @@ quality gate avoids inventing speculative work merely to mark an umbrella item c
 ### GIT-G01 — Repository mutation lock
 **Why:** Concurrent requests can contend on Git state or report an orphaned save as successful.
 
-**Plan:** Introduce a reentrant per-repository engine lock around every mutating operation while leaving reads concurrent.
+**Plan:** Introduce a reentrant per-repository engine lock around every mutating
+operation and clone-state transaction while leaving unrelated Git reads concurrent.
 
-**Acceptance:** Concurrent real-repository tests show serialized commits, no index-lock leak, and no lost successful save.
+**Acceptance:** Concurrent real-repository tests show serialized commits, no index-lock
+leak, no lost successful save, stable serialization across `git init`, cached steady-state
+identity lookup, and eviction of idle lock entries.
 
 **Dependencies:** Precedes lifecycle and state-file changes.
 
@@ -165,7 +168,8 @@ quality gate avoids inventing speculative work merely to mark an umbrella item c
 
 **Plan:** Limit extraction to needed artifacts, make cleanup Windows-safe, and return typed failure rather than an empty successful graph.
 
-**Acceptance:** Tests cover large unneeded files, cleanup contention, malformed archives, and compatible tar handling.
+**Acceptance:** Tests cover large unneeded files, cleanup contention, malformed archives,
+compatible tar handling, and explicit member-count/extracted-byte ceilings.
 
 **Dependencies:** GIT-G09.
 

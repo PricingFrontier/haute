@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import gc
+import io
 import subprocess
+import tarfile
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -61,6 +64,89 @@ def repo(tmp_path: Path) -> Path:
 
 
 class TestRepositoryMutationLock:
+    def test_repository_identity_reuses_cached_filesystem_lookup(
+        self,
+        repo: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import haute._git_lock as git_lock
+
+        real_find_git_dir = git_lock._find_git_dir
+        calls = 0
+
+        def counted_find_git_dir(path: Path) -> Path | None:
+            nonlocal calls
+            calls += 1
+            return real_find_git_dir(path)
+
+        monkeypatch.setattr(git_lock, "_find_git_dir", counted_find_git_dir)
+
+        first = git_lock.repository_identity(repo)
+        second = git_lock.repository_identity(repo)
+
+        assert first == second
+        assert calls == 1
+
+    def test_repository_lock_identity_stays_stable_across_git_init(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        from haute._git_lock import repository_mutation
+
+        root = tmp_path / "new-project"
+        root.mkdir()
+        completed = threading.Event()
+
+        def mutate() -> None:
+            with repository_mutation(root):
+                completed.set()
+
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            with repository_mutation(root):
+                _git(root, "init", "-b", "main")
+                future = pool.submit(mutate)
+                assert not completed.wait(timeout=0.1)
+            future.result(timeout=5)
+
+        assert completed.is_set()
+
+    def test_linked_worktrees_share_the_common_repository_lock(
+        self,
+        repo: Path,
+        tmp_path: Path,
+    ) -> None:
+        from haute._git_lock import repository_mutation
+
+        linked = tmp_path / "linked-worktree"
+        _git(repo, "worktree", "add", "-b", "linked-work", str(linked))
+        completed = threading.Event()
+
+        def mutate() -> None:
+            with repository_mutation(linked):
+                completed.set()
+
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            with repository_mutation(repo):
+                future = pool.submit(mutate)
+                assert not completed.wait(timeout=0.1)
+            future.result(timeout=5)
+
+        assert completed.is_set()
+
+    def test_idle_repository_lock_is_evicted(self, tmp_path: Path) -> None:
+        import haute._git_lock as git_lock
+
+        root = tmp_path / "ephemeral-project"
+        root.mkdir()
+        before = set(git_lock._repository_locks)
+
+        with git_lock.repository_mutation(root):
+            created = set(git_lock._repository_locks) - before
+            assert created
+
+        gc.collect()
+        assert created.isdisjoint(git_lock._repository_locks)
+
     def test_git_mutator_waits_for_the_same_repository_lock(self, repo: Path) -> None:
         from haute._git_lock import repository_mutation
 
@@ -261,6 +347,16 @@ class TestRoutineRemoteReads:
 
 
 class TestHistoricalPipelineReads:
+    @staticmethod
+    def _tar_payload(entries: list[tuple[str, bytes]]) -> bytes:
+        payload = io.BytesIO()
+        with tarfile.open(fileobj=payload, mode="w") as archive:
+            for name, content in entries:
+                member = tarfile.TarInfo(name)
+                member.size = len(content)
+                archive.addfile(member, io.BytesIO(content))
+        return payload.getvalue()
+
     def test_archive_excludes_unneeded_large_data(self, repo: Path, tmp_path: Path) -> None:
         (repo / "haute.toml").write_text('[project]\npipeline = "rating.py"\n')
         (repo / "rating.py").write_text('import haute\n\npipeline = haute.Pipeline("rating")\n')
@@ -311,6 +407,72 @@ class TestHistoricalPipelineReads:
 
         with pytest.raises(GitHistoryReadError, match="could not be extracted"):
             git_mod._extract_history_tar(b"not a tar archive", dest)
+
+    def test_archive_rejects_too_many_members_before_writing(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(
+            git_mod,
+            "_HISTORY_ARCHIVE_MAX_MEMBERS",
+            2,
+            raising=False,
+        )
+        payload = self._tar_payload([("first.py", b""), ("second.py", b""), ("third.py", b"")])
+        dest = tmp_path / "too-many-members"
+        dest.mkdir()
+
+        with pytest.raises(GitHistoryReadError, match="too many archived files"):
+            git_mod._extract_history_tar(payload, dest)
+
+        assert list(dest.iterdir()) == []
+
+    def test_archive_rejects_too_many_bytes_before_writing(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(
+            git_mod,
+            "_HISTORY_ARCHIVE_MAX_BYTES",
+            4,
+            raising=False,
+        )
+        payload = self._tar_payload([("rating.py", b"12345")])
+        dest = tmp_path / "too-many-bytes"
+        dest.mkdir()
+
+        with pytest.raises(GitHistoryReadError, match="too large to extract safely"):
+            git_mod._extract_history_tar(payload, dest)
+
+        assert list(dest.iterdir()) == []
+
+    def test_archive_accepts_member_and_byte_limits_exactly(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(
+            git_mod,
+            "_HISTORY_ARCHIVE_MAX_MEMBERS",
+            2,
+            raising=False,
+        )
+        monkeypatch.setattr(
+            git_mod,
+            "_HISTORY_ARCHIVE_MAX_BYTES",
+            4,
+            raising=False,
+        )
+        payload = self._tar_payload([("first.py", b"12"), ("second.py", b"34")])
+        dest = tmp_path / "at-limits"
+        dest.mkdir()
+
+        git_mod._extract_history_tar(payload, dest)
+
+        assert (dest / "first.py").read_bytes() == b"12"
+        assert (dest / "second.py").read_bytes() == b"34"
 
     def test_temporary_history_cleanup_retries_windows_contention(
         self,

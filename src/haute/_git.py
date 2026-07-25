@@ -75,6 +75,9 @@ PROTECTED_BRANCHES = DEFAULT_PROTECTED_BRANCHES
 _BRANCH_PREFIX = "pricing"
 _ARCHIVE_PREFIX = "archive"
 
+_HISTORY_ARCHIVE_MAX_MEMBERS = 10_000
+_HISTORY_ARCHIVE_MAX_BYTES = 64 * 1024 * 1024
+
 # Minimum seconds between `git fetch` calls per (cwd, remote, kind).
 _FETCH_COOLDOWN_SECONDS: float = 30.0
 # Hard ceiling on a single background fetch so a slow / unreachable / auth-walled
@@ -2551,19 +2554,40 @@ def _extract_history_tar(payload: bytes, dest: Path) -> None:
     root = dest.resolve()
     try:
         with tarfile.open(fileobj=io.BytesIO(payload)) as tar:
-            for member in tar.getmembers():
+            validated: list[tuple[tarfile.TarInfo, Path]] = []
+            extracted_bytes = 0
+            for member_number, member in enumerate(tar, start=1):
+                if member_number > _HISTORY_ARCHIVE_MAX_MEMBERS:
+                    raise GitHistoryReadError(
+                        "The selected version contains too many archived files."
+                    )
                 target = (dest / member.name).resolve()
                 if target != root and root not in target.parents:
                     raise GitHistoryReadError(
                         "The selected version contains an unsafe archive path."
                     )
                 if member.isdir():
-                    target.mkdir(parents=True, exist_ok=True)
+                    validated.append((member, target))
                     continue
                 if not member.isfile():
                     raise GitHistoryReadError(
                         "The selected version contains an unsupported linked or special file."
                     )
+                if member.size < 0:
+                    raise GitHistoryReadError(
+                        "The selected version contains an invalid archived file size."
+                    )
+                extracted_bytes += member.size
+                if extracted_bytes > _HISTORY_ARCHIVE_MAX_BYTES:
+                    raise GitHistoryReadError(
+                        "The selected version's pipeline files are too large to extract safely."
+                    )
+                validated.append((member, target))
+
+            for member, target in validated:
+                if member.isdir():
+                    target.mkdir(parents=True, exist_ok=True)
+                    continue
                 source = tar.extractfile(member)
                 if source is None:
                     raise GitHistoryReadError(

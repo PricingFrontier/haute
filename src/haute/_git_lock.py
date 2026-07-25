@@ -1,21 +1,48 @@
-"""Process-local mutation serialization for Git repositories.
+"""Process-local transaction serialization for Git repositories.
 
-The lock identity is the repository's common Git directory, so linked
-worktrees that share refs and objects also share one reentrant lock. Paths that
-are not repositories yet fall back to their resolved directory; this keeps
-state-file updates serialized during project setup as well.
+Every caller keeps a stable lock keyed by its absolute project path, including
+across ``git init``. Once Git metadata exists, callers also take a lock keyed by
+the common Git directory so linked worktrees serialize access to shared refs
+and objects.
 """
 
 from __future__ import annotations
 
 import os
 import threading
+import weakref
 from collections.abc import Iterator
 from contextlib import contextmanager
+from functools import lru_cache
 from pathlib import Path
 
+_IDENTITY_CACHE_SIZE = 256
+
 _registry_guard = threading.Lock()
-_repository_locks: dict[str, threading.RLock] = {}
+_repository_locks: weakref.WeakValueDictionary[str, threading.RLock] = weakref.WeakValueDictionary()
+
+_MarkerFingerprint = tuple[int, int, int, int, int, int] | None
+
+
+def _normalized_absolute(path: Path) -> str:
+    """Return a stable local key without touching the filesystem."""
+    return os.path.normcase(os.path.abspath(os.fspath(path)))
+
+
+def _marker_fingerprint(project_path: str) -> _MarkerFingerprint:
+    """Fingerprint a direct ``.git`` marker with one steady-state stat."""
+    try:
+        stat = (Path(project_path) / ".git").stat(follow_symlinks=False)
+    except OSError:
+        return None
+    return (
+        stat.st_mode,
+        stat.st_dev,
+        stat.st_ino,
+        stat.st_size,
+        stat.st_mtime_ns,
+        stat.st_ctime_ns,
+    )
 
 
 def _git_dir_from_marker(marker: Path) -> Path | None:
@@ -37,7 +64,7 @@ def _git_dir_from_marker(marker: Path) -> Path | None:
 
 
 def _find_git_dir(path: Path) -> Path | None:
-    current = path.resolve()
+    current = path
     if current.is_file():
         current = current.parent
     for candidate in (current, *current.parents):
@@ -63,26 +90,67 @@ def _common_git_dir(git_dir: Path) -> Path:
     return common.resolve()
 
 
+@lru_cache(maxsize=_IDENTITY_CACHE_SIZE)
+def _resolved_location(project_path: str) -> Path:
+    return Path(project_path).resolve()
+
+
+@lru_cache(maxsize=_IDENTITY_CACHE_SIZE)
+def _common_repository_identity(
+    project_path: str,
+    marker_fingerprint: _MarkerFingerprint,
+) -> str | None:
+    del marker_fingerprint  # It invalidates this cache entry when ``.git`` changes.
+    git_dir = _find_git_dir(_resolved_location(project_path))
+    if git_dir is None:
+        return None
+    return os.path.normcase(str(_common_git_dir(git_dir)))
+
+
+def _repository_keys(path: Path) -> tuple[str, ...]:
+    project_path = _normalized_absolute(path)
+    common_identity = _common_repository_identity(
+        project_path,
+        _marker_fingerprint(project_path),
+    )
+    local_key = f"local:{project_path}"
+    if common_identity is None:
+        return (local_key,)
+    return local_key, f"common:{common_identity}"
+
+
 def repository_identity(path: Path) -> str:
     """Return a normalized key shared by every worktree of one repository."""
-    resolved = path.resolve()
-    git_dir = _find_git_dir(resolved)
-    identity = _common_git_dir(git_dir) if git_dir is not None else resolved
-    return os.path.normcase(str(identity))
+    project_path = _normalized_absolute(path)
+    common_identity = _common_repository_identity(
+        project_path,
+        _marker_fingerprint(project_path),
+    )
+    return common_identity if common_identity is not None else project_path
 
 
-def _lock_for(path: Path) -> threading.RLock:
-    key = repository_identity(path)
+def _locks_for(path: Path) -> tuple[threading.RLock, ...]:
+    keys = _repository_keys(path)
+    locks: list[threading.RLock] = []
     with _registry_guard:
-        lock = _repository_locks.get(key)
-        if lock is None:
-            lock = threading.RLock()
-            _repository_locks[key] = lock
-        return lock
+        for key in keys:
+            lock = _repository_locks.get(key)
+            if lock is None:
+                lock = threading.RLock()
+                _repository_locks[key] = lock
+            locks.append(lock)
+    return tuple(locks)
 
 
 @contextmanager
 def repository_mutation(path: Path) -> Iterator[None]:
-    """Serialize a mutation with every other mutation of the same repository."""
-    with _lock_for(path):
+    """Serialize a transaction with every other transaction of the repository."""
+    acquired: list[threading.RLock] = []
+    try:
+        for lock in _locks_for(path):
+            lock.acquire()
+            acquired.append(lock)
         yield
+    finally:
+        for lock in reversed(acquired):
+            lock.release()

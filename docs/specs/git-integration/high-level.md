@@ -9,8 +9,13 @@ resolution as raw git concepts. Every git CLI interaction in the product goes th
 one layer, so guardrails (no writing to protected branches, no force-push, no silent
 merges), user-friendly error translation, and safety nets (trash tombstones, transactional
 rollback paths) are enforced in exactly one place rather than scattered across call sites.
-All mutations of one repository are serialized by one reentrant engine lock; read-only
-history and readiness work remains concurrent.
+All mutations and clone-state transactions for one repository are serialized by one
+logical reentrant engine critical section; unrelated read-only history and Git readiness
+work remains concurrent. Lock identity lookup is bounded and cached so clone-state reads
+used by readiness polling do not repeatedly walk the filesystem. A stable project-path key
+remains part of the critical section after `git init`, while linked worktrees additionally
+share their common-Git-directory key, so the initialization transition cannot split one
+project's mutations across two locks.
 
 The component owns the full lifecycle of a "working branch": creating one, saving
 incremental progress to it, promoting saves to a named milestone, forking a parallel
@@ -104,8 +109,10 @@ operations perform prompt-proof, time-bounded network refreshes. Remote URLs ret
 
 **History as read-only.** Viewing a historical commit's pipeline (`GET /show/{sha}`) never
 touches HEAD or the working tree. The view extracts only pipeline artifacts required for
-parsing, not unrelated datasets or build outputs, and malformed archives or an unparseable
-historical pipeline fail explicitly instead of returning a successful empty graph. Actually
+parsing, not unrelated datasets or build outputs. Extraction rejects unsafe member types and
+paths, more than 10,000 members, or more than 64 MiB of regular-file content; malformed,
+oversized, or unparseable historical pipelines fail explicitly instead of returning a
+successful empty graph. Actually
 moving the working directory to a historical commit (`move`) is a distinct, explicit
 operation: a detached-HEAD checkout that clears the clone's working-branch association, so
 the very next save re-triggers the working-branch chooser rather than silently resuming an
@@ -176,6 +183,9 @@ complete old or new document, never torn JSON.
   working tree, and Haute's clone-state files form one logical engine state. A reentrant
   per-repository lock lets compound operations call smaller mutators without deadlock while
   preventing two request threads from interleaving successful-looking partial transactions.
+  The registry holds locks weakly, and the path-to-repository lookup cache is bounded, so a
+  long-running multi-project server does not retain one permanent lock per path it has ever
+  observed.
 - **Untracked per-clone state.** The working-branch association, preferences, fork map,
   trash, and last-pushed SHAs all live in `.haute/*.json`, deliberately outside git's own
   history — HEAD itself cannot answer "which working branch does this clone serve" once
