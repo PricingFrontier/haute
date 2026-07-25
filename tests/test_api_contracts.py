@@ -253,12 +253,6 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
             "success_schema": {"$ref": "#/components/schemas/PipelineGraph"},
         },
     },
-    "/api/git/status": {
-        "GET": {
-            "request_ref": None,
-            "success_schema": {"$ref": "#/components/schemas/GitStatusResponse"},
-        },
-    },
     "/api/git/undelete": {
         "POST": {
             "request_ref": "#/components/schemas/GitUndeleteRequest",
@@ -592,6 +586,12 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
     },
     "/api/session": {
         "GET": {
+            "request_ref": None,
+            "success_schema": {"$ref": "#/components/schemas/SessionStatusResponse"},
+        },
+    },
+    "/api/session/bootstrap": {
+        "POST": {
             "request_ref": None,
             "success_schema": {"$ref": "#/components/schemas/SessionStatusResponse"},
         },

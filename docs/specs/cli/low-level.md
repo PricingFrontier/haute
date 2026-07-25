@@ -90,13 +90,17 @@ the formatter reads is accepted.
 `_progress` renders a `\r`-carriage-return progress bar and explicitly flushes stdout after every
 write (documented as load-bearing — `click.echo(nl=False)` alone can leave the line buffered).
 
-**`serve`**: `handle_serve` runs, in order: `_warn_if_non_loopback` (logs before any other work so
-the warning still fires even if a later step aborts), `_configure_trusted_hosts` (sets/clears the
-`TRUSTED_HOSTS_ENV` env var consumed by the FastAPI `TrustedHostMiddleware`), `_abort_if_port_in_use`
+**`serve`**: `handle_serve` runs, in order: `_require_loopback_host` (rejects every non-loopback
+value before any startup side effect), `_configure_trusted_hosts` (clears any stale
+`TRUSTED_HOSTS_ENV` remote-bind policy), `_abort_if_port_in_use`
 (pre-flight socket bind/close probe — `SO_EXCLUSIVEADDRUSE` on Windows to avoid a false-negative from
 `SO_REUSEADDR`), then `_detect_dev_frontend_dir` to choose dev vs. prod mode.
   - **Dev mode** (`_run_dev_mode`): spawns `npm run dev` as a subprocess (`_start_vite_subprocess`,
-    with `SIGINT`/`SIGTERM` handlers wired to terminate the child), schedules a background thread
+    with `SIGINT`/`SIGTERM` handlers wired to terminate the child). It creates the backend's
+    process-local session token but removes `VITE_HAUTE_SESSION_TOKEN` from the child environment,
+    so the frontend cannot read the credential. The server-only `HAUTE_BACKEND_URL` carries the
+    selected loopback host/port into Vite's same-origin `/api` and `/ws` proxy (including bracketed
+    IPv6) without becoming client code. It schedules a background thread
     that polls the backend TCP port and opens the browser once it's accepting connections
     (`_open_browser_after_backend_ready` → `_wait_for_tcp_ready`), then runs `uvicorn.run(...,
     reload=True, reload_dirs=[haute package dir])`. The Vite subprocess is terminated in a `finally`
@@ -167,9 +171,10 @@ appends to `$GITHUB_STEP_SUMMARY` when that env var is set.
   that sets its marker to a falsy string should not be treated as "running in CI".
 - **Loopback detection covers the whole `127.0.0.0/8` range**, not just `127.0.0.1` — `_serve._is_loopback_host`
   parses via `ipaddress` and checks `.is_loopback`, so `127.0.0.42` counts as safe.
-- **Wildcard binds probed via their loopback counterpart.** `_serve._backend_probe_host` maps
-  `0.0.0.0` → `127.0.0.1` and `::` → `::1` for the post-launch TCP readiness check, since a wildcard
-  bind address isn't itself a connectable target.
+- **Wildcard and network-visible binds never reach probing.** `_require_loopback_host` runs before
+  `_abort_if_port_in_use`, frontend detection, Vite, or uvicorn. The lower-level
+  `_backend_probe_host` helper remains general-purpose, but `handle_serve` never calls it with a
+  non-loopback host.
 - **`_wait_for_tcp_ready` only swallows `ConnectionRefusedError`/`TimeoutError`.** Any other socket
   exception (e.g. an unresolvable hostname) propagates rather than being retried into a misleading
   timeout.

@@ -337,7 +337,7 @@ def _write_ratebook_artifact(tmp_path: Path) -> str:
     return str(path).replace("\\", "/")
 
 
-def test_optimiser_apply_run_matches_executor_batch(tmp_path):
+def test_optimiser_apply_run_matches_executor_batch(tmp_path, _widen_sandbox_root):
     artifact_path = _write_ratebook_artifact(tmp_path)
     src = _const("rb", "ratebook_src", [{"name": "region", "value": "London"}])
     apply = _node(

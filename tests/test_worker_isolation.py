@@ -198,6 +198,28 @@ def test_isolated_job_supervisor_records_remote_failure() -> None:
     assert "bad input" in job["message"]
 
 
+@pytest.mark.filterwarnings("ignore::pytest.PytestUnhandledThreadExceptionWarning")
+def test_isolated_job_supervisor_terminalizes_unexpected_parent_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = JobStore()
+    job_id = store.create_job({"status": "running"})
+    supervisor = IsolatedJobSupervisor(JobLifecycle(store))
+
+    def raise_parent_error(*args: object, **kwargs: object) -> object:
+        raise RuntimeError("parent isolation bug")
+
+    monkeypatch.setattr("haute.routes._background_jobs.run_isolated_worker", raise_parent_error)
+    thread = supervisor.launch(job_id, _return_payload, 2, 4)
+    thread.join(timeout=10)
+
+    assert not thread.is_alive()
+    job = store.require_job(job_id)
+    assert job["status"] == "error"
+    assert job["worker_error_class"] == "RuntimeError"
+    assert job["message"] == "Unexpected isolated worker supervisor failure."
+
+
 def test_isolated_job_supervisor_records_stopped_reason_and_runs_cleanup(
     tmp_path: Path,
 ) -> None:

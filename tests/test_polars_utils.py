@@ -79,6 +79,54 @@ def test_streaming_collect_records_collect_metric_on_active_context_stage() -> N
     assert metric.to_summary().to_dict()["n_collects"] == 1
 
 
+def test_streaming_collect_fault_point_runs_immediately_before_native_collect() -> None:
+    timeline: list[str] = []
+
+    class Lazy:
+        def collect(self, *, engine: str) -> pl.DataFrame:
+            assert engine == "streaming"
+            timeline.append("native")
+            return pl.DataFrame({"x": [1]})
+
+    context = ExecutionContext(
+        operation="sink",
+        profile=ExecutionProfile.LAZY_SINK,
+        fault_injector=lambda point: timeline.append(point.name),
+    )
+
+    streaming_collect(
+        Lazy(),  # type: ignore[arg-type]
+        profile=ExecutionProfile.LAZY_SINK,
+        execution_context=context,
+    )
+
+    assert timeline == ["collect_before_native", "native"]
+
+
+def test_streaming_collect_fault_prevents_native_operation() -> None:
+    class Lazy:
+        def collect(self, *, engine: str) -> pl.DataFrame:
+            raise AssertionError(f"native collect unexpectedly ran with {engine}")
+
+    def inject(_point) -> None:
+        raise RuntimeError("collect fault")
+
+    context = ExecutionContext(
+        operation="sink",
+        profile=ExecutionProfile.LAZY_SINK,
+        fault_injector=inject,
+    )
+
+    with pytest.raises(RuntimeError, match="collect fault"):
+        streaming_collect(
+            Lazy(),  # type: ignore[arg-type]
+            profile=ExecutionProfile.LAZY_SINK,
+            execution_context=context,
+        )
+
+    assert context.metrics_payload()["n_collects"] == 0
+
+
 def test_verified_streaming_compatibility_table_is_intentionally_empty() -> None:
     """No Polars 1.39.3 signature is classified without reproducible evidence."""
     assert pl.__version__ == "1.39.3"
@@ -399,6 +447,22 @@ def test_bounded_sink_writes_csv(tmp_path: Path):
     assert result.shape == (2, 2)
     assert result["a"].to_list() == [1, 2]
     assert result["b"].to_list() == [3.5, 4.5]
+
+
+def test_bounded_sink_emits_fault_points_around_native_sink(tmp_path: Path) -> None:
+    points: list[str] = []
+    context = ExecutionContext(
+        operation="sink",
+        profile=ExecutionProfile.LAZY_SINK,
+        fault_injector=lambda point: points.append(point.name),
+    )
+    out = tmp_path / "out.parquet"
+
+    with context.stage("sink"):
+        bounded_sink(pl.LazyFrame({"x": [1]}), out)
+
+    assert points == ["sink_before_native", "sink_after_native"]
+    assert out.exists()
 
 
 # ---------------------------------------------------------------------------

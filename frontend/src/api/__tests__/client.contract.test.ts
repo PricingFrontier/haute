@@ -20,7 +20,6 @@ import {
   buildInputCache,
   fetchSchema,
   getExploreStatus,
-  getGitStatus,
   getMilestones,
   getMilestoneSaves,
   getOptimiserFrontierAutoRangeStatus,
@@ -454,13 +453,6 @@ describe("client runtime contracts", () => {
       job_id: "opt-job-1",
       point_index: 3,
     })
-  })
-
-  it("getGitStatus rejects malformed git payloads", async () => {
-    const fixture = loadUiContractFixture<Record<string, unknown>>("git_status_response")
-    mockFetch.mockReturnValue(jsonResponse({ ...fixture, is_read_only: undefined }))
-
-    await expect(getGitStatus()).rejects.toThrow(/parseGitStatusResponse/i)
   })
 
   it("getMilestones rejects malformed milestone payloads", async () => {

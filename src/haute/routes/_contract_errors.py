@@ -8,9 +8,12 @@ from fastapi import HTTPException
 
 from haute._output_assembler import OutputNestingKeyError
 from haute.errors import (
+    ChunkMemoryRiskError,
+    ContractResolutionError,
     GroupByExecutionUnsupportedError,
     HauteError,
     LiveSwitchScenarioError,
+    PreambleError,
     RatingExtremaUndefinedError,
     RatingFactorDtypeContractError,
     RatingFactorMissingError,
@@ -24,6 +27,9 @@ CONTRACT_ERROR_TERMINAL_REASON = "contract_error"
 # ``except`` accepts a tuple stored in a variable.  Exporting one canonical
 # tuple prevents synchronous and background adapters from drifting apart.
 PUBLIC_CONTRACT_ERROR_TYPES: tuple[type[HauteError], ...] = (
+    PreambleError,
+    ContractResolutionError,
+    ChunkMemoryRiskError,
     GroupByExecutionUnsupportedError,
     TraceCorrelationUnsupportedError,
     RatingExtremaUndefinedError,

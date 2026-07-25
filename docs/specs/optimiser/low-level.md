@@ -5,7 +5,7 @@
 | File | Responsibility |
 |---|---|
 | `src/haute/routes/optimiser.py` | FastAPI router (`/api/optimiser/*`). Owns request/response assembly, frontier-point summary derivation, artifact-payload building/validation for save and MLflow log, and the module-level `_store`/`_solve_service` singletons. |
-| `src/haute/routes/_optimiser_service.py` | `OptimiserSolveService` and its supporting free functions: pipeline execution, schema/value-contract validation, quote-grid construction, solver dispatch (online and ratebook), frontier-auto-range estimation (foreground and streaming/background), apply/ratebook-factor artifact persistence, and ratebook factor-table canonicalisation/serialisation. |
+| `src/haute/routes/_optimiser_service.py` | `OptimiserSolveService` and its supporting free functions: pipeline execution, schema/value-contract validation, quote-grid construction, solver dispatch (online and ratebook), frontier-auto-range estimation (foreground and streaming/background), ownership-marked apply/ratebook-factor artifact persistence and stale-startup reporting, and ratebook factor-table canonicalisation/serialisation. |
 | `src/haute/routes/_optimiser_limits.py` | Shared response-size and solver-compute budgets: `APPLY_PREVIEW_ROW_LIMIT`, `FRONTIER_POINT_LIMIT`, `FRONTIER_COMPUTE_LIMIT`, `enforce_frontier_compute_budget`, `limited_apply_preview_payload`, `limited_frontier_payload`. |
 | `src/haute/_optimiser_io.py` | Loads a previously saved optimiser artifact for the `OPTIMISER_APPLY` node — from a local JSON file (content-hash cached) or from MLflow (run-id/version cached). Analogous to `_mlflow_io.py` and `_io.py`. |
 | `src/haute/_optimiser_apply_explainability.py` | Builds a structured trace-detail payload for one clicked `OPTIMISER_APPLY` output row, for both online and ratebook modes. Consumed by the tracing subsystem, not exposed as its own route. |
@@ -326,10 +326,11 @@ Two artifact families, both rooted under a resolved subdirectory of the OS temp 
 - **Persist** (`_persist_apply_result_artifact`, `_persist_ratebook_factors_artifact`,
   `_persist_ratebook_factors_lazy_artifact` — the lazy variant sinks a
   `LazyFrame` via `bounded_sink` without ever collecting it into memory): each writes into a
-  freshly created `mkdtemp` directory under the artifact root, and — for the apply-result case —
-  explicitly nulls the source object's `.dataframe` attribute afterward (logging at debug level
-  if the attribute cannot be cleared) so the heavy dataframe is not held twice, once on disk and
-  once in the job store's retained `solve_result`.
+  freshly created direct child under the artifact root and writes a versioned family-specific
+  ownership marker before writing payload data. For the apply-result case it explicitly nulls the
+  source object's `.dataframe` attribute afterward (logging at debug level if the attribute
+  cannot be cleared) so the heavy dataframe is not held twice, once on disk and once in the job
+  store's retained `solve_result`.
 - **Validate** (`_validate_server_owned_parquet_handle`): re-derives the expected
   directory/path from the handle's own fields and checks they resolve (with a TOCTOU-aware
   strict-resolution-only-if-exists rule, so validating a handle whose artifact was already
@@ -352,6 +353,10 @@ Two artifact families, both rooted under a resolved subdirectory of the OS temp 
   (`updated_job.get("artifact_handles") is not artifact_handles`) rather than an equality check,
   used to detect when the atomic job-store update silently no-opped because the job's expected
   status no longer held.
+- **Restart cleanup**: `reap_stale_optimiser_artifacts` reads the strict non-negative
+  `HAUTE_ARTIFACT_STALE_SECONDS` interval (default 86,400 seconds), reaps only valid stale markers
+  from the two dedicated roots, and logs bounded inspected/removed/failed/reclaimed-byte counts.
+  The server lifespan invokes it once after loading the project environment.
 
 ### Ratebook factor-table canonicalisation (`src/haute/routes/_optimiser_service.py`)
 

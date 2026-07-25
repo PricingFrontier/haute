@@ -39,6 +39,8 @@ from tests.conftest import (
     make_transform_node as _transform_node,
 )
 
+pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
+
 NAN_SENTINEL = {"__haute_type__": "non_finite_float", "value": "nan"}
 
 # Consistent row_limit matching real usage (preview and trace share same limit).

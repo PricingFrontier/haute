@@ -7,23 +7,32 @@ import contextvars
 import ctypes
 import math
 import os
+import sys
 import threading
 import time
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
+from functools import cache
 from pathlib import Path
 from typing import Any
 
+from haute._logging import get_logger
+
 EXECUTION_METRICS_SCHEMA_VERSION = 1
+EXECUTION_TELEMETRY_SCHEMA_VERSION = 1
 _DEFAULT_MAX_RETAINED_STAGES = 200
 _DEFAULT_MAX_RETAINED_MEMORY_PRESSURE_EVENTS = 32
 _MAX_RETAINED_COLUMN_WIDTHS = 128
 _MAX_STREAMABILITY_EVIDENCE = 32
+_MAX_TELEMETRY_ATTRIBUTES = 32
+_MAX_TELEMETRY_STRING_LENGTH = 128
 _MEMORY_PRESSURE_THRESHOLDS: tuple[float, ...] = (0.50, 0.75, 0.90)
+_TERMINAL_NON_STATES = frozenset({"pending", "queued", "running"})
 _CURRENT_EXECUTION_CONTEXT: contextvars.ContextVar[ExecutionContext | None] = (
     contextvars.ContextVar("haute_current_execution_context", default=None)
 )
+logger = get_logger(component="execution_context")
 
 
 class ExecutionProfile(StrEnum):
@@ -40,16 +49,92 @@ class ExecutionProfile(StrEnum):
     CHUNKED_MAP_REDUCE = "chunked_map_reduce"
 
 
+@dataclass(frozen=True, slots=True)
+class ExecutionFaultPoint:
+    """One deterministic, request-local execution fault boundary."""
+
+    name: str
+    operation: str
+    node_id: str | None
+    sequence: int
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutionTelemetryEvent:
+    """Bounded terminal telemetry event with no request identifiers."""
+
+    schema_version: int
+    event: str
+    attributes: Mapping[str, str | int | float | bool | None]
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "schema_version": self.schema_version,
+            "event": self.event,
+            "attributes": dict(self.attributes),
+        }
+
+
+@cache
+def _execution_telemetry_enabled() -> bool:
+    """Parse the process-wide telemetry toggle once."""
+    raw = os.environ.get("HAUTE_EXECUTION_TELEMETRY")
+    if raw is None:
+        return False
+    normalised = raw.strip().lower()
+    if normalised in {"1", "true", "yes", "on"}:
+        return True
+    if normalised in {"", "0", "false", "no", "off"}:
+        return False
+    raise ValueError(
+        "HAUTE_EXECUTION_TELEMETRY must be an explicit boolean (true/false, yes/no, on/off, or 1/0)"
+    )
+
+
+def configure_execution_telemetry() -> bool:
+    """Validate and warm telemetry configuration after server environment loading."""
+    _execution_telemetry_enabled.cache_clear()
+    return _execution_telemetry_enabled()
+
+
+def _bounded_telemetry_attributes(
+    raw_attributes: Mapping[str, object],
+) -> dict[str, str | int | float | bool | None]:
+    """Normalise one complete bounded telemetry allow-list without truncation."""
+    if len(raw_attributes) > _MAX_TELEMETRY_ATTRIBUTES:
+        raise ValueError(
+            f"Execution telemetry attribute allow-list exceeds {_MAX_TELEMETRY_ATTRIBUTES} entries"
+        )
+    attributes: dict[str, str | int | float | bool | None] = {}
+    for name, value in raw_attributes.items():
+        if value is None or isinstance(value, (bool, int)):
+            attributes[name] = value
+        elif isinstance(value, float):
+            attributes[name] = value if math.isfinite(value) else None
+        elif isinstance(value, str):
+            attributes[name] = value[:_MAX_TELEMETRY_STRING_LENGTH]
+        else:
+            attributes[name] = None
+    return attributes
+
+
 class ExecutionCancelledError(RuntimeError):
     """Raised when an execution context has been cancelled."""
 
-    def __init__(self, operation: str, *, job_id: str | None = None) -> None:
+    def __init__(
+        self,
+        operation: str,
+        *,
+        job_id: str | None = None,
+        cancellation_latency_ms: float | None = None,
+    ) -> None:
         detail = f"Execution {operation!r} was cancelled"
         if job_id:
             detail = f"{detail} (job_id={job_id!r})"
         super().__init__(detail)
         self.operation = operation
         self.job_id = job_id
+        self.cancellation_latency_ms = cancellation_latency_ms
 
 
 class ExecutionMemoryLimitExceededError(MemoryError):
@@ -569,10 +654,16 @@ class ExecutionMetricsRecorder:
 class ExecutionCancellationToken:
     """Cooperative cancellation token shared by route jobs and executors."""
 
-    _event: threading.Event = field(default_factory=threading.Event)
+    monotonic_clock: Callable[[], float] = time.monotonic
+    _event: threading.Event = field(default_factory=threading.Event, init=False)
+    _lock: threading.RLock = field(default_factory=threading.RLock, init=False)
+    _cancelled_at: float | None = field(default=None, init=False)
 
     def cancel(self) -> None:
-        self._event.set()
+        with self._lock:
+            if self._cancelled_at is None:
+                self._cancelled_at = self.monotonic_clock()
+            self._event.set()
 
     @property
     def cancelled(self) -> bool:
@@ -580,7 +671,18 @@ class ExecutionCancellationToken:
 
     def throw_if_cancelled(self, operation: str, *, job_id: str | None = None) -> None:
         if self.cancelled:
-            raise ExecutionCancelledError(operation, job_id=job_id)
+            with self._lock:
+                cancelled_at = self._cancelled_at
+            latency_ms = (
+                None
+                if cancelled_at is None
+                else max(0.0, (self.monotonic_clock() - cancelled_at) * 1_000)
+            )
+            raise ExecutionCancelledError(
+                operation,
+                job_id=job_id,
+                cancellation_latency_ms=latency_ms,
+            )
 
 
 def current_rss_bytes() -> int | None:
@@ -734,6 +836,9 @@ class ExecutionContext:
     memory_sampler: Callable[[], int | None] = current_rss_bytes
     memory_pressure_callback: Callable[[ExecutionMemoryPressureEvent], None] | None = None
     admission_release: Callable[[], None] | None = None
+    fault_injector: Callable[[ExecutionFaultPoint], None] | None = None
+    telemetry_enabled: bool = field(default_factory=_execution_telemetry_enabled)
+    telemetry_sink: Callable[[ExecutionTelemetryEvent], None] | None = None
     _stage_local: threading.local = field(default_factory=threading.local, init=False)
     _memory_pressure_seen: set[int] = field(default_factory=set, init=False)
     _memory_pressure_lock: threading.RLock = field(
@@ -751,6 +856,13 @@ class ExecutionContext:
     )
     _cleanup_callbacks: list[Callable[[], None]] = field(default_factory=list, init=False)
     _cleanups_released: bool = field(default=False, init=False)
+    _fault_lock: threading.RLock = field(default_factory=threading.RLock, init=False)
+    _fault_sequence: int = field(default=0, init=False)
+    _telemetry_lock: threading.RLock = field(default_factory=threading.RLock, init=False)
+    _telemetry_emitted: set[tuple[str, str | None]] = field(
+        default_factory=set,
+        init=False,
+    )
     _evidence_lock: threading.RLock = field(default_factory=threading.RLock, init=False)
     _column_widths: dict[str, ExecutionColumnWidths] = field(
         default_factory=dict,
@@ -760,6 +872,7 @@ class ExecutionContext:
     _bytes_written: int | None = field(default=None, init=False)
     _chunk_count: int = field(default=0, init=False)
     _observed_peak_rss_bytes: int | None = field(default=None, init=False)
+    _cancellation_latency_ms: float | None = field(default=None, init=False)
 
     def cancel(self) -> None:
         self.cancellation_token.cancel()
@@ -771,43 +884,88 @@ class ExecutionContext:
                 raise RuntimeError("cannot register a resource on a released execution context")
             self._cleanup_callbacks.append(callback)
 
-    def _release_cleanups(self) -> None:
+    def _release_cleanups(self) -> list[BaseException]:
         with self._cleanup_lock:
             if self._cleanups_released:
-                return
+                return []
             self._cleanups_released = True
             callbacks = list(reversed(self._cleanup_callbacks))
             self._cleanup_callbacks.clear()
-        first_error: BaseException | None = None
+        errors: list[BaseException] = []
         for callback in callbacks:
             try:
                 callback()
             except BaseException as exc:
-                if first_error is None:
-                    first_error = exc
-        if first_error is not None:
-            raise first_error
+                errors.append(exc)
+        return errors
 
-    def release_admission(self) -> None:
-        """Release runtime resources and any in-flight memory reservation."""
+    @staticmethod
+    def _cleanup_failure_note(error: BaseException) -> str:
+        return f"Execution cleanup failed: {type(error).__name__}: {error}"
+
+    def release_admission(self, *, preserve_primary_error: bool = False) -> None:
+        """Release resources, optionally preserving an exception propagating through ``finally``."""
+        primary_error = sys.exception() if preserve_primary_error else None
         release: Callable[[], None] | None = None
-        try:
-            self._release_cleanups()
-        finally:
-            with self._admission_release_lock:
-                if not self._admission_released:
-                    self._admission_released = True
-                    release = self.admission_release
-                    self.admission_release = None
-            if release is not None:
+        errors = self._release_cleanups()
+        with self._admission_release_lock:
+            if not self._admission_released:
+                self._admission_released = True
+                release = self.admission_release
+                self.admission_release = None
+        if release is not None:
+            try:
                 release()
+            except BaseException as exc:
+                errors.append(exc)
+        if not errors:
+            return
+        if primary_error is not None:
+            for error in errors:
+                primary_error.add_note(self._cleanup_failure_note(error))
+            return
+        first_error, *later_errors = errors
+        for error in later_errors:
+            first_error.add_note(self._cleanup_failure_note(error))
+        raise first_error
 
     def close(self) -> None:
         """Alias for callers that treat execution contexts as resources."""
         self.release_admission()
 
+    def fault_point(self, name: str, *, node_id: str | None = None) -> None:
+        """Invoke the request-local deterministic fault seam when configured."""
+        injector = self.fault_injector
+        if injector is None:
+            return
+        if not isinstance(name, str) or not name:
+            raise ValueError("execution fault-point name must be a non-empty string")
+        with self._fault_lock:
+            self._fault_sequence += 1
+            point = ExecutionFaultPoint(
+                name=name,
+                operation=self.operation,
+                node_id=node_id,
+                sequence=self._fault_sequence,
+            )
+        injector(point)
+
+    def _throw_if_cancelled(self) -> None:
+        try:
+            self.cancellation_token.throw_if_cancelled(
+                self.operation,
+                job_id=self.job_id,
+            )
+        except ExecutionCancelledError as exc:
+            if exc.cancellation_latency_ms is not None:
+                with self._evidence_lock:
+                    if self._cancellation_latency_ms is None:
+                        self._cancellation_latency_ms = exc.cancellation_latency_ms
+            raise
+
     def checkpoint(self, *, label: str, node_id: str | None = None) -> None:
-        self.cancellation_token.throw_if_cancelled(self.operation, job_id=self.job_id)
+        self._throw_if_cancelled()
+        self.fault_point(label, node_id=node_id)
         self._record_checkpoint()
         rss_bytes = (
             self.memory_sampler()
@@ -827,7 +985,7 @@ class ExecutionContext:
         skip_metric_on_exception: tuple[type[BaseException], ...] = (),
     ) -> Iterator[None]:
         t0 = time.perf_counter()
-        self.cancellation_token.throw_if_cancelled(self.operation, job_id=self.job_id)
+        self._throw_if_cancelled()
         rss_start = self.memory_sampler()
         self._observe_rss(rss_start, stage=name, node_id=node_id)
         try:
@@ -1015,7 +1173,89 @@ class ExecutionContext:
             else None
         )
         payload.update(self._execution_evidence_payload(payload, diagnostic=diagnostic))
+        self._emit_terminal_telemetry(payload)
         return payload
+
+    def _emit_terminal_telemetry(self, payload: Mapping[str, object]) -> None:
+        if not self.telemetry_enabled:
+            return
+        status = payload.get("status")
+        if not isinstance(status, str) or not status or status.lower() in _TERMINAL_NON_STATES:
+            return
+        raw_reason = payload.get("terminal_reason")
+        terminal_reason = raw_reason if isinstance(raw_reason, str) else None
+        emission_key = (status, terminal_reason)
+        with self._telemetry_lock:
+            if emission_key in self._telemetry_emitted:
+                return
+            self._telemetry_emitted.add(emission_key)
+
+        try:
+            attributes = self._telemetry_attributes(payload)
+            event = ExecutionTelemetryEvent(
+                schema_version=EXECUTION_TELEMETRY_SCHEMA_VERSION,
+                event="execution_terminal",
+                attributes=attributes,
+            )
+            sink = self.telemetry_sink
+            if sink is None:
+                logger.info(
+                    event.event,
+                    schema_version=event.schema_version,
+                    **dict(event.attributes),
+                )
+            else:
+                sink(event)
+        except Exception as exc:
+            logger.warning(
+                "execution_telemetry_sink_failed",
+                error_type=type(exc).__name__,
+            )
+
+    @staticmethod
+    def _telemetry_attributes(
+        payload: Mapping[str, object],
+    ) -> dict[str, str | int | float | bool | None]:
+        strategy = payload.get("execution_strategy")
+        strategy_payload = strategy if isinstance(strategy, Mapping) else {}
+        admission = payload.get("admission")
+        admission_payload = admission if isinstance(admission, Mapping) else {}
+        widths = payload.get("column_widths")
+        widths_payload = widths if isinstance(widths, Mapping) else {}
+        raw_attributes: dict[str, object] = {
+            "profile": payload.get("profile"),
+            "status": payload.get("status"),
+            "total_elapsed_ms": payload.get("total_elapsed_ms"),
+            "rss_start_bytes": payload.get("rss_start_bytes"),
+            "rss_end_bytes": payload.get("rss_end_bytes"),
+            "rss_delta_bytes": payload.get("rss_delta_bytes"),
+            "rss_peak_bytes": payload.get("rss_peak_bytes"),
+            "n_collects": payload.get("n_collects"),
+            "n_checkpoints": payload.get("n_checkpoints"),
+            "checkpoint_count": payload.get("checkpoint_count"),
+            "chunk_count": payload.get("chunk_count"),
+            "bytes_read": payload.get("bytes_read"),
+            "bytes_written": payload.get("bytes_written"),
+            "estimated_bytes": payload.get("estimated_bytes"),
+            "observed_peak_rss_bytes": payload.get("observed_peak_rss_bytes"),
+            "cancellation_latency_ms": payload.get("cancellation_latency_ms"),
+            "stage_count": payload.get("stage_count"),
+            "stages_truncated": payload.get("stages_truncated"),
+            "memory_pressure_event_count": payload.get("memory_pressure_event_count"),
+            "memory_pressure_events_truncated": payload.get("memory_pressure_events_truncated"),
+            "streamability": payload.get("streamability"),
+            "strategy_status": strategy_payload.get("status"),
+            "strategy": strategy_payload.get("strategy"),
+            "boundedness": strategy_payload.get("boundedness"),
+            "strategy_reason_code": strategy_payload.get("reason_code"),
+            "admission_admitted": admission_payload.get("admitted"),
+            "admission_budget_policy": admission_payload.get("budget_policy"),
+            "admission_headroom_bytes": admission_payload.get("headroom_bytes"),
+            "memory_limit_bytes": payload.get("memory_limit_bytes"),
+            "rss_limit_bytes": payload.get("rss_limit_bytes"),
+            "column_widths_state": widths_payload.get("state"),
+        }
+        return _bounded_telemetry_attributes(raw_attributes)
 
     def _execution_evidence_payload(
         self,
@@ -1029,6 +1269,7 @@ class ExecutionContext:
             bytes_written = self._bytes_written
             chunk_count = self._chunk_count
             observed_peak_rss_bytes = self._observed_peak_rss_bytes
+            cancellation_latency_ms = self._cancellation_latency_ms
 
         retained_widths = widths[:_MAX_RETAINED_COLUMN_WIDTHS]
         width_state = "truncated" if len(widths) > len(retained_widths) else "available"
@@ -1086,6 +1327,7 @@ class ExecutionContext:
             "checkpoint_count": metrics_payload["n_checkpoints"],
             "chunk_count": chunk_count,
             "observed_peak_rss_bytes": observed_peak_rss_bytes,
+            "cancellation_latency_ms": cancellation_latency_ms,
         }
 
     def _active_stage_stack(self) -> list[_ActiveStage]:

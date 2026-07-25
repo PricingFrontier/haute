@@ -596,6 +596,7 @@ class ExecutionMetricsPayload(BaseModel):
     checkpoint_count: int = Field(default=0, ge=0)
     chunk_count: int = Field(default=0, ge=0)
     observed_peak_rss_bytes: int | None = Field(default=None, ge=0)
+    cancellation_latency_ms: float | None = Field(default=None, ge=0)
 
 
 NodeExecutionStatus = Literal["ok", "error"]
@@ -1884,36 +1885,32 @@ class OptimiserMlflowLogResponse(MlflowLogResponse):
 
 
 # ---------------------------------------------------------------------------
-# /api/git/*
-# ---------------------------------------------------------------------------
-
-
-class GitStatusResponse(BaseModel):
-    branch: str
-    is_main: bool
-    is_read_only: bool
-    changed_files: list[str] = Field(default_factory=list)
-    main_ahead: bool = False
-    main_ahead_by: int = 0
-    main_last_updated: str | None = None
-
-
-# ---------------------------------------------------------------------------
 # Working-branch selection (P2): the per-clone working-branch association and
 # the readiness signal the startup flow + toolbar indicator consume.
 # ---------------------------------------------------------------------------
+
+GitWorkingBranchState = Literal[
+    "no-repository",
+    "unset",
+    "detached",
+    "invalid",
+    "divergent",
+    "ready",
+]
 
 
 class GitWorkingBranchResponse(BaseModel):
     # The branch recorded against this clone in .haute/state.json, or None.
     working_branch: str | None = None
     # Drives whether the startup modal fires (S27) and which variant (S14).
-    state: Literal["ready", "unset", "invalid", "divergent"] = "unset"
+    state: GitWorkingBranchState = "unset"
     # Human-readable reasons when state is "invalid" (check_invariants output
     # or eligibility failure).
     errors: list[str] = Field(default_factory=list)
-    # HEAD's current branch ("HEAD" when detached). For the divergence message.
-    current_branch: str
+    # HEAD's attached branch; empty when the repository is absent or detached.
+    current_branch: str = ""
+    # Full HEAD commit when it can be resolved (especially detached state).
+    head_sha: str | None = None
     # Short SHA of the ledger tip (or working tip pre-spawn) — feeds the
     # toolbar indicator. None when neither ref exists yet.
     last_save_sha: str | None = None
@@ -1934,7 +1931,7 @@ class GitSetWorkingBranchRequest(BaseModel):
 
 class GitSetWorkingBranchResponse(BaseModel):
     working_branch: str
-    state: Literal["ready", "unset", "invalid", "divergent"]
+    state: GitWorkingBranchState
     last_save_sha: str | None = None
 
 

@@ -135,7 +135,8 @@ Out of scope (owned elsewhere):
   candidate roots — the project root and the owning pipeline's directory —
   preferring whichever candidate exists on disk, and preferring the
   project-root candidate when both exist or neither does (unless the
-  caller asks for pipeline-preference).
+  caller asks for pipeline-preference). Containment is enabled by default
+  and is checked after symlink resolution.
 - `warn_if_case_ambiguous` logs — but never blocks — when a resolved path
   has a case-equivalent sibling on disk, since Haute pins no Unicode/case
   normalisation on user-supplied data paths: a config that resolves cleanly
@@ -396,3 +397,18 @@ describe the shipped implementation until the 0.7.0 release reconciles them.
   cache identity/query separation, atomic refresh and concurrent-reader tests; Polars-code
   ordering and row-local rejection tests; output atomicity and explicit-write tests; and
   end-to-end parse/save/reload tests containing only `dataInput`/`dataOutput`.
+
+## Approved partitioned-Parquet execution boundary
+
+A direct File or Lakehouse `dataInput` using the Parquet scanner may point at a directory-backed
+dataset. Hive partition discovery is an explicit validated Polars argument, not a path-name guess
+owned by Haute. A partition predicate written in the input's Polars body participates in ordinary
+column-demand analysis; the predicate column is retained while unrelated payload columns are
+projected away. The resulting predicate and projection must be visible at the Parquet scan in the
+optimised lazy plan before any execution-engine checkpoint or materialisation.
+
+Haute does not enumerate and eagerly concatenate partition files, infer partition values itself,
+or promise pruning for opaque/global input code. Invalid directories, inconsistent partition
+schemas, or unsupported scanner arguments propagate as typed configuration/Polars failures.
+Regression tests use at least two partitions and an unrelated wide column, then prove both the
+selected file set and projected scan width.

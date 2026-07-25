@@ -13,6 +13,8 @@ from haute.executor import _build_node_fn, execute_graph
 from haute.graph_utils import GraphNode, NodeData, PipelineGraph
 from tests.conftest import make_edge, make_file_input_config, make_graph
 
+pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
+
 
 def _make_model_score_graph(
     *,

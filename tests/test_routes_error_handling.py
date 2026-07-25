@@ -224,9 +224,9 @@ class TestGitErrorSanitisation:
         [
             pytest.param(
                 "get",
-                "/api/git/status",
+                "/api/git/working-branch",
                 None,
-                "haute.routes.git.get_status",
+                "haute.routes.git.working_branch_status",
                 "fatal: unable to access 'https://github.com/org/private-repo.git/': "
                 "SSL certificate problem: self signed certificate at "
                 "C:/Users/secretuser/.ssh/ca.pem",
@@ -235,7 +235,7 @@ class TestGitErrorSanitisation:
                     "private-repo",
                     "SSL certificate problem",
                 ],
-                id="status-ssl-leak",
+                id="working-branch-ssl-leak",
             ),
         ],
     )
@@ -531,23 +531,22 @@ class TestApiWsNotFoundReturnsJson:
         )
         assert not resp.text.lower().startswith("<!doctype"), "Response body must not be HTML"
 
-    def test_registered_api_git_status_still_works(
+    def test_registered_api_git_working_branch_still_works(
         self,
         project_client: TestClient,
     ) -> None:
         """Regression: the new /api/* catch-all must not shadow real API routes."""
         from unittest.mock import patch
 
-        from haute.schemas import GitStatusResponse
+        from haute.schemas import GitWorkingBranchResponse
 
-        fake = GitStatusResponse(
-            branch="main",
-            is_main=True,
-            is_read_only=False,
-            changed_files=[],
+        fake = GitWorkingBranchResponse(
+            state="ready",
+            working_branch="pricing/alice/dev",
+            current_branch="pricing/alice/dev",
         )
-        with patch("haute.routes.git.get_status", return_value=fake):
-            resp = project_client.get("/api/git/status")
+        with patch("haute.routes.git.working_branch_status", return_value=fake):
+            resp = project_client.get("/api/git/working-branch")
         assert resp.status_code == 200, (
             f"real route should still return 200, got {resp.status_code}"
         )

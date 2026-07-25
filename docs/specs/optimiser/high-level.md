@@ -118,6 +118,9 @@ Invariants:
   affordances are only ever meaningful for online mode.
 - Every capped/paginated response (apply preview, frontier points) states its true total count
   and whether it was truncated; nothing is silently dropped without saying so.
+- Crash-surviving apply-result and ratebook-factor directories carry distinct versioned Haute
+  ownership markers. Startup cleanup can remove only stale marked direct children of those two
+  dedicated roots; unmarked or foreign temporary data is never swept.
 - Trace reconciliation either matches the real output exactly (within floating-point tolerance)
   or the trace request fails with a specific error — it never returns an approximate or
   partially-reconstructed explanation.

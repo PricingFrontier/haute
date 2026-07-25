@@ -10,7 +10,6 @@ from haute.schemas import (
     ExecutionMetricsPayload,
     ExploreRunResponse,
     ExploreStatusResponse,
-    GitStatusResponse,
     JsonCacheStatusResponse,
     OptimiserStatusResponse,
     PreviewNodeResponse,
@@ -227,19 +226,6 @@ def _schema_summary(model: type[Any]) -> dict[str, Any]:
                     "type": "array",
                     "items": "ref:ExecutionMemoryPressureEventPayload",
                 },
-            },
-        ),
-        (
-            GitStatusResponse,
-            ["branch", "is_main", "is_read_only"],
-            {
-                "branch": {"type": "string"},
-                "is_main": {"type": "boolean"},
-                "is_read_only": {"type": "boolean"},
-                "changed_files": {"type": "array", "items": "string"},
-                "main_ahead": {"type": "boolean", "default": False},
-                "main_ahead_by": {"type": "integer", "default": 0},
-                "main_last_updated": {"anyOf": ["string", "null"], "default": None},
             },
         ),
         (

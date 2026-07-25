@@ -33,6 +33,10 @@ if TYPE_CHECKING:
 
     from haute.chunking import ChunkPlan
 
+from haute._artifact_housekeeping import (
+    create_owned_artifact_directory,
+    reap_stale_artifact_directories,
+)
 from haute._banding_config import normalise_banding_factors
 from haute._contracts import Contract, get_column_contract
 from haute._env import int_env, optional_int_env
@@ -174,6 +178,10 @@ _APPLY_RESULT_FILENAME = "result.parquet"
 _RATEBOOK_FACTORS_ARTIFACT_ROOT_NAME = "haute/optimiser_ratebook_factors"
 _RATEBOOK_FACTORS_ARTIFACT_DIR_PREFIX = "factors_"
 _RATEBOOK_FACTORS_FILENAME = "factors.parquet"
+_APPLY_ARTIFACT_OWNER = "optimiser_apply"
+_RATEBOOK_FACTORS_ARTIFACT_OWNER = "optimiser_ratebook_factors"
+_ARTIFACT_STALE_SECONDS_ENV = "HAUTE_ARTIFACT_STALE_SECONDS"
+_DEFAULT_ARTIFACT_STALE_SECONDS = 86_400
 _JOB_TYPE_KEY = "job_type"
 _SOLVE_JOB_TYPE = "solve"
 _ESTIMATE_JOB_TYPE = "estimate"
@@ -1086,6 +1094,33 @@ def _prepare_ratebook_factors_artifact_root() -> Path:
     return root
 
 
+def _artifact_stale_seconds() -> int:
+    raw = os.environ.get(_ARTIFACT_STALE_SECONDS_ENV)
+    if raw is None:
+        return _DEFAULT_ARTIFACT_STALE_SECONDS
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ValueError(f"{_ARTIFACT_STALE_SECONDS_ENV} must be a non-negative integer") from exc
+    if value < 0:
+        raise ValueError(f"{_ARTIFACT_STALE_SECONDS_ENV} must be a non-negative integer")
+    return value
+
+
+def reap_stale_optimiser_artifacts() -> dict[str, dict[str, int]]:
+    """Reap stale marked artifacts from the optimiser's dedicated roots only."""
+    stale_after_seconds = _artifact_stale_seconds()
+    reports: dict[str, dict[str, int]] = {}
+    for name, root, owner in (
+        ("apply", _apply_artifact_root(), _APPLY_ARTIFACT_OWNER),
+        ("ratebook_factors", _ratebook_factors_artifact_root(), _RATEBOOK_FACTORS_ARTIFACT_OWNER),
+    ):
+        if root.is_dir():
+            reports[name] = reap_stale_artifact_directories(root, owner, stale_after_seconds)
+    logger.info("optimiser_artifact_reap_completed", reports=reports)
+    return reports
+
+
 def _validate_server_owned_parquet_handle(
     handle: dict[str, Any],
     *,
@@ -1166,11 +1201,8 @@ def _persist_apply_result_artifact(solve_result: SolveResultLike) -> dict[str, A
     if not isinstance(df, pl.DataFrame):
         return None
 
-    artifact_dir = Path(
-        tempfile.mkdtemp(
-            prefix=_APPLY_ARTIFACT_DIR_PREFIX,
-            dir=_prepare_apply_artifact_root(),
-        ),
+    artifact_dir = create_owned_artifact_directory(
+        _prepare_apply_artifact_root(), _APPLY_ARTIFACT_DIR_PREFIX, _APPLY_ARTIFACT_OWNER
     )
     artifact_path = artifact_dir / _APPLY_RESULT_FILENAME
     try:
@@ -1207,11 +1239,10 @@ def _persist_ratebook_factors_artifact(factors_df: Any) -> dict[str, Any] | None
     if not isinstance(factors_df, pl.DataFrame):
         return None
 
-    artifact_dir = Path(
-        tempfile.mkdtemp(
-            prefix=_RATEBOOK_FACTORS_ARTIFACT_DIR_PREFIX,
-            dir=_prepare_ratebook_factors_artifact_root(),
-        ),
+    artifact_dir = create_owned_artifact_directory(
+        _prepare_ratebook_factors_artifact_root(),
+        _RATEBOOK_FACTORS_ARTIFACT_DIR_PREFIX,
+        _RATEBOOK_FACTORS_ARTIFACT_OWNER,
     )
     artifact_path = artifact_dir / _RATEBOOK_FACTORS_FILENAME
     try:
@@ -1242,11 +1273,10 @@ def _persist_ratebook_factors_lazy_artifact(
     streaming_chunk_size: int | None = None,
 ) -> dict[str, Any]:
     """Persist projected ratebook factors without collecting them into memory."""
-    artifact_dir = Path(
-        tempfile.mkdtemp(
-            prefix=_RATEBOOK_FACTORS_ARTIFACT_DIR_PREFIX,
-            dir=_prepare_ratebook_factors_artifact_root(),
-        ),
+    artifact_dir = create_owned_artifact_directory(
+        _prepare_ratebook_factors_artifact_root(),
+        _RATEBOOK_FACTORS_ARTIFACT_DIR_PREFIX,
+        _RATEBOOK_FACTORS_ARTIFACT_OWNER,
     )
     artifact_path = artifact_dir / _RATEBOOK_FACTORS_FILENAME
     try:
@@ -3141,7 +3171,7 @@ class OptimiserSolveService:
             raise _memory_limit_http_exception(exc) from None
         finally:
             if execution_context is not None:
-                execution_context.release_admission()
+                execution_context.release_admission(preserve_primary_error=True)
             self._store.delete_job(job_id)
 
     def start_frontier_auto_range(
