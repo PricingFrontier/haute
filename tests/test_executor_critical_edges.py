@@ -187,6 +187,7 @@ def test_empty_graph_short_circuit_respects_explicit_contract_flag() -> None:
     assert execute_graph(_g({"nodes": [], "edges": []}), enforce_contracts=False) == {}
 
 
+@pytest.mark.usefixtures("_widen_sandbox_root")
 def test_instance_schema_warning_reports_missing_original_inputs(tmp_path: Path) -> None:
     original_path = tmp_path / "original.parquet"
     instance_path = tmp_path / "instance.parquet"

@@ -38,6 +38,12 @@ backend API modules own validation and persistence.
 - IO editors obtain supported formats and their arguments from the server. API/data input,
   output, source, sink, external-file, transform, explore, live-switch, scenario, submodel,
   model-score and optimiser-apply editors render only their own configuration contract.
+- The Edge Join editor presents the canvas-bound dominant/base and joining roles as fixed
+  connections with one atomic swap action. Swapping updates the incoming role handles and
+  `baseInput`/`joinInput` config together. Join type choices are exactly `inner`, `left`,
+  `right`, `full`, `semi`, `anti`, and `cross`. A cross join has no key controls or persisted
+  keys; every other mode requires either one-or-more same-name `on` keys or equal-length,
+  non-empty `leftOn`/`rightOn` pairs, and the two key forms cannot coexist.
 
 ## Design rationale
 
@@ -79,6 +85,9 @@ presented (input chips, live-switch mapping rows, output frame blocks) — never
 to the parent node and never a normal-looking entry. Null-handle API-input edges cannot be
 created (the zero-frame handle is non-connectable) and are pruned by reconciliation when read
 from a hand-edited file, so the verbatim-plus-warning rule is the complete unresolved story.
+An Edge Join with missing/ambiguous role edges, conflicting stored roles, an unknown join mode,
+or invalid key shape remains visibly invalid and blocks save; the editor never infers a role or
+silently substitutes join keys.
 
 ## Approved change contract — 0.7.0 unified data I/O editors
 

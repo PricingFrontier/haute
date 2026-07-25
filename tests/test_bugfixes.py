@@ -590,9 +590,11 @@ class TestPreviewRouteSourceFile:
         preview must still read ``data/...`` from the project root when that
         file exists there.
         """
+        from haute._sandbox import set_project_root
         from haute.executor import execute_graph
 
         monkeypatch.chdir(tmp_path)
+        set_project_root(tmp_path)
         pipeline_dir = tmp_path / "rating"
         pipeline_dir.mkdir()
         (pipeline_dir / "main.py").write_text("", encoding="utf-8")

@@ -14,6 +14,9 @@ import useUIStore from "../stores/useUIStore"
  */
 export default function BranchIndicator() {
   const status = useGitStore((s) => s.status)
+  const loading = useGitStore((s) => s.loading)
+  const statusError = useGitStore((s) => s.statusError)
+  const loadStatus = useGitStore((s) => s.loadStatus)
   const openModal = useGitStore((s) => s.openModal)
   const setPeekBranch = useGitStore((s) => s.setPeekBranch)
   const requestExpandBranches = useGitStore((s) => s.requestExpandBranches)
@@ -46,24 +49,65 @@ export default function BranchIndicator() {
     }
   }
 
-  // Nothing to show until we know the git state (non-git project, or pre-load).
-  if (status === null) return null
+  if (statusError) {
+    return (
+      <div data-testid="toolbar-branch-indicator" data-branch-state="error">
+        <span>Git unavailable: {statusError}</span>
+        <button
+          type="button"
+          data-testid="branch-indicator-retry"
+          onClick={() => void loadStatus()}
+        >
+          Retry
+        </button>
+      </div>
+    )
+  }
+
+  if (status === null) {
+    if (loading) {
+      return (
+        <span data-testid="toolbar-branch-indicator" data-branch-state="checking">
+          Checking Git…
+        </span>
+      )
+    }
+    return null
+  }
 
   const ready = status.state === "ready"
 
   if (!ready) {
+    if (status.state === "no-repository") {
+      return (
+        <span
+          data-testid="toolbar-branch-indicator"
+          data-branch-state="no-repository"
+          title="Run git init in this project to enable version control."
+        >
+          Git not initialised
+        </span>
+      )
+    }
+    const stateMeta = status.state === "unset"
+      ? { label: "Set branch", modal: "select" as const }
+      : status.state === "divergent"
+        ? { label: "Branch changed externally", modal: "divergence" as const }
+        : status.state === "detached"
+          ? { label: `Detached at ${status.head_sha?.slice(0, 7) ?? "unknown"}`, modal: "select" as const }
+          : { label: "Git needs attention", modal: "select" as const }
     return (
       <button
         type="button"
         data-testid="toolbar-branch-indicator"
         data-branch-state={status.state}
-        onClick={() => openModal(status.state === "divergent" ? "divergence" : "select")}
+        onClick={() => openModal(stateMeta.modal)}
         className="flex items-center gap-1 px-2 py-1 text-[12px] font-medium rounded-md hover-chrome"
         style={{ color: "var(--danger)" }}
-        title="No working branch set — click to choose one"
+        title={`${stateMeta.label} — click to resolve in the Git panel`}
       >
         <GitBranch size={13} aria-hidden="true" />
-        Set branch
+        {stateMeta.label}
       </button>
     )
   }

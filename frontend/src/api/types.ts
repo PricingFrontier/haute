@@ -1161,17 +1161,7 @@ export interface UtilityDeleteResponse {
 // Git types
 // ---------------------------------------------------------------------------
 
-export interface GitStatus {
-  branch: string
-  is_main: boolean
-  is_read_only: boolean
-  changed_files: string[]
-  main_ahead: boolean
-  main_ahead_by: number
-  main_last_updated?: string | null
-}
-
-export type WorkingBranchState = "ready" | "unset" | "invalid" | "divergent"
+export type WorkingBranchState = "no-repository" | "unset" | "detached" | "invalid" | "divergent" | "ready"
 
 export interface GitWorkingBranchResponse {
   working_branch: string | null
@@ -1183,6 +1173,7 @@ export interface GitWorkingBranchResponse {
   identity_set: boolean
   user_name: string | null
   user_email: string | null
+  head_sha?: string | null
 }
 
 export interface GitSetWorkingBranchResponse {

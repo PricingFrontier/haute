@@ -6,6 +6,7 @@ import type { GitMilestoneFork } from "../api/types"
 import { parseGitMilestoneFork } from "../types/guards"
 import useGitStore from "../stores/useGitStore"
 import useToastStore from "../stores/useToastStore"
+import { gitErrorMessage } from "../utils/gitError"
 import ModalShell from "./ModalShell"
 
 interface MilestoneCommitModalProps {
@@ -68,7 +69,7 @@ export default function MilestoneCommitModal({ onConfirmed, onClose }: Milestone
           return
         }
       }
-      const detail = err instanceof Error ? err.message : "unknown error"
+      const detail = gitErrorMessage(err, "unknown error")
       addToast("error", `Could not commit: ${detail}`)
     } finally {
       setBusy(false)

@@ -4,8 +4,8 @@ import {
   ApiError,
   ApiTimeoutError,
   HAUTE_SESSION_EXPIRED_EVENT,
+  bootstrapHauteSession,
   checkHauteSession,
-  hauteSessionToken,
   isHauteSessionExpiredError,
   loadPipeline,
   previewNode,
@@ -27,7 +27,6 @@ import {
   estimateTrainingRam,
   getWarehouses,
   getCatalogs,
-  getGitStatus,
   gitArchiveBranch,
   gitDeleteBranch,
   getMilestones,
@@ -273,15 +272,18 @@ function makeSolveOptimiserResponse(overrides: Record<string, unknown> = {}) {
   }
 }
 
-function makeGitStatusResponse(overrides: Record<string, unknown> = {}) {
+function makeWorkingBranchResponse(overrides: Record<string, unknown> = {}) {
   return {
-    branch: "main",
-    is_main: true,
-    is_read_only: false,
-    changed_files: [],
-    main_ahead: false,
-    main_ahead_by: 0,
-    main_last_updated: null,
+    working_branch: "dev",
+    state: "ready",
+    errors: [],
+    current_branch: "dev-save",
+    last_save_sha: "abc1234",
+    eligible_branches: ["dev"],
+    identity_set: true,
+    user_name: "Test User",
+    user_email: "test@example.com",
+    head_sha: "abc1234def5678",
     ...overrides,
   }
 }
@@ -321,7 +323,6 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.restoreAllMocks()
-  delete window.__HAUTE_SESSION_TOKEN__
 })
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -337,15 +338,49 @@ describe("request() core via loadPipeline", () => {
     expect(url).toBe("/api/pipeline")
   })
 
-  it("attaches the local session token header when present", async () => {
-    window.__HAUTE_SESSION_TOKEN__ = "frontend-session-token"
+  it("uses browser-managed same-origin credentials without a bearer header", async () => {
     mockFetch.mockReturnValue(jsonResponse({ nodes: [], edges: [] }))
 
     await loadPipeline()
 
     const [, options] = mockFetch.mock.calls[0]
-    expect(options.headers["x-haute-session-token"]).toBe("frontend-session-token")
-    expect(hauteSessionToken()).toBe("frontend-session-token")
+    expect(options.credentials).toBe("same-origin")
+    expect(options.headers["x-haute-session-token"]).toBeUndefined()
+  })
+
+  it("bootstraps one HttpOnly-cookie session for concurrent callers", async () => {
+    mockFetch.mockReturnValue(jsonResponse({ ok: true }))
+
+    await Promise.all([
+      bootstrapHauteSession(true),
+      bootstrapHauteSession(true),
+    ])
+
+    expect(mockFetch).toHaveBeenCalledTimes(1)
+    expect(mockFetch).toHaveBeenCalledWith(
+      "/api/session/bootstrap",
+      expect.objectContaining({
+        method: "POST",
+        credentials: "same-origin",
+        cache: "no-store",
+      }),
+    )
+    const [, options] = mockFetch.mock.calls[0]
+    expect(options.headers).toBeUndefined()
+    expect(options.body).toBeUndefined()
+  })
+
+  it("retries a normal bootstrap after a forced refresh fails", async () => {
+    mockFetch
+      .mockReturnValueOnce(jsonResponse({ ok: true }))
+      .mockReturnValueOnce(errorResponse(503, { detail: "temporarily unavailable" }))
+      .mockReturnValueOnce(jsonResponse({ ok: true }))
+
+    await bootstrapHauteSession(true)
+    await expect(bootstrapHauteSession(true)).rejects.toThrow(ApiError)
+    await bootstrapHauteSession()
+
+    expect(mockFetch).toHaveBeenCalledTimes(3)
   })
 
   it("returns parsed JSON on success", async () => {
@@ -594,16 +629,6 @@ describe("endpoint contracts", () => {
 describe("git endpoints", () => {
   beforeEach(() => {
     mockFetch.mockReturnValue(jsonResponse({}))
-  })
-
-  it("getGitStatus GETs /api/git/status", async () => {
-    const data = makeGitStatusResponse()
-    mockFetch.mockReturnValue(jsonResponse(data))
-    const result = await getGitStatus()
-    const [url, opts] = mockFetch.mock.calls[0]
-    expect(url).toBe("/api/git/status")
-    expect(opts.method).toBeUndefined()
-    expect(result).toEqual(data)
   })
 
   it("gitArchiveBranch POSTs to /api/git/archive with branch body", async () => {
@@ -1141,8 +1166,8 @@ describe("json cache endpoints", () => {
 
 describe("request() edge cases", () => {
   it("creates an AbortController and passes its signal to fetch", async () => {
-    mockFetch.mockReturnValue(jsonResponse(makeGitStatusResponse()))
-    await getGitStatus()
+    mockFetch.mockReturnValue(jsonResponse(makeWorkingBranchResponse()))
+    await getWorkingBranch()
     const [, opts] = mockFetch.mock.calls[0]
     expect(opts.signal).toBeInstanceOf(AbortSignal)
   })
@@ -1150,7 +1175,7 @@ describe("request() edge cases", () => {
   it("extracts string detail from error response", async () => {
     mockFetch.mockReturnValue(errorResponse(400, { detail: "bad request" }))
     try {
-      await getGitStatus()
+      await getWorkingBranch()
     } catch (err) {
       expect(err).toBeInstanceOf(ApiError)
       expect((err as ApiError).status).toBe(400)
@@ -1162,7 +1187,7 @@ describe("request() edge cases", () => {
     const nestedDetail = { field: "name", error: "required" }
     mockFetch.mockReturnValue(errorResponse(422, { detail: nestedDetail }))
     try {
-      await getGitStatus()
+      await getWorkingBranch()
     } catch (err) {
       expect(err).toBeInstanceOf(ApiError)
       expect((err as ApiError).detail).toBe(JSON.stringify(nestedDetail))
@@ -1173,12 +1198,15 @@ describe("request() edge cases", () => {
     const structuredDetail = {
       message: "Training rejected by admission control",
       terminal_reason: "memory_limited",
-      execution_metrics: makeExecutionMetricsFixture({ profile: "training_prep", terminal_reason: "memory_limited" }),
+      execution_metrics: makeExecutionMetricsFixture({
+        profile: "training_prep",
+        terminal_reason: "memory_limited",
+      }),
     }
     mockFetch.mockReturnValue(errorResponse(507, { detail: structuredDetail }))
 
     try {
-      await getGitStatus()
+      await getWorkingBranch()
     } catch (err) {
       expect(err).toBeInstanceOf(ApiError)
       expect((err as ApiError).detail).toBe(JSON.stringify(structuredDetail))
@@ -1190,7 +1218,7 @@ describe("request() edge cases", () => {
     const body = { message: "something went wrong" }
     mockFetch.mockReturnValue(errorResponse(500, body))
     try {
-      await getGitStatus()
+      await getWorkingBranch()
     } catch (err) {
       expect(err).toBeInstanceOf(ApiError)
       expect((err as ApiError).detail).toBe(JSON.stringify(body))
@@ -1200,7 +1228,7 @@ describe("request() edge cases", () => {
   it("falls back to statusText when response body is not JSON", async () => {
     mockFetch.mockReturnValue(errorResponse(502))
     try {
-      await getGitStatus()
+      await getWorkingBranch()
     } catch (err) {
       expect(err).toBeInstanceOf(ApiError)
       expect((err as ApiError).status).toBe(502)
@@ -1210,13 +1238,13 @@ describe("request() edge cases", () => {
 
   it("propagates network errors when fetch throws", async () => {
     mockFetch.mockRejectedValue(new TypeError("Network request failed"))
-    await expect(getGitStatus()).rejects.toThrow("Network request failed")
+    await expect(getWorkingBranch()).rejects.toThrow("Network request failed")
   })
 
   it("propagates network errors as non-ApiError", async () => {
     mockFetch.mockRejectedValue(new TypeError("Failed to fetch"))
     try {
-      await getGitStatus()
+      await getWorkingBranch()
     } catch (err) {
       expect(err).not.toBeInstanceOf(ApiError)
       expect(err).toBeInstanceOf(TypeError)

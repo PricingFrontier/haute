@@ -36,6 +36,8 @@ from tests.fixtures.expected_contracts import (
     OPAQUE_SENTINEL,
 )
 
+pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

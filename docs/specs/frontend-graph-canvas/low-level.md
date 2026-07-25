@@ -4,7 +4,7 @@
 
 | File | Responsibility |
 | --- | --- |
-| `frontend/src/App.tsx` | `FlowEditor` — the canvas orchestrator: wires `<ReactFlow>` event props to interaction hooks, owns local selection/context-menu/dialog state, picks the active preview pane, handles `onUpdateNode` (including api-input edge reconciliation), and gates Save/Save-&-Commit on git working-branch status. Exports `App`, which mounts `FlowEditor` inside `ReactFlowProvider`. |
+| `frontend/src/App.tsx` | `FlowEditor` — the canvas orchestrator: wires `<ReactFlow>` event props to interaction hooks, derives a transient highlighted edge from the active edge-join insertion candidate, renders its accessible status, owns local selection/context-menu/dialog state, picks the active preview pane, handles `onUpdateNode` (including api-input edge reconciliation), and gates Save/Save-&-Commit on git working-branch status. Exports `App`, which mounts `FlowEditor` inside `ReactFlowProvider`. |
 | `frontend/src/nodes/PipelineNode.tsx` | Renders every non-submodel node type across three zoom LODs and the edge-join marker variant; computes source/target `Handle` sets, including multi-frame api-input handles (row-mounted on the full-detail frame-row body, evenly spaced at medium/compact) and edge-join geometry-dependent handle placement; owns the api-input frame-row body with instance-name suppression and the zero-frame "No emitted frames" state. |
 | `frontend/src/nodes/SubmodelNode.tsx` | Renders a submodel boundary card: label, child count, file path, and hidden per-port target/source handles mirroring `config.inputPorts`/`config.outputPorts`. |
 | `frontend/src/nodes/SubmodelPortNode.tsx` | Renders the input/output port marker shown when a submodel is drilled into; input ports get a source handle, output ports get a target handle. |
@@ -12,7 +12,7 @@
 | `frontend/src/panels/GraphContext.tsx` | `GraphProvider` component; memoises the context value on `{allNodes, edges, submodels, preamble}` identity. |
 | `frontend/src/stores/useGraphStore.ts` | Zustand store owning `nodes`/`edges`/`preamble`/`submodels`, undo/redo history (four-field graph snapshots interleaved with VC entries), and three derived fingerprints (`structuralFingerprint`, `panelContextFingerprint`, `persistedFingerprint`) plus the `dirty` boolean derived from them. |
 | `frontend/src/hooks/useNodeHandlers.ts` | Node CRUD handlers: `handleDeleteNode` (atomic node+edges delete, deferred cache cleanup), `handleDuplicateNode`, `handleCreateInstance`, `handleRenameNode` (opens the rename dialog), `handleAutoLayout` (ELK, in-flight guarded). |
-| `frontend/src/hooks/useEdgeHandlers.ts` | Connection/gesture handlers: `commitConnection`/`onConnectEnd` (interprets React Flow handle-drag endings into a normal edge or an edge-join insertion), `onSelectionChange`/`onNodeClick` (panel + debounced preview), `handleDeleteEdge`, `onNodeContextMenu`, `onDragOver`/`onDrop` (palette node creation). |
+| `frontend/src/hooks/useEdgeHandlers.ts` | Connection/gesture handlers: `onConnectStart` plus pointer movement maintain the transient compatible edge-join candidate; `commitConnection`/`onConnectEnd` interpret React Flow handle-drag endings into a normal edge or a revalidated edge-join insertion and always clear gesture feedback; the hook also owns `onSelectionChange`/`onNodeClick` (panel + debounced preview), `handleDeleteEdge`, `onNodeContextMenu`, and `onDragOver`/`onDrop` (palette node creation). |
 | `frontend/src/hooks/usePipelineAPI.ts` | Pipeline load-on-mount; debounced, cache-first, concurrency-limited-cascade preview fetching (`fetchPreview`/`fetchPreviewImmediate`/`refreshPreview`/`previewNodeFrame`); an active-source-change effect (`invalidateStaleColumnStashes`) that strips any node's column stash tagged with a different (or no) `_columnsSource`; and `handleSave` (config-ref/edge-join pre-save validation, snapshot-scoped save-concurrency guard, `markSaved`). |
 | `frontend/src/hooks/useWebSocketSync.ts` | The `/ws/sync` WebSocket client: connect/reconnect with exponential backoff, fingerprint-based resync, applying `graph_update`/`parse_error` frames (with dirty-blocking and rollback-on-failure), and session-expiry handling. |
 | `frontend/src/hooks/useSubmodelNavigation.ts` | `handleCreateSubmodel`/`handleDrillIntoSubmodel`/`handleBreadcrumbNavigate`/`handleDissolveSubmodel` — the view-stack state machine, cross-boundary port-node/edge synthesis on drill-in, and the three submodel API calls. |
@@ -31,6 +31,7 @@
 | `frontend/src/utils/nodeTypes.ts` | `NODE_TYPES`/`NODE_TYPE_META` and derived lookups (`SOURCE_ONLY_TYPES`, `SINK_ONLY_TYPES`, `SINGLETON_TYPES`, `PALETTE_TYPES`, `nodeTypeIcons`/`Colors`/`Labels`, `PILL_TYPES`) — the single source of truth for node-type metadata. |
 | `frontend/src/components/ComparisonInspector.tsx` | Read-only comparison-view config panel: renders the real node editor `inert` for the available side(s), with a Historical/Current switcher. |
 | `frontend/src/components/ComparisonView.tsx` | The historical-vs-current comparison canvas pair: fetches the historical pipeline, diffs it, and renders two non-interactive `ReactFlow` instances (`ReadonlyCanvas`) with diff-ring highlighting, a draggable split, and orientation toggle. |
+| `frontend/src/components/EdgeJoinInsertionFeedback.tsx` | Renders the conditional polite live-region status for a compatible edge-join insertion candidate. |
 | `frontend/src/components/PolarsIcon.tsx` | Memoized SVG icon for the Polars node type. |
 | `frontend/src/components/RenameDialog.tsx` | Node-rename modal with name-length and unsafe-character validation. |
 | `frontend/src/components/SubmodelDialog.tsx` | "Create submodel" name-entry modal. |
@@ -61,7 +62,8 @@ is the authoritative module map for their responsibilities:
 | `frontend/src/hooks/useKeyboardShortcuts.ts` | App-level canvas keyboard bindings for save, undo/redo, copy/paste, delete, search, and panel dismissal; honours editable controls so keystrokes do not leak from a text field into graph mutation. |
 | `frontend/src/utils/apiInputPorts.ts` | Mirrors backend api-input frame identity: `apiInputFrameLabels` is the single ordered eligible-frame-label list (no minimum count) that drives handles, body rows, and downstream input names alike; `edgeInputName` derives an edge's input/argument name (frame label verbatim for api-input edges, sanitised source label otherwise, submodel `out__` edges resolved to the child's sanitised label) in lockstep with the backend's `edge_input_name`; validates blank/duplicate/non-identifier/keyword labels (`apiInputLabelIssue`, mirroring backend invariant B4 exactly — ASCII identifier `/^[A-Za-z_][A-Za-z0-9_]*$/` plus the Python hard-keyword list — with duplicates compared case-insensitively to match backend B2's casefolded parquet-stem rule); migrates edges on a conservative in-place table rename, then prunes only genuinely orphaned handles while preserving input array identity on no-op. |
 | `frontend/src/utils/edgeJoinRoles.ts` | Defines edge-join base/join handle roles and canonical role resolution, including compatibility handling for legacy/default handle ids. |
-| `frontend/src/utils/edgeJoinGraph.ts` | Pure edge-join insertion/rewrite helpers: split an existing edge or combine source gestures into a correctly configured join node and its role-bound edges. |
+| `frontend/src/utils/edgeJoinGraph.ts` | Pure edge-join candidate validation and insertion/rewrite helpers: reject missing endpoints, self-joins, and cycles without mutation; split an existing edge or combine source gestures into a correctly configured join node and its role-bound edges. Candidate feedback and release-time insertion share the same validator. |
+| `frontend/src/utils/edgeJoinInsertionFeedback.ts` | Pure render-only Edge Join candidate decoration: preserves existing edge classes, adds the shared candidate class and accessible label only to the active edge, and preserves the edge-array identity when no candidate is active. |
 | `frontend/src/utils/edgeJoinValidation.ts` | Save-time edge-join graph validation and readable warnings; rejects incomplete, duplicate, or otherwise inconsistent role/edge representations before the backend receives them. |
 | `frontend/src/utils/nodeTypeRegistry.ts` | React Flow node-type registry built from the canonical metadata, shared by the editable and read-only comparison canvases. |
 | `frontend/src/utils/graphSnapshot.ts` | Snapshot serialization/cloning helpers which omit transient node data so undo/redo and persisted fingerprints describe graph state rather than preview/UI residue. |
@@ -263,14 +265,28 @@ is the authoritative module map for their responsibilities:
     `setTimeout(..., 0)` so the cache eviction lands only after the
     node-removal render has committed. Also clears `renameDialog`/
     `submodelDialog` if either referenced the deleted node.
-13. **Connection commit (`useEdgeHandlers.onConnectEnd`).** Reads
+13. **Connection candidate and commit (`useEdgeHandlers`).**
+    `onConnectStart` records an active endpoint only when the gesture begins
+    at a source handle. Pointer movement asks `findEdgeIdAtPoint` for the
+    uppermost edge under the pointer and runs
+    `validateEdgeJoinInsertionCandidate` against `graphRef.current`. The hook
+    exposes only a compatible candidate edge id; repeated movement over the
+    same edge is an identity-preserving state no-op, moving between valid
+    edges replaces the id, and a node/handle, invalid edge, canvas exit, or
+    non-source gesture clears it. `FlowEditor` decorates that edge in the
+    derived render-only edge list and conditionally mounts a polite
+    `role="status"` message whose text names the Edge Join insertion action.
+    Neither representation is written to `useGraphStore`.
+
+    `onConnectEnd` first clears the active source/candidate state, then reads
     `fromHandle`/`toHandle` types off the connection-end event to decide the
     shape of the gesture: source→source with a resolved target node inserts
     an edge-join via `insertEdgeJoinNodeFromSources`; source→target or
     target→source with a resolved target node calls `commitConnection`;
     source-with-no-target-node probes `findEdgeIdAtPoint` (a DOM hit-test
     via `document.elementsFromPoint`) and, if the drop landed on an edge,
-    inserts an edge-join via `insertEdgeJoinNode`. `commitConnection`
+    re-runs `validateEdgeJoinInsertionCandidate` through
+    `insertEdgeJoinNode` before committing the rewrite. `commitConnection`
     special-cases an edge-join *target*: it resolves the canonical
     base/join role for the target handle, rejects a second input to an
     already-filled role or a third input overall, stores the source node id
@@ -279,6 +295,11 @@ is the authoritative module map for their responsibilities:
     role-config write and the new edge land in the same undo entry as the
     edge itself). A successful edge-join insertion (either path) also
     selects the new node, clears trace, and cancels any in-flight preview.
+    Splitting preserves the original edge's `sourceHandle` on the new base
+    edge and `targetHandle` on the new downstream edge, and preserves the
+    dragged source's handle on the join-role edge. Failure leaves graph,
+    selection, and history untouched; an edge-targeted failure uses the
+    exhaustive reason-to-toast map, while a non-edge cancellation is silent.
 14. **Palette drop (`useEdgeHandlers.onDrop`).** Parses the drag event's
     `application/reactflow-type` and `application/reactflow-config` payloads;
     a config JSON parse failure or a non-object payload toasts an error and
@@ -347,8 +368,9 @@ is the authoritative module map for their responsibilities:
     `useGitStore`'s last-save SHA and notifies its history-changed
     subscribers. Never throws; resolves `false` on any failure after
     toasting the detail.
-19. **WebSocket sync (`useWebSocketSync`).** Connects to `/ws/sync` with the
-    session token in the query string; on open, sends a `resync` message
+19. **WebSocket sync (`useWebSocketSync`).** Connects to the credential-free
+    `/ws/sync` URL; the browser supplies its HttpOnly same-origin cookie during
+    the handshake. On open, sends a `resync` message
     carrying the last-applied graph fingerprint for the current source file
     (server skips replying if it already matches). On `graph_update`: source
     file must match the currently open one (`isCurrentSourceFile`, tolerant
@@ -361,11 +383,11 @@ is the authoritative module map for their responsibilities:
     during apply rolls back to the pre-update `nodes`/`edges`/`preamble`
     (best-effort) before re-throwing into the outer catch, which toasts.
     Reconnection backs off exponentially (`INITIAL_BACKOFF_MS` doubling to
-    `MAX_BACKOFF_MS`, capped at `MAX_RETRIES` = 50); a `1008` close with a
-    session-expired reason stops retrying and calls
-    `notifyHauteSessionExpired`; an abnormal (`1006`) close before the
-    socket ever opened probes session validity before deciding whether to
-    reconnect.
+    `MAX_BACKOFF_MS`, capped at `MAX_RETRIES` = 50). A `1008` close with a
+    session-expired reason force-refreshes the HttpOnly cookie, then reconnects;
+    only a failed refresh emits the session-expired event. An abnormal (`1006`)
+    pre-open close also attempts bootstrap before continuing the bounded retry
+    loop, covering local backend restarts without putting a secret in a URL.
 20. **Submodel drill-in (`useSubmodelNavigation.handleDrillIntoSubmodel`).**
     Loads the submodel's graph, snapshots the parent graph into
     `parentGraphRef` and the outgoing view-stack entry (`_savedNodes`/
@@ -571,6 +593,13 @@ is the authoritative module map for their responsibilities:
   events with neither `touches` nor `changedTouches`) throw a plain `Error`
   from `connectionEndPoint` rather than silently treating the drop as a
   no-op — a genuinely impossible browser event, not a user-input case.
+- Edge-join candidate movement never mutates the graph and never toasts.
+  `validateEdgeJoinInsertionCandidate` returns the same exhaustive
+  `EdgeJoinFailureReason` set used by insertion; only `ok` candidates are
+  exposed. `onConnectEnd` clears candidate state before all early returns and
+  before coordinate parsing, so cancellation and malformed touch endings
+  cannot strand visual or accessible feedback. Release-time validation
+  remains authoritative if the graph changed after the last pointer move.
 - `usePipelineAPI`'s initial load `.catch` distinguishes an
   unmount-triggered `AbortError` (silently ignored) from every other
   failure (including a `parsePipelineResponse` contract violation), which
@@ -752,6 +781,17 @@ The pure connection/frame helpers are defended by `frontend/src/utils/__tests__/
     reverse-drag normalisation between default handles; edge-drop
     edge-join insertion from a default source handle; edge hit-testing
     consultation and its "missing hit-tester" fallback.
+  - `useEdgeHandlers` candidate-state cases cover source-gesture entry,
+    movement between compatible edges, invalid/stale/self/cycle edges,
+    node/non-edge exit, canvas leave, cancellation, and connection-end
+    cleanup. They assert state identity over repeated movement and prove that
+    candidate churn never calls graph setters, selection setters, or
+    `pushSnapshot`; existing normal connection and insertion cases retain the
+    handle-preservation, selection, and single-undo assertions.
+  - The Edge Join insertion feedback component is covered with React Testing
+    Library: a compatible candidate exposes one named polite status and the
+    derived edge receives the candidate class; clearing or invalidating the
+    candidate removes both semantic and visual feedback.
   - `useEdgeHandlers.dragJson.test.ts` (#35) — malformed drag-config JSON
     produces a visible error and never silently creates an empty-config
     node; well-formed JSON, the empty-string default, and non-object JSON
@@ -964,6 +1004,17 @@ The pure connection/frame helpers are defended by `frontend/src/utils/__tests__/
   This is the only real-browser performance coverage of canvas drag
   responsiveness; the unit/component tests above cover correctness, not
   frame timing under load.
+- **`frontend/e2e/edge-join.spec.ts`** — the normal Playwright lane's
+  deterministic Edge Join workflow. It proves pre-release compatible-edge
+  feedback and real gesture insertion; same-name-key configuration and
+  joined preview rows/columns; save/reload preservation of the compact node,
+  role handles, config, and split topology; a second insertion on the same
+  branch; exact preservation of a named API-input `sourceHandle`; and a
+  downstream trace retaining both Edge Join ancestors, leaving them undimmed,
+  and highlighting their connecting path while reserving node-active styling
+  for column-relevant steps. All
+  drag points are derived from live locator geometry and every assertion is
+  an observable DOM, preview, trace, or persisted-pipeline outcome.
 
 ## Approved change contract — 0.7.0 canonical data-I/O canvas nodes
 

@@ -62,6 +62,7 @@ from haute.routes._optimiser_service import (
     _with_flattened_optimiser_graph,
     solver_worker_context,
 )
+from haute.routes.pipeline import _prepare_runtime_graph
 from haute.schemas import (
     OptimiserApplyRequest,
     OptimiserApplyResponse,
@@ -118,6 +119,16 @@ _RATEBOOK_APPLY_DETAIL_UNSUPPORTED = (
     "selections. Use the factor tables on the result (Rates tab), or save the "
     "result and apply it with an Optimiser Apply node."
 )
+
+
+def _prepare_optimiser_execution_request(
+    body: OptimiserSolveRequest | OptimiserEstimateRequest | OptimiserFrontierAutoRangeRequest,
+) -> OptimiserSolveRequest | OptimiserEstimateRequest | OptimiserFrontierAutoRangeRequest:
+    """Confine and flatten graph-bearing optimiser requests before execution."""
+    graph = _prepare_runtime_graph(body.graph)
+    if graph is body.graph:
+        return body
+    return body.model_copy(update={"graph": graph})
 
 
 def _job_mode(job: dict[str, Any]) -> str:
@@ -1121,7 +1132,7 @@ def solve(body: OptimiserSolveRequest) -> OptimiserSolveResponse:
     Executes the pipeline up to the optimiser node to materialise the
     scored DataFrame, then runs the solver in a background thread.
     """
-    body = cast(OptimiserSolveRequest, _with_flattened_optimiser_graph(body))
+    body = cast(OptimiserSolveRequest, _prepare_optimiser_execution_request(body))
     return _solve_service.start(body)
 
 
@@ -1139,7 +1150,7 @@ def estimate_solve(body: OptimiserEstimateRequest) -> OptimiserEstimateResponse:
     """
     from haute._ram_estimate import _ancestor_source_metadata
 
-    body = cast(OptimiserEstimateRequest, _with_flattened_optimiser_graph(body))
+    body = cast(OptimiserEstimateRequest, _prepare_optimiser_execution_request(body))
     total_rows: int | None = None
     try:
         total_rows, _max_cols = _ancestor_source_metadata(
@@ -1177,7 +1188,10 @@ def estimate_frontier_auto_range(
     body: OptimiserFrontierAutoRangeRequest,
 ) -> OptimiserFrontierAutoRangeResponse:
     """Estimate absolute efficient-frontier ranges from the scenario dataframe."""
-    body = cast(OptimiserFrontierAutoRangeRequest, _with_flattened_optimiser_graph(body))
+    body = cast(
+        OptimiserFrontierAutoRangeRequest,
+        _prepare_optimiser_execution_request(body),
+    )
     return _solve_service.estimate_frontier_auto_range(body)
 
 
@@ -1186,7 +1200,10 @@ def start_frontier_auto_range(
     body: OptimiserFrontierAutoRangeRequest,
 ) -> OptimiserFrontierAutoRangeStartResponse:
     """Start efficient-frontier auto-range estimation as a background job."""
-    body = cast(OptimiserFrontierAutoRangeRequest, _with_flattened_optimiser_graph(body))
+    body = cast(
+        OptimiserFrontierAutoRangeRequest,
+        _prepare_optimiser_execution_request(body),
+    )
     return _solve_service.start_frontier_auto_range(body)
 
 

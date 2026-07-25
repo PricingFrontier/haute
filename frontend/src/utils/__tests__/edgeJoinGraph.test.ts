@@ -1,6 +1,11 @@
 import type { Edge, Node } from "@xyflow/react"
-import { describe, expect, it } from "vitest"
-import { insertEdgeJoinNode, insertEdgeJoinNodeFromSources, swapEdgeJoinInputs } from "../edgeJoinGraph"
+import { describe, expect, it, vi } from "vitest"
+import {
+  insertEdgeJoinNode,
+  insertEdgeJoinNodeFromSources,
+  swapEdgeJoinInputs,
+  validateEdgeJoinInsertionCandidate,
+} from "../edgeJoinGraph"
 import { NODE_TYPES } from "../nodeTypes"
 
 function node(id: string): Node {
@@ -15,6 +20,48 @@ function node(id: string): Node {
 function edge(id: string, source: string, target: string, extra: Partial<Edge> = {}): Edge {
   return { id, source, target, ...extra }
 }
+
+describe("validateEdgeJoinInsertionCandidate", () => {
+  const nodes = [node("base"), node("downstream"), node("lookup")]
+  const edges = [edge("base-to-downstream", "base", "downstream")]
+
+  it("accepts a compatible source and target edge without mutating either input array", () => {
+    const result = validateEdgeJoinInsertionCandidate({
+      nodes,
+      edges,
+      targetEdgeId: "base-to-downstream",
+      connection: { source: "lookup", sourceHandle: "lookup_frame" },
+    })
+
+    expect(result).toEqual({ ok: true })
+    expect(nodes).toHaveLength(3)
+    expect(edges).toEqual([edge("base-to-downstream", "base", "downstream")])
+  })
+
+  it.each([
+    ["missing edge", "missing", "lookup", "target-edge-not-found"],
+    ["missing source", "base-to-downstream", "missing", "source-node-not-found"],
+    ["missing endpoint", "stale-edge", "lookup", "target-edge-node-not-found"],
+    ["self join", "base-to-downstream", "base", "self-join"],
+    ["cycle", "base-to-downstream", "downstream", "cycle"],
+  ] as const)("rejects a %s candidate with the insertion failure reason", (
+    _label,
+    targetEdgeId,
+    source,
+    reason,
+  ) => {
+    const candidateEdges = targetEdgeId === "stale-edge"
+      ? [...edges, edge("stale-edge", "ghost", "downstream")]
+      : edges
+
+    expect(validateEdgeJoinInsertionCandidate({
+      nodes,
+      edges: candidateEdges,
+      targetEdgeId,
+      connection: { source },
+    })).toEqual({ ok: false, reason })
+  })
+})
 
 describe("insertEdgeJoinNode", () => {
   it("splits the target edge and creates a compact edgeJoin node", () => {
@@ -243,16 +290,18 @@ describe("insertEdgeJoinNode", () => {
   })
 
   it("rejects cycle creation", () => {
+    const idFactory = vi.fn(() => "edgeJoin_1")
     const result = insertEdgeJoinNode({
       nodes: [node("a"), node("b")],
       edges: [edge("e-a-b", "a", "b")],
       targetEdgeId: "e-a-b",
       connection: { source: "b" },
       position: { x: 0, y: 0 },
-      idFactory: () => "edgeJoin_1",
+      idFactory,
     })
 
     expect(result).toEqual({ ok: false, reason: "cycle" })
+    expect(idFactory).not.toHaveBeenCalled()
   })
 
   it("rejects using the target edge source as the join input", () => {

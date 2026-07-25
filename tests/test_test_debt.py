@@ -86,6 +86,11 @@ _EXPECTED_DEBT_IDS = {
     # and the spelling-mismatch test covers the case-insensitive direction.
     # See tests/test_path_case_audit.py::test_coexisting_case_twins_are_flagged.
     "b0ad28e0a98cbfa9",
+    # Runtime containment — the symlink escape regression needs a real
+    # directory symlink. Some Windows privilege configurations cannot create
+    # one, while the Linux CI leg and developer-mode Windows run the assertion.
+    # See test_data_input_nested_relative_path.py.
+    "235519354498d5aa",
     # W2.9 — the trace-cache budget wiring assertion cannot hold when an
     # operator deliberately overrides HAUTE_TRACE_CACHE_MAX_BYTES; the skip
     # documents that the pin targets default wiring only. See

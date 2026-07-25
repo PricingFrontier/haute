@@ -50,6 +50,8 @@ from haute._types import GraphEdge, GraphNode, NodeData, PipelineGraph
 from haute.executor import _preview_cache, execute_graph
 from haute.trace import _cache as _trace_cache
 
+pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

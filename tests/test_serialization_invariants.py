@@ -16,6 +16,8 @@ from tests.conftest import make_graph as _g
 from tests.conftest import make_source_node as _source_node
 from tests.conftest import make_transform_node as _transform_node
 
+pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
+
 NAN_SENTINEL = {"__haute_type__": "non_finite_float", "value": "nan"}
 INF_SENTINEL = {"__haute_type__": "non_finite_float", "value": "inf"}
 NEG_INF_SENTINEL = {"__haute_type__": "non_finite_float", "value": "-inf"}

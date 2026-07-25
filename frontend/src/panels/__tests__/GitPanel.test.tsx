@@ -126,7 +126,7 @@ describe("GitPanel", () => {
     globalThis.ResizeObserver = MockResizeObserver as unknown as typeof ResizeObserver
     useGitStore.setState({ status: null, loading: false, modal: null, pendingAction: null, peekBranch: null, historyNonce: 0, commitNonce: 0, selectLatestSaveNonce: 0, selectSaveNonce: 0, selectSaveTarget: null, branchesExpandNonce: 0, moveTarget: null, comparison: null })
     // Switches record undoable VC entries on the graph store's history stacks.
-    useGraphStore.setState({ undoStack: [], redoStack: [], vcBusy: false })
+    useGraphStore.setState({ dirty: false, undoStack: [], redoStack: [], vcBusy: false })
     mockGetWorkingBranch.mockResolvedValue(readyStatus)
     mockSetWorkingBranch.mockResolvedValue({})
     mockGetMilestones.mockResolvedValue(milestones)
@@ -712,17 +712,43 @@ describe("GitPanel", () => {
     await waitFor(() => expect(screen.getByTestId("git-graph-lane-menu")).toBeInTheDocument())
 
     fireEvent.click(screen.getByTestId("git-graph-lane-menu-switch"))
-    // NB: asserted on the branch argument only — performSwitch currently
-    // omits the client's required `create` flag (a known source-side type
-    // error); this pin survives that fix.
     await waitFor(() => expect(mockSetWorkingBranch).toHaveBeenCalled())
     expect(mockSetWorkingBranch.mock.calls[0][0]).toBe("pricing/nick/spur")
+    expect(mockSetWorkingBranch.mock.calls[0][1]).toBe(false)
     // No page reload: the switch lands in-app and records its inverse.
     await waitFor(() => expect(useGraphStore.getState().undoStack).toHaveLength(1))
     const entry = useGraphStore.getState().undoStack[0]
     expect(entry).toMatchObject({ kind: "vc", label: "switch to pricing/nick/spur" })
     // The panel returns to the (new) current branch's view.
     await waitFor(() => expect(useGitStore.getState().peekBranch).toBeNull())
+  })
+
+  it("guards a lane switch while the canvas is dirty", async () => {
+    useGraphStore.setState({ dirty: true })
+    useGitStore.setState({ peekBranch: "pricing/nick/spur" })
+    mockGetGitGraph.mockResolvedValue(graphTwoBranch)
+    mockGetMilestones.mockResolvedValue({
+      working_branch: "pricing-dev",
+      entries: [
+        { sha: "b1full", short_sha: "b1abcd", message: "Spur milestone", timestamp: now(), version_label: null },
+        { sha: "m2full", short_sha: "m2def", message: "Second milestone", timestamp: now(), version_label: null, is_root: true },
+      ],
+    })
+    render(<GitPanel {...defaultProps} />)
+    await waitFor(() => expect(screen.getAllByTestId("git-graph-rail").length).toBeGreaterThan(0))
+
+    const spurEdge = screen
+      .getAllByTestId("git-graph-edge")
+      .find((e) => e.getAttribute("data-branch") === "pricing/nick/spur")!
+    fireEvent.contextMenu(spurEdge)
+    await waitFor(() => expect(screen.getByTestId("git-graph-lane-menu")).toBeInTheDocument())
+
+    fireEvent.click(screen.getByTestId("git-graph-lane-menu-switch"))
+    expect(mockSetWorkingBranch).not.toHaveBeenCalled()
+    expect(screen.getByTestId("git-navigation-confirm")).toBeInTheDocument()
+
+    fireEvent.click(screen.getByTestId("git-navigation-discard"))
+    await waitFor(() => expect(mockSetWorkingBranch).toHaveBeenCalledWith("pricing/nick/spur", false))
   })
 
   it("the lane menu disables Switch and View on the already-current, already-viewed lane", async () => {

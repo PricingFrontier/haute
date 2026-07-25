@@ -32,6 +32,8 @@ from haute.errors import ChunkPlanUnsupportedError, GroupByExecutionUnsupportedE
 from haute.executor import _build_node_fn
 from tests.conftest import make_edge, make_graph, make_output_config
 
+pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
+
 DEFAULT_OUTPUT_FIELDS = [
     "quote_id",
     "age_band",
@@ -885,6 +887,53 @@ def test_run_chunked_reduce_accepts_bounded_reducer(tmp_path: Path) -> None:
         )
         == 18
     )
+
+
+def test_run_chunked_reduce_emits_fault_points_before_add_and_finish(
+    tmp_path: Path,
+) -> None:
+    graph = _chunk_safe_graph(_write_source(tmp_path))
+    plan = _chunk_runner_plan(graph, chunk_size=5)
+    reducer_calls: list[str] = []
+
+    class RowCounter:
+        bounded = True
+
+        def __init__(self) -> None:
+            self.rows = 0
+
+        def add(self, batch: ChunkBatch) -> None:
+            reducer_calls.append("add")
+            self.rows += batch.output_rows
+
+        def finish(self) -> int:
+            reducer_calls.append("finish")
+            return self.rows
+
+    fault_names: list[str] = []
+    context = ExecutionContext(
+        operation="chunk-reduce",
+        profile=ExecutionProfile.CHUNKED_MAP_REDUCE,
+        fault_injector=lambda point: fault_names.append(point.name),
+    )
+
+    result = run_chunked_reduce(
+        ChunkRunnerRequest(
+            graph=graph,
+            plan=plan,
+            build_node_fn=_build_node_fn,
+            execution_context=context,
+        ),
+        RowCounter(),
+    )
+
+    reducer_faults = [name for name in fault_names if name.startswith("reducer_")]
+    assert result == 18
+    assert reducer_faults == [
+        *(["reducer_add"] * reducer_calls.count("add")),
+        "reducer_finish",
+    ]
+    assert reducer_calls[-1] == "finish"
 
 
 def test_chunk_runner_creates_checkpoint_directory_once_per_run(tmp_path: Path) -> None:
