@@ -593,9 +593,11 @@ class TestCanonicalEncoderUnification:
         assert captured, "digest material never reached content_hash_bytes"
         material = captured[0].decode()
         # The checked graph-structure object frames every field injectively.
-        # Config values retain compact, key-sorted, set-canonicalised encoding.
+        # The nested record marker is explicit, while config values retain
+        # compact, key-sorted, set-canonicalised encoding.
         assert (
-            '{"config":{"k":1,"tags":["a","b"]},"id":"n1","label":"A","nodeType":"polars"}'
+            '{"cache_record_schema":{"record":"graph_node","version":1},'
+            '"config":{"k":1,"tags":["a","b"]},"id":"n1","label":"A","nodeType":"polars"}'
         ) in material, f"Node/config is not canonically encoded: {material!r}"
         # The spaced ``json.dumps`` form must never appear.
         assert '{"k": 1' not in material

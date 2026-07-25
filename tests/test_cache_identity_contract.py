@@ -6,7 +6,9 @@ from types import MappingProxyType, SimpleNamespace
 
 import pytest
 
+import haute._cache as cache_module
 from haute._cache import (
+    ALGO_VERSION,
     CACHE_CONFIG_FIELD_CLASSIFICATIONS,
     CACHE_CONSUMER_CONTRACTS,
     CacheConfigFieldClassification,
@@ -22,6 +24,7 @@ from haute._config_validation import VALID_KEYS
 from haute._dataframe_execution_cache import dataframe_execution_cache_key
 from haute._execution_context import ExecutionProfile
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
+from haute.execution import dataframe_graph_input_fingerprint
 
 
 def _node(
@@ -125,6 +128,68 @@ def test_every_consumer_totally_classifies_the_closed_logical_input_set() -> Non
             for field_name in disposition.fields
         }
         assert classified_fields == set(contract.fields), consumer
+
+
+def test_checked_contract_versions_advance_with_changed_byte_layouts() -> None:
+    assert ALGO_VERSION == 8
+    assert CACHE_CONSUMER_CONTRACTS[CacheConsumer.GRAPH_STRUCTURE].version == 2
+    assert CACHE_CONSUMER_CONTRACTS[CacheConsumer.PREVIEW_TRACE].version == 3
+    assert CACHE_CONSUMER_CONTRACTS[CacheConsumer.RUNTIME_GRAPH_INPUT].version == 2
+
+
+def test_preview_contract_checks_lineage_graph_dimensions_individually() -> None:
+    contract = CACHE_CONSUMER_CONTRACTS[CacheConsumer.PREVIEW_TRACE]
+
+    assert "graph" not in contract.fields
+    assert {"preamble", "source_file", "nodes", "edges"} <= set(contract.fields)
+    assert contract.input_classes[CacheInputClass.NODE_CONFIG].fields == ("nodes",)
+    assert set(contract.input_classes[CacheInputClass.EDGE_WIRING].fields) == {
+        "edges",
+        "selected_live_switch_path",
+    }
+
+
+def test_runtime_graph_input_declares_structural_identity_as_a_required_companion() -> None:
+    contract = CACHE_CONSUMER_CONTRACTS[CacheConsumer.RUNTIME_GRAPH_INPUT]
+
+    for input_class in (
+        CacheInputClass.NODE_CONFIG,
+        CacheInputClass.UPSTREAM_LINEAGE,
+        CacheInputClass.EDGE_WIRING,
+    ):
+        disposition = contract.input_classes[input_class]
+        assert disposition.fields == ()
+        assert "structural" in disposition.exclusion_reason.lower()
+
+    for consumer, structural_field in (
+        (CacheConsumer.PREVIEW_TRACE, "nodes"),
+        (CacheConsumer.DATAFRAME_EXECUTION, "lineage_fingerprint"),
+        (CacheConsumer.DEPLOY_SCHEMA, "graph_fingerprint"),
+    ):
+        disposition = CACHE_CONSUMER_CONTRACTS[consumer].input_classes[CacheInputClass.NODE_CONFIG]
+        assert structural_field in disposition.fields
+
+
+@pytest.mark.parametrize(
+    "record_name",
+    ["GRAPH_NODE", "GRAPH_EDGE", "RUNTIME_INPUT_ENTRY", "LIVE_SWITCH_SELECTION"],
+)
+def test_nested_identity_records_reject_missing_and_unknown_fields(record_name: str) -> None:
+    record = getattr(cache_module.CacheIdentityRecord, record_name)
+    contract = cache_module.CACHE_IDENTITY_RECORD_CONTRACTS[record]
+    valid = {field_name: None for field_name in contract.fields}
+
+    checked = cache_module.checked_cache_identity_record(record, valid)
+
+    assert checked["cache_record_schema"] == {
+        "record": record.value,
+        "version": contract.version,
+    }
+    assert set(checked) == {"cache_record_schema", *contract.fields}
+    with pytest.raises(ValueError, match="missing"):
+        cache_module.checked_cache_identity_record(record, dict(list(valid.items())[1:]))
+    with pytest.raises(ValueError, match="unknown"):
+        cache_module.checked_cache_identity_record(record, {**valid, "extra": True})
 
 
 def test_checked_payload_rejects_missing_and_unknown_dimensions() -> None:
@@ -240,6 +305,70 @@ def test_dataframe_identity_consumes_label_and_source_location() -> None:
     baseline = key(graph)
     assert key(_replace_node(graph, "target", label="Other target")) != baseline
     assert key(graph.model_copy(update={"source_file": "other/main.py"})) != baseline
+
+
+@pytest.mark.parametrize(
+    ("node_type", "base_config", "field", "changed_value"),
+    [
+        (
+            NodeType.EXTERNAL_FILE,
+            {"path": "artifact.bin", "fileType": "pickle", "modelClass": "Estimator"},
+            "fileType",
+            "joblib",
+        ),
+        (
+            NodeType.EXTERNAL_FILE,
+            {"path": "artifact.bin", "fileType": "pickle", "modelClass": "Estimator"},
+            "modelClass",
+            "OtherEstimator",
+        ),
+        (
+            NodeType.MODEL_SCORE,
+            {"output_column": "prediction", "task": "regression"},
+            "output_column",
+            "score",
+        ),
+        (
+            NodeType.MODEL_SCORE,
+            {"output_column": "prediction", "task": "regression"},
+            "task",
+            "classification",
+        ),
+    ],
+)
+def test_runtime_input_identity_is_composed_with_structural_node_config(
+    tmp_path,
+    monkeypatch,
+    node_type: NodeType,
+    base_config: dict[str, object],
+    field: str,
+    changed_value: str,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "artifact.bin").write_bytes(b"artifact")
+    node = _node("runtime", node_type=node_type, config=base_config)
+    graph = PipelineGraph(nodes=[node], source_file=str(tmp_path / "pipeline.py"))
+    changed_node = node.model_copy(
+        update={
+            "data": node.data.model_copy(update={"config": {**base_config, field: changed_value}})
+        }
+    )
+    changed = graph.model_copy(update={"nodes": [changed_node]})
+
+    runtime = dataframe_graph_input_fingerprint(
+        graph,
+        target_node_id="runtime",
+        source="live",
+    )
+    changed_runtime = dataframe_graph_input_fingerprint(
+        changed,
+        target_node_id="runtime",
+        source="live",
+    )
+
+    assert changed_runtime == runtime
+    assert graph_fingerprint(changed) != graph_fingerprint(graph)
+    assert (graph_fingerprint(changed), changed_runtime) != (graph_fingerprint(graph), runtime)
 
 
 def test_model_contract_key_routes_through_the_checked_contract(monkeypatch) -> None:

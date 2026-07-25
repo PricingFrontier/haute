@@ -20,10 +20,12 @@ from typing import Any
 from haute._cache import (
     CACHE_CONFIG_FIELD_CLASSIFICATIONS,
     CacheConsumer,
+    CacheIdentityRecord,
     CacheInputClass,
     GraphFingerprintMemo,
     LineageCacheKeyRequest,
     canonical_json,
+    checked_cache_identity_record,
     checked_cache_inputs,
     lineage_cache_key,
     preamble_execution_fingerprint,
@@ -656,6 +658,9 @@ def dataframe_frame_input_fingerprint(input_df: Any) -> Mapping[str, object]:
     if not isinstance(input_df, pl.DataFrame):
         raise TypeError("input_df must be a polars DataFrame")
     schema = {name: str(dtype) for name, dtype in input_df.schema.items()}
+    # The payload tag below versions this canonical byte encoding, not Polars'
+    # hash algorithm. A dependency upgrade may therefore cold-start these keys,
+    # which is safe: changed hashes over-invalidate instead of serving stale data.
     row_hash_bytes = (
         input_df.hash_rows(seed=0).to_numpy().astype("<u8", copy=False).tobytes(order="C")
     )
@@ -725,18 +730,19 @@ def _runtime_input_fingerprint_entry(
     node: GraphNode,
 ) -> Mapping[str, object]:
     config = node.data.config
-    payload: dict[str, object] = {
-        "node_id": node.id,
-        "node_type": node.data.nodeType.value,
-        "config": _config_subset(config, _runtime_input_config_fields(node.data.nodeType)),
-    }
     files = {
         path_field: _stat_gated_runtime_path_fingerprint(path)
         for path_field, path in _runtime_file_signature_paths(graph, node).items()
     }
-    if files:
-        payload["files"] = files
-    return payload
+    return checked_cache_identity_record(
+        CacheIdentityRecord.RUNTIME_INPUT_ENTRY,
+        {
+            "node_id": node.id,
+            "node_type": node.data.nodeType.value,
+            "config": _config_subset(config, _runtime_input_config_fields(node.data.nodeType)),
+            "files": files,
+        },
+    )
 
 
 def dataframe_graph_input_fingerprint(
@@ -751,7 +757,9 @@ def dataframe_graph_input_fingerprint(
     """Fingerprint source-side inputs that sit outside graph structure.
 
     The target lineage is scoped once and every maintained runtime-input
-    class is routed through the checked ``RUNTIME_GRAPH_INPUT`` contract.
+    class is routed through the checked ``RUNTIME_GRAPH_INPUT`` contract. This
+    component is not a standalone execution identity: callers pair it with
+    their checked graph or lineage fingerprint.
     """
 
     graph = canonical_dataframe_execution_graph(graph)

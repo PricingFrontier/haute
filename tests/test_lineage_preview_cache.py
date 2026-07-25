@@ -217,7 +217,10 @@ def test_lineage_key_ignores_edge_display_id() -> None:
         ("row_limit", 101),
         ("port_label", "frame-b"),
         ("contract_fingerprint", "contracts:v1:off:target-only"),
-        ("selected_live_switch_path", ({"switch": "s", "parent": "p"},)),
+        (
+            "selected_live_switch_path",
+            ({"switch_id": "s", "incoming_edges": ()},),
+        ),
         ("runtime_input_fingerprint", "runtime:v1:changed"),
         ("execution_semantics_version", "preview:v2"),
     ],

@@ -112,7 +112,10 @@ def test_small_lru_and_stat_gated_cache_evidence(
 
     path = tmp_path / "unchanged.artifact"
     path.write_text("stable")
-    stat_cache: StatGatedCache[str, str] = StatGatedCache(artifact_kind="perf")
+    stat_cache: StatGatedCache[str, str] = StatGatedCache(
+        artifact_kind="perf",
+        max_entries=8,
+    )
     loads = 0
 
     def loader() -> str:
@@ -129,7 +132,7 @@ def test_small_lru_and_stat_gated_cache_evidence(
     assert loads == 1
     _record(
         request,
-        workload="configured-small LRU hit/update/eviction and unchanged-file StatGatedCache hits",
+        workload="bounded LRU operations and unchanged-file StatGatedCache hits",
         artifact_paths=["src/haute/_lru_cache.py", "src/haute/_stat_gated_cache.py"],
         measured_medians_ns={
             "lru_hit_insert_eviction_ns_per_op": lru_ns,
@@ -139,7 +142,7 @@ def test_small_lru_and_stat_gated_cache_evidence(
         decision="no_change",
         decision_reason=(
             "No semantics-preserving comparative candidate demonstrated a 20% improvement; "
-            "configured bounds are already small."
+            "retention is bounded independently of this hot-path decision."
         ),
     )
 

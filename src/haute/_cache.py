@@ -63,7 +63,11 @@ logger = get_logger(component="cache")
 # v7: fingerprint factories route through exact checked input contracts.
 # Structural identity now includes execution labels, excludes presentation
 # edge IDs, and keys the source-file context used for relative resolution.
-ALGO_VERSION: int = 7
+#
+# v8: repeated graph/runtime identity records use versioned, checked shapes.
+# Preview lineage fields are explicit rather than hidden beneath an opaque
+# graph member, and runtime identity declares its required structural companion.
+ALGO_VERSION: int = 8
 
 
 class CacheInputClass(StrEnum):
@@ -92,6 +96,86 @@ class CacheConsumer(StrEnum):
     DEPLOY_SCHEMA = "deploy_schema"
     MODEL_CONTRACT = "model_contract"
     INPUT_SNAPSHOT = "input_snapshot"
+
+
+class CacheIdentityRecord(StrEnum):
+    """Repeated nested records with closed, independently versioned shapes."""
+
+    GRAPH_NODE = "graph_node"
+    GRAPH_EDGE = "graph_edge"
+    RUNTIME_INPUT_ENTRY = "runtime_input_entry"
+    LIVE_SWITCH_SELECTION = "live_switch_selection"
+
+
+@dataclass(frozen=True, slots=True)
+class CacheIdentityRecordContract:
+    """Exact shape and version marker for nested cache identity material."""
+
+    record: CacheIdentityRecord
+    version: int
+    fields: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if isinstance(self.version, bool) or not isinstance(self.version, int) or self.version < 1:
+            raise ValueError("cache identity record version must be a positive integer")
+        if len(set(self.fields)) != len(self.fields) or any(not field for field in self.fields):
+            raise ValueError("cache identity record fields must be unique non-empty strings")
+
+
+CACHE_IDENTITY_RECORD_CONTRACTS: Mapping[CacheIdentityRecord, CacheIdentityRecordContract] = (
+    MappingProxyType(
+        {
+            CacheIdentityRecord.GRAPH_NODE: CacheIdentityRecordContract(
+                record=CacheIdentityRecord.GRAPH_NODE,
+                version=1,
+                fields=("id", "label", "nodeType", "config"),
+            ),
+            CacheIdentityRecord.GRAPH_EDGE: CacheIdentityRecordContract(
+                record=CacheIdentityRecord.GRAPH_EDGE,
+                version=1,
+                fields=("source", "sourceHandle", "target", "targetHandle"),
+            ),
+            CacheIdentityRecord.RUNTIME_INPUT_ENTRY: CacheIdentityRecordContract(
+                record=CacheIdentityRecord.RUNTIME_INPUT_ENTRY,
+                version=1,
+                fields=("node_id", "node_type", "config", "files"),
+            ),
+            CacheIdentityRecord.LIVE_SWITCH_SELECTION: CacheIdentityRecordContract(
+                record=CacheIdentityRecord.LIVE_SWITCH_SELECTION,
+                version=1,
+                fields=("switch_id", "incoming_edges"),
+            ),
+        }
+    )
+)
+
+
+def checked_cache_identity_record(
+    record: CacheIdentityRecord,
+    values: Mapping[str, object],
+) -> dict[str, object]:
+    """Return canonical nested identity material after exact-shape validation."""
+
+    if not isinstance(record, CacheIdentityRecord):
+        raise TypeError("record must be a CacheIdentityRecord")
+    if not isinstance(values, Mapping):
+        raise TypeError("cache identity record values must be a mapping")
+    contract = CACHE_IDENTITY_RECORD_CONTRACTS[record]
+    actual = set(values)
+    expected = set(contract.fields)
+    missing = sorted(expected - actual)
+    unknown = sorted(actual - expected)
+    if missing or unknown:
+        raise ValueError(
+            f"{record.value} cache identity record differs (missing={missing}, unknown={unknown})"
+        )
+    return {
+        "cache_record_schema": {
+            "record": record.value,
+            "version": contract.version,
+        },
+        **{field_name: values[field_name] for field_name in contract.fields},
+    }
 
 
 @dataclass(frozen=True, slots=True)
@@ -197,12 +281,16 @@ _CALLER_KEYS_SOURCE = "The caller keys source selection outside this structural 
 _FULL_FRAME_NO_ROW_LIMIT = "This cache stores a complete materialised frame, not a row slice."
 _NO_RUNTIME_STATE = "Runtime state is owned by a separate input/artifact identity."
 _NO_GRAPH_INPUT = "This cache is independent of pipeline graph execution."
+_REQUIRES_STRUCTURAL_IDENTITY = (
+    "This external-state component must be paired with the caller's checked structural "
+    "graph or lineage identity."
+)
 
 CACHE_CONSUMER_CONTRACTS: Mapping[CacheConsumer, CacheConsumerContract] = MappingProxyType(
     {
         CacheConsumer.GRAPH_STRUCTURE: _consumer_contract(
             CacheConsumer.GRAPH_STRUCTURE,
-            version=1,
+            version=2,
             fields=("nodes", "edges"),
             consumed={
                 CacheInputClass.NODE_CONFIG: ("nodes",),
@@ -249,9 +337,12 @@ CACHE_CONSUMER_CONTRACTS: Mapping[CacheConsumer, CacheConsumerContract] = Mappin
         ),
         CacheConsumer.PREVIEW_TRACE: _consumer_contract(
             CacheConsumer.PREVIEW_TRACE,
-            version=2,
+            version=3,
             fields=(
-                "graph",
+                "preamble",
+                "source_file",
+                "nodes",
+                "edges",
                 "target_node_id",
                 "source",
                 "requested_columns",
@@ -264,10 +355,15 @@ CACHE_CONSUMER_CONTRACTS: Mapping[CacheConsumer, CacheConsumerContract] = Mappin
                 "execution_semantics_version",
             ),
             consumed={
-                CacheInputClass.NODE_CONFIG: ("graph",),
-                CacheInputClass.UPSTREAM_LINEAGE: ("graph", "target_node_id"),
-                CacheInputClass.EDGE_WIRING: ("graph", "selected_live_switch_path"),
-                CacheInputClass.USER_CODE: ("graph", "runtime_input_fingerprint"),
+                CacheInputClass.NODE_CONFIG: ("nodes",),
+                CacheInputClass.UPSTREAM_LINEAGE: ("nodes", "edges", "target_node_id"),
+                CacheInputClass.EDGE_WIRING: ("edges", "selected_live_switch_path"),
+                CacheInputClass.USER_CODE: (
+                    "preamble",
+                    "source_file",
+                    "nodes",
+                    "runtime_input_fingerprint",
+                ),
                 CacheInputClass.SOURCE_SELECTION: ("source", "selected_live_switch_path"),
                 CacheInputClass.ROW_LIMIT: ("initial_column_limit", "row_limit"),
                 CacheInputClass.RUNTIME_FILES: ("runtime_input_fingerprint",),
@@ -319,7 +415,7 @@ CACHE_CONSUMER_CONTRACTS: Mapping[CacheConsumer, CacheConsumerContract] = Mappin
         ),
         CacheConsumer.RUNTIME_GRAPH_INPUT: _consumer_contract(
             CacheConsumer.RUNTIME_GRAPH_INPUT,
-            version=1,
+            version=2,
             fields=(
                 "source",
                 "sources",
@@ -328,8 +424,6 @@ CACHE_CONSUMER_CONTRACTS: Mapping[CacheConsumer, CacheConsumerContract] = Mappin
                 "extra",
             ),
             consumed={
-                CacheInputClass.NODE_CONFIG: ("sources",),
-                CacheInputClass.UPSTREAM_LINEAGE: ("sources",),
                 CacheInputClass.USER_CODE: ("sources", "preamble_fingerprint"),
                 CacheInputClass.SOURCE_SELECTION: ("source",),
                 CacheInputClass.RUNTIME_FILES: ("sources", "json_cache_signature"),
@@ -337,7 +431,9 @@ CACHE_CONSUMER_CONTRACTS: Mapping[CacheConsumer, CacheConsumerContract] = Mappin
                 CacheInputClass.REQUEST_SHAPE: ("extra",),
             },
             excluded={
-                CacheInputClass.EDGE_WIRING: _CALLER_SCOPES_LINEAGE,
+                CacheInputClass.NODE_CONFIG: _REQUIRES_STRUCTURAL_IDENTITY,
+                CacheInputClass.UPSTREAM_LINEAGE: _REQUIRES_STRUCTURAL_IDENTITY,
+                CacheInputClass.EDGE_WIRING: _REQUIRES_STRUCTURAL_IDENTITY,
                 CacheInputClass.ROW_LIMIT: "External input identity is independent of row limits.",
                 CacheInputClass.EXECUTION_POLICY: (
                     "Execution policy is keyed by the frame consumer."
@@ -796,6 +892,9 @@ def validate_cache_config_field_classifications(
             )
 
 
+validate_cache_config_field_classifications()
+
+
 @dataclass(frozen=True)
 class _UtilityFileStatKey:
     """Metadata that identifies unchanged utility file bytes inside one memo."""
@@ -962,23 +1061,29 @@ def _graph_base_fingerprint(graph: PipelineGraph) -> str:
     nodes: list[dict[str, object]] = []
     for n in sorted(graph.nodes, key=lambda n: n.id):
         nodes.append(
-            {
-                "id": n.id,
-                "label": n.data.label,
-                "nodeType": str(n.data.nodeType),
-                "config": _node_config_for_execution_fingerprint(n),
-            }
+            checked_cache_identity_record(
+                CacheIdentityRecord.GRAPH_NODE,
+                {
+                    "id": n.id,
+                    "label": n.data.label,
+                    "nodeType": str(n.data.nodeType),
+                    "config": _node_config_for_execution_fingerprint(n),
+                },
+            )
         )
     # Handles select which frame/role reaches a consumer. Edge IDs are canvas
     # identity only, so endpoint/handle tuples define execution wiring.
     edges = sorted(
         (
-            {
-                "source": edge.source,
-                "sourceHandle": edge.sourceHandle,
-                "target": edge.target,
-                "targetHandle": edge.targetHandle,
-            }
+            checked_cache_identity_record(
+                CacheIdentityRecord.GRAPH_EDGE,
+                {
+                    "source": edge.source,
+                    "sourceHandle": edge.sourceHandle,
+                    "target": edge.target,
+                    "targetHandle": edge.targetHandle,
+                },
+            )
             for edge in graph.edges
         ),
         key=canonical_json,
@@ -1037,21 +1142,27 @@ class LineageCacheKeyRequest:
 
 
 def _lineage_node_identity(node: GraphNode) -> dict[str, Any]:
-    return {
-        "id": node.id,
-        "label": node.data.label,
-        "nodeType": str(node.data.nodeType),
-        "config": _node_config_for_execution_fingerprint(node),
-    }
+    return checked_cache_identity_record(
+        CacheIdentityRecord.GRAPH_NODE,
+        {
+            "id": node.id,
+            "label": node.data.label,
+            "nodeType": str(node.data.nodeType),
+            "config": _node_config_for_execution_fingerprint(node),
+        },
+    )
 
 
 def _lineage_edge_identity(edge: GraphEdge) -> dict[str, Any]:
-    return {
-        "source": edge.source,
-        "sourceHandle": edge.sourceHandle,
-        "target": edge.target,
-        "targetHandle": edge.targetHandle,
-    }
+    return checked_cache_identity_record(
+        CacheIdentityRecord.GRAPH_EDGE,
+        {
+            "source": edge.source,
+            "sourceHandle": edge.sourceHandle,
+            "target": edge.target,
+            "targetHandle": edge.targetHandle,
+        },
+    )
 
 
 def _normalise_requested_columns(columns: Iterable[str] | None) -> tuple[str, ...] | None:
@@ -1159,18 +1270,15 @@ def lineage_cache_key(request: LineageCacheKeyRequest) -> str:
     requested_columns = _normalise_requested_columns(request.requested_columns)
 
     payload = {
-        "graph": {
-            "preamble": request.graph.preamble,
-            "source_file": request.graph.source_file,
-            "nodes": [
-                _lineage_node_identity(relevant_nodes[node_id])
-                for node_id in sorted(relevant_nodes)
-            ],
-            "edges": sorted(
-                (_lineage_edge_identity(edge) for edge in relevant_edges),
-                key=canonical_json,
-            ),
-        },
+        "preamble": request.graph.preamble,
+        "source_file": request.graph.source_file,
+        "nodes": [
+            _lineage_node_identity(relevant_nodes[node_id]) for node_id in sorted(relevant_nodes)
+        ],
+        "edges": sorted(
+            (_lineage_edge_identity(edge) for edge in relevant_edges),
+            key=canonical_json,
+        ),
         "target_node_id": request.target_node_id,
         "source": request.source,
         "requested_columns": requested_columns,
@@ -1178,7 +1286,10 @@ def lineage_cache_key(request: LineageCacheKeyRequest) -> str:
         "row_limit": request.row_limit,
         "port_label": request.port_label,
         "contract_fingerprint": request.contract_fingerprint,
-        "selected_live_switch_path": request.selected_live_switch_path,
+        "selected_live_switch_path": tuple(
+            checked_cache_identity_record(CacheIdentityRecord.LIVE_SWITCH_SELECTION, selection)
+            for selection in request.selected_live_switch_path
+        ),
         "runtime_input_fingerprint": request.runtime_input_fingerprint,
         "execution_semantics_version": request.execution_semantics_version,
     }

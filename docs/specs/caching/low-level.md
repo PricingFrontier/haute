@@ -32,7 +32,7 @@
 - **`CACHE_CONFIG_FIELD_CLASSIFICATIONS`** (`_cache.py`) — immutable
   per-`NodeType` classification of every recognised config key as a logical
   execution input or a rationale-bearing presentation exclusion.
-- **`ALGO_VERSION: int`** (`_cache.py`, currently `7`) — read dynamically inside
+- **`ALGO_VERSION: int`** (`_cache.py`, currently `8`) — read dynamically inside
   `graph_fingerprint()` (not captured at import time) so tests can monkeypatch it
   to simulate a version bump. Embedded as a `"v<N>:"` prefix on every fingerprint.
 - **`LRUCache[K, V]`** (`_lru_cache.py`) — `OrderedDict`-backed store (`_data`),
@@ -97,9 +97,12 @@
 2. `_graph_base_fingerprint` builds the checked `GRAPH_STRUCTURE` payload.
    Nodes contain `id`, execution-relevant `label`, `nodeType`, and classified
    config; edges contain `source`, `sourceHandle`, `target`, and
-   `targetHandle`. Presentation-only config fields and edge IDs are excluded.
-   Nodes sort by ID, edges sort by canonical encoding, and the namespaced
-   canonical payload is hashed with `content_hash_bytes`.
+   `targetHandle`. The node and edge records themselves pass through closed
+   checked record schemas before entering the consumer payload.
+   Presentation-only config fields and edge IDs are excluded. Nodes sort by ID,
+   edges sort by canonical encoding, and the namespaced canonical payload is
+   hashed with `content_hash_bytes`. A record-layout change bumps both the
+   `GRAPH_STRUCTURE` schema version and the enclosing graph algorithm version.
 3. `graph_fingerprint` separately computes `preamble_execution_fingerprint` for
    the graph's preamble text (and, if the preamble imports the `utility`
    package, a digest of the resolved `utility` module/package's file contents —
@@ -422,9 +425,11 @@ identity audit and evidence-gated performance pass.
   runtime/input fingerprint; and execution-semantics version. `None`, empty,
   default, and named values are encoded as distinct explicit fields. Preview and
   trace modules consume this API and do not own parallel key formats.
-- The factory derives a canonical lineage payload containing deterministically
-  ordered execution-relevant nodes and edge endpoints/handles, including
-  relevant node labels/config, plus graph-level `preamble` and `source_file`.
+- The factory derives a canonical lineage payload with separately checked
+  top-level `preamble`, `source_file`, `nodes`, and `edges` fields. Node, edge,
+  and selected-live-switch records use closed nested schemas, and nodes/edges
+  are deterministically ordered. Relevant node labels/config and edge
+  endpoints/handles are therefore not hidden beneath an opaque `graph` field.
   It excludes presentation metadata (`preserved_blocks`, available `sources`,
   `active_source`, edge IDs), downstream nodes, and disconnected graph state;
   selected source is an explicit checked field. All map/set and graph
@@ -560,22 +565,25 @@ contract through the following low-level boundaries.
 ### Checked consumer contracts
 
 - `_cache.py` defines the closed logical-input enum, cache-consumer enum,
-  immutable consumer-contract records, and the checked input-payload builder.
+  immutable consumer-contract records, checked nested-record schemas, and the
+  checked input-payload builders.
   Each consumer contract has a key-schema version, an exact ordered payload
   field set, and a total classification of logical input classes. Construction
   raises on a missing/extra payload field, an unknown referenced field, an
-  input class classified twice, or an exclusion without a rationale.
+  input class classified twice, or an exclusion without a rationale. Nested
+  node, edge, runtime-source, and selected-switch records likewise reject
+  missing/extra fields.
 - Maintained consumers include graph execution, preview/trace lineage,
   dataframe execution, runtime graph inputs, deploy output-schema inference,
   model feature-contract validation, and provider-neutral input snapshots.
   Consumer code passes mappings into the checked builder and hashes or keys the
   resulting canonical/raw values according to its existing persistence and
   hot-path needs; it does not reconstruct a parallel field list.
-- Cache namespaces and versions are owned by the corresponding consumer
-  contract. Graph identity is deliberately version-bumped when node labels,
-  source-file resolution, or presentation exclusions change its canonical
-  bytes. Dataframe and lineage payload versions are independently bumped when
-  their own field sets change.
+- Cache namespaces and versions are owned by the corresponding consumer and
+  record contracts. Graph identity is deliberately version-bumped when node
+  labels, source-file resolution, presentation exclusions, or a nested record
+  layout changes its canonical bytes. Dataframe, runtime-input, and lineage
+  payload versions are independently bumped when their own field sets change.
 
 ### Field and runtime classification
 
@@ -583,8 +591,9 @@ contract through the following low-level boundaries.
   `_config_validation.VALID_KEYS`, with universal fields classified once.
   Execution fields are retained in node identity; excluded fields carry a
   non-empty rationale. Runtime treatment is conservative for an unrecognised
-  legacy key, but reflective tests compare the maintained registry to
-  `VALID_KEYS` so a new official field cannot merge unclassified.
+  legacy key. Import-time validation and reflective tests both compare the
+  maintained registry to `VALID_KEYS` so a new official field cannot run or
+  merge unclassified.
 - Node identity contains `id`, execution-relevant `label`, `nodeType`, and the
   classified config. Edge identity contains `source`, `sourceHandle`, `target`,
   and `targetHandle`; edge `id` is excluded because selection and binding are
@@ -594,19 +603,28 @@ contract through the following low-level boundaries.
   `preserved_blocks`, `sources`, and `active_source` are excluded because every
   consumer supplies the selected source explicitly.
 - `execution.py` replaces its bespoke runtime-path dictionary/lock with a
-  `StatGatedCache`. Its runtime-input registry distinguishes source data,
-  snapshot generation pointers, external files, model artifacts, feature
-  contracts, and optimiser artifacts. Preview/trace, dataframe graph-input,
-  deploy-schema, and deploy scorer identity all consume the structured result.
-  Missing paths remain explicit identity values and changing either stat-gate
-  dimension reloads the content fingerprint.
+  bounded `StatGatedCache`. Its runtime-input registry distinguishes source
+  data, snapshot generation pointers, external files, model artifacts, feature
+  contracts, and optimiser artifacts. `RUNTIME_GRAPH_INPUT` explicitly excludes
+  node config, upstream lineage, and edge wiring because it is an external-state
+  component, not a standalone execution identity. Every maintained caller pairs
+  it with the checked structural lineage owned by preview/trace, dataframe
+  execution, deploy-schema, or deploy scoring. Missing paths remain explicit
+  identity values and changing either stat-gate dimension reloads the content
+  fingerprint.
+- `StatGatedCache` retains at most its positive configured `max_entries` in
+  least-recently-used order. A hit refreshes recency. Insertion evicts the
+  oldest entry and its idle per-key load gate; an in-flight gate remains until
+  its last participant exits, preserving same-key single flight. Eviction only
+  causes a future stat/load and does not change torn-read or loader-exception
+  behavior.
 
 ### Required automated evidence
 
 - Registry reflection adds/removes a recognised config field under test and
   proves the classification check fails until the registry changes. A consumer
   matrix proves every logical input class is consumed or has a rationale and
-  every checked payload rejects missing/extra dimensions.
+  every checked payload and nested record rejects missing/extra dimensions.
 - Mutation tests cover node label/type/config/code, upstream lineage and order,
   edge endpoints/handles, preamble/utility, source file, explicit source,
   requested columns, row limits, contracts/policies, runtime files, and
@@ -616,6 +634,9 @@ contract through the following low-level boundaries.
   invalidation, dataframe lineage invalidation, deploy-schema invalidation
   after direct-input or artifact replacement, model-contract schema/contract
   separation, and input-cache provider/query/secret semantics.
+- Stat-cache tests prove positive bound validation, LRU refresh/eviction,
+  bounded idle load-gate retention, same-key single flight across concurrent
+  misses, and unchanged torn-read/loader-exception semantics.
 - `tests/performance/test_cache_identity_perf.py` records separate evidence for
   row-hash conversion, LRU operations, stat-gated path identity, and canonical
   lineage serialisation. Run it through `scripts/run_perf_suite.py` so
@@ -626,6 +647,10 @@ contract through the following low-level boundaries.
 - `execution.dataframe_frame_input_fingerprint` feeds
   `hash_rows(seed=0)` through a canonical little-endian UInt64 buffer tagged
   `polars-u64-le:v1`; the representation change deliberately cold-starts
-  dependent keys. The LRU/stat and cross-request lineage-memo gates record
-  `no_change` until a semantics-preserving candidate demonstrates the required
-  relative improvement.
+  dependent keys. The tag versions the byte encoding rather than Polars'
+  internal hash algorithm, so an algorithm change after a dependency upgrade
+  may safely over-invalidate but cannot serve stale data. The LRU/stat hot-path
+  and cross-request lineage-memo gates record `no_change` until a
+  semantics-preserving candidate demonstrates the required relative
+  improvement. Stat-cache entry bounding is a retention invariant and is not
+  presented as a lookup-speed optimisation.

@@ -68,10 +68,10 @@ Out of scope (owned elsewhere, linked where relevant):
   collision-free hashing. Utility content is also subject to the documented
   `(mtime_ns, size)` stat-gate limitation below.
 - **Fingerprints are versioned.** Every fingerprint is prefixed with an algorithm
-  version tag (`v<N>:`). Changing the canonicalisation rules bumps the version, so
-  old cache entries can never be silently reinterpreted under new rules — they
-  simply become unreachable (a fingerprint under the new version never matches a
-  stored key under the old one).
+  version tag (`v<N>:`), and checked consumer/record schemas carry their own
+  versions inside canonical key material. Changing canonicalisation or a checked
+  byte layout bumps the owning version, so old cache entries can never be silently
+  reinterpreted under new rules — they simply become unreachable.
 - **Caches are bounded and evict least-recently-used entries first,** except for
   entries a caller has explicitly pinned (e.g. a preview result the trace is still
   reading) or that are inside a protected write window (a dataframe artifact
@@ -87,7 +87,9 @@ Out of scope (owned elsewhere, linked where relevant):
   itself a `StatGatedCache` instance, not a parallel implementation — both key on
   `(mtime_ns, size)`; a change either dimension reloads. A byte-identical rewrite
   that happens to preserve both `mtime_ns` and `size` is below this resolution and
-  is accepted as a documented trade-off, not a defect.
+  is accepted as a documented trade-off, not a defect. Stat-gated entries and
+  their idle per-key single-flight gates are retained in bounded least-recently-used
+  order; eviction only causes a future reload and never weakens freshness.
 - **The JSON cache has two on-disk layers**, `working/` (the volatile layer a
   build call populates) and `committed/` (the durable layer, promoted from
   `working/` by a save operation elsewhere in the system). Deleting the JSON cache
@@ -388,14 +390,16 @@ eviction, quota accounting, and direct-versus-snapshot schema/data equivalence.
   request shape, and execution policy. A logical class is either consumed
   through named payload fields or excluded with a non-empty rationale.
 - Checked payload construction rejects missing and unknown fields before
-  hashing. Cache-specific namespaces and schema versions remain explicit, so a
-  contract change causes a deliberate cold cache rather than reinterpreting an
-  old key.
+  hashing. Repeated nested identity records (graph nodes, graph edges, runtime
+  source entries, and selected live-switch records) also have closed checked
+  shapes, so wrapping them in a list or mapping cannot hide a missing dimension.
+  Cache-specific namespaces and schema versions remain explicit, so a contract
+  change causes a deliberate cold cache rather than reinterpreting an old key.
 - The canonical node-config registry classifies every recognised config field
   as execution-affecting or excluded with a rationale. Adding a recognised
-  field without updating that registry fails reflective coverage. Unknown
-  legacy fields remain conservatively execution-affecting at runtime; they are
-  never silently omitted.
+  field without updating that registry fails both import-time validation and
+  reflective test coverage. Unknown legacy fields remain conservatively
+  execution-affecting at runtime; they are never silently omitted.
 - Execution graph identity includes node labels when they affect generated
   names or frame binding, relevant node type/config/user code, upstream order,
   full edge endpoints and handles, preamble/utility identity, and the pipeline
@@ -403,8 +407,16 @@ eviction, quota accounting, and direct-versus-snapshot schema/data equivalence.
   descriptions, edge IDs, pipeline display metadata, preserved source blocks,
   and the UI's available/active-source metadata are presentation-only. The
   selected execution source remains an explicit key input.
+- Preview/trace lineage key material exposes `preamble`, `source_file`, relevant
+  nodes, and relevant edges as separately checked fields rather than hiding
+  them beneath an opaque graph member. `preserved_blocks` and the graph's
+  available/active-source UI metadata remain excluded: the selected execution
+  source is the mandatory `source` field.
 - Runtime file and artifact identities use the shared `StatGatedCache`
-  discipline underneath the logical signature. Preview, trace, dataframe
+  discipline underneath the logical signature. That runtime identity is
+  deliberately complementary rather than standalone: node config, lineage,
+  and edge wiring are excluded with a rationale and every maintained consumer
+  pairs it with a checked graph/lineage identity. Preview, trace, dataframe
   execution, and deploy-schema keys consume the same structured runtime
   identity; a direct input or bundled artifact change invalidates immediately
   at the documented stat-gate resolution.
@@ -419,7 +431,7 @@ algorithm version. Compatibility is cache-cold only: persisted source
 generations and user data are not migrated or deleted.
 
 The performance gate measures row-hash conversion, bounded LRU lookup/update,
-stat-gated unchanged/changed lookup, and canonical lineage-signature
+bounded stat-gated unchanged/changed lookup, and canonical lineage-signature
 serialisation independently. Each benchmark records its workload, environment,
 generated performance artifact, comparison threshold, and
 implement/no-change decision. A micro-optimisation is accepted only when its
@@ -430,8 +442,9 @@ unless it is bounded, contains no frame/plan references, is project- and
 algorithm-version-scoped, and preserves immediate lineage invalidation.
 
 The accepted row-hash path hashes a versioned, canonical little-endian UInt64
-buffer instead of decimalising each Polars row hash. Configured-small LRU/stat
-operations and cross-request lineage memoisation remain no-change decisions:
-the former has no material semantics-preserving comparator, while the latter
-has no demonstrated saving after paying the identity work needed to reject
-changed graph and runtime inputs.
+buffer instead of decimalising each Polars row hash. The LRU/stat hot-path
+implementations and cross-request lineage memoisation remain no-change
+decisions: the former has no material semantics-preserving comparator, while
+the latter has no demonstrated saving after paying the identity work needed to
+reject changed graph and runtime inputs. Bounding stat-cache retention is a
+memory-safety policy, not a claim of faster lookup.
