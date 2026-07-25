@@ -115,19 +115,10 @@ def test_data_input_reads_pipeline_relative_path_from_project_root(nested_projec
     assert results["src"].preview == _EXPECTED_RECORDS
 
 
-def test_data_input_out_of_cwd_absolute_passthrough(
+def test_data_input_out_of_cwd_absolute_is_rejected(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """An ABSOLUTE data path that resolves OUTSIDE cwd is loaded, NOT rejected and
-    NOT re-anchored to the pipeline dir.
-
-    ``canonical_dataframe_execution_graph`` may already have resolved the path
-    against ``graph.source_file`` to somewhere outside cwd (a codegen round-trip
-    re-execute, or ``haute run <pipeline outside cwd>``); the executor must load
-    it. This stage does not enforce project-root containment (that gate lives on
-    the route boundary), and ``read_source`` imposes none either. Regression
-    guard for tests/test_e2e.py::test_full_lifecycle.
-    """
+    """Direct execution rejects absolute file inputs outside its project root."""
     monkeypatch.chdir(tmp_path)  # cwd == project root
     original = _get_project_root()
     set_project_root(tmp_path)
@@ -142,10 +133,95 @@ def test_data_input_out_of_cwd_absolute_passthrough(
         outside.write_text(_CSV_TEXT)
 
         graph = _data_input_graph(str(outside))
-        results = execute_graph(graph, target_node_id="src")
-
-        assert results["src"].status == "ok", results["src"].error
-        assert results["src"].preview == _EXPECTED_RECORDS
+        with pytest.raises(ValueError, match="outside the project root"):
+            execute_graph(graph, target_node_id="src")
     finally:
         set_project_root(original)
         _preview_cache.invalidate()
+
+
+@pytest.mark.parametrize("escape", ["../outside.csv", r"nested\..\..\outside.csv"])
+def test_direct_executor_rejects_relative_and_mixed_separator_escape(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    escape: str,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    set_project_root(tmp_path)
+    outside = tmp_path.parent / "outside.csv"
+    outside.write_text(_CSV_TEXT, encoding="utf-8")
+
+    with pytest.raises(ValueError, match="outside the project root"):
+        execute_graph(_data_input_graph(escape), target_node_id="src")
+
+
+def test_direct_executor_rejects_symlink_escape(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    set_project_root(tmp_path)
+    outside = tmp_path.parent / "outside-data"
+    outside.mkdir()
+    (outside / "customers.csv").write_text(_CSV_TEXT, encoding="utf-8")
+    link = tmp_path / "linked-data"
+    try:
+        link.symlink_to(outside, target_is_directory=True)
+    except OSError:
+        pytest.skip("directory symlinks are unavailable on this platform")
+
+    with pytest.raises(ValueError, match="outside the project root"):
+        execute_graph(_data_input_graph("linked-data/customers.csv"), target_node_id="src")
+
+    (outside / "pipeline.py").write_text("# symlink target", encoding="utf-8")
+    symlinked_source_graph = _data_input_graph("customers.csv").model_copy(
+        update={"source_file": str(link / "pipeline.py")}
+    )
+    with pytest.raises(ValueError, match="outside the project root"):
+        execute_graph(symlinked_source_graph, target_node_id="src")
+
+
+def test_selected_external_pipeline_uses_its_parent_as_execution_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    external_root = tmp_path.parent / f"{tmp_path.name}-external-project"
+    external_root.mkdir()
+    source_file = external_root / "main.py"
+    source_file.write_text("# selected pipeline", encoding="utf-8")
+    data_path = external_root / "data" / "customers.csv"
+    data_path.parent.mkdir()
+    data_path.write_text(_CSV_TEXT, encoding="utf-8")
+    graph = _data_input_graph("data/customers.csv").model_copy(
+        update={"source_file": str(source_file)}
+    )
+
+    results = execute_graph(graph, target_node_id="src")
+
+    assert results["src"].status == "ok", results["src"].error
+    assert results["src"].preview == _EXPECTED_RECORDS
+
+
+def test_http_graph_cannot_select_an_external_pipeline_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from fastapi import HTTPException
+
+    from haute.routes.pipeline import _validate_runtime_input_paths
+
+    monkeypatch.chdir(tmp_path)
+    set_project_root(tmp_path)
+    external_root = tmp_path.parent / f"{tmp_path.name}-untrusted-http-root"
+    external_root.mkdir()
+    source_file = external_root / "main.py"
+    source_file.write_text("# untrusted request source", encoding="utf-8")
+    data_path = external_root / "customers.csv"
+    data_path.write_text(_CSV_TEXT, encoding="utf-8")
+    graph = _data_input_graph("customers.csv").model_copy(update={"source_file": str(source_file)})
+
+    with pytest.raises(HTTPException) as exc_info:
+        _validate_runtime_input_paths(graph)
+
+    assert exc_info.value.status_code == 403

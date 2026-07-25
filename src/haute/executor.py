@@ -54,7 +54,7 @@ from haute._execution_context import ExecutionContext, ExecutionProfile
 from haute._fingerprint_cache import FingerprintCache
 from haute._logging import get_logger
 from haute._output_assembler import render_output_document
-from haute._path_resolution import _normalise_path_text
+from haute._path_resolution import RuntimePathOutsideProjectError, _normalise_path_text
 from haute._rating import _apply_banding  # noqa: F401 — re-exported for tests
 from haute._registry import ensure_registry_ready
 from haute._sandbox import safe_globals, validate_user_code
@@ -1604,7 +1604,9 @@ def _contain_output_path(
                 base = source.resolve().parent
             out = (base / raw).resolve()
         if not out.is_relative_to(root):
-            raise ValueError(f"Sink path {resolved_path!r} resolves outside the project root")
+            raise RuntimePathOutsideProjectError(
+                f"Sink path {resolved_path!r} resolves outside the project root"
+            )
         return out
 
     out = Path(resolved_path)

@@ -5,11 +5,14 @@ from __future__ import annotations
 from datetime import date
 
 import polars as pl
+import pytest
 
 from haute._types import GraphNode, NodeData, PipelineGraph
 from haute.executor import PreviewProjectionError, execute_graph
 from haute.schemas import ColumnInfo, NodeResult
 from tests.conftest import make_file_input_config
+
+pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
 
 
 def _source_node(nid: str, path: str) -> GraphNode:

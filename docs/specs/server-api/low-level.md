@@ -4,7 +4,7 @@
 
 | File | Responsibility |
 |---|---|
-| `src/haute/server.py` | App factory (`app = FastAPI(...)`), lifespan (bytecode clear, logging config, env load, marked optimiser-artifact reaping, pipeline-index priming, watcher task lifecycle), middleware registration, router inclusion, the `/api/session` health probe, the API/WS 404 guard, the `/ws/sync` WebSocket endpoint, the debounced file watcher, and static SPA serving. |
+| `src/haute/server.py` | App factory (`app = FastAPI(...)`), lifespan (bytecode clear, logging config, env load, marked optimiser-artifact reaping, pipeline-index priming, watcher task lifecycle), middleware registration, router inclusion, `/api/session` health/bootstrap routes, bounded request-ID selection, the API/WS 404 guard, the `/ws/sync` WebSocket endpoint, the debounced file watcher, and credential-free static SPA serving. |
 | `src/haute/_local_security.py` | Per-process local-session token, trusted-Origin/Host parsing (including bracketed IPv6), `LocalSessionMiddleware`, `LocalTrustedHostMiddleware`, and the HTTP/WebSocket token-validation contract. |
 | `src/haute/schemas.py` | Shared Pydantic request/response models used across the app — re-exports the canonical graph types from `_types.py` and defines per-feature model groups (pipeline save/preview/trace/sink, Explore, files/schema, Databricks, JSON cache, utility, submodel, modelling, MLflow, optimiser, git, I/O format capabilities). The OUTPUT dry-run models are the deliberate route-local exception. |
 | `src/haute/errors.py` | The `HauteError` root and its direct subclasses (`ConfigError`, `ParseError`, `ExecutionError` and its `PreambleError`, `ContractResolutionError`, `BoundedMemoryUnsupportedError`, `ChunkPlanUnsupportedError`, and `ChunkMemoryRiskError` descendants, `DeployError`, `FeatureMismatchError`, `SchemaMismatchError`, `ContractMismatchError`, `ProjectionImpossibleError`). |
@@ -13,7 +13,7 @@
 | `src/haute/_types.py` | `NodeType` (`StrEnum`), the decorator↔NodeType maps, every per-node-type config `TypedDict`, the `SolveResultLike` Protocol family, and the canonical `NodeData` / `GraphNode` / `GraphEdge` / `PipelineGraph` Pydantic models (with `PipelineGraph`'s cached-property-invalidating `model_copy` override). |
 | `src/haute/routes/__init__.py` | Package docstring only — no code. |
 | `src/haute/routes/_helpers.py` | `SidecarModel` (the `.haute.json` on-disk schema); `validate_safe_path`; `pipeline_dir()`; the pipeline-name→path index (`_ensure_pipeline_index`, `invalidate_pipeline_index`, `lookup_pipeline_by_name`) and its module-dependency twin (`_ensure_module_deps`, `pipelines_importing_module`); self-write tracking (`mark_self_write`, `is_self_write`); watcher-pause (`pause_watcher`, `watcher_is_paused`); the WebSocket client registry and `broadcast()`; sidecar load/save (`load_sidecar`, `save_sidecar`); `parse_pipeline_to_graph` (parse + sidecar merge); `commit_pipeline_graph` (read-only historical-commit parse); the shared `save_lock` asyncio.Lock. |
-| `src/haute/routes/pipeline.py` | `/api/pipelines`, `/api/pipeline`, `/api/pipeline/{name}`, `/api/pipeline/save`, `/api/pipeline/read-json`, `/api/pipeline/trace`, `/api/pipeline/preview`, `/api/pipeline/write-output` — plus the supersession-key builders, runtime-input/output path validators, and memory-limit-to-HTTP-exception translators shared across those handlers. |
+| `src/haute/routes/pipeline.py` | `/api/pipelines`, `/api/pipeline`, `/api/pipeline/{name}`, `/api/pipeline/save`, `/api/pipeline/read-json`, `/api/pipeline/trace`, `/api/pipeline/preview`, `/api/pipeline/write-output` — plus the supersession-key builders, `_prepare_runtime_graph` request-containment helper, runtime-input/output path validators, and memory-limit-to-HTTP-exception translators shared across graph-executing route families. |
 | `src/haute/routes/files.py` | `/api/files` (directory browse) and `/api/schema` (flat-file schema+preview). |
 | `src/haute/routes/io_capabilities.py` | `/api/io-capabilities`, the versioned provider/format/cache capability contract consumed by the input and output editors. |
 | `src/haute/routes/input_cache.py` | `/api/input-cache/*`, the shared build/status/cancel/clear lifecycle for snapshot-backed inputs. |
@@ -22,6 +22,7 @@
 | `src/haute/routes/_supersession.py` | `SupersessionCoordinator` / `_SupersessionState` — generation-counted "run latest, cancel/skip the rest" concurrency primitive used by preview and trace. |
 | `src/haute/routes/output_assemble.py` | `POST /api/output-assemble/dry-run` — validates an unsaved `outputMapping`, swaps it into the target node's in-memory config, executes up to that node, returns the rendered document. |
 | `src/haute/routes/_contract_errors.py` | Shared public-contract-error adapter: validates the closed public error set, emits stable payloads, maps synchronous failures to HTTP 422, and supplies the matching `contract_error` fields for background jobs. |
+| `src/haute/routes/_runtime_path_errors.py` | Closed HTTP mapping for runtime-path failures: malformed path → 400, project-root escape → 403, selected by concrete exception type rather than message text. |
 
 ## Key types and data structures
 
@@ -97,6 +98,7 @@ when a path/query/body fails model validation):
 | Method and path | Input contract | Success contract |
 |---|---|---|
 | `GET /api/session` | No body | `SessionStatusResponse {ok: bool=true}` |
+| `POST /api/session/bootstrap` | No body; explicit exact local Origin required | `SessionStatusResponse {ok: bool=true}` plus HttpOnly, SameSite=Strict session cookie and no-store headers |
 | `GET /api/pipelines` | No body | `list[PipelineSummary]`; each item is `{name, description, file, node_count, error}` |
 | `GET /api/pipeline` | No body | `PipelineGraph` for the first discovered pipeline |
 | `GET /api/pipeline/{name}` | Pipeline name path parameter | `PipelineGraph` |
@@ -127,7 +129,9 @@ waterfall is the typed `{error, error_type}` shape. This keeps omission links, d
 and reconciliation failures enforceable at the HTTP boundary rather than accepting arbitrary
 trace dictionaries.
 
-**WebSocket contract.** `GET /ws/sync` upgrades only after local Origin/token validation.
+**WebSocket contract.** `GET /ws/sync` upgrades only after an explicit Origin exactly matches
+the loopback Host authority and the HttpOnly cookie or non-browser token header validates.
+Query parameters are not an authentication transport.
 The client may send `{"type":"resync","source_file":str,"graph_fingerprint":str|null}`;
 plain text, malformed JSON, non-object JSON, and unknown message types are keep-alive no-ops.
 The server sends either `{"type":"graph_update","graph":object,
@@ -147,10 +151,13 @@ spawn `_watcher_forever()` as a background task. Shutdown cancels that task and 
 completion, suppressing `CancelledError`.
 
 **Request middleware chain.** `add_middleware` prepends entries and Starlette later wraps in
-reverse, so runtime outer-to-inner order is `(CORSMiddleware in dev) →
-LocalTrustedHostMiddleware → LocalSessionMiddleware → _RequestIdMiddleware → route`.
+reverse, so runtime outer-to-inner order is `LocalTrustedHostMiddleware →
+LocalSessionMiddleware → _RequestIdMiddleware → route` in both dev and built-UI modes.
+Vite preserves the browser authority while proxying `/api` and `/ws`; no CORS middleware
+exposes a second request path around the exact authority checks.
 Host/auth failures therefore bypass request-ID binding/logging/header injection. The request-
-ID backstop returns `{"detail":"Internal server error"}` on an escaped exception; route
+ID backstop returns `{"detail":"Internal server error"}` with the selected safe request ID on
+an escaped exception; route
 catch-alls use the different `_INTERNAL_ERROR_DETAIL` string. `LocalSessionMiddleware`
 checks Origin before its `OPTIONS` exception, so a trusted preflight bypasses the token while
 an untrusted preflight still receives 403.
@@ -233,10 +240,27 @@ concurrent plain saves):
     on-disk save already succeeded, while an unexpected exception still propagates after
     the filesystem transaction and stale cleanup have committed.
 
+**Executable graph request containment.** Before work starts, every route that
+executes or profiles a client-supplied graph confines it to the configured
+project root. `_prepare_runtime_graph` flattens embedded submodels, fills a
+missing source from `haute.toml`, rejects a supplied `source_file` that resolves
+outside the project, and validates every path-bearing node in the flattened
+graph. Modelling train/dispersion/estimate and optimiser
+solve/estimate/frontier-auto-range use that helper before delegating to their
+services. Pipeline preview/trace/write-output, Explore, and OUTPUT dry-run
+likewise flatten before validating the submitted source and runtime paths at
+their route boundary (and use the configured source when their execution
+contract requires it). An HTTP body therefore cannot select the
+direct-execution external-pipeline re-rooting behavior. Runtime path adapters
+map `MalformedRuntimePathError` to HTTP 400 and
+`RuntimePathOutsideProjectError` to HTTP 403 by concrete exception type; error
+message wording is not part of the status-selection contract.
+
 **Preview / trace supersession**, both routed through the same `SupersessionCoordinator`
 pattern (`_preview_supersession`, `_trace_supersession`, each bounded by its own
 `asyncio.Semaphore` sized by `HAUTE_{PREVIEW,TRACE}_MAX_CONCURRENCY`, default 2):
-build a composite key from `(operation, source_file, source, graph_fingerprint, ...
+after request containment, build a composite key from
+`(operation, source_file, source, graph_fingerprint, ...
 operation-specific selectors)` → `run_latest()` → on preview, an
 `ExecutionCancellationToken` is threaded through so a superseded preview's in-flight work is
 asked to cancel cooperatively, not just abandoned. Trace has no corresponding token: its old
@@ -389,7 +413,10 @@ for route-level tests, and direct unit tests for the pure-function modules.
   full-reparse, self-write suppression).
 - **`test_security_gaps.py`** — local-session token generation/override/disable behaviour,
   HTTP and WebSocket Origin/token rejection, trusted hosts (including bracketed IPv6), and
-  session-token injection into the built SPA.
+  malformed authority cases.
+- **`test_local_security.py`** — exact bootstrap authority checks, cookie/API/WebSocket success,
+  forwarded/absent/mismatched rejection, query-token rejection, and secret-corpus coverage proving
+  the SPA, URLs, errors, and rejection surfaces contain no credential.
 - **`test_server_concurrency.py`**, **`test_save_lock_contract.py`** — concurrency
   correctness: the shared `save_lock` serialises concurrent saves/submodel operations; the
   WebSocket broadcaster's per-client serialization under concurrent rapid sends.

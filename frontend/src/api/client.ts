@@ -267,19 +267,6 @@ const DEFAULT_RETRY_POLICY: ResolvedRetryPolicy = {
   baseDelayMs: 100,
 }
 
-declare global {
-  interface Window {
-    __HAUTE_SESSION_TOKEN__?: string
-  }
-}
-
-export function hauteSessionToken(): string {
-  if (typeof window !== "undefined" && typeof window.__HAUTE_SESSION_TOKEN__ === "string") {
-    return window.__HAUTE_SESSION_TOKEN__
-  }
-  return import.meta.env.VITE_HAUTE_SESSION_TOKEN ?? ""
-}
-
 function requestHeaders(headers: HeadersInit | undefined): Record<string, string> {
   const resolved: Record<string, string> = {}
   if (headers instanceof Headers) {
@@ -292,11 +279,6 @@ function requestHeaders(headers: HeadersInit | undefined): Record<string, string
     }
   } else if (headers) {
     Object.assign(resolved, headers)
-  }
-
-  const token = hauteSessionToken()
-  if (token) {
-    resolved["x-haute-session-token"] = token
   }
   return resolved
 }
@@ -318,6 +300,36 @@ async function throwApiError(response: Response): Promise<never> {
     notifyHauteSessionExpired(detail)
   }
   throw new ApiError(`HTTP ${response.status}`, response.status, detail, body, rawDetail)
+}
+
+let sessionBootstrap: Promise<void> | null = null
+let sessionBootstrapped = false
+
+/**
+ * Establish the local UI's HttpOnly session cookie.
+ *
+ * The credential never enters JavaScript: the browser accepts it from the
+ * same-origin response and sends it automatically on API and WebSocket
+ * requests. Concurrent callers share one request.
+ */
+export function bootstrapHauteSession(force = false): Promise<void> {
+  if (force) sessionBootstrapped = false
+  if (sessionBootstrapped && !force) return Promise.resolve()
+  if (sessionBootstrap) return sessionBootstrap
+
+  sessionBootstrap = fetch("/api/session/bootstrap", {
+    method: "POST",
+    credentials: "same-origin",
+    cache: "no-store",
+  })
+    .then(async (response) => {
+      if (!response.ok) await throwApiError(response)
+      sessionBootstrapped = true
+    })
+    .finally(() => {
+      sessionBootstrap = null
+    })
+  return sessionBootstrap
 }
 
 const IDEMPOTENT_METHODS = new Set(["GET", "HEAD", "PUT", "DELETE", "OPTIONS"])
@@ -434,6 +446,7 @@ async function attemptFetch<T>(
   try {
     const res = await fetch(url, {
       ...fetchOptions,
+      credentials: fetchOptions.credentials ?? "same-origin",
       headers: requestHeaders(fetchOptions.headers),
       signal: controller.signal,
     })
@@ -512,6 +525,7 @@ export async function postRawStream(
 ): Promise<Response> {
   const response = await fetch(url, {
     method: "POST",
+    credentials: "same-origin",
     headers: requestHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify(body),
     signal: options.signal,

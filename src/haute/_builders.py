@@ -383,33 +383,17 @@ def _resolve_runtime_data_path(data_path: str) -> str:
         return data_path
 
     from haute._path_case_audit import warn_if_case_ambiguous
-    from haute._path_resolution import resolve_runtime_file_path
+    from haute._path_resolution import current_runtime_project_root, resolve_runtime_file_path
+
+    project_root = current_runtime_project_root()
 
     resolved = str(
         resolve_runtime_file_path(
             data_path,
             pipeline_dir=_configured_pipeline_dir(),
-            project_root=Path.cwd(),
+            project_root=project_root,
             prefer="project",
-            # NOTE: deliberately NOT enforce_project_root here. Only the
-            # ``pipeline_dir`` anchoring is the fix; the enforce flag is not.
-            # Unlike the cache-build route — which enforces a RAW GUI-relative
-            # path against the project root at the API boundary — this executor
-            # stage may receive a path ALREADY resolved by
-            # ``execution.canonical_dataframe_execution_graph`` against
-            # ``graph.source_file``, which can legitimately sit OUTSIDE cwd
-            # (``haute run <pipeline outside cwd>``, or a codegen round-trip
-            # re-execute as in tests/test_e2e.py::test_full_lifecycle).
-            # Enforcing against cwd would wrongly reject those valid, cached
-            # paths. Route-driven flows are still gated upstream by
-            # ``routes.pipeline._validate_runtime_input_paths``; the executor
-            # never enforced here pre-fix; cache hits and direct JSON fallback
-            # must both support an explicitly requested pipeline outside cwd,
-            # so leaving enforce off is status-quo-ante, not a new hole.
-            # (EXTERNAL_FILE additionally re-checks project-root containment
-            # inside ``load_external_object`` via
-            # ``_sandbox.validate_project_path``; that independent gate is
-            # unchanged by this anchoring.)
+            enforce_project_root=True,
         )
     )
     # Advisory only: no normalization is applied (pinned contract), but a
@@ -417,7 +401,7 @@ def _resolve_runtime_data_path(data_path: str) -> str:
     # will break when this checkout moves between case-sensitive and
     # case-insensitive filesystems — warn at the one seam every standard
     # input funnels through.
-    warn_if_case_ambiguous(resolved, stop=Path.cwd())
+    warn_if_case_ambiguous(resolved, stop=project_root)
     return resolved
 
 

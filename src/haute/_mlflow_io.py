@@ -952,6 +952,10 @@ def load_mlflow_model(
     valid_tasks = ("regression", "classification")
     if task not in valid_tasks:
         raise ValueError(f"Invalid task {task!r}. Expected one of: {', '.join(valid_tasks)}")
+    if artifact_path:
+        # This is a POSIX-style identifier within an MLflow run, not a local
+        # project path. Validate it before any cache lookup or network access.
+        _validate_artifact_path(artifact_path)
 
     # Fast-path cache check using the raw inputs — avoids calling
     # resolve_mlflow_source() (which hits the MLflow tracking server)

@@ -148,3 +148,28 @@ recorded total within a fixed numerical tolerance. Missing product counters are 
 zero. A deterministic CI-small smoke executes the same semantic graph across the supported
 execution profiles and reports the complete profile set. Larger 1m/10m scenarios remain opt-in and
 no hardware-specific throughput threshold is added by this contract.
+
+## Approved change contract — dependency advisory policy
+
+The committed Python environment and frontend lockfile are audited in the
+scheduled dependency workflow and whenever the audit inputs change.
+
+- Python uses a pinned `pip-audit` release against the locked project
+  environment. Because the scanner does not provide a stable severity for every
+  advisory source, every reported Python advisory is blocking unless explicitly
+  accepted; this is intentionally stricter than a high/critical-only threshold.
+- Frontend audit evaluates the full locked tree, including build/test
+  dependencies, and blocks reachable `high` or `critical` findings. Haute ships
+  a pre-built UI, so build dependencies are part of the supply-chain surface
+  even though they are not browser runtime dependencies.
+- A temporary acceptance is data, not a command-line suppression: it must name
+  the ecosystem, advisory and package, owner, exposure, compensating control,
+  approval date, and review deadline. Expired, malformed, duplicate, unused, or
+  package-mismatched acceptances fail the policy check.
+- Scanner execution failures and malformed/incomplete reports fail closed.
+  The scheduled workflow keeps its existing issue-alarm behavior so a newly
+  published advisory becomes visible without relying on an unrelated source
+  change.
+- Dependency upgrades must retain the nearest backend, frontend, package, and
+  browser compatibility evidence for the surface they affect. The repository
+  does not claim advisory closure until both locked reports pass this policy.

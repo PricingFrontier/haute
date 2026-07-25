@@ -36,6 +36,8 @@ from tests.conftest import (
     make_source_node,
 )
 
+pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
+
 
 def _clear_execution_memory_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Remove memory-budget env vars so tests exercise default policy."""

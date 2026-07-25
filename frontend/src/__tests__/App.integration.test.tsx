@@ -46,7 +46,7 @@ vi.mock("../api/client", async () => {
   const actual = await vi.importActual<typeof import("../api/client")>("../api/client")
   return {
     // Preserve real non-network exports so production `instanceof` checks and
-    // local-session token wiring keep their normal behaviour. Only network
+    // local-session event wiring keep their normal behaviour. Only network
     // functions are stubbed below.
     ApiError: actual.ApiError,
     ApiTimeoutError: actual.ApiTimeoutError,
@@ -55,7 +55,7 @@ vi.mock("../api/client", async () => {
     isHauteSessionExpiredReason: actual.isHauteSessionExpiredReason,
     isHauteSessionExpiredError: actual.isHauteSessionExpiredError,
     notifyHauteSessionExpired: actual.notifyHauteSessionExpired,
-    hauteSessionToken: actual.hauteSessionToken,
+    bootstrapHauteSession: vi.fn(() => Promise.resolve()),
     checkHauteSession: vi.fn(() => Promise.resolve({ ok: true })),
     // Pipeline endpoints
     loadPipeline: vi.fn(() => Promise.resolve({ nodes: [], edges: [], preamble: "" })),
