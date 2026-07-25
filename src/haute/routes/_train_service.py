@@ -781,7 +781,7 @@ class TrainService:
             raise
         finally:
             if execution_context is not None and not launch_started:
-                execution_context.release_admission()
+                execution_context.release_admission(preserve_primary_error=True)
 
         return TrainResponse(
             status="started",
@@ -930,7 +930,7 @@ class TrainService:
             raise
         finally:
             if execution_context is not None and not launch_started:
-                execution_context.release_admission()
+                execution_context.release_admission(preserve_primary_error=True)
 
         return DispersionEstimateResponse(status="started", job_id=job_id)
 

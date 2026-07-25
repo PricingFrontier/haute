@@ -596,6 +596,7 @@ class ExecutionMetricsPayload(BaseModel):
     checkpoint_count: int = Field(default=0, ge=0)
     chunk_count: int = Field(default=0, ge=0)
     observed_peak_rss_bytes: int | None = Field(default=None, ge=0)
+    cancellation_latency_ms: float | None = Field(default=None, ge=0)
 
 
 NodeExecutionStatus = Literal["ok", "error"]

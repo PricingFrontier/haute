@@ -598,7 +598,7 @@ async def trace_row(body: TraceRequest) -> JSONResponse:
         raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
     finally:
         if trace_context is not None:
-            trace_context.release_admission()
+            trace_context.release_admission(preserve_primary_error=True)
 
 
 @router.post("/pipeline/preview", response_model=PreviewNodeResponse)
@@ -834,7 +834,7 @@ async def preview_node(body: PreviewNodeRequest) -> PreviewNodeResponse:
         raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
     finally:
         if preview_context is not None:
-            preview_context.release_admission()
+            preview_context.release_admission(preserve_primary_error=True)
 
 
 @router.post("/pipeline/write-output", response_model=WriteOutputResponse)
@@ -936,4 +936,4 @@ async def write_output_node(body: WriteOutputRequest) -> WriteOutputResponse:
         raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
     finally:
         if output_context is not None:
-            output_context.release_admission()
+            output_context.release_admission(preserve_primary_error=True)

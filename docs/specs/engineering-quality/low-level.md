@@ -21,6 +21,7 @@
 | `frontend/playwright.config.ts` | Configures serial browser E2E projects, retries, artifacts, and readiness-managed local E2E server. |
 | `frontend/e2e/core-flows.spec.ts` | Playwright coverage for core browser flows. |
 | `frontend/e2e/data-io-nodes.spec.ts` | Playwright coverage for data-I/O node browser flows. |
+| `frontend/e2e/edge-join.spec.ts` | Deterministic full-browser Edge Join workflow: compatible-edge feedback and insertion, configuration/preview, save/reload topology, repeated joins, named API-input source-handle preservation, and downstream trace highlighting. |
 | `frontend/e2e/data-preview-scroll.benchmark.spec.ts` | `@benchmark` Playwright coverage for data-preview scrolling. |
 | `frontend/e2e/git-graph.spec.ts` | Playwright coverage for the Git graph. |
 | `frontend/e2e/git-sidebar-regression.spec.ts` | Playwright regression coverage for the Git sidebar. |
@@ -52,7 +53,7 @@
 | `scripts/regen_sanitize_parity_fixture.py` | Regenerates the committed sanitisation-parity fixture when deliberately requested. |
 | `scripts/run_frontend_e2e_server.py` | Starts and readiness-signals the backend/frontend process used by Playwright. |
 | `scripts/run_mutation_suite.py` | Implements mutation target selection, work planning, shard execution, merge, and survival-threshold reporting. |
-| `scripts/run_perf_suite.py` | Runs bounded Python performance tests and writes performance artifacts. |
+| `scripts/run_perf_suite.py` | Runs bounded Python performance tests and writes schema-3 workload, environment, resource, wall-time, and per-test evidence artifacts. |
 | `scripts/setup-worktree.sh` | Sets up a development worktree. |
 | `mutation/README.md` | Documents the maintained mutation-testing workflow and constraints. |
 | `mutation/targets.json` | Declares selected mutation targets, witness suites, and survival budgets. |
@@ -96,6 +97,12 @@
   Chromium is the normal project and Firefox is restricted to `@smoke` tests.
   CI retries twice, recording traces on first retry and screenshots/video on
   failure.
+- **Edge Join E2E fixture** is a project-isolated, generated pipeline with
+  deterministic small frames and one API-input frame whose raw label is the
+  persisted source handle. The workflow targets nodes, handles, and rendered
+  edge ids through stable locators and derives drag coordinates from live
+  handle bounds and rendered SVG path geometry; it does not use production
+  data, fixed sleeps, or hard-coded canvas coordinates.
 - **Pytest configuration** constrains collection to `tests/`, has strict
   markers/configuration/xfails, excludes `perf` by default, and recognises
   `slow`, `perf`, and `sandbox_strict` markers.
@@ -209,6 +216,12 @@
   other exact frontend test-group directories listed in the module map, run by
   `npm run test` or `npm run test:coverage`. Browser coverage lives in `frontend/e2e/`, run by
   `npm run test:e2e`, `npm run test:e2e:smoke`, or the benchmark command.
+- `frontend/e2e/edge-join.spec.ts` asserts user-observable outcomes across the
+  real canvas and backend: pre-release candidate feedback, insertion and role
+  handles, same-name-key configuration, joined preview columns/rows, persisted
+  split topology/config after reload, two joins on one branch after a second
+  reload, exact named API-input `sourceHandle`, and an Edge Join retained and
+  highlighted in a downstream trace. Private React state is not an oracle.
 - `tests/test_check_critical_coverage.py`, `tests/test_mutation_suite_runner.py`,
   `tests/test_run_perf_suite.py`, `tests/test_perf_suite_script.py`,
   `tests/test_memory_smoke_script.py`, `tests/test_frontend_bundle_budget_ci.py`,
@@ -235,3 +248,25 @@ output semantics, chosen strategy, source-width propagation, no unintended full 
 budgeted rejection. Only the CI-small fixture belongs in ordinary CI; 1m/10m cases remain opt-in
 performance-harness work. Baselines are recorded as artifacts first: numeric throughput, latency
 or memory thresholds may not gate hardware-diverse CI until reproducible baselines are established.
+
+### Performance report schema 3
+
+- `scripts/run_perf_suite.py` emits `schema_version=3`.
+- Top-level `environment` records the Python and platform versions plus installed Haute, Polars,
+  and pytest package versions; an unavailable distribution version is explicit `null`.
+- Top-level `workload` contains deterministic scenario names/scales, the sorted execution-profile
+  set, and per-test input/schema descriptors supplied through `haute_perf_evidence`.
+- Top-level `resources` contains independent RSS, aggregate input/output bytes, collect/checkpoint/
+  chunk counts, temporary-disk peak bytes, admission states, and payload bytes. Every unavailable
+  numeric counter is present as `null`.
+- Top-level `wall_time` contains `total_seconds`, `reported_phase_seconds`,
+  `runner_overhead_seconds`, and `partition_tolerance_seconds`; the first two partition fields sum
+  to total within the tolerance or report construction fails.
+- The existing `tests` records retain their full bounded evidence maps. Evidence values must be
+  JSON-safe; malformed evidence fails the performance lane rather than being stringified.
+- `tests/performance/test_polars_scale_scenario.py` records the complete resource descriptor for
+  the generated join/training scenario. A CI-small cross-profile case uses a fixed graph and fixed
+  data and records every `ExecutionProfile` without multiplying the 1m/10m input generation.
+
+`tests/test_run_perf_suite.py` and `tests/test_perf_suite_script.py` pin schema completeness,
+explicit `null` values, deterministic profile ordering, and exact wall-time partitioning.

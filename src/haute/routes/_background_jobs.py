@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import Any, cast
 
 from haute._execution_context import ExecutionCancellationToken
+from haute._logging import get_logger
 from haute._worker_isolation import (
     IsolatedWorkerConfig,
     IsolatedWorkerCrashedError,
@@ -17,6 +18,8 @@ from haute._worker_isolation import (
     run_isolated_worker,
 )
 from haute.routes._job_lifecycle import JobLifecycle, TerminalReason
+
+logger = get_logger(component="server.background_jobs")
 
 
 class BackgroundJobStoppedError(RuntimeError):
@@ -198,6 +201,21 @@ class IsolatedJobSupervisor:
             except IsolatedWorkerError as exc:
                 self._transition_failure(job_id, exc, start_time=start_time)
                 return
+            except Exception as exc:
+                try:
+                    self._lifecycle.transition(
+                        job_id,
+                        to="error",
+                        message="Unexpected isolated worker supervisor failure.",
+                        fields={"worker_error_class": type(exc).__name__},
+                        elapsed_seconds=time.monotonic() - start_time,
+                    )
+                except Exception:
+                    logger.exception(
+                        "isolated_job_unexpected_failure_transition_failed",
+                        job_id=job_id,
+                    )
+                raise
             self._lifecycle.transition(
                 job_id,
                 to="completed",

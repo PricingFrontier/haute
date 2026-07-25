@@ -243,3 +243,27 @@ state machine.
 Acceptance covers namespace closure, same-identity join, different-identity concurrency,
 cancel/complete races, progress isolation, TTL independence from snapshots, bounded job payloads,
 and redaction.
+
+## Approved execution-housekeeping contract
+
+Execution-owned artifacts that can survive a process crash live only in explicitly named Haute
+artifact roots. Every reapable child directory contains a versioned ownership marker written at
+creation. Server startup may remove a child only when the root is explicitly registered, the child
+is a direct non-symlink descendant, its marker is valid for the expected owner, and its marker age
+exceeds the configured stale interval. Unmarked directories, malformed markers, symlinks,
+unexpected owners, and unrelated operating-system temporary data are preserved.
+
+Optimiser apply-result and ratebook-factor directories adopt this marker contract and are reaped
+from their existing dedicated roots during server lifespan startup. Ordinary job eviction and
+artifact-handle cleanup remain the primary live-process lifecycle; startup reaping is only the
+crash/restart backstop.
+
+Completed heavy runtime objects remain bounded by the existing closed key set and short TTL.
+Their expiry timestamp and clearing timestamp remain observable in job metadata, while artifact
+handles survive long enough for ordinary TTL eviction to invoke their typed cleaners. Repeated
+status reads may extend heavy-object retention only up to the existing metadata lifetime.
+
+An isolated-job supervisor must transition an unexpected ordinary parent-side exception to
+`error` before reporting it to the thread exception hook. No supported supervisor failure leaves a
+job permanently `running`. Terminal-transition fault tests cover status-store failure,
+supersession races, and cleanup scheduling without replacing the original worker error.

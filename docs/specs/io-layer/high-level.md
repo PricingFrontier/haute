@@ -397,3 +397,18 @@ describe the shipped implementation until the 0.7.0 release reconciles them.
   cache identity/query separation, atomic refresh and concurrent-reader tests; Polars-code
   ordering and row-local rejection tests; output atomicity and explicit-write tests; and
   end-to-end parse/save/reload tests containing only `dataInput`/`dataOutput`.
+
+## Approved partitioned-Parquet execution boundary
+
+A direct File or Lakehouse `dataInput` using the Parquet scanner may point at a directory-backed
+dataset. Hive partition discovery is an explicit validated Polars argument, not a path-name guess
+owned by Haute. A partition predicate written in the input's Polars body participates in ordinary
+column-demand analysis; the predicate column is retained while unrelated payload columns are
+projected away. The resulting predicate and projection must be visible at the Parquet scan in the
+optimised lazy plan before any execution-engine checkpoint or materialisation.
+
+Haute does not enumerate and eagerly concatenate partition files, infer partition values itself,
+or promise pruning for opaque/global input code. Invalid directories, inconsistent partition
+schemas, or unsupported scanner arguments propagate as typed configuration/Polars failures.
+Regression tests use at least two partitions and an unrelated wide column, then prove both the
+selected file set and projected scan width.

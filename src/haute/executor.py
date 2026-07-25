@@ -59,8 +59,8 @@ from haute._rating import _apply_banding  # noqa: F401 — re-exported for tests
 from haute._registry import ensure_registry_ready
 from haute._sandbox import safe_globals, validate_user_code
 from haute._types import NodeData
+from haute.errors import PreambleError
 from haute.graph_utils import (
-    HauteError,
     NodeType,
     PipelineGraph,
     _execute_eager_core,
@@ -164,14 +164,6 @@ def _pipeline_dir(graph: PipelineGraph) -> Path | None:  # pragma: no mutate
     if not p.is_absolute():
         p = Path.cwd() / p
     return p.resolve().parent
-
-
-class PreambleError(HauteError):
-    """Raised when the preamble (imports / utility code) fails to compile."""
-
-    def __init__(self, message: str, source_line: int | None = None):  # pragma: no mutate
-        super().__init__(message)
-        self.source_line = source_line
 
 
 class PreviewProjectionError(ValueError):
@@ -978,7 +970,7 @@ def execute_graph(
                 execution_context=admitted_context,
             )
         finally:
-            admitted_context.release_admission()
+            admitted_context.release_admission(preserve_primary_error=True)
 
     # Include enforce_contracts in the cache key so a toggle flips
     # between distinct cache slots instead of serving a stale entry
@@ -1310,6 +1302,10 @@ def execute_graph(
                     )
             return node_warnings
 
+        execution_context.fault_point(
+            "response_shaping",
+            node_id=target_node_id,
+        )
         results: dict[str, NodeResult] = {}
         for nid in result_order:
             if nid in errors:
@@ -1494,6 +1490,13 @@ def _eager_execute(
             memo=fingerprint_memo,
         )
     except PreambleError as exc:
+        active_profile = (
+            execution_context.profile
+            if execution_context is not None
+            else ExecutionProfile.PREVIEW_EAGER
+        )
+        if active_profile != ExecutionProfile.PREVIEW_EAGER:
+            raise
         # Don't abort — let non-preamble nodes (data sources, model scoring,
         # etc.) execute normally.  The error will surface on transform /
         # source-switch nodes that actually need the preamble bindings.
@@ -1902,6 +1905,10 @@ def write_data_output(
             staging_out.replace(out)
         logger.info("data_output_written", path=path, format=config["format"])
 
+        execution_context.fault_point(
+            "response_shaping",
+            node_id=output_node_id,
+        )
         return WriteOutputResponse(
             status="ok",
             message=f"Wrote {row_count:,} rows to {path}",

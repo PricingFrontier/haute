@@ -92,12 +92,80 @@ class ExecutionError(HauteError):
     """Runtime execution failure."""
 
 
+class PreambleError(ExecutionError):
+    """Raised when the pipeline preamble fails to compile or execute."""
+
+    error_code = "preamble_failed"
+    public_fields = ("source_line",)
+
+    def __init__(self, message: str, source_line: int | None = None) -> None:
+        self.source_line = source_line
+        super().__init__(message)
+
+
+class ContractResolutionError(ExecutionError):
+    """Raised when profiled production execution cannot resolve a node contract."""
+
+    error_code = "contract_resolution_failed"
+    public_fields = ("node_id", "node_type", "failure_kind")
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        node_id: str,
+        node_type: str,
+        failure_kind: str,
+    ) -> None:
+        self.node_id = node_id
+        self.node_type = node_type
+        self.failure_kind = failure_kind
+        super().__init__(
+            message,
+            node_id=node_id,
+            node_type=node_type,
+            failure_kind=failure_kind,
+        )
+
+
 class BoundedMemoryUnsupportedError(ExecutionError):
     """Raised when a bounded-memory execution path cannot stay bounded."""
 
 
 class ChunkPlanUnsupportedError(BoundedMemoryUnsupportedError):
     """Raised when a graph cannot prove a safe chunked execution plan."""
+
+
+class ChunkMemoryRiskError(BoundedMemoryUnsupportedError):
+    """Raised when even one estimated target row exceeds a chunk byte budget."""
+
+    error_code = "chunk_memory_risk"
+    public_fields = (
+        "target_node_id",
+        "reason_code",
+        "estimated_target_row_bytes",
+        "target_chunk_bytes",
+    )
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        target_node_id: str,
+        estimated_target_row_bytes: int,
+        target_chunk_bytes: int,
+    ) -> None:
+        self.target_node_id = target_node_id
+        self.reason_code = "single_row_exceeds_budget"
+        self.estimated_target_row_bytes = estimated_target_row_bytes
+        self.target_chunk_bytes = target_chunk_bytes
+        super().__init__(
+            message,
+            target_node_id=target_node_id,
+            reason_code=self.reason_code,
+            estimated_target_row_bytes=estimated_target_row_bytes,
+            target_chunk_bytes=target_chunk_bytes,
+        )
 
 
 class GroupByExecutionUnsupportedError(BoundedMemoryUnsupportedError):

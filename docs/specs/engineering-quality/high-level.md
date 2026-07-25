@@ -134,6 +134,21 @@ strategy selection, source-width handling, absence of unintended full collection
 rejection. The 10m case is never default CI, and no hardware-specific numeric performance gate is
 introduced until stable baselines exist.
 
+## Approved reproducible execution-evidence contract
+
+The Python performance report is a comparison artifact, not just a pass/fail wrapper. Its next
+schema records the exact workload scale and profile set, input rows/bytes/schema widths, package
+and platform versions, independent peak RSS, execution counters and unavailable states,
+temporary-disk evidence, admission state, response-payload size, and the command/budgets already
+recorded today. Per-test evidence remains available so a top-level summary can be traced back to
+the scenario that produced it.
+
+Wall time is partitioned into reported pytest phase time and runner overhead; their sum equals the
+recorded total within a fixed numerical tolerance. Missing product counters are JSON `null`, never
+zero. A deterministic CI-small smoke executes the same semantic graph across the supported
+execution profiles and reports the complete profile set. Larger 1m/10m scenarios remain opt-in and
+no hardware-specific throughput threshold is added by this contract.
+
 ## Approved change contract — dependency advisory policy
 
 The committed Python environment and frontend lockfile are audited in the

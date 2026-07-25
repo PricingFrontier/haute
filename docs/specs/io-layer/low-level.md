@@ -566,3 +566,19 @@ unavailable, never guessed.
   unregistered leg. Per-format integration tests cover direct read, cache build where declared,
   cached read, sink/write where declared, schema/dtype preservation, engine absence, and
   unsupported-leg rejection.
+
+## Approved partitioned-Parquet execution boundary
+
+- `read_polars_input` passes registry-validated Parquet scanner arguments unchanged.
+  `path` may resolve to a dataset directory; it is still rejected if it is a URL or contains a
+  parent traversal segment.
+- `hive_partitioning` is owned by the pinned `polars.scan_parquet` signature extracted into
+  `_polars_io_arguments.json`. No Haute-only duplicate argument or partition parser is added.
+- `_build_data_input` applies source projection and then the input Polars body to one lazy scan.
+  Projection analysis must retain columns referenced by a row-local partition predicate. Polars'
+  optimiser is responsible for pushing both the predicate and final column projection into the
+  scan.
+- The integration test creates `partition=value/*.parquet` children, filters one partition,
+  demands one payload column, and asserts the optimised plan names only the selected file and
+  reports a projected width smaller than the dataset schema. The collected result is checked for
+  semantic correctness.
