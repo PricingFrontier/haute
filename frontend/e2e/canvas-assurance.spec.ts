@@ -28,6 +28,9 @@ const narrowViewport = { width: 1024, height: 768 }
 const mixedBandingNarrowSnapshot = process.platform === "linux"
   ? "mixed-banding-narrow-1024x768-linux.png"
   : "mixed-banding-narrow-1024x768.png"
+const rebuiltRatingNarrowSnapshot = process.platform === "linux"
+  ? "rebuilt-three-factor-rating-narrow-1024x768-linux.png"
+  : "rebuilt-three-factor-rating-narrow-1024x768.png"
 const saveShortcut = process.platform === "darwin" ? "Meta+s" : "Control+s"
 
 type JsonObject = Record<string, unknown>
@@ -172,7 +175,7 @@ test.describe("frontend canvas assurance", () => {
     await page.setViewportSize(narrowViewport)
     await expectCanvasScreenshot(
       ratingPanel,
-      "rebuilt-three-factor-rating-narrow-1024x768.png",
+      rebuiltRatingNarrowSnapshot,
     )
     await page.setViewportSize(desktopViewport)
 
