@@ -16,6 +16,7 @@ from haute._polars_dtypes import dtype_to_spec, parse_dtype, parse_schema_mappin
 from haute._polars_io_registry import (
     FORMATS,
     FORMATS_BY_NAME,
+    IoFormat,
     PolarsIoConfigError,
     allowed_arguments,
     input_callable_key,
@@ -147,6 +148,17 @@ class TestRegistrySchemaCompleteness:
             # one side; each owned name must exist somewhere for the format.
             missing = {n for n in fmt.source_owned_args if n not in all_args}
             assert not missing, f"{fmt.name}: source_owned_args not in any signature: {missing}"
+
+    @pytest.mark.parametrize("extension", ["csv", ".CSV", "", ".csv/backup"])
+    def test_registry_rejects_noncanonical_extensions(self, extension: str) -> None:
+        with pytest.raises(ValueError, match="lower-case leading-dot suffix"):
+            IoFormat(
+                name="bad",
+                label="Bad",
+                source_kind="path",
+                reader="read_csv",
+                extensions=(extension,),
+            )
 
     def test_allowed_arguments_exclude_the_excluded_classes(self) -> None:
         for fmt in FORMATS:

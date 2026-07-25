@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest"
 import type { Node, Edge } from "@xyflow/react"
+import type { PipelineEdge } from "../../types/node"
 import { computeNextNodeId, normalizeEdges } from "../graphHelpers"
 
 // ---------------------------------------------------------------------------
@@ -83,6 +84,25 @@ describe("normalizeEdges", () => {
     expect(result[0].source).toBe("a")
     expect(result[0].target).toBe("b")
     expect(result[0].style).toEqual({ stroke: "red" })
+  })
+
+  it("preserves authored submodel boundary ports", () => {
+    const edges: PipelineEdge[] = [
+      {
+        id: "e1",
+        source: "submodel__pricing",
+        target: "submodel__scoring",
+        sourceHandle: "out__priced",
+        targetHandle: "in__score",
+        sourcePort: "quotes",
+        targetPort: "base",
+      },
+    ]
+
+    const result = normalizeEdges(edges)
+
+    expect(result[0].sourcePort).toBe("quotes")
+    expect(result[0].targetPort).toBe("base")
   })
 
   it("does not mutate the original array", () => {

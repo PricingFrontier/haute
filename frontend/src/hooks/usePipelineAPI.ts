@@ -1,5 +1,5 @@
 import { useEffect, useCallback, useRef, useState } from "react"
-import type { Node, Edge } from "@xyflow/react"
+import type { Node } from "@xyflow/react"
 import type { PreviewData } from "../panels/DataPreview"
 import { makePreviewData } from "../utils/makePreviewData"
 import { ApiError, loadPipeline, previewNode, savePipeline } from "../api/client"
@@ -15,6 +15,7 @@ import useNodeResultsStore from "../stores/useNodeResultsStore"
 import { validateConfigRefs, formatConfigRefWarnings } from "../utils/validateConfigRefs"
 import { findFirstInvalidEdgeJoin, formatEdgeJoinValidationIssue } from "../utils/edgeJoinValidation"
 import { effectiveNodeType, nodeData } from "../types/node"
+import type { PipelineEdge } from "../types/node"
 import { NODE_TYPES } from "../utils/nodeTypes"
 import { parsePipelineResponse } from "../types/guards"
 import { columnsEqualByFingerprint, type ColumnFingerprintInput } from "../utils/columnFingerprint"
@@ -23,11 +24,11 @@ export { columnFingerprint } from "../utils/columnFingerprint"
 
 interface PipelineAPIParams {
   selectedNode: Node | null
-  graphRef: React.MutableRefObject<{ nodes: Node[]; edges: Edge[] }>
-  parentGraphRef: React.MutableRefObject<{ nodes: Node[]; edges: Edge[]; submodels: Record<string, unknown> } | null>
+  graphRef: React.MutableRefObject<{ nodes: Node[]; edges: PipelineEdge[] }>
+  parentGraphRef: React.MutableRefObject<{ nodes: Node[]; edges: PipelineEdge[]; submodels: Record<string, unknown> } | null>
   submodelsRef: React.MutableRefObject<Record<string, unknown>>
   setNodesRaw: (updater: Node[] | ((nds: Node[]) => Node[])) => void
-  setEdgesRaw: (edges: Edge[]) => void
+  setEdgesRaw: (edges: PipelineEdge[]) => void
   setSubmodelsRaw?: (submodels: Record<string, unknown>) => void
   setCurrentSourceFile?: (sourceFile: string | null) => void
   setPreamble: (p: string) => void

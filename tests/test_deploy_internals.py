@@ -438,6 +438,36 @@ class TestHauteModelPredict:
 class TestInferInputSchema:
     """Tests for infer_input_schema edge cases."""
 
+    def test_ndjson_api_input_uses_json_shape_reader(self):
+        """The .ndjson alias follows the same deploy schema path as .jsonl."""
+        from haute.deploy import _schema
+
+        graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "src",
+                        "data": {
+                            "label": "src",
+                            "nodeType": "apiInput",
+                            "config": {"path": "data.ndjson"},
+                        },
+                    },
+                ],
+            }
+        )
+        expected = pl.LazyFrame({"value": [1]})
+
+        with (
+            patch.object(_schema, "read_source", return_value=expected) as read_source,
+            patch.object(_schema, "read_data_source") as read_data_source,
+        ):
+            result = _schema._read_input_source(graph, graph.nodes[0], "data.ndjson")
+
+        assert result is expected
+        read_source.assert_called_once_with("data.ndjson")
+        read_data_source.assert_not_called()
+
     def test_node_with_no_path_raises(self):
         """Input node with empty path must raise ValueError."""
         from haute.deploy._schema import infer_input_schema
@@ -2122,6 +2152,14 @@ class TestScoreGraphOptimiserApplyRemap:
                                 "__factor_group__": "North",
                                 "optimal_scenario_value": 1.10,
                             },
+                        ]
+                    },
+                    "factor_dtypes": {
+                        "region_band": [
+                            {
+                                "column": "region_band",
+                                "dtype": {"kind": "String"},
+                            }
                         ]
                     },
                 }

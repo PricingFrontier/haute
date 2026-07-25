@@ -654,3 +654,24 @@ contract through the following low-level boundaries.
   semantics-preserving candidate demonstrates the required relative
   improvement. Stat-cache entry bounding is a retention invariant and is not
   presented as a lookup-speed optimisation.
+
+## Dataframe-cache first-consume safety
+
+`DataFrameExecutionCache.store_artifact` inserts the complete
+`DataFrameExecutionCacheEntry` and then checks the retained object directly
+under `_lock`; it does not call the validating `get` override.
+
+A public `scan_stored_entry` method accepts that exact stored entry. Under
+`_lock` it verifies object identity, marks the entry most-recently used,
+increments the `(cache_key, path)` scan refcount, and pins the key without
+calling `_validate_entry`. It then shares the normal scan construction and
+finalizer/release path. `materialize_lazy_frame_with_cache` calls this method
+before releasing `materialization_lock`.
+
+Public `get`/`scan` continue to call `_evict_if_invalid`. Focused tests patch
+the validator to fail if invoked by store/first-consume, then damage the
+artifact and assert that an ordinary later lookup detects and evicts it.
+`read_parquet_metadata` has already reopened the atomically published artifact
+through PyArrow and read its footer and schema before `store_artifact` is
+called; repeating the Polars schema-only validator would not prove data-page
+integrity and is deliberately not a second corruption boundary.

@@ -36,8 +36,12 @@ from haute._config_builder import (
 from haute._config_io import find_config_by_func_name, has_config_folder
 from haute._graph_builders import _build_edges, _build_rf_nodes
 from haute._io import read_user_text
-from haute._logging import get_logger
+from haute._parser_conservation import (
+    assert_parser_structure_conserved,
+    missing_submodel_error,
+)
 from haute._parser_submodels import (
+    build_unique_submodel_maps,
     extract_submodel_calls,
     merge_submodels,
     parse_submodel_source,
@@ -45,8 +49,6 @@ from haute._parser_submodels import (
 from haute._submodel_paths import resolve_submodel_reference
 from haute._types import DECORATOR_TO_NODE_TYPE, NodeType, PipelineGraph
 from haute.errors import ParseError
-
-logger = get_logger(component="parser.regex")
 
 # ---------------------------------------------------------------------------
 # Compiled patterns
@@ -727,27 +729,43 @@ def _recover_submodel_paths(source: str) -> list[str]:
 
     The submodel calls live at module top level, so a syntax error deeper in
     a function body usually leaves them intact and extractable.  The scan is
-    scoped to each submodel call span: an unparseable span (or a non-literal
-    path that cannot be resolved offline) is skipped rather than aborting the
-    whole recovery, mirroring how the healthy path resolves literal paths.
+    scoped to each submodel call span. Visible spans that cannot be recovered
+    are accumulated into one typed diagnostic; returning the other references
+    while silently dropping these would make the fallback graph unsafe to
+    save.
     """
     paths: list[str] = []
+    unrecoverable: list[dict[str, str | int]] = []
     for m in _iter_top_level_anchor_matches(source, _RE_SUBMODEL_ANCHOR):
         line_no = source.count("\n", 0, m.start()) + 1
-        end = _scan_call_end(source, m.end() - 1, line_no)
-        while (chain := _RE_CHAIN_LINK.match(source, end)) is not None:
-            end = _scan_call_end(source, chain.end() - 1, line_no)
+        try:
+            end = _scan_call_end(source, m.end() - 1, line_no)
+            while (chain := _RE_CHAIN_LINK.match(source, end)) is not None:
+                end = _scan_call_end(source, chain.end() - 1, line_no)
+        except ParseError:
+            unrecoverable.append(
+                {
+                    "line": line_no,
+                    "source": source[m.start() : _line_end(source, m.start())].strip(),
+                }
+            )
+            continue
         span = source[m.start() : end]
         try:
             span_tree = ast.parse(span)
         except SyntaxError:
+            unrecoverable.append({"line": line_no, "source": span.strip()})
             continue
         try:
             paths.extend(extract_submodel_calls(span_tree))
         except ParseError:
-            # Non-literal path in an already-broken file — unrecoverable
-            # offline; skip so the rest of the graph still comes back.
+            unrecoverable.append({"line": line_no, "source": span.strip()})
             continue
+    if unrecoverable:
+        raise ParseError(
+            "Regex fallback could not recover submodel reference(s).",
+            unrecoverable_references=unrecoverable,
+        )
     return paths
 
 
@@ -760,15 +778,15 @@ def _recover_submodels(
     submodel_base_dir: Path,
     *,
     flatten: bool,
-) -> PipelineGraph:
+) -> tuple[PipelineGraph, dict[str, PipelineGraph], dict[str, str], list[str]]:
     """Recover and merge submodels for the fallback graph (healthy-path parity)."""
     submodel_paths = _recover_submodel_paths(source)
     if not submodel_paths:
-        return graph
+        return graph, {}, {}, []
 
-    submodel_graphs: dict[str, PipelineGraph] = {}
-    submodel_files: dict[str, str] = {}
     resolved_root = submodel_base_dir.resolve()
+    resolved: list[tuple[str, Path, Path]] = []
+    missing_paths: list[str] = []
 
     for rel_path in submodel_paths:
         sm_filepath, sm_base_dir = resolve_submodel_reference(
@@ -777,29 +795,27 @@ def _recover_submodels(
             project_root=resolved_root,
         )
         if not sm_filepath.is_file():
+            missing_paths.append(rel_path)
             continue
+        resolved.append((rel_path, sm_filepath, sm_base_dir))
+
+    if missing_paths:
+        raise missing_submodel_error(missing_paths)
+
+    parsed_submodels: list[tuple[str, PipelineGraph]] = []
+    for rel_path, sm_filepath, sm_base_dir in resolved:
         sm_source = read_user_text(sm_filepath)
         sm_graph = parse_submodel_source(
             sm_source,
             source_file=str(sm_filepath),
             _base_dir=sm_base_dir,
         )
-        sm_name = sm_graph.pipeline_name or sm_filepath.stem
-        if sm_name in submodel_graphs:
-            logger.warning("submodel_name_collision", name=sm_name)
-        submodel_graphs[sm_name] = sm_graph
-        submodel_files[sm_name] = rel_path
+        parsed_submodels.append((rel_path, sm_graph))
 
-    if not submodel_graphs:
-        return graph
+    submodel_graphs, submodel_files = build_unique_submodel_maps(parsed_submodels)
 
-    return merge_submodels(
-        graph,
-        submodel_graphs,
-        submodel_files,
-        connect_pairs,
-        flatten=flatten,
-    )
+    merged = merge_submodels(graph, submodel_graphs, submodel_files, connect_pairs, flatten=flatten)
+    return merged, submodel_graphs, submodel_files, submodel_paths
 
 
 # ---------------------------------------------------------------------------
@@ -939,13 +955,20 @@ def fallback_parse(
         source_file=source_file,
         warning=f"File has syntax errors (line {syntax_error.lineno}); parsed via regex fallback",
     )
+    graph._parser_parameter_names = {
+        str(node["func_name"]): [str(name) for name in node.get("param_names", ())]
+        for node in raw_nodes
+    }
 
     # Recover submodels so a syntax error in the main file does not silently
     # discard every submodel node and edge.  Only runs when a base dir is
     # available to resolve the referenced files against.
-    submodel_base_dir = _submodel_base_dir or _base_dir
+    submodel_base_dir = _submodel_base_dir or _base_dir or base_dir
+    submodel_graphs: dict[str, PipelineGraph] = {}
+    submodel_files: dict[str, str] = {}
+    submodel_paths: list[str] = []
     if submodel_base_dir is not None:
-        graph = _recover_submodels(
+        graph, submodel_graphs, submodel_files, submodel_paths = _recover_submodels(
             graph,
             source,
             source_file,
@@ -954,5 +977,15 @@ def fallback_parse(
             submodel_base_dir,
             flatten=flatten,
         )
+
+    assert_parser_structure_conserved(
+        raw_nodes=raw_nodes,
+        explicit_connects=connect_pairs,
+        root_nodes=rf_nodes,
+        root_edges=edges,
+        submodel_paths=submodel_paths,
+        submodel_graphs=submodel_graphs,
+        submodel_files=submodel_files,
+    )
 
     return graph

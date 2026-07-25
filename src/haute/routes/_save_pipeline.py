@@ -27,6 +27,7 @@ from typing import Any, NamedTuple
 
 from fastapi import HTTPException
 
+from haute._api_input_schema import is_json_api_input_path
 from haute._file_ops import Writer, atomic_write_bytes
 from haute._logging import get_logger
 from haute._submodel_paths import resolve_submodel_reference
@@ -797,7 +798,7 @@ class SavePipelineService:
                 continue
             cfg = node.data.config
             path = cfg.get("path", "") or ""
-            if not isinstance(path, str) or not path.endswith((".json", ".jsonl")):
+            if not isinstance(path, str) or not is_json_api_input_path(path):
                 continue
             tables = cfg.get("tables")
             if isinstance(tables, list) and tables:
@@ -815,7 +816,8 @@ class SavePipelineService:
     def _mirror_api_input_caches(self, graph: PipelineGraph) -> None:
         """Promote each API Input node's volatile cache to the committed layer.
 
-        Walks every API Input node backed by a JSON/JSONL data file and
+        Walks every API Input node backed by a JSON or newline-delimited JSON
+        data file and
         invokes :func:`haute._json_flatten.mirror_cache_to_committed`.
         Mirror semantics (test plan):
 
@@ -838,7 +840,7 @@ class SavePipelineService:
                 continue
             cfg = node.data.config
             path = cfg.get("path", "")
-            if not path.endswith((".json", ".jsonl")):
+            if not isinstance(path, str) or not is_json_api_input_path(path):
                 continue
             data_path = (self._root / path).resolve()
             if not data_path.is_relative_to(self._root):

@@ -37,6 +37,8 @@ const mockGetJsonCacheProgress = vi.fn()
 const mockDeleteJsonCache = vi.fn()
 const mockCancelJsonCache = vi.fn()
 const mockInferJsonCacheSchema = vi.fn()
+const mockFetchSchemaForPath = vi.fn()
+const schemaFetchState = vi.hoisted(() => ({ error: null as string | null }))
 
 vi.mock("../../api/client", () => ({
   fetchDatabricksSchema: vi.fn(),
@@ -61,7 +63,8 @@ vi.mock("../../hooks/useSchemaFetch", () => ({
     schema: initialPath ? { columns: [{ name: "col1", dtype: "Int64" }, { name: "col2", dtype: "String" }], preview: [], row_count: 10 } : null,
     setSchema: vi.fn(),
     loading: false,
-    fetchForPath: vi.fn(),
+    error: schemaFetchState.error,
+    fetchForPath: mockFetchSchemaForPath,
   }),
 }))
 
@@ -73,6 +76,8 @@ beforeEach(() => {
   mockDeleteJsonCache.mockReset()
   mockCancelJsonCache.mockReset()
   mockInferJsonCacheSchema.mockReset()
+  mockFetchSchemaForPath.mockReset()
+  schemaFetchState.error = null
   DEFAULT_PROPS.onUpdate.mockClear()
 })
 
@@ -98,15 +103,26 @@ const CACHEABLE_TABLE = {
 }
 
 describe("ApiInputEditor", () => {
+  it("renders a safe schema-fetch error", () => {
+    schemaFetchState.error = "The selected file cannot be read"
+    render(<ApiInputEditor {...DEFAULT_PROPS} config={{ path: "data/input.json" }} />)
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Could not fetch schema: The selected file cannot be read",
+    )
+    fireEvent.click(screen.getByRole("button", { name: "Retry schema" }))
+    expect(mockFetchSchemaForPath).toHaveBeenCalledWith("data/input.json")
+  })
+
   it("renders API input banner text", () => {
     render(<ApiInputEditor {...DEFAULT_PROPS} />)
     expect(screen.getByText("This node receives live API requests at deploy time")).toBeTruthy()
   })
 
-  it("FileBrowser rendered with .json/.jsonl extensions filter", () => {
+  it("FileBrowser renders the complete JSON-family extensions filter", () => {
     render(<ApiInputEditor {...DEFAULT_PROPS} />)
     expect(screen.getByTestId("file-browser")).toBeTruthy()
-    expect(screen.getByTestId("extensions").textContent).toBe(".json,.jsonl")
+    expect(screen.getByTestId("extensions").textContent).toBe(".json,.jsonl,.ndjson")
+    expect(screen.getByText(".json, .jsonl, or .ndjson")).toBeTruthy()
   })
 
 
@@ -117,6 +133,11 @@ describe("ApiInputEditor", () => {
 
   it("cache button shown for .jsonl files", () => {
     render(<ApiInputEditor {...DEFAULT_PROPS} config={{ path: "data/input.jsonl" }} />)
+    expect(screen.getByText("Cache as Parquet")).toBeTruthy()
+  })
+
+  it("cache button shown for .ndjson files", () => {
+    render(<ApiInputEditor {...DEFAULT_PROPS} config={{ path: "data/input.NDJSON" }} />)
     expect(screen.getByText("Cache as Parquet")).toBeTruthy()
   })
 

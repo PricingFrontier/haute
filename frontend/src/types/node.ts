@@ -1,6 +1,6 @@
 /** Shared node data shape used across hooks and components. */
 
-import type { Node } from "@xyflow/react"
+import type { Edge, Node } from "@xyflow/react"
 import type { NodeTypeValue } from "../utils/nodeTypes"
 
 export interface ColumnInfo {
@@ -58,6 +58,19 @@ export interface HauteNodeData extends Record<string, unknown> {
 
 export type PipelineNodeData = HauteNodeData
 export type PipelineFlowNode = Node<PipelineNodeData>
+
+/**
+ * Persisted pipeline edge shape.
+ *
+ * A submodel boundary consumes sourceHandle/targetHandle to identify the
+ * child node represented by the placeholder. These supplemental fields keep
+ * the authored connect ports alive until the backend flattens or regenerates
+ * the graph.
+ */
+export type PipelineEdge = Edge & {
+  sourcePort?: string | null
+  targetPort?: string | null
+}
 
 export interface SubmodelNodeData extends HauteNodeData {
   config?: {

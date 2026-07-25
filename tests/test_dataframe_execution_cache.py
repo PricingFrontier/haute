@@ -18,6 +18,7 @@ from haute._execution_context import ExecutionProfile
 from haute._hashing import content_hash_bytes
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute.execution import (
+    CacheArtifactCorruptError,
     CacheArtifactTooLargeError,
     DataFrameExecutionCache,
     DataFrameExecutionCacheKey,
@@ -668,6 +669,46 @@ def test_materialize_lazy_frame_with_cache_does_not_store_failed_collect(
 
     assert cache.get(key) is None
     assert list(tmp_path.rglob("*.parquet")) == []
+
+
+def test_fresh_artifact_first_consume_does_not_reopen_through_validator(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Store + first consume bypass transient reopen validation; later hits do not."""
+    cache = DataFrameExecutionCache(root=tmp_path, max_entries=4, max_bytes=10_000_000)
+    key = dataframe_execution_cache_key(
+        _graph(),
+        node_id="target",
+        namespace="unit",
+        source="batch",
+        profile=ExecutionProfile.LAZY_SINK,
+        input_fingerprint="input:v1",
+    )
+    validations = 0
+
+    def fail_reopen(_self: DataFrameExecutionCache, _entry: object) -> None:
+        nonlocal validations
+        validations += 1
+        raise CacheArtifactCorruptError("transient reopen failure")
+
+    monkeypatch.setattr(DataFrameExecutionCache, "_validate_entry", fail_reopen)
+
+    first_scan = materialize_lazy_frame_with_cache(
+        pl.DataFrame({"x": [1]}).lazy(),
+        cache=cache,
+        key=key,
+        profile=ExecutionProfile.LAZY_SINK,
+    )
+    artifact = next(tmp_path.glob("*.parquet"))
+    assert validations == 0
+    assert first_scan.collect().to_dict(as_series=False) == {"x": [1]}
+
+    del first_scan
+    gc.collect()
+    assert cache.get(key) is None
+    assert validations == 1
+    assert not artifact.exists()
 
 
 def test_dataframe_execution_cache_eviction_removes_owned_artifact(tmp_path: Path) -> None:

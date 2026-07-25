@@ -6,7 +6,7 @@
 |---|---|
 | `src/haute/pipeline.py` | `Node` / `NodeRegistry` / `Pipeline` / `Submodel`: the decorator API, `connect()`, the standalone `run()`/`score()` executor, `to_graph()` (live-object → React-Flow dict). |
 | `src/haute/_config_builder.py` | Per-node-type config dict construction from decorator kwargs + function body (`_build_node_config`); sidecar resolution and the parse-time `contract=` cross-check (`_resolve_node_config`). `config["inputs"]` records the function's parameter names verbatim — under input-identity convergence these ARE the per-edge input names (`edge_input_name`: frame labels for apiInput edges, sanitised source labels otherwise), the same strings `input_scenario_map` keys and instance `inputMapping` values reference. |
-| `src/haute/_config_io.py` | Sidecar JSON path conventions (`NODE_TYPE_TO_FOLDER`), read/write helpers, `collect_node_configs` (graph → sidecar files), Windows-reserved-filename guard. |
+| `src/haute/_config_io.py` | Sidecar JSON path conventions (`NODE_TYPE_TO_FOLDER`), read/write helpers, `collect_node_configs` (graph → sidecar files), per-type normalisation (including legacy nested rating maps → canonical ordered rows), and the Windows-reserved-filename guard. |
 | `src/haute/_config_validation.py` | `VALID_KEYS` registry derived from each node type's `TypedDict`, and `warn_unrecognized_config_keys`. |
 | `src/haute/_builders.py` | Cross-component dependency owned by [execution-engine](../execution-engine/low-level.md): registers each per-`NodeType` runtime builder and its column-contract callback in `NODE_REGISTRY`. Pipeline-config consumes those callbacks through `src/haute/_contracts.py`; it does not own the runtime closures. |
 | `src/haute/_node_builder.py` | Cross-component dependency owned by [execution-engine](../execution-engine/low-level.md): `NodeBuildHooks` / `wrap_builder` allow deploy scoring to intercept runtime builders. It is listed here to make the boundary explicit, not because sidecar/static graph construction calls it. |
@@ -135,8 +135,11 @@ stable id via `_remap_config_ids_for_saved_graph` (logging a WARNING and leaving
 unchanged if the referenced upstream node can't be resolved), filters each config through
 `_prepare_config_for_sidecar` (strips `code`/`_`-prefixed keys recursively via
 `_strip_internal_keys`, applies the `VALID_KEYS` allowlist — logging any dropped keys at
-WARNING — then per-type compaction for `BANDING`/`RATING_STEP`), and serialises the result to
-`{relative_path: json_string}`.
+WARNING — then per-type canonicalisation for `BANDING`/`RATING_STEP`), and serialises the result
+to `{relative_path: json_string}`. Rating-step canonicalisation always emits ordered entry rows;
+legacy nested maps are accepted only on read and traversed independently of map insertion order.
+Any validation error is raised while collecting/staging content, before an existing sidecar is
+replaced.
 
 **Registry-driven contract lookup.** `haute._builders._register(node_type, columns=..., opaque=...,
 is_behavioural=...)` decorates roughly twenty per-type builder functions, registering both the
@@ -187,9 +190,10 @@ artifact paths (from the `_CI_ARTIFACTS` map) and removes the resulting empty
   > and they diverge for a graph with several leaves and no explicit output: `run()` raises
   > naming every leaf, while `to_graph()` still assigns some type to the last-registered node
   > without checking degree at all.
-- A static `pipeline.connect()` naming an unknown source or target is silently omitted by
-  `haute._graph_builders._build_edges`; the live `Pipeline.connect()` rejects the same mistake
-  immediately. There is no graph-level warning for the static omission.
+- A static `pipeline.connect()` naming a non-root endpoint is deferred until submodel child ids
+  are known. Cross-boundary child references are accepted; every remaining unknown endpoint
+  raises `ParseError` from the parser's conservation gate. The live `Pipeline.connect()` rejects
+  the same mistake immediately because live submodel children are not registered there.
 - Duplicate node function names are rejected twice, independently: at live registration
   (`NodeRegistry._register_node`, `ValueError`) and at static parse time
   (`_extract_decorated_nodes`, `ParseError`) — because the function name becomes the graph
@@ -256,7 +260,8 @@ artifact paths (from the `_CI_ARTIFACTS` map) and removes the resulting empty
   `topo_sort_ids` through `Pipeline._topo_order` with the participating node names.
 - **`ExecutionError`** (`haute.errors`) — live node arity mismatch; multiple explicit output
   nodes; ambiguous terminal nodes; multiple or ambiguous `score()` seed sources; unresolved
-  `instanceOf`/`inputMapping` references in the standalone executor; a bare-frame `score()`
+  `@pipeline.instance` registrations in the standalone executor (identified by the decorator's
+  internal marker even when `instanceOf`/`inputMapping` are empty); a bare-frame `score()`
   seed against a source with two or more distinct connected `source_port`s; a dict seed whose
   keys do not exactly match the distinct connected ports (missing and unknown port names are
   both listed in the message — a one-port source accepts only the exact one-key dict); and a
@@ -301,7 +306,8 @@ API and real JSON round-trips rather than mocks:
 - **`test_config_io.py`** + **`test_config_io_gaps.py`** (~97 tests) — sidecar save/load
   round-trips, path conventions (`TestConfigPathForNode`), Windows-reserved-filename rejection
   (`TestIsWindowsReservedFilename`), `collect_node_configs` (including load-error protection
-  and id remapping), and banding/rating-step sidecar compaction/expansion.
+  and id remapping), banding compaction, rating canonical-row emission and legacy-map migration,
+  and preservation of the prior sidecar when validation fails.
 - **`test_config_validation.py`** (44 tests) — `VALID_KEYS` registry completeness
   (`TestValidKeysRegistry`), `warn_unrecognized_config_keys` behaviour, and alignment between
   each type's decorator kwargs and the config keys `_build_node_config` actually produces
@@ -311,8 +317,8 @@ API and real JSON round-trips rather than mocks:
   decorator kwarg parsing, `_build_node_config` per node type
   (`TestBuildNodeConfigExtended`), `_resolve_node_config` sidecar and contract paths
   (`TestResolveNodeConfig`), and edge/GraphNode building (`TestBuildEdges`,
-  `TestBuildRfNodes`), including the deliberate static omission of connects whose endpoint is
-  not a parsed node.
+  `TestBuildRfNodes`), including deferred cross-boundary endpoints and fail-loud rejection of
+  genuinely dangling connects.
 - **`test_graph_shape_contracts.py`** (14 tests) — Explore in/out-degree contracts
   (`TestExploreGraphShape`), single-node and empty-graph edge cases, submodel boundary handle
   matching, and round-trip drift (`TestRoundTripDrift`).
@@ -335,8 +341,7 @@ generated graphs.
 > Known gap: the live `Pipeline.to_graph()` path and the static `_graph_builders.py` path are
 > exercised by separate test files with no explicit cross-check asserting they produce
 > equivalent graphs for the same source pipeline — consistent with the type-inference
-> divergence noted above under Edge cases. The static unknown-endpoint omission is unit-tested
-> as current behaviour, but no end-to-end test requires it to produce a visible warning.
+> divergence noted above under Edge cases.
 
 ## Polars backend contracts (0.6.0)
 
@@ -393,3 +398,24 @@ Remaining pipeline-configuration improvement work is tracked in the
   leakage, multiple-node registration, explicit-output and ambiguous-leaf standalone execution,
   config JSON round trips, blank scaffold/reference reset, and source search proving there is no
   executable legacy mapping or alias.
+
+## Retained input sidecar authority
+
+- Generated `apiInput` decorators reference
+  `config/quote_input/<name>.json`; generated `externalFile` decorators
+  reference `config/load_file/<name>.json`.
+- `resolve_api_input_from_config` and
+  `load_external_object_from_config` accept either an inline mapping or a
+  sidecar path. Path arguments are loaded through `load_node_config` and
+  relative data/object paths use `base_dir` as the pipeline candidate in the
+  shared project/pipeline resolution policy.
+- API-input resolution requires a non-empty path for flat/JSON inputs,
+  validates `tables[]` before the JSON shred, and forwards projection/profile
+  arguments for flat-file reads. External-file resolution validates non-empty
+  `path` and `fileType` strings and forwards `modelClass`.
+- Missing or malformed API-input `tables[]` raises the typed
+  `ApiInputSchemaError` contract. Execution routes adapt it to a stable 422
+  response rather than allowing a bare runtime exception to become a 500.
+- Executor builders call the same helpers with their already-resolved inline
+  graph config. Generated builders pass only the sidecar path and `base_dir`;
+  no declarative field is interpolated into the function body.

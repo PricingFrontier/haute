@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import multiprocessing as mp
+import os
 import queue
 import sys
 import time
@@ -23,6 +24,8 @@ WorkerTerminalReason = Literal[
     "contract_error",
     "error",
 ]
+WorkerMemoryEnforcement = Literal["best_effort", "required"]
+_WORKER_MEMORY_ENFORCEMENT_ENV = "HAUTE_WORKER_MEMORY_ENFORCEMENT"
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,8 +45,45 @@ class IsolatedWorkerConfig:
             raise ValueError("timeout_seconds must be positive")
         if self.memory_limit_bytes is not None and self.memory_limit_bytes <= 0:
             raise ValueError("memory_limit_bytes must be positive")
+        if self.require_memory_limit and self.memory_limit_bytes is None:
+            raise ValueError("required memory enforcement needs a configured memory limit")
         if self.stop_poll_interval_seconds <= 0:
             raise ValueError("stop_poll_interval_seconds must be positive")
+
+
+def resolve_worker_memory_enforcement() -> WorkerMemoryEnforcement:
+    """Return the explicit hard-cap policy for isolated workers."""
+    raw = os.environ.get(_WORKER_MEMORY_ENFORCEMENT_ENV, "best_effort")
+    policy = raw.strip().lower()
+    if policy not in {"best_effort", "required"}:
+        raise RuntimeError(f"{_WORKER_MEMORY_ENFORCEMENT_ENV} must be 'best_effort' or 'required'")
+    return cast(WorkerMemoryEnforcement, policy)
+
+
+def worker_config_for_memory_policy(
+    *,
+    memory_limit_bytes: int | None,
+    timeout_seconds: float | None = None,
+    cleanup_callbacks: tuple[Callable[[], None], ...] = (),
+    stop_reason: Callable[[], WorkerTerminalReason | None] | None = None,
+    stop_poll_interval_seconds: float = 0.1,
+    process_name: str = "haute-isolated-worker",
+) -> IsolatedWorkerConfig:
+    """Build worker controls without implying a hard cap on unsupported hosts."""
+    enforcement = resolve_worker_memory_enforcement()
+    if enforcement == "required" and memory_limit_bytes is None:
+        raise RuntimeError(
+            f"{_WORKER_MEMORY_ENFORCEMENT_ENV}='required' requires a configured memory limit"
+        )
+    return IsolatedWorkerConfig(
+        timeout_seconds=timeout_seconds,
+        memory_limit_bytes=memory_limit_bytes,
+        require_memory_limit=enforcement == "required",
+        cleanup_callbacks=cleanup_callbacks,
+        stop_reason=stop_reason,
+        stop_poll_interval_seconds=stop_poll_interval_seconds,
+        process_name=process_name,
+    )
 
 
 class IsolatedWorkerError(RuntimeError):

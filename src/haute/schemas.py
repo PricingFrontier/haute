@@ -17,6 +17,7 @@ from pydantic import (
     ConfigDict,
     Field,
     RootModel,
+    StrictBool,
     field_validator,
     model_validator,
 )
@@ -821,11 +822,23 @@ class TraceResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+class OutputDestinationRequest(BaseModel):
+    graph: Graph
+    node_id: str
+
+
+class OutputDestinationResponse(BaseModel):
+    path: str
+    format: str
+    suffix_mismatch: bool
+
+
 class WriteOutputRequest(BaseModel):
     graph: Graph
     node_id: str
     source: str = "live"
     streaming_chunk_size: StreamingChunkSize = None
+    overwrite: StrictBool = False
 
 
 class WriteOutputResponse(BaseModel):

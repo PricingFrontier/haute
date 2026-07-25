@@ -303,3 +303,24 @@ Remaining code-generation improvement work is tracked in the
 Acceptance executes generated direct and cached inputs with and without code, verifies offline
 remote-cache use, exercises each output publication class explicitly, round-trips multiple
 inputs/outputs and submodels, and asserts registry completeness/absence for the removed builders.
+
+## Retained input sidecar execution parity
+
+Generated code implements the code-generation half of
+[IO-IO02](../../roadmap/io-layer.md) through shared config-driven loaders.
+
+`_gen_api_input` and `_gen_external_file` emit config-sidecar decorators and
+delegate their runtime setup to shared helpers through `haute.graph_utils`.
+Their bodies contain the sidecar path, not snapshots of the sidecar's path,
+schema, file type, or model class. `Path(__file__).parent` supplies the
+pipeline-directory candidate to the shared project/pipeline path-resolution
+policy, and external-file user code still executes after `obj` is loaded.
+
+Generated API Input retains its flat-frame versus frame-bundle runtime
+semantics, but the current sidecar decides which path is active at call time.
+A hand edit that makes the sidecar malformed raises the same validation error
+as canvas execution; code generation never silently falls back to the stale
+decorator/body values.
+
+Executable-equivalence tests generate once, mutate only the sidecar, and run
+again for JSON/flat API Input and External File, including malformed config.

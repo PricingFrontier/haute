@@ -1291,6 +1291,24 @@ class TestInstanceReferencesFailLoud:
         with pytest.raises(ExecutionError, match="instanceOf.*inputMapping|cannot resolve"):
             p.run()
 
+    def test_instance_decorator_without_reference_values_still_raises(self):
+        p = Pipeline("instance_marker")
+
+        @p.api_input
+        def src() -> pl.DataFrame:
+            return pl.DataFrame({"x": [1]})
+
+        @p.instance
+        def inst(df: pl.DataFrame) -> pl.DataFrame:
+            return df
+
+        p.connect("src", "inst")
+
+        with pytest.raises(ExecutionError, match="instance"):
+            p.run()
+        with pytest.raises(ExecutionError, match="instance"):
+            p.score(pl.DataFrame({"x": [2]}))
+
 
 # ---------------------------------------------------------------------------
 # Duplicate node names fail loud at registration (F288)

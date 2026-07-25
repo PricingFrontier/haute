@@ -107,6 +107,7 @@ def _enrich_single_table(
     output_row: dict[str, Any],
     *,
     post_code_present: bool = False,
+    factor_input_dtypes: Mapping[str, pl.DataType] | None = None,
 ) -> dict[str, Any]:
     """Enrich a single rate table lookup within a rating step."""
     table_name = str(table.get("name", "") or "")
@@ -138,12 +139,31 @@ def _enrich_single_table(
     # input key skips entry matching entirely.
     matched_entry: dict[str, Any] | None = None
     if entries:
-        input_keys = {f: normalise_rating_key(input_row.get(f)) for f in factors}
+        resolved_dtypes = factor_input_dtypes or {}
+        missing_dtypes = [factor for factor in factors if resolved_dtypes.get(factor) is None]
+        if missing_dtypes:
+            raise ValueError(
+                "Cannot normalise rating lookup keys without an originating dtype for "
+                f"factor(s) {missing_dtypes!r}"
+            )
+        input_keys = {
+            factor: normalise_rating_key(
+                input_row.get(factor),
+                resolved_dtypes[factor],
+            )
+            for factor in factors
+        }
         if all(key is not None for key in input_keys.values()):
             # Runtime rating lookup deduplicates with keep="last" before joining.
             # Walk in reverse so the trace shows the same row that supplied the value.
             for entry in reversed(entries):
-                entry_keys = {f: normalise_rating_key(entry.get(f)) for f in factors}
+                entry_keys = {
+                    factor: normalise_rating_key(
+                        entry.get(factor),
+                        resolved_dtypes[factor],
+                    )
+                    for factor in factors
+                }
                 if entry_keys == input_keys:
                     matched_entry = dict(entry)
                     break
@@ -198,6 +218,8 @@ def enrich_rating_step(
     config: dict[str, Any],
     input_row: dict[str, Any],
     output_row: dict[str, Any],
+    *,
+    factor_input_dtypes: Mapping[str, pl.DataType] | None = None,
 ) -> dict[str, Any]:
     """Enrich a rating-step (rate table lookup) trace.
 
@@ -211,7 +233,13 @@ def enrich_rating_step(
     if tables or combined_col or has_combined_outputs:
         post_code_present = bool(str(config.get("code", "") or "").strip())
         table_details = [
-            _enrich_single_table(t, input_row, output_row, post_code_present=post_code_present)
+            _enrich_single_table(
+                t,
+                input_row,
+                output_row,
+                post_code_present=post_code_present,
+                factor_input_dtypes=factor_input_dtypes,
+            )
             for t in tables
         ]
         table_output_columns = [t["output_column"] for t in table_details if t.get("output_column")]
@@ -1463,6 +1491,34 @@ def _sniff_operation_type(code: str) -> str:
     return ""
 
 
+def _resolve_factor_input_dtypes(
+    node_id: str,
+    eager_outputs: Mapping[str, Any],
+    parents_of: Mapping[str, Sequence[str]],
+    source_frames_of: Mapping[tuple[str, str], Sequence[str | None]] | None,
+) -> dict[str, pl.DataType]:
+    """Resolve dtypes only from parent frames consumed by this node."""
+    resolved: dict[str, pl.DataType] = {}
+    for parent_id in parents_of.get(node_id, []):
+        parent_output = eager_outputs.get(parent_id)
+        frames: list[pl.DataFrame]
+        if isinstance(parent_output, dict):
+            handles = (source_frames_of or {}).get((parent_id, node_id))
+            frames = [
+                parent_output[handle]
+                for handle in dict.fromkeys(handles or ())
+                if handle is not None and handle in parent_output
+            ] or list(parent_output.values())
+        elif parent_output is not None:
+            frames = [parent_output]
+        else:
+            frames = []
+        for frame in frames:
+            for column_name, dtype in frame.schema.items():
+                resolved.setdefault(column_name, dtype)
+    return resolved
+
+
 def enrich_steps(
     steps: list[TraceStep],
     node_map: dict[str, Any],
@@ -1852,39 +1908,29 @@ def enrich_steps(
                 try:
                     detail: dict[str, Any] | None = None
                     if node_type == "ratingStep":
+                        factor_input_dtypes = _resolve_factor_input_dtypes(
+                            step.node_id,
+                            eager_outputs,
+                            parents_of,
+                            source_frames_of,
+                        )
                         detail = trace_mod.enrich_rating_step(
-                            cfg, step.input_values, step.output_values
+                            cfg,
+                            step.input_values,
+                            step.output_values,
+                            factor_input_dtypes=factor_input_dtypes,
                         )
                     elif node_type == "banding":
                         # Resolve each factor's source column dtype from
                         # the parent frames so continuous-rule re-matching
                         # compares in the engine's own numeric domain
                         # (Float32-faithful), not widened float64.
-                        factor_input_dtypes: dict[str, Any] = {}
-                        for pid in parents_of.get(step.node_id, []):
-                            pdf = eager_outputs.get(pid)
-                            # Multi-frame parents store dict[label, DataFrame].
-                            # Scope to the frame(s) this node's incoming
-                            # edge(s) actually consume (per-edge sourceHandle)
-                            # so a column name that recurs across frames with
-                            # a different dtype resolves in the consumed
-                            # frame's numeric domain, not by dict-iteration
-                            # order across every emitted frame.
-                            frames: list[pl.DataFrame]
-                            if isinstance(pdf, dict):
-                                handles = (source_frames_of or {}).get((pid, step.node_id))
-                                frames = [
-                                    pdf[h]
-                                    for h in dict.fromkeys(handles or ())
-                                    if h is not None and h in pdf
-                                ] or list(pdf.values())
-                            elif pdf is not None:
-                                frames = [pdf]
-                            else:
-                                frames = []
-                            for frame in frames:
-                                for cname, cdtype in frame.schema.items():
-                                    factor_input_dtypes.setdefault(cname, cdtype)
+                        factor_input_dtypes = _resolve_factor_input_dtypes(
+                            step.node_id,
+                            eager_outputs,
+                            parents_of,
+                            source_frames_of,
+                        )
                         detail = trace_mod.enrich_banding(
                             cfg,
                             step.input_values,

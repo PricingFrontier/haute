@@ -56,7 +56,7 @@ def train_model(body: TrainRequest) -> TrainResponse:
     """Start model training for a modelling node.
 
     Executes the pipeline up to the modelling node to materialise the
-    training DataFrame, then runs TrainingJob in a background thread.
+    training DataFrame, then runs TrainingJob in a supervised spawn worker.
     """
     graph = _prepare_runtime_graph(body.graph)
     return _train_service.start(body.model_copy(update={"graph": graph}))
@@ -84,16 +84,7 @@ async def train_status(job_id: str) -> TrainStatusResponse:
         except ValueError as exc:
             message = f"Training result cannot be published: {exc}"
             logger.error("training_result_not_json_finite", error=str(exc), job_id=job_id)
-            _store.atomic_update(
-                job_id,
-                {
-                    "status": "error",
-                    "message": message,
-                    "result": None,
-                },
-                expected_status="completed",
-            )
-            job = _store.require_job(job_id)
+            job = _train_service.reject_completed_result(job_id, message=message)
         else:
             # Completed-job results are immutable in this store, so we only
             # need to walk them once.  Cache the validation outcome so

@@ -10,6 +10,7 @@ import type { IoCapabilityGroup } from "../../../api/types"
 
 vi.mock("../../../api/client", () => ({
   ApiError: class ApiError extends Error {},
+  fetchSchema: vi.fn(),
   fetchIoCapabilities: vi.fn(),
   listFiles: vi.fn(() => Promise.resolve({ items: [] })),
   getWarehouses: vi.fn(() => Promise.resolve({ warehouses: [] })),
@@ -41,6 +42,7 @@ vi.mock("../CodeEditor", () => ({
 
 import {
   buildInputCache,
+  fetchSchema,
   fetchIoCapabilities,
   getInputCacheJob,
   getInputCacheStatus,
@@ -280,6 +282,16 @@ beforeEach(() => {
     schema_version: 1,
     groups,
   })
+  vi.mocked(fetchSchema).mockResolvedValue({
+    path: "quotes.csv",
+    columns: [
+      { name: "policy_id", dtype: "Int64" },
+      { name: "premium", dtype: "Float64" },
+    ],
+    row_count: 2,
+    column_count: 2,
+    preview: [],
+  })
   vi.mocked(getInputCacheStatus).mockResolvedValue(missingSnapshot)
   vi.mocked(buildInputCache).mockResolvedValue({
     schema_version: 1,
@@ -312,6 +324,48 @@ beforeEach(() => {
 afterEach(cleanup)
 
 describe("DataInputEditor", () => {
+  it("uses the capability schema requirement and preserves other arguments when adopting it", async () => {
+    const { onUpdate } = renderEditor({
+      inputType: "file",
+      cacheMode: "direct",
+      format: "csv",
+      mode: "scan",
+      path: "quotes.csv",
+      arguments: { separator: "|", null_values: ["NA"] },
+      code: "",
+    })
+
+    expect(await screen.findByText("A schema mapping is required for this bounded input.")).toBeInTheDocument()
+    fireEvent.click(await screen.findByRole("button", { name: "Use detected schema" }))
+    expect(onUpdate).toHaveBeenCalledWith("arguments", {
+      separator: "|",
+      null_values: ["NA"],
+      schema: { policy_id: "Int64", premium: "Float64" },
+    })
+  })
+
+  it("recovers a failed bounded-schema fetch without changing the path", async () => {
+    vi.mocked(fetchSchema).mockRejectedValueOnce(new Error("broken CSV"))
+    renderEditor({
+      inputType: "file",
+      cacheMode: "direct",
+      format: "csv",
+      mode: "scan",
+      path: "quotes.csv",
+      arguments: {},
+      code: "",
+    })
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Could not detect schema: broken CSV",
+    )
+    fireEvent.click(screen.getByRole("button", { name: "Retry schema" }))
+
+    expect(
+      await screen.findByRole("button", { name: "Use detected schema" }),
+    ).toBeInTheDocument()
+  })
+
   it("uses backend group order and atomically removes inactive provider keys", async () => {
     const { onReplaceConfig } = renderEditor({
       code: "df",

@@ -10,13 +10,35 @@ long-running work.
 
 | Package | State | Priority | Outcome |
 | --- | --- | --- | --- |
-| ROAD-WORKER-01 | Active | P0 | Make worker supervision terminalise every launched job. |
-| ROAD-WORKER-02 | Active | P0 | Establish typed, bounded worker artifact and event contracts. |
-| AUD-C15 | Reverify | P0 | Make JobStore access and lifecycle timeout transitions coherent. |
-| ROAD-WORKER-03 | Active | P1 | Move training and dispersion work through the worker boundary. |
-| ROAD-WORKER-04 | Active | P1 | Move optimiser workflows through declared artifact boundaries. |
-| AUD-C19 | Reverify | P1 | Bound long-lived server resources and expose their cleanup. |
-| ROAD-WORKER-05 | Decision | P2 | Decide the deployment/API worker-enforcement policy. |
+| ROAD-WORKER-01 | Implemented | P0 | Worker supervision terminalises every launched job. |
+| ROAD-WORKER-02 | Implemented | P0 | Typed, bounded worker artifact and event contracts. |
+| AUD-C15 | Implemented | P0 | Coherent JobStore access, timeout stamping, and terminal correction. |
+| ROAD-WORKER-03 | Implemented | P1 | Fit/evaluation and dispersion cross the worker boundary. |
+| ROAD-WORKER-04 | Deferred | P1 | Requires versioned solver-specific persistence before isolation is safe. |
+| AUD-C19 | Verified | P1 | Existing cache and retained GPU-work bounds already satisfy the audit. |
+| ROAD-WORKER-05 | Implemented | P2 | Explicit local-worker and generated-server enforcement policies. |
+
+## 0.8.0 audit outcome
+
+ROAD-WORKER-01, ROAD-WORKER-02, AUD-C15, and ROAD-WORKER-05 are direct
+correctness or operability improvements and were accepted. ROAD-WORKER-03 was
+accepted with a narrower boundary: synchronous request validation, graph
+compilation, admission, and bounded Parquet materialisation stay in the parent
+so HTTP contract errors and admission decisions remain immediate; the
+crash-prone fit/evaluation, model staging, and dispersion search run in spawned
+workers.
+
+ROAD-WORKER-04 is not an improvement in its current form. Supported optimiser
+follow-ons intentionally reuse live solver and frame state, and the codebase has
+no stable, versioned, solver-specific persistence format from which that state
+can be reconstructed. Ad-hoc process pickling would weaken correctness and
+restart guarantees. Reconsider the item only after each supported solver has a
+declared reopenable format, schema/version migration rules, rebuild-cost
+limits, and equivalence tests.
+
+AUD-C19 required no implementation change: sandbox validation already uses the
+bounded shared `LRUCache`, while cancellation-constrained GPU writer retention
+is deliberately observable and tested rather than unsafely deleted.
 
 ## Planned improvements
 
@@ -42,7 +64,9 @@ long-running work.
 
 **Dependencies:** ROAD-WORKER-01; artifact ownership and execution metrics.
 
-**Evidence:** `src/haute/_worker_isolation.py`; `src/haute/routes/_background_jobs.py`; `tests/test_worker_isolation.py`; `tests/test_job_store.py`.
+**Evidence:** `src/haute/_worker_protocol.py`; `src/haute/_worker_isolation.py`;
+`src/haute/routes/_background_jobs.py`; `tests/test_worker_protocol.py`;
+`tests/test_worker_isolation.py`; `tests/test_job_store.py`.
 
 ### AUD-C15 — JobStore and timeout coherence
 
@@ -60,9 +84,16 @@ long-running work.
 
 **Why:** Training and dispersion still retain route-thread callbacks and rich in-memory results.
 
-**Plan:** Run preparation, fit/evaluation, dispersion profiling, progress, and validated model publication through the worker contracts while preserving cancellation, admission, bounded loss history, diagnostics, and existing responses.
+**Plan:** Keep request validation, graph/pipeline preparation, and admission in
+the parent. Run fit/evaluation, dispersion profiling, progress transport, and
+model staging through worker contracts; validate and publish the model pair in
+the parent while preserving cancellation, bounded loss history, diagnostics,
+and existing responses.
 
-**Acceptance:** A killed worker does not take down the host; both status/cancellation flows retain truthful terminal states; artifacts are retained or cleaned according to declared lifetime.
+**Acceptance:** A killed worker does not take down the host; synchronous
+validation and admission retain their existing HTTP behavior; both
+status/cancellation flows retain truthful terminal states; artifacts are
+published or cleaned according to declared lifetime.
 
 **Dependencies:** ROAD-WORKER-01 and ROAD-WORKER-02; execution admission.
 
@@ -72,7 +103,9 @@ long-running work.
 
 **Why:** Setup, solve, auto-range, and frontier recomputation retain solver/data-frame state across route threads.
 
-**Plan:** Publish re-openable prepared-input, solve-result, and range manifests; reopen only declared artifacts for follow-on work; keep single-flight, supersession, admission, projection/chunk provenance, and metrics in the parent.
+**Plan:** Deferred pending solver-specific persistence contracts. Do not pass
+live solvers or frames across spawn boundaries and do not use unversioned
+pickles as restart artifacts.
 
 **Acceptance:** Supported workflows share no solver/data-frame state across processes, recover deterministically after cancellation/crash/restart, and leak no reservation or temporary artifact.
 

@@ -1,8 +1,22 @@
 // ─── Rating Table Types & Pure Utilities ──────────────────────────
 
+type PrimitiveRatingFactorKind =
+  | "Int8" | "Int16" | "Int32" | "Int64" | "Int128"
+  | "UInt8" | "UInt16" | "UInt32" | "UInt64"
+  | "Float32" | "Float64" | "Boolean" | "String" | "Categorical"
+  | "Date" | "Time" | "Null"
+
+export type RatingFactorDtype =
+  | { kind: PrimitiveRatingFactorKind }
+  | { kind: "Datetime"; timeUnit: "ms" | "us" | "ns"; timeZone: string | null }
+  | { kind: "Duration"; timeUnit: "ms" | "us" | "ns" }
+  | { kind: "Decimal"; precision: number | null; scale: number }
+  | { kind: "Enum"; categories: string[] }
+
 export type RatingTable = {
   name: string
   factors: string[]
+  factorDtypes?: Record<string, RatingFactorDtype>
   outputColumn: string
   defaultValue: string | null
   entries: Record<string, string | number>[]
@@ -26,17 +40,99 @@ function isEntry(value: unknown): value is Record<string, string | number> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value)
 }
 
+const primitiveRatingKinds = new Set<PrimitiveRatingFactorKind>([
+  "Int8", "Int16", "Int32", "Int64", "Int128",
+  "UInt8", "UInt16", "UInt32", "UInt64",
+  "Float32", "Float64", "Boolean", "String", "Categorical",
+  "Date", "Time", "Null",
+])
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false
+  const prototype = Object.getPrototypeOf(value)
+  return prototype === Object.prototype || prototype === null
+}
+
+function hasExactKeys(value: Record<string, unknown>, keys: string[]): boolean {
+  const actual = Object.keys(value)
+  return actual.length === keys.length && keys.every(key => Object.hasOwn(value, key))
+}
+
+function isRatingTimeUnit(value: unknown): value is "ms" | "us" | "ns" {
+  return value === "ms" || value === "us" || value === "ns"
+}
+
+function normaliseRatingFactorDtype(value: unknown): RatingFactorDtype | undefined {
+  if (!isPlainRecord(value) || typeof value.kind !== "string") return undefined
+
+  const kind = value.kind
+  if (primitiveRatingKinds.has(kind as PrimitiveRatingFactorKind)) {
+    return hasExactKeys(value, ["kind"])
+      ? { kind: kind as PrimitiveRatingFactorKind }
+      : undefined
+  }
+  if (kind === "Datetime") {
+    if (
+      !hasExactKeys(value, ["kind", "timeUnit", "timeZone"])
+      || !isRatingTimeUnit(value.timeUnit)
+      || (value.timeZone !== null && typeof value.timeZone !== "string")
+    ) return undefined
+    return { kind, timeUnit: value.timeUnit, timeZone: value.timeZone }
+  }
+  if (kind === "Duration") {
+    if (!hasExactKeys(value, ["kind", "timeUnit"]) || !isRatingTimeUnit(value.timeUnit)) return undefined
+    return { kind, timeUnit: value.timeUnit }
+  }
+  if (kind === "Decimal") {
+    if (
+      !hasExactKeys(value, ["kind", "precision", "scale"])
+      || (value.precision !== null
+        && (typeof value.precision !== "number" || !Number.isInteger(value.precision)))
+      || typeof value.scale !== "number"
+      || !Number.isInteger(value.scale)
+    ) return undefined
+    return { kind, precision: value.precision, scale: value.scale }
+  }
+  if (kind === "Enum") {
+    if (
+      !hasExactKeys(value, ["kind", "categories"])
+      || !Array.isArray(value.categories)
+      || !value.categories.every(category => typeof category === "string")
+      || new Set(value.categories).size !== value.categories.length
+    ) return undefined
+    return { kind, categories: [...value.categories] }
+  }
+  return undefined
+}
+
+function normaliseFactorDtypes(raw: unknown, factors: string[]): Record<string, RatingFactorDtype> | undefined {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined
+
+  const selectedFactors = new Set(factors)
+  const factorDtypes: Record<string, RatingFactorDtype> = {}
+  for (const [factor, descriptor] of Object.entries(raw)) {
+    if (!selectedFactors.has(factor)) continue
+    const normalised = normaliseRatingFactorDtype(descriptor)
+    if (!normalised) continue
+    factorDtypes[factor] = normalised
+  }
+  return Object.keys(factorDtypes).length > 0 ? factorDtypes : undefined
+}
+
 function normaliseRatingTable(raw: unknown, idx: number): RatingTable {
   const fallback = defaultRatingTable(idx)
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return fallback
 
   const table = raw as Record<string, unknown>
   const outputColumn = typeof table.outputColumn === "string" ? table.outputColumn : ""
+  const factors = Array.isArray(table.factors)
+    ? table.factors.filter((factor): factor is string => typeof factor === "string")
+    : []
+  const factorDtypes = normaliseFactorDtypes(table.factorDtypes, factors)
   return {
     name: outputColumn.trim() || fallback.name,
-    factors: Array.isArray(table.factors)
-      ? table.factors.filter((factor): factor is string => typeof factor === "string")
-      : [],
+    factors,
+    ...(factorDtypes ? { factorDtypes } : {}),
     outputColumn,
     defaultValue: typeof table.defaultValue === "string" || table.defaultValue === null
       ? table.defaultValue
@@ -266,4 +362,3 @@ export function resolveDefault(defaultValue: string | number | null | undefined)
     : typeof defaultValue === "string" && defaultValue.trim() ? parseFloat(defaultValue) : 1
   return Number.isNaN(raw) ? 1 : raw
 }
-

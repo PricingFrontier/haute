@@ -248,6 +248,7 @@ class TestGenerateAppSource:
     def test_contains_health_endpoint(self) -> None:
         source = _generate_app_source("motor", 8080)
         assert "/health" in source
+        assert '"memory_enforcement": "admission_rss_best_effort"' in source
 
     def test_contains_quote_endpoint(self) -> None:
         source = _generate_app_source("motor", 8080)
@@ -745,6 +746,11 @@ class TestGenerateAppSource:
 
 
 class TestGenerateDockerfile:
+    def test_selects_strict_server_memory_policy(self) -> None:
+        df = _generate_dockerfile("python:3.11-slim", 8080, _make_resolved())
+
+        assert "ENV HAUTE_EXECUTION_MEMORY_POLICY=strict_server" in df
+
     def test_default_base_image(self) -> None:
         resolved = _make_resolved()
         df = _generate_dockerfile("python:3.11-slim", 8080, resolved)

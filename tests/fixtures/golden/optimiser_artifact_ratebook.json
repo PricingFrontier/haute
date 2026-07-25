@@ -34,5 +34,15 @@
       }
     ]
   },
+  "factor_dtypes": {
+    "region": [
+      {
+        "column": "region",
+        "dtype": {
+          "kind": "String"
+        }
+      }
+    ]
+  },
   "clamp_rate": 0.05
 }

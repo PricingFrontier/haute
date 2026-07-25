@@ -7,6 +7,7 @@ from pathlib import Path
 
 import polars as pl
 
+from haute._api_input_schema import is_json_api_input_path
 from haute._cache import (
     CacheConsumer,
     GraphFingerprintMemo,
@@ -46,9 +47,7 @@ def _read_input_source(graph: PipelineGraph, node: GraphNode, resolved_path: str
             store=SourceCacheStore(_get_project_root()),
             base_dir=base_dir,
         )
-    if node.data.nodeType == NodeType.API_INPUT and not resolved_path.lower().endswith(
-        (".json", ".jsonl")
-    ):
+    if node.data.nodeType == NodeType.API_INPUT and not is_json_api_input_path(resolved_path):
         return read_data_source({**config, "path": resolved_path})
     return read_source(resolved_path)
 

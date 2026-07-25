@@ -227,57 +227,6 @@ def _format_kwarg_source(key: str, value: Any) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _api_input_template(path: str, config: dict) -> str:
-    """Return the API input template string for the given file path.
-
-    JSON/JSONL files use the v2 per-frame shred (``_json_shred``), reading
-    the v2 schema from the sidecar config at runtime. CSV uses
-    ``scan_csv``, everything else (parquet / flat) uses ``scan_parquet``.
-    """
-    lower = path.lower()
-    if lower.endswith((".json", ".jsonl")):
-        return_annotation = "dict[str, pl.LazyFrame]"
-        # Emit-state checks, optional cache resolution, direct-shred fallback,
-        # and the uniform frame-bundle return all live in the shared
-        # `haute._json_shred.load_v2_api_source` so this
-        # generated/deploy path can't drift from the runtime builder
-        # (`_builders._make_api_source_v2`). The only codegen-specific work is
-        # reading the v2 config from its on-disk sidecar and validating it.
-        body = (
-            "    from pathlib import Path\n"
-            "    import orjson\n"
-            "    from haute._api_input_schema import validate_v2_schema\n"
-            "    from haute._json_shred import load_v2_api_source\n"
-            "    _data_path = {portable_path}\n"
-            "    _config_path = Path(__file__).parent / {config_path_repr}\n"
-            "    _v2_config = orjson.loads(_config_path.read_bytes())\n"
-            "    if not isinstance(_v2_config.get('tables'), list):\n"
-            "        raise RuntimeError(\n"
-            '            "API Input has no v2 schema (tables[]). Open the node "\n'
-            "            \"and click 'Infer Tables' to populate the schema mapping, \"\n"
-            '            "then preview again."\n'
-            "        )\n"
-            "    validate_v2_schema(_v2_config)\n"
-            "    return load_v2_api_source(str(_data_path), _v2_config)"
-        )
-    else:
-        return_annotation = "pl.LazyFrame"
-        runtime_config = {"sourceType": "flat_file", **config}
-        runtime_expr = _api_input_runtime_config_expr(runtime_config)
-        runtime_expr = runtime_expr.replace("{", "{{").replace("}", "}}")
-        body = (
-            "    from pathlib import Path\n"
-            "    from haute.graph_utils import read_data_source\n"
-            f"    return read_data_source({runtime_expr})"
-        )
-
-    return (
-        "@pipeline.api_input(path={path_repr}{row_id_kw})\n"
-        f"def {{func_name}}() -> {return_annotation}:\n"
-        '    """{description}"""\n' + body + "\n"
-    )
-
-
 _LIVE_SWITCH = '''\
 @pipeline.live_switch(input_scenario_map={input_scenario_map_repr})
 def {func_name}({params}) -> pl.LazyFrame:
@@ -302,25 +251,18 @@ def {func_name}({params}) -> pl.LazyFrame:
 '''
 
 
-def _api_input_runtime_config_expr(config: dict) -> str:
-    runtime_config = {
-        key: value
-        for key, value in config.items()
-        if key != "code" and not str(key).startswith("_")
-    }
-    source_type = runtime_config.get("sourceType", "flat_file")
-    items: list[str] = [f'"sourceType": {source_type!r}']
-
-    if source_type != "databricks":
-        path = str(runtime_config.get("path", ""))
-        items.append(f'"path": str({_portable_path_expr(path)})')
-
-    for key, value in runtime_config.items():
-        if key in {"sourceType", "path"}:
-            continue
-        items.append(f"{key!r}: {value!r}")
-
-    return "{" + ", ".join(items) + "}"
+def _retained_api_input_template(config_path: str) -> str:
+    """Emit an API input whose loader is entirely driven by its sidecar."""
+    return '''\\
+@pipeline.api_input()
+def {func_name}() -> pl.LazyFrame | dict[str, pl.LazyFrame]:
+    """{description}"""
+    from pathlib import Path
+    from haute.graph_utils import resolve_api_input_from_config
+    return resolve_api_input_from_config(
+        {config_path_repr}, base_dir=Path(__file__).resolve().parent
+    )
+'''
 
 
 _BANDING_SINGLE = '''\
@@ -411,13 +353,15 @@ def {func_name}() -> pl.LazyFrame:
     return pl.LazyFrame({data_dict})
 '''
 
-_EXTERNAL = '''\
-@pipeline.external_file(path={path_repr}, file_type={file_type_repr}{extra_dec})
+_RETAINED_EXTERNAL = '''\
+@pipeline.external_file()
 def {func_name}({params}) -> pl.LazyFrame:
     """{description}"""
     from pathlib import Path
-    from haute.graph_utils import load_external_object
-    obj = load_external_object({portable_path}, {file_type_repr}{extra_load})
+    from haute.graph_utils import load_external_object_from_config
+    obj = load_external_object_from_config(
+        {config_path_repr}, base_dir=Path(__file__).resolve().parent
+    )
 {body}
 '''
 
@@ -473,19 +417,11 @@ def _register_codegen(node_type: NodeType) -> Callable[[CodegenBuilder], Codegen
 @_register_codegen(NodeType.API_INPUT)
 def _gen_api_input(node: GraphNode, source_names: list[str]) -> str:
     func_name, description, config = _common_node_fields(node)
-    path = config.get("path", "")
-    row_id_kw = ""
-    if config.get("row_id_column"):
-        row_id_kw = f", row_id_column={_safe_str(config['row_id_column'])}"
     cfg_path = config_path_for_node(node.data.nodeType, func_name).as_posix()
-    template = _api_input_template(path, config)
+    template = _retained_api_input_template(cfg_path)
     return template.format(
         func_name=func_name,
         description=description,
-        path_repr=_safe_path(path),
-        portable_path=_portable_path_expr(path),
-        row_id_kw=row_id_kw,
-        config_path=cfg_path,
         config_path_repr=_safe_path(cfg_path),
     )
 
@@ -898,8 +834,6 @@ def _gen_explore(node: GraphNode, source_names: list[str]) -> str:
 @_register_codegen(NodeType.EXTERNAL_FILE)
 def _gen_external_file(node: GraphNode, source_names: list[str]) -> str:
     func_name, description, config = _common_node_fields(node)
-    path = config.get("path", "model.pkl")
-    file_type = config.get("fileType", "pickle")
     code = _strip_generated_boilerplate_from_code(
         config.get("code") or "",
         kind="external",
@@ -907,22 +841,13 @@ def _gen_external_file(node: GraphNode, source_names: list[str]) -> str:
     )
     params = _build_params(source_names)
     body = _wrap_external_code(code)
-    extra_dec = ""
-    extra_load = ""
-    if file_type == "catboost":
-        model_class = config.get("modelClass", "classifier")
-        extra_dec = f", model_class={_safe_str(model_class)}"
-        extra_load = f", {_safe_str(model_class)}"
-    return _EXTERNAL.format(
+    cfg_path = config_path_for_node(node.data.nodeType, func_name).as_posix()
+    return _RETAINED_EXTERNAL.format(
         func_name=func_name,
         description=description,
-        path_repr=_safe_path(path),
-        portable_path=_portable_path_expr(path),
-        file_type_repr=_safe_str(file_type),
+        config_path_repr=_safe_path(cfg_path),
         params=params,
         body=body,
-        extra_dec=extra_dec,
-        extra_load=extra_load,
     )
 
 

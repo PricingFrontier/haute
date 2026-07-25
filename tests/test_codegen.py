@@ -680,7 +680,6 @@ class TestNodeToCode:
                 [
                     'config="config/load_file/CB_Model.json"',
                     "load_external_object",
-                    '"catboost", "regressor"',
                 ],
                 id="catboost",
             ),
@@ -698,6 +697,10 @@ class TestNodeToCode:
         )
         for s in expected_strings:
             assert s in code, f"Expected {s!r} in generated code"
+        assert config["path"] not in code
+        assert config["fileType"] not in code
+        if "modelClass" in config:
+            assert config["modelClass"] not in code
         _compile_node_code(code)
 
     def test_external_file_codegen_strips_stale_loader_scaffold_from_code(self):
@@ -724,7 +727,8 @@ class TestNodeToCode:
             }
         )
         code = _node_to_code(node, source_names=["features"])
-        assert code.count("load_external_object(") == 1
+        assert code.count("load_external_object_from_config(") == 1
+        assert "model.pkl" not in code
         assert "df = df.limit(10)" in code
         _compile_node_code(code)
 
@@ -1957,7 +1961,7 @@ class TestDataInputFormatCodegen:
 
 
 class TestApiInputCodegen:
-    """Verify that API input codegen handles case-insensitive extensions."""
+    """API input codegen delegates every current sidecar to one runtime helper."""
 
     def _make_api_node(self, path: str, label: str = "Input"):
         return _n(
@@ -1969,41 +1973,41 @@ class TestApiInputCodegen:
 
     def test_json_api_input(self):
         code = _node_to_code(self._make_api_node("input.json", "JsonIn"))
-        assert "load_v2_api_source" in code  # v2 shred via the shared entry point
+        assert "resolve_api_input_from_config" in code
+        assert "input.json" not in code
         assert "api_input=True" not in code  # replaced by config= ref
         _compile_node_code(code)
 
     def test_jsonl_api_input(self):
         code = _node_to_code(self._make_api_node("input.jsonl", "JsonlIn"))
-        assert "load_v2_api_source" in code
+        assert "resolve_api_input_from_config" in code
+        assert "input.jsonl" not in code
         _compile_node_code(code)
 
     def test_csv_api_input(self):
         code = _node_to_code(self._make_api_node("input.csv", "CsvIn"))
-        assert "read_data_source" in code
-        assert "input.csv" in code
-        assert "load_v2_api_source" not in code
+        assert "resolve_api_input_from_config" in code
+        assert "input.csv" not in code
         _compile_node_code(code)
 
     def test_uppercase_json_api_input(self):
-        """Case-insensitive: .JSON uses v2 cached-or-direct shred, not a flat scan."""
+        """Runtime sidecar resolution owns case-insensitive format dispatch."""
         code = _node_to_code(self._make_api_node("input.JSON", "UpperIn"))
-        assert "load_v2_api_source" in code
-        assert "scan_parquet" not in code
+        assert "resolve_api_input_from_config" in code
+        assert "input.JSON" not in code
         _compile_node_code(code)
 
     def test_uppercase_csv_api_input(self):
-        """Case-insensitive: .CSV should use the shared source reader, not JSON."""
+        """The generated body never bakes the current extension decision."""
         code = _node_to_code(self._make_api_node("input.CSV", "UpperCsv"))
-        assert "read_data_source" in code
-        assert "input.CSV" in code
+        assert "resolve_api_input_from_config" in code
+        assert "input.CSV" not in code
         _compile_node_code(code)
 
     def test_parquet_api_input(self):
         code = _node_to_code(self._make_api_node("input.parquet", "PqIn"))
-        assert "read_data_source" in code
-        assert "input.parquet" in code
-        assert "load_v2_api_source" not in code
+        assert "resolve_api_input_from_config" in code
+        assert "input.parquet" not in code
         _compile_node_code(code)
 
 

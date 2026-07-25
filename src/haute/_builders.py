@@ -21,7 +21,6 @@ from typing import Any, cast
 import polars as pl
 
 import haute.projection as projection
-from haute._api_input_schema import is_json_api_input_path
 from haute._code_extraction import _strip_generated_boilerplate_from_code
 
 # The Contract dataclass is defined canonically in haute._contracts; re-exported
@@ -38,7 +37,7 @@ from haute._edge_join import (
 )
 from haute._execution_context import ExecutionProfile, current_execution_context
 from haute._graph_utils import _sanitize_func_name
-from haute._io import _select_columns, load_external_object, read_data_source
+from haute._io import _select_columns
 from haute._logging import get_logger
 
 # Scenario-expander defaults live in ``_node_apply`` (the shared apply module)
@@ -57,6 +56,8 @@ from haute._node_apply import (
     apply_optimiser_apply_from_config,
     assemble_output_from_config,
     expand_scenarios_from_config,
+    load_external_object_from_config,
+    resolve_api_input_from_config,
     select_live_switch_input,
 )
 from haute._output_assembler import (
@@ -70,6 +71,8 @@ from haute._rating import (
     _combine_rating_columns,
     _normalise_banding_factors,
     _normalise_combined_outputs,
+    is_rating_dtype_descriptor,
+    rating_dtype_descriptor,
 )
 from haute._rating_step_config import normalise_rating_tables
 from haute._registry import (
@@ -80,6 +83,7 @@ from haute._registry import (
 )
 from haute._types import GraphNode, NodeType, _Frame
 from haute._user_exec import _exec_user_code
+from haute.errors import RatingFactorDtypeContractError
 
 logger = get_logger(component="executor")
 
@@ -330,33 +334,31 @@ def _explore_columns(config: dict[str, Any]) -> ColumnContract:
 def _configured_pipeline_dir() -> Path | None:
     """Return the project's configured pipeline directory, or ``None``.
 
-    This is the SAME anchor the cache-build route
-    (``routes.json_cache._resolve_data_path`` → ``routes._helpers.pipeline_dir``)
-    and codegen (``_codegen_builders._api_input_template`` emits
-    ``Path(__file__).parent / <rel>``) resolve a relative apiInput data path
-    against: the directory holding the pipeline's ``main.py``, taken from
-    ``haute.toml [project].pipeline`` under the current working directory.
+    This is the pipeline-directory candidate used by the cache-build route and
+    by the shared retained-input helpers. It is the directory holding the
+    pipeline's ``main.py``, taken from ``haute.toml [project].pipeline`` under
+    the execution-scoped project root.
 
     Read through the core, deploy-safe :mod:`haute._project` reader (stdlib
     ``tomllib`` only) rather than ``routes._helpers.pipeline_dir`` so this
     builder never drags the FastAPI route layer into the executor/deploy import
     path.  ``None`` when there is no ``haute.toml`` or no ``[project].pipeline``,
-    so resolution falls back to the project root / cwd.
+    so resolution falls back to the execution-scoped project root.
     """
+    from haute._path_resolution import current_runtime_project_root
     from haute._project import _toml_configured_pipeline
 
-    configured = _toml_configured_pipeline(Path.cwd())
+    configured = _toml_configured_pipeline(current_runtime_project_root())
     return configured.parent if configured is not None else None
 
 
 def _resolve_runtime_data_path(data_path: str) -> str:
     """Anchor a (possibly relative) runtime data path to the pipeline dir.
 
-    Shared by every in-process node builder that consumes a user-facing data
-    path at execute time: the v2 apiInput source (``_make_api_source_v2`` →
-    ``load_v2_api_source``), the flat-file ``API_INPUT`` reads (via
-    :func:`_config_with_resolved_data_path` → ``read_data_source``), and the
-    ``EXTERNAL_FILE`` object load (``load_external_object``).
+    This retains the historical builder-level path contract for the direct
+    helper call sites below. Registered API Input and External File builders
+    now delegate their full config-driven load to :mod:`haute._node_apply`,
+    which applies the same project/pipeline candidate policy.
 
     Relative ``path`` values are pipeline-directory-relative (the GUI file
     browser reports them from the pipeline's location, and codegen emits them
@@ -477,59 +479,21 @@ def _make_api_source_v2(
 @_register(NodeType.API_INPUT, opaque=True)
 def _build_api_input(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
-    path = config.get("path", "")
 
-    api_source_fn: Callable[..., Any]
-    if is_json_api_input_path(path):
-        # v2 per-frame shred is the only JSON apiInput codec. When the
-        # config carries `tables[]` we dispatch into the v2 source
-        # builder (every eligible count returns dict[label, frame]). Anything
-        # else is an editor-state error: the user must
-        # populate `tables[]` via the Infer Tables button before the
-        # pipeline can run.
-        from haute._api_input_schema import is_v2_shape as _is_v2_shape
-
-        if _is_v2_shape(config):
-            return ctx.func_name, _make_api_source_v2(path, config), True
-
-        def _api_source_no_tables(
-            _label: str = ctx.func_name,
-        ) -> _Frame:
-            raise RuntimeError(
-                f"API Input '{_label}' has no v2 schema (tables[]). Open the "
-                "node and click 'Infer Tables' to populate the schema "
-                "mapping, then preview again."
-            )
-
-        api_source_fn = _api_source_no_tables
-    else:
-
-        def _api_source_flat(
-            _profile: str | None = ctx.execution_profile,
-            _columns: frozenset[str] | set[str] | None = ctx.required_output_columns,
-            _config: dict[str, Any] = config,
-            _node_id: str = ctx.node.id,
-        ) -> _Frame:
-            projected = _source_scan_projection(
-                _profile,
-                _columns,
-                _config,
-                node_id=_node_id,
-            )
-            # Anchor a relative flat-file path to the pipeline dir before the
-            # read — the flat (CSV/parquet) apiInput codec is the third sibling
-            # of the API_INPUT sites above: the JSON apiInput fix (09a5500f)
-            # only anchored _make_api_source_v2, so a flat apiInput feeding an
-            # OUTPUT via the empty-source_file dry-run route still resolved
-            # config["path"] against cwd.
-            return read_data_source(
-                _config_with_resolved_data_path(_config),
-                profile=_profile,
-                columns=projected.columns,
-                validate_columns=projected.validate_columns,
-            )
-
-        api_source_fn = _api_source_flat
+    def api_source_fn(
+        _profile: str | None = ctx.execution_profile,
+        _columns: frozenset[str] | set[str] | None = ctx.required_output_columns,
+        _config: dict[str, Any] = config,
+        _node_id: str = ctx.node.id,
+    ) -> _Frame | dict[str, _Frame]:
+        projected = _source_scan_projection(_profile, _columns, _config, node_id=_node_id)
+        return resolve_api_input_from_config(
+            _config,
+            base_dir=_configured_pipeline_dir(),
+            profile=_profile,
+            columns=projected.columns,
+            validate_columns=projected.validate_columns,
+        )
 
     return ctx.func_name, api_source_fn, True
 
@@ -688,9 +652,6 @@ def _build_external_file(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
         kind="external",
         param_names=ctx.source_names,
     )
-    path = config.get("path", "")
-    file_type = config.get("fileType", "pickle")
-    model_class = config.get("modelClass", "classifier")
     _src_names = list(ctx.source_names)
 
     _orig_src = list(ctx.orig_source_names) if ctx.orig_source_names else None
@@ -706,9 +667,7 @@ def _build_external_file(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
             # served from the project root would otherwise hash/open the wrong
             # (or a missing) file. Resolved at call time, mirroring codegen.
             ens = {
-                "obj": load_external_object(
-                    _resolve_runtime_data_path(path), file_type, model_class
-                )
+                "obj": load_external_object_from_config(config, base_dir=_configured_pipeline_dir())
             }
             ens.update(_preamble_ext)
             if dfs_by_name:
@@ -1581,7 +1540,11 @@ def _split_ratebook_level(level: Any, join_columns: list[str], table_name: str) 
     return parts
 
 
-def _ratebook_lookup_table(name: str, entries: list[dict[str, Any]]) -> dict[str, Any] | None:
+def _ratebook_lookup_table(
+    name: str,
+    entries: list[dict[str, Any]],
+    dtype_records: list[dict[str, Any]] | None = None,
+) -> dict[str, Any] | None:
     """Convert one saved factor table into a rating-table lookup spec.
 
     Returns ``None`` when no entry carries ``__factor_group__`` (skipped with
@@ -1610,8 +1573,15 @@ def _ratebook_lookup_table(name: str, entries: list[dict[str, Any]]) -> dict[str
         return None
 
     levels = [entry[_RATEBOOK_FACTOR_GROUP_KEY] for entry in raw_entries]
-    if _ratebook_table_is_composite(levels):
-        join_columns = _ratebook_join_columns(name)
+    if dtype_records is not None:
+        join_columns = [str(record["column"]) for record in dtype_records]
+        is_composite = len(join_columns) > 1
+    else:
+        # Compatibility for direct helper callers. Production apply always
+        # supplies persisted metadata and never guesses factor columns.
+        is_composite = _ratebook_table_is_composite(levels)
+        join_columns = _ratebook_join_columns(name) if is_composite else [name]
+    if is_composite:
         lookup_entries = []
         for entry in raw_entries:
             parts = _split_ratebook_level(entry[_RATEBOOK_FACTOR_GROUP_KEY], join_columns, name)
@@ -1619,9 +1589,11 @@ def _ratebook_lookup_table(name: str, entries: list[dict[str, Any]]) -> dict[str
             lookup_entry["value"] = entry["optimal_scenario_value"]
             lookup_entries.append(lookup_entry)
     else:
-        join_columns = [name]
         lookup_entries = [
-            {name: entry[_RATEBOOK_FACTOR_GROUP_KEY], "value": entry["optimal_scenario_value"]}
+            {
+                join_columns[0]: entry[_RATEBOOK_FACTOR_GROUP_KEY],
+                "value": entry["optimal_scenario_value"],
+            }
             for entry in raw_entries
         ]
 
@@ -1654,6 +1626,7 @@ def _apply_ratebook(
     (3b.5) — neutral, never silent.
     """
     factor_tables = artifact.get("factor_tables", {})
+    factor_dtypes = artifact.get("factor_dtypes")
     schema_by_name: dict[str, Any]
     if hasattr(lf, "collect_schema"):
         collected_schema = lf.collect_schema()
@@ -1669,22 +1642,94 @@ def _apply_ratebook(
         result_lf = lf
         factor_cols: list[str] = []
         for _name, entries in factor_tables.items():
+            dtype_records_raw = (
+                factor_dtypes.get(_name) if isinstance(factor_dtypes, dict) else None
+            )
+            if not isinstance(dtype_records_raw, list) or not dtype_records_raw:
+                raise RatingFactorDtypeContractError(
+                    f"optimiserApply ratebook factor table {_name!r} has no "
+                    "factor_dtypes metadata; re-run and re-save the optimiser",
+                    table=_name,
+                    factor="",
+                    saved_dtype=None,
+                    input_dtype=None,
+                )
+            dtype_records: list[dict[str, Any]] = []
+            seen_columns: set[str] = set()
+            for index, raw_record in enumerate(dtype_records_raw):
+                if not isinstance(raw_record, dict):
+                    raise RatingFactorDtypeContractError(
+                        f"optimiserApply ratebook factor table {_name!r} has malformed "
+                        f"factor_dtypes record at index {index}",
+                        table=_name,
+                        factor="",
+                        saved_dtype=None,
+                        input_dtype=None,
+                    )
+                column = raw_record.get("column")
+                saved_descriptor = raw_record.get("dtype")
+                if (
+                    set(raw_record) != {"column", "dtype"}
+                    or not isinstance(column, str)
+                    or not column
+                    or column in seen_columns
+                    or not is_rating_dtype_descriptor(saved_descriptor)
+                ):
+                    raise RatingFactorDtypeContractError(
+                        f"optimiserApply ratebook factor table {_name!r} has malformed "
+                        f"factor_dtypes record at index {index}",
+                        table=_name,
+                        factor=column if isinstance(column, str) else "",
+                        saved_dtype=(
+                            dict(saved_descriptor) if isinstance(saved_descriptor, dict) else None
+                        ),
+                        input_dtype=None,
+                    )
+                assert isinstance(saved_descriptor, dict)
+                seen_columns.add(column)
+                dtype_records.append({"column": column, "dtype": dict(saved_descriptor)})
+            join_columns = [record["column"] for record in dtype_records]
+            missing = [column for column in join_columns if column not in available]
+            if missing:
+                raise ValueError(
+                    f"optimiserApply ratebook factor table {_name!r} requires join "
+                    f"column(s) {join_columns!r} but the input frame is missing "
+                    f"{missing!r}"
+                )
+            for record in dtype_records:
+                column = record["column"]
+                saved_descriptor = record["dtype"]
+                try:
+                    input_descriptor = rating_dtype_descriptor(schema_by_name[column])
+                except ValueError as exc:
+                    raise RatingFactorDtypeContractError(
+                        f"optimiserApply ratebook factor table {_name!r} factor "
+                        f"{column!r} has unsupported apply dtype "
+                        f"{schema_by_name[column]!r}",
+                        table=_name,
+                        factor=column,
+                        saved_dtype=saved_descriptor,
+                        input_dtype=None,
+                    ) from exc
+                if saved_descriptor != input_descriptor:
+                    raise RatingFactorDtypeContractError(
+                        f"optimiserApply ratebook factor table {_name!r} factor "
+                        f"{column!r} was solved as {saved_descriptor!r} but the "
+                        f"apply input is {input_descriptor!r}",
+                        table=_name,
+                        factor=column,
+                        saved_dtype=saved_descriptor,
+                        input_dtype=input_descriptor,
+                    )
             if not entries:
                 continue
             # factor_tables format from save: list of
             # {"__factor_group__": level, "optimal_scenario_value": value}
             # Convert to the rating table format expected by _apply_rating_table
-            table = _ratebook_lookup_table(_name, entries)
+            table = _ratebook_lookup_table(_name, entries, dtype_records)
             if table is None:
                 continue
             out_col: str = table["outputColumn"]
-            missing = [column for column in table["factors"] if column not in available]
-            if missing:
-                raise ValueError(
-                    f"optimiserApply ratebook factor table {_name!r} requires join "
-                    f"column(s) {table['factors']!r} but the input frame is missing "
-                    f"{missing!r}"
-                )
             result_lf = _apply_rating_table(result_lf, table, input_schema=schema_by_name)
             # Neutral fill AFTER the miss guard has counted and logged the
             # misses inside the plan: per-factor columns stay 1.0 for unseen

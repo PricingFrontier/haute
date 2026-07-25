@@ -1120,7 +1120,7 @@ pipeline.connect("source", "transform")
 
 
 class TestCircularSubmodelReferences:
-    def test_circular_submodel_refs_terminate(self, tmp_path):
+    def test_circular_submodel_refs_fail_at_nested_boundary(self, tmp_path):
         main_src_config = write_data_input_config(tmp_path, "src", "d.parquet")
         sub_src_config = write_data_input_config(tmp_path, "b_node", "d.parquet")
         main_code = f"""\
@@ -1152,14 +1152,14 @@ def b_node() -> pl.DataFrame:
         (tmp_path / "test_pipeline.py").write_text(main_code)
         (tmp_path / "sub_b.py").write_text(sub_b_code)
 
-        graph = parse_pipeline_file(tmp_path / "test_pipeline.py")
+        with pytest.raises(ParseError, match="Nested submodels") as exc_info:
+            parse_pipeline_file(tmp_path / "test_pipeline.py")
 
-        assert graph.pipeline_name == "circular_main"
-        assert len(graph.nodes) >= 1
+        assert exc_info.value.context["nested_paths"] == ["test_pipeline.py"]
 
 
 class TestNonExistentSubmodelFilePath:
-    def test_nonexistent_submodel_skipped(self, tmp_path):
+    def test_nonexistent_submodel_paths_raise_together(self, tmp_path):
         source_config = write_data_input_config(tmp_path, "src", "d.parquet")
         code = f"""\
 import polars as pl
@@ -1174,13 +1174,16 @@ def src() -> pl.DataFrame:
 
 
 pipeline.submodel("nonexistent.py")
+pipeline.submodel("modules/also_missing.py")
 """
         p = _write_pipeline(tmp_path, code)
-        graph = parse_pipeline_file(p)
+        with pytest.raises(ParseError, match="submodel file") as exc_info:
+            parse_pipeline_file(p)
 
-        assert graph.pipeline_name == "missing_sub"
-        assert len(graph.nodes) == 1
-        assert graph.nodes[0].id == "src"
+        assert exc_info.value.context["missing_paths"] == [
+            "nonexistent.py",
+            "modules/also_missing.py",
+        ]
 
 
 class TestFileWithUtf8Bom:
@@ -1207,7 +1210,7 @@ def node_a() -> pl.DataFrame:
 
 
 class TestSubmodelNameCollision:
-    def test_same_submodel_name_is_deterministic(self, tmp_path):
+    def test_same_submodel_name_raises_with_both_files(self, tmp_path):
         sub_a_code = """\
 import polars as pl
 import haute
@@ -1249,10 +1252,11 @@ pipeline.submodel("sub_b.py")
         (tmp_path / "sub_a.py").write_text(sub_a_code)
         (tmp_path / "sub_b.py").write_text(sub_b_code)
         p = _write_pipeline(tmp_path, main_code)
-        graph = parse_pipeline_file(p)
+        with pytest.raises(ParseError, match="same submodel name") as exc_info:
+            parse_pipeline_file(p)
 
-        assert graph.pipeline_name == "collision_parent"
-        assert len(graph.nodes) >= 1
+        assert exc_info.value.context["submodel_name"] == "shared_name"
+        assert exc_info.value.context["files"] == ["sub_a.py", "sub_b.py"]
 
 
 class TestEmptySubmodelFile:
@@ -1324,7 +1328,7 @@ pipeline.submodel("modules/scoring.py")
 
 
 class TestSubmodelFileWithSyntaxError:
-    def test_syntax_error_submodel_no_crash(self, tmp_path):
+    def test_syntax_error_submodel_fails_loudly(self, tmp_path):
         broken_sub_code = """\
 import polars as pl
 import haute
@@ -1353,7 +1357,7 @@ pipeline.submodel("broken_sub.py")
 """
         (tmp_path / "broken_sub.py").write_text(broken_sub_code)
         p = _write_pipeline(tmp_path, main_code)
-        graph = parse_pipeline_file(p)
+        with pytest.raises(ParseError, match="syntax errors") as exc_info:
+            parse_pipeline_file(p)
 
-        assert graph.pipeline_name == "syntax_err_parent"
-        assert len(graph.nodes) >= 1
+        assert exc_info.value.context["source_file"].endswith("broken_sub.py")

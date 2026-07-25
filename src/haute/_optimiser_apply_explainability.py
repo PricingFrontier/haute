@@ -9,13 +9,15 @@ import polars as pl
 
 from haute._builders import (
     _prepare_online_apply_frame,
-    _ratebook_join_columns,
-    _ratebook_table_is_composite,
     _select_optimiser_apply_input,
     _split_ratebook_level,
 )
 from haute._logging import get_logger
-from haute._rating import normalise_rating_key
+from haute._rating import (
+    is_rating_dtype_descriptor,
+    normalise_rating_key,
+    rating_dtype_descriptor,
+)
 from haute._trace_correlation import _jsonify_row, _trace_values_match
 
 logger = get_logger(component="optimiser_apply_explainability")
@@ -297,6 +299,8 @@ def _explain_ratebook(
 ) -> dict[str, Any]:
     matched_input = _match_ratebook_input_row(parent_frame, output_row)
     factor_tables = artifact.get("factor_tables", {}) or {}
+    factor_dtypes = artifact.get("factor_dtypes")
+    parent_schema = parent_frame.collect_schema()
     output_col = _required_config_column(
         config,
         "optimised_value_column",
@@ -313,22 +317,71 @@ def _explain_ratebook(
         ]
         if not valid_entries:
             continue
-        # Composite tables (3b.2) join on their component columns; the
-        # decoding mirrors the engine exactly via the shared helpers.
-        levels = [entry["__factor_group__"] for entry in valid_entries]
-        if _ratebook_table_is_composite(levels):
-            join_columns = _ratebook_join_columns(factor_name)
-        else:
-            join_columns = [factor_name]
+        dtype_records_raw = (
+            factor_dtypes.get(factor_name) if isinstance(factor_dtypes, dict) else None
+        )
+        if not isinstance(dtype_records_raw, list) or not dtype_records_raw:
+            raise OptimiserApplyTraceError(
+                f"ratebook factor table {factor_name!r} has no factor_dtypes metadata"
+            )
+        dtype_records: list[dict[str, Any]] = []
+        seen_columns: set[str] = set()
+        for index, record in enumerate(dtype_records_raw):
+            if not isinstance(record, dict):
+                raise OptimiserApplyTraceError(
+                    f"ratebook factor table {factor_name!r} has malformed "
+                    f"factor_dtypes record at index {index}"
+                )
+            column = record.get("column")
+            descriptor = record.get("dtype")
+            if (
+                set(record) != {"column", "dtype"}
+                or not isinstance(column, str)
+                or not column
+                or column in seen_columns
+                or not is_rating_dtype_descriptor(descriptor)
+            ):
+                raise OptimiserApplyTraceError(
+                    f"ratebook factor table {factor_name!r} has malformed "
+                    f"factor_dtypes record at index {index}"
+                )
+            assert isinstance(descriptor, dict)
+            seen_columns.add(column)
+            dtype_records.append({"column": column, "dtype": dict(descriptor)})
+        join_columns: list[str] = [str(record["column"]) for record in dtype_records]
         missing_columns = [column for column in join_columns if column not in matched_input]
         if missing_columns:
             raise OptimiserApplyTraceError(
                 f"ratebook input row is missing factor column(s) {missing_columns!r} "
                 f"for factor table {factor_name!r}"
             )
+        input_dtypes: list[pl.DataType] = []
+        for column, record in zip(join_columns, dtype_records):
+            if column not in parent_schema:
+                raise OptimiserApplyTraceError(
+                    f"ratebook input schema is missing factor column {column!r}"
+                )
+            input_dtype = parent_schema[column]
+            saved_descriptor = record.get("dtype")
+            try:
+                input_descriptor = rating_dtype_descriptor(input_dtype)
+            except ValueError as exc:
+                raise OptimiserApplyTraceError(
+                    f"ratebook factor {column!r} has unsupported input dtype {input_dtype!r}"
+                ) from exc
+            if saved_descriptor != input_descriptor:
+                raise OptimiserApplyTraceError(
+                    f"ratebook factor {column!r} dtype mismatch: saved "
+                    f"{saved_descriptor!r}, input {input_descriptor!r}"
+                )
+            input_dtypes.append(input_dtype)
         input_values = [matched_input.get(column) for column in join_columns]
         matched_entry = _match_ratebook_entry(
-            valid_entries, join_columns, input_values, factor_name
+            valid_entries,
+            join_columns,
+            input_values,
+            factor_name,
+            input_dtypes=input_dtypes,
         )
         factor_value: Any
         # An unmatched level is the engine's loud-neutral miss path (3b.5):
@@ -550,6 +603,8 @@ def _match_ratebook_entry(
     join_columns: list[str],
     input_values: list[Any],
     table_name: str,
+    *,
+    input_dtypes: list[pl.DataType],
 ) -> dict[str, Any] | None:
     """Mirror the engine's ratebook lookup for one input row.
 
@@ -566,17 +621,23 @@ def _match_ratebook_entry(
     entry at runtime; walking ``entries`` in reverse mirrors that — see
     ``test_ratebook_match_entry_uses_last_duplicate_to_match_runtime``.
     """
-    input_keys = [normalise_rating_key(value) for value in input_values]
+    if len(input_dtypes) != len(join_columns):
+        raise OptimiserApplyTraceError(
+            f"ratebook factor table {table_name!r} has misaligned dtype metadata"
+        )
+    input_keys = [
+        normalise_rating_key(value, input_dtypes[index]) for index, value in enumerate(input_values)
+    ]
     if any(key is None for key in input_keys):
         return None
     for entry in reversed(entries):
         level = entry.get("__factor_group__")
         if len(join_columns) == 1:
-            entry_keys = [normalise_rating_key(level)]
+            entry_keys = [normalise_rating_key(level, input_dtypes[0])]
         else:
             entry_keys = [
-                normalise_rating_key(part)
-                for part in _split_ratebook_level(level, join_columns, table_name)
+                normalise_rating_key(part, input_dtypes[index])
+                for index, part in enumerate(_split_ratebook_level(level, join_columns, table_name))
             ]
         if entry_keys == input_keys:
             return entry

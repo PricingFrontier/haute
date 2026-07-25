@@ -77,7 +77,9 @@ Out of scope (owned elsewhere, linked where relevant):
   nonexistent or duplicate ids in the request are resolved against the actual
   graph; fewer is rejected.
 - **No nesting.** A node that is itself a `SUBMODEL` placeholder cannot be
-  selected as part of a new group — grouping is capped at one level.
+  selected as part of a new group — grouping is capped at one level. A hand-authored submodel
+  file that contains `pipeline.submodel(...)` is rejected by the parser with every nested path
+  named; it is never accepted with the nested graph omitted.
 - **GUI creation is selection-based.** There is no submodel entry in the node palette or GUI
   library picker: the create endpoint only extracts an existing selection from the current graph.
   Source files can still hand-author `pipeline.submodel("path")` references, and the static parser
@@ -141,15 +143,9 @@ Out of scope (owned elsewhere, linked where relevant):
   the `in__`/`out__` handle scheme, and the flatten pass single-level;
   recursive nesting (a submodel containing another submodel) was considered
   as a possible future phase and never implemented. This closes the
-  GUI-authored path, but a hand-authored submodel `.py` file could still
-  contain its own `pipeline.submodel(...)` call — the parser (owned by
-  expression-parsing component) handles that case by detecting the
-  nested call and *ignoring* it with a `nested_submodel_ignored` log plus a graph-level warning,
-  not by raising. Detecting a circular submodel reference and raising a clear
-  error for it was proposed but never built; nesting one level deep is
-  structurally impossible to trigger from the GUI, and nesting attempted from
-  hand-written code is silently dropped rather than erroring, so a cycle
-  cannot form either way.
+  GUI-authored path; the expression parser closes the hand-authored path by
+  raising `ParseError` with the containing file and every nested reference.
+  A cycle therefore cannot be hidden by truncating the authored hierarchy.
 - **Name-collision detection lives at save time, not in `haute lint`.**
   Extending `haute lint` to warn about (and block on) node-name collisions
   across submodels was proposed and never built — the CLI's lint command has

@@ -18,6 +18,7 @@ import pytest
 from haute._jsonpath import (
     _Seg,
     is_canonical,
+    is_identifier_name,
     make_output_path,
     parse_data_path,
     parse_path,
@@ -181,6 +182,22 @@ def test_parse_path_rejects_non_root_start() -> None:
     # The very first gate: a path not starting with '$' is rejected outright.
     with pytest.raises(ValueError):
         parse_path("drivers[:].name", _reject)
+
+
+@pytest.mark.parametrize("name", ["a", "_id", "field2", "A_B"])
+def test_identifier_name_accepts_exact_path_grammar_names(name: str) -> None:
+    assert is_identifier_name(name) is True
+
+
+@pytest.mark.parametrize("name", ["", "2field", "a-b", "a.b", "#id", "white space"])
+def test_identifier_name_rejects_unaddressable_names(name: str) -> None:
+    assert is_identifier_name(name) is False
+
+
+@pytest.mark.parametrize("path", ["$[:]['a.b']", '$[:]["a.b"]'])
+def test_bracket_selector_cannot_smuggle_dotted_key(path: str) -> None:
+    with pytest.raises(ValueError, match="identifier"):
+        parse_path(path, _reject)
 
 
 # ─── _ParsedPath is an immutable value object (frozen dataclass) ───────

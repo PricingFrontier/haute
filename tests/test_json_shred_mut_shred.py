@@ -183,21 +183,13 @@ def test_normal_column_sources_current_node_equality_not_neq() -> None:
     assert buffers["drivers"] == [{"driver_id": 9}]
 
 
-# ─── _resolve_leaf via _emit_row, line 652: $value coercion guard ─────
+# ─── _resolve_leaf via _emit_row: inferred scalar coercion ────────────
 #   `if leaf == _SCALAR_VALUE_LEAF: resolved = _coerce_scalar(...)`
 
 
-def test_scalar_value_column_coerced_object_column_not() -> None:
-    # Line 652 `if leaf == _SCALAR_VALUE_LEAF: resolved = _coerce_scalar(...)`.
-    # The $value column of a scalar-array child table IS coerced to its declared
-    # type (int element 7 -> "str" => "7"); a sibling ancestor OBJECT column is
-    # NOT coerced. Crucially the ancestor "gid" is declared "str" but carries a
-    # RAW int 1: real code leaves it as int 1 (object columns aren't coerced),
-    # so the two non-equivalent direction mutants are killed —
-    #   GtE:  "gid" >= "$value" is True  => gid wrongly coerced 1 -> "1".
-    #   NotEq: inverts the guard => $value left raw 7 (and gid coerced).
-    # (Eq->Is and Eq->LtE on this guard are equivalent: the runtime leaf is the
-    # interned _SCALAR_VALUE_LEAF, and "gid" <= "$value" is False.)
+def test_declared_string_columns_coerce_json_scalars_at_any_depth() -> None:
+    # Inference widens mixed scalar domains to ``str``. The shredder therefore
+    # applies deterministic scalar stringification at every source depth.
     cfg = {
         "path": "x.json",
         "contract": "opaque",
@@ -220,10 +212,10 @@ def test_scalar_value_column_coerced_object_column_not() -> None:
     }
     records = [{"gid": 1, "tags": [7]}]
     buffers = shred_to_buffers(records, cfg)
-    # $value 7 coerced to "7" (str); ancestor column keeps its RAW int 1.
-    assert buffers["tags"] == [{"value": "7", "gid": 1}]
+    # String widening is consistent for both the scalar element and ancestor.
+    assert buffers["tags"] == [{"value": "7", "gid": "1"}]
     assert isinstance(buffers["tags"][0]["value"], str)
-    assert isinstance(buffers["tags"][0]["gid"], int)
+    assert isinstance(buffers["tags"][0]["gid"], str)
 
 
 # ─── _emit_at, lines 671-672 + 674: shape-mismatch skip accounting ────
@@ -447,8 +439,10 @@ def test_reject_unexpressible_key_rejects_dotted() -> None:
         _reject_unexpressible_key("profile.age")
 
 
-def test_reject_unexpressible_key_allows_sub_sentinel_key() -> None:
-    # An ordinary key lexically BELOW "$value" ('#' 0x23 < '$' 0x24) and with no
-    # dot is fine. Kills the `key == _SCALAR_VALUE_LEAF` Eq -> LtE mutation
-    # ("#id" <= "$value" is True), which would wrongly reject it.
-    _reject_unexpressible_key("#id")
+def test_reject_unexpressible_key_rejects_non_identifier() -> None:
+    with pytest.raises(ApiInputSchemaError, match="identifier"):
+        _reject_unexpressible_key("#id")
+
+
+def test_reject_unexpressible_key_allows_identifier() -> None:
+    _reject_unexpressible_key("_id2")

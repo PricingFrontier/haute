@@ -545,6 +545,12 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
             "success_schema": {"$ref": "#/components/schemas/PreviewNodeResponse"},
         },
     },
+    "/api/pipeline/output-destination": {
+        "POST": {
+            "request_ref": "#/components/schemas/OutputDestinationRequest",
+            "success_schema": {"$ref": "#/components/schemas/OutputDestinationResponse"},
+        },
+    },
     "/api/pipeline/save": {
         "POST": {
             "request_ref": "#/components/schemas/SavePipelineRequest",

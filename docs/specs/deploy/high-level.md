@@ -311,3 +311,14 @@ Acceptance covers static files across supported formats, each remote snapshot pr
 or identity-mismatched metadata, generation pinning during concurrent refresh, secret/network
 policy, offline scorer execution, post-input code, and proof that deploy validation/scoring
 performs no cache build, remote fetch, or data-output write.
+
+## Approved change contract — 0.8.0 deployment memory-policy declaration
+
+Generated scoring images set `HAUTE_EXECUTION_MEMORY_POLICY=strict_server` explicitly and expose
+`memory_enforcement="admission_rss_best_effort"` from health metadata. This guarantees fixed,
+profile-aware application admission and RSS checkpoints; it does not claim an OS/container hard
+limit. The operator remains responsible for configuring a hard memory limit in Docker or the
+selected hosting platform. Local/editor processes default to adaptive admission, and isolated
+background workers separately expose `best_effort|required` process-cap policy. Documentation,
+runtime diagnostics, and tests use these exact terms so a sampled RSS policy can never be
+mistaken for a hard cap.
