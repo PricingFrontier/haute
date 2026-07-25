@@ -14,7 +14,8 @@ import type { Node } from "@xyflow/react"
 
 // ── Mock dependencies BEFORE importing the hook ──────────────────
 
-vi.mock("../../utils/layout.ts", () => ({
+vi.mock("../../utils/layout.ts", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../utils/layout.ts")>(),
   getLayoutedElements: vi.fn(async (nodes: unknown[]) => nodes),
 }))
 

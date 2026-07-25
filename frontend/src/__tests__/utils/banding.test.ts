@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest"
-import { extractBandingLevelOrderForNode, extractBandingLevelsForNode, extractBandingLevels } from "../../utils/banding"
+import { classifyBandingFactors, extractBandingLevelOrderForNode, extractBandingLevelsForNode, extractBandingLevels } from "../../utils/banding"
 import { buildCartesianEntries } from "../../panels/editors/rating/ratingTableUtils"
 import type { SimpleNode } from "../../panels/editors/_shared"
 
@@ -194,6 +194,36 @@ describe("extractBandingLevelsForNode", () => {
 
     const result = extractBandingLevelsForNode(nodes, "b1")
     expect(result).toEqual({ region_band: ["East", "West"] })
+  })
+})
+
+describe("classifyBandingFactors", () => {
+  it("classifies all supported modes and reports configured zero-level outputs without throwing on drafts", () => {
+    expect(classifyBandingFactors([
+      { banding: "continuous", outputColumn: "age_band", rules: [{ assignment: "Young" }] },
+      { banding: "categorical", outputColumn: "channel_band", rules: [{ assignment: "Direct" }] },
+      { banding: "breakpoints", outputColumn: "vehicle_band", rules: [{ label: "New" }] },
+      { banding: "continuous", outputColumn: "empty_band", rules: [{}] },
+      null,
+      { banding: "unknown", outputColumn: "ignored", rules: [{ assignment: "Ignored" }] },
+      { banding: "continuous", outputColumn: "   ", rules: [{ assignment: "Ignored" }] },
+    ])).toEqual({
+      levels: { age_band: ["Young"], channel_band: ["Direct"], vehicle_band: ["New"] },
+      configuredOutputs: ["age_band", "channel_band", "vehicle_band", "empty_band"],
+      zeroLevelOutputs: ["empty_band"],
+      zeroLevelIssues: [{ outputColumn: "empty_band" }],
+    })
+  })
+
+  it("does not invent a level from a malformed default container", () => {
+    expect(classifyBandingFactors([
+      {
+        banding: "continuous",
+        outputColumn: "age_band",
+        rules: [{ assignment: "Young" }],
+        default: { label: "not-a-persisted-default" },
+      },
+    ], { includeDefault: true }).levels).toEqual({ age_band: ["Young"] })
   })
 })
 

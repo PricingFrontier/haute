@@ -1,5 +1,9 @@
 import type { Node, Edge } from "@xyflow/react"
 
+const DEFAULT_NODE_WIDTH = 240
+const DEFAULT_NODE_HEIGHT = 70
+const LAYOUT_COLLISION_GAP = 60
+
 type ElkLayout = {
   children?: Array<{ id: string; x?: number; y?: number }>
 }
@@ -91,4 +95,115 @@ export async function getLayoutedElements(nodes: Node[], edges: Edge[]): Promise
     ...n,
     position: posMap.get(n.id) || n.position,
   }))
+}
+
+function hasFinitePosition(node: Node): boolean {
+  return Number.isFinite(node.position?.x) && Number.isFinite(node.position?.y)
+}
+
+/**
+ * Identify imported nodes that do not yet carry a real canvas position.
+ *
+ * An established node at the origin is intentional and remains fixed. A new
+ * node at the parser's default origin is the only finite-position case that
+ * needs layout.
+ */
+export function nodeIdsNeedingLayout(
+  incomingNodes: Node[],
+  currentNodes: Node[],
+): Set<string> {
+  const establishedIds = new Set(currentNodes.map(node => node.id))
+  return new Set(
+    incomingNodes
+      .filter(node => (
+        !hasFinitePosition(node)
+        || (
+          !establishedIds.has(node.id)
+          && node.position.x === 0
+          && node.position.y === 0
+        )
+      ))
+      .map(node => node.id),
+  )
+}
+
+type NodeBounds = {
+  left: number
+  top: number
+  right: number
+  bottom: number
+}
+
+function positiveDimension(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0
+    ? value
+    : fallback
+}
+
+function nodeDimensions(node: Node): { width: number; height: number } {
+  const measured = node.measured as { width?: number; height?: number } | undefined
+  return {
+    width: positiveDimension(node.width ?? measured?.width, DEFAULT_NODE_WIDTH),
+    height: positiveDimension(node.height ?? measured?.height, DEFAULT_NODE_HEIGHT),
+  }
+}
+
+function nodeBounds(node: Node, position = node.position): NodeBounds {
+  const { width, height } = nodeDimensions(node)
+  const origin = node.origin ?? [0, 0]
+  const left = position.x - origin[0] * width
+  const top = position.y - origin[1] * height
+  return {
+    left,
+    top,
+    right: left + width,
+    bottom: top + height,
+  }
+}
+
+function overlaps(a: NodeBounds, b: NodeBounds): boolean {
+  return (
+    a.left < b.right + LAYOUT_COLLISION_GAP
+    && a.right + LAYOUT_COLLISION_GAP > b.left
+    && a.top < b.bottom + LAYOUT_COLLISION_GAP
+    && a.bottom + LAYOUT_COLLISION_GAP > b.top
+  )
+}
+
+/**
+ * Copy layout coordinates only to the requested missing nodes.
+ *
+ * Preserved nodes reserve their actual boxes. Missing nodes are considered in
+ * incoming order and shifted down by one node-height-plus-gap step until their
+ * candidate box is clear, producing deterministic non-overlapping placement.
+ */
+export function mergeLayoutedNodePositions(
+  incomingNodes: Node[],
+  layoutedNodes: Node[],
+  missingNodeIds: ReadonlySet<string>,
+): Node[] {
+  const layoutedById = new Map(layoutedNodes.map(node => [node.id, node]))
+  const reservedBounds = incomingNodes
+    .filter(node => !missingNodeIds.has(node.id))
+    .map(node => nodeBounds(node))
+
+  return incomingNodes.map(node => {
+    if (!missingNodeIds.has(node.id)) return node
+
+    const layouted = layoutedById.get(node.id)
+    if (!layouted || !hasFinitePosition(layouted)) {
+      throw new Error(`Layout did not return a finite position for node "${node.id}"`)
+    }
+
+    const { height } = nodeDimensions(node)
+    const step = height + LAYOUT_COLLISION_GAP
+    const position = { ...layouted.position }
+    let candidateBounds = nodeBounds(node, position)
+    while (reservedBounds.some(bounds => overlaps(candidateBounds, bounds))) {
+      position.y += step
+      candidateBounds = nodeBounds(node, position)
+    }
+    reservedBounds.push(candidateBounds)
+    return { ...node, position }
+  })
 }

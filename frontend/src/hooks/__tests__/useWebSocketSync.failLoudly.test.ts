@@ -21,7 +21,8 @@ import { type Mock } from "vitest"
 
 // ── Mocks ────────────────────────────────────────────────────────
 
-vi.mock("../../utils/layout.ts", () => ({
+vi.mock("../../utils/layout.ts", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../utils/layout.ts")>(),
   getLayoutedElements: vi.fn(),
 }))
 

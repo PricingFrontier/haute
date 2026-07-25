@@ -174,26 +174,49 @@ interface ActiveExploreJob {
 
 // ─── Config hashing ──────────────────────────────────────────────
 
-/** Fast djb2 string hash — good enough for staleness detection. */
-function djb2(s: string): string {
-  let hash = 5381
-  for (let i = 0; i < s.length; i++) {
-    hash = ((hash << 5) + hash + s.charCodeAt(i)) | 0
-  }
-  return (hash >>> 0).toString(36)
-}
-
 export function hashConfig(config: Record<string, unknown>): string {
-  // Strip internal keys that don't affect computation
-  const { _nodeId, _columns, _schemaWarnings, _availableColumns, ...rest } = config
-  void _nodeId; void _columns; void _schemaWarnings; void _availableColumns
-  const sortKeys = (o: unknown): unknown => {
-    if (o === null || typeof o !== "object") return o
-    if (Array.isArray(o)) return o.map(sortKeys)
-    const sorted = Object.keys(o as Record<string, unknown>).sort()
-    return Object.fromEntries(sorted.map(k => [k, sortKeys((o as Record<string, unknown>)[k])]))
+  const ephemeralKeys = new Set(["_nodeId", "_columns", "_schemaWarnings", "_availableColumns"])
+  const ancestors = new WeakSet<object>()
+
+  const canonicalise = (value: unknown): unknown => {
+    if (value === null || typeof value === "string" || typeof value === "boolean") return value
+    if (typeof value === "number") {
+      if (Number.isFinite(value)) return value
+      throw new TypeError("Config identity requires JSON-compatible finite numbers")
+    }
+    if (Array.isArray(value)) {
+      if (ancestors.has(value)) throw new TypeError("Config identity cannot serialize cyclic values")
+      ancestors.add(value)
+      try {
+        return value.map(canonicalise)
+      } finally {
+        ancestors.delete(value)
+      }
+    }
+    if (typeof value !== "object") {
+      throw new TypeError("Config identity requires JSON-compatible values")
+    }
+
+    const prototype = Object.getPrototypeOf(value)
+    if (prototype !== Object.prototype && prototype !== null) {
+      throw new TypeError("Config identity requires plain JSON objects")
+    }
+    if (ancestors.has(value)) throw new TypeError("Config identity cannot serialize cyclic values")
+    ancestors.add(value)
+    try {
+      const object = value as Record<string, unknown>
+      return Object.fromEntries(
+        Object.keys(object)
+          .filter(key => !ephemeralKeys.has(key))
+          .sort()
+          .map(key => [key, canonicalise(object[key])]),
+      )
+    } finally {
+      ancestors.delete(value)
+    }
   }
-  return djb2(JSON.stringify(sortKeys(rest)))
+
+  return JSON.stringify(canonicalise(config))
 }
 
 // ─── Derived-getter caches (Issue #13) ──────────────────────────

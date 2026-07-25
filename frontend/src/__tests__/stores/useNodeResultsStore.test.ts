@@ -530,17 +530,23 @@ describe("useNodeResultsStore", () => {
       expect(hash.length).toBeGreaterThan(0)
     })
 
-    it("is order-sensitive via JSON.stringify (same object key order)", () => {
-      // JSON.stringify preserves insertion order, so these should differ
+    it("uses the same identity for different object key orders", () => {
       const a = { x: 1, y: 2 }
       const b = { y: 2, x: 1 }
-      // Note: these MAY differ depending on JSON.stringify key ordering
-      // In practice, JS engines preserve insertion order, so this tests that
-      const hashA = hashConfig(a)
-      const hashB = hashConfig(b)
-      // We just verify both produce valid hashes; equality depends on engine
-      expect(hashA.length).toBeGreaterThan(0)
-      expect(hashB.length).toBeGreaterThan(0)
+
+      expect(hashConfig(a)).toBe(hashConfig(b))
+    })
+
+    it("preserves array order in the identity", () => {
+      expect(hashConfig({ columns: ["premium", "discount"] })).not.toBe(
+        hashConfig({ columns: ["discount", "premium"] }),
+      )
+    })
+
+    it("does not collide for the known legacy DJB2 collision", () => {
+      expect(hashConfig({ value: "10ry7jgv0xesb" })).not.toBe(
+        hashConfig({ value: "n2mwwma6ztkt" }),
+      )
     })
   })
 

@@ -11,7 +11,11 @@
  */
 import { describe, it, expect } from "vitest"
 import type { Node, Edge } from "@xyflow/react"
-import { getLayoutedElements } from "../layout"
+import {
+  getLayoutedElements,
+  mergeLayoutedNodePositions,
+  nodeIdsNeedingLayout,
+} from "../layout"
 
 function makeNode(id: string, x = 0, y = 0): Node {
   return {
@@ -158,5 +162,61 @@ describe("getLayoutedElements", () => {
 
     expect(posB.x).toBe(posC.x)
     expect(posC.x).toBe(posD.x)
+  })
+})
+
+describe("partial imported-graph layout", () => {
+  it("treats an established origin as positioned and a new origin as unpositioned", () => {
+    const incoming = [
+      makeNode("established", 0, 0),
+      makeNode("new-default", 0, 0),
+      makeNode("new-positioned", 400, 200),
+    ]
+    const current = [makeNode("established", 120, 80)]
+
+    expect([...nodeIdsNeedingLayout(incoming, current)]).toEqual(["new-default"])
+  })
+
+  it("treats non-finite incoming coordinates as unpositioned", () => {
+    const invalid = makeNode("invalid")
+    invalid.position = { x: Number.NaN, y: 10 }
+
+    expect([...nodeIdsNeedingLayout([invalid], [])]).toEqual(["invalid"])
+  })
+
+  it("copies layout only to missing nodes and moves them clear of preserved nodes", () => {
+    const incoming = [
+      makeNode("origin", 0, 0),
+      makeNode("new-a", 0, 0),
+      makeNode("new-b", 0, 0),
+    ]
+    const layouted = [
+      makeNode("origin", 500, 500),
+      makeNode("new-a", 0, 0),
+      makeNode("new-b", 0, 0),
+    ]
+    const result = mergeLayoutedNodePositions(
+      incoming,
+      layouted,
+      new Set(["new-a", "new-b"]),
+    )
+
+    expect(result.find(node => node.id === "origin")?.position).toEqual({ x: 0, y: 0 })
+    const newAPosition = result.find(node => node.id === "new-a")!.position
+    const newBPosition = result.find(node => node.id === "new-b")!.position
+    expect(newAPosition).not.toEqual({ x: 0, y: 0 })
+    expect(newBPosition).not.toEqual({ x: 0, y: 0 })
+    expect(newBPosition).not.toEqual(newAPosition)
+  })
+
+  it("does not mutate incoming or layouted node arrays", () => {
+    const incoming = [makeNode("origin", 0, 0), makeNode("new", 0, 0)]
+    const layouted = [makeNode("origin", 100, 100), makeNode("new", 0, 0)]
+    const result = mergeLayoutedNodePositions(incoming, layouted, new Set(["new"]))
+
+    expect(result).not.toBe(incoming)
+    expect(result[1]).not.toBe(incoming[1])
+    expect(incoming[1].position).toEqual({ x: 0, y: 0 })
+    expect(layouted[1].position).toEqual({ x: 0, y: 0 })
   })
 })

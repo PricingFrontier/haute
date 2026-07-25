@@ -15,7 +15,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { renderHook, act, cleanup } from "@testing-library/react"
 import { type Mock } from "vitest"
 
-vi.mock("../../utils/layout.ts", () => ({
+vi.mock("../../utils/layout.ts", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../utils/layout.ts")>(),
   getLayoutedElements: vi.fn(async (n: unknown) => n),
 }))
 

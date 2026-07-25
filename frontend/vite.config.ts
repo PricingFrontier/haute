@@ -7,6 +7,11 @@ import tailwindcss from "@tailwindcss/vite"
 const toml = readFileSync(path.resolve(__dirname, "../pyproject.toml"), "utf-8")
 const versionMatch = toml.match(/^version\s*=\s*"(.+)"/m)
 const appVersion = versionMatch ? versionMatch[1] : "0.1.0"
+const backendUrl = new URL(
+  process.env.HAUTE_DEV_BACKEND_URL ?? "http://127.0.0.1:8000",
+)
+const websocketUrl = new URL(backendUrl)
+websocketUrl.protocol = backendUrl.protocol === "https:" ? "wss:" : "ws:"
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
@@ -21,11 +26,11 @@ export default defineConfig({
   server: {
     proxy: {
       "/api": {
-        target: "http://127.0.0.1:8000",
+        target: backendUrl.origin,
         changeOrigin: true,
       },
       "/ws": {
-        target: "ws://127.0.0.1:8000",
+        target: websocketUrl.origin,
         ws: true,
       },
     },

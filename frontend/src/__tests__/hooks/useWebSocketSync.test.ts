@@ -13,7 +13,8 @@ import type { Node } from "@xyflow/react"
 // ── Mock dependencies BEFORE importing the hook ──────────────────
 
 // Mock getLayoutedElements — called when graph update has no positions
-vi.mock("../../utils/layout.ts", () => ({
+vi.mock("../../utils/layout.ts", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../utils/layout.ts")>(),
   getLayoutedElements: vi.fn(async (nodes: unknown[]) => nodes),
 }))
 
@@ -60,7 +61,13 @@ vi.mock("../../stores/useUIStore.ts", () => {
 
 // Wave 7E: dirty tracking moved from useUIStore to useGraphStore.
 vi.mock("../../stores/useGraphStore.ts", () => {
-  const store = { dirty: false, markSaved: vi.fn() }
+  const store = {
+    dirty: false,
+    nodes: [] as Node[],
+    edges: [] as import("@xyflow/react").Edge[],
+    preamble: "",
+    markSaved: vi.fn(),
+  }
   const useGraphStore = Object.assign(() => store, {
     getState: () => store,
     setState: vi.fn(),
@@ -113,13 +120,13 @@ function createMockWebSocket() {
 
 // ── Shared params for the hook ───────────────────────────────────
 
-function makeHookParams() {
+function makeHookParams(sourceFile = "") {
   return {
     setNodesRaw: vi.fn(),
     setEdgesRaw: vi.fn(),
     setPreamble: vi.fn(),
     preambleRef: { current: "" },
-    sourceFileRef: { current: "rating/main.py" },
+    sourceFileRef: { current: sourceFile },
     graphRefreshingRef: { current: 0 },
     nodeIdCounter: { current: 0 },
     fitView: vi.fn(),
@@ -142,6 +149,9 @@ describe("useWebSocketSync", () => {
     vi.mocked(useUIStore.getState().setSyncBanner).mockClear()
     vi.mocked(useGraphStore.getState().markSaved).mockClear()
     useGraphStore.getState().dirty = false
+    useGraphStore.getState().nodes = []
+    useGraphStore.getState().edges = []
+    useGraphStore.getState().preamble = ""
   })
 
   afterEach(() => {
@@ -253,7 +263,7 @@ describe("useWebSocketSync", () => {
     })
 
     it("requests a current-source resync when the socket opens", () => {
-      const params = makeHookParams()
+      const params = makeHookParams("rating/main.py")
       renderHook(() => useWebSocketSync(params))
 
       act(() => {
@@ -267,7 +277,7 @@ describe("useWebSocketSync", () => {
     })
 
     it("includes the last applied graph fingerprint in reconnect resync requests", async () => {
-      const params = makeHookParams()
+      const params = makeHookParams("rating/main.py")
       renderHook(() => useWebSocketSync(params))
 
       await act(async () => {
@@ -302,7 +312,7 @@ describe("useWebSocketSync", () => {
     })
 
     it("does not send a graph fingerprint remembered for another source", async () => {
-      const params = makeHookParams()
+      const params = makeHookParams("rating/main.py")
       renderHook(() => useWebSocketSync(params))
 
       await act(async () => {
@@ -349,7 +359,7 @@ describe("useWebSocketSync", () => {
     })
 
     it("keeps the socket connected and reports a failed reconnect resync send", () => {
-      const params = makeHookParams()
+      const params = makeHookParams("rating/main.py")
       renderHook(() => useWebSocketSync(params))
       latestWS().send.mockImplementation(() => {
         throw new Error("send boom")
@@ -404,6 +414,7 @@ describe("useWebSocketSync", () => {
         graph: {
           nodes: [
             { id: "transform_3", position: { x: 100, y: 200 }, data: { label: "test" } },
+            { id: "transform_4", position: { x: 400, y: 200 }, data: { label: "target" } },
           ],
           edges: [
             { id: "e1", source: "transform_3", target: "transform_4" },
@@ -435,8 +446,8 @@ describe("useWebSocketSync", () => {
       // Preamble updated
       expect(params.setPreamble).toHaveBeenCalledWith("import numpy as np")
       expect(params.preambleRef.current).toBe("import numpy as np")
-      // nodeIdCounter updated — computed from max numeric suffix (3) + 1
-      expect(params.nodeIdCounter.current).toBe(4)
+      // nodeIdCounter updated — computed from max numeric suffix (4) + 1
+      expect(params.nodeIdCounter.current).toBe(5)
       // Toast fired
       expect(useToastStore.getState().addToast).toHaveBeenCalledWith(
         "info",
@@ -478,7 +489,7 @@ describe("useWebSocketSync", () => {
     })
 
     it("ignores graph_update messages for a different source_file", async () => {
-      const params = makeHookParams()
+      const params = makeHookParams("rating/main.py")
       renderHook(() => useWebSocketSync(params))
 
       act(() => {
@@ -502,6 +513,47 @@ describe("useWebSocketSync", () => {
 
       expect(params.setNodesRaw).not.toHaveBeenCalled()
       expect(params.setEdgesRaw).not.toHaveBeenCalled()
+      expect(useGraphStore.getState().markSaved).not.toHaveBeenCalled()
+    })
+
+    it("rejects a graph_update when only the current graph has a source identity", async () => {
+      const params = makeHookParams("rating/main.py")
+      renderHook(() => useWebSocketSync(params))
+
+      await act(async () => {
+        latestWS().onmessage?.(new MessageEvent("message", {
+          data: JSON.stringify({
+            type: "graph_update",
+            graph: {
+              nodes: [{ id: "unidentified", position: { x: 100, y: 200 }, data: {} }],
+              edges: [],
+            },
+          }),
+        }))
+      })
+
+      expect(params.setNodesRaw).not.toHaveBeenCalled()
+      expect(useGraphStore.getState().markSaved).not.toHaveBeenCalled()
+    })
+
+    it("rejects a graph_update when only the message has a source identity", async () => {
+      const params = makeHookParams()
+      renderHook(() => useWebSocketSync(params))
+
+      await act(async () => {
+        latestWS().onmessage?.(new MessageEvent("message", {
+          data: JSON.stringify({
+            type: "graph_update",
+            source_file: "rating/main.py",
+            graph: {
+              nodes: [{ id: "unmatched", position: { x: 100, y: 200 }, data: {} }],
+              edges: [],
+            },
+          }),
+        }))
+      })
+
+      expect(params.setNodesRaw).not.toHaveBeenCalled()
       expect(useGraphStore.getState().markSaved).not.toHaveBeenCalled()
     })
 
@@ -610,7 +662,7 @@ describe("useWebSocketSync", () => {
     })
 
     it("does not overwrite unsaved local edits with an external graph_update", async () => {
-      const params = makeHookParams()
+      const params = makeHookParams("rating/main.py")
       useGraphStore.getState().dirty = true
       renderHook(() => useWebSocketSync(params))
 
@@ -657,7 +709,7 @@ describe("useWebSocketSync", () => {
       })
       vi.mocked(getLayoutedElements).mockImplementationOnce(async () => layoutPromise)
 
-      const params = makeHookParams()
+      const params = makeHookParams("rating/main.py")
       renderHook(() => useWebSocketSync(params))
 
       act(() => {
@@ -809,8 +861,147 @@ describe("useWebSocketSync", () => {
       )
     })
 
-    it("clears remembered graph fingerprints after a parse_error", async () => {
+    it("keeps a parse_error when an older async graph layout finishes later", async () => {
+      const { getLayoutedElements } = await import("../../utils/layout.ts")
+      let resolveLayout!: (nodes: Node[]) => void
+      const pendingLayout = new Promise<Node[]>((resolve) => {
+        resolveLayout = resolve
+      })
+      vi.mocked(getLayoutedElements).mockImplementationOnce(async () => pendingLayout)
+
+      const params = makeHookParams("rating/main.py")
+      renderHook(() => useWebSocketSync(params))
+
+      let graphMessage!: Promise<void>
+      act(() => {
+        graphMessage = latestWS().onmessage?.(new MessageEvent("message", {
+          data: JSON.stringify({
+            type: "graph_update",
+            source_file: "rating/main.py",
+            graph: {
+              nodes: [{ id: "stale", position: { x: 0, y: 0 }, data: {} }],
+              edges: [],
+            },
+          }),
+        })) as unknown as Promise<void>
+      })
+
+      await act(async () => {
+        await latestWS().onmessage?.(new MessageEvent("message", {
+          data: JSON.stringify({
+            type: "parse_error",
+            source_file: "rating/main.py",
+            error: "Newest parse failure",
+          }),
+        }))
+      })
+
+      await act(async () => {
+        resolveLayout([{ id: "stale", position: { x: 200, y: 100 }, data: {} } as Node])
+        await graphMessage
+      })
+
+      expect(params.setNodesRaw).not.toHaveBeenCalled()
+      expect(useGraphStore.getState().markSaved).not.toHaveBeenCalled()
+      expect(useUIStore.getState().syncBanner).toBe("Newest parse failure")
+      expect(useUIStore.getState().setSyncBanner).not.toHaveBeenCalledWith(null)
+    })
+
+    it("lays out only new default-position nodes and preserves an established origin", async () => {
+      const { getLayoutedElements } = await import("../../utils/layout.ts")
+      const established = {
+        id: "origin",
+        position: { x: 0, y: 0 },
+        data: { label: "Origin", nodeType: "polars", config: {} },
+      } as Node
+      useGraphStore.getState().nodes = [established]
+      vi.mocked(getLayoutedElements).mockImplementationOnce(async (nodes: Node[]) =>
+        nodes.map(node => ({
+          ...node,
+          position: node.id === "origin" ? { x: 600, y: 400 } : { x: 0, y: 0 },
+        })),
+      )
+
       const params = makeHookParams()
+      renderHook(() => useWebSocketSync(params))
+
+      await act(async () => {
+        await latestWS().onmessage?.(new MessageEvent("message", {
+          data: JSON.stringify({
+            type: "graph_update",
+            graph: {
+              nodes: [
+                established,
+                {
+                  id: "new",
+                  position: { x: 0, y: 0 },
+                  data: { label: "New", nodeType: "polars", config: {} },
+                },
+              ],
+              edges: [],
+            },
+          }),
+        }))
+      })
+
+      expect(getLayoutedElements).toHaveBeenCalled()
+      const applied = params.setNodesRaw.mock.calls[0][0] as Node[]
+      expect(applied.find(node => node.id === "origin")?.position).toEqual({ x: 0, y: 0 })
+      expect(applied.find(node => node.id === "new")?.position).not.toEqual({ x: 0, y: 0 })
+    })
+
+    it("drops invalid synced edges with one visible warning and keeps valid edges", async () => {
+      const params = makeHookParams()
+      renderHook(() => useWebSocketSync(params))
+
+      await act(async () => {
+        await latestWS().onmessage?.(new MessageEvent("message", {
+          data: JSON.stringify({
+            type: "graph_update",
+            graph: {
+              nodes: [
+                {
+                  id: "api",
+                  position: { x: 10, y: 10 },
+                  data: {
+                    label: "Quote input",
+                    nodeType: "apiInput",
+                    config: {
+                      tables: [{
+                        label: "quotes",
+                        emit: true,
+                        columns: [{ name: "id", selected: true }],
+                      }],
+                    },
+                  },
+                },
+                {
+                  id: "target",
+                  position: { x: 300, y: 10 },
+                  data: { label: "Transform", nodeType: "polars", config: {} },
+                },
+              ],
+              edges: [
+                { id: "live", source: "api", target: "target", sourceHandle: "quotes" },
+                { id: "stale-handle", source: "api", target: "target", sourceHandle: "gone" },
+                { id: "missing-node", source: "api", target: "gone", sourceHandle: "quotes" },
+              ],
+            },
+          }),
+        }))
+      })
+
+      expect(params.setEdgesRaw).toHaveBeenCalledWith([
+        expect.objectContaining({ id: "live", sourceHandle: "quotes" }),
+      ])
+      expect(useToastStore.getState().addToast).toHaveBeenCalledWith(
+        "warning",
+        expect.stringMatching(/stale-handle.*missing-node|missing-node.*stale-handle/),
+      )
+    })
+
+    it("clears remembered graph fingerprints after a parse_error", async () => {
+      const params = makeHookParams("rating/main.py")
       renderHook(() => useWebSocketSync(params))
 
       await act(async () => {
@@ -854,7 +1045,7 @@ describe("useWebSocketSync", () => {
     })
 
     it("ignores parse_error messages for a different source_file", async () => {
-      const params = makeHookParams()
+      const params = makeHookParams("rating/main.py")
       renderHook(() => useWebSocketSync(params))
 
       act(() => {

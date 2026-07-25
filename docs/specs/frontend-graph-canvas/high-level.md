@@ -583,3 +583,35 @@ Remaining graph-canvas improvement work is tracked in the
 Acceptance pins 19-type registry parity, palette/search/derived-set membership, source/sink
 handles, multiple input/output creation and save/reload, side-effect-free Data Output preview,
 strict default branch shape, comparison dispatch, and legacy graph rejection.
+
+## Approved change contract — canvas live-update reconciliation
+
+This contract implements the live-update part of the
+[frontend canvas roadmap](../../roadmap/frontend-canvas.md) (AUD-C17).
+
+- **Current limitation.** WebSocket graph updates currently admit an update when either side of
+  the source-file comparison is blank, a parse error does not supersede layout work already in
+  flight, incoming edges are normalised without proving that their endpoints and handles still
+  exist, and automatic layout is all-or-nothing. Those behaviours can apply an update to the
+  wrong pipeline, clear a newer error, retain a dangling edge, or move an established node at
+  the canvas origin.
+- **Target behaviour.** Once either the open pipeline or a WebSocket message carries a source
+  identity, both identities are required and must resolve to the same file. An accepted message
+  advances one monotonic generation before any asynchronous work: a later graph update or parse
+  error permanently supersedes earlier layout work. Imported edges are checked against the
+  incoming live node and port set; invalid edges are omitted and reported in one visible warning
+  while the valid graph remains usable. Layout assigns positions only to incoming nodes without
+  a real position, preserves every established position including `{x: 0, y: 0}`, and
+  deterministically avoids overlap with preserved nodes.
+- **Non-goals.** This change does not introduce collaborative merge semantics, change the
+  backend WebSocket protocol, reinterpret an intentionally dirty local graph, or relayout a
+  complete imported graph.
+- **Failure and compatibility.** Source-less operation remains valid only when both sides are
+  source-less (for isolated consumers and tests); a one-sided identity is fail-closed. A dirty
+  local canvas continues to reject external graph replacement. Layout/apply exceptions retain
+  the prior graph and surface through the existing error toast. Edge rejection never fabricates
+  a replacement endpoint or handle.
+- **Acceptance.** Focused hook tests prove one-sided and foreign identities are ignored, a parse
+  error wins over an older pending layout, stale updates cannot clear a newer banner, endpoint
+  and handle-invalid edges are visibly removed, valid live-port edges survive, and an existing
+  origin node remains fixed while only new unpositioned nodes receive non-overlapping layout.

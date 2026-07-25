@@ -1,7 +1,15 @@
 import { useEffect, useRef, useState } from "react"
 import type { Node, Edge } from "@xyflow/react"
-import { getLayoutedElements } from "../utils/layout"
-import { computeNextNodeId, normalizeEdges } from "../utils/graphHelpers"
+import {
+  getLayoutedElements,
+  mergeLayoutedNodePositions,
+  nodeIdsNeedingLayout,
+} from "../utils/layout"
+import {
+  computeNextNodeId,
+  filterIncomingEdges,
+  normalizeEdges,
+} from "../utils/graphHelpers"
 import useToastStore from "../stores/useToastStore"
 import useUIStore from "../stores/useUIStore"
 import useGraphStore from "../stores/useGraphStore"
@@ -68,7 +76,7 @@ function isAbsoluteRelativeMatch(absoluteSource: string, relativeSource: string)
 function isCurrentSourceFile(incoming: unknown, current: string | undefined): boolean {
   const incomingSource = normalizeSourceFile(incoming)
   const currentSource = normalizeSourceFile(current)
-  if (!incomingSource || !currentSource) return true
+  if (!incomingSource || !currentSource) return incomingSource === currentSource
   if (incomingSource === currentSource) return true
   const incomingIsAbsolute = isAbsoluteSourceFile(incomingSource)
   const currentIsAbsolute = isAbsoluteSourceFile(currentSource)
@@ -258,13 +266,23 @@ export default function useWebSocketSync({
 
           try {
             const newNodes = g.nodes || []
-            const newEdges = normalizeEdges(g.edges || [])
-            const hasPositions = newNodes.some(
-              (n: Node) => n.position && (n.position.x !== 0 || n.position.y !== 0),
-            )
-            const nodesToApply = hasPositions
-              ? newNodes
-              : await getLayoutedElements(newNodes, newEdges)
+            const normalizedEdges = normalizeEdges(g.edges || [])
+            const {
+              validEdges: newEdges,
+              rejectedEdges,
+            } = filterIncomingEdges(newNodes, normalizedEdges)
+            const graphBeforeLayout = useGraphStore.getState() as Partial<{ nodes: Node[] }>
+            const currentNodes = Array.isArray(graphBeforeLayout.nodes)
+              ? graphBeforeLayout.nodes
+              : []
+            const missingNodeIds = nodeIdsNeedingLayout(newNodes, currentNodes)
+            const nodesToApply = missingNodeIds.size > 0
+              ? mergeLayoutedNodePositions(
+                  newNodes,
+                  await getLayoutedElements(newNodes, newEdges),
+                  missingNodeIds,
+                )
+              : newNodes
 
             if (!mounted || updateSeq !== graphUpdateSeq) {
               return
@@ -336,6 +354,15 @@ export default function useWebSocketSync({
             }
 
             addToast("info", "Pipeline updated from file")
+            if (rejectedEdges.length > 0) {
+              const rejectedSummary = rejectedEdges
+                .map(({ edge, reason }) => `${edge.id} (${reason})`)
+                .join(", ")
+              addToast(
+                "warning",
+                `Ignored ${rejectedEdges.length} invalid synced ${rejectedEdges.length === 1 ? "edge" : "edges"}: ${rejectedSummary}`,
+              )
+            }
             if (g.warning) addToast("warning", g.warning)
             scheduleDelayed(() => {
               if (mounted && updateSeq === graphUpdateSeq) {
@@ -355,6 +382,7 @@ export default function useWebSocketSync({
           if (!isCurrentSourceFile(msg.source_file, sourceFileRef?.current)) {
             return
           }
+          ++graphUpdateSeq
           appliedGraphFingerprintRef.current = null
           setSyncBanner(String(msg.error || "Parse error in pipeline file"))
         }

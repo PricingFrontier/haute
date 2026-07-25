@@ -157,3 +157,29 @@ Remaining frontend modelling and optimiser improvement work is tracked in the
 - Update component/hook/helper fixtures for grouped Data Input configs, optional code, multiple
   roots, cached generation changes, and removed-node absence. Guard tests reject legacy node
   values rather than rewriting them.
+
+## Approved change contract — deterministic optimiser canvas journey
+
+This contract implements ROAD-UI-02 and ROAD-UI-03 in the
+[frontend canvas roadmap](../../roadmap/frontend-canvas.md).
+
+- `utils/banding.ts` supplies the same typed factor classification consumed by Rating. For an
+  optimiser it accepts the current direct Banding candidate ids and the explicit configured
+  source id. A non-blank explicit id absent from that candidate set is returned as a confirmed
+  missing source; absence of an explicit id retains the existing exactly-one-direct-source
+  fallback and is not itself an error.
+- `OptimiserConfig.tsx` renders one accessible warning that aggregates the missing selected source
+  and named zero-level outputs from the effective selected Banding node. Healthy levels still
+  render as factor controls. Changing to a healthy source clears only issues that no longer apply.
+- `e2e/canvas-assurance.spec.ts` extends the deterministic E2E project with a solved optimiser and
+  apply node. It saves non-default objective/constraint ranges, reloads and reopens the editor,
+  then asserts the fields before solving. Frontier selection is asserted by stable
+  `point_index`/display identity, and local apply is checked against the selected artefact.
+- The MLflow leg is a browser-network contract: Playwright intercepts the repository-owned API
+  boundary with a fixed run response, records the requested job/selected-point identity, and
+  asserts the editor displays the returned experiment/run identity. Optimiser logging currently
+  creates a run and artifacts rather than a registered-model identity; the journey neither starts
+  nor contacts an external MLflow server.
+- `src/panels/__tests__/OptimiserConfig.test.tsx` owns missing explicit source, healthy source,
+  zero-level source, and mixed-output alert boundaries. Existing result-store tests continue to
+  own rejection of a backend response whose echoed point index differs from the requested one.

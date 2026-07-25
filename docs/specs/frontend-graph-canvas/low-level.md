@@ -1027,3 +1027,32 @@ Remaining graph-canvas improvement work is tracked in the
 - Update exact-count/completeness, factory, handles, palette/search, click preview, graph
   fingerprint, load/save, comparison, and WebSocket tests. Browser coverage creates multiple
   retained I/O nodes and proves a rejected legacy payload leaves the prior/blank graph intact.
+
+## Approved change contract — canvas live-update reconciliation
+
+This contract implements AUD-C17 in the
+[frontend canvas roadmap](../../roadmap/frontend-canvas.md).
+
+- `hooks/useWebSocketSync.ts` uses a per-effect monotonically increasing message generation.
+  Every accepted `graph_update` and `parse_error` increments it synchronously. A graph update
+  captures its generation before awaiting layout and may mutate graph, fingerprints, banners, or
+  dialogs only if that generation is still current when the await completes.
+- Source matching normalises absolute/relative spellings as today, but succeeds with a missing
+  value only when *both* values are missing. If exactly one side is missing, or both resolve to
+  different files, the message is ignored without changing graph or error state.
+- A pure incoming-edge validator runs after node normalisation and before layout. It retains an
+  edge only when both node ids exist and each non-null handle is one that the endpoint's current
+  node type/config renders. Default null handles remain valid only for endpoint directions that
+  render a default handle; API-input frame handles, Edge Join role handles, and submodel named
+  ports are checked exactly. Rejected edge ids/reasons are aggregated into one warning toast;
+  healthy nodes and edges still apply.
+- A node has a real incoming position when both coordinates are finite and either it already
+  exists in the current graph or at least one coordinate is non-zero. Thus an established node
+  deliberately moved to the origin is preserved, while a newly parsed `{x: 0, y: 0}` node is
+  treated as unpositioned. ELK may calculate the whole graph, but its coordinates are copied only
+  to unpositioned node ids. Candidate boxes that overlap preserved boxes are moved by a
+  deterministic grid step until clear; established nodes are never moved to resolve the clash.
+- `hooks/__tests__/useWebSocketSync*.test.ts` owns the identity, generation, partial-layout, and
+  warning regressions. Pure endpoint/handle validation is covered beside the graph utilities so
+  API Input, Edge Join, submodel, ordinary, missing-node, and stale-handle cases do not depend on
+  React timing.

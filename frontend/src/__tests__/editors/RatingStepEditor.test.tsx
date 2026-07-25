@@ -90,6 +90,37 @@ afterEach(() => {
 // Tests
 
 describe("RatingStepEditor", () => {
+  it("warns once for configured zero-level Banding outputs without restoring stale levels", () => {
+    render(
+      <RatingStepEditor
+        config={{
+          tables: [{
+            name: "Stale", factors: ["empty_one"], outputColumn: "factor", defaultValue: "1.0",
+            entries: [{ empty_one: "stale", value: 1.2 }],
+          }],
+        }}
+        onUpdate={vi.fn()}
+        inputSources={[]}
+        accentColor="#14b8a6"
+      />,
+      { allNodes: [
+        {
+          id: "banding_empty", data: {
+            label: "Banding", description: "", nodeType: "banding", config: { factors: [
+              { banding: "continuous", outputColumn: "empty_one", rules: [] },
+              { banding: "categorical", outputColumn: "empty_two", rules: [{}] },
+              { banding: "breakpoints", outputColumn: "healthy", rules: [{ label: "Known" }] },
+            ] },
+          },
+        },
+      ] },
+    )
+    expect(screen.getByRole("alert")).toHaveTextContent(/empty_one.*empty_two/)
+    const addFactor = screen.getByRole("combobox", { name: "Add factor" })
+    expect(Array.from((addFactor as HTMLSelectElement).options).map(option => option.value)).toContain("healthy")
+    expect(Array.from((addFactor as HTMLSelectElement).options).map(option => option.value)).not.toContain("empty_one")
+  })
+
   it("renders with default empty table", () => {
     render(
       <RatingStepEditor
@@ -1520,7 +1551,11 @@ describe("RatingStepEditor", () => {
     )
     // Factors count should show 3/3
     expect(screen.getByText("Factors (3/3)")).toBeTruthy()
+    expect(screen.getByRole("combobox", { name: "Factor 1" })).toHaveValue("age_band")
+    expect(screen.getByRole("combobox", { name: "Factor 2" })).toHaveValue("region")
+    expect(screen.getByRole("combobox", { name: "Factor 3" })).toHaveValue("vehicle_type")
     // The 3rd factor (vehicle_type) should appear as the slice selector label
     expect(screen.getByText("vehicle_type")).toBeTruthy()
+    expect(screen.getByRole("combobox", { name: "vehicle_type slice" })).toBeInTheDocument()
   })
 })
