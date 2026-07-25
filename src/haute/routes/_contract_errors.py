@@ -12,6 +12,7 @@ from haute.errors import (
     HauteError,
     LiveSwitchScenarioError,
     RatingExtremaUndefinedError,
+    RatingFactorDtypeContractError,
     RatingFactorMissingError,
     TraceCorrelationUnsupportedError,
     is_public_contract_error,
@@ -27,6 +28,7 @@ PUBLIC_CONTRACT_ERROR_TYPES: tuple[type[HauteError], ...] = (
     TraceCorrelationUnsupportedError,
     RatingExtremaUndefinedError,
     RatingFactorMissingError,
+    RatingFactorDtypeContractError,
     LiveSwitchScenarioError,
     OutputNestingKeyError,
 )

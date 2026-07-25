@@ -237,6 +237,7 @@ class TestFinalizeRatebook:
                 "factor_tables": {
                     "age": [{"__factor_group__": "young", "optimal_scenario_value": 1.1}]
                 },
+                "factor_dtypes": {"age": [{"column": "age", "dtype": {"kind": "String"}}]},
                 "clamp_rate": 0.05,
                 "history": None,
             },
@@ -246,6 +247,7 @@ class TestFinalizeRatebook:
         assert rd["mode"] == "ratebook"
         assert rd["cd_iterations"] == 7
         assert rd["factor_tables"]["age"][0]["__factor_group__"] == "young"
+        assert rd["factor_dtypes"] == {"age": [{"column": "age", "dtype": {"kind": "String"}}]}
         assert rd["clamp_rate"] == 0.05
         assert rd["history"] is None
 

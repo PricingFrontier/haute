@@ -76,6 +76,10 @@ def _ratebook_artifact(version: str = "rb_v1") -> dict:
                 {"__factor_group__": "old", "optimal_scenario_value": 0.95},
             ],
         },
+        "factor_dtypes": {
+            "region": [{"column": "region", "dtype": {"kind": "String"}}],
+            "age_band": [{"column": "age_band", "dtype": {"kind": "String"}}],
+        },
     }
 
 
@@ -346,6 +350,13 @@ def _composite_ratebook_artifact(version: str = "rb_comp_v1") -> dict:
                 {"__factor_group__": "London", "optimal_scenario_value": 1.20},
             ],
         },
+        "factor_dtypes": {
+            "channel:age_band": [
+                {"column": "channel", "dtype": {"kind": "String"}},
+                {"column": "age_band", "dtype": {"kind": "String"}},
+            ],
+            "region": [{"column": "region", "dtype": {"kind": "String"}}],
+        },
     }
 
 
@@ -468,6 +479,9 @@ def test_ratebook_execute_trace_float_keyed_levels_agree_with_engine(tmp_path):
                 {"__factor_group__": "25", "optimal_scenario_value": 2.0},
                 {"__factor_group__": "30.5", "optimal_scenario_value": 3.0},
             ],
+        },
+        "factor_dtypes": {
+            "age": [{"column": "age", "dtype": {"kind": "Float64"}}],
         },
     }
     artifact_path = _write_json(tmp_path / "ratebook_float.json", artifact)

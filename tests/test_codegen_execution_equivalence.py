@@ -328,6 +328,9 @@ def _write_ratebook_artifact(tmp_path: Path) -> str:
                 {"__factor_group__": "Manchester", "optimal_scenario_value": 0.98},
             ],
         },
+        "factor_dtypes": {
+            "region": [{"column": "region", "dtype": {"kind": "String"}}],
+        },
     }
     path = tmp_path / "ratebook.json"
     path.write_text(json.dumps(artifact))

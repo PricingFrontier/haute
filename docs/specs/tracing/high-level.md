@@ -271,9 +271,10 @@ Out of scope (owned elsewhere, linked where relevant):
   version.
 - Depends on [rating](../rating/high-level.md) for rating-table normalisation
   (`normalise_rating_tables`, `_normalise_combined_outputs`) and the canonical
-  rating-key comparison (`normalise_rating_key`) that the rating-step enricher
-  uses so its matched/default verdict can never contradict what the engine's own
-  join produced.
+  rating-key comparison (`normalise_rating_key(value, dtype)`). The rating-step
+  dispatch resolves each factor's originating dtype from the exact consumed
+  parent frame and supplies it to the enricher, so JSON/Python scalar widening
+  cannot make its matched/default verdict contradict the engine's own join.
 - Depends on [mlflow-model-registry](../mlflow-model-registry/high-level.md) for
   model-score explanation (`haute._model_explainability`, imported lazily inside
   `enrich_model_score`) and on [optimiser](../optimiser/high-level.md) for

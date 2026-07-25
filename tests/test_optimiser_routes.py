@@ -4876,6 +4876,7 @@ def _make_ratebook_frontier_materialisation_job(clean_job_store, job_id: str):
         "lambdas": {"volume": 0.5},
         "converged": True,
         "factor_tables": {"region": [{"__factor_group__": "Old", "optimal_scenario_value": 1.0}]},
+        "factor_dtypes": {"region": [{"column": "region", "dtype": {"kind": "String"}}]},
         "scenario_value_histogram": {"counts": [1, 2], "edges": [0.9, 1.0, 1.1]},
     }
     clean_job_store.jobs[job_id] = {
@@ -4892,6 +4893,7 @@ def _make_ratebook_frontier_materialisation_job(clean_job_store, job_id: str):
         "ratebook_factor_contexts": factor_contexts,
         "factor_columns_valid": [["region"]],
         "factor_level_counts": {"region": {"North": 1, "South": 1}},
+        "factor_dtypes": {"region": [{"column": "region", "dtype": {"kind": "String"}}]},
         "base_result": base_result,
         "result": dict(base_result),
         "frontier_data": {
@@ -5895,6 +5897,7 @@ class TestBuildArtifactPayload:
                 "factor_tables": {
                     "region": [{"__factor_group__": "North", "optimal_scenario_value": 1.1}]
                 },
+                "factor_dtypes": {"region": [{"column": "region", "dtype": {"kind": "String"}}]},
             },
         }
         solve_result = SimpleNamespace(
@@ -5907,6 +5910,9 @@ class TestBuildArtifactPayload:
         payload = _build_artifact_payload(job, solve_result)
         assert payload["mode"] == "ratebook"
         assert "factor_tables" in payload
+        assert payload["factor_dtypes"] == {
+            "region": [{"column": "region", "dtype": {"kind": "String"}}]
+        }
         assert payload["clamp_rate"] == 0.05
 
     def test_version_override(self):
@@ -10371,6 +10377,7 @@ class TestBuildArtifactPayloadExtended:
                         {"__factor_group__": "S", "optimal_scenario_value": 0.95},
                     ]
                 },
+                "factor_dtypes": {"region": [{"column": "region", "dtype": {"kind": "String"}}]},
             },
         }
         solve_result = SimpleNamespace(
@@ -10382,6 +10389,9 @@ class TestBuildArtifactPayloadExtended:
         )
         payload = _build_artifact_payload(job, solve_result)
         assert payload["factor_tables"] is not None
+        assert payload["factor_dtypes"] == {
+            "region": [{"column": "region", "dtype": {"kind": "String"}}]
+        }
         assert len(payload["factor_tables"]["region"]) == 2
         assert payload["clamp_rate"] == 0.03
 
@@ -11342,18 +11352,18 @@ class TestSolveRatebookUnit:
             "young\x1f30.5": 1,
         }
 
-    def test_ratebook_factor_level_counts_mixed_type_collision_fails_loudly(self):
-        """3b.10: distinct raw levels that canonicalise identically (str "25"
-        vs float 25.0 — only possible when a source column mixes types) must
-        raise naming the collision, never merge or last-writer-win."""
+    def test_ratebook_factor_level_counts_rejects_object_dtype(self):
+        """Mixed Python object columns have no stable persisted dtype contract."""
         from haute.routes._optimiser_service import _ratebook_factor_level_counts
 
         factors_df = pl.DataFrame([pl.Series("age", ["25", 25.0], dtype=pl.Object)])
 
-        with pytest.raises(ValueError, match="canonicalise") as exc_info:
+        with pytest.raises(
+            ValueError,
+            match=r"unsupported rating factor dtype Object",
+        ) as exc_info:
             _ratebook_factor_level_counts(factors_df, [["age"]])
-        assert "age" in str(exc_info.value)
-        assert "'25'" in str(exc_info.value)
+        assert "Object" in str(exc_info.value)
 
     def test_serialise_ratebook_factor_tables_canonicalises_float_labels(self):
         """3b.10: solver-emitted "25.0" saves as the canonical "25" the apply
@@ -13282,6 +13292,7 @@ class TestSaveArtifactGate:
                         }
                     ]
                 },
+                "factor_dtypes": {"region": [{"column": "region", "dtype": {"kind": "String"}}]},
                 "clamp_rate": 0.0,
             },
         )

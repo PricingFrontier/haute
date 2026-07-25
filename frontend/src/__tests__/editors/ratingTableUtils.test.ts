@@ -128,6 +128,95 @@ describe("normaliseRatingTables", () => {
       },
     ])
   })
+
+  it("preserves valid selected factor dtype descriptors without mutating the source", () => {
+    const tables = [{
+      factors: ["age", "region"],
+      outputColumn: "rating",
+      defaultValue: "1.0",
+      entries: [{ age: "young", region: "north", value: 1.1 }],
+      factorDtypes: {
+        age: { kind: "Enum", categories: ["young", "old"] },
+        region: { kind: "String" },
+        removed_factor: { kind: "Int64" },
+        blank_kind: { kind: "  " },
+        invalid_value: "string",
+      },
+    }]
+    const original = structuredClone(tables)
+
+    const result = normaliseRatingTables({ tables })
+
+    expect(result[0]?.factorDtypes).toEqual({
+      age: { kind: "Enum", categories: ["young", "old"] },
+      region: { kind: "String" },
+    })
+    expect(result[0]?.factorDtypes?.age).not.toBe(tables[0]?.factorDtypes.age)
+    expect(result[0]?.entries).toEqual(tables[0]?.entries)
+    expect(tables).toEqual(original)
+  })
+
+  it("preserves every structured dtype descriptor as an independent value", () => {
+    const factorDtypes = {
+      timestamp: { kind: "Datetime", timeUnit: "us", timeZone: "Europe/London" },
+      elapsed: { kind: "Duration", timeUnit: "ns" },
+      amount: { kind: "Decimal", precision: 12, scale: 2 },
+      unbounded_amount: { kind: "Decimal", precision: null, scale: 4 },
+      channel: { kind: "Enum", categories: ["web", "branch"] },
+    }
+    const factors = Object.keys(factorDtypes)
+
+    const [result] = normaliseRatingTables({
+      tables: [{ factors, factorDtypes, outputColumn: "rating", entries: [] }],
+    })
+
+    expect(result.factorDtypes).toEqual(factorDtypes)
+    for (const factor of factors) {
+      expect(result.factorDtypes?.[factor]).not.toBe(factorDtypes[factor as keyof typeof factorDtypes])
+    }
+    expect(result.factorDtypes?.channel).toEqual({ kind: "Enum", categories: ["web", "branch"] })
+    expect((result.factorDtypes?.channel as { categories: string[] }).categories)
+      .not.toBe(factorDtypes.channel.categories)
+  })
+
+  it.each([
+    ["non-object metadata", "invalid"],
+    ["array metadata", []],
+    ["unknown kind", { kind: "Binary" }],
+    ["primitive descriptor with extra key", { kind: "String", extra: true }],
+    ["datetime missing timezone", { kind: "Datetime", timeUnit: "us" }],
+    ["datetime with invalid unit", { kind: "Datetime", timeUnit: "s", timeZone: null }],
+    ["datetime with invalid timezone", { kind: "Datetime", timeUnit: "us", timeZone: 42 }],
+    ["duration missing unit", { kind: "Duration" }],
+    ["duration with invalid unit", { kind: "Duration", timeUnit: "s" }],
+    ["decimal missing scale", { kind: "Decimal", precision: 12 }],
+    ["decimal with boolean precision", { kind: "Decimal", precision: true, scale: 2 }],
+    ["decimal with fractional precision", { kind: "Decimal", precision: 12.5, scale: 2 }],
+    ["decimal with non-number scale", { kind: "Decimal", precision: 12, scale: "2" }],
+    ["decimal with fractional scale", { kind: "Decimal", precision: 12, scale: 2.5 }],
+    ["enum with non-array categories", { kind: "Enum", categories: "web" }],
+    ["enum with non-string category", { kind: "Enum", categories: ["web", 2] }],
+    ["enum with duplicate categories", { kind: "Enum", categories: ["web", "web"] }],
+  ])("drops %s", (_description, descriptor) => {
+    const [result] = normaliseRatingTables({
+      tables: [{
+        factors: ["risk"],
+        factorDtypes: { risk: descriptor },
+        outputColumn: "rating",
+        entries: [],
+      }],
+    })
+
+    expect(result.factorDtypes).toBeUndefined()
+  })
+
+  it.each([null, [], "invalid"])("drops a malformed factorDtypes container: %j", factorDtypes => {
+    const [result] = normaliseRatingTables({
+      tables: [{ factors: ["risk"], factorDtypes, outputColumn: "rating", entries: [] }],
+    })
+
+    expect(result.factorDtypes).toBeUndefined()
+  })
 })
 
 describe("ratingTableStatus", () => {

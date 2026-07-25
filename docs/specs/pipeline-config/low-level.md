@@ -6,7 +6,7 @@
 |---|---|
 | `src/haute/pipeline.py` | `Node` / `NodeRegistry` / `Pipeline` / `Submodel`: the decorator API, `connect()`, the standalone `run()`/`score()` executor, `to_graph()` (live-object → React-Flow dict). |
 | `src/haute/_config_builder.py` | Per-node-type config dict construction from decorator kwargs + function body (`_build_node_config`); sidecar resolution and the parse-time `contract=` cross-check (`_resolve_node_config`). `config["inputs"]` records the function's parameter names verbatim — under input-identity convergence these ARE the per-edge input names (`edge_input_name`: frame labels for apiInput edges, sanitised source labels otherwise), the same strings `input_scenario_map` keys and instance `inputMapping` values reference. |
-| `src/haute/_config_io.py` | Sidecar JSON path conventions (`NODE_TYPE_TO_FOLDER`), read/write helpers, `collect_node_configs` (graph → sidecar files), Windows-reserved-filename guard. |
+| `src/haute/_config_io.py` | Sidecar JSON path conventions (`NODE_TYPE_TO_FOLDER`), read/write helpers, `collect_node_configs` (graph → sidecar files), per-type normalisation (including legacy nested rating maps → canonical ordered rows), and the Windows-reserved-filename guard. |
 | `src/haute/_config_validation.py` | `VALID_KEYS` registry derived from each node type's `TypedDict`, and `warn_unrecognized_config_keys`. |
 | `src/haute/_builders.py` | Cross-component dependency owned by [execution-engine](../execution-engine/low-level.md): registers each per-`NodeType` runtime builder and its column-contract callback in `NODE_REGISTRY`. Pipeline-config consumes those callbacks through `src/haute/_contracts.py`; it does not own the runtime closures. |
 | `src/haute/_node_builder.py` | Cross-component dependency owned by [execution-engine](../execution-engine/low-level.md): `NodeBuildHooks` / `wrap_builder` allow deploy scoring to intercept runtime builders. It is listed here to make the boundary explicit, not because sidecar/static graph construction calls it. |
@@ -135,8 +135,11 @@ stable id via `_remap_config_ids_for_saved_graph` (logging a WARNING and leaving
 unchanged if the referenced upstream node can't be resolved), filters each config through
 `_prepare_config_for_sidecar` (strips `code`/`_`-prefixed keys recursively via
 `_strip_internal_keys`, applies the `VALID_KEYS` allowlist — logging any dropped keys at
-WARNING — then per-type compaction for `BANDING`/`RATING_STEP`), and serialises the result to
-`{relative_path: json_string}`.
+WARNING — then per-type canonicalisation for `BANDING`/`RATING_STEP`), and serialises the result
+to `{relative_path: json_string}`. Rating-step canonicalisation always emits ordered entry rows;
+legacy nested maps are accepted only on read and traversed independently of map insertion order.
+Any validation error is raised while collecting/staging content, before an existing sidecar is
+replaced.
 
 **Registry-driven contract lookup.** `haute._builders._register(node_type, columns=..., opaque=...,
 is_behavioural=...)` decorates roughly twenty per-type builder functions, registering both the
@@ -301,7 +304,8 @@ API and real JSON round-trips rather than mocks:
 - **`test_config_io.py`** + **`test_config_io_gaps.py`** (~97 tests) — sidecar save/load
   round-trips, path conventions (`TestConfigPathForNode`), Windows-reserved-filename rejection
   (`TestIsWindowsReservedFilename`), `collect_node_configs` (including load-error protection
-  and id remapping), and banding/rating-step sidecar compaction/expansion.
+  and id remapping), banding compaction, rating canonical-row emission and legacy-map migration,
+  and preservation of the prior sidecar when validation fails.
 - **`test_config_validation.py`** (44 tests) — `VALID_KEYS` registry completeness
   (`TestValidKeysRegistry`), `warn_unrecognized_config_keys` behaviour, and alignment between
   each type's decorator kwargs and the config keys `_build_node_config` actually produces

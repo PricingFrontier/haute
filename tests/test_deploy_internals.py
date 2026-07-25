@@ -2065,6 +2065,14 @@ class TestScoreGraphOptimiserApplyRemap:
                             },
                         ]
                     },
+                    "factor_dtypes": {
+                        "region_band": [
+                            {
+                                "column": "region_band",
+                                "dtype": {"kind": "String"},
+                            }
+                        ]
+                    },
                 }
             )
         )

@@ -1230,11 +1230,8 @@ class TestRatingStepCompactSidecars:
         rel = _write_node_config_sidecar(NodeType.RATING_STEP, "adjustments", config, tmp_path)
         saved = json.loads((tmp_path / rel).read_text(encoding="utf-8"))
 
-        assert saved["tables"][0]["entries"] == {"London": "1.25", "Rural": 0.85}
-        assert saved["tables"][1]["entries"] == {
-            "1-3": {"comprehensive": 0.9, "tpft": 1.1},
-            "10+": {"comprehensive": 1.4},
-        }
+        assert saved["tables"][0]["entries"] == config["tables"][0]["entries"]
+        assert saved["tables"][1]["entries"] == config["tables"][1]["entries"]
         assert saved["combinedOutputs"] == config["combinedOutputs"]
         assert load_node_config(rel, base_dir=tmp_path) == config
 
@@ -1315,19 +1312,7 @@ class TestRatingStepCompactSidecars:
         rel = _write_node_config_sidecar(NodeType.RATING_STEP, "adjustments", config, tmp_path)
         saved = json.loads((tmp_path / rel).read_text(encoding="utf-8"))
 
-        assert saved["tables"][0]["entries"] == {
-            "confused": {
-                "comprehensive": {
-                    "1-3": 0.91,
-                    "4-5": 0.96,
-                }
-            },
-            "compare_the_market": {
-                "third_party_only": {
-                    "1-3": 1.08,
-                }
-            },
-        }
+        assert saved["tables"][0]["entries"] == config["tables"][0]["entries"]
         assert load_node_config(rel, base_dir=tmp_path) == config
 
     def test_save_keeps_sparse_three_factor_entries_sparse(self, tmp_path):
@@ -1358,10 +1343,7 @@ class TestRatingStepCompactSidecars:
         rel = _write_node_config_sidecar(NodeType.RATING_STEP, "sparse", config, tmp_path)
         saved = json.loads((tmp_path / rel).read_text(encoding="utf-8"))
 
-        assert saved["tables"][0]["entries"] == {
-            "confused": {"comprehensive": {"1-3": 0.91}},
-            "broker": {"third_party_only": {"10+": 1.25}},
-        }
+        assert saved["tables"][0]["entries"] == config["tables"][0]["entries"]
         assert load_node_config(rel, base_dir=tmp_path)["tables"][0]["entries"] == [
             {
                 "vehicle_age_band": "1-3",
@@ -1412,7 +1394,9 @@ class TestRatingStepCompactSidecars:
         configs = collect_node_configs(graph)
         content = json.loads(configs["config/rating_step/adjustments.json"])
 
-        assert content["tables"][0]["entries"] == {"1-3": {"comprehensive": 0.9}}
+        assert content["tables"][0]["entries"] == [
+            {"vehicle_age_band": "1-3", "cover_type": "comprehensive", "value": 0.9}
+        ]
 
     def test_collect_node_configs_writes_three_factor_entries_in_editor_axis_order(self):
         graph = make_graph(
@@ -1454,7 +1438,14 @@ class TestRatingStepCompactSidecars:
         configs = collect_node_configs(graph)
         content = json.loads(configs["config/rating_step/adjustments.json"])
 
-        assert content["tables"][0]["entries"] == {"confused": {"comprehensive": {"1-3": 0.9}}}
+        assert content["tables"][0]["entries"] == [
+            {
+                "vehicle_age_band": "1-3",
+                "cover_type": "comprehensive",
+                "channel": "confused",
+                "value": 0.9,
+            }
+        ]
 
     def test_find_config_by_func_name_expands_compact_rating_entries(self, tmp_path):
         path = tmp_path / "config" / "rating_step" / "adjustments.json"
@@ -1488,7 +1479,7 @@ class TestRatingStepCompactSidecars:
             }
         ]
 
-    def test_save_rejects_duplicate_rating_factor_keys(self, tmp_path):
+    def test_save_preserves_ordered_duplicate_rating_factor_keys(self, tmp_path):
         config = {
             "tables": [
                 {
@@ -1503,8 +1494,12 @@ class TestRatingStepCompactSidecars:
             ]
         }
 
-        with pytest.raises(ValueError, match="duplicate ratingStep tables\\[0\\].entries key"):
-            _write_node_config_sidecar(NodeType.RATING_STEP, "adjustments", config, tmp_path)
+        rel = _write_node_config_sidecar(NodeType.RATING_STEP, "adjustments", config, tmp_path)
+        expected_entries = config["tables"][0]["entries"]
+
+        saved = json.loads((tmp_path / rel).read_text(encoding="utf-8"))
+        assert saved["tables"][0]["entries"] == expected_entries
+        assert load_node_config(rel, base_dir=tmp_path)["tables"][0]["entries"] == expected_entries
 
     def test_save_rejects_entries_missing_factor_values(self, tmp_path):
         config = {
@@ -1538,7 +1533,7 @@ class TestRatingStepCompactSidecars:
 
         with pytest.raises(
             ValueError,
-            match="ratingStep tables\\[0\\].entries key 'London' requires value",
+            match="ratingStep tables\\[0\\].entries\\[0\\] requires value",
         ):
             _write_node_config_sidecar(NodeType.RATING_STEP, "adjustments", config, tmp_path)
 
@@ -1560,13 +1555,14 @@ class TestRatingStepCompactSidecars:
         rel = _write_node_config_sidecar(NodeType.RATING_STEP, "adjustments", config, tmp_path)
         saved = json.loads((tmp_path / rel).read_text(encoding="utf-8"))
 
-        assert saved["tables"][0]["entries"] == {"London": 1.25, "Rural": 0.85}
-        assert load_node_config(rel, base_dir=tmp_path)["tables"][0]["entries"] == [
+        expected_entries = [
             {"area": "London", "value": 1.25},
             {"area": "Rural", "value": 0.85},
         ]
+        assert saved["tables"][0]["entries"] == expected_entries
+        assert load_node_config(rel, base_dir=tmp_path)["tables"][0]["entries"] == expected_entries
 
-    def test_save_rejects_rating_entries_with_unrepresentable_extra_keys(self, tmp_path):
+    def test_save_preserves_rating_entry_metadata(self, tmp_path):
         config = {
             "tables": [
                 {
@@ -1578,11 +1574,12 @@ class TestRatingStepCompactSidecars:
             ]
         }
 
-        with pytest.raises(
-            ValueError,
-            match="ratingStep tables\\[0\\].entries\\[0\\] contains unsupported keys",
-        ):
-            _write_node_config_sidecar(NodeType.RATING_STEP, "adjustments", config, tmp_path)
+        rel = _write_node_config_sidecar(NodeType.RATING_STEP, "adjustments", config, tmp_path)
+        expected_entries = [{"area": "London", "value": 1.25, "note": "legacy"}]
+
+        saved = json.loads((tmp_path / rel).read_text(encoding="utf-8"))
+        assert saved["tables"][0]["entries"] == expected_entries
+        assert load_node_config(rel, base_dir=tmp_path)["tables"][0]["entries"] == expected_entries
 
     def test_load_rejects_non_list_rating_tables(self, tmp_path):
         path = tmp_path / "config" / "rating_step" / "bad_tables.json"

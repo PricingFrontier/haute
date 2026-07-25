@@ -109,8 +109,11 @@ rather than silently rendering a plausible-looking but wrong explanation.
 Invariants:
 
 - A completed solve is never persisted as an artifact if it contains a NaN or Infinity value
-  anywhere in the payload, or (for ratebook) if it is missing its factor tables — an artifact
-  is what production pricing reads from.
+  anywhere in the payload, or (for ratebook) if it is missing its factor tables or the ordered
+  `factor_dtypes` descriptor for any table — an artifact is what production pricing reads from.
+- Ratebook apply verifies each saved factor name and dtype descriptor against the apply-frame
+  schema before constructing a lookup. A legacy artifact without dtype metadata or any mismatch
+  fails as a typed 422/background contract error; it never becomes a neutral rating miss.
 - Ratebook solves have no per-quote result dataframe; the apply-preview and per-quote trace
   affordances are only ever meaningful for online mode.
 - Every capped/paginated response (apply preview, frontier points) states its true total count
@@ -219,8 +222,8 @@ stall discovered later under load.
   artifact logged this way.
 - [rating](../rating/high-level.md) — supplies the `banding_source` node and banding-rule
   configuration that ratebook mode reads its factor columns and level display order from; its
-  runtime rating-key canonicalisation is reused so ratebook factor levels saved by this
-  component match the join semantics `OPTIMISER_APPLY` uses at apply time.
+  dtype-faithful rating-key canonicalisation and dtype descriptor are reused so ratebook factor
+  levels saved by this component match the join semantics `OPTIMISER_APPLY` uses at apply time.
 - [tracing](../tracing/high-level.md) — calls into this component's explainability entry point
   when a user inspects an `OPTIMISER_APPLY` output row, and owns correlating that row back to
   its producing node in the first place.
@@ -264,10 +267,12 @@ than either crashing on a missing attribute or silently returning a misleading r
 some other way.
 
 An optimiser artifact is never written with a non-finite value or (for ratebook) a missing
-factor-table section; the save/log request is rejected before the write, listing every
-offending path in the payload. Loading a previously saved artifact that is missing or corrupt
-raises a 500 with a "re-run the solve to regenerate it" message rather than leaking the
-underlying filesystem or parquet exception.
+factor-table/dtype-contract section; the save/log request is rejected before the write, listing
+every offending path in the payload. Loading a previously saved artifact that is missing or
+corrupt raises a 500 with a "re-run the solve to regenerate it" message rather than leaking the
+underlying filesystem or parquet exception. Applying a structurally valid legacy ratebook
+artifact without `factor_dtypes`, or applying one to a changed factor dtype, raises
+`RatingFactorDtypeContractError` before lookup construction.
 
 Trace explainability is the one deliberate exception to fail-loud-by-default: every failure
 inside the trace-enrichment path — a missing artifact source, an import error for the

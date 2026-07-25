@@ -300,6 +300,7 @@ class RatingTable(TypedDict, total=False):
 
     name: str
     factors: list[str]
+    factorDtypes: dict[str, dict[str, Any]]
     outputColumn: str
     defaultValue: str | None
     # Miss policy when no usable defaultValue exists: "error" (default)

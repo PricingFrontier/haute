@@ -56,8 +56,11 @@
   Output mappings use the equivalent conversion boundary in
   `frontend/src/panels/editors/outputMappingSchema.ts`.
 - `RatingTable` and factor/entry structures are normalised by
-  `frontend/src/panels/editors/rating/ratingTableUtils.ts`; banding grids consume and update the
-  node's banding-rule records through `frontend/src/panels/editors/banding/bandingUtils.ts`.
+  `frontend/src/panels/editors/rating/ratingTableUtils.ts`. `RatingTable.factorDtypes` is an
+  optional factor-name → backend dtype-descriptor map that is preserved for selected factors.
+  The editor does not invent a descriptor when the backend has not supplied one.
+  Banding grids consume and update the node's banding-rule records through
+  `frontend/src/panels/editors/banding/bandingUtils.ts`.
 
 ## Control flow
 
@@ -83,7 +86,9 @@
    one-gesture boundary in their own controlled cells.
 4. Schema, mapping, banding and rating editors derive visible rows from persisted config, accept
    user changes, normalise only at their documented conversion/update boundary, then invoke the
-   panel callback. Clipboard/drag/dialog operations remain local until that callback.
+   panel callback. Rating factor changes filter `factorDtypes` atomically with `factors` and
+   `entries`; removing a factor removes its descriptor, while new descriptors are never invented.
+   Clipboard/drag/dialog operations remain local until that callback.
 5. Format, file, catalog and MLflow controls issue their own API calls. Their request state is
    local to the editor; the editor never assumes an out-of-order response still describes a
    changed node unless its own effect/request guards accept it.
@@ -97,6 +102,8 @@
   filtered/merged before persistence without making existing user rows disappear.
 - Rating table normalisation supports missing/malformed entries by producing the editable table
   contract; two-way grids keep their cartesian factor coordinates aligned with their entry values.
+  It preserves canonical row order and valid `factorDtypes` metadata instead of dropping either
+  during a view-only open/save cycle.
 - `frontend/src/panels/editors/shared/tableClipboard.ts` parses tab/newline data before applying
   it, while the rating/banding grids validate their target coordinates and numeric values.
 - Path tools preserve/rewrite only recognised path prefixes. JSON path validation and

@@ -67,6 +67,8 @@ from haute._rating import (
     _combine_rating_columns,
     _normalise_banding_factors,
     _normalise_combined_outputs,
+    is_rating_dtype_descriptor,
+    rating_dtype_descriptor,
 )
 from haute._rating_step_config import normalise_rating_tables
 from haute._registry import (
@@ -77,6 +79,7 @@ from haute._registry import (
 )
 from haute._types import GraphNode, NodeType, _Frame
 from haute._user_exec import _exec_user_code
+from haute.errors import RatingFactorDtypeContractError
 
 logger = get_logger(component="executor")
 
@@ -1575,7 +1578,11 @@ def _split_ratebook_level(level: Any, join_columns: list[str], table_name: str) 
     return parts
 
 
-def _ratebook_lookup_table(name: str, entries: list[dict[str, Any]]) -> dict[str, Any] | None:
+def _ratebook_lookup_table(
+    name: str,
+    entries: list[dict[str, Any]],
+    dtype_records: list[dict[str, Any]] | None = None,
+) -> dict[str, Any] | None:
     """Convert one saved factor table into a rating-table lookup spec.
 
     Returns ``None`` when no entry carries ``__factor_group__`` (skipped with
@@ -1604,8 +1611,15 @@ def _ratebook_lookup_table(name: str, entries: list[dict[str, Any]]) -> dict[str
         return None
 
     levels = [entry[_RATEBOOK_FACTOR_GROUP_KEY] for entry in raw_entries]
-    if _ratebook_table_is_composite(levels):
-        join_columns = _ratebook_join_columns(name)
+    if dtype_records is not None:
+        join_columns = [str(record["column"]) for record in dtype_records]
+        is_composite = len(join_columns) > 1
+    else:
+        # Compatibility for direct helper callers. Production apply always
+        # supplies persisted metadata and never guesses factor columns.
+        is_composite = _ratebook_table_is_composite(levels)
+        join_columns = _ratebook_join_columns(name) if is_composite else [name]
+    if is_composite:
         lookup_entries = []
         for entry in raw_entries:
             parts = _split_ratebook_level(entry[_RATEBOOK_FACTOR_GROUP_KEY], join_columns, name)
@@ -1613,9 +1627,11 @@ def _ratebook_lookup_table(name: str, entries: list[dict[str, Any]]) -> dict[str
             lookup_entry["value"] = entry["optimal_scenario_value"]
             lookup_entries.append(lookup_entry)
     else:
-        join_columns = [name]
         lookup_entries = [
-            {name: entry[_RATEBOOK_FACTOR_GROUP_KEY], "value": entry["optimal_scenario_value"]}
+            {
+                join_columns[0]: entry[_RATEBOOK_FACTOR_GROUP_KEY],
+                "value": entry["optimal_scenario_value"],
+            }
             for entry in raw_entries
         ]
 
@@ -1648,6 +1664,7 @@ def _apply_ratebook(
     (3b.5) — neutral, never silent.
     """
     factor_tables = artifact.get("factor_tables", {})
+    factor_dtypes = artifact.get("factor_dtypes")
     schema_by_name: dict[str, Any]
     if hasattr(lf, "collect_schema"):
         collected_schema = lf.collect_schema()
@@ -1663,22 +1680,94 @@ def _apply_ratebook(
         result_lf = lf
         factor_cols: list[str] = []
         for _name, entries in factor_tables.items():
+            dtype_records_raw = (
+                factor_dtypes.get(_name) if isinstance(factor_dtypes, dict) else None
+            )
+            if not isinstance(dtype_records_raw, list) or not dtype_records_raw:
+                raise RatingFactorDtypeContractError(
+                    f"optimiserApply ratebook factor table {_name!r} has no "
+                    "factor_dtypes metadata; re-run and re-save the optimiser",
+                    table=_name,
+                    factor="",
+                    saved_dtype=None,
+                    input_dtype=None,
+                )
+            dtype_records: list[dict[str, Any]] = []
+            seen_columns: set[str] = set()
+            for index, raw_record in enumerate(dtype_records_raw):
+                if not isinstance(raw_record, dict):
+                    raise RatingFactorDtypeContractError(
+                        f"optimiserApply ratebook factor table {_name!r} has malformed "
+                        f"factor_dtypes record at index {index}",
+                        table=_name,
+                        factor="",
+                        saved_dtype=None,
+                        input_dtype=None,
+                    )
+                column = raw_record.get("column")
+                saved_descriptor = raw_record.get("dtype")
+                if (
+                    set(raw_record) != {"column", "dtype"}
+                    or not isinstance(column, str)
+                    or not column
+                    or column in seen_columns
+                    or not is_rating_dtype_descriptor(saved_descriptor)
+                ):
+                    raise RatingFactorDtypeContractError(
+                        f"optimiserApply ratebook factor table {_name!r} has malformed "
+                        f"factor_dtypes record at index {index}",
+                        table=_name,
+                        factor=column if isinstance(column, str) else "",
+                        saved_dtype=(
+                            dict(saved_descriptor) if isinstance(saved_descriptor, dict) else None
+                        ),
+                        input_dtype=None,
+                    )
+                assert isinstance(saved_descriptor, dict)
+                seen_columns.add(column)
+                dtype_records.append({"column": column, "dtype": dict(saved_descriptor)})
+            join_columns = [record["column"] for record in dtype_records]
+            missing = [column for column in join_columns if column not in available]
+            if missing:
+                raise ValueError(
+                    f"optimiserApply ratebook factor table {_name!r} requires join "
+                    f"column(s) {join_columns!r} but the input frame is missing "
+                    f"{missing!r}"
+                )
+            for record in dtype_records:
+                column = record["column"]
+                saved_descriptor = record["dtype"]
+                try:
+                    input_descriptor = rating_dtype_descriptor(schema_by_name[column])
+                except ValueError as exc:
+                    raise RatingFactorDtypeContractError(
+                        f"optimiserApply ratebook factor table {_name!r} factor "
+                        f"{column!r} has unsupported apply dtype "
+                        f"{schema_by_name[column]!r}",
+                        table=_name,
+                        factor=column,
+                        saved_dtype=saved_descriptor,
+                        input_dtype=None,
+                    ) from exc
+                if saved_descriptor != input_descriptor:
+                    raise RatingFactorDtypeContractError(
+                        f"optimiserApply ratebook factor table {_name!r} factor "
+                        f"{column!r} was solved as {saved_descriptor!r} but the "
+                        f"apply input is {input_descriptor!r}",
+                        table=_name,
+                        factor=column,
+                        saved_dtype=saved_descriptor,
+                        input_dtype=input_descriptor,
+                    )
             if not entries:
                 continue
             # factor_tables format from save: list of
             # {"__factor_group__": level, "optimal_scenario_value": value}
             # Convert to the rating table format expected by _apply_rating_table
-            table = _ratebook_lookup_table(_name, entries)
+            table = _ratebook_lookup_table(_name, entries, dtype_records)
             if table is None:
                 continue
             out_col: str = table["outputColumn"]
-            missing = [column for column in table["factors"] if column not in available]
-            if missing:
-                raise ValueError(
-                    f"optimiserApply ratebook factor table {_name!r} requires join "
-                    f"column(s) {table['factors']!r} but the input frame is missing "
-                    f"{missing!r}"
-                )
             result_lf = _apply_rating_table(result_lf, table, input_schema=schema_by_name)
             # Neutral fill AFTER the miss guard has counted and logged the
             # misses inside the plan: per-factor columns stay 1.0 for unseen

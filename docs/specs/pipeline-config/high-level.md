@@ -147,6 +147,13 @@ Sidecar writes pass every config dict through an allowlist derived from each nod
 catches off-spec keys smuggled in by external tooling, a not-yet-hardened code path, or a
 frontend bug, without failing the save itself.
 
+Rating-step sidecars have one canonical persisted entry shape: ordered row arrays. The loader
+still accepts the historical nested object-key maps, migrates them in deterministic key order,
+and the next save writes rows. This exception to compact object-key maps is required because a
+JSON object key cannot preserve the scalar identity or dtype metadata of a rating level.
+Validation and canonicalisation finish before the save service stages any file, so a malformed
+rating table leaves the prior sidecar untouched.
+
 Contract validation at parse time deliberately avoids contacting MLflow for model-scoring nodes:
 their input side is treated as opaque while the locally configured output column is still
 checked. For other node types, a `ConfigError`, `OSError`, `ImportError`, `RuntimeError`, or

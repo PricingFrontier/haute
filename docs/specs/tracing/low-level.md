@@ -278,13 +278,16 @@ one step's unforeseen failure cannot abort the whole enrichment pass) and:
    `modelScore`, `scenarioExpander`, `liveSwitch`, `optimiserApply`) into
    `step.node_detail`; for `banding`, additionally attaches lineage
    (`_attach_banding_lineage`) directly into `step.expression`/`step.calculation`
-   using the matched factor. Building `factor_input_dtypes` for `enrich_banding`
-   walks each parent's materialized output; when a parent is a multi-frame `dict`,
+   using the matched factor. Building `factor_input_dtypes` for
+   `enrich_rating_step` and `enrich_banding` walks each parent's materialized
+   output; when a parent is a multi-frame `dict`,
    it is scoped to the frame(s) named by `source_frames_of.get((pid,
    step.node_id))` (falling back to every frame if no handle is recorded) rather
    than merged across every frame the source emits — a column name recurring
    across frames with a different dtype must resolve in the *consumed* frame's
-   dtype, not by dict-iteration order over frames the node never sees.
+   dtype, not by dict-iteration order over frames the node never sees. Rating
+   entry and input-row keys are both canonicalised through that exact dtype via
+   `normalise_rating_key(value, dtype)`.
 7. Classifies `step.row_lineage_type` via `detect_row_lineage_type()`, using the
    node type first (source nodes → `"created"`, `liveSwitch` → `"selected"`,
    `edgeJoin` → `"joined"` — checked before any code-sniffing because a join's

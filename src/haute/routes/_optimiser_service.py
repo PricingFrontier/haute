@@ -58,7 +58,7 @@ from haute._polars_utils import (
     streaming_collect,
     temporary_streaming_chunk_size,
 )
-from haute._rating import normalise_rating_key
+from haute._rating import normalise_rating_key, rating_dtype_descriptor
 from haute._types import (
     GraphNode,
     OnlineSolveResultLike,
@@ -1767,7 +1767,10 @@ def _ratebook_factor_table_name(columns: list[str]) -> str:
     return ":".join(columns)
 
 
-def _ratebook_factor_level_key(values: list[Any]) -> str:
+def _ratebook_factor_level_key(
+    values: list[Any],
+    dtypes: list[pl.DataType] | None = None,
+) -> str:
     """Canonical level key for one observed factor-level tuple (3b.10).
 
     Components are canonicalised through the shared
@@ -1776,8 +1779,13 @@ def _ratebook_factor_level_key(values: list[Any]) -> str:
     (Float64 ``25.0`` -> ``"25"``; strings stay verbatim).
     """
     parts: list[str] = []
-    for value in values:
-        canonical = normalise_rating_key(value)
+    if dtypes is not None and len(dtypes) != len(values):
+        raise ValueError("Ratebook factor values and dtypes must have the same length.")
+    for index, value in enumerate(values):
+        canonical = normalise_rating_key(
+            value,
+            dtypes[index] if dtypes is not None else None,
+        )
         if canonical is None:
             raise ValueError("Ratebook factor counts cannot be computed with null factor levels.")
         parts.append(canonical)
@@ -2000,7 +2008,8 @@ def _ratebook_factor_level_counts(
         return {}
 
     is_lazy = isinstance(factors_df, pl.LazyFrame)
-    schema_names = set(factors_df.collect_schema().names()) if is_lazy else set(factors_df.columns)
+    schema = factors_df.collect_schema() if is_lazy else factors_df.schema
+    schema_names = set(schema.names())
     counts: dict[str, dict[str, int]] = {}
     for columns in factor_columns or []:
         if not columns:
@@ -2023,9 +2032,10 @@ def _ratebook_factor_level_counts(
             count_rows = grouped.to_dicts()
         table_counts: dict[str, int] = {}
         level_sources: dict[str, list[Any]] = {}
+        column_dtypes = [schema[column] for column in columns]
         for row in count_rows:
             values = [row[column] for column in columns]
-            level_key = _ratebook_factor_level_key(values)
+            level_key = _ratebook_factor_level_key(values, column_dtypes)
             if level_key in table_counts:
                 raise ValueError(
                     f"Ratebook factor levels {level_sources[level_key]!r} and {values!r} in "
@@ -2036,6 +2046,39 @@ def _ratebook_factor_level_counts(
             level_sources[level_key] = values
         counts[table_name] = table_counts
     return counts
+
+
+def _ratebook_factor_dtypes(
+    factors_df: Any | None,
+    factor_columns: list[list[str]] | None,
+) -> dict[str, list[dict[str, Any]]]:
+    """Describe every solved factor table's ordered originating dtypes."""
+    import polars as pl
+
+    if factors_df is None:
+        return {}
+    schema = (
+        factors_df.collect_schema() if isinstance(factors_df, pl.LazyFrame) else factors_df.schema
+    )
+    schema_names = set(schema.names())
+    result: dict[str, list[dict[str, Any]]] = {}
+    for columns in factor_columns or []:
+        if not columns:
+            continue
+        missing = [column for column in columns if column not in schema_names]
+        if missing:
+            raise ValueError(
+                "Ratebook factor dtype columns are missing from aligned factors "
+                f"dataframe: {missing}"
+            )
+        result[_ratebook_factor_table_name(columns)] = [
+            {
+                "column": column,
+                "dtype": rating_dtype_descriptor(schema[column]),
+            }
+            for column in columns
+        ]
+    return result
 
 
 def _ratebook_factor_level_counts_from_artifact(
@@ -2049,6 +2092,17 @@ def _ratebook_factor_level_counts_from_artifact(
         _scan_ratebook_factors_artifact(handle),
         factor_columns,
         streaming_chunk_size=streaming_chunk_size,
+    )
+
+
+def _ratebook_factor_dtypes_from_artifact(
+    handle: dict[str, Any],
+    factor_columns: list[list[str]] | None,
+) -> dict[str, list[dict[str, Any]]]:
+    """Read ratebook dtype metadata from the persisted solved-factor schema."""
+    return _ratebook_factor_dtypes(
+        _scan_ratebook_factors_artifact(handle),
+        factor_columns,
     )
 
 
@@ -2593,6 +2647,10 @@ def _solve_ratebook(
         factor_columns_valid,
         streaming_chunk_size=streaming_chunk_size,
     )
+    factor_dtypes = _ratebook_factor_dtypes_from_artifact(
+        ratebook_factors_handle,
+        factor_columns_valid,
+    )
     resolved_level_order = factor_level_order or {}
     existing_setup_chunking = store.require_job(job_id).get("setup_chunking")
     setup_chunking = (
@@ -2619,11 +2677,13 @@ def _solve_ratebook(
         extra_fields={
             "cd_iterations": solve_result.cd_iterations,
             "factor_tables": factor_tables_serialised,
+            "factor_dtypes": factor_dtypes,
             "clamp_rate": getattr(solve_result, "clamp_rate", None),
             "history": None,
         },
         extra_job_fields={
             "factor_level_counts": factor_level_counts,
+            "factor_dtypes": factor_dtypes,
             _RATEBOOK_FACTOR_LEVEL_ORDER_KEY: resolved_level_order,
             "setup_chunking": setup_chunking,
         },
