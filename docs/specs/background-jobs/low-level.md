@@ -364,8 +364,8 @@ completed_message="Completed", **kwargs)`
 | `HTTPException(404)` | `JobStore.require_job` | Standard FastAPI error response for missing/expired job ids. |
 | `HTTPException(400)` | `JobStore.require_completed_job` | When the job exists but isn't `completed`; message includes the actual status. |
 | `SingleFlightConflictError(RuntimeError)` | `SingleFlightCoordinator.acquire` | Not caught inside this component; optimiser route code (`_optimiser_service.py`) converts the equivalent caller-side conflict into `HTTPException(409)`. |
-| `BackgroundJobStoppedError(RuntimeError)` | Not raised by this component itself — it is the typed exception worker code is expected to raise after observing `CancellableJobRegistry.cancellation_reason(job_id)` is non-`None`. | Caught by consumer services (e.g. `_train_service.py`) to route cooperative-cancellation into the appropriate terminal transition. |
-| `IsolatedWorkerError` and subtypes | Raised inside `run_isolated_worker` (owned by worker-isolation, not this component) | Caught exclusively by `IsolatedJobSupervisor._transition_failure`; any other exception type from the same call site is unhandled (see NOTE above). |
+| `BackgroundJobStoppedError(RuntimeError)` | Not raised by this component itself — it is the typed exception in-process worker code is expected to raise after observing `CancellableJobRegistry.cancellation_reason(job_id)` is non-`None`. | Caught by remaining in-process consumers such as `_optimiser_service.py`; migrated process workers use the protocol stop callback and typed failure payloads. |
+| `IsolatedWorkerError` and subtypes | Raised inside `run_isolated_worker` or `run_worker_protocol` (owned by worker isolation/transport) | Converted by `IsolatedJobSupervisor` into a typed lifecycle outcome. Unexpected parent exceptions become `error`; terminal-persistence failure is exposed through `IsolatedSupervisorThread.join_and_raise()`. |
 | `BlockingWorkTimeoutError(TimeoutError)` | `run_blocking_with_response_timeout` | Raised to the awaiting route handler on response timeout; route code (`pipeline.py`, `output_assemble.py`) catches it to build a 504 response. |
 | `asyncio.CancelledError` | Re-raised by `run_blocking_with_response_timeout` after draining the background task | Propagates to the ASGI layer as normal task cancellation. |
 
@@ -396,9 +396,9 @@ completed_message="Completed", **kwargs)`
   `ExecutionContext` checkpoint (raises `ExecutionCancelledError`) and that a
   caller-supplied `ExecutionCancellationToken` is used as-is rather than replaced.
 - `tests/test_worker_isolation.py` — `IsolatedJobSupervisor` end-to-end: completed
-  result recorded correctly, a remote `ValueError` recorded with
-  `worker_error_type`/message, and a stopped/cancelled run triggering its configured
-  cleanup callback.
+  result recording, typed remote/stopped/crashed outcomes, totalisation of unexpected
+  parent errors, cleanup behavior, coherent terminal precedence, and observable
+  terminal-persistence infrastructure failure.
 - `tests/test_timeout_helper_contracts.py` — `run_blocking_with_response_timeout`
   returning a worker result, re-raising a worker exception unchanged, logging +
   raising `BlockingWorkTimeoutError` on timeout, and — using real
@@ -406,16 +406,12 @@ completed_message="Completed", **kwargs)`
   for the started blocking work to actually finish before the `CancelledError`
   propagates. Also covers `_drain_background_future_result` logging an ordinary
   exception and *not* swallowing a `BaseException` (`SystemExit`).
-- Indirect coverage: `tests/test_optimiser_routes.py`, `tests/test_train_service_coverage.py`,
-  and `tests/test_training_temp_cleanup.py` exercise `BackgroundJobStoppedError` and
-  the registry/lifecycle combination from the consumer side (training/optimiser
-  services), including local fixture stand-ins for the exception in a couple of
-  files rather than importing it directly.
+- Indirect coverage: `tests/test_optimiser_routes.py` exercises
+  `BackgroundJobStoppedError` with the registry/lifecycle combination; modelling
+  process-worker behavior is covered through the protocol-specific suites.
 - **Known gaps**: no test directly exercises `SingleFlightCoordinator` in isolation
   (it is only exercised indirectly through `_optimiser_service.py`'s route-level
-  409 tests); the NOTE'd unhandled-non-`IsolatedWorkerError` path in
-  `IsolatedJobSupervisor.launch` has no regression test pinning the "job stuck at
-  running forever" behaviour.
+  409 tests).
 
 ## Approved change contract — 0.7.0 input-cache jobs
 
@@ -436,3 +432,93 @@ Remaining background-job improvement work is tracked in the
 - Extend focused background-job tests for the new prefix and direct
   `SingleFlightCoordinator` coverage. Input-cache route tests own join/start/cancel races,
   redaction, global concurrency, builder checkpoints, and job-TTL/snapshot independence.
+
+## Approved change contract — 0.8.0 supervised process jobs
+
+### Module and type contract
+
+- Add `src/haute/_worker_protocol.py` as the owner of the version-1 transport DTOs,
+  validation, artifact-root containment/integrity checks, and the spawn parent/child loop.
+  `_worker_isolation.py` continues to own process caps, termination, and the legacy one-result
+  primitive; routes use the protocol runner for migrated work.
+- `WorkerRequest` contains exactly `schema_version=1`, a non-empty `request_id`, a non-empty
+  `kind`, and bounded plain-data `payload`.
+- `WorkerProgressEvent` contains `schema_version=1`, a zero-based `sequence`, a finite
+  `progress` in `[0, 1]`, a bounded message, a non-empty event kind, and bounded plain-data
+  fields. The child runtime assigns the sequence; callers cannot supply it.
+- `WorkerArtifactManifest` contains `schema_version=1`, a declared `kind`, a normalized relative
+  path, non-negative `size_bytes`, a lowercase SHA-256 hex digest, and lifetime
+  `staged|job|durable`. The manifest never contains an absolute path.
+- `WorkerResultManifest` contains `schema_version=1`, bounded plain-data metadata, and a bounded
+  tuple of artifact manifests. `WorkerFailurePayload` contains the same schema version plus a
+  known terminal reason, bounded error type/message/traceback, and bounded named fields.
+- `WorkerRuntime` is created inside the child entrypoint. It exposes progress emission and safe
+  staged-path allocation below the already-created artifact root. Route callbacks, stores, and
+  cancellation objects are not members.
+
+### Bounds and validation
+
+The version-1 constants are part of the contract: event queue capacity 64, at most 10,000 events,
+64 KiB per serialized event, 4 MiB result metadata, 64 artifacts, 512-character identifiers and
+human messages, 4,096-character relative paths, and a maximum plain-data nesting depth of 64.
+Plain data is recursively limited to `None`, booleans, finite numbers, strings, lists/tuples, and
+string-keyed mappings; frames, models, arbitrary class instances, excessive nesting, and
+non-finite floats are contract errors.
+
+The parent drains both events and any available result envelope while the child is alive, so it
+never joins a process whose queue feeder is blocked on a pipe-sized result. The bounded event
+queue applies back-pressure without deadlocking ordinary progress. Event validation accepts
+sequence `0` first and then exactly `previous + 1`; gaps, duplicates, and reordering terminate
+the run as `contract_error`. Every payload is validated again in the parent even though the
+child runtime constructs it.
+
+For each artifact, the parent rejects absolute or non-normalized paths, `.`/`..`, symlink
+escapes, unknown kinds, missing/non-regular files, size mismatches, digest mismatches, and
+files exceeding the caller's declared maximum. Validation uses the resolved parent root and
+requires every resolved artifact to remain relative to it. Publication happens only after the
+complete result manifest validates.
+
+### Supervisor contract
+
+`IsolatedJobSupervisor.launch` returns an `IsolatedSupervisorThread`, a `threading.Thread`
+subclass with `infrastructure_failure` and `join_and_raise(timeout=None)`. Its target has one
+outer `BaseException` boundary:
+
+1. Produce a success outcome or a typed/derived terminal failure.
+2. Attempt one lifecycle transition carrying elapsed time and all available worker fields.
+3. If precedence rejects the transition, verify the current record is already terminal.
+4. If the write raises, the job disappeared, or it remains running, store
+   `SupervisorInfrastructureError` on the thread and log it with the original outcome.
+
+An unexpected parent-side exception is recorded as `error` with
+`supervisor_error_class`; typed worker failures retain their existing
+`worker_error_class`, remote type/traceback, exit code, and memory-limit code. Cleanup failure
+is never allowed to erase an earlier typed failure: it is retained as a diagnostic note/field,
+while terminal reason precedence still selects the observable status.
+
+### Consumer flow
+
+Training creates `start_time` and `timeout` together with the running job. Parent preparation
+retains its admitted `ExecutionContext`. Fit/dispersion child requests contain only plain config,
+the prepared Parquet path, output staging information, and response metadata. Parent event
+handlers perform compare-and-swap running updates; iteration events append to the bounded loss
+history. Parent completion validates and atomically publishes staged model/contract files,
+builds the existing response DTO, records child metrics, then transitions to completed. A
+parent `finally` releases registry/admission ownership and removes prepared/staged temporary
+data on all outcomes.
+
+`JobLifecycle.transition(..., expected_status="completed", to="error")` is the sole explicit
+publication-correction path. Default transitions still treat completed as sticky. Optimiser
+elapsed reporting uses a locked snapshot/helper or a worker-local start time; it never reads
+`store.jobs[job_id]`.
+
+### Verification
+
+`tests/test_worker_protocol.py` pins spawn pickling, event ordering/bounds, malformed versions,
+plain-data rejection, cancellation with progress in flight, crash/timeout cleanup, artifact
+containment, symlink/traversal rejection, partial/tampered manifests, unknown kinds, and digest
+validation. `tests/test_worker_isolation.py` pins total supervisor terminalisation, precedence,
+cleanup plus primary failure, and raising join behavior. Focused modelling tests pin progress,
+bounded loss history, completion publication, cancellation, timeout, crash, invalid manifest,
+and cleanup. Lifecycle/route tests pin create-time timeout and coherent publication correction;
+optimiser tests assert that no production source path subscripts `JobStore.jobs`.

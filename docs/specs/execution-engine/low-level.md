@@ -629,3 +629,22 @@ sink suites. They prove direct/cached equivalence, cache-lease lifetime, generat
 invalidation, multiple-input planning, no remote call during execution, post-read code ordering,
 row-local acceptance/global rejection, capability diagnostics, unique staging under concurrent
 writes, failure cleanup, and the complete absence of removed enum members and branches.
+
+## Approved change contract — 0.8.0 worker transport and enforcement
+
+- `_worker_protocol.py` owns protocol serialization/validation and multiplexes one result queue
+  with one bounded progress queue. Its process target and every route worker function are
+  module-level spawn-picklable callables.
+- `_worker_isolation.py` adds a closed `WorkerMemoryEnforcement` vocabulary and resolves
+  `HAUTE_WORKER_MEMORY_ENFORCEMENT` as `best_effort|required`. It builds process configs from
+  an admitted execution context without passing that context across the spawn boundary. A
+  directly constructed required-cap config is also invalid unless it declares a positive
+  memory limit.
+- The child constructs a fresh `ExecutionContext` from plain operation/profile/job-id and
+  memory-budget fields. Its final metrics payload is plain result metadata; the parent remains
+  the owner of admission release and lifecycle persistence.
+- Parent cancellation/timeout terminates and joins the process, then validates that it is no
+  longer alive before cleanup. A process that cannot be terminated is an infrastructure
+  failure, not a reported cancellation success.
+- Protocol and cap-policy tests run on all platforms; the real RLIMIT assertion remains
+  POSIX/Linux-gated, while unsupported-platform required-policy tests are deterministic.

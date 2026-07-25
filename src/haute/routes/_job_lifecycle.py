@@ -117,8 +117,14 @@ class JobLifecycle:
 
         ``expected_status`` protects normal running-to-terminal writes. If a
         terminal write already won the race, a later higher-precedence terminal
-        reason may still replace it; lower-precedence reasons are ignored.
+        reason may still replace it; lower-precedence reasons are ignored. The
+        only direct terminal-status correction is completed-to-error for a
+        result that failed publication validation.
         """
+        if expected_status not in {RUNNING_STATUS, COMPLETED_STATUS}:
+            raise ValueError("Lifecycle transitions may expect only 'running' or 'completed'")
+        if expected_status == COMPLETED_STATUS and to != "error":
+            raise ValueError("A completed lifecycle record may only be corrected to 'error'")
         timestamp = time.time() if now is None else now
         update: dict[str, Any] = dict(fields or {})
         update["status"] = TERMINAL_REASON_TO_STATUS[to]

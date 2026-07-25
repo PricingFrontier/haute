@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import os
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import polars as pl
 import pytest
@@ -19,6 +20,10 @@ from haute.modelling._split import PARTITION_TRAIN, PARTITION_VALIDATION
 from haute.modelling._training_job import TrainingJob, TrainResult, _PreparedData
 from haute.routes._job_store import JobStore
 from haute.routes._train_service import TrainService
+from tests.test_training_worker_protocol import (
+    _inline_protocol_runner,
+    _SuccessfulTrainingJob,
+)
 
 
 def _context() -> ExecutionContext:
@@ -214,24 +219,27 @@ def _admitted_training_context(
     return context, admission_calls
 
 
+def _running_training_job(store: JobStore) -> str:
+    return store.create_job(
+        {
+            "status": "running",
+            "progress": 0.0,
+            "message": "Starting",
+            "job_type": "training",
+            "start_time": time.monotonic(),
+            "timeout": 60,
+        }
+    )
+
+
 def test_training_background_memory_limit_sets_typed_terminal_status(
     tmp_path: Path,
 ) -> None:
     store = JobStore()
-    service = TrainService(store)
-    job_id = store.create_job({"status": "running", "progress": 0.0, "message": "Starting"})
+    service = TrainService(store, protocol_runner=_inline_protocol_runner)
+    job_id = _running_training_job(store)
     tmp_parquet = tmp_path / "training.parquet"
     tmp_parquet.write_bytes(b"placeholder")
-    deferred_threads: list[object] = []
-
-    class DeferredThread:
-        def __init__(self, *, target, daemon):
-            self.target = target
-            self.daemon = daemon
-            deferred_threads.append(self)
-
-        def start(self) -> None:
-            return None
 
     class MemoryLimitedTrainingJob:
         def __init__(self, *args, **kwargs):
@@ -248,22 +256,23 @@ def test_training_background_memory_limit_sets_typed_terminal_status(
             )
 
     admitted, _ = _admitted_training_context(job_id)
-    with (
-        patch("haute.modelling.TrainingJob", MemoryLimitedTrainingJob),
-        patch("haute.routes._train_service.threading.Thread", DeferredThread),
-    ):
-        service._launch_background(
+    with patch("haute.modelling.TrainingJob", MemoryLimitedTrainingJob):
+        thread = service._launch_background(
             job_id,
             "train",
-            {"target": "target", "loss_function": "RMSE"},
+            {
+                "target": "target",
+                "loss_function": "RMSE",
+                "output_dir": str(tmp_path / "outputs"),
+            },
             {},
             str(tmp_parquet),
             None,
             None,
             execution_context=admitted,
         )
-
-    deferred_threads[0].target()
+        assert thread is not None
+        thread.join_and_raise(timeout=10)
 
     job = store.require_job(job_id)
     assert job["status"] == "memory_limited"
@@ -275,68 +284,52 @@ def test_training_background_memory_limit_sets_typed_terminal_status(
     assert not tmp_parquet.exists()
 
 
-def test_launch_background_threads_admitted_context_through_to_training_job(
+def test_launch_background_reconstructs_child_context_from_admitted_budget(
     tmp_path: Path,
 ) -> None:
-    """Regression for bug_003: _launch_background must run TrainingJob with the
-    admitted context (memory_limit_bytes / admission preserved), not a bare one.
-    """
+    """The spawn request carries limits, never the parent context object."""
     store = JobStore()
-    service = TrainService(store)
-    job_id = store.create_job({"status": "running", "progress": 0.0, "message": "Starting"})
+    service = TrainService(store, protocol_runner=_inline_protocol_runner)
+    job_id = _running_training_job(store)
     tmp_parquet = tmp_path / "training.parquet"
     tmp_parquet.write_bytes(b"placeholder")
-    deferred_threads: list[object] = []
     captured: dict[str, Any] = {}
 
-    class DeferredThread:
-        def __init__(self, *, target, daemon):
-            self.target = target
-            self.daemon = daemon
-            deferred_threads.append(self)
-
-        def start(self) -> None:
-            return None
-
-    class _TrainingJob:
-        def __init__(self, *args, **kwargs):
-            pass
-
+    class _TrainingJob(_SuccessfulTrainingJob):
         def run(self, progress, on_iteration, check_cancelled=None, execution_context=None):
             captured["execution_context"] = execution_context
-            return TrainResult(
-                metrics={"rmse": 0.1},
-                feature_importance=[],
-                model_path=str(tmp_path / "model.cbm"),
-                train_rows=1,
-                test_rows=0,
-                features=["x"],
-                cat_features=[],
+            return super().run(
+                progress,
+                on_iteration,
+                check_cancelled=check_cancelled,
+                execution_context=execution_context,
             )
 
     admitted, _ = _admitted_training_context(job_id)
-    with (
-        patch("haute.modelling.TrainingJob", _TrainingJob),
-        patch("haute.routes._train_service.threading.Thread", DeferredThread),
-    ):
-        service._launch_background(
+    with patch("haute.modelling.TrainingJob", _TrainingJob):
+        thread = service._launch_background(
             job_id,
             "train",
-            {"target": "target", "loss_function": "RMSE"},
+            {
+                "name": "model",
+                "target": "target",
+                "loss_function": "RMSE",
+                "output_dir": str(tmp_path / "outputs"),
+            },
             {},
             str(tmp_parquet),
             None,
             None,
             execution_context=admitted,
         )
-
-    deferred_threads[0].target()
+        assert thread is not None
+        thread.join_and_raise(timeout=10)
 
     ctx = captured["execution_context"]
-    assert ctx is admitted, "background must run TrainingJob with the admitted context"
+    assert ctx is not admitted
     assert ctx.memory_limit_bytes == 1_000
-    assert ctx.memory_baseline_bytes == 500
-    assert ctx.rss_limit_bytes == 1_500
+    assert ctx.admission is None
+    assert ctx.admission_release is None
 
 
 def test_launch_background_releases_admission_after_thread_completes(
@@ -347,45 +340,22 @@ def test_launch_background_releases_admission_after_thread_completes(
     reservation stays held while training runs.
     """
     store = JobStore()
-    service = TrainService(store)
-    job_id = store.create_job({"status": "running", "progress": 0.0, "message": "Starting"})
+    service = TrainService(store, protocol_runner=_inline_protocol_runner)
+    job_id = _running_training_job(store)
     tmp_parquet = tmp_path / "training.parquet"
     tmp_parquet.write_bytes(b"placeholder")
-    deferred_threads: list[object] = []
-
-    class DeferredThread:
-        def __init__(self, *, target, daemon):
-            self.target = target
-            self.daemon = daemon
-            deferred_threads.append(self)
-
-        def start(self) -> None:
-            return None
-
-    class _TrainingJob:
-        def __init__(self, *args, **kwargs):
-            pass
-
-        def run(self, progress, on_iteration, check_cancelled=None, execution_context=None):
-            return TrainResult(
-                metrics={"rmse": 0.1},
-                feature_importance=[],
-                model_path=str(tmp_path / "model.cbm"),
-                train_rows=1,
-                test_rows=0,
-                features=["x"],
-                cat_features=[],
-            )
 
     admitted, admission_calls = _admitted_training_context(job_id)
-    with (
-        patch("haute.modelling.TrainingJob", _TrainingJob),
-        patch("haute.routes._train_service.threading.Thread", DeferredThread),
-    ):
-        service._launch_background(
+    with patch("haute.modelling.TrainingJob", _SuccessfulTrainingJob):
+        thread = service._launch_background(
             job_id,
             "train",
-            {"target": "target", "loss_function": "RMSE"},
+            {
+                "name": "model",
+                "target": "target",
+                "loss_function": "RMSE",
+                "output_dir": str(tmp_path / "outputs"),
+            },
             {},
             str(tmp_parquet),
             None,
@@ -397,7 +367,8 @@ def test_launch_background_releases_admission_after_thread_completes(
         assert admission_calls["release"] == 0
 
         # Background completes -> admission released exactly once.
-        deferred_threads[0].target()
+        assert thread is not None
+        thread.join_and_raise(timeout=10)
 
     assert admission_calls["release"] == 1
 
@@ -409,29 +380,27 @@ def test_launch_background_releases_admission_on_thread_start_failure(
     from fastapi import HTTPException
 
     store = JobStore()
-    service = TrainService(store)
-    job_id = store.create_job({"status": "running", "progress": 0.0, "message": "Starting"})
+    service = TrainService(store, protocol_runner=_inline_protocol_runner)
+    job_id = _running_training_job(store)
     tmp_parquet = tmp_path / "training.parquet"
     tmp_parquet.write_bytes(b"placeholder")
 
-    class FailingThread:
-        def __init__(self, *, target, daemon):
-            self.target = target
-            self.daemon = daemon
-
-        def start(self) -> None:
-            raise RuntimeError("thread spawn refused")
-
     admitted, admission_calls = _admitted_training_context(job_id)
     with (
-        patch("haute.modelling.TrainingJob"),
-        patch("haute.routes._train_service.threading.Thread", FailingThread),
+        patch(
+            "haute.routes._background_jobs.IsolatedSupervisorThread.start",
+            side_effect=RuntimeError("thread spawn refused"),
+        ),
         pytest.raises(HTTPException) as exc_info,
     ):
         service._launch_background(
             job_id,
             "train",
-            {"target": "target", "loss_function": "RMSE"},
+            {
+                "target": "target",
+                "loss_function": "RMSE",
+                "output_dir": str(tmp_path / "outputs"),
+            },
             {},
             str(tmp_parquet),
             None,
@@ -503,17 +472,12 @@ def test_start_keeps_admission_held_after_successful_launch(
         captured["context"] = ctx
         return ctx
 
-    class DeferredThread:
-        def __init__(self, *, target, daemon):
-            self.target = target
-            self.daemon = daemon
-            captured["thread_target"] = target
-
-        def start(self) -> None:
-            return None
-
     fake_tmp = tmp_path / "prep.parquet"
     fake_tmp.write_bytes(b"placeholder")
+
+    def capture_launch(*_args, **kwargs):
+        captured["on_finished"] = kwargs["on_finished"]
+        return MagicMock()
 
     with (
         patch(
@@ -521,8 +485,7 @@ def test_start_keeps_admission_held_after_successful_launch(
             side_effect=recording_create,
         ),
         patch.object(service, "_execute_and_sink", return_value=str(fake_tmp)),
-        patch("haute.routes._train_service.threading.Thread", DeferredThread),
-        patch("haute.modelling.TrainingJob"),
+        patch.object(service._supervisor, "launch_protocol", side_effect=capture_launch),
     ):
         response = service.start(
             TrainRequest(graph=_make_modelling_graph(str(data_path)), node_id="train"),
@@ -534,9 +497,12 @@ def test_start_keeps_admission_held_after_successful_launch(
         "admission must remain held after start() returns; "
         "ownership belongs to the background worker"
     )
-    # And the same context must be the one passed to the worker.
+    # The parent retains the admitted context while its plain budget fields are
+    # sent in the worker request.
     assert admitted.memory_limit_bytes is not None
     assert admitted.admission is not None
+    captured["on_finished"]()
+    assert admitted._admission_released is True
 
 
 def test_catboost_gpu_vram_limit_refuses_before_launch(

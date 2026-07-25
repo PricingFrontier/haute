@@ -16,6 +16,7 @@ Covers three remediation items at the ``TrainService`` boundary:
 from __future__ import annotations
 
 import time
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 from unittest.mock import patch
 
@@ -76,6 +77,11 @@ def _start_training(client: TestClient, graph: dict, node_id: str = "train") -> 
 
 def _modelling_graph(data_path: str, config: dict[str, Any]) -> dict:
     """dataInput → modelling graph with a fully caller-controlled config."""
+    config = dict(config)
+    config.setdefault(
+        "output_dir",
+        str(Path(data_path).resolve().parent / "outputs"),
+    )
     graph = make_graph(
         {
             "nodes": [
@@ -98,13 +104,13 @@ def _modelling_graph(data_path: str, config: dict[str, Any]) -> dict:
     return graph.model_dump()
 
 
-def _completed_train_result() -> object:
+def _completed_train_result(model_path: str) -> object:
     from haute.modelling._training_job import TrainResult
 
     return TrainResult(
         metrics={"rmse": 0.1, "gini": 0.5},
         feature_importance=[],
-        model_path="outputs/test_model.cbm",
+        model_path=model_path,
         train_rows=48,
         test_rows=12,
         features=["x1", "x2"],
@@ -134,7 +140,17 @@ class _CapturingTrainingJob:
         type(self).captured.append(
             {"kwargs": self.kwargs, "frame": pl.read_parquet(self.kwargs["data"])}
         )
-        return _completed_train_result()
+        output_dir = Path(self.kwargs["output_dir"])
+        output_dir.mkdir(parents=True, exist_ok=True)
+        model_path = output_dir / f"{self.kwargs['name']}.cbm"
+        model_path.write_bytes(b"model")
+        from haute.modelling._training_job import model_contract_filename
+
+        (output_dir / model_contract_filename(self.kwargs["name"])).write_text(
+            '{"schema_version": 1}',
+            encoding="utf-8",
+        )
+        return _completed_train_result(str(model_path))
 
 
 @pytest.fixture()
@@ -145,6 +161,19 @@ def capturing_job() -> type[_CapturingTrainingJob]:
         captured: ClassVar[list[dict[str, Any]]] = []
 
     return _Job
+
+
+@pytest.fixture()
+def inline_training_worker(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep patched training doubles in-process while exercising the protocol."""
+    from haute.routes._train_service import TrainService
+    from haute.routes.modelling import _store
+    from tests.test_training_worker_protocol import _inline_protocol_runner
+
+    monkeypatch.setattr(
+        "haute.routes.modelling._train_service",
+        TrainService(_store, protocol_runner=_inline_protocol_runner),
+    )
 
 
 @pytest.fixture()
@@ -219,7 +248,13 @@ class TestCatBoostParamRouting:
         assert status["result"]["metrics"]
         assert status["result"]["train_rows"] > 0
 
-    def test_catboost_receives_only_catboost_params(self, client, frequency_data, capturing_job):
+    def test_catboost_receives_only_catboost_params(
+        self,
+        client,
+        frequency_data,
+        capturing_job,
+        inline_training_worker,
+    ):
         """Pin the exact params CatBoost training receives: config GLM keys must
         not leak into ``params`` while ``offset`` still arrives as its own kwarg."""
         config = {
@@ -268,9 +303,17 @@ class TestCatBoostParamRouting:
             "feature_weights": None,
             "categorical_levels": None,
         }
-        assert kwargs["output_dir"].endswith("outputs")
+        staged_output = Path(kwargs["output_dir"])
+        assert staged_output.name == "output"
+        assert staged_output.parent.name.startswith(".haute-training-")
 
-    def test_glm_receives_merged_glm_config_in_params(self, client, frequency_data, capturing_job):
+    def test_glm_receives_merged_glm_config_in_params(
+        self,
+        client,
+        frequency_data,
+        capturing_job,
+        inline_training_worker,
+    ):
         """GLM keeps the top-level→params merge: terms/family/link/regularization
         and friends must arrive in ``params`` for ``GLMAlgorithm.fit``."""
         config = {
@@ -410,7 +453,13 @@ class TestRowLimitDownsample:
         }
         return _modelling_graph(data_path, config)
 
-    def test_row_limit_sample_is_not_order_biased(self, client, target_ordered_data, capturing_job):
+    def test_row_limit_sample_is_not_order_biased(
+        self,
+        client,
+        target_ordered_data,
+        capturing_job,
+        inline_training_worker,
+    ):
         """RED repro for 4b.4: on target-ordered data, ``head(120)`` confines the
         training target to y < 120. A uniform seeded sample of 120/400 rows
         misses an entire half with probability < 1e-14 — this asserts a
@@ -428,7 +477,11 @@ class TestRowLimitDownsample:
         assert (y >= 200).sum() > 0, "sample is confined to the oldest slice (head bias)"
 
     def test_row_limit_sample_is_deterministic_across_runs(
-        self, client, target_ordered_data, capturing_job
+        self,
+        client,
+        target_ordered_data,
+        capturing_job,
+        inline_training_worker,
     ):
         """The downsample seed is a fixed constant: identical input → identical
         training rows on every run (reproducible training)."""
@@ -445,7 +498,11 @@ class TestRowLimitDownsample:
         assert first_y == second_y
 
     def test_row_limit_at_or_above_height_keeps_all_rows(
-        self, client, target_ordered_data, capturing_job
+        self,
+        client,
+        target_ordered_data,
+        capturing_job,
+        inline_training_worker,
     ):
         graph = self._graph_with_row_limit(target_ordered_data, 1_000)
 

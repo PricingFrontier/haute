@@ -11,6 +11,7 @@ training job stuck in the wrong state, so these assert on job-store state too.
 from __future__ import annotations
 
 import os
+import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -27,6 +28,7 @@ from haute.errors import BoundedMemoryUnsupportedError
 from haute.projection import AllExcept
 from haute.routes._train_service import TrainService
 from tests.conftest import make_edge, make_graph
+from tests.test_training_worker_protocol import _inline_protocol_runner, _SuccessfulTrainingJob
 
 
 def _training_execution_context() -> ExecutionContext:
@@ -403,6 +405,9 @@ class TestStartGlmMergeAndKeepColumns:
             resp = service.start(body)
 
         assert resp.status == "started"
+        created_job = next(iter(store.jobs.values()))
+        assert isinstance(created_job["start_time"], float)
+        assert created_job["timeout"] > 0
         # GLM top-level config keys merged into train_params (line 272-273).
         tp = captured["train_params"]
         assert tp["family"] == "poisson"
@@ -414,6 +419,35 @@ class TestStartGlmMergeAndKeepColumns:
         assert set(keep) == {"loss", "exposure", "log_exp"}
         # The excluded column is forwarded as the exclude list.
         assert captured["exclude"] == ["junk"]
+
+    def test_start_stamps_explicit_timeout_before_preparation(self):
+        from haute.routes._job_store import JobStore
+        from haute.schemas import TrainRequest
+
+        store = JobStore()
+        service = TrainService(store)
+        graph = self._glm_graph()
+        for node in graph.nodes:
+            if node.id == "train":
+                node.data.config["timeout"] = 17
+        body = TrainRequest(graph=graph, node_id="train")
+        observed: dict[str, object] = {}
+
+        def inspect_created_job(*_args, **_kwargs):
+            job = next(iter(store.jobs.values()))
+            observed["start_time"] = job.get("start_time")
+            observed["timeout"] = job.get("timeout")
+            raise RuntimeError("stop after create")
+
+        with (
+            patch.object(service, "_compile_preamble", return_value=None),
+            patch.object(service, "_estimate_ram", side_effect=inspect_created_job),
+            pytest.raises(RuntimeError, match="stop after create"),
+        ):
+            service.start(body)
+
+        assert isinstance(observed["start_time"], float)
+        assert observed["timeout"] == 17
 
     def test_existing_train_param_not_overwritten_by_config_key(self):
         """A key already in params is NOT clobbered by the top-level config value."""
@@ -1061,8 +1095,7 @@ class TestCheckGpuVramHelper:
 
 
 # ---------------------------------------------------------------------------
-# Public methods cancel() / timeout() / _raise_if_training_stopped and the
-# start() categorical-levels merge (lines 430, 597, 599, 632).
+# Public cancel guards and the start() categorical-levels merge.
 # ---------------------------------------------------------------------------
 
 
@@ -1089,25 +1122,6 @@ class TestCancelGuards:
 
         result = service.cancel(job_id)
         assert result["status"] == "completed"
-
-
-class TestRaiseIfTrainingStopped:
-    def test_raises_when_cancellation_reason_set(self):
-        """A registered cancellation reason trips BackgroundJobStoppedError (632)."""
-        from haute.routes._background_jobs import BackgroundJobStoppedError
-        from haute.routes._job_store import JobStore
-
-        store = JobStore()
-        service = TrainService(store)
-        job_id = store.create_job({"status": "running", "job_type": "training"})
-        context = _training_execution_context()
-
-        service._training_jobs.register_latest(("training", job_id), job_id)
-        service._training_jobs.cancel(job_id, reason="cancelled")
-
-        with pytest.raises(BackgroundJobStoppedError) as exc_info:
-            service._raise_if_training_stopped(job_id, execution_context=context)
-        assert exc_info.value.terminal_reason == "cancelled"
 
 
 class TestStartCategoricalLevelsMerge:
@@ -1207,24 +1221,9 @@ class TestCheckGpuFallbackNoWarning:
 
 
 # ---------------------------------------------------------------------------
-# _launch_background — drive the background worker synchronously by patching
-# threading.Thread so .start() runs the target inline. Covers the success-path
-# closures (_progress / _on_iteration incl. the loss-history truncation 1075-1076),
-# the BackgroundJobStoppedError arm (1164), BoundedMemoryUnsupportedError arm
-# (1185-1186), the finally metrics arm when the job still exists (1213->1227),
-# the temp-parquet unlink (1229->exit), and the thread-start-failure arm
-# (1236-1250 incl. 1236->1238).
+# _launch_background — use the deterministic inline protocol runner to cover
+# progress/history, typed failures, parent cleanup, and supervisor start errors.
 # ---------------------------------------------------------------------------
-
-
-class _InlineThread:
-    """A drop-in threading.Thread that runs its target synchronously on start."""
-
-    def __init__(self, target=None, daemon=None, **_kwargs):
-        self._target = target
-
-    def start(self):
-        self._target()
 
 
 def _launch_config():
@@ -1241,9 +1240,15 @@ class TestLaunchBackgroundWorker:
         from haute.routes._job_store import JobStore
 
         store = JobStore()
-        service = TrainService(store)
+        service = TrainService(store, protocol_runner=_inline_protocol_runner)
         job_id = store.create_job(
-            {"status": "running", "job_type": "training", "node_label": "train"}
+            {
+                "status": "running",
+                "job_type": "training",
+                "node_label": "train",
+                "start_time": time.monotonic(),
+                "timeout": 60,
+            }
         )
         return store, service, job_id
 
@@ -1251,7 +1256,6 @@ class TestLaunchBackgroundWorker:
         """A TrainingJob whose run() invokes progress + on_iteration (past the
         loss-history cap) drives the success closures and the truncation arm
         (1075-1076); the job ends completed and the temp parquet is unlinked."""
-        from haute.modelling._training_job import TrainResult
         from haute.routes import _train_service
 
         store, service, job_id = self._service_and_job()
@@ -1261,33 +1265,23 @@ class TestLaunchBackgroundWorker:
 
         cap = _train_service._max_train_loss_history()
 
-        class FakeJob:
-            def run(self, progress, on_iteration, *, check_cancelled, execution_context):
+        class FakeJob(_SuccessfulTrainingJob):
+            def run(self, progress, on_iteration, **kwargs):
                 progress("working", 0.5)
                 # Push more iterations than the cap so 1075-1076 truncates.
                 for i in range(cap + 3):
                     on_iteration(i, cap + 3, {"loss": float(i)})
-                return TrainResult(
-                    metrics={"rmse": 1.0},
-                    feature_importance=[],
-                    model_path=str(tmp_path / "model.cbm"),
-                    train_rows=10,
-                    test_rows=2,
-                    features=["x1"],
-                    cat_features=[],
-                    loss_history=[{"iteration": 0.0, "loss": 0.0}],
-                )
+                return super().run(progress, on_iteration, **kwargs)
 
         with (
-            patch("haute.modelling.TrainingJob", return_value=FakeJob()),
+            patch("haute.modelling.TrainingJob", FakeJob),
             patch.object(
                 _train_service,
                 "build_training_job_kwargs",
-                return_value={"name": "train"},
+                return_value={"name": "train", "output_dir": str(tmp_path / "outputs")},
             ),
-            patch.object(_train_service.threading, "Thread", _InlineThread),
         ):
-            service._launch_background(
+            thread = service._launch_background(
                 job_id,
                 "train",
                 _launch_config(),
@@ -1297,6 +1291,8 @@ class TestLaunchBackgroundWorker:
                 total_source_rows=100,
                 execution_context=context,
             )
+            assert thread is not None
+            thread.join_and_raise(timeout=10)
 
         job = store.require_job(job_id)
         assert job["status"] == "completed"
@@ -1304,43 +1300,6 @@ class TestLaunchBackgroundWorker:
         assert job["train_loss_history_truncated"] is True
         assert len(job["train_loss_history"]) == cap
         # Temp parquet removed in the worker finally (1229->exit true side).
-        assert not Path(tmp_parquet).exists()
-
-    def test_stopped_error_logs_and_leaves_no_transition(self, tmp_path):
-        """A BackgroundJobStoppedError from run() hits the quiet arm (1164):
-        no error transition, temp parquet still cleaned up."""
-        from haute.routes import _train_service
-        from haute.routes._background_jobs import BackgroundJobStoppedError
-
-        store, service, job_id = self._service_and_job()
-        context = _training_execution_context()
-        # Use a path that was never created so the worker finally takes the
-        # "temp parquet absent" arm (branch 1229->exit).
-        tmp_parquet = str(tmp_path / "never_written.parquet")
-
-        class FakeJob:
-            def run(self, *a, **k):
-                raise BackgroundJobStoppedError(job_id, "cancelled")
-
-        with (
-            patch("haute.modelling.TrainingJob", return_value=FakeJob()),
-            patch.object(_train_service, "build_training_job_kwargs", return_value={"name": "t"}),
-            patch.object(_train_service.threading, "Thread", _InlineThread),
-        ):
-            service._launch_background(
-                job_id,
-                "train",
-                _launch_config(),
-                {"iterations": 1},
-                tmp_parquet,
-                ram_warning=None,
-                total_source_rows=None,
-                execution_context=context,
-            )
-
-        # The stopped arm does not transition the job to a terminal error state;
-        # it stays running (the cancelling caller owns the terminal transition).
-        assert store.require_job(job_id)["status"] == "running"
         assert not Path(tmp_parquet).exists()
 
     def test_execution_cancelled_marks_cancelled(self, tmp_path):
@@ -1354,15 +1313,21 @@ class TestLaunchBackgroundWorker:
         Path(tmp_parquet).write_text("x", encoding="utf-8")
 
         class FakeJob:
+            def __init__(self, *args, **kwargs):
+                pass
+
             def run(self, *a, **k):
                 raise ExecutionCancelledError("training_pipeline")
 
         with (
-            patch("haute.modelling.TrainingJob", return_value=FakeJob()),
-            patch.object(_train_service, "build_training_job_kwargs", return_value={"name": "t"}),
-            patch.object(_train_service.threading, "Thread", _InlineThread),
+            patch("haute.modelling.TrainingJob", FakeJob),
+            patch.object(
+                _train_service,
+                "build_training_job_kwargs",
+                return_value={"name": "t", "output_dir": str(tmp_path / "outputs")},
+            ),
         ):
-            service._launch_background(
+            thread = service._launch_background(
                 job_id,
                 "train",
                 _launch_config(),
@@ -1372,49 +1337,10 @@ class TestLaunchBackgroundWorker:
                 total_source_rows=None,
                 execution_context=context,
             )
+            assert thread is not None
+            thread.join_and_raise(timeout=10)
 
         assert store.require_job(job_id)["status"] == "cancelled"
-        assert not Path(tmp_parquet).exists()
-
-    def test_finally_skips_metrics_when_job_removed(self, tmp_path):
-        """If the job is gone by the worker finally, the metrics-publish block is
-        skipped (branch 1213->1227) but admission release + temp cleanup run.
-
-        Uses the BackgroundJobStoppedError arm because it only logs (no job
-        access), so deleting the job mid-run won't trip the transition before
-        the finally observes ``get_job() is None``."""
-        from haute.routes import _train_service
-        from haute.routes._background_jobs import BackgroundJobStoppedError
-
-        store, service, job_id = self._service_and_job()
-        context = _training_execution_context()
-        tmp_parquet = str(tmp_path / "train.parquet")
-        Path(tmp_parquet).write_text("x", encoding="utf-8")
-
-        class FakeJob:
-            def run(self, *a, **k):
-                # Delete the job mid-run so get_job() returns None in finally.
-                store.jobs.pop(job_id, None)
-                raise BackgroundJobStoppedError(job_id, "cancelled")
-
-        with (
-            patch("haute.modelling.TrainingJob", return_value=FakeJob()),
-            patch.object(_train_service, "build_training_job_kwargs", return_value={"name": "t"}),
-            patch.object(_train_service.threading, "Thread", _InlineThread),
-        ):
-            service._launch_background(
-                job_id,
-                "train",
-                _launch_config(),
-                {"iterations": 1},
-                tmp_parquet,
-                ram_warning=None,
-                total_source_rows=None,
-                execution_context=context,
-            )
-
-        # Job was removed; finally still cleaned up the temp parquet.
-        assert job_id not in store.jobs
         assert not Path(tmp_parquet).exists()
 
     def test_bounded_unsupported_marks_contract_error(self, tmp_path):
@@ -1427,15 +1353,21 @@ class TestLaunchBackgroundWorker:
         Path(tmp_parquet).write_text("x", encoding="utf-8")
 
         class FakeJob:
+            def __init__(self, *args, **kwargs):
+                pass
+
             def run(self, *a, **k):
                 raise BoundedMemoryUnsupportedError("cannot stream node Z")
 
         with (
-            patch("haute.modelling.TrainingJob", return_value=FakeJob()),
-            patch.object(_train_service, "build_training_job_kwargs", return_value={"name": "t"}),
-            patch.object(_train_service.threading, "Thread", _InlineThread),
+            patch("haute.modelling.TrainingJob", FakeJob),
+            patch.object(
+                _train_service,
+                "build_training_job_kwargs",
+                return_value={"name": "t", "output_dir": str(tmp_path / "outputs")},
+            ),
         ):
-            service._launch_background(
+            thread = service._launch_background(
                 job_id,
                 "train",
                 _launch_config(),
@@ -1445,6 +1377,8 @@ class TestLaunchBackgroundWorker:
                 total_source_rows=None,
                 execution_context=context,
             )
+            assert thread is not None
+            thread.join_and_raise(timeout=10)
 
         job = store.require_job(job_id)
         assert job["status"] == "contract_error"
@@ -1470,17 +1404,16 @@ class TestLaunchBackgroundWorker:
         # "temp parquet absent" arm (branch 1236->1238).
         tmp_parquet = str(tmp_path / "never_written.parquet")
 
-        class ExplodingThread:
-            def __init__(self, *a, **k):
-                pass
-
-            def start(self):
-                raise RuntimeError("no threads available")
-
         with (
-            patch("haute.modelling.TrainingJob", return_value=object()),
-            patch.object(_train_service, "build_training_job_kwargs", return_value={"name": "t"}),
-            patch.object(_train_service.threading, "Thread", ExplodingThread),
+            patch.object(
+                _train_service,
+                "build_training_job_kwargs",
+                return_value={"name": "t", "output_dir": str(tmp_path / "outputs")},
+            ),
+            patch(
+                "haute.routes._background_jobs.IsolatedSupervisorThread.start",
+                side_effect=RuntimeError("no threads available"),
+            ),
             pytest.raises(HTTPException) as exc_info,
         ):
             service._launch_background(

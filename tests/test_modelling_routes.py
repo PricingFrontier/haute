@@ -65,6 +65,25 @@ def _completed_train_result() -> object:
     )
 
 
+def _inline_route_service(monkeypatch: pytest.MonkeyPatch):
+    """Install an inline-protocol route service and retain launched supervisors."""
+    from haute.routes.modelling import _store
+    from tests.test_training_worker_protocol import _inline_protocol_runner
+
+    service = TrainService(_store, protocol_runner=_inline_protocol_runner)
+    launched = []
+    launch_protocol = service._supervisor.launch_protocol
+
+    def capture_launch(*args, **kwargs):
+        thread = launch_protocol(*args, **kwargs)
+        launched.append(thread)
+        return thread
+
+    monkeypatch.setattr(service._supervisor, "launch_protocol", capture_launch)
+    monkeypatch.setattr("haute.routes.modelling._train_service", service)
+    return launched
+
+
 class TestTrainingCategoricalLevelDeclarations:
     def test_collects_source_declared_levels_through_transforms(self):
         graph = make_graph(
@@ -368,15 +387,24 @@ class TestTrainBackgroundLaunchFailures:
         from haute.routes._job_store import JobStore
 
         store = JobStore()
-        service = TrainService(store)
-        job_id = store.create_job({"status": "running"})
+        from tests.test_training_worker_protocol import _inline_protocol_runner
+
+        service = TrainService(store, protocol_runner=_inline_protocol_runner)
+        job_id = store.create_job(
+            {
+                "status": "running",
+                "job_type": "training",
+                "start_time": time.monotonic(),
+                "timeout": 60,
+            }
+        )
         tmp_parquet = tmp_path / "train_data.parquet"
         tmp_parquet.write_bytes(b"train")
 
         with (
             patch("haute.modelling.TrainingJob", return_value=MagicMock()),
             patch(
-                "haute.routes._train_service.threading.Thread.start",
+                "haute.routes._background_jobs.IsolatedSupervisorThread.start",
                 side_effect=RuntimeError("thread boom"),
             ),
             pytest.raises(HTTPException) as exc_info,
@@ -396,76 +424,7 @@ class TestTrainBackgroundLaunchFailures:
         job = store.require_job(job_id)
         assert job["status"] == "error"
         assert job["terminal_reason"] == "error"
-        assert "Failed to start training worker" in job["message"]
-        assert not tmp_parquet.exists()
-
-    def test_late_completion_does_not_overwrite_timeout(self, tmp_path: Path) -> None:
-        """Late progress and completion callbacks must not overwrite a timeout error."""
-        from haute.routes._job_store import JobStore
-
-        store = JobStore()
-        service = TrainService(store)
-        job_id = store.create_job({"status": "running", "progress": 0.0, "message": "Starting"})
-        tmp_parquet = tmp_path / "train_data.parquet"
-        tmp_parquet.write_bytes(b"train")
-
-        deferred_threads: list[object] = []
-
-        class DeferredThread:
-            def __init__(self, *, target, daemon):
-                self.target = target
-                self.daemon = daemon
-                deferred_threads.append(self)
-
-            def start(self) -> None:
-                return None
-
-        class FakeTrainingJob:
-            def __init__(self, *args, **kwargs):
-                pass
-
-            def run(self, progress, on_iteration, check_cancelled=None, execution_context=None):
-                progress("Still training", 0.5)
-                on_iteration(1, 2, {"rmse": 1.0})
-                return _completed_train_result()
-
-        with (
-            patch("haute.modelling.TrainingJob", FakeTrainingJob),
-            patch("haute.routes._train_service.threading.Thread", DeferredThread),
-        ):
-            service._launch_background(
-                job_id,
-                "train",
-                {"target": "y", "loss_function": "RMSE", "timeout": 10},
-                {},
-                str(tmp_parquet),
-                None,
-                None,
-                execution_context=_admitted_training_context_for_launch(job_id),
-            )
-
-        assert len(deferred_threads) == 1
-
-        store.atomic_update(
-            job_id,
-            {
-                "status": "error",
-                "message": "Training timed out after 10s",
-                "elapsed_seconds": 10.0,
-            },
-            expected_status="running",
-        )
-
-        deferred_threads[0].target()
-
-        job = store.require_job(job_id)
-        assert job["status"] == "error"
-        assert "terminal_reason" not in job
-        assert job["message"] == "Training timed out after 10s"
-        assert job["elapsed_seconds"] == 10.0
-        assert job["progress"] == 0.0
-        assert job.get("iteration", 0) == 0
-        assert job.get("result") is None
+        assert "Failed to start isolated supervisor" in job["message"]
         assert not tmp_parquet.exists()
 
     def test_non_finite_training_result_marks_job_error(self, tmp_path: Path) -> None:
@@ -474,42 +433,49 @@ class TestTrainBackgroundLaunchFailures:
         from haute.routes._job_store import JobStore
 
         store = JobStore()
-        service = TrainService(store)
-        job_id = store.create_job({"status": "running", "progress": 0.0, "message": "Starting"})
+        from tests.test_training_worker_protocol import _inline_protocol_runner
+
+        service = TrainService(store, protocol_runner=_inline_protocol_runner)
+        job_id = store.create_job(
+            {
+                "status": "running",
+                "job_type": "training",
+                "progress": 0.0,
+                "message": "Starting",
+                "start_time": time.monotonic(),
+                "timeout": 60,
+            }
+        )
         tmp_parquet = tmp_path / "train_data.parquet"
         tmp_parquet.write_bytes(b"train")
 
-        deferred_threads: list[object] = []
-
-        class DeferredThread:
-            def __init__(self, *, target, daemon):
-                self.target = target
-                self.daemon = daemon
-                deferred_threads.append(self)
-
-            def start(self) -> None:
-                return None
-
         class FakeTrainingJob:
             def __init__(self, *args, **kwargs):
-                pass
+                from haute.modelling._training_job import model_contract_filename
+
+                self.output_dir = Path(kwargs["output_dir"])
+                self.name = str(kwargs.get("name", "model"))
+                self.model_contract_filename = model_contract_filename
 
             def run(self, progress, on_iteration, check_cancelled=None, execution_context=None):
+                self.output_dir.mkdir(parents=True, exist_ok=True)
+                model_path = self.output_dir / f"{self.name}.cbm"
+                model_path.write_bytes(b"model")
+                (self.output_dir / self.model_contract_filename(self.name)).write_text(
+                    '{"schema_version": 1}', encoding="utf-8"
+                )
                 return TrainResult(
                     metrics={"auc": float("nan")},
                     feature_importance=[],
-                    model_path="outputs/bad.rsglm",
+                    model_path=str(model_path),
                     train_rows=10,
                     test_rows=0,
                     features=["x"],
                     cat_features=[],
                 )
 
-        with (
-            patch("haute.modelling.TrainingJob", FakeTrainingJob),
-            patch("haute.routes._train_service.threading.Thread", DeferredThread),
-        ):
-            service._launch_background(
+        with patch("haute.modelling.TrainingJob", FakeTrainingJob):
+            thread = service._launch_background(
                 job_id,
                 "train",
                 {"target": "y", "loss_function": "RMSE"},
@@ -519,8 +485,8 @@ class TestTrainBackgroundLaunchFailures:
                 None,
                 execution_context=_admitted_training_context_for_launch(job_id),
             )
-
-        deferred_threads[0].target()
+            assert thread is not None
+            thread.join_and_raise(timeout=10)
 
         job = store.require_job(job_id)
         assert job["status"] == "contract_error"
@@ -1174,48 +1140,69 @@ class TestMlflowCheckImportError:
 class TestBackgroundThreadErrors:
     """Test error handling in the background training thread."""
 
-    def test_background_value_error(self, client, training_data):
+    def test_background_value_error(self, client, training_data, monkeypatch):
         """ValueError in TrainingJob.run() sets status to error with message."""
         graph = _make_modelling_graph(training_data)
-        with patch(
-            "haute.modelling.TrainingJob.run",
-            side_effect=ValueError("Invalid target column: not found"),
-        ):
+
+        class FailingJob:
+            def __init__(self, **_kwargs):
+                pass
+
+            def run(self, *_args, **_kwargs):
+                raise ValueError("Invalid target column: not found")
+
+        launched = _inline_route_service(monkeypatch)
+        with patch("haute.modelling.TrainingJob", FailingJob):
             resp = client.post("/api/modelling/train", json={"graph": graph, "node_id": "train"})
             data = resp.json()
             assert data["status"] == "started"
-            status = _poll_until_done(client, data["job_id"])
+            launched[0].join_and_raise(timeout=10)
+            status = client.get(f"/api/modelling/train/status/{data['job_id']}").json()
             assert status["status"] == "contract_error"
             assert status["terminal_reason"] == "contract_error"
             assert "Invalid target column" in status["message"]
 
-    def test_background_runtime_error(self, client, training_data):
+    def test_background_runtime_error(self, client, training_data, monkeypatch):
         """RuntimeError in TrainingJob.run() is translated via _friendly_error."""
         graph = _make_modelling_graph(training_data)
-        with patch(
-            "haute.modelling.TrainingJob.run",
-            side_effect=RuntimeError("CUDA out of memory"),
-        ):
+
+        class FailingJob:
+            def __init__(self, **_kwargs):
+                pass
+
+            def run(self, *_args, **_kwargs):
+                raise RuntimeError("CUDA out of memory")
+
+        launched = _inline_route_service(monkeypatch)
+        with patch("haute.modelling.TrainingJob", FailingJob):
             resp = client.post("/api/modelling/train", json={"graph": graph, "node_id": "train"})
             data = resp.json()
-            status = _poll_until_done(client, data["job_id"])
+            launched[0].join_and_raise(timeout=10)
+            status = client.get(f"/api/modelling/train/status/{data['job_id']}").json()
             assert status["status"] == "error"
             assert "CUDA out of memory" in status["message"]
 
-    def test_background_generic_exception(self, client, training_data):
+    def test_background_generic_exception(self, client, training_data, monkeypatch):
         """Generic exception in TrainingJob.run() includes exception type."""
         graph = _make_modelling_graph(training_data)
-        with patch(
-            "haute.modelling.TrainingJob.run",
-            side_effect=Exception("unexpected crash"),
-        ):
+
+        class FailingJob:
+            def __init__(self, **_kwargs):
+                pass
+
+            def run(self, *_args, **_kwargs):
+                raise RuntimeError("unexpected crash")
+
+        launched = _inline_route_service(monkeypatch)
+        with patch("haute.modelling.TrainingJob", FailingJob):
             resp = client.post("/api/modelling/train", json={"graph": graph, "node_id": "train"})
             data = resp.json()
-            status = _poll_until_done(client, data["job_id"])
+            launched[0].join_and_raise(timeout=10)
+            status = client.get(f"/api/modelling/train/status/{data['job_id']}").json()
             assert status["status"] == "error"
             assert "unexpected crash" in status["message"]
 
-    def test_ram_warning_propagated(self, client, training_data):
+    def test_ram_warning_propagated(self, client, training_data, monkeypatch):
         """RAM warning from estimate should appear in job status."""
         graph = _make_modelling_graph(training_data)
         mock_est = SimpleNamespace(
@@ -1228,22 +1215,26 @@ class TestBackgroundThreadErrors:
             bytes_per_row=10.0,
             was_downsampled=True,
         )
+        from tests.test_training_worker_protocol import _SuccessfulTrainingJob
+
+        launched = _inline_route_service(monkeypatch)
         with patch(
             "haute._ram_estimate.estimate_safe_training_rows",
             return_value=mock_est,
         ):
-            with patch("haute.modelling.TrainingJob.run", return_value=_completed_train_result()):
+            with patch("haute.modelling.TrainingJob", _SuccessfulTrainingJob):
                 resp = client.post(
                     "/api/modelling/train",
                     json={"graph": graph, "node_id": "train"},
                 )
                 data = resp.json()
-                status = _poll_until_done(client, data["job_id"])
+                launched[0].join_and_raise(timeout=10)
+                status = client.get(f"/api/modelling/train/status/{data['job_id']}").json()
                 # Whether it completed or errored, the warning should be set
                 warning = status.get("warning") or ""
                 assert "Row limit" in warning or "RAM" in warning
 
-    def test_ram_warning_suppressed_when_user_limit_binds(self, client, training_data):
+    def test_ram_warning_suppressed_when_user_limit_binds(self, client, training_data, monkeypatch):
         """When user's row_limit is lower than RAM-safe limit, no RAM warning in job status."""
         graph = _make_modelling_graph(training_data)
         for node in graph["nodes"]:
@@ -1260,17 +1251,21 @@ class TestBackgroundThreadErrors:
             bytes_per_row=10.0,
             was_downsampled=True,
         )
+        from tests.test_training_worker_protocol import _SuccessfulTrainingJob
+
+        launched = _inline_route_service(monkeypatch)
         with patch(
             "haute._ram_estimate.estimate_safe_training_rows",
             return_value=mock_est,
         ):
-            with patch("haute.modelling.TrainingJob.run", return_value=_completed_train_result()):
+            with patch("haute.modelling.TrainingJob", _SuccessfulTrainingJob):
                 resp = client.post(
                     "/api/modelling/train",
                     json={"graph": graph, "node_id": "train"},
                 )
                 data = resp.json()
-                status = _poll_until_done(client, data["job_id"])
+                launched[0].join_and_raise(timeout=10)
+                status = client.get(f"/api/modelling/train/status/{data['job_id']}").json()
                 # RAM warning should be suppressed since user limit (30) < RAM limit (50)
                 assert status.get("warning") is None
 
@@ -1911,20 +1906,6 @@ _NB_ESTIMATION_CONFIG: dict = {
 }
 
 
-class _DeferredThread:
-    """Capture the worker instead of running it, so tests drive it inline."""
-
-    captured: list[_DeferredThread] = []
-
-    def __init__(self, *, target, daemon):
-        self.target = target
-        self.daemon = daemon
-        _DeferredThread.captured.append(self)
-
-    def start(self) -> None:
-        return None
-
-
 class TestDispersionErrorPaths:
     """The dispersion job's error/cleanup branches must not strand a job in a
     wrong state or orphan the training-prep parquet (same critical-coverage
@@ -1932,18 +1913,24 @@ class TestDispersionErrorPaths:
 
     def _service(self):
         from haute.routes._job_store import JobStore
+        from tests.test_training_worker_protocol import _inline_protocol_runner
 
         store = JobStore()
-        return store, TrainService(store)
+        return store, TrainService(store, protocol_runner=_inline_protocol_runner)
 
-    def _launch(self, service, store, tmp_path: Path, *, config=None) -> tuple[str, Path]:
-        _DeferredThread.captured.clear()
+    def _launch(self, service, store, tmp_path: Path, *, config=None) -> tuple[str, Path, object]:
         job_id = store.create_job(
-            {"status": "running", "job_type": "dispersion_estimate", "param": "theta"}
+            {
+                "status": "running",
+                "job_type": "dispersion_estimate",
+                "param": "theta",
+                "start_time": time.monotonic(),
+                "timeout": 60,
+            }
         )
         tmp_parquet = tmp_path / "estimate_data.parquet"
         tmp_parquet.write_bytes(b"parquet")
-        service._launch_dispersion_background(
+        thread = service._launch_dispersion_background(
             job_id,
             "train",
             config or dict(_NB_ESTIMATION_CONFIG),
@@ -1951,7 +1938,8 @@ class TestDispersionErrorPaths:
             str(tmp_parquet),
             execution_context=_admitted_training_context_for_launch(job_id),
         )
-        return job_id, tmp_parquet
+        assert thread is not None
+        return job_id, tmp_parquet, thread
 
     def test_start_maps_execute_http_error_to_contract_error(self, nb_training_data):
         from haute.schemas import DispersionEstimateRequest
@@ -2069,39 +2057,13 @@ class TestDispersionErrorPaths:
                 )
 
         store, service = self._service()
-        with (
-            patch("haute.modelling.TrainingJob", FakeJob),
-            patch("haute.routes._train_service.threading.Thread", _DeferredThread),
-        ):
-            job_id, tmp_parquet = self._launch(service, store, tmp_path)
-        _DeferredThread.captured[0].target()
+        with patch("haute.modelling.TrainingJob", FakeJob):
+            job_id, tmp_parquet, thread = self._launch(service, store, tmp_path)
+            thread.join_and_raise(timeout=10)
 
         job = store.require_job(job_id)
         assert job["status"] == "contract_error"
         assert "x1" in job["message"]
-        assert not tmp_parquet.exists()
-
-    def test_worker_stopped_error_leaves_terminal_state_alone(self, tmp_path: Path):
-        from haute.routes._background_jobs import BackgroundJobStoppedError
-
-        class FakeJob:
-            def __init__(self, *args, **kwargs):
-                pass
-
-            def _prepare_data(self, _report, *, execution_context=None):
-                raise BackgroundJobStoppedError("job", "cancelled")
-
-        store, service = self._service()
-        with (
-            patch("haute.modelling.TrainingJob", FakeJob),
-            patch("haute.routes._train_service.threading.Thread", _DeferredThread),
-        ):
-            job_id, tmp_parquet = self._launch(service, store, tmp_path)
-        store.atomic_update(job_id, {"status": "cancelled"})
-        _DeferredThread.captured[0].target()
-
-        # The stopped worker must not overwrite the terminal state.
-        assert store.require_job(job_id)["status"] == "cancelled"
         assert not tmp_parquet.exists()
 
     def test_worker_execution_cancelled_marks_cancelled(self, tmp_path: Path):
@@ -2115,14 +2077,13 @@ class TestDispersionErrorPaths:
                 raise ExecutionCancelledError("cancelled mid-prep")
 
         store, service = self._service()
-        with (
-            patch("haute.modelling.TrainingJob", FakeJob),
-            patch("haute.routes._train_service.threading.Thread", _DeferredThread),
-        ):
-            job_id, tmp_parquet = self._launch(service, store, tmp_path)
-        _DeferredThread.captured[0].target()
+        with patch("haute.modelling.TrainingJob", FakeJob):
+            job_id, tmp_parquet, thread = self._launch(service, store, tmp_path)
+            thread.join_and_raise(timeout=10)
 
-        assert store.require_job(job_id)["status"] == "cancelled"
+        job = store.require_job(job_id)
+        assert job["status"] == "cancelled"
+        assert job["terminal_reason"] == "cancelled"
         assert not tmp_parquet.exists()
 
     def test_worker_unexpected_exception_marks_error(self, tmp_path: Path):
@@ -2134,21 +2095,25 @@ class TestDispersionErrorPaths:
                 raise RuntimeError("estimator exploded")
 
         store, service = self._service()
-        with (
-            patch("haute.modelling.TrainingJob", FakeJob),
-            patch("haute.routes._train_service.threading.Thread", _DeferredThread),
-        ):
-            job_id, tmp_parquet = self._launch(service, store, tmp_path)
-        _DeferredThread.captured[0].target()
+        with patch("haute.modelling.TrainingJob", FakeJob):
+            job_id, tmp_parquet, thread = self._launch(service, store, tmp_path)
+            thread.join_and_raise(timeout=10)
 
         job = store.require_job(job_id)
         assert job["status"] == "error"
+        assert job["terminal_reason"] == "error"
         assert not tmp_parquet.exists()
 
     def test_worker_thread_start_failure_maps_to_500(self, tmp_path: Path):
         store, service = self._service()
         job_id = store.create_job(
-            {"status": "running", "job_type": "dispersion_estimate", "param": "theta"}
+            {
+                "status": "running",
+                "job_type": "dispersion_estimate",
+                "param": "theta",
+                "start_time": time.monotonic(),
+                "timeout": 60,
+            }
         )
         tmp_parquet = tmp_path / "estimate_data.parquet"
         tmp_parquet.write_bytes(b"parquet")
@@ -2156,7 +2121,7 @@ class TestDispersionErrorPaths:
         with (
             patch("haute.modelling.TrainingJob", return_value=MagicMock()),
             patch(
-                "haute.routes._train_service.threading.Thread.start",
+                "haute.routes._background_jobs.IsolatedSupervisorThread.start",
                 side_effect=RuntimeError("thread boom"),
             ),
             pytest.raises(HTTPException) as exc_info,
@@ -2173,7 +2138,7 @@ class TestDispersionErrorPaths:
         assert exc_info.value.status_code == 500
         job = store.require_job(job_id)
         assert job["status"] == "error"
-        assert "Failed to start dispersion estimation worker" in job["message"]
+        assert "Failed to start isolated supervisor" in job["message"]
         assert not tmp_parquet.exists()
 
 

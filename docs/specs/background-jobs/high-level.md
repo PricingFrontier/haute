@@ -188,11 +188,12 @@ Depended on:
 - **Single-flight contention.** Acquiring an already-owned key raises
   `SingleFlightConflictError`; the optimiser route layer converts this into an HTTP
   409 rather than queuing the second request or silently reusing the existing job.
-- **Cooperative cancellation.** `BackgroundJobStoppedError` is raised *inside* worker
-  code when it observes its own job has been cancelled or superseded; it is not raised
-  by this component automatically — a worker that never checks
-  `CancellableJobRegistry.cancellation_reason` will keep running to completion
-  regardless of a cancellation request.
+- **Cooperative cancellation for in-process work.** `BackgroundJobStoppedError` is
+  raised inside legacy thread worker code when it observes its own job has been
+  cancelled or superseded; a thread worker that never checks
+  `CancellableJobRegistry.cancellation_reason` can keep running. Supervised process
+  workers additionally poll the registry in the parent and are terminated and joined
+  when a stop reason appears.
 - **Isolated worker failures.** Every `IsolatedWorkerError` subtype (crash, remote
   exception, timeout, memory limit, contract violation) is caught by
   `IsolatedJobSupervisor` and turned into a terminal transition with diagnostic
@@ -201,13 +202,10 @@ Depended on:
   An unrecognised reason string coerces to `error` rather than raising, so the job
   still reaches a terminal state.
 
-  > NOTE: `IsolatedJobSupervisor.launch`'s background `run()` closure only catches
-  > `IsolatedWorkerError`. Any other exception escaping `run_isolated_worker` (e.g. a
-  > bug in the parent-side result-collection path itself, not the worker) is not
-  > caught, is not written to the job record, and is only visible via the default
-  > `threading.Thread` excepthook (stderr). The job is left permanently `running`
-  > until the 24-hour metadata TTL evicts it — no HTTP-visible terminal transition
-  > ever occurs for that failure mode.
+  The supervisor also catches unexpected parent-side exceptions and attempts an
+  `error` transition. If the terminal write itself cannot be persisted or verified,
+  `IsolatedSupervisorThread.infrastructure_failure` and `join_and_raise()` expose a
+  typed `SupervisorInfrastructureError`; the failure is not left only on stderr.
 
 - **Background work outliving its HTTP response.** If a client-facing response
   timeout fires, or the request itself is cancelled, the background thread is neither
@@ -243,3 +241,55 @@ state machine.
 Acceptance covers namespace closure, same-identity join, different-identity concurrency,
 cancel/complete races, progress isolation, TTL independence from snapshots, bounded job payloads,
 and redaction.
+
+## Approved change contract — 0.8.0 supervised process jobs
+
+The approved subset of the
+[background-jobs and API roadmap](../../roadmap/background-jobs-api.md) hardens behavior that
+has a concrete consumer and preserves the existing HTTP contract.
+
+- **Total parent-side terminalisation.** A supervisor maps a worker result, typed worker
+  failure, malformed protocol, process loss, timeout, cancellation, cleanup failure, and an
+  unexpected parent-side exception to the shared lifecycle exactly once. A lower-precedence
+  late outcome remains unable to replace a higher-precedence terminal reason. If the final
+  lifecycle write itself cannot be persisted, the returned supervisor thread exposes a typed
+  infrastructure failure through an inspectable property and a raising join method; it never
+  silently reports success.
+- **One bounded, versioned worker protocol.** Spawn workers exchange only a version-1 request,
+  monotonic progress events, a result manifest, or a failure payload. The transport has a fixed
+  queue bound and fixed per-event, event-count, result-metadata, and artifact-count limits.
+  Parent-side validation rejects unknown versions, malformed payloads, duplicate or
+  out-of-order event sequences, unknown artifact kinds, integrity mismatches, and paths outside
+  the parent-created artifact root. JobStore, callbacks, open frames, solvers, and route-owned
+  mutable objects never cross into the child.
+- **Parent-owned publication and cleanup.** A child may write only staged artifacts below the
+  supplied root and returns relative manifest entries containing kind, size, SHA-256, and
+  lifetime. The parent validates before publishing. Staging is removed after publication and
+  after every failure, timeout, cancellation, crash, or malformed result. Durable model outputs
+  are not tied to job TTL; job-lifetime artifacts use the existing typed JobStore cleanup path.
+- **Training fit and dispersion isolation.** The crash-prone fit/evaluation/model-write phase
+  and GLM dispersion search run in spawn children. Request validation and pipeline materialisation
+  remain in the parent so existing immediate HTTP validation errors and admission ownership do
+  not change. Progress is reconstructed from protocol events, bounded loss history remains
+  bounded in the parent, cancellation/timeout terminate the child, and only a validated manifest
+  can complete the job.
+- **Coherent timeout and publication correction.** Training jobs stamp their monotonic start
+  time and timeout in the original locked create operation, so preparation time counts and a
+  poll can time out work before fit launch. Optimiser workers no longer subscript the exposed
+  backing mapping for elapsed-time reporting. A completed training record whose result fails the
+  final JSON-finiteness guard is atomically corrected through `JobLifecycle` with
+  `expected_status="completed"`, updating `status` and `terminal_reason` together.
+- **Explicit enforcement vocabulary.** Process-worker memory enforcement is either
+  `best_effort` (the default: RLIMIT where supported plus admission/RSS checkpoints everywhere)
+  or `required` (fail with `contract_error` before launch when a configured hard process cap is
+  unavailable). Generated scoring containers select the existing `strict_server` admission
+  policy explicitly and report that the application guarantee is admission/RSS enforcement;
+  a hosting-platform/container hard limit remains an operator-owned outer boundary and is never
+  implied by the application.
+
+The optimiser setup/solve/frontier migration is not part of this approved contract. The current
+follow-on API retains live solver/dataframe state, and there is no stable, versioned serializer
+for every supported solver. Introducing opaque pickles or claiming restart recovery without
+that contract would be a regression. A future proposal must first specify solver-specific
+re-openable formats, compatibility/versioning, and rebuild cost independently of the generic
+worker transport.

@@ -436,3 +436,17 @@ tracing/deploy hooks, and tests. Acceptance covers each execution strategy with 
 inputs, multiple roots, row-local and rejected global code, stale/missing/corrupt snapshots,
 format-capability mismatch, native/eager output modes, cancellation/admission, and assertions
 that graph execution causes no cache-build or remote-provider call.
+
+## Approved change contract — 0.8.0 worker transport and enforcement
+
+The process-isolation boundary gains the versioned request/event/result/failure protocol defined
+by [background jobs](../background-jobs/high-level.md#approved-change-contract-080-supervised-process-jobs).
+It is a containment and transfer layer, not a replacement for projection, chunking, admission,
+or execution checkpoints.
+
+Spawn is required on every platform so workers do not inherit the host's native heaps. Linux
+workers apply an address-space limit when configured. Windows and macOS are explicitly
+unsupported for that hard cap: `best_effort` continues with process containment and in-child
+RSS checkpoints, while `required` fails before process creation. Unknown enforcement values,
+missing required limits, malformed protocol data, and unavailable required caps fail loudly.
+No API or diagnostic calls best-effort RSS sampling a hard OS limit.
