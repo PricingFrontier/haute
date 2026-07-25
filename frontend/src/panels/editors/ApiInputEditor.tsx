@@ -165,9 +165,9 @@ export default function ApiInputEditor({
   configPath?: string
 }) {
   const currentPath = configField<string | undefined>(config, "path", undefined)
-  const { schema, loading: loadingSchema, fetchForPath } = useSchemaFetch(currentPath)
+  const { schema, loading: loadingSchema, error: schemaError, fetchForPath } = useSchemaFetch(currentPath)
   const showCacheButton =
-    !!currentPath && (currentPath.endsWith(".json") || currentPath.endsWith(".jsonl"))
+    !!currentPath && /\.(?:json|jsonl|ndjson)$/i.test(currentPath)
   const [fileExpanded, setFileExpanded] = useState(false)
   const [inferring, setInferring] = useState(false)
   const [inferError, setInferError] = useState<string | null>(null)
@@ -732,7 +732,7 @@ export default function ApiInputEditor({
           >
             Preview Data
             <span className="ml-1.5 normal-case tracking-normal font-normal">
-              .json or .jsonl
+              .json, .jsonl, or .ndjson
             </span>
           </label>
           {currentPath && (
@@ -773,7 +773,7 @@ export default function ApiInputEditor({
                   fetchForPath(path)
                   setFileExpanded(false)
                 }}
-                extensions=".json,.jsonl"
+                extensions=".json,.jsonl,.ndjson"
               />
             </div>
           )}
@@ -984,6 +984,27 @@ export default function ApiInputEditor({
               <span className="text-xs" style={{ color: "var(--text-muted)" }}>
                 Loading schema...
               </span>
+            </div>
+          )}
+
+          {schemaError && (
+            <div
+              className="px-4 py-2 text-xs space-y-1"
+              style={{ borderTop: "1px solid var(--border)" }}
+            >
+              <p role="alert" style={{ color: "var(--danger-text)" }}>
+                Could not fetch schema: {schemaError}
+              </p>
+              {currentPath && (
+                <button
+                  type="button"
+                  onClick={() => fetchForPath(currentPath)}
+                  className="px-3 py-1.5 rounded-lg text-xs font-medium"
+                  style={{ background: "var(--bg-elevated)", color: "var(--text-primary)" }}
+                >
+                  Retry schema
+                </button>
+              )}
             </div>
           )}
 

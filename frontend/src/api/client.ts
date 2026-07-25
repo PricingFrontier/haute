@@ -685,6 +685,7 @@ export interface WriteOutputArgs {
   nodeId: string
   source?: string
   streamingChunkSize?: number
+  overwrite?: boolean
   signal?: AbortSignal
   timeout?: number
 }
@@ -695,6 +696,7 @@ export function writeOutput(args: WriteOutputArgs): Promise<WriteOutputResponse>
     nodeId,
     source,
     streamingChunkSize,
+    overwrite,
     signal,
     timeout = 300_000,
   } = args
@@ -704,6 +706,7 @@ export function writeOutput(args: WriteOutputArgs): Promise<WriteOutputResponse>
       graph,
       node_id: nodeId,
       source: source ?? "live",
+      overwrite: overwrite ?? false,
       ...(streamingChunkSize !== undefined ? { streaming_chunk_size: streamingChunkSize } : {}),
     },
     { signal, timeout },

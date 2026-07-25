@@ -30,6 +30,31 @@ class SourceFormat(StrEnum):
     PARQUET = "parquet"
 
 
+_SUPPORTED_SOURCE_SUFFIXES = (".csv", ".json", ".jsonl", ".ndjson", ".parquet")
+_COMPRESSION_SUFFIXES = frozenset({".bz2", ".gz", ".xz", ".zst"})
+
+
+class UnsupportedSourceFormatError(ValueError):
+    """A safe unsupported-source diagnostic containing no filesystem path."""
+
+    supported_suffixes = _SUPPORTED_SOURCE_SUFFIXES
+
+    def __init__(self, suffix: str) -> None:
+        self.suffix = suffix
+        observed = suffix or "(no extension)"
+        super().__init__(
+            f"Unsupported file type: {observed}. Supported file types: "
+            + ", ".join(self.supported_suffixes)
+        )
+
+
+def _observed_source_suffix(path: str) -> str:
+    suffixes = [suffix.lower() for suffix in Path(path).suffixes]
+    if len(suffixes) >= 2 and suffixes[-1] in _COMPRESSION_SUFFIXES:
+        return "".join(suffixes[-2:])
+    return suffixes[-1] if suffixes else ""
+
+
 _EAGER_JSON_ALLOWED_PROFILES = frozenset(
     {
         ExecutionProfile.PREVIEW_EAGER,
@@ -153,14 +178,14 @@ def _source_format(path: str) -> SourceFormat:
         return SourceFormat.CSV
     if lower.endswith(".json"):
         return SourceFormat.JSON
-    if lower.endswith(".jsonl"):
+    if lower.endswith((".jsonl", ".ndjson")):
         return SourceFormat.NDJSON
     if lower.endswith(".parquet"):
         return SourceFormat.PARQUET
 
-    suffix = path.rsplit(".", 1)[-1] if "." in path else ""
+    suffix = _observed_source_suffix(path)
     logger.error("unsupported_file_type", path=path, suffix=suffix)
-    raise ValueError(f"Unsupported file type: .{suffix}")
+    raise UnsupportedSourceFormatError(suffix)
 
 
 def _select_columns(

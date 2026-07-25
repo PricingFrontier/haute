@@ -544,6 +544,28 @@ class TestExecuteSinkEndpoint:
         assert data["row_count"] == 3
         assert out_path.exists()
 
+        collision = client.post(
+            "/api/pipeline/write-output",
+            json={"graph": graph, "node_id": "sink"},
+        )
+        assert collision.status_code == 409
+        assert collision.json()["detail"] == (
+            "Output destination already exists: output/result.parquet"
+        )
+
+        overwrite = client.post(
+            "/api/pipeline/write-output",
+            json={"graph": graph, "node_id": "sink", "overwrite": True},
+        )
+        assert overwrite.status_code == 200
+        assert overwrite.json()["row_count"] == 3
+
+        non_boolean = client.post(
+            "/api/pipeline/write-output",
+            json={"graph": graph, "node_id": "sink", "overwrite": "true"},
+        )
+        assert non_boolean.status_code == 422
+
     def test_invalid_output_config_returns_safe_400(
         self, client: TestClient, pipeline_dir: Path
     ) -> None:

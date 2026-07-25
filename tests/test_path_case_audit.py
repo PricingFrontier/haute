@@ -131,12 +131,12 @@ def test_wrap_path_case_audit_missing_argument_is_harmless() -> None:
     assert wrapped() == "ok"
 
 
-def test_resolver_seam_runs_the_audit(
+def test_retained_input_resolver_seam_runs_the_audit(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """`_resolve_runtime_data_path` must audit every resolved input path."""
-    from haute import _builders
+    """The retained-input chokepoint audits every resolved input path."""
+    from haute import _node_apply
 
     monkeypatch.chdir(tmp_path)
     (tmp_path / "Foo.csv").write_text("x", encoding="utf-8")
@@ -148,7 +148,7 @@ def test_resolver_seam_runs_the_audit(
         lambda path, *, stop=None: audited.append(str(path)) or {},
     )
 
-    resolved = _builders._resolve_runtime_data_path("foo.csv")
+    resolved = _node_apply._anchored_required_path({"path": "foo.csv"}, base_dir=None)
 
     assert audited == [resolved]
     assert resolved.endswith("foo.csv")  # spelling preserved, never rewritten

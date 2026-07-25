@@ -1,12 +1,11 @@
-import { useRef, useState } from "react"
-import { writeOutput } from "../../api/client"
+import { writeOutput, ApiError } from "../../api/client"
 import type {
   IoCapabilityGroup,
   IoFormatCapability,
-  WriteOutputResponse,
 } from "../../api/types"
 import { EditorLabel } from "../../components/form"
 import useSettingsStore from "../../stores/useSettingsStore"
+import useOutputWriteStore from "../../stores/useOutputWriteStore"
 import { buildGraph } from "../../utils/buildGraph"
 import { useGraph } from "../useGraph"
 import IoFormatEditor from "./_IoFormatEditor"
@@ -127,6 +126,35 @@ function outputConfigReady(
   )
 }
 
+function destinationPreview(
+  group: IoCapabilityGroup | undefined,
+  format: IoFormatCapability | undefined,
+  config: Record<string, unknown>,
+): { destination: string | null; suffixMismatch: boolean } {
+  if (group?.name === "database") {
+    const table = typeof config.table === "string" ? config.table.trim() : ""
+    return { destination: table || null, suffixMismatch: false }
+  }
+  if (group?.name !== "file") return { destination: null, suffixMismatch: false }
+  const path = typeof config.path === "string" ? config.path.trim() : ""
+  if (!path) return { destination: null, suffixMismatch: false }
+  const fileName = path.split(/[\\/]/).at(-1) ?? path
+  const lastDot = fileName.lastIndexOf(".")
+  const suffix =
+    lastDot > 0 && lastDot < fileName.length - 1
+      ? fileName.slice(lastDot)
+      : ""
+  const extensions = format?.extensions ?? []
+  const resolvedName = suffix ? path : `${path}${extensions[0] ?? ""}`
+  return {
+    destination: path.includes("/") || path.includes("\\")
+      ? resolvedName
+      : `outputs/${resolvedName}`,
+    suffixMismatch:
+      suffix.length > 0 && !extensions.some((extension) => extension.toLowerCase() === suffix.toLowerCase()),
+  }
+}
+
 export default function DataOutputEditor({
   config,
   onUpdate,
@@ -145,9 +173,9 @@ export default function DataOutputEditor({
   const streamingChunkSize = useSettingsStore(
     (state) => state.streamingChunkSize,
   )
-  const [result, setResult] = useState<WriteOutputResponse | null>(null)
-  const [writing, setWriting] = useState(false)
-  const currentIdentity = useRef("")
+  const writeState = useOutputWriteStore((state) => state.writes[nodeId])
+  const beginWrite = useOutputWriteStore((state) => state.begin)
+  const completeWrite = useOutputWriteStore((state) => state.complete)
 
   const groups = (capabilities?.groups ?? []).filter(
     (group) => group.output_available,
@@ -161,31 +189,38 @@ export default function DataOutputEditor({
   const ready =
     group !== undefined && outputConfigReady(group, format, config)
   const identity = `${nodeId}:${JSON.stringify(config)}`
-  currentIdentity.current = identity
+  const isWriting = writeState?.phase === "writing"
+  const visibleState = writeState?.configIdentity === identity ? writeState : undefined
+  const destination = destinationPreview(group, format, config)
 
-  const write = async () => {
-    if (!ready) return
+  const write = async (overwrite: boolean) => {
+    if (!ready || isWriting) return
     const requestIdentity = identity
-    setWriting(true)
-    setResult(null)
+    const requestId = beginWrite(nodeId, requestIdentity)
+    if (requestId === null) return
     try {
       const response = await writeOutput({
         graph: buildGraph(allNodes, edges, submodels, preamble),
         nodeId,
         source: useSettingsStore.getState().activeSource,
         streamingChunkSize,
+        overwrite,
       })
-      if (currentIdentity.current === requestIdentity) setResult(response)
+      completeWrite(nodeId, requestId, requestIdentity, {
+        phase: "success",
+        result: response,
+      })
     } catch (caught) {
-      if (currentIdentity.current === requestIdentity) {
-        setResult({
-          status: "error",
-          message:
-            caught instanceof Error ? caught.message : "Output write failed.",
-        })
-      }
-    } finally {
-      setWriting(false)
+      const message =
+        caught instanceof ApiError && caught.detail
+          ? caught.detail
+          : caught instanceof Error
+            ? caught.message
+            : "Output write failed."
+      completeWrite(nodeId, requestId, requestIdentity, {
+        phase: caught instanceof ApiError && caught.status === 409 ? "confirm_overwrite" : "error",
+        message,
+      })
     }
   }
 
@@ -247,32 +282,67 @@ export default function DataOutputEditor({
         />
       )}
 
+      {destination.destination && (
+        <p className="text-xs" style={{ color: "var(--text-muted)" }}>
+          Destination: {destination.destination}
+        </p>
+      )}
+      {destination.suffixMismatch && (
+        <p role="alert" className="text-xs" style={{ color: "var(--danger-text)" }}>
+          The destination extension does not match the selected format.
+        </p>
+      )}
+
       <button
         type="button"
-        disabled={!ready || writing}
-        onClick={() => void write()}
+        disabled={!ready || isWriting}
+        onClick={() => void write(false)}
         className="px-3 py-1.5 rounded-lg text-xs font-medium disabled:opacity-50"
         style={{ background: "var(--accent)", color: "white" }}
       >
-        {writing ? "Writing..." : "Write"}
+        {isWriting ? "Writing..." : "Write"}
       </button>
 
-      {result && (
+      {visibleState?.phase === "writing" && (
+        <p role="status" className="text-xs" style={{ color: "var(--text-muted)" }}>
+          Writing output…
+        </p>
+      )}
+
+      {visibleState?.phase === "confirm_overwrite" && (
+        <div className="space-y-1">
+          <p role="alert" className="text-xs" style={{ color: "var(--danger-text)" }}>
+            {visibleState.message}
+          </p>
+          <button
+            type="button"
+            onClick={() => void write(true)}
+            className="px-3 py-1.5 rounded-lg text-xs font-medium"
+            style={{ background: "var(--danger)", color: "white" }}
+          >
+            Replace existing file
+          </button>
+        </div>
+      )}
+
+      {visibleState && (visibleState.phase === "success" || visibleState.phase === "error") && (
         <p
-          role="status"
+          role={visibleState.phase === "error" ? "alert" : "status"}
           className="text-xs"
           style={{
             color:
-              result.status === "ok"
+              visibleState.phase === "success"
                 ? "var(--success)"
                 : "var(--danger-text)",
           }}
         >
-          {result.message ?? result.status}
-          {result.row_count !== undefined
-            ? ` | ${result.row_count} rows`
+          {visibleState.phase === "error"
+            ? visibleState.message
+            : visibleState.result?.message ?? visibleState.result?.status}
+          {visibleState.result?.row_count !== undefined
+            ? ` | ${visibleState.result.row_count} rows`
             : ""}
-          {result.path ? ` | ${result.path}` : ""}
+          {visibleState.result?.path ? ` | ${visibleState.result.path}` : ""}
         </p>
       )}
     </div>

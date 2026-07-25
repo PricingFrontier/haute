@@ -97,8 +97,9 @@ class TestGenApiInput:
         code = _node_to_code(node)
         assert 'config="config/quote_input/PolicyData.json"' in code
         assert "def PolicyData()" in code
-        assert "read_data_source" in code
-        assert 'Path(__file__).parent / "data/api_input.parquet"' in code
+        assert "resolve_api_input_from_config" in code
+        assert "data/api_input.parquet" not in code
+        assert "base_dir=Path(__file__).resolve().parent" in code
         _compile_node_code(code)
 
     def test_csv_api_input(self) -> None:
@@ -110,9 +111,9 @@ class TestGenApiInput:
         code = _node_to_code(node)
         assert 'config="config/quote_input/CSVInput.json"' in code
         assert "def CSVInput()" in code
-        assert "read_data_source" in code
-        assert "def CSVInput() -> pl.LazyFrame:" in code
-        assert 'Path(__file__).parent / "data/input.csv"' in code
+        assert "resolve_api_input_from_config" in code
+        assert "def CSVInput() -> pl.LazyFrame | dict[str, pl.LazyFrame]:" in code
+        assert "data/input.csv" not in code
         _compile_node_code(code)
 
     def test_api_input_preserves_categorical_levels_in_shared_reader(self) -> None:
@@ -127,8 +128,8 @@ class TestGenApiInput:
 
         code = _node_to_code(node)
 
-        assert "read_data_source" in code
-        assert "'categorical_levels': {'region': ['north', 'south']}" in code
+        assert "resolve_api_input_from_config" in code
+        assert "categorical_levels" not in code
         _compile_node_code(code)
 
     def test_json_api_input(self) -> None:
@@ -140,9 +141,10 @@ class TestGenApiInput:
         code = _node_to_code(node)
         assert 'config="config/quote_input/JSONInput.json"' in code
         assert "def JSONInput()" in code
-        assert "load_v2_api_source" in code
-        assert "def JSONInput() -> dict[str, pl.LazyFrame]:" in code
-        assert 'Path(__file__).parent / "config/quote_input/JSONInput.json"' in code
+        assert "resolve_api_input_from_config" in code
+        assert "def JSONInput() -> pl.LazyFrame | dict[str, pl.LazyFrame]:" in code
+        assert '"config/quote_input/JSONInput.json"' in code
+        assert "data/quotes.json" not in code
         _compile_node_code(code)
 
     def test_jsonl_api_input(self) -> None:
@@ -152,7 +154,8 @@ class TestGenApiInput:
             label="JSONLInput",
         )
         code = _node_to_code(node)
-        assert "load_v2_api_source" in code
+        assert "resolve_api_input_from_config" in code
+        assert "data/quotes.jsonl" not in code
         _compile_node_code(code)
 
     def test_api_input_with_row_id(self) -> None:
@@ -1195,10 +1198,10 @@ class TestCodegenExecValidation:
         assert collected.schema["quote_id"] == pl.String
 
     def test_api_input_exec_produces_lazyframe(self) -> None:
-        """apiInput code for a JSON file compiles and contains v2 shred markers.
+        """apiInput code compiles and delegates through its retained sidecar.
 
         This fixture lacks a matching sidecar config, so we verify compilation
-        and v2 structural markers here; standalone direct-vs-cached execution is
+        and config-driven loader markers here; standalone direct-vs-cached execution is
         covered by ``test_codegen_execution_equivalence.py``.
         """
         node = _make_codegen_node(
@@ -1208,8 +1211,9 @@ class TestCodegenExecValidation:
         )
         code = _node_to_code(node)
         _compile_node_code(code)
-        assert "load_v2_api_source" in code
-        assert "validate_v2_schema" in code
+        assert "resolve_api_input_from_config" in code
+        assert '"config/quote_input/quotes.json"' in code
+        assert "tests/fixtures/data/api_input.json" not in code
 
     def test_json_api_input_exec_fails_loudly_without_v2_schema(
         self,

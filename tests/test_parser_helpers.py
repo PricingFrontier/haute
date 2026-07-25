@@ -1836,6 +1836,18 @@ class TestExtractSourceUserCode:
         assert "scan_csv" not in result
         assert result == "df = df.limit(10)"
 
+    def test_generated_retained_api_input_load_is_not_user_code(self):
+        body = (
+            "    from pathlib import Path\n"
+            "    from haute.graph_utils import resolve_api_input_from_config\n"
+            "    return resolve_api_input_from_config(\n"
+            '        "config/quote_input/quotes.json",\n'
+            "        base_dir=Path(__file__).resolve().parent,\n"
+            "    )"
+        )
+
+        assert _extract_source_user_code(body) == ""
+
     def test_repeated_multiline_generated_loads_are_not_user_code(self):
         body = (
             "    from pathlib import Path\n"

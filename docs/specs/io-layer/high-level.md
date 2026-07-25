@@ -135,7 +135,9 @@ Out of scope (owned elsewhere):
   candidate roots — the project root and the owning pipeline's directory —
   preferring whichever candidate exists on disk, and preferring the
   project-root candidate when both exist or neither does (unless the
-  caller asks for pipeline-preference).
+  caller asks for pipeline-preference). Resolution uses canonical targets
+  for containment and existence decisions but returns the chosen absolute
+  candidate with the user's path-segment spelling intact.
 - `warn_if_case_ambiguous` logs — but never blocks — when a resolved path
   has a case-equivalent sibling on disk, since Haute pins no Unicode/case
   normalisation on user-supplied data paths: a config that resolves cleanly
@@ -396,3 +398,49 @@ describe the shipped implementation until the 0.7.0 release reconciles them.
   cache identity/query separation, atomic refresh and concurrent-reader tests; Polars-code
   ordering and row-local rejection tests; output atomicity and explicit-write tests; and
   end-to-end parse/save/reload tests containing only `dataInput`/`dataOutput`.
+
+## I/O authoring and publication guarantees
+
+The I/O layer implements the accepted parts of
+[IO-IO01, IO-IO05, IO-IO06, IO-IO08, IO-IO09, and IO-IO11](../../roadmap/io-layer.md).
+
+- File browsing defaults come from the installed, read-capable path-format
+  registry rather than a handwritten extension list. Matching is
+  case-insensitive; hidden entries and symlinks are not advertised; broken
+  entries are skipped; directory enumeration runs off the async event loop.
+  A selected format continues to pass its own capability extensions.
+- The legacy read adapter accepts both `.jsonl` and `.ndjson`. Unsupported
+  compound extensions are reported as the compound suffix with the complete
+  supported set, rather than mislabelling `x.csv.gz` as merely `.gz`.
+- Schema preview distinguishes safe, expected input failures from internal
+  failures. Missing files remain 404; unsupported extensions and decoder
+  failures return actionable, sanitised 400 details; unexpected exceptions
+  remain sanitised 500s with full server-side diagnostics.
+- A bounded CSV Data Input exposes its detected schema in the editor and can
+  copy the full ordered name-to-dtype mapping into `arguments.schema` while
+  preserving delimiter and other arguments. The editor visibly warns while
+  this required declaration is absent. Registry validation and execution
+  remain authoritative.
+- File Data Output publication is explicit about collisions. The HTTP action
+  defaults to `overwrite=false`; an existing destination returns a conflict
+  without executing the graph or changing the file. A confirmed retry with
+  `overwrite=true` may atomically replace it. A race that creates the target
+  between preflight and publication is still detected by a no-replace
+  publication primitive.
+- Single-file output writes use a unique same-directory staging path, flush
+  and `fsync` the completed stage before publication, and sync the containing
+  directory where the platform exposes that operation. Failures before
+  publication leave an existing target unchanged and clean the stage.
+  Publication and directory-sync failures propagate; the target is always a
+  complete old or new artifact, never a partial file.
+- CSV encoding is UTF-8 without a BOM by default, matching Polars. A caller
+  requests Excel-oriented UTF-8 BOM output explicitly with
+  `arguments.include_bom=true`; both modes are round-trip tested with
+  non-ASCII data. Streaming row counts remain an exact format re-scan because
+  byte-newline counts are incorrect for quoted CSV fields. The re-scan uses
+  the output's header and dialect settings rather than scanner defaults.
+
+The current capability registry and capability-driven UI already satisfy the
+structural part of IO-IO12. No additional format is approved by this package:
+future formats still require an explicit use case, engine/capability metadata,
+validation, and supported/unsupported end-to-end tests.

@@ -541,3 +541,20 @@ Remaining source-cache improvement work is tracked in the
   progress isolation, cancellation/deadline cleanup, quotas, redaction, and provider protocol
   conformance. Database, Databricks, lakehouse, and file integration suites supply their own
   builders against the same store contract.
+
+## Dataframe-cache first-consume safety
+
+`DataFrameExecutionCache.store_artifact` inserts the complete
+`DataFrameExecutionCacheEntry` and then checks the retained object directly
+under `_lock`; it does not call the validating `get` override.
+
+A private first-consume scan method accepts that exact stored entry. Under
+`_lock` it verifies object identity, marks the entry most-recently used,
+increments the `(cache_key, path)` scan refcount, and pins the key without
+calling `_validate_entry`. It then shares the normal scan construction and
+finalizer/release path. `materialize_lazy_frame_with_cache` calls this method
+before releasing `materialization_lock`.
+
+Public `get`/`scan` continue to call `_evict_if_invalid`. Focused tests patch
+the validator to fail if invoked by store/first-consume, then damage the
+artifact and assert that an ordinary later lookup detects and evicts it.

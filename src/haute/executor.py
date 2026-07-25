@@ -178,6 +178,14 @@ class PreviewProjectionError(ValueError):
     """Requested preview columns cannot be projected from the target DataFrame."""
 
 
+class DataOutputDestinationExistsError(FileExistsError):
+    """A Data Output destination exists and replacement was not authorised."""
+
+    def __init__(self, display_path: str):
+        self.display_path = display_path
+        super().__init__(f"Output destination already exists: {display_path}")
+
+
 def _execution_stage(
     execution_context: ExecutionContext | None,  # pragma: no mutate
     name: str,
@@ -1653,6 +1661,53 @@ def _cleanup_output_staging_path(
     staging_path.unlink(missing_ok=True)
 
 
+def _sync_output_artifact(path: Path) -> None:
+    """Flush a completed staged output artifact before it is published."""
+    # Windows requires a write-capable descriptor for ``os.fsync``; POSIX
+    # permits a read-only descriptor for an already-closed writer artifact.
+    mode = "rb+" if os.name == "nt" else "rb"
+    with path.open(mode) as artifact:
+        os.fsync(artifact.fileno())
+
+
+def _sync_output_directory(path: Path) -> None:
+    """Flush a published output directory where directory fsync is supported."""
+    if os.name == "nt":
+        return
+    flags = os.O_RDONLY
+    if hasattr(os, "O_DIRECTORY"):
+        flags |= os.O_DIRECTORY
+    descriptor = os.open(path, flags)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _output_row_count_scan_kwargs(
+    config: Mapping[str, Any],
+    scanner_name: str,
+) -> dict[str, Any]:
+    """Translate writer arguments that affect exact artifact row parsing."""
+    if scanner_name != "scan_csv":
+        return {}
+    raw_arguments = config.get("arguments")
+    arguments = raw_arguments if isinstance(raw_arguments, Mapping) else {}
+    kwargs: dict[str, Any] = {"raise_if_empty": False}
+    for shared_name in ("decimal_comma", "quote_char", "separator"):
+        if shared_name in arguments:
+            kwargs[shared_name] = arguments[shared_name]
+    if "include_header" in arguments:
+        kwargs["has_header"] = arguments["include_header"]
+    if "line_terminator" in arguments:
+        line_terminator = arguments["line_terminator"]
+        # ``scan_csv.eol_char`` is one byte; the writer's common two-byte
+        # CRLF spelling is parsed on its final newline byte so each row is
+        # counted once (passing CRLF directly counts both bytes separately).
+        kwargs["eol_char"] = "\n" if line_terminator == "\r\n" else line_terminator
+    return kwargs
+
+
 def resolve_data_output_path(
     graph: PipelineGraph,
     config: Mapping[str, Any],
@@ -1701,6 +1756,7 @@ def write_data_output(
     execution_context: ExecutionContext | None = None,  # pragma: no mutate
     streaming_chunk_size: int | None = None,  # pragma: no mutate
     project_root: str | Path | None = None,  # pragma: no mutate
+    overwrite: bool = False,  # pragma: no mutate
 ) -> WriteOutputResponse:
     """Execute the pipeline up to a Data Output and publish its target.
 
@@ -1726,6 +1782,13 @@ def write_data_output(
     from haute._polars_io_registry import validate_data_output_config
 
     config = validate_data_output_config(output_node.data.config)
+    from haute._polars_io_registry import format_for_config, format_group
+
+    out, path = resolve_data_output_path(graph, config, project_root=project_root)
+    is_file_target = format_group(format_for_config(config)) == "file"
+    if is_file_target and out is not None and out.exists() and not overwrite:
+        raise DataOutputDestinationExistsError(path)
+
     selected_columns = config.get("selected_columns")
 
     if execution_context is None:
@@ -1745,14 +1808,10 @@ def write_data_output(
             selected_seed.add(column)
         required_columns_by_node = {output_node_id: frozenset(selected_seed)}
 
-    out: Path | None
     staging_out: Path | None = None
-    out, path = resolve_data_output_path(graph, config, project_root=project_root)
     if out is not None:
         out.parent.mkdir(parents=True, exist_ok=True)
-        from haute._polars_io_registry import format_for_config, format_group
-
-        if format_group(format_for_config(config)) == "file":
+        if is_file_target:
             staging_out = out.with_name(f".{out.stem}.haute-stage-{uuid.uuid4().hex}{out.suffix}")
 
     # Sinks are never used in live serving — model scoring must use the
@@ -1881,7 +1940,10 @@ def write_data_output(
                         f"Format {config.get('format')!r} wrote via a streaming sink but "
                         "cannot be re-scanned to count rows"
                     )
-                count_lf = getattr(pl, scanner_name)(count_path).select(pl.len())
+                count_lf = getattr(pl, scanner_name)(
+                    count_path,
+                    **_output_row_count_scan_kwargs(config, scanner_name),
+                ).select(pl.len())
                 row_count = streaming_collect(
                     count_lf,
                     profile=execution_context.profile,
@@ -1897,7 +1959,16 @@ def write_data_output(
                     staging_out,
                     project_root=project_root,
                 )
-            staging_out.replace(out)
+            _sync_output_artifact(staging_out)
+            if overwrite:
+                os.replace(staging_out, out)
+            else:
+                try:
+                    os.link(staging_out, out)
+                except FileExistsError as exc:
+                    raise DataOutputDestinationExistsError(path) from exc
+                staging_out.unlink()
+            _sync_output_directory(out.parent)
         logger.info("data_output_written", path=path, format=config["format"])
 
         return WriteOutputResponse(

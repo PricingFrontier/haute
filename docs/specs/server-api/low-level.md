@@ -563,3 +563,18 @@ Remaining server API improvement work is tracked in the
   concurrency, cancel/finish races, timeout ownership, safe errors/redaction, path containment,
   unsaved graph execution, and removed route 404s. OpenAPI/frontend contract fixtures update in
   the same batch.
+
+## I/O diagnostics and overwrite choice
+
+- `WriteOutputRequest` adds `overwrite: StrictBool = False`; the route forwards it
+  as a keyword argument to `write_data_output`.
+- `DataOutputDestinationExistsError` is caught before the generic sink failure
+  branch and translated to 409. Its public text is constructed from
+  `resolve_data_output_path`'s display path, never the absolute resolved path.
+- `browse_files(extensions: str | None = None)` resolves omitted extensions
+  through the registry and delegates enumeration through
+  `run_in_threadpool`.
+- `get_schema` catches `UnsupportedSourceFormatError` and
+  `polars.exceptions.PolarsError` as expected 400-class input failures with
+  static safe details. It retains the generic sanitised `ValueError` and 500
+  branches, including `exc_info=True`.

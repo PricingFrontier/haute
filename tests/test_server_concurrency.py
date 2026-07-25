@@ -632,3 +632,14 @@ class TestAsyncRouteDoesNotBlockEventLoop:
             "#30: get_schema must call run_in_threadpool / asyncio.to_thread "
             "so the event loop is not blocked on disk I/O."
         )
+
+    def test_file_browser_offloads_directory_enumeration(self) -> None:
+        import inspect
+
+        from haute.routes import files
+
+        src = inspect.getsource(files.browse_files)
+        assert ("run_in_threadpool" in src) or ("to_thread" in src), (
+            "browse_files must offload directory enumeration and stat calls "
+            "so a slow filesystem cannot block the event loop."
+        )

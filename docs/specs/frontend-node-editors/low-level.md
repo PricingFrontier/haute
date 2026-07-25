@@ -14,6 +14,7 @@
 | `frontend/src/panels/editors/CodeEditor.tsx`, `frontend/src/panels/editors/CodeMirrorEditor.tsx`, `frontend/src/panels/editors/shared/PolarsCodePanel.tsx` | Code-editor wrappers and Polars-specific panel. |
 | `frontend/src/panels/editors/ConstantEditor.tsx`, `frontend/src/panels/editors/TransformEditor.tsx`, `frontend/src/panels/editors/EdgeJoinEditor.tsx`, `frontend/src/panels/editors/LiveSwitchEditor.tsx`, `frontend/src/panels/editors/ScenarioExpanderEditor.tsx` | Editors for scalar, transform, join, conditional-switch and scenario nodes. |
 | `frontend/src/panels/editors/ExternalFileEditor.tsx`, `frontend/src/panels/editors/DataInputEditor.tsx`, `frontend/src/panels/editors/DataOutputEditor.tsx` | External-object, grouped tabular input, and grouped tabular output configuration. |
+| `frontend/src/stores/useOutputWriteStore.ts` | Per-node output-write request identity, pending/terminal lifecycle, and overwrite-confirmation state retained across editor remounts. |
 | `frontend/src/panels/editors/_IoFormatEditor.tsx`, `frontend/src/panels/editors/_ioFormats.ts`, `frontend/src/panels/editors/_DatabricksSelector.tsx`, `frontend/src/panels/editors/_InputCacheControls.tsx` | Registry-driven IO arguments, cached capabilities, dedicated Databricks browsing, and shared input-cache lifecycle controls. |
 | `frontend/src/panels/editors/ApiInputEditor.tsx`, `frontend/src/panels/editors/apiInputSchema.ts`, `frontend/src/panels/editors/apiInputInherit.ts`, `frontend/src/panels/editors/FrameTableActions.tsx` | API-input frame/schema editing, persisted/inferred schema conversion, reconciliation and row actions. |
 | `frontend/src/panels/editors/OutputEditor.tsx`, `frontend/src/panels/editors/outputMappingSchema.ts`, `frontend/src/panels/editors/outputPathTools.ts`, `frontend/src/panels/editors/jsonpath.ts`, `frontend/src/panels/editors/pathCanonicalWarning.ts`, `frontend/src/panels/editors/JsonPreview.tsx` | Output mappings, JSON-path validation/rewrites, canonical-path hints and preview. |
@@ -229,3 +230,25 @@ round-trip, output direction filtering, write gating/status, and no output code 
 provider grouping, snapshot refresh, cached offline execution, multiple format legs, atomic file
 write, and removed-node absence. The legacy node-continuity migration suite is deleted rather
 than adapted.
+
+## I/O authoring feedback and output lifecycle
+
+- `DataInputEditor` calls `useSchemaFetch` with the configured file path only
+  when `format.input.needs_schema_when_bounded` is true. It imports
+  `SchemaPreview`, renders the hook's loading/error states, and merges
+  `Object.fromEntries(schema.columns.map(({name, dtype}) => ...))` into the
+  current arguments on confirmation.
+- `useSchemaFetch` recognises `ApiError` and stores `detail ?? message`.
+  `ApiInputEditor` consumes and renders its `error` return.
+- A small Zustand output-write store owns entries keyed by node id. Each entry
+  carries request id, config identity, phase
+  (`writing | success | error | confirm_overwrite`), and structured result or
+  message. Terminal actions update only the matching request id.
+- `DataOutputEditor` derives display destination and extension mismatch from
+  the selected capability's extensions. It starts the API promise after
+  recording store state; the promise updates the store even if the component
+  unmounts. It sends `overwrite=false`, handles `ApiError.status === 409` as
+  `confirm_overwrite`, and retries true only from the confirmation action.
+- `WriteOutputArgs` adds `overwrite?: boolean` and serialises an explicit
+  boolean. Tests reset the write store between cases and exercise unmount/
+  remount while a deferred request is unresolved.

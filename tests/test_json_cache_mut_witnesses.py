@@ -136,13 +136,21 @@ def test_aggregate_build_present_counts_summed(tmp_path: Path) -> None:
     Pins the non-default path so a mutant can't pass by zeroing everything.
     """
     summary = {
-        "tables": [{"label": "t", "parquet": None, "row_count": 3, "column_count": 2}],
+        "tables": [
+            {
+                "label": "t",
+                "parquet": None,
+                "row_count": 3,
+                "column_count": 2,
+                "columns": {"id": "Int64", "name": "String"},
+            }
+        ],
         "skipped": {"records": 5, "rows_by_table": {}},
     }
     resp = _aggregate_v2_build_response(summary, tmp_path, "/d.json", 1.0)
     assert resp.row_count == 3
     assert resp.column_count == 2
-    assert len(resp.columns) == 2
+    assert resp.columns == {"t.id": "Int64", "t.name": "String"}
     assert resp.skipped_records == 5
 
 

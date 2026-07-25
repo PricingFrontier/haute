@@ -42,6 +42,7 @@ from haute.errors import (
 )
 from haute.execution import _runtime_input_path_fields, prune_source_switch_edges
 from haute.executor import (
+    DataOutputDestinationExistsError,
     PreviewProjectionError,
     _preview_cache,
     execute_graph,
@@ -855,6 +856,7 @@ async def write_output_node(body: WriteOutputRequest) -> WriteOutputResponse:
             execution_context=output_context,
             streaming_chunk_size=body.streaming_chunk_size,
             project_root=project_root,
+            overwrite=body.overwrite,
             timeout=_sink_timeout(),
             operation="pipeline_write_output",
         )
@@ -903,6 +905,8 @@ async def write_output_node(body: WriteOutputRequest) -> WriteOutputResponse:
             status_code=504,
             detail=f"Sink execution timed out ({_sink_timeout():.0f}s limit)",
         )
+    except DataOutputDestinationExistsError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from None
     except HTTPException:
         raise
     except Exception as e:

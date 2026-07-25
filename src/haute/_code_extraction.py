@@ -477,6 +477,7 @@ _SOURCE_LOAD_PREFIXES: tuple[str, ...] = (
     "df=read_source(",
     "df=read_data_source(",
     "df=resolve_data_input_from_config(",
+    "df=resolve_api_input_from_config(",
     "returnpl.scan_parquet(",
     "returnpl.scan_csv(",
     "returnpl.scan_ndjson(",
@@ -484,6 +485,7 @@ _SOURCE_LOAD_PREFIXES: tuple[str, ...] = (
     "returnread_source(",
     "returnread_data_source(",
     "returnresolve_data_input_from_config(",
+    "returnresolve_api_input_from_config(",
 )
 
 
@@ -658,7 +660,7 @@ def _match_rating_step(cleaned: list[str], param_names: tuple[str, ...]) -> Matc
 def _match_external(cleaned: list[str], param_names: tuple[str, ...]) -> MatcherResult:
     """ExternalFile nodes: skip the generated file-loading prefix only.
 
-    The generated boilerplate (see the ``_EXTERNAL`` template in
+    The generated boilerplate (see the ``_RETAINED_EXTERNAL`` template in
     ``_codegen_builders``) is loader imports followed by the obj-load —
     either ``obj = load_external_object(...)`` or a legacy
     ``with open(...)`` block.  User code is emitted strictly AFTER the
@@ -1097,9 +1099,10 @@ def _extract_user_code(body_source: str, param_names: list[str]) -> str:
 def _extract_source_user_code(body_source: str) -> str:
     """Extract user code from a Data Input body.
 
-    The auto-generated boilerplate is a single assignment line at the
-    top (e.g. ``df = pl.scan_parquet("...")``).  Everything after that
-    assignment — minus the trailing ``return df`` — is user code.
+    The auto-generated boilerplate is a source-load assignment or return
+    statement at the top (for example ``df = pl.scan_parquet("...")`` or
+    ``return resolve_api_input_from_config(...)``). Everything after that
+    load — minus the trailing ``return df`` — is user code.
 
     User code follows the generated boilerplate directly.
     """

@@ -119,3 +119,34 @@ sets, mandatory/optional/no-cache states, progress/freshness/error states, Polar
 placement, inactive-key removal and undo, output Write gating/status, and unavailable engines.
 Browser coverage creates, configures, saves, reloads, executes, snapshots, and writes the
 retained node types and asserts that no Data Source/Data Sink palette/editor affordance exists.
+
+## I/O authoring feedback and output lifecycle
+
+The retained editors implement the editor portion of
+[IO-IO01, IO-IO06, IO-IO08, and IO-IO09](../../roadmap/io-layer.md).
+
+- A file Data Input whose backend capability requires a bounded schema shows
+  schema-fetch progress, a preview, and any safe route diagnostic inline.
+  **Use detected schema** merges the detected ordered dtype map into
+  `arguments.schema` without discarding delimiter or other arguments. A
+  visible warning remains until a schema mapping is present.
+- API Input also renders the shared schema-fetch error instead of discarding
+  it. Starting another fetch clears the old error, so recovery is visible.
+  Its retained JSON-family picker exposes `.json`, `.jsonl`, and `.ndjson`;
+  cancelling/closing the picker does not mutate config.
+- Data Output renders its resolved destination before writing and warns when
+  an explicit file extension disagrees with the selected capability.
+  While an HTTP write is pending it renders an indeterminate progress status
+  and disables another write for that node.
+- Output write state is stored per node outside the editor component. Switching
+  panels cannot forget a pending request, enable a duplicate request, or lose
+  the last success/failure. Completion for an obsolete config identity is not
+  presented as the current config's result.
+- A 409 collision renders an explicit **Replace existing file** action. Only
+  that action retries with `overwrite=true`; ordinary Write sends false.
+  Success uses structured `row_count` and `path`, and API failures prefer the
+  safe server `detail` over a generic HTTP status string.
+
+Component tests cover schema merge/preservation, loading/error/recovery,
+destination preview/mismatch, remount during a pending write, structured
+success/failure, and the overwrite confirmation retry.

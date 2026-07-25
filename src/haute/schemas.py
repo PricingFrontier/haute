@@ -17,6 +17,7 @@ from pydantic import (
     ConfigDict,
     Field,
     RootModel,
+    StrictBool,
     field_validator,
     model_validator,
 )
@@ -825,6 +826,7 @@ class WriteOutputRequest(BaseModel):
     node_id: str
     source: str = "live"
     streaming_chunk_size: StreamingChunkSize = None
+    overwrite: StrictBool = False
 
 
 class WriteOutputResponse(BaseModel):

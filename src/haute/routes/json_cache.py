@@ -293,14 +293,24 @@ def _aggregate_v2_tables(
     for table in tables:
         label = table.get("label", "")
         parquet_name = table.get("parquet")
+        parquet_path: Path | None = None
         if isinstance(parquet_name, str):
             parquet_path = cache_dir / parquet_name
             if parquet_path.exists():
                 stat = parquet_path.stat()
                 size_bytes += int(stat.st_size)
                 cached_at = max(cached_at, float(stat.st_mtime))
-        for ci in range(int(table.get("column_count", 0))):
-            columns[f"{label}.col{ci}"] = "v2"
+        table_columns = table.get("columns")
+        if isinstance(table_columns, dict) and all(
+            isinstance(name, str) and isinstance(dtype, str)
+            for name, dtype in table_columns.items()
+        ):
+            columns.update({f"{label}.{name}": dtype for name, dtype in table_columns.items()})
+        elif parquet_path is not None and parquet_path.exists():
+            import polars as pl
+
+            schema = pl.scan_parquet(parquet_path).collect_schema()
+            columns.update({f"{label}.{name}": str(dtype) for name, dtype in schema.items()})
     return row_count, column_count, columns, size_bytes, cached_at
 
 

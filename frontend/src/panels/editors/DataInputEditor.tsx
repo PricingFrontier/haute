@@ -5,8 +5,9 @@ import { WarehousePicker, CatalogTablePicker } from "./_DatabricksSelector"
 import InputCacheControls from "./_InputCacheControls"
 import IoFormatEditor, { IoArgumentsEditor } from "./_IoFormatEditor"
 import { useIoCapabilities } from "./_ioFormats"
-import { INPUT_STYLE } from "./_shared"
+import { INPUT_STYLE, SchemaPreview } from "./_shared"
 import type { OnReplaceConfig, OnUpdateConfig } from "./_shared"
+import { useSchemaFetch } from "../../hooks/useSchemaFetch"
 
 const INPUT_COMMON_KEYS = [
   "instanceOf",
@@ -202,6 +203,23 @@ export default function DataInputEditor({
     group?.cache_modes.includes("snapshot") === true && cacheMode === "snapshot"
   const databricksErrors =
     group?.name === "databricks" ? databricksConfigurationErrors(config) : []
+  const schemaRequired =
+    group?.name === "file" && format?.input?.needs_schema_when_bounded === true
+  const configuredPath = typeof config.path === "string" ? config.path.trim() : ""
+  const {
+    schema,
+    loading: schemaLoading,
+    error: schemaError,
+    fetchForPath: fetchSchemaForPath,
+  } = useSchemaFetch(schemaRequired && configuredPath ? configuredPath : undefined)
+  const configuredArguments =
+    typeof config.arguments === "object" && config.arguments !== null && !Array.isArray(config.arguments)
+      ? config.arguments as Record<string, unknown>
+      : {}
+  const hasSchemaMapping =
+    typeof configuredArguments.schema === "object" &&
+    configuredArguments.schema !== null &&
+    !Array.isArray(configuredArguments.schema)
 
   return (
     <div className="px-4 py-3 space-y-3">
@@ -361,6 +379,54 @@ export default function DataInputEditor({
           admittedEager={format?.input?.snapshot_build === "admitted_eager"}
           requiredReady={requiredReady}
         />
+      )}
+
+      {schemaRequired && configuredPath && (
+        <section aria-label="Detected schema" className="space-y-2">
+          {schemaLoading && (
+            <p className="text-xs" style={{ color: "var(--text-muted)" }}>
+              Loading schema...
+            </p>
+          )}
+          {schemaError && (
+            <div className="space-y-1">
+              <p role="alert" className="text-xs" style={{ color: "var(--danger-text)" }}>
+                Could not detect schema: {schemaError}
+              </p>
+              <button
+                type="button"
+                onClick={() => fetchSchemaForPath(configuredPath)}
+                className="px-3 py-1.5 rounded-lg text-xs font-medium"
+                style={{ background: "var(--bg-elevated)", color: "var(--text-primary)" }}
+              >
+                Retry schema
+              </button>
+            </div>
+          )}
+          {!hasSchemaMapping && (
+            <p className="text-xs" style={{ color: "var(--danger-text)" }}>
+              A schema mapping is required for this bounded input.
+            </p>
+          )}
+          <SchemaPreview schema={schema} />
+          {schema && (
+            <button
+              type="button"
+              onClick={() =>
+                onUpdate("arguments", {
+                  ...configuredArguments,
+                  schema: Object.fromEntries(
+                    schema.columns.map((column) => [column.name, column.dtype]),
+                  ),
+                })
+              }
+              className="px-3 py-1.5 rounded-lg text-xs font-medium"
+              style={{ background: "var(--accent)", color: "white" }}
+            >
+              Use detected schema
+            </button>
+          )}
+        </section>
       )}
 
       <section>

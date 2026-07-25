@@ -563,24 +563,28 @@ class TestCurlyBracesInValues:
         _assert_sidecar_value("dataInput", _file_input_config(path), "path", path)
 
     def test_path_with_braces_api_input(self):
-        """API input with {braces} in path."""
+        """API input keeps a brace-bearing path only in its JSON sidecar."""
+        config = {"path": "data/{region}/api.parquet"}
         node = _make_node(
             "apiInput",
-            {"path": "data/{region}/api.parquet"},
+            config,
         )
         code = _node_to_code(node)
         _compile_node_code(code)
-        assert "{region}" in code
+        assert "{region}" not in code
+        _assert_sidecar_value("apiInput", config, "path", config["path"])
 
     def test_path_with_braces_api_input_json(self):
-        """API input JSON with {braces} in path."""
+        """JSON API input keeps a brace-bearing path only in its sidecar."""
+        config = {"path": "data/{region}/api.json"}
         node = _make_node(
             "apiInput",
-            {"path": "data/{region}/api.json"},
+            config,
         )
         code = _node_to_code(node)
         _compile_node_code(code)
-        assert "{region}" in code
+        assert "{region}" not in code
+        _assert_sidecar_value("apiInput", config, "path", config["path"])
 
     def test_path_with_braces_data_output(self):
         """Data Output with {braces} in path."""
@@ -606,13 +610,19 @@ class TestCurlyBracesInValues:
 
     def test_path_with_braces_external_file(self):
         """External file with {braces} in path."""
+        config = {
+            "path": "models/{version}/model.pkl",
+            "fileType": "pickle",
+            "code": "",
+        }
         node = _make_node(
             "externalFile",
-            {"path": "models/{version}/model.pkl", "fileType": "pickle", "code": ""},
+            config,
         )
         code = _node_to_code(node)
         _compile_node_code(code)
-        assert "{version}" in code
+        assert "{version}" not in code
+        _assert_sidecar_value("externalFile", config, "path", config["path"])
 
     def test_path_with_nested_double_braces(self):
         """Path with already-doubled {{braces}} — pass through as-is."""

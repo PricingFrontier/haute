@@ -393,3 +393,21 @@ Remaining pipeline-configuration improvement work is tracked in the
   leakage, multiple-node registration, explicit-output and ambiguous-leaf standalone execution,
   config JSON round trips, blank scaffold/reference reset, and source search proving there is no
   executable legacy mapping or alias.
+
+## Retained input sidecar authority
+
+- Generated `apiInput` decorators reference
+  `config/quote_input/<name>.json`; generated `externalFile` decorators
+  reference `config/load_file/<name>.json`.
+- `resolve_api_input_from_config` and
+  `load_external_object_from_config` accept either an inline mapping or a
+  sidecar path. Path arguments are loaded through `load_node_config` and
+  relative data/object paths use `base_dir` as the pipeline candidate in the
+  shared project/pipeline resolution policy.
+- API-input resolution requires a non-empty path for flat/JSON inputs,
+  validates `tables[]` before the JSON shred, and forwards projection/profile
+  arguments for flat-file reads. External-file resolution validates non-empty
+  `path` and `fileType` strings and forwards `modelClass`.
+- Executor builders call the same helpers with their already-resolved inline
+  graph config. Generated builders pass only the sidecar path and `base_dir`;
+  no declarative field is interpolated into the function body.

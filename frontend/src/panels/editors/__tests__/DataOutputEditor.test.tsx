@@ -9,6 +9,15 @@ import {
 import type { IoCapabilityGroup } from "../../../api/types"
 
 vi.mock("../../../api/client", () => ({
+  ApiError: class ApiError extends Error {
+    status: number
+    detail?: string
+    constructor(message: string, status: number, detail?: string) {
+      super(message)
+      this.status = status
+      this.detail = detail
+    }
+  },
   fetchIoCapabilities: vi.fn(),
   listFiles: vi.fn(() => Promise.resolve({ items: [] })),
   writeOutput: vi.fn(),
@@ -18,6 +27,7 @@ import { fetchIoCapabilities, writeOutput } from "../../../api/client"
 import { GraphProvider } from "../../GraphContext"
 import DataOutputEditor from "../DataOutputEditor"
 import { resetIoCapabilitiesCacheForTests } from "../_ioFormats"
+import { resetOutputWriteStoreForTests } from "../../../stores/useOutputWriteStore"
 
 const groups: IoCapabilityGroup[] = [
   {
@@ -186,6 +196,7 @@ function renderEditor(
 
 beforeEach(() => {
   vi.clearAllMocks()
+  resetOutputWriteStoreForTests()
   resetIoCapabilitiesCacheForTests()
   vi.mocked(fetchIoCapabilities).mockResolvedValue({
     schema_version: 1,
@@ -272,6 +283,7 @@ describe("DataOutputEditor", () => {
       expect(writeOutput).toHaveBeenCalledWith(
         expect.objectContaining({
           nodeId: "output-node",
+          overwrite: false,
           graph: expect.objectContaining({ nodes: [], edges: [] }),
         }),
       ),
@@ -279,6 +291,99 @@ describe("DataOutputEditor", () => {
     expect(await screen.findByRole("status")).toHaveTextContent(
       "Wrote output. | 2 rows | out.csv",
     )
+  })
+
+  it("shows the resolved destination and warns on an incompatible suffix", async () => {
+    renderEditor({
+      outputType: "file",
+      format: "csv",
+      mode: "sink",
+      path: "out.json",
+      arguments: {},
+    })
+
+    expect(await screen.findByText("Destination: outputs/out.json")).toBeInTheDocument()
+    expect(screen.getByRole("alert")).toHaveTextContent("extension does not match")
+  })
+
+  it("shows a failed write as an actionable alert and allows retry", async () => {
+    vi.mocked(writeOutput).mockRejectedValueOnce(new Error("Output storage is unavailable"))
+    renderEditor({
+      outputType: "file",
+      format: "csv",
+      mode: "sink",
+      path: "out.csv",
+      arguments: {},
+    })
+
+    fireEvent.click(await screen.findByRole("button", { name: "Write" }))
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Output storage is unavailable",
+    )
+    expect(screen.getByRole("button", { name: "Write" })).toBeEnabled()
+  })
+
+  it("matches backend extension rules for a bare dotfile destination", async () => {
+    renderEditor({
+      outputType: "file",
+      format: "csv",
+      mode: "sink",
+      path: ".report",
+      arguments: {},
+    })
+
+    expect(
+      await screen.findByText("Destination: outputs/.report.csv"),
+    ).toBeInTheDocument()
+    expect(screen.queryByText(/extension does not match/i)).not.toBeInTheDocument()
+  })
+
+  it("keeps a pending write disabled through remount and retries a 409 with overwrite", async () => {
+    let resolveWrite: (value: { status: string; message: string }) => void
+    vi.mocked(writeOutput).mockReturnValueOnce(new Promise((resolve) => {
+      resolveWrite = resolve
+    }) as ReturnType<typeof writeOutput>)
+    const view = renderEditor({
+      outputType: "file",
+      format: "csv",
+      mode: "sink",
+      path: "out",
+      arguments: {},
+    })
+
+    const write = await screen.findByRole("button", { name: "Write" })
+    fireEvent.click(write)
+    view.unmount()
+    const remounted = renderEditor({
+      outputType: "file",
+      format: "csv",
+      mode: "sink",
+      path: "out",
+      arguments: {},
+    })
+    expect(await screen.findByRole("button", { name: "Writing..." })).toBeDisabled()
+
+    resolveWrite!({ status: "ok", message: "Wrote output." })
+    await screen.findByText("Wrote output.")
+
+    remounted.unmount()
+    renderEditor({
+      outputType: "file",
+      format: "csv",
+      mode: "sink",
+      path: "changed-output",
+      arguments: {},
+    })
+    expect(screen.queryByText("Wrote output.")).not.toBeInTheDocument()
+
+    const { ApiError } = await import("../../../api/client")
+    vi.mocked(writeOutput).mockRejectedValueOnce(new ApiError("HTTP 409", 409, "out.csv exists"))
+    fireEvent.click(screen.getByRole("button", { name: "Write" }))
+    expect(await screen.findByRole("button", { name: "Replace existing file" })).toBeInTheDocument()
+    vi.mocked(writeOutput).mockResolvedValueOnce({ status: "ok", message: "Replaced." })
+    fireEvent.click(screen.getByRole("button", { name: "Replace existing file" }))
+    await waitFor(() => expect(writeOutput).toHaveBeenLastCalledWith(expect.objectContaining({ overwrite: true })))
   })
 
   it("requires exactly one database locator and clears the other atomically", async () => {

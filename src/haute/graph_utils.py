@@ -47,6 +47,12 @@ from haute._node_apply import (
     expand_scenarios_from_config as expand_scenarios_from_config,
 )
 from haute._node_apply import (
+    load_external_object_from_config as load_external_object_from_config,
+)
+from haute._node_apply import (
+    resolve_api_input_from_config as resolve_api_input_from_config,
+)
+from haute._node_apply import (
     select_live_switch_input as select_live_switch_input,
 )
 from haute._optimiser_io import load_mlflow_optimiser_artifact as load_mlflow_optimiser_artifact

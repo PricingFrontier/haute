@@ -12,7 +12,8 @@ verbatim. It carries three things, matching the spec's three lynchpin
 constructs:
 
 * the **acceptance** grammar — the regex pieces plus :func:`parse_path`, which
-  accepts the full-width set (§2.2) and rejects everything in §3;
+  accepts identifier-valued dotted or bracket selectors and rejects everything
+  outside that representable set;
 * the **canonicality** predicate — :func:`is_canonical`, true iff a path uses
   only the canonical spellings (§2.1);
 * the **canonical writer** — :func:`make_output_path`, emitting the one
@@ -53,20 +54,29 @@ class _PathError(Protocol):
 # The lynchpin — the grammar IS these named constructs (PATH_GRAMMAR.md)
 # ---------------------------------------------------------------------------
 #
-# Acceptance grammar (full-width, §2.2): the identifier charset, the canonical
-# dotted-name object selector, and the full-width bracket-name object selector
-# (normalised to the bare name). The array selector ``[:]`` and the root are
-# matched literally below. Everything else is rejected (§3).
+# Acceptance grammar: the identifier charset plus dotted-name and bracket-name
+# object selectors (the latter normalised to the bare name). Both spellings
+# carry identifier-valued names because the downstream dotted-leaf runtime
+# cannot represent arbitrary literal keys. The array selector ``[:]`` and the
+# root are matched literally below. Everything else is rejected.
 
 _NAME = r"[A-Za-z_][A-Za-z0-9_]*"  # identifier charset — object key
 _DOT_NAME = re.compile(rf"\.({_NAME})")  # object comprehension (canonical)
-_BRACKET_NAME = re.compile(r"\[(['\"])([^'\"]+)\1\]")  # bracket object name (full-width)
+_BRACKET_NAME = re.compile(r"\[(['\"])([^'\"]+)\1\]")  # validated after matching
 
 # Transport shape = array-outer JSON. The root container is ``$``; the sole data
 # entry into it is the array selector, so ``$[:]`` is the canonical root prefix.
 _ARRAY = "[:]"  # array comprehension — the only array selector
 _ROOT = "$"  # the root container (not itself a data path)
 _ROOT_ARRAY = "$[:]"  # the canonical (array-outer) data root
+
+
+_IDENTIFIER_NAME = re.compile(rf"{_NAME}\Z")
+
+
+def is_identifier_name(name: str) -> bool:
+    """Return whether *name* is exactly addressable by the shared grammar."""
+    return isinstance(name, str) and _IDENTIFIER_NAME.fullmatch(name) is not None
 
 
 class _Seg(NamedTuple):
@@ -133,6 +143,11 @@ def parse_path(raw: str, error: _PathError) -> _ParsedPath:
                 )
             name = m.group(2)
             i = m.end()
+            if not is_identifier_name(name):
+                raise error(
+                    "bracketed object names must use the identifier form [A-Za-z_][A-Za-z0-9_]*",
+                    output_path=raw,
+                )
         else:
             raise error("malformed output path", output_path=raw)
 

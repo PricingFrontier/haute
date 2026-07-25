@@ -21,6 +21,7 @@ function so this module never forms an import cycle with ``_builders``.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from os import PathLike
 from pathlib import Path
 from typing import Any
@@ -38,21 +39,93 @@ _DEFAULT_SCENARIO_STEPS = 21  # number of steps in scenario grid
 
 
 def _resolve_node_config(
-    config: dict[str, Any] | str | PathLike[str],
+    config: Mapping[str, Any] | str | PathLike[str],
     base_dir: str | Path | None,
 ) -> dict[str, Any]:
     """Resolve a config argument that may be an inline dict or a sidecar path.
 
-    A ``dict`` is returned as-is; a path is loaded through
+    A mapping is copied to a plain dict; a path is loaded through
     :func:`haute._config_io.load_node_config` relative to *base_dir* (which
     generated code sets to ``Path(__file__).parent``).
     """
-    if isinstance(config, dict):
-        return config
+    if isinstance(config, Mapping):
+        return dict(config)
     from haute._config_io import load_node_config
 
     config_path = config if isinstance(config, str) else Path(config)
     return load_node_config(config_path, base_dir=Path(base_dir) if base_dir else None)
+
+
+def _anchored_required_path(config: Mapping[str, Any], base_dir: str | Path | None) -> str:
+    """Return the required ``path`` from *config*, anchored to *base_dir*."""
+    path = config.get("path")
+    if not isinstance(path, str) or not path.strip():
+        raise ValueError("retained input config requires non-empty 'path'")
+
+    from haute._path_case_audit import warn_if_case_ambiguous
+    from haute._path_resolution import resolve_runtime_file_path
+
+    resolved = resolve_runtime_file_path(
+        path,
+        pipeline_dir=base_dir,
+        project_root=Path.cwd(),
+        prefer="project",
+    )
+    warn_if_case_ambiguous(resolved, stop=Path.cwd())
+    return str(resolved)
+
+
+def resolve_api_input_from_config(
+    config_or_path: Mapping[str, Any] | str | PathLike[str],
+    *,
+    base_dir: str | Path | None = None,
+    profile: str | None = None,
+    columns: frozenset[str] | set[str] | None = None,
+    validate_columns: frozenset[str] | set[str] | None = None,
+) -> _Frame | dict[str, _Frame]:
+    """Load an API input from its current inline config or JSON sidecar."""
+    config = _resolve_node_config(config_or_path, base_dir)
+    path = _anchored_required_path(config, base_dir)
+
+    from haute._api_input_schema import is_json_api_input_path, validate_v2_schema
+
+    if is_json_api_input_path(path):
+        if not isinstance(config.get("tables"), list):
+            raise RuntimeError(
+                "API Input has no v2 schema (tables[]). Open the node and click "
+                "'Infer Tables' to populate the schema mapping, then preview again."
+            )
+        from haute._json_shred import load_v2_api_source
+
+        validate_v2_schema(config)
+        return load_v2_api_source(path, config)
+
+    from haute._io import read_data_source
+
+    config_with_anchored_path = {**config, "path": path}
+    return read_data_source(
+        {"sourceType": "flat_file", **config_with_anchored_path},
+        profile=profile,
+        columns=columns,
+        validate_columns=validate_columns,
+    )
+
+
+def load_external_object_from_config(
+    config_or_path: Mapping[str, Any] | str | PathLike[str],
+    *,
+    base_dir: str | Path | None = None,
+) -> object:
+    """Load an external object from its current inline config or sidecar."""
+    config = _resolve_node_config(config_or_path, base_dir)
+    path = _anchored_required_path(config, base_dir)
+    file_type = config.get("fileType")
+    if not isinstance(file_type, str) or not file_type.strip():
+        raise ValueError("external file config requires non-empty 'fileType'")
+
+    from haute._io import load_external_object
+
+    return load_external_object(path, file_type, config.get("modelClass", "classifier"))
 
 
 # ---------------------------------------------------------------------------
@@ -302,4 +375,4 @@ def assemble_output_from_config(
             f"frames: {sorted(frames.keys())!r}.",
         )
     document = assemble_output_from_mapping(frames, mapping)
-    return pl.LazyFrame(document)
+    return pl.LazyFrame(document, infer_schema_length=None)

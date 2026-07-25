@@ -373,19 +373,51 @@ class DataFrameExecutionCache(LRUCache[str, DataFrameExecutionCacheEntry]):
                 return None
             if self._evict_if_invalid(entry):
                 return None
-            scan_id = (key.cache_key, entry.path)
-            self._scan_refcounts[scan_id] = self._scan_refcounts.get(scan_id, 0) + 1
-            self.pin(key.cache_key)
+            self._pin_scan(key.cache_key, entry)
+        return self._open_scan(key.cache_key, entry)
+
+    def _scan_stored_entry(
+        self,
+        key: DataFrameExecutionCacheKey,
+        expected: DataFrameExecutionCacheEntry,
+    ) -> pl.LazyFrame | None:
+        """Open the exact entry just stored without ordinary-hit validation.
+
+        The materializer has already completed the write and metadata read.
+        Re-running the corruption validator before its first consumer can turn
+        a transient reopen failure into destructive eviction of a valid fresh
+        artifact.  Identity checking still fails loudly if another entry
+        replaced or evicted it.
+        """
+        with self._lock:
+            entry = super().get(key.cache_key)
+            if entry is not expected:
+                return None
+            self._pin_scan(key.cache_key, entry)
+        return self._open_scan(key.cache_key, entry)
+
+    def _pin_scan(self, cache_key: str, entry: DataFrameExecutionCacheEntry) -> None:
+        """Pin one scan reference. Caller must hold ``self._lock``."""
+        scan_id = (cache_key, entry.path)
+        self._scan_refcounts[scan_id] = self._scan_refcounts.get(scan_id, 0) + 1
+        self.pin(cache_key)
+
+    def _open_scan(
+        self,
+        cache_key: str,
+        entry: DataFrameExecutionCacheEntry,
+    ) -> pl.LazyFrame:
+        """Create the LazyFrame for an entry whose scan reference is pinned."""
         try:
             lazy_frame = pl.scan_parquet(entry.path)
         except BaseException:
-            self._release_scan(key.cache_key, entry.path)
+            self._release_scan(cache_key, entry.path)
             raise
         weakref.finalize(
             lazy_frame,
             _release_pinned_scan,
             weakref.ref(self),
-            key.cache_key,
+            cache_key,
             entry.path,
         )
         return lazy_frame
@@ -486,8 +518,9 @@ class DataFrameExecutionCache(LRUCache[str, DataFrameExecutionCacheEntry]):
             )
         self.evict_where(lambda stored_key: stored_key == key.cache_key)
         self.put(key.cache_key, entry)
-        stored = self.get(key)
-        if stored is None:
+        with self._lock:
+            stored = super().get(key.cache_key)
+        if stored is not entry:
             raise DataFrameExecutionCacheError(
                 "Stored dataframe cache entry vanished immediately "
                 f"(node_id={key.node_id!r}, cache_key={key.cache_key!r})"
@@ -605,14 +638,16 @@ def materialize_lazy_frame_with_cache(
                 streaming_chunk_size=streaming_chunk_size,
             )
             metadata = read_parquet_metadata(path)
-            cache.store_artifact(key, path, metadata)
+            stored = cache.store_artifact(key, path, metadata)
         except BaseException:
             path.unlink(missing_ok=True)
             path.with_suffix(".parquet.tmp").unlink(missing_ok=True)
             raise
 
-        # Validate the just-written artifact through the same path as a later hit.
-        cached_after_store = cache.scan(key)
+        # The successful writer + metadata read already validated this exact
+        # generation. Ordinary independent hits still take ``scan`` and its
+        # corruption validator; first consume only checks stored identity.
+        cached_after_store = cache._scan_stored_entry(key, stored)
         if cached_after_store is None:
             raise DataFrameExecutionCacheError(
                 "Stored dataframe cache entry vanished immediately "

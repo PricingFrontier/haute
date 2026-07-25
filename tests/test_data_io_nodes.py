@@ -27,7 +27,11 @@ from haute._polars_io_registry import PolarsIoConfigError
 from haute._registry import NODE_REGISTRY, ensure_registry_ready
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute.errors import SchemaMismatchError
-from haute.executor import resolve_data_output_path, write_data_output
+from haute.executor import (
+    DataOutputDestinationExistsError,
+    resolve_data_output_path,
+    write_data_output,
+)
 
 ensure_registry_ready()
 
@@ -263,7 +267,7 @@ class TestExecuteSinkDataOutput:
             fail_after_partial_write,
         )
         with pytest.raises(RuntimeError, match="writer failed"):
-            write_data_output(graph, "dout")
+            write_data_output(graph, "dout", overwrite=True)
 
         assert out_path.read_bytes() == original
         assert list(haute_scratch.glob(".*.haute-stage-*")) == []
@@ -307,7 +311,7 @@ class TestExecuteSinkDataOutput:
 
         monkeypatch.setattr(pl, "scan_ndjson", fail_row_count)
         with pytest.raises(RuntimeError, match="row count failed"):
-            write_data_output(graph, "dout")
+            write_data_output(graph, "dout", overwrite=True)
 
         assert out_path.read_bytes() == original
         assert list(haute_scratch.glob(".*.haute-stage-*")) == []
@@ -366,11 +370,352 @@ class TestExecuteSinkDataOutput:
                 graph,
                 "dout",
                 project_root=haute_scratch,
+                overwrite=True,
             )
 
         assert validation_count == 2
         assert out_path.read_bytes() == original
         assert list(haute_scratch.glob(".*.haute-stage-*")) == []
+
+    def test_existing_destination_is_rejected_before_graph_execution(
+        self,
+        haute_scratch: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        struct_frame: pl.DataFrame,
+    ) -> None:
+        src_path = haute_scratch / "in.parquet"
+        struct_frame.write_parquet(src_path)
+        out_path = haute_scratch / "result.parquet"
+        original = b"existing-complete-output"
+        out_path.write_bytes(original)
+        graph = PipelineGraph(
+            nodes=[
+                _data_input_node(
+                    "din",
+                    {
+                        "inputType": "file",
+                        "format": "parquet",
+                        "cacheMode": "direct",
+                        "path": str(src_path),
+                    },
+                ),
+                _data_output_node(
+                    "dout",
+                    {
+                        "outputType": "file",
+                        "format": "parquet",
+                        "path": str(out_path),
+                    },
+                ),
+            ],
+            edges=[_edge("din", "dout")],
+        )
+
+        def unexpected_execution(*_args, **_kwargs):
+            raise AssertionError("graph execution started before collision preflight")
+
+        monkeypatch.setattr(executor_module, "_execute_lazy", unexpected_execution)
+
+        with pytest.raises(DataOutputDestinationExistsError) as exc:
+            write_data_output(graph, "dout")
+
+        assert exc.value.display_path == str(out_path)
+        assert out_path.read_bytes() == original
+
+    def test_overwrite_true_replaces_existing_destination(
+        self, haute_scratch: Path, struct_frame: pl.DataFrame
+    ) -> None:
+        src_path = haute_scratch / "in.parquet"
+        struct_frame.write_parquet(src_path)
+        out_path = haute_scratch / "result.parquet"
+        out_path.write_bytes(b"old")
+        graph = PipelineGraph(
+            nodes=[
+                _data_input_node(
+                    "din",
+                    {
+                        "inputType": "file",
+                        "format": "parquet",
+                        "cacheMode": "direct",
+                        "path": str(src_path),
+                    },
+                ),
+                _data_output_node(
+                    "dout",
+                    {
+                        "outputType": "file",
+                        "format": "parquet",
+                        "path": str(out_path),
+                    },
+                ),
+            ],
+            edges=[_edge("din", "dout")],
+        )
+
+        result = write_data_output(graph, "dout", overwrite=True)
+
+        assert result.row_count == 3
+        assert_frame_equal(pl.read_parquet(out_path), struct_frame)
+
+    def test_no_overwrite_publication_race_preserves_competing_file(
+        self,
+        haute_scratch: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        src_path = haute_scratch / "in.parquet"
+        pl.DataFrame({"x": [1]}).write_parquet(src_path)
+        out_path = haute_scratch / "result.parquet"
+        graph = PipelineGraph(
+            nodes=[
+                _data_input_node(
+                    "din",
+                    {
+                        "inputType": "file",
+                        "format": "parquet",
+                        "cacheMode": "direct",
+                        "path": str(src_path),
+                    },
+                ),
+                _data_output_node(
+                    "dout",
+                    {
+                        "outputType": "file",
+                        "format": "parquet",
+                        "path": str(out_path),
+                    },
+                ),
+            ],
+            edges=[_edge("din", "dout")],
+        )
+
+        def write_then_race(_frame, _config, *, resolved_path, **_kwargs):
+            pl.DataFrame({"x": [1]}).write_parquet(resolved_path)
+            out_path.write_bytes(b"competing-publisher")
+            return 1
+
+        monkeypatch.setattr(
+            "haute._polars_io_registry.write_polars_output",
+            write_then_race,
+        )
+
+        with pytest.raises(DataOutputDestinationExistsError):
+            write_data_output(graph, "dout")
+
+        assert out_path.read_bytes() == b"competing-publisher"
+        assert list(haute_scratch.glob(".*.haute-stage-*")) == []
+
+    @pytest.mark.parametrize(
+        ("arguments", "has_bom"),
+        [
+            ({}, False),
+            ({"include_bom": True}, True),
+        ],
+    )
+    def test_csv_bom_policy_is_explicit_and_opt_in(
+        self,
+        haute_scratch: Path,
+        arguments: dict[str, object],
+        has_bom: bool,
+    ) -> None:
+        src_path = haute_scratch / f"in-{has_bom}.parquet"
+        pl.DataFrame({"city": ["Zürich"]}).write_parquet(src_path)
+        out_path = haute_scratch / f"out-{has_bom}.csv"
+        graph = PipelineGraph(
+            nodes=[
+                _data_input_node(
+                    "din",
+                    {
+                        "inputType": "file",
+                        "format": "parquet",
+                        "cacheMode": "direct",
+                        "path": str(src_path),
+                    },
+                ),
+                _data_output_node(
+                    "dout",
+                    {
+                        "outputType": "file",
+                        "format": "csv",
+                        "path": str(out_path),
+                        "arguments": arguments,
+                    },
+                ),
+            ],
+            edges=[_edge("din", "dout")],
+        )
+
+        write_data_output(graph, "dout")
+
+        assert out_path.read_bytes().startswith(b"\xef\xbb\xbf") is has_bom
+        assert pl.read_csv(out_path)["city"].to_list() == ["Zürich"]
+
+    def test_csv_streaming_row_count_handles_embedded_newlines(self, haute_scratch: Path) -> None:
+        src_path = haute_scratch / "in.parquet"
+        pl.DataFrame({"text": ["alpha\nbeta", "gamma"]}).write_parquet(src_path)
+        out_path = haute_scratch / "out.csv"
+        graph = PipelineGraph(
+            nodes=[
+                _data_input_node(
+                    "din",
+                    {
+                        "inputType": "file",
+                        "format": "parquet",
+                        "cacheMode": "direct",
+                        "path": str(src_path),
+                    },
+                ),
+                _data_output_node(
+                    "dout",
+                    {
+                        "outputType": "file",
+                        "format": "csv",
+                        "path": str(out_path),
+                    },
+                ),
+            ],
+            edges=[_edge("din", "dout")],
+        )
+
+        result = write_data_output(graph, "dout")
+
+        assert result.row_count == 2
+        assert pl.read_csv(out_path)["text"].to_list() == ["alpha\nbeta", "gamma"]
+
+    def test_csv_streaming_row_count_respects_header_and_dialect_arguments(
+        self, haute_scratch: Path
+    ) -> None:
+        src_path = haute_scratch / "in.parquet"
+        pl.DataFrame({"id": [1, 2, 3], "text": ["alpha", "beta", "gamma"]}).write_parquet(src_path)
+        out_path = haute_scratch / "out.csv"
+        graph = PipelineGraph(
+            nodes=[
+                _data_input_node(
+                    "din",
+                    {
+                        "inputType": "file",
+                        "format": "parquet",
+                        "cacheMode": "direct",
+                        "path": str(src_path),
+                    },
+                ),
+                _data_output_node(
+                    "dout",
+                    {
+                        "outputType": "file",
+                        "format": "csv",
+                        "path": str(out_path),
+                        "arguments": {
+                            "include_header": False,
+                            "line_terminator": "\r\n",
+                            "separator": ";",
+                            "quote_char": "'",
+                        },
+                    },
+                ),
+            ],
+            edges=[_edge("din", "dout")],
+        )
+
+        result = write_data_output(graph, "dout")
+
+        assert result.row_count == 3
+        assert (
+            pl.read_csv(
+                out_path,
+                has_header=False,
+                separator=";",
+                quote_char="'",
+                new_columns=["id", "text"],
+            ).height
+            == 3
+        )
+
+    @pytest.mark.parametrize("include_header", [True, False])
+    def test_csv_streaming_row_count_handles_empty_output(
+        self, haute_scratch: Path, include_header: bool
+    ) -> None:
+        src_path = haute_scratch / f"empty-{include_header}.parquet"
+        pl.DataFrame({"id": pl.Series([], dtype=pl.Int64)}).write_parquet(src_path)
+        out_path = haute_scratch / f"empty-{include_header}.csv"
+        graph = PipelineGraph(
+            nodes=[
+                _data_input_node(
+                    "din",
+                    {
+                        "inputType": "file",
+                        "format": "parquet",
+                        "cacheMode": "direct",
+                        "path": str(src_path),
+                    },
+                ),
+                _data_output_node(
+                    "dout",
+                    {
+                        "outputType": "file",
+                        "format": "csv",
+                        "path": str(out_path),
+                        "arguments": {"include_header": include_header},
+                    },
+                ),
+            ],
+            edges=[_edge("din", "dout")],
+        )
+
+        result = write_data_output(graph, "dout")
+
+        assert result.row_count == 0
+        assert out_path.exists()
+
+    def test_file_publication_syncs_artifact_and_parent_directory(
+        self,
+        haute_scratch: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        src_path = haute_scratch / "in.parquet"
+        pl.DataFrame({"x": [1]}).write_parquet(src_path)
+        out_path = haute_scratch / "result.parquet"
+        graph = PipelineGraph(
+            nodes=[
+                _data_input_node(
+                    "din",
+                    {
+                        "inputType": "file",
+                        "format": "parquet",
+                        "cacheMode": "direct",
+                        "path": str(src_path),
+                    },
+                ),
+                _data_output_node(
+                    "dout",
+                    {
+                        "outputType": "file",
+                        "format": "parquet",
+                        "path": str(out_path),
+                    },
+                ),
+            ],
+            edges=[_edge("din", "dout")],
+        )
+        calls: list[tuple[str, Path]] = []
+        original_artifact_sync = executor_module._sync_output_artifact
+        original_directory_sync = executor_module._sync_output_directory
+
+        def record_artifact(path: Path) -> None:
+            calls.append(("artifact", path))
+            original_artifact_sync(path)
+
+        def record_directory(path: Path) -> None:
+            calls.append(("directory", path))
+            original_directory_sync(path)
+
+        monkeypatch.setattr(executor_module, "_sync_output_artifact", record_artifact)
+        monkeypatch.setattr(executor_module, "_sync_output_directory", record_directory)
+
+        write_data_output(graph, "dout")
+
+        assert calls[0][0] == "artifact"
+        assert calls[0][1].name.startswith(".result.haute-stage-")
+        assert calls[-1] == ("directory", out_path.parent)
 
 
 class TestResolveDataOutputPath:

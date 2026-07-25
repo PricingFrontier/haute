@@ -404,3 +404,27 @@ Acceptance includes schema/guard parity, capability ordering and completeness, s
 cache single-flight/cancel/progress/status races, no orphaned job after timeout, cache corruption
 and identity mismatch, explicit output-write admission/cancellation/atomicity, and route absence
 for every removed endpoint.
+
+## I/O diagnostics and overwrite choice
+
+The server API implements the HTTP portion of
+[IO-IO01, IO-IO05, and IO-IO09](../../roadmap/io-layer.md).
+
+`GET /api/files` omits its extension default from the HTTP schema and derives
+the effective list from installed read capabilities. Its blocking enumeration
+runs in the server thread pool and never advertises symlink entries.
+
+`GET /api/schema` exposes only allow-listed, actionable user failures:
+missing file (404), unsupported extension (400), and a known file decoder
+failure (400 with a static format-specific remediation). Arbitrary
+`ValueError`, OS, and unexpected runtime text remains private in structured
+logs and returns the existing sanitised envelope.
+
+`POST /api/pipeline/write-output` accepts `overwrite: bool = false`.
+An existing file destination returns HTTP 409 with a safe detail naming the
+user-facing resolved destination. No graph execution or write starts on that
+preflight conflict. A true retry authorises replacement; false remains
+collision-safe at the final publication race.
+
+Request/response model, OpenAPI, route, sanitisation, and frontend client
+contract tests cover both overwrite values and the 409 path.

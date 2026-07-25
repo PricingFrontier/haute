@@ -511,6 +511,7 @@ describe("endpoint contracts", () => {
     const body = JSON.parse(opts.body)
     expect(body.node_id).toBe("sink1")
     expect(body.source).toBe("live")
+    expect(body.overwrite).toBe(false)
   })
 
   it("fetchSchema GETs /api/schema with encoded path", async () => {
