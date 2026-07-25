@@ -146,8 +146,8 @@
    User-triggered surfaces such as the Ctrl+K `NodeSearch` palette remain
    dynamically imported so their implementation is excluded from that initial
    chunk. Canvas-assurance screenshots retain the shared 2% pixel-difference
-   ceiling; mixed-Banding, rebuilt-Rating, and selected-optimiser assertions
-   select reviewed Linux-specific baselines in Linux CI only when repeated
+   ceiling; mixed-Banding, rebuilt-Rating, and both selected-optimiser viewport
+   assertions select reviewed Linux-specific baselines in Linux CI only when repeated
    captures prove that system-font and native-control rasterisation differs
    stably from the default developer baseline, rather than weakening the
    assertion for every platform.
