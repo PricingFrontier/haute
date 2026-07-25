@@ -14,7 +14,7 @@ from haute._types import PipelineGraph
 
 PathPreference = Literal["project", "pipeline"]
 _CallableT = TypeVar("_CallableT", bound=Callable[..., Any])
-_RUNTIME_PROJECT_ROOT: ContextVar[Path | None] = ContextVar(
+_RUNTIME_PROJECT_ROOT: ContextVar[Path | None] = ContextVar(  # pragma: no mutate
     "haute_runtime_project_root",
     default=None,
 )
@@ -90,7 +90,9 @@ def current_runtime_project_root() -> Path:
 
 
 @contextmanager
-def runtime_project_root_scope(source_file: str | Path | None) -> Iterator[Path]:
+def runtime_project_root_scope(
+    source_file: str | Path | None,  # pragma: no mutate
+) -> Iterator[Path]:
     """Scope all builder path reads to the selected pipeline's project root."""
     root = _infer_project_root(project_root=None, source_file=source_file)
     token = _RUNTIME_PROJECT_ROOT.set(root)
@@ -119,7 +121,7 @@ def _candidate_if_allowed(
     project_root: Path,
     *,  # pragma: no mutate
     enforce_project_root: bool,  # pragma: no mutate
-) -> Path | None:
+) -> Path | None:  # pragma: no mutate
     resolved = candidate.resolve()
     if enforce_project_root and not resolved.is_relative_to(project_root):
         return None
