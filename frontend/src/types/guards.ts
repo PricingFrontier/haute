@@ -6,7 +6,7 @@
  * later with "cannot read property X of undefined".
  */
 
-import type { Edge, Node } from "@xyflow/react"
+import type { Node } from "@xyflow/react"
 
 import type {
   DatabricksCatalogsResponse,
@@ -110,7 +110,7 @@ import type {
   UtilityReadResponse,
   UtilityWriteResult,
 } from "../api/types"
-import type { BackendNodeStatus, ColumnInfo } from "./node"
+import type { BackendNodeStatus, ColumnInfo, PipelineEdge } from "./node"
 import type {
   TraceCorrelationDiagnostic,
   TraceInputSource,
@@ -128,7 +128,7 @@ import type {
 
 export interface PipelineResponse {
   nodes: Node[]
-  edges: Edge[]
+  edges: PipelineEdge[]
   pipeline_name?: string | null
   pipeline_description?: string | null
   preamble?: string | null
@@ -901,7 +901,7 @@ export function parsePipelineResponse(value: unknown): PipelineResponse {
 
   return {
     nodes: nodes as Node[],
-    edges: edges as Edge[],
+    edges: edges as PipelineEdge[],
     pipeline_name: obj.pipeline_name === undefined ? undefined : optionalNullableString("parsePipelineResponse", obj, "pipeline_name"),
     pipeline_description: obj.pipeline_description === undefined ? undefined : optionalNullableString("parsePipelineResponse", obj, "pipeline_description"),
     preamble: obj.preamble === undefined ? undefined : optionalNullableString("parsePipelineResponse", obj, "preamble"),

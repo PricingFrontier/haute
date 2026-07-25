@@ -10,6 +10,7 @@ import useToastStore from "../../stores/useToastStore"
 import useSettingsStore from "../../stores/useSettingsStore"
 import useGraphStore from "../../stores/useGraphStore"
 import useNodeResultsStore from "../../stores/useNodeResultsStore"
+import type { PipelineEdge } from "../../types/node"
 import { NODE_TYPES } from "../../utils/nodeTypes"
 import { makeExecutionMetricsFixture } from "../../testSupport/executionMetricsFixture"
 
@@ -306,6 +307,40 @@ describe("usePipelineAPI", () => {
     })
     // After save, the submitted graph snapshot is the saved baseline.
     expect(useGraphStore.getState().isDirty()).toBe(false)
+  })
+
+  it("preserves authored submodel boundary ports in the save payload", async () => {
+    mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+    mockSave.mockResolvedValue({ file: "pricing.py", pipeline_name: "pricing" })
+    const boundaryEdge: PipelineEdge = {
+      id: "e_boundary",
+      source: "submodel__pricing",
+      target: "submodel__scoring",
+      sourceHandle: "out__priced",
+      targetHandle: "in__score",
+      sourcePort: "quotes",
+      targetPort: "base",
+    }
+    const params = makeParams()
+    params.graphRef.current = { nodes: [], edges: [boundaryEdge] }
+    useGraphStore.setState({ nodes: [], edges: [boundaryEdge], preamble: "" })
+
+    const { result } = renderHook(() => usePipelineAPI(params))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+    await act(async () => {
+      await result.current.handleSave()
+    })
+
+    expect(mockSave).toHaveBeenCalledWith(expect.objectContaining({
+      graph: expect.objectContaining({
+        edges: [
+          expect.objectContaining({
+            sourcePort: "quotes",
+            targetPort: "base",
+          }),
+        ],
+      }),
+    }))
   })
 
   it("keeps later edits dirty when they happen while a save is in flight", async () => {

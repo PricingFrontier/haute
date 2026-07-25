@@ -21,6 +21,6 @@ export function computeNextNodeId(nodes: Node[]): number {
  * Strips any custom edge types from the backend so React Flow
  * renders standard edges.
  */
-export function normalizeEdges(edges: Edge[]): Edge[] {
+export function normalizeEdges<T extends Edge>(edges: T[]): T[] {
   return edges.map((e) => ({ ...e, type: "default", animated: false }))
 }

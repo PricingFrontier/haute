@@ -844,11 +844,10 @@ def test_frame_named_api_parameters_are_a_byte_identical_roundtrip_fixpoint() ->
 def test_submodel_container_types_are_explicitly_budgeted() -> None:
     """Submodel containers are multi-file structure, not root decorators.
 
-    A RED probe while building this capstone found the current hierarchical
-    submodel parser can add a fallback root edge and drops user-facing
-    cross-boundary source handles while rewiring to ``in__`` / ``out__``
-    handles. That is a product limitation to fix before submodel containers
-    can join this byte-idempotence property.
+    The single-file node strategy still excludes container-only node types.
+    Their implicit boundary edges and hidden source/target ports are covered
+    by the dedicated multi-file parse â†’ codegen â†’ parse conservation
+    regression in ``test_parser_conservation.py``.
     """
     assert NodeType.SUBMODEL not in ROUNDTRIPPABLE_NODE_TYPES
     assert NodeType.SUBMODEL_PORT not in ROUNDTRIPPABLE_NODE_TYPES

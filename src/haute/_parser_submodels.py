@@ -10,6 +10,7 @@ Handles:
 from __future__ import annotations
 
 import ast
+from os.path import normcase
 from pathlib import Path
 from typing import Any
 
@@ -25,7 +26,8 @@ from haute._graph_builders import (
     _build_rf_nodes,
     _extract_decorated_nodes,
 )
-from haute._logging import get_logger
+from haute._graph_utils import _edge_id
+from haute._parser_conservation import assert_parser_structure_conserved
 from haute._submodel_graph import (
     build_submodel_placeholder,
     classify_ports,
@@ -34,7 +36,75 @@ from haute._submodel_graph import (
 from haute._types import GraphEdge, GraphNode, PipelineGraph
 from haute.errors import ParseError
 
-logger = get_logger(component="parser.submodels")
+_Connect4 = tuple[str, str, str | None, str | None]
+
+
+def build_unique_submodel_maps(
+    parsed: list[tuple[str, PipelineGraph]],
+) -> tuple[dict[str, PipelineGraph], dict[str, str]]:
+    """Index parsed submodels by declared name, rejecting every collision.
+
+    ``parsed`` preserves authored reference order as ``(path, graph)`` pairs.
+    Resolved source files are grouped first so a repeated reference is not
+    misreported as several files declaring one name. Grouping names before
+    constructing the dictionaries then prevents the historical later-file-
+    wins overwrite and lets one diagnostic name every genuinely distinct
+    file involved in a declared-name collision.
+    """
+    by_source_file: dict[str, dict[str, Any]] = {}
+    for rel_path, graph in parsed:
+        source_file = graph.source_file or rel_path
+        source_key = normcase(str(Path(source_file).resolve()))
+        entry = by_source_file.setdefault(
+            source_key,
+            {
+                "source_file": source_file,
+                "references": [],
+            },
+        )
+        entry["references"].append(rel_path)
+
+    duplicate_files = [entry for entry in by_source_file.values() if len(entry["references"]) > 1]
+    if duplicate_files:
+        duplicate_context: dict[str, Any] = {"duplicate_files": duplicate_files}
+        if len(duplicate_files) == 1:
+            duplicate_file = duplicate_files[0]
+            duplicate_context.update(
+                source_file=duplicate_file["source_file"],
+                references=duplicate_file["references"],
+            )
+        raise ParseError(
+            "The same submodel file is referenced more than once.",
+            **duplicate_context,
+        )
+
+    by_name: dict[str, list[tuple[str, PipelineGraph]]] = {}
+    for rel_path, graph in parsed:
+        name = graph.pipeline_name or Path(rel_path).stem
+        by_name.setdefault(name, []).append((rel_path, graph))
+
+    collisions = {
+        name: [rel_path for rel_path, _graph in entries]
+        for name, entries in by_name.items()
+        if len(entries) > 1
+    }
+    if collisions:
+        context: dict[str, Any] = {"collisions": collisions}
+        if len(collisions) == 1:
+            submodel_name, files = next(iter(collisions.items()))
+            context.update(submodel_name=submodel_name, files=files)
+        raise ParseError(
+            "Multiple files declare the same submodel name.",
+            **context,
+        )
+
+    submodel_graphs: dict[str, PipelineGraph] = {}
+    submodel_files: dict[str, str] = {}
+    for name, entries in by_name.items():
+        rel_path, graph = entries[0]
+        submodel_graphs[name] = graph
+        submodel_files[name] = rel_path
+    return submodel_graphs, submodel_files
 
 
 def _submodel_path_expr(link: ast.Call) -> ast.expr | None:
@@ -119,15 +189,26 @@ def parse_submodel_source(
 
     try:
         tree = ast.parse(source)
-    except SyntaxError:
-        return PipelineGraph(
-            pipeline_name="unnamed",
-            pipeline_description="",
+    except SyntaxError as exc:
+        raise ParseError(
+            "Submodel file has syntax errors; its graph cannot be recovered.",
             source_file=source_file,
-            warning="Submodel file has syntax errors",
-        )
+            line=exc.lineno,
+            offset=exc.offset,
+        ) from exc
 
     submodel_name, submodel_desc = _extract_submodel_meta(tree)
+
+    # Nested submodels are capped at one level. Returning the outer child
+    # graph while dropping these authored references would corrupt the source
+    # on its next save, so the producer contract is enforced as a typed error.
+    nested_paths = extract_submodel_calls(tree)
+    if nested_paths:
+        raise ParseError(
+            "Nested submodels are not supported.",
+            source_file=source_file,
+            nested_paths=nested_paths,
+        )
 
     func_bodies = _extract_function_bodies(source, tree=tree)
     raw_nodes = _extract_decorated_nodes(
@@ -137,30 +218,28 @@ def parse_submodel_source(
         _base_dir,
     )
 
-    edges = _build_edges(raw_nodes, _extract_connect_calls(tree, receiver="submodel"))
+    explicit_connects = _extract_connect_calls(tree, receiver="submodel")
+    edges = _build_edges(raw_nodes, explicit_connects)
     rf_nodes = _build_rf_nodes(raw_nodes)
+    assert_parser_structure_conserved(
+        raw_nodes=raw_nodes,
+        explicit_connects=explicit_connects,
+        root_nodes=rf_nodes,
+        root_edges=edges,
+    )
 
-    # Nested submodels are capped at one level. A ``pipeline.submodel(...)``
-    # call inside a submodel file would otherwise be silently ignored (its
-    # nodes never appear anywhere). Surface it as a graph-level warning so the
-    # drop is visible rather than silent.
-    nested_paths = extract_submodel_calls(tree)
-    nested_warning: str | None = None
-    if nested_paths:
-        nested_warning = (
-            "Nested submodels are not supported; "
-            f"ignored pipeline.submodel() reference(s): {', '.join(nested_paths)}"
-        )
-        logger.warning("nested_submodel_ignored", paths=nested_paths, file=source_file)
-
-    return PipelineGraph(
+    graph = PipelineGraph(
         nodes=rf_nodes,
         edges=edges,
         pipeline_name=submodel_name,
         pipeline_description=submodel_desc,
         source_file=source_file,
-        warning=nested_warning,
     )
+    graph._parser_parameter_names = {
+        str(node["func_name"]): [str(name) for name in node.get("param_names", ())]
+        for node in raw_nodes
+    }
+    return graph
 
 
 def merge_submodels(
@@ -196,6 +275,42 @@ def merge_submodels(
     for sm_graph in submodel_graphs.values():
         all_child_ids.update(n.id for n in sm_graph.nodes)
 
+    resolved_parent_edges: list[_Connect4] = []
+    for edge_tuple in parent_edges:
+        if len(edge_tuple) == 4:
+            resolved_parent_edges.append(edge_tuple)
+        elif len(edge_tuple) == 3:
+            src, tgt, source_port = edge_tuple
+            resolved_parent_edges.append((src, tgt, source_port, None))
+        else:
+            src, tgt = edge_tuple
+            resolved_parent_edges.append((src, tgt, None, None))
+
+    # A function parameter can name a node outside its own source file. Keep
+    # parser-private signature metadata just long enough to infer those edges
+    # after all root and child IDs are known.
+    all_graphs = [parent_graph, *submodel_graphs.values()]
+    known_node_ids = {node.id for candidate_graph in all_graphs for node in candidate_graph.nodes}
+    occupied_pairs = {
+        (source, target) for source, target, _source_port, _target_port in resolved_parent_edges
+    }
+    occupied_pairs.update(
+        (edge.source, edge.target)
+        for candidate_graph in all_graphs
+        for edge in candidate_graph.edges
+    )
+    for candidate_graph in all_graphs:
+        for target_id, parameter_names in candidate_graph._parser_parameter_names.items():
+            for source_id in parameter_names:
+                pair = (source_id, target_id)
+                if (
+                    source_id in known_node_ids
+                    and source_id != target_id
+                    and pair not in occupied_pairs
+                ):
+                    occupied_pairs.add(pair)
+                    resolved_parent_edges.append((source_id, target_id, None, None))
+
     # _build_edges drops edges where one endpoint is a submodel child node
     # (because it only knows about main-file nodes).  Reconstruct those
     # cross-boundary edges from the raw parent_edges tuples.
@@ -204,32 +319,24 @@ def merge_submodels(
     # those handles while reconstructing cross-boundary edges; later
     # rewiring replaces true submodel boundary handles with in__/out__
     # markers.
-    existing_pairs = {(e.source, e.target) for e in parent_edge_list}
-    for edge_tuple in parent_edges:
-        # Tolerate pre-port 2-tuples, source-port 3-tuples, and the
-        # current 4-tuple shape with source and target ports.
-        if len(edge_tuple) == 4:
-            src, tgt, source_port, target_port = edge_tuple
-        elif len(edge_tuple) == 3:
-            src, tgt, source_port = edge_tuple
-            target_port = None
-        else:
-            src, tgt = edge_tuple
-            source_port = None
-            target_port = None
-        if (src, tgt) in existing_pairs:
+    existing_edges = {
+        (e.source, e.target, e.sourceHandle, e.targetHandle) for e in parent_edge_list
+    }
+    for src, tgt, source_port, target_port in resolved_parent_edges:
+        identity = (src, tgt, source_port, target_port)
+        if identity in existing_edges:
             continue
         if src in all_child_ids or tgt in all_child_ids:
             parent_edge_list.append(
                 GraphEdge(
-                    id=f"e_{src}_{tgt}",
+                    id=_edge_id(src, tgt, source_port, target_port),
                     source=src,
                     target=tgt,
                     sourceHandle=source_port,
                     targetHandle=target_port,
                 )
             )
-            existing_pairs.add((src, tgt))
+            existing_edges.add(identity)
 
     # Hierarchical mode: create submodel placeholder nodes
     submodels_meta: dict[str, dict] = {}
@@ -241,7 +348,10 @@ def merge_submodels(
         sm_file = submodel_files.get(sm_name, "")
 
         # Determine input and output ports from cross-boundary edges
-        input_ports, output_ports = classify_ports(parent_edges, child_node_names)
+        input_ports, output_ports = classify_ports(
+            resolved_parent_edges,
+            child_node_names,
+        )
 
         # Build the submodel placeholder node
         sm_node = build_submodel_placeholder(

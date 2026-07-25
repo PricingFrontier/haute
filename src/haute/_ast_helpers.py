@@ -480,9 +480,107 @@ def _extract_submodel_meta(tree: ast.Module) -> tuple[str, str]:
 
 _RE_POLARS_IMPORT = re.compile(r"import\s+polars(?:\s+as\s+\w+)?\s*$")
 _RE_HAUTE_IMPORT = re.compile(r"import\s+haute(?:\s+as\s+(\w+))?\s*$")
+_RE_HAUTE_PIPELINE_IMPORT = re.compile(r"from\s+haute\s+import\s+Pipeline(?:\s+as\s+(\w+))?\s*$")
 
 
-def _extract_preamble(source: str) -> str:
+def _extract_preamble_from_ast(source: str, tree: ast.Module) -> str:
+    """Extract a valid module's preamble from AST source boundaries."""
+    lines = source.splitlines()
+    haute_module_aliases: set[str] = {"haute"}
+    pipeline_constructor_aliases: set[str] = set()
+    last_standard_line = 0
+
+    for statement in tree.body:
+        if isinstance(statement, ast.Import):
+            imported_names = {alias.name for alias in statement.names}
+            for alias in statement.names:
+                if alias.name == "haute":
+                    haute_module_aliases.add(alias.asname or "haute")
+            if imported_names and imported_names <= {"haute", "polars"}:
+                last_standard_line = max(
+                    last_standard_line,
+                    statement.end_lineno or statement.lineno,
+                )
+        elif isinstance(statement, ast.ImportFrom) and statement.module == "haute":
+            imported_names = {alias.name for alias in statement.names}
+            for alias in statement.names:
+                if alias.name == "Pipeline":
+                    pipeline_constructor_aliases.add(alias.asname or alias.name)
+            if imported_names and imported_names <= {"Pipeline"}:
+                last_standard_line = max(
+                    last_standard_line,
+                    statement.end_lineno or statement.lineno,
+                )
+
+    if last_standard_line == 0:
+        return ""
+
+    def is_pipeline_constructor(expr: ast.expr) -> bool:
+        if not isinstance(expr, ast.Call):
+            return False
+        func = expr.func
+        if isinstance(func, ast.Name):
+            return func.id in pipeline_constructor_aliases
+        return (
+            isinstance(func, ast.Attribute)
+            and func.attr == "Pipeline"
+            and isinstance(func.value, ast.Name)
+            and func.value.id in haute_module_aliases
+        )
+
+    pipeline_start_line = len(lines) + 1
+    for statement in tree.body:
+        value: ast.expr | None = None
+        target_is_pipeline = False
+        if isinstance(statement, ast.Assign):
+            target_is_pipeline = any(
+                isinstance(target, ast.Name) and target.id == "pipeline"
+                for target in statement.targets
+            )
+            value = statement.value
+        elif isinstance(statement, ast.AnnAssign):
+            target_is_pipeline = (
+                isinstance(statement.target, ast.Name) and statement.target.id == "pipeline"
+            )
+            value = statement.value
+
+        if target_is_pipeline and value is not None and is_pipeline_constructor(value):
+            pipeline_start_line = min(pipeline_start_line, statement.lineno)
+            continue
+
+        if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)) and any(
+            _is_pipeline_node_decorator(decorator) for decorator in statement.decorator_list
+        ):
+            decorator_lines = [
+                decorator.lineno
+                for decorator in statement.decorator_list
+                if _is_pipeline_node_decorator(decorator)
+            ]
+            pipeline_start_line = min(pipeline_start_line, *decorator_lines)
+
+    preamble_lines = lines[last_standard_line : pipeline_start_line - 1]
+    while preamble_lines and not preamble_lines[0].strip():
+        preamble_lines.pop(0)
+    while preamble_lines and not preamble_lines[-1].strip():
+        preamble_lines.pop()
+    return "\n".join(preamble_lines)
+
+
+def _extract_preamble(source: str, *, tree: ast.Module | None = None) -> str:
+    """Extract user preamble with AST boundaries when the module is valid.
+
+    The regex fallback calls this on an invalid whole file, so a conservative
+    textual implementation remains available for that path.
+    """
+    if tree is None:
+        try:
+            tree = ast.parse(source)
+        except SyntaxError:
+            return _extract_preamble_textual(source)
+    return _extract_preamble_from_ast(source, tree)
+
+
+def _extract_preamble_textual(source: str) -> str:
     """Extract user-defined preamble between standard imports and pipeline code.
 
     The preamble is any code that appears after the standard imports
@@ -496,14 +594,21 @@ def _extract_preamble(source: str) -> str:
     and duplicated it on the next round-trip save.
     """
     lines = source.splitlines()
-    # Find the end of standard imports region, capturing the haute alias.
+    # Find the end of standard imports region, capturing either supported
+    # spelling of the Pipeline constructor.
     last_standard_idx = -1
-    haute_alias = "haute"
+    pipeline_constructor = "haute.Pipeline"
     for i, line in enumerate(lines):
         stripped = line.strip()
         haute_match = _RE_HAUTE_IMPORT.match(stripped)
         if haute_match is not None:
             haute_alias = haute_match.group(1) or "haute"
+            pipeline_constructor = f"{haute_alias}.Pipeline"
+            last_standard_idx = i
+            continue
+        pipeline_import_match = _RE_HAUTE_PIPELINE_IMPORT.match(stripped)
+        if pipeline_import_match is not None:
+            pipeline_constructor = pipeline_import_match.group(1) or "Pipeline"
             last_standard_idx = i
             continue
         if _RE_POLARS_IMPORT.match(stripped):
@@ -512,13 +617,12 @@ def _extract_preamble(source: str) -> str:
     if last_standard_idx == -1:
         return ""
 
-    pipeline_construct = f"{haute_alias}.Pipeline"
     # Find the start of pipeline code (pipeline = ... or @pipeline.<type>)
     pipeline_start_idx = len(lines)
     for i in range(last_standard_idx + 1, len(lines)):
         stripped = lines[i].strip()
         starts_pipeline = stripped.startswith("pipeline =") or stripped.startswith("pipeline=")
-        is_pipeline_def = starts_pipeline and pipeline_construct in stripped
+        is_pipeline_def = starts_pipeline and pipeline_constructor in stripped
         if is_pipeline_def:
             pipeline_start_idx = i
             break

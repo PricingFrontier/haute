@@ -321,7 +321,11 @@ class NodeRegistry:
         than silently ignore them; provide a real function body if you invoke
         the pipeline object directly.
         """
-        return self._register_node(fn, _node_type=NodeType.POLARS, **config)
+        return self._register_node(
+            fn,
+            _node_type=NodeType.POLARS,
+            **{**config, "_instance": True},
+        )
 
     def connect(
         self,
@@ -498,10 +502,10 @@ class Pipeline(NodeRegistry):
                 f"Node '{n.name}' is missing input(s) from: {missing}. "
                 "Upstream node(s) may have failed or not been registered."
             )
-        if n.config.get("instanceOf") or n.config.get("inputMapping"):
+        if n.config.get("_instance") or n.config.get("instanceOf") or n.config.get("inputMapping"):
             raise ExecutionError(
-                "Standalone run()/score() cannot resolve an instance node's "
-                "'instanceOf'/'inputMapping' references. Run the pipeline through "
+                "Standalone run()/score() cannot resolve an @pipeline.instance "
+                "node's 'instanceOf'/'inputMapping' references. Run the pipeline through "
                 "the graph executor, or inline the referenced logic into this node.",
                 node=n.name,
             )
