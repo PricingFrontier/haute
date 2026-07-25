@@ -251,6 +251,7 @@ def test_component_roadmaps_are_flat_complete_and_self_contained() -> None:
         "AUD-C11",
         "AUD-C13",
         "AUD-C18",
+        "AUD-SEC-01",
         "AUD-SEC-02",
         "AUD-TRACE-01",
         "ROAD-EXEC-01",
