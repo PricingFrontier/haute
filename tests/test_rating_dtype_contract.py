@@ -314,6 +314,36 @@ def test_ratebook_serialisation_requires_dtype_metadata_for_each_table() -> None
 
 
 @pytest.mark.parametrize(
+    ("records", "message"),
+    [
+        (
+            [{"column": "factor", "dtype": {"kind": "String"}, "extra": True}],
+            "malformed",
+        ),
+        (
+            [{"column": "wrong_factor", "dtype": {"kind": "String"}}],
+            "expected column",
+        ),
+        (
+            [{"column": "factor", "dtype": {"kind": "Binary"}}],
+            "invalid dtype descriptor",
+        ),
+    ],
+)
+def test_ratebook_serialisation_rejects_invalid_ordered_dtype_records(
+    records: list[dict[str, Any]],
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        _serialise_ratebook_factor_tables(
+            {"factor": {"known": 1.0}},
+            {"factor": {"known": 1}},
+            {},
+            {"factor": records},
+        )
+
+
+@pytest.mark.parametrize(
     ("dtype", "value"),
     [
         (pl.Float32, float("nan")),
