@@ -15,7 +15,7 @@ is covered by current specifications and ordinary regression tests.
 |---|---|---|
 | [Assistant](assistant.md) | Session fidelity, authoring feedback, provider/model workflow | `ASSIST-01` |
 | [Background jobs and API lifecycle](background-jobs-api.md) | Worker terminal states, artifacts, events, cleanup | `ROAD-WORKER-01` |
-| [Caching](caching.md) | Fingerprint completeness, invalidation, lifetime, concurrency | `AUD-CACHE-01` |
+| [Caching](caching.md) | Fingerprint completeness, invalidation, lifetime, concurrency | No open package |
 | [Deploy and platform](deploy-platform.md) | Deployment paths, scaffolding, platform/resource boundaries | `AUD-DEPLOY-01` |
 | [Engineering quality](engineering-quality.md) | Invariants, oracles, fixtures, CI, types, documentation truth | `ROAD-TEST-01` |
 | [Execution engine](execution-engine.md) | Execution boundary, projection, memory, faults, metrics | — |

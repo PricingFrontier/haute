@@ -8,14 +8,22 @@ from pathlib import Path
 import polars as pl
 
 from haute._api_input_schema import is_json_api_input_path
-from haute._cache import graph_fingerprint
+from haute._cache import (
+    CacheConsumer,
+    GraphFingerprintMemo,
+    checked_cache_inputs,
+    graph_fingerprint,
+)
+from haute._hashing import content_hash_bytes
 from haute._logging import get_logger
 from haute.errors import ConfigError
+from haute.execution import dataframe_graph_input_fingerprint
 from haute.graph_utils import GraphNode, NodeType, PipelineGraph, read_data_source, read_source
 
 logger = get_logger(component="deploy.schema")
 
 _SCHEMA_CACHE_FILE = ".haute_cache/output_schema.json"
+_DEPLOY_SCHEMA_EXECUTION_POLICY = "deploy-output-schema:v1"
 
 
 def _resolve_pipeline_path(graph: PipelineGraph, path: str) -> str:
@@ -80,6 +88,38 @@ def infer_input_schema(graph: PipelineGraph, input_node_id: str) -> dict[str, st
     return {col: str(dtype) for col, dtype in schema.items()}
 
 
+def deploy_schema_cache_fingerprint(
+    graph: PipelineGraph,
+    *,
+    output_node_id: str,
+    input_node_ids: list[str],
+    artifact_paths: dict[str, str] | None,
+) -> str:
+    """Return the checked identity for one deploy output-schema dry-run."""
+    from haute.deploy._scorer import artifact_identity_fingerprint
+
+    memo = GraphFingerprintMemo()
+    inputs = checked_cache_inputs(
+        CacheConsumer.DEPLOY_SCHEMA,
+        {
+            "graph_fingerprint": graph_fingerprint(graph, memo=memo),
+            "runtime_input_fingerprint": dataframe_graph_input_fingerprint(
+                graph,
+                target_node_id=output_node_id,
+                source="live",
+                memo=memo,
+            ),
+            "artifact_fingerprint": artifact_identity_fingerprint(artifact_paths),
+            "output_node_id": output_node_id,
+            "input_node_ids": tuple(sorted(set(input_node_ids))),
+            "source": "live",
+            "row_limit": 1,
+            "execution_policy": _DEPLOY_SCHEMA_EXECUTION_POLICY,
+        },
+    )
+    return f"deploy-schema:v{inputs.contract.version}:{content_hash_bytes(inputs.canonical_bytes)}"
+
+
 def infer_output_schema(
     graph: PipelineGraph,
     output_node_id: str,
@@ -113,13 +153,12 @@ def infer_output_schema(
     Returns:
         Dict of column_name → polars dtype string.
     """
-    from haute.deploy._scorer import artifact_identity_fingerprint
-
-    artifact_fp = artifact_identity_fingerprint(artifact_paths)
-    extra_keys = (output_node_id, *input_node_ids)
-    if artifact_fp:
-        extra_keys = (*extra_keys, artifact_fp)
-    fp = graph_fingerprint(graph, *extra_keys)
+    fp = deploy_schema_cache_fingerprint(
+        graph,
+        output_node_id=output_node_id,
+        input_node_ids=input_node_ids,
+        artifact_paths=artifact_paths,
+    )
 
     # Check cache
     cache_path = Path(_SCHEMA_CACHE_FILE)

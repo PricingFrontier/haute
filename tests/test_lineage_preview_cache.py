@@ -166,9 +166,6 @@ def test_lineage_key_invalidates_relevant_config_and_wiring() -> None:
     [
         ("preamble", "import polars as pl\nVALUE = 1"),
         ("source_file", "pipelines/other.py"),
-        ("preserved_blocks", ["# other"]),
-        ("sources", ["live", "stress"]),
-        ("active_source", "batch"),
     ],
 )
 def test_lineage_key_invalidates_each_graph_level_identity_field(field, value) -> None:
@@ -176,6 +173,38 @@ def test_lineage_key_invalidates_each_graph_level_identity_field(field, value) -
     changed = graph.model_copy(update={field: value})
 
     assert lineage_cache_key(_request(changed)) != lineage_cache_key(_request(graph))
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("pipeline_name", "other"),
+        ("pipeline_description", "other description"),
+        ("preserved_blocks", ["# other"]),
+        ("sources", ["live", "stress"]),
+        ("active_source", "batch"),
+        ("warning", "display-only warning"),
+    ],
+)
+def test_lineage_key_ignores_presentation_graph_fields(field, value) -> None:
+    graph = _graph()
+    changed = graph.model_copy(update={field: value})
+
+    assert lineage_cache_key(_request(changed)) == lineage_cache_key(_request(graph))
+
+
+def test_lineage_key_ignores_edge_display_id() -> None:
+    graph = _graph()
+    changed = graph.model_copy(
+        update={
+            "edges": [
+                edge.model_copy(update={"id": f"display-{index}"})
+                for index, edge in enumerate(graph.edges)
+            ]
+        }
+    )
+
+    assert lineage_cache_key(_request(changed)) == lineage_cache_key(_request(graph))
 
 
 @pytest.mark.parametrize(
@@ -190,7 +219,10 @@ def test_lineage_key_invalidates_each_graph_level_identity_field(field, value) -
         ("row_limit", 101),
         ("port_label", "frame-b"),
         ("contract_fingerprint", "contracts:v1:off:target-only"),
-        ("selected_live_switch_path", ({"switch": "s", "parent": "p"},)),
+        (
+            "selected_live_switch_path",
+            ({"switch_id": "s", "incoming_edges": ()},),
+        ),
         ("runtime_input_fingerprint", "runtime:v1:changed"),
         ("execution_semantics_version", "preview:v2"),
     ],

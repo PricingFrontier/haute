@@ -58,18 +58,20 @@ Out of scope (owned elsewhere, linked where relevant):
 ## Behaviour
 
 - **Fingerprints are deterministic and execution-sensitive, not mathematically
-  injective.** Node config, node type, edge wiring (including frame/port handles),
-  preamble text, and imported `utility` content hashes are included in the key
-  material. Structurally identical graphs produce the same fingerprint regardless
-  of node/edge insertion order, dict key order, or set member order. The result is
-  a 64-bit xxh64 digest, so the implementation avoids known serialization
-  ambiguities but cannot promise collision-free hashing. Utility content is also
-  subject to the documented `(mtime_ns, size)` stat-gate limitation below.
+  injective.** Execution-relevant node labels/config/type, edge endpoints and
+  frame/port handles, preamble text, pipeline source location, and imported
+  `utility` content hashes are included in key material. Presentation-only edge
+  IDs and canvas metadata are excluded. Structurally identical graphs produce
+  the same fingerprint regardless of node/edge insertion order, dict key order,
+  or set member order. The result is a 64-bit xxh64 digest, so the
+  implementation avoids known serialization ambiguities but cannot promise
+  collision-free hashing. Utility content is also subject to the documented
+  `(mtime_ns, size)` stat-gate limitation below.
 - **Fingerprints are versioned.** Every fingerprint is prefixed with an algorithm
-  version tag (`v<N>:`). Changing the canonicalisation rules bumps the version, so
-  old cache entries can never be silently reinterpreted under new rules — they
-  simply become unreachable (a fingerprint under the new version never matches a
-  stored key under the old one).
+  version tag (`v<N>:`), and checked consumer/record schemas carry their own
+  versions inside canonical key material. Changing canonicalisation or a checked
+  byte layout bumps the owning version, so old cache entries can never be silently
+  reinterpreted under new rules — they simply become unreachable.
 - **Caches are bounded and evict least-recently-used entries first,** except for
   entries a caller has explicitly pinned (e.g. a preview result the trace is still
   reading) or that are inside a protected write window (a dataframe artifact
@@ -85,7 +87,9 @@ Out of scope (owned elsewhere, linked where relevant):
   itself a `StatGatedCache` instance, not a parallel implementation — both key on
   `(mtime_ns, size)`; a change either dimension reloads. A byte-identical rewrite
   that happens to preserve both `mtime_ns` and `size` is below this resolution and
-  is accepted as a documented trade-off, not a defect.
+  is accepted as a documented trade-off, not a defect. Stat-gated entries and
+  their idle per-key single-flight gates are retained in bounded least-recently-used
+  order; eviction only causes a future reload and never weakens freshness.
 - **The JSON cache has two on-disk layers**, `working/` (the volatile layer a
   build call populates) and `committed/` (the durable layer, promoted from
   `working/` by a save operation elsewhere in the system). Deleting the JSON cache
@@ -260,17 +264,18 @@ Out of scope (owned elsewhere, linked where relevant):
 
 ## Polars backend contracts (0.6.0)
 
-Remaining cache improvement work is tracked in the
-[caching roadmap](../../roadmap/caching.md).
-It supplements, rather than weakens, the fingerprint and failure contracts above.
+The [caching roadmap](../../roadmap/caching.md) has no open package following
+the checked-identity audit and evidence-gated performance pass.
 
 - **Preview and trace identity is lineage-scoped.** A preview or trace result is
   identified from a deterministic canonical payload for the requested target's
   execution-relevant upstream lineage, not from unrelated nodes elsewhere in the
-  graph. The payload contains the ordered relevant nodes and edges plus the
-  graph-level `preamble`, `source_file`, `preserved_blocks`, `sources`, and
-  `active_source`; downstream and disconnected state is excluded. Edits outside
-  that payload preserve reuse, while any change within it invalidates reuse.
+  graph. The payload contains the ordered relevant nodes and execution wiring
+  plus graph-level `preamble` and `source_file`; display metadata,
+  `preserved_blocks`, available `sources`, and `active_source` are excluded.
+  The selected execution source is an explicit key field. Downstream and
+  disconnected state is excluded, so edits outside the payload preserve reuse
+  while any execution-affecting change within it invalidates reuse.
 - **There is one mandatory normalised key factory.** Preview and trace callers
   pass the original graph, the source-pruned result of
   `prepare_graph(graph, target, source)`, and explicit values for target,
@@ -301,12 +306,10 @@ It supplements, rather than weakens, the fingerprint and failure contracts above
   JSON: a JSON-derived result still requires the content/semantic checks its own
   operation needs and may not be accepted merely because `(mtime_ns, size)` match.
 - **Hash and serialisation work remains canonical.** Cache-key JSON uses the one
-  shared canonical encoder. Row-hash processing may use a direct buffer rather
-  than a Python list only if benchmarks demonstrate a material benefit while
-  preserving deterministic frame identity. A deliberate encoding change must bump
-  the relevant key version and document the one-time cache invalidation; it need not
-  reproduce the obsolete digest byte-for-byte. Otherwise the simpler established
-  path remains authoritative.
+  shared canonical encoder. Dataframe row hashes use the benchmark-approved,
+  versioned little-endian UInt64 buffer; equal frames retain equal identities and
+  the representation tag deliberately cold-starts keys created by the obsolete
+  decimal-list encoding.
 - **Cleanup is contractual, not cosmetic.** Retire unreachable collection
   strategies, dead sink helpers, no-op projection guards, and duplicate
   canonical-JSON paths once their callers have migrated. Removal must leave one
@@ -319,15 +322,15 @@ replace the dataframe execution cache's distinct artifact lifecycle.
 
 Required tests cover: lineage-local reuse and invalidation for both preview and
 trace; independent mutation of every key-factory argument and every canonical
-lineage payload field; invariance to node, edge, map, and set insertion ordering;
-exclusion of downstream/disconnected edits; oversize rejection preserving an old
-same-key value without eviction or protection; atomic concurrent replacement and
-coherent byte/entry accounting; lease release on success and exceptions; loud
-unexpected store failures; stat-gated runtime hash reuse and changed-file
-invalidation; a regression proving unchanged file metadata alone cannot validate
-JSON work for a different operation; cleanup imports/callers; and benchmark-gated
-semantic identity plus version-bump tests for any direct row-hash buffer
-implementation.
+lineage payload field; presentation-only stability; invariance to node, edge,
+map, and set insertion ordering; exclusion of downstream/disconnected edits;
+oversize rejection preserving an old same-key value without eviction or
+protection; atomic concurrent replacement and coherent byte/entry accounting;
+lease release on success and exceptions; loud unexpected store failures;
+stat-gated runtime hash reuse and changed-file invalidation; a regression proving
+unchanged file metadata alone cannot validate JSON work for a different
+operation; cleanup imports/callers; and benchmark-gated semantic identity plus
+version-tag tests for the direct row-hash buffer.
 
 ## Approved change contract — 0.7.0 shared input snapshots
 
@@ -377,6 +380,77 @@ boundedness admission, atomic refresh with readers on both sides of publication,
 single flight, different-identity concurrency, cancellation and fault preservation, signed
 artifact corruption, local-file invalidation, remote freshness-unknown reporting, leased
 eviction, quota accounting, and direct-versus-snapshot schema/data equivalence.
+
+## Checked fingerprint completeness
+
+- Every maintained cache-key factory declares one checked input contract. The
+  contract names its exact payload fields and classifies the shared logical
+  input classes: node configuration, upstream lineage, edge wiring and handles,
+  user code, source selection, row-limit semantics, runtime files, artifacts,
+  request shape, and execution policy. A logical class is either consumed
+  through named payload fields or excluded with a non-empty rationale.
+- Checked payload construction rejects missing and unknown fields before
+  hashing. Repeated nested identity records (graph nodes, graph edges, runtime
+  source entries, and selected live-switch records) also have closed checked
+  shapes, so wrapping them in a list or mapping cannot hide a missing dimension.
+  Cache-specific namespaces and schema versions remain explicit, so a contract
+  change causes a deliberate cold cache rather than reinterpreting an old key.
+- The canonical node-config registry classifies every recognised config field
+  as execution-affecting or excluded with a rationale. Adding a recognised
+  field without updating that registry fails both import-time validation and
+  reflective test coverage. Unknown legacy fields remain conservatively
+  execution-affecting at runtime; they are never silently omitted.
+- Execution graph identity includes node labels when they affect generated
+  names or frame binding, relevant node type/config/user code, upstream order,
+  full edge endpoints and handles, preamble/utility identity, and the pipeline
+  source location used for relative resolution. React-Flow position/type,
+  descriptions, edge IDs, pipeline display metadata, preserved source blocks,
+  and the UI's available/active-source metadata are presentation-only. The
+  selected execution source remains an explicit key input.
+- Preview/trace lineage key material exposes `preamble`, `source_file`, relevant
+  nodes, and relevant edges as separately checked fields rather than hiding
+  them beneath an opaque graph member. `preserved_blocks` and the graph's
+  available/active-source UI metadata remain excluded: the selected execution
+  source is the mandatory `source` field.
+- Runtime file and artifact identities use the shared `StatGatedCache`
+  discipline underneath the logical signature. That runtime identity is
+  deliberately complementary rather than standalone: node config, lineage,
+  and edge wiring are excluded with a rationale and every maintained consumer
+  pairs it with a checked graph/lineage identity. Preview, trace, dataframe
+  execution, and deploy-schema keys consume the same structured runtime
+  identity; a direct input or bundled artifact change invalidates immediately
+  at the documented stat-gate resolution.
+- Deploy output-schema identity additionally includes the selected input/output
+  nodes, the fixed one-row inference policy, and resolved bundled artifacts.
+  Model-contract and input-snapshot caches keep their specialised hot-key/hash
+  representations, but construct them from the same checked completeness
+  contract so their deliberately excluded input classes remain reviewable.
+  A process-local hot key may request the contract's ordered raw values without
+  constructing the canonical payload wrapper, but that projection still rejects
+  missing or unknown fields and follows the contract's declared field order.
+
+Changing the graph-identity or consumer payload schema bumps the corresponding
+algorithm version. Compatibility is cache-cold only: persisted source
+generations and user data are not migrated or deleted.
+
+The performance gate measures row-hash conversion, bounded LRU lookup/update,
+bounded stat-gated unchanged/changed lookup, and canonical lineage-signature
+serialisation independently. Each benchmark records its workload, environment,
+generated performance artifact, comparison threshold, and
+implement/no-change decision. A micro-optimisation is accepted only when its
+median improvement is at least 20% on the representative workload and semantic
+identity/concurrency tests remain unchanged; otherwise the required outcome is
+a recorded no-change decision. Cross-request graph memoisation is not accepted
+unless it is bounded, contains no frame/plan references, is project- and
+algorithm-version-scoped, and preserves immediate lineage invalidation.
+
+The accepted row-hash path hashes a versioned, canonical little-endian UInt64
+buffer instead of decimalising each Polars row hash. The LRU/stat hot-path
+implementations and cross-request lineage memoisation remain no-change
+decisions: the former has no material semantics-preserving comparator, while
+the latter has no demonstrated saving after paying the identity work needed to
+reject changed graph and runtime inputs. Bounding stat-cache retention is a
+memory-safety policy, not a claim of faster lookup.
 
 ## Dataframe-cache first-consume safety
 

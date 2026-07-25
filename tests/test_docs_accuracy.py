@@ -251,9 +251,11 @@ def test_component_roadmaps_are_flat_complete_and_self_contained() -> None:
         "AUD-C11",
         "AUD-C13",
         "AUD-C18",
+        "AUD-CACHE-01",
         "AUD-SEC-01",
         "AUD-SEC-02",
         "AUD-TRACE-01",
+        "CACHE-PERF-01",
         "ROAD-EXEC-01",
         "ROAD-EXEC-02",
         "ROAD-EXEC-03",
@@ -277,7 +279,6 @@ def test_component_roadmaps_are_flat_complete_and_self_contained() -> None:
         | {
             "ASSIST-01",
             "ASSIST-02",
-            "AUD-CACHE-01",
             "AUD-DEPLOY-01",
             "AUD-DEPLOY-02",
             "AUD-PIPE-01",
@@ -285,8 +286,6 @@ def test_component_roadmaps_are_flat_complete_and_self_contained() -> None:
             "AUD-QUALITY-02",
             "AUD-QUALITY-03",
             "AUD-RATING-01",
-            "AUD-SEC-01",
-            "CACHE-PERF-01",
             "RATING-PERF-01",
         }
     ) - retired_or_folded_packages

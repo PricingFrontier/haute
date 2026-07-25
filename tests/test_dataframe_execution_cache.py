@@ -4,11 +4,12 @@ import gc
 import os
 from pathlib import Path
 from types import MappingProxyType
+from unittest.mock import patch
 
 import polars as pl
 import pytest
 
-from haute._cache import canonical_json
+from haute._cache import CacheConsumer, canonical_json, checked_cache_inputs
 from haute._dataframe_execution_cache import (
     DATAFRAME_EXECUTION_CACHE_VERSION,
     DEFAULT_DATAFRAME_EXECUTION_CACHE_MAX_BYTES,
@@ -24,6 +25,7 @@ from haute.execution import (
     dataframe_execution_cache_key,
     dataframe_execution_cache_profile,
     dataframe_execution_policy_fingerprint,
+    dataframe_frame_input_fingerprint,
     dataframe_graph_input_fingerprint,
     materialize_lazy_frame_with_cache,
 )
@@ -426,7 +428,6 @@ def test_cache_key_digest_is_canonical_json_of_documented_payload() -> None:
     )
 
     payload = {
-        "version": DATAFRAME_EXECUTION_CACHE_VERSION,
         "namespace": "unit",
         "node_id": "target",
         "lineage_fingerprint": key.lineage_fingerprint,
@@ -437,7 +438,9 @@ def test_cache_key_digest_is_canonical_json_of_documented_payload() -> None:
         "extra_keys": ["x"],
         "execution_policy": {"cols": {0, 1, 2, 10}},
     }
-    payload_digest = content_hash_bytes(canonical_json(payload).encode())
+    payload_digest = content_hash_bytes(
+        checked_cache_inputs(CacheConsumer.DATAFRAME_EXECUTION, payload).canonical_bytes
+    )
     assert key.cache_key == f"dfexec:v{DATAFRAME_EXECUTION_CACHE_VERSION}:{payload_digest}"
 
 
@@ -495,6 +498,49 @@ def test_dataframe_graph_input_fingerprint_tracks_file_backed_runtime_artifacts(
     second = dataframe_graph_input_fingerprint(graph, target_node_id="target", source="batch")
 
     assert second != first
+
+
+def test_dataframe_frame_fingerprint_uses_versioned_canonical_uint64_buffer() -> None:
+    frame = pl.DataFrame(
+        {
+            "id": [1, 2, 3],
+            "amount": [1.5, 2.5, 3.5],
+            "group": ["a", "b", "a"],
+        }
+    )
+    hashes = frame.hash_rows(seed=0)
+    expected_bytes = hashes.to_numpy().astype("<u8", copy=False).tobytes(order="C")
+
+    with patch.object(pl.Series, "to_list", side_effect=AssertionError("decimal conversion")):
+        fingerprint = dataframe_frame_input_fingerprint(frame)
+
+    assert fingerprint == {
+        "height": 3,
+        "width": 3,
+        "schema": {"id": "Int64", "amount": "Float64", "group": "String"},
+        "row_hash_encoding": "polars-u64-le:v1",
+        "row_hash": content_hash_bytes(expected_bytes),
+    }
+
+
+def test_dataframe_frame_fingerprint_preserves_null_and_empty_identity() -> None:
+    empty_int = pl.DataFrame(schema={"value": pl.Int64})
+    empty_string = pl.DataFrame(schema={"value": pl.String})
+    with_nulls = pl.DataFrame({"value": [1, None, 3], "label": [None, "a", ""]})
+    changed_nulls = pl.DataFrame({"value": [1, 2, 3], "label": [None, "a", ""]})
+
+    assert dataframe_frame_input_fingerprint(empty_int) == dataframe_frame_input_fingerprint(
+        empty_int.clone()
+    )
+    assert dataframe_frame_input_fingerprint(empty_int) != dataframe_frame_input_fingerprint(
+        empty_string
+    )
+    assert dataframe_frame_input_fingerprint(with_nulls) == dataframe_frame_input_fingerprint(
+        with_nulls.clone()
+    )
+    assert dataframe_frame_input_fingerprint(with_nulls) != dataframe_frame_input_fingerprint(
+        changed_nulls
+    )
 
 
 def test_dataframe_graph_input_fingerprint_reuses_same_stat_gate_after_content_change(

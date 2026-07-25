@@ -592,13 +592,13 @@ class TestCanonicalEncoderUnification:
 
         assert captured, "digest material never reached content_hash_bytes"
         material = captured[0].decode()
-        # W1-cache F164: the node line is now framed as a canonical JSON array
-        # ``[id, type, config]`` (injective — a node id containing ``|`` or
-        # ``\n`` can no longer collide with the separators).  The config itself
-        # must still carry the compact, key-sorted, set-canonicalised encoding.
-        assert '["n1","polars",{"k":1,"tags":["a","b"]}]' in material, (
-            f"Node line is not injectively framed / config not canonically encoded: {material!r}"
-        )
+        # The checked graph-structure object frames every field injectively.
+        # The nested record marker is explicit, while config values retain
+        # compact, key-sorted, set-canonicalised encoding.
+        assert (
+            '{"cache_record_schema":{"record":"graph_node","version":1},'
+            '"config":{"k":1,"tags":["a","b"]},"id":"n1","label":"A","nodeType":"polars"}'
+        ) in material, f"Node/config is not canonically encoded: {material!r}"
         # The spaced ``json.dumps`` form must never appear.
         assert '{"k": 1' not in material
 

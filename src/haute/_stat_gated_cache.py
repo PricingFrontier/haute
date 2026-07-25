@@ -3,9 +3,9 @@
 Shares the invalidation discipline of
 :func:`haute.execution._stat_gated_runtime_path_fingerprint`: a cached
 value is reused while the backing file's ``(st_mtime_ns, st_size)`` is
-unchanged; any metadata change reloads.  One slot per key, replaced when
-the stat gate changes, so a cache stays bounded by the number of
-distinct artifacts the process touches.
+unchanged; any metadata change reloads. One slot per key is replaced when
+the stat gate changes, and least-recently-used slots are evicted at the
+configured entry bound.
 
 Concurrency: the first load for a key runs under a per-key lock — other
 callers arriving during that load wait and then reuse the cached value,
@@ -29,12 +29,24 @@ from __future__ import annotations
 
 import os
 import threading
+from collections import OrderedDict
 from collections.abc import Callable, Hashable
 from pathlib import Path
 from typing import Generic, TypeVar
 
 K = TypeVar("K", bound=Hashable)
 V = TypeVar("V")
+
+
+DEFAULT_STAT_GATED_CACHE_MAX_ENTRIES = 256
+
+
+class _LoadGate:
+    """A per-key load lock, with its current number of participants."""
+
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.participants = 0
 
 
 def resolve_artifact_path(path: str | Path) -> str:
@@ -66,13 +78,21 @@ def artifact_cache_key(path: str | Path) -> str:
 
 
 class StatGatedCache(Generic[K, V]):
-    """Single-flight, stat-gated cache of loaded file artifacts."""
+    """Bounded, single-flight, stat-gated cache of loaded file artifacts."""
 
-    def __init__(self, *, artifact_kind: str) -> None:
+    def __init__(
+        self,
+        *,
+        artifact_kind: str,
+        max_entries: int = DEFAULT_STAT_GATED_CACHE_MAX_ENTRIES,
+    ) -> None:
+        if isinstance(max_entries, bool) or not isinstance(max_entries, int) or max_entries <= 0:
+            raise ValueError("max_entries must be a positive integer")
         self._artifact_kind = artifact_kind
+        self._max_entries = max_entries
         self._lock = threading.Lock()
-        self._entries: dict[K, tuple[int, int, V]] = {}
-        self._load_locks: dict[K, threading.Lock] = {}
+        self._entries: OrderedDict[K, tuple[int, int, V]] = OrderedDict()
+        self._load_locks: dict[K, _LoadGate] = {}
 
     def get_or_load(self, key: K, path: str, loader: Callable[[], V]) -> V:
         """Return the cached value for *key*, loading at most once per gate.
@@ -87,26 +107,54 @@ class StatGatedCache(Generic[K, V]):
             with self._lock:
                 entry = self._entries.get(key)
                 if entry is not None and (entry[0], entry[1]) == gate:
+                    self._entries.move_to_end(key)
                     return entry[2]
-                load_lock = self._load_locks.setdefault(key, threading.Lock())
-            with load_lock:
-                # Re-check: the load that held this lock while we waited
-                # has already populated the cache for this gate.
+                load_gate = self._load_locks.setdefault(key, _LoadGate())
+                load_gate.participants += 1
+            try:
+                with load_gate.lock:
+                    # Re-check: the load that held this lock while we waited
+                    # has already populated the cache for this gate.
+                    with self._lock:
+                        entry = self._entries.get(key)
+                        if entry is not None and (entry[0], entry[1]) == gate:
+                            self._entries.move_to_end(key)
+                            return entry[2]
+                    value = loader()
+                    after = Path(path).stat()
+                    if (after.st_mtime_ns, after.st_size) != gate:
+                        continue
+                    with self._lock:
+                        self._entries[key] = (gate[0], gate[1], value)
+                        self._entries.move_to_end(key)
+                        while len(self._entries) > self._max_entries:
+                            evicted_key, _ = self._entries.popitem(last=False)
+                            evicted_gate = self._load_locks.get(evicted_key)
+                            if evicted_gate is not None and evicted_gate.participants == 0:
+                                del self._load_locks[evicted_key]
+                    return value
+            finally:
                 with self._lock:
-                    entry = self._entries.get(key)
-                    if entry is not None and (entry[0], entry[1]) == gate:
-                        return entry[2]
-                value = loader()
-                after = Path(path).stat()
-                if (after.st_mtime_ns, after.st_size) != gate:
-                    continue
-                with self._lock:
-                    self._entries[key] = (gate[0], gate[1], value)
-                return value
+                    load_gate.participants -= 1
+                    if (
+                        load_gate.participants == 0
+                        and self._load_locks.get(key) is load_gate
+                        and key not in self._entries
+                    ):
+                        del self._load_locks[key]
         raise RuntimeError(f"{self._artifact_kind} changed on disk while loading: {path}")
 
+    def __len__(self) -> int:
+        """Return the number of retained cache entries."""
+        with self._lock:
+            return len(self._entries)
+
     def clear(self) -> None:
-        """Drop every cached entry and per-key load lock."""
+        """Drop cached entries and idle gates without splitting an active flight."""
         with self._lock:
             self._entries.clear()
-            self._load_locks.clear()
+            self._load_locks = {
+                key: load_gate
+                for key, load_gate in self._load_locks.items()
+                if load_gate.participants
+            }

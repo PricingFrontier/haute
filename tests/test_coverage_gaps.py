@@ -206,16 +206,20 @@ class TestGraphBaseFingerprint:
 
     def test_empty_graph_fingerprint(self):
         """Empty graph produces a valid content hash of the empty payload."""
-        from haute._cache import _graph_base_fingerprint
+        from haute._cache import (
+            CacheConsumer,
+            _graph_base_fingerprint,
+            checked_cache_inputs,
+        )
         from haute._types import PipelineGraph
 
         g = PipelineGraph()
         fp = _graph_base_fingerprint(g)
-        # Hash of empty string under the same content-hash helper the
-        # production code uses; pins algorithmic agreement with
-        # ``haute._hashing.content_hash_bytes`` without hard-coding a
-        # specific digest algorithm here.
-        assert fp == content_hash_bytes(b"")
+        expected = checked_cache_inputs(
+            CacheConsumer.GRAPH_STRUCTURE,
+            {"nodes": [], "edges": []},
+        )
+        assert fp == content_hash_bytes(expected.canonical_bytes)
 
 
 class TestGraphFingerprintWithExtraKeys:
@@ -636,6 +640,7 @@ class TestInferOutputSchemaEdgeCases:
         with pytest.raises(ValueError, match="No API input nodes"):
             infer_output_schema(graph, "out", [])
 
+    @pytest.mark.usefixtures("_widen_sandbox_root")
     def test_cache_write_failure_does_not_raise(self, monkeypatch, tmp_path):
         """If cache writing fails, infer_output_schema still returns the schema."""
         from haute.deploy._schema import infer_output_schema

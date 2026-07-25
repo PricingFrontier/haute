@@ -616,10 +616,15 @@ class TestInferOutputSchema:
             }
         )
 
-        # Compute the fingerprint that will be used
-        from haute._cache import graph_fingerprint
+        # Compute the checked deploy-schema fingerprint that will be used.
+        from haute.deploy._schema import deploy_schema_cache_fingerprint
 
-        fp = graph_fingerprint(graph, "out", "src")
+        fp = deploy_schema_cache_fingerprint(
+            graph,
+            output_node_id="out",
+            input_node_ids=["src"],
+            artifact_paths=None,
+        )
 
         # Pre-write the cache
         cache_dir = tmp_path / ".haute_cache"

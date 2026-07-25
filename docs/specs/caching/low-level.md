@@ -5,7 +5,7 @@
 | File | Responsibility |
 | --- | --- |
 | `src/haute/_hashing.py` | Deterministic xxh64 content hashing for bytes and files (`content_hash_bytes`, `content_hash`). The primitive every other digest in this component builds on. |
-| `src/haute/_cache.py` | `canonical_json()` — the shared canonical JSON encoder for graph/dataframe cache-key material; `graph_fingerprint()` / `preamble_execution_fingerprint()` — deterministic, versioned digests of a `PipelineGraph`'s execution-relevant inputs; `GraphFingerprintMemo` — request-scoped pin over the process-wide `StatGatedCache`-backed utility-file hash cache. |
+| `src/haute/_cache.py` | Checked consumer/config-field contracts; `canonical_json()` — the shared canonical JSON encoder for graph/dataframe cache-key material; `graph_fingerprint()` / `preamble_execution_fingerprint()` — deterministic, versioned digests of a `PipelineGraph`'s execution-relevant inputs; `GraphFingerprintMemo` — request-scoped pin over the process-wide `StatGatedCache`-backed utility-file hash cache. |
 | `src/haute/_lru_cache.py` | `LRUCache[K, V]` — thread-safe bounded LRU cache with optional TTL, pinning, and optional byte-budget eviction. The shared eviction/pinning core for the other in-process caches below. |
 | `src/haute/_fingerprint_cache.py` | `FingerprintCache` — thin `LRUCache` subclass adding multi-slot dict-valued semantics (`store`, `try_get`, `update_slot`), used by the preview and trace caches (execution engine). |
 | `src/haute/_dataframe_execution_cache.py` | `DataFrameExecutionCache` — parquet-artifact-backed `LRUCache` subclass for materialized backend dataframes, plus `dataframe_execution_cache_key()` and `materialize_lazy_frame_with_cache()`, the entry points backend callers use. |
@@ -25,7 +25,14 @@
   not safe to reuse across independent calls because file metadata alone cannot
   detect every edit (an editor can preserve both `mtime` and `size` while changing
   bytes).
-- **`ALGO_VERSION: int`** (`_cache.py`, currently `6`) — read dynamically inside
+- **`CacheConsumerContract` / `CheckedCacheInputs`** (`_cache.py`) — immutable,
+  versioned exact-field contracts over the closed `CacheInputClass` set.
+  `checked_cache_inputs()` rejects missing or unknown fields and exposes ordered
+  raw values or a namespaced canonical payload.
+- **`CACHE_CONFIG_FIELD_CLASSIFICATIONS`** (`_cache.py`) — immutable
+  per-`NodeType` classification of every recognised config key as a logical
+  execution input or a rationale-bearing presentation exclusion.
+- **`ALGO_VERSION: int`** (`_cache.py`, currently `8`) — read dynamically inside
   `graph_fingerprint()` (not captured at import time) so tests can monkeypatch it
   to simulate a version bump. Embedded as a `"v<N>:"` prefix on every fingerprint.
 - **`LRUCache[K, V]`** (`_lru_cache.py`) — `OrderedDict`-backed store (`_data`),
@@ -87,19 +94,23 @@
    immutable `model_copy(update=...)` idiom used elsewhere) never serve a stale
    base digest. Direct in-place mutation after the cached property has been read is
    unsupported and can leave the graph instance's base fingerprint stale.
-2. `_graph_base_fingerprint` canonically encodes every node as
-   `[id, nodeType, config]` (via `canonical_json`, EXPLORE nodes drop their
-   `overview` key first) and every edge as `[source, sourceHandle, target,
-   targetHandle]`, sorts nodes by id and edges by their serialized line, joins
-   with `\n`, and hashes with `content_hash_bytes`.
+2. `_graph_base_fingerprint` builds the checked `GRAPH_STRUCTURE` payload.
+   Nodes contain `id`, execution-relevant `label`, `nodeType`, and classified
+   config; edges contain `source`, `sourceHandle`, `target`, and
+   `targetHandle`. The node and edge records themselves pass through closed
+   checked record schemas before entering the consumer payload.
+   Presentation-only config fields and edge IDs are excluded. Nodes sort by ID,
+   edges sort by canonical encoding, and the namespaced canonical payload is
+   hashed with `content_hash_bytes`. A record-layout change bumps both the
+   `GRAPH_STRUCTURE` schema version and the enclosing graph algorithm version.
 3. `graph_fingerprint` separately computes `preamble_execution_fingerprint` for
    the graph's preamble text (and, if the preamble imports the `utility`
    package, a digest of the resolved `utility` module/package's file contents —
    resolved via `importlib.machinery.PathFinder` against the same prioritised
    search path the executor installs at exec time).
-4. If there are `extra_keys` or a non-`None` preamble fingerprint, the two are
-   combined with the base digest via `canonical_json([extra_keys, context_fp, base])`
-   and re-hashed; otherwise the base digest is used directly.
+4. `graph_fingerprint` builds the checked `GRAPH_EXECUTION` payload from the
+   base digest, preamble/utility digest, `source_file`, and ordered
+   `extra_keys`, then always hashes that namespaced canonical payload.
 5. The result is returned as `f"v{ALGO_VERSION}:{digest}"`.
 
 ### Dataframe execution cache key construction
@@ -119,8 +130,9 @@
 4. If `execution_policy` is given, `dataframe_execution_policy_fingerprint()`
    hashes its `canonical_json` encoding separately (stored as
    `execution_policy_fingerprint` on the key) *and* the raw policy is embedded
-   directly in the outer payload dict (not just its fingerprint) before that
-   payload itself is canonically encoded and hashed into `cache_key`.
+   directly in the checked `DATAFRAME_EXECUTION` payload (not just its
+   fingerprint) before the namespaced canonical payload is hashed into
+   `cache_key`.
 5. The final `cache_key` string is `f"dfexec:v{DATAFRAME_EXECUTION_CACHE_VERSION}:{payload_digest}"`.
 
 ### Dataframe execution cache read/write (`materialize_lazy_frame_with_cache`)
@@ -399,26 +411,30 @@ etc. when changing this component.
 
 ## Polars backend contracts (0.6.0)
 
-The implementation satisfies this low-level contract. Remaining cache improvement work is
-tracked in the [caching roadmap](../../roadmap/caching.md).
+The implementation satisfies this low-level contract. The
+[caching roadmap](../../roadmap/caching.md) has no open package following the
+identity audit and evidence-gated performance pass.
 
 ### Preview/trace key construction and lifecycle
 
-- Add one shared, versioned preview/trace key-factory API at the cache boundary.
+- One shared, versioned preview/trace key-factory API exists at the cache boundary.
   Its mandatory inputs are the original graph; the source-pruned
   `prepare_graph(graph, target, source)` result; explicit target;
-  source/`active_source`; normalised requested columns; initial width; row limit;
+  selected source; normalised requested columns; initial width; row limit;
   port/frame handle; contract fingerprint; selected live-switch path;
   runtime/input fingerprint; and execution-semantics version. `None`, empty,
   default, and named values are encoded as distinct explicit fields. Preview and
   trace modules consume this API and do not own parallel key formats.
-- The factory derives a canonical lineage payload containing deterministically
-  ordered execution-relevant nodes and edges, including relevant node config and
-  handles, plus graph-level `preamble`, `source_file`, `preserved_blocks`,
-  `sources`, and `active_source`. It excludes downstream and disconnected graph
-  state. All map/set and graph insertion-order differences normalise before
-  `canonical_json()`; unsupported fields propagate its `TypeError` rather than
-  falling back to `repr()`.
+- The factory derives a canonical lineage payload with separately checked
+  top-level `preamble`, `source_file`, `nodes`, and `edges` fields. Node, edge,
+  and selected-live-switch records use closed nested schemas, and nodes/edges
+  are deterministically ordered. Relevant node labels/config and edge
+  endpoints/handles are therefore not hidden beneath an opaque `graph` field.
+  It excludes presentation metadata (`preserved_blocks`, available `sources`,
+  `active_source`, edge IDs), downstream nodes, and disconnected graph state;
+  selected source is an explicit checked field. All map/set and graph
+  insertion-order differences normalise before `canonical_json()`; unsupported
+  fields propagate its `TypeError` rather than falling back to `repr()`.
 - Cache store returns an explicit retained-or-rejected outcome. It computes size
   and rejects an oversized candidate before mutating the cache. Rejection leaves
   an existing value under the same key untouched, performs no victim eviction,
@@ -436,7 +452,7 @@ tracked in the [caching roadmap](../../roadmap/caching.md).
 
 ### Runtime fingerprints, hashing, and cleanup
 
-- Runtime data-path fingerprinting must delegate unchanged-path reuse to the
+- Runtime data-path fingerprinting delegates unchanged-path reuse to the
   shared `StatGatedCache` loader pattern used for utility hashes. The loader still
   computes the required content hash on a cache miss and preserves the existing
   torn-read failure semantics.
@@ -444,13 +460,12 @@ tracked in the [caching roadmap](../../roadmap/caching.md).
   loaded content hash. It must not bypass JSON parsing, schema/version validation,
   source selection, or any other semantic check required by a distinct JSON
   operation. No stat-only cross-operation JSON-validity cache is permitted.
-- All new cache-key payloads use `_cache.canonical_json()`; remove duplicate
-  canonicalisation helpers after call sites migrate. Any direct row-hash buffer
-  replaces Python-list materialisation only behind a benchmark gate and must
-  preserve equal-frame/different-frame identity for supported shapes, including
-  nulls and empty frames. If its byte encoding changes existing digests, bump the
-  key version and document the deliberate one-time invalidation rather than
-  retaining the old allocation-heavy encoding for digest compatibility.
+- All maintained cache-key payloads use `_cache.canonical_json()`. The
+  benchmark-approved dataframe row-hash path uses a tagged canonical
+  little-endian UInt64 buffer and preserves equal-frame/different-frame identity
+  for supported shapes, including nulls and empty frames. Its representation tag
+  documents the deliberate one-time invalidation of the old allocation-heavy
+  decimal encoding.
 - Obsolete `COLLECT_LAZY` selection paths, dead sink helpers, and no-op projection
   guards are absent, with tests pinning no observable execution or diagnostic
   effect. Do not retain compatibility aliases with no
@@ -458,11 +473,11 @@ tracked in the [caching roadmap](../../roadmap/caching.md).
 
 ### Required automated evidence
 
-- Unit and consumer tests prove preview and trace reuse survives downstream or
-  disconnected edits and is invalidated by each lineage/config/wiring change and
-  each graph-level lineage field (`preamble`, `source_file`, `preserved_blocks`,
-  `sources`, `active_source`). Ordering permutations of relevant nodes, edges,
-  mappings, and sets produce the same key.
+- Unit and consumer tests prove preview and trace reuse survives downstream,
+  disconnected, and presentation-only edits and is invalidated by each
+  execution-relevant lineage/config/wiring change plus `preamble`,
+  `source_file`, and explicit source. Ordering permutations of relevant nodes,
+  edges, mappings, and sets produce the same key.
 - A field-by-field matrix independently mutates the original graph, prepared
   source-pruned graph, target, source/active source, requested columns, initial
   width, row limit, port/frame handle, contract fingerprint, selected live-switch
@@ -481,9 +496,8 @@ tracked in the [caching roadmap](../../roadmap/caching.md).
   either metadata dimension changing, and preserve loader/torn-read failures.
   JSON route/component tests prove matching metadata alone cannot make one
   operation accept another operation's JSON-derived result.
-- Any direct row-hash-buffer patch includes equivalence tests plus a repeatable
-  benchmark with an agreed material-improvement threshold; absent that evidence,
-  do not make the optimisation.
+- The direct row-hash-buffer path has equivalence tests plus a repeatable
+  benchmark with the 20% material-improvement threshold and recorded decision.
 
 ## Approved change contract — 0.7.0 shared input snapshots
 
@@ -541,6 +555,111 @@ Remaining source-cache improvement work is tracked in the
   progress isolation, cancellation/deadline cleanup, quotas, redaction, and provider protocol
   conformance. Database, Databricks, lakehouse, and file integration suites supply their own
   builders against the same store contract.
+
+## Checked fingerprint completeness
+
+The shared implementation follows the high-level
+[checked fingerprint completeness](high-level.md#checked-fingerprint-completeness)
+contract through the following low-level boundaries.
+
+### Checked consumer contracts
+
+- `_cache.py` defines the closed logical-input enum, cache-consumer enum,
+  immutable consumer-contract records, checked nested-record schemas, and the
+  checked input-payload builders. `checked_cache_input_values` is the
+  allocation-light projection for process-local hot keys: an already ordered
+  mapping returns raw values in contract order without constructing a
+  `CheckedCacheInputs` wrapper, while reordered mappings and invalid shapes
+  take the full checked-builder path for canonical ordering and diagnostics.
+  Each consumer contract has a key-schema version, an exact ordered payload
+  field set, and a total classification of logical input classes. Construction
+  raises on a missing/extra payload field, an unknown referenced field, an
+  input class classified twice, or an exclusion without a rationale. Nested
+  node, edge, runtime-source, and selected-switch records likewise reject
+  missing/extra fields.
+- Maintained consumers include graph execution, preview/trace lineage,
+  dataframe execution, runtime graph inputs, deploy output-schema inference,
+  model feature-contract validation, and provider-neutral input snapshots.
+  Consumer code passes mappings into the checked builder and hashes or keys the
+  resulting canonical/raw values according to its existing persistence and
+  hot-path needs; it does not reconstruct a parallel field list.
+- Cache namespaces and versions are owned by the corresponding consumer and
+  record contracts. Graph identity is deliberately version-bumped when node
+  labels, source-file resolution, presentation exclusions, or a nested record
+  layout changes its canonical bytes. Dataframe, runtime-input, and lineage
+  payload versions are independently bumped when their own field sets change.
+
+### Field and runtime classification
+
+- `_cache.py` owns an explicit per-node-type classification for every field in
+  `_config_validation.VALID_KEYS`, with universal fields classified once.
+  Execution fields are retained in node identity; excluded fields carry a
+  non-empty rationale. Runtime treatment is conservative for an unrecognised
+  legacy key. Import-time validation and reflective tests both compare the
+  maintained registry to `VALID_KEYS` so a new official field cannot run or
+  merge unclassified.
+- Node identity contains `id`, execution-relevant `label`, `nodeType`, and the
+  classified config. Edge identity contains `source`, `sourceHandle`, `target`,
+  and `targetHandle`; edge `id` is excluded because selection and binding are
+  determined before fingerprinting and do not depend on that display ID.
+  Pipeline execution context contains `preamble`, its utility-content
+  fingerprint, and `source_file`; pipeline display metadata,
+  `preserved_blocks`, `sources`, and `active_source` are excluded because every
+  consumer supplies the selected source explicitly.
+- `execution.py` replaces its bespoke runtime-path dictionary/lock with a
+  bounded `StatGatedCache`. Its runtime-input registry distinguishes source
+  data, snapshot generation pointers, external files, model artifacts, feature
+  contracts, and optimiser artifacts. `RUNTIME_GRAPH_INPUT` explicitly excludes
+  node config, upstream lineage, and edge wiring because it is an external-state
+  component, not a standalone execution identity. Every maintained caller pairs
+  it with the checked structural lineage owned by preview/trace, dataframe
+  execution, deploy-schema, or deploy scoring. Missing paths remain explicit
+  identity values and changing either stat-gate dimension reloads the content
+  fingerprint.
+- `StatGatedCache` retains at most its positive configured `max_entries` in
+  least-recently-used order. A hit refreshes recency. Insertion evicts the
+  oldest entry and its idle per-key load gate; an in-flight gate remains until
+  its last participant exits, preserving same-key single flight. Eviction only
+  causes a future stat/load and does not change torn-read or loader-exception
+  behavior.
+
+### Required automated evidence
+
+- Registry reflection adds/removes a recognised config field under test and
+  proves the classification check fails until the registry changes. A consumer
+  matrix proves every logical input class is consumed or has a rationale and
+  every checked payload and nested record rejects missing/extra dimensions.
+- Mutation tests cover node label/type/config/code, upstream lineage and order,
+  edge endpoints/handles, preamble/utility, source file, explicit source,
+  requested columns, row limits, contracts/policies, runtime files, and
+  artifacts. Presentation-only mutations remain stable. Existing separator,
+  ordering, `None`, set/NaN, and path-collision probes remain green.
+- Consumer regressions prove preview/trace parity and immediate runtime-file
+  invalidation, dataframe lineage invalidation, deploy-schema invalidation
+  after direct-input or artifact replacement, model-contract schema/contract
+  separation, allocation-light model hot-key routing with unchanged
+  missing/unknown-field rejection, and input-cache provider/query/secret
+  semantics.
+- Stat-cache tests prove positive bound validation, LRU refresh/eviction,
+  bounded idle load-gate retention, same-key single flight across concurrent
+  misses, and unchanged torn-read/loader-exception semantics.
+- `tests/performance/test_cache_identity_perf.py` records separate evidence for
+  row-hash conversion, LRU operations, stat-gated path identity, and canonical
+  lineage serialisation. Run it through `scripts/run_perf_suite.py` so
+  `.cache/perf/perf-report.json` records the environment and artifact. Each
+  comparison records a 20% materiality threshold and an
+  implement/no-change decision; no optimisation is merged solely from an
+  absolute wall-clock threshold.
+- `execution.dataframe_frame_input_fingerprint` feeds
+  `hash_rows(seed=0)` through a canonical little-endian UInt64 buffer tagged
+  `polars-u64-le:v1`; the representation change deliberately cold-starts
+  dependent keys. The tag versions the byte encoding rather than Polars'
+  internal hash algorithm, so an algorithm change after a dependency upgrade
+  may safely over-invalidate but cannot serve stale data. The LRU/stat hot-path
+  and cross-request lineage-memo gates record `no_change` until a
+  semantics-preserving candidate demonstrates the required relative
+  improvement. Stat-cache entry bounding is a retention invariant and is not
+  presented as a lookup-speed optimisation.
 
 ## Dataframe-cache first-consume safety
 

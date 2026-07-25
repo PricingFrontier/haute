@@ -31,6 +31,19 @@ For a focused preview/trace run with tighter local budgets:
 uv run python scripts/run_perf_suite.py --pytest-target tests/performance/test_preview_trace_perf.py --max-total-seconds 120 --max-test-seconds 30
 ```
 
+Run the cache-identity decision gates independently with:
+
+```powershell
+uv run python scripts/run_perf_suite.py --pytest-target tests/performance/test_cache_identity_perf.py --max-total-seconds 60 --max-test-seconds 15
+```
+
+That lane records the representative row-hash encoding comparison, bounded LRU and
+stat-gate operations, and 100-node lineage serialization in the normal performance
+report. A relative median improvement must clear 20% before an optimization is accepted.
+The versioned little-endian UInt64 row-hash buffer clears that gate; LRU/stat hot-path and
+cross-request lineage-memo candidates remain explicit no-change decisions. Stat-cache
+retention is bounded as a memory-safety invariant, independently of lookup speed.
+
 The preview/trace lane currently enforces these Phase 9 latency budgets on a
 representative multi-branch graph:
 
