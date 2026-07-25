@@ -16,12 +16,16 @@ from functools import cache
 from pathlib import Path
 
 from haute._config_io import NODE_TYPE_TO_FOLDER
+from haute._edge_join import _ALLOWED_HOW
 from haute._scaffold import TARGETS, haute_toml
 from haute._types import NodeType
 
 ROOT = Path(__file__).resolve().parents[1]
 MKDOCS_CONFIG = ROOT / "mkdocs.yml"
 EXECUTION_STRATEGY_DOC = ROOT / "docs" / "building-models" / "execution-strategy.md"
+EDGE_JOIN_GUIDE = ROOT / "docs" / "building-models" / "nodes" / "edge-join.md"
+EDGE_JOIN_RUNTIME_SPEC = ROOT / "docs" / "specs" / "json-shredding" / "low-level.md"
+EDGE_JOIN_EDITOR_SPEC = ROOT / "docs" / "specs" / "frontend-node-editors" / "low-level.md"
 SPECS_README = ROOT / "docs" / "specs" / "README.md"
 PIPELINE_CONFIG_SPEC = ROOT / "docs" / "specs" / "pipeline-config" / "low-level.md"
 DEPLOYMENT_DOCS = sorted((ROOT / "docs" / "deployment").rglob("*.md"))
@@ -100,7 +104,6 @@ _EXPECTED_COMPONENT_ROADMAPS = (
     "background-jobs-api",
     "caching",
     "deploy-platform",
-    "edge-join",
     "engineering-quality",
     "execution-engine",
     "explore-eda",
@@ -148,6 +151,37 @@ def test_execution_strategy_guide_is_in_public_navigation_and_states_key_contrac
         "unavailable or `null`",
     ):
         assert claim in guide
+
+
+def test_edge_join_guide_matches_runtime_and_canvas_contract() -> None:
+    guide = EDGE_JOIN_GUIDE.read_text(encoding="utf-8")
+    normalised_guide = " ".join(guide.replace("**", "").split())
+
+    supported_modes = re.search(r"Supported join types are (.+?)\.", normalised_guide)
+    assert supported_modes is not None
+    documented_modes = set(_MARKDOWN_CODE_SPAN.findall(supported_modes.group(1)))
+    assert documented_modes == set(_ALLOWED_HOW)
+
+    for claim in (
+        "dragging a connection onto an existing edge",
+        "connecting the output of one node to the output of another node",
+        "base input on the left",
+        "join input above or below",
+        "output on the right",
+        "both the top and bottom join-handle candidates are available",
+        "Cross joins do not use keys",
+        "`on`, `leftOn`, and `rightOn` must all be absent",
+        '"on": ["quote_id"]',
+        '"leftOn": ["quote_id"]',
+        '"rightOn": ["id"]',
+    ):
+        assert claim in normalised_guide
+    assert "palette" not in guide.casefold()
+
+    for spec_path in (EDGE_JOIN_RUNTIME_SPEC, EDGE_JOIN_EDITOR_SPEC):
+        spec = spec_path.read_text(encoding="utf-8")
+        for mode in _ALLOWED_HOW:
+            assert f"`{mode}`" in spec
 
 
 def test_internal_engineering_docs_are_excluded_from_public_mkdocs_site() -> None:
@@ -222,6 +256,9 @@ def test_component_roadmaps_are_flat_complete_and_self_contained() -> None:
         "ROAD-EXEC-03",
         "ROAD-EXEC-04",
         "ROAD-EXEC-05",
+        "ROAD-EDGE-01",
+        "ROAD-EDGE-02",
+        "ROAD-EDGE-03",
     }
     expected_packages = (
         {f"AUD-C{number:02d}" for number in range(1, 21)}
@@ -234,7 +271,6 @@ def test_component_roadmaps_are_flat_complete_and_self_contained() -> None:
         | {f"ROAD-EXEC-{number:02d}" for number in range(1, 6)}
         | {f"ROAD-TEST-{number:02d}" for number in range(1, 6)}
         | {f"ROAD-UI-{number:02d}" for number in range(1, 6)}
-        | {f"ROAD-EDGE-{number:02d}" for number in range(1, 4)}
         | {
             "ASSIST-01",
             "ASSIST-02",

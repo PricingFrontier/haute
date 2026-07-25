@@ -23,9 +23,11 @@ const DEFAULT_MAX_SINGLE_JS_GZIP_KIB = 650
 // always-visible Toolbar toggle (Bot icon + button + useUIStore selectors)
 // and client.ts's postRawStream helper. The panel, store, api module, and
 // markdown renderer are all lazy (guarded by App.assistantLazy.test.ts).
-// 245 KiB keeps a small margin while still catching accidental eager
-// editor/vendor imports.
-const DEFAULT_MAX_INITIAL_JS_GZIP_KIB = 245
+// Edge Join compatible-target feedback adds ~0.7 KiB of deliberate eager code:
+// the always-mounted canvas must validate and announce candidates synchronously
+// during a connection gesture. 246 KiB restores a small margin while still
+// catching accidental eager editor/vendor imports.
+const DEFAULT_MAX_INITIAL_JS_GZIP_KIB = 246
 
 // Chunks that should only be fetched after a user opens a code/editor-heavy
 // surface. If one appears as a startup modulepreload, the app has likely
