@@ -377,3 +377,31 @@ boundedness admission, atomic refresh with readers on both sides of publication,
 single flight, different-identity concurrency, cancellation and fault preservation, signed
 artifact corruption, local-file invalidation, remote freshness-unknown reporting, leased
 eviction, quota accounting, and direct-versus-snapshot schema/data equivalence.
+
+## Dataframe-cache first-consume safety
+
+The dataframe execution cache implements [AUD-C12](../../roadmap/io-layer.md)
+through a distinct store/first-consume path.
+
+After a dataframe Parquet artifact has been atomically written, read back
+through PyArrow metadata/schema validation, and admitted while its per-key
+materialisation lock is held, the cache verifies only that the exact entry is
+still retained before handing it to the first consumer. That
+store/first-consume path does not reopen the artifact through the ordinary
+validation-and-eviction lookup. A transient validation read therefore cannot
+delete a newly written, valid file or turn the successful store into a
+spurious miss.
+
+Ordinary later `get` and `scan` calls retain the existing strict contract:
+missing or unreadable artifacts are detected, evicted, and treated as misses.
+The first consumer still opens a real `scan_parquet` plan and pins the entry;
+an actual failure to construct that scan propagates, releases the pin, and
+does not misclassify the artifact as corrupt.
+
+Same-key materialisation is serialised through the per-key `RLock` across the
+initial lookup, store, and first consume. A second conforming materialiser
+therefore cannot replace the exact entry during that window.
+
+Acceptance simulates a transient validator failure during the store window,
+asserts that the new entry and file remain present, and then proves that a
+subsequent ordinary corrupt-artifact lookup still evicts it.

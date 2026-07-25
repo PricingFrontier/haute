@@ -19,9 +19,10 @@ Neither is haute's to *fix* (no-normalization is the pinned contract, see
 ``notes-haute/common/INVARIANTS.md`` §Invariant 1), but both are worth a
 loud warning at access time.  This module provides that audit as a
 standalone check, plus a generic function wrapper so any path-consuming
-callable can opt in.  The runtime chokepoint every standard input funnels
-through (:func:`haute._builders._resolve_runtime_data_path`) calls
-:func:`warn_if_case_ambiguous` on each resolved path.
+callable can opt in. The retained API Input and External File runtime
+chokepoint (:func:`haute._node_apply.resolve_api_input_from_config` and its
+external-object sibling) calls :func:`warn_if_case_ambiguous` on each resolved
+path.
 """
 
 from __future__ import annotations

@@ -30,6 +30,7 @@ from typing import Any, NamedTuple, cast
 
 import polars as pl
 
+from haute._api_input_schema import is_json_api_input_path
 from haute._edge_join import build_edge_join_kwargs, edge_join_key_columns_by_role
 from haute._graph_utils import build_parents_of
 from haute._logging import get_logger
@@ -409,11 +410,11 @@ def _count_source_rows_for_node(node: GraphNode) -> int | None:
     try:
         if node_type == NodeType.API_INPUT:
             path = config.get("path", "")
-            if path.endswith((".json", ".jsonl")):
+            if isinstance(path, str) and is_json_api_input_path(path):
                 # v2 per-frame caches don't expose a single aggregate row
-                # count; RAM estimation falls back to JSONL line count
-                # (.json files yield None, treated as "unknown" upstream).
-                if path.endswith(".jsonl") and Path(path).exists():
+                # count; RAM estimation falls back to newline-delimited JSON
+                # line count (.json files yield None, treated as "unknown").
+                if Path(path).suffix.casefold() in {".jsonl", ".ndjson"} and Path(path).exists():
                     return _jsonl_row_count(path)
                 return None
             if path and Path(path).exists():
@@ -469,7 +470,7 @@ def _detailed_source_metadata_for_node(node: GraphNode) -> _DetailedSourceMetada
         if node_type == NodeType.API_INPUT:
             if not path:
                 return None
-            if path.endswith((".json", ".jsonl")):
+            if isinstance(path, str) and is_json_api_input_path(path):
                 # v2 per-frame caches are one parquet per emit-true table,
                 # so there's no single (row_count, column_count) summary
                 # to return. Conservative None lets the caller fall back

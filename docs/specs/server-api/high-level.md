@@ -412,6 +412,34 @@ cache single-flight/cancel/progress/status races, no orphaned job after timeout,
 and identity mismatch, explicit output-write admission/cancellation/atomicity, and route absence
 for every removed endpoint.
 
+## I/O diagnostics and overwrite choice
+
+The server API implements the HTTP portion of
+[IO-IO01, IO-IO05, and IO-IO09](../../roadmap/io-layer.md).
+
+`GET /api/files` omits its extension default from the HTTP schema and derives
+the effective list from installed read capabilities. Its blocking enumeration
+runs in the server thread pool and never advertises symlink entries.
+
+`GET /api/schema` exposes only allow-listed, actionable user failures:
+missing file (404), unsupported extension (400), and a known file decoder
+failure (400 with a static format-specific remediation). Arbitrary
+`ValueError`, OS, and unexpected runtime text remains private in structured
+logs and returns the existing sanitised envelope.
+
+`POST /api/pipeline/write-output` accepts `overwrite: bool = false`.
+An existing file destination returns HTTP 409 with a safe detail naming the
+user-facing resolved destination. No graph execution or write starts on that
+preflight conflict. A true retry authorises replacement; false remains
+collision-safe at the final publication race.
+
+Destination preview and write share one validated request preparation path and
+resolve local targets against the selected Haute project root, independently of
+the server process working directory.
+
+Request/response model, OpenAPI, route, sanitisation, and frontend client
+contract tests cover both overwrite values and the 409 path.
+
 ## Approved change contract — bounded request correlation
 
 An inbound `x-request-id` is retained only when it is a 1–64 character ASCII

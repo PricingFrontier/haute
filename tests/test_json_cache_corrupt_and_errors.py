@@ -139,6 +139,20 @@ def test_infer_nested_array_returns_422_naming_field(client: TestClient, tmp_pat
     assert "matrix" in body["detail"]
 
 
+def test_infer_rejects_non_identifier_key_before_returning_schema(
+    client: TestClient, tmp_path: Path
+) -> None:
+    (tmp_path / "data.json").write_text(json.dumps([{"policy-id": 1}]))
+
+    resp = client.post("/api/json-cache/infer", json={"path": "data.json"})
+
+    assert resp.status_code == 422
+    body = resp.json()
+    assert body["type"] == "ApiInputSchemaError"
+    assert "policy-id" in body["detail"]
+    assert "rename" in body["detail"].lower()
+
+
 def test_build_type_mismatch_returns_422_naming_column(client: TestClient, tmp_path: Path) -> None:
     (tmp_path / "data.json").write_text(json.dumps([{"age": 30}, {"age": "oops"}]))
     schema = _root_schema(
@@ -235,6 +249,29 @@ def test_aggregators_skip_missing_or_nonstr_parquet(tmp_path: Path) -> None:
     assert status.row_count == 3
 
 
+def test_aggregator_reads_real_parquet_schema_for_older_metadata(tmp_path: Path) -> None:
+    import polars as pl
+
+    from haute.routes.json_cache import _aggregate_v2_build_response
+
+    pl.DataFrame({"id": [1], "name": ["Ada"]}).write_parquet(tmp_path / "root.parquet")
+    summary = {
+        "tables": [
+            {
+                "label": "root",
+                "parquet": "root.parquet",
+                "row_count": 1,
+                "column_count": 2,
+            }
+        ],
+        "skipped": {"records": 0, "rows_by_table": {}},
+    }
+
+    response = _aggregate_v2_build_response(summary, tmp_path, "data.json", 0.1)
+
+    assert response.columns == {"root.id": "Int64", "root.name": "String"}
+
+
 def test_infer_then_build_scalar_array_end_to_end(client: TestClient, tmp_path: Path) -> None:
     """The headline repro, through the HTTP layer: infer → enable child → build → 200."""
     (tmp_path / "data.json").write_text(
@@ -263,3 +300,57 @@ def test_infer_then_build_scalar_array_end_to_end(client: TestClient, tmp_path: 
     assert build.status_code == 200, build.text
     # 2 policy rows + 3 coverage rows = 5 across the two emitted ports.
     assert build.json()["row_count"] == 5
+
+
+def test_ndjson_alias_infers_and_builds_end_to_end(client: TestClient, tmp_path: Path) -> None:
+    (tmp_path / "events.ndjson").write_text(
+        '{"id":1,"kind":"start"}\n{"id":2,"kind":"finish"}\n',
+        encoding="utf-8",
+    )
+
+    infer = client.post("/api/json-cache/infer", json={"path": "events.ndjson"})
+    assert infer.status_code == 200, infer.text
+
+    build = client.post(
+        "/api/json-cache/build",
+        json={
+            "path": "events.ndjson",
+            "volatile_schema": {"tables": infer.json()["tables"]},
+        },
+    )
+
+    assert build.status_code == 200, build.text
+    assert build.json()["row_count"] == 2
+    assert build.json()["columns"] == {
+        "root.id": "Int64",
+        "root.kind": "String",
+    }
+
+
+def test_inferred_string_widening_builds_mixed_json_scalars(
+    client: TestClient, tmp_path: Path
+) -> None:
+    data_path = tmp_path / "data.json"
+    data_path.write_text(
+        json.dumps([{"code": 100}, {"code": "A1"}, {"code": True}]),
+        encoding="utf-8",
+    )
+    infer = client.post("/api/json-cache/infer", json={"path": "data.json"})
+    assert infer.status_code == 200, infer.text
+    tables = infer.json()["tables"]
+    code = next(column for column in tables[0]["columns"] if column["name"] == "code")
+    assert code["type"] == "str"
+
+    config = {"tables": tables}
+    build = client.post(
+        "/api/json-cache/build",
+        json={"path": "data.json", "volatile_schema": config},
+    )
+    assert build.status_code == 200, build.text
+    assert build.json()["columns"] == {"root.code": "String"}
+
+    from haute._json_flatten import _json_cache_dir
+    from haute._json_shred import load_per_port_cache
+
+    frames = load_per_port_cache(_json_cache_dir(data_path, "working"), config)
+    assert frames["root"].collect()["code"].to_list() == ["100", "A1", "true"]

@@ -279,3 +279,27 @@ sidecar save/load, standalone registration and explicit-output/ambiguous-leaf be
 scaffold parsing, and repository-wide assertions that `dataSource`, `dataSink`, `data_source`,
 and `data_sink` are absent outside the 0.7 plan, release note, and historical current-state spec
 text.
+
+## Retained input sidecar authority
+
+Retained input configuration implements [IO-IO02](../../roadmap/io-layer.md)
+by making each sidecar the sole declarative runtime source.
+
+`apiInput` and `externalFile` keep their existing sidecar folders, and that
+sidecar is the sole declarative runtime source for generated pipelines.
+Generated function bodies do not embed a second copy of path, source type,
+schema, external file type, or model class. Editing a valid sidecar after code
+generation therefore changes both parsing/editor state and the next standalone
+execution without regenerating Python.
+
+Shared config-driven helpers load duplicate-key-rejecting sidecars, validate
+the active shape, and resolve relative paths with the same project/pipeline
+candidate policy used by the executor, with the generated module directory as
+the pipeline candidate. They then perform the same source/object load used by
+the executor. Missing, malformed, or shape-incomplete sidecars fail before
+reading the data/object file. User code remains in the Python function body
+and runs after the object or input frame has been resolved.
+
+Acceptance saves and reloads each retained node, edits only its sidecar, runs
+the already-generated module, and proves that executor and generated results
+or diagnostics agree.

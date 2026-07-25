@@ -592,12 +592,14 @@ class TestBuildStatusAggregateEquality:
                 "parquet": "policies.parquet",
                 "row_count": 10,
                 "column_count": 3,
+                "columns": {"id": "Int64", "name": "String", "premium": "Float64"},
             },
             {
                 "label": "drivers",
                 "parquet": "drivers.parquet",
                 "row_count": 4,
                 "column_count": 2,
+                "columns": {"id": "Int64", "age": "Int64"},
             },
         ]
         # Create identical stub parquet files so size_bytes > 0 and

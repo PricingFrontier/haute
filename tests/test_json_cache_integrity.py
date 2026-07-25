@@ -1253,6 +1253,28 @@ class TestSkippedRecordSurfacing:
         assert summary["skipped"]["rows_by_table"] == {"tags": 1}
         assert summary["tables"][0]["row_count"] == 2
 
+    def test_nested_list_elements_in_scalar_array_are_skipped_not_null_rows(
+        self, tmp_path: Path
+    ) -> None:
+        data = tmp_path / "data.json"
+        _write_json(data, [{"tags": ["a", ["nested"], "b"]}])
+        cfg = {
+            "tables": [
+                _table(
+                    "$[:].tags[:]",
+                    "tags",
+                    [_col("value", "$[:].tags[:].$value", type_="str")],
+                ),
+            ]
+        }
+        cache_dir = tmp_path / "cache"
+        summary = build_per_port_cache(data, cfg, cache_dir)
+
+        assert summary["skipped"]["rows_by_table"] == {"tags": 1}
+        assert summary["tables"][0]["row_count"] == 2
+        values = load_per_port_cache(cache_dir, cfg)["tags"].collect()["value"].to_list()
+        assert values == ["a", "b"]
+
     def test_clean_data_reports_zero_skips(self, client: TestClient, isolated_cwd: Path) -> None:
         data = isolated_cwd / "data.json"
         _write_json(data, [{"id": 1}, {"id": 2}])

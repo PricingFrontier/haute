@@ -15,6 +15,7 @@ import {
   estimateOptimiserSolve,
   estimateTrainingRam,
   commitMilestone,
+  resolveOutputDestination,
   writeOutput,
   fetchIoCapabilities,
   buildInputCache,
@@ -112,6 +113,38 @@ describe("client runtime contracts", () => {
     expect(result.status).toBe("ok")
     expect(result.row_count).toBe(3)
     expect(result.path).toBe("out.parquet")
+  })
+
+  it("resolveOutputDestination rejects malformed destination payloads", async () => {
+    mockFetch.mockReturnValue(
+      jsonResponse({
+        path: "outputs/report.csv",
+        format: "csv",
+        suffix_mismatch: "no",
+      }),
+    )
+
+    await expect(
+      resolveOutputDestination({ graph: dummyGraph, nodeId: "sink1" }),
+    ).rejects.toThrow(/parseOutputDestinationResponse/i)
+  })
+
+  it("resolveOutputDestination validates its complete response", async () => {
+    mockFetch.mockReturnValue(
+      jsonResponse({
+        path: "outputs/report.csv",
+        format: "csv",
+        suffix_mismatch: false,
+      }),
+    )
+
+    await expect(
+      resolveOutputDestination({ graph: dummyGraph, nodeId: "sink1" }),
+    ).resolves.toEqual({
+      path: "outputs/report.csv",
+      format: "csv",
+      suffix_mismatch: false,
+    })
   })
 
   it("fetchIoCapabilities rejects unknown V1 discriminants", async () => {

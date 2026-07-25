@@ -295,3 +295,50 @@ than being silently orphaned. This change does not alter output-path grammar, ba
 semantics for valid keys, pruning rules, cache directory layout, source-signature
 fields, or cache validity requirements. It does not define a divergent-prefix mapping
 feature; that requires a separate explicit contract.
+
+## I/O roadmap correctness hardening
+
+JSON shredding implements the accepted parts of
+[IO-IO03, IO-IO04, IO-IO07, IO-IO10, and IO-IO11](../../roadmap/io-layer.md).
+
+- OUTPUT document materialisation infers the Polars schema from the complete
+  bounded assembled document, including nested structs. A field whose first
+  non-null value occurs after Polars' default inference window remains present
+  with its inferred nullable type. The already-shared canvas/generated assembler
+  remains the sole execution path, and parity coverage includes this late-field
+  case.
+- API-input inference and shredding use one JSON-scalar compatibility rule.
+  When observations widen a column to `str`, strings remain unchanged and
+  numbers/booleans are rendered deterministically as strings; null remains null.
+  Objects and arrays are shape values, not strings, and still fail or count as a
+  shape mismatch according to the table contract. In a scalar-array table, a
+  nested array is counted as a skipped row rather than fabricated as a null
+  scalar row.
+- Inference rejects every source object key outside the path grammar's ASCII
+  identifier set, as well as the reserved `$value` sentinel, before returning a
+  schema. The error names the key and tells the user to rename it. Hand-authored
+  bracket paths containing a dot are rejected because the dotted-leaf runtime
+  cannot represent a literal dotted key.
+- Config sidecars continue to use duplicate-key-rejecting loading. Raw
+  JSON/NDJSON source records retain the streaming decoder's native duplicate-key
+  semantics and are not rescanned solely to reject duplicates; inference and
+  build consume the same record iterator, so they remain mutually consistent.
+- JSON-cache build/status `columns` payloads contain real, label-qualified
+  column names and dtype strings from the emitted frames. Placeholder names and
+  the constant `"v2"` pseudo-dtype are not part of the public response.
+- Per-cache build locks may be weakly retained so completed, unreachable cache
+  identities do not grow a process-lifetime dictionary. A lock remains strongly
+  referenced for its entire active critical section, preserving same-key
+  serialisation.
+
+The operation-scoped raw-file signature contract already satisfies IO-IO10:
+one logical load/build hashes the source once and shares that signature, while
+each independent operation hashes again. This change does not introduce a
+cross-operation `(size, mtime)` validity shortcut, a columnar-buffer rewrite
+without benchmark evidence, or any relaxation of signed cache validation.
+
+Acceptance evidence covers late/null-first nested OUTPUT fields through direct
+and generated execution; an inference/build accepted-and-rejected value matrix;
+scalar-table nested-list skip accounting; early invalid-key diagnostics; real
+cache-response columns; dotted bracket rejection; and lock reclamation without
+loss of concurrent build serialisation.

@@ -21,7 +21,6 @@ from typing import Any, cast
 import polars as pl
 
 import haute.projection as projection
-from haute._api_input_schema import is_json_api_input_path
 from haute._code_extraction import _strip_generated_boilerplate_from_code
 
 # The Contract dataclass is defined canonically in haute._contracts; re-exported
@@ -38,7 +37,7 @@ from haute._edge_join import (
 )
 from haute._execution_context import ExecutionProfile, current_execution_context
 from haute._graph_utils import _sanitize_func_name
-from haute._io import _select_columns, load_external_object, read_data_source
+from haute._io import _select_columns
 from haute._logging import get_logger
 
 # Scenario-expander defaults live in ``_node_apply`` (the shared apply module)
@@ -57,6 +56,8 @@ from haute._node_apply import (
     apply_optimiser_apply_from_config,
     assemble_output_from_config,
     expand_scenarios_from_config,
+    load_external_object_from_config,
+    resolve_api_input_from_config,
     select_live_switch_input,
 )
 from haute._output_assembler import (
@@ -330,33 +331,31 @@ def _explore_columns(config: dict[str, Any]) -> ColumnContract:
 def _configured_pipeline_dir() -> Path | None:
     """Return the project's configured pipeline directory, or ``None``.
 
-    This is the SAME anchor the cache-build route
-    (``routes.json_cache._resolve_data_path`` → ``routes._helpers.pipeline_dir``)
-    and codegen (``_codegen_builders._api_input_template`` emits
-    ``Path(__file__).parent / <rel>``) resolve a relative apiInput data path
-    against: the directory holding the pipeline's ``main.py``, taken from
-    ``haute.toml [project].pipeline`` under the current working directory.
+    This is the pipeline-directory candidate used by the cache-build route and
+    by the shared retained-input helpers. It is the directory holding the
+    pipeline's ``main.py``, taken from ``haute.toml [project].pipeline`` under
+    the execution-scoped project root.
 
     Read through the core, deploy-safe :mod:`haute._project` reader (stdlib
     ``tomllib`` only) rather than ``routes._helpers.pipeline_dir`` so this
     builder never drags the FastAPI route layer into the executor/deploy import
     path.  ``None`` when there is no ``haute.toml`` or no ``[project].pipeline``,
-    so resolution falls back to the project root / cwd.
+    so resolution falls back to the execution-scoped project root.
     """
+    from haute._path_resolution import current_runtime_project_root
     from haute._project import _toml_configured_pipeline
 
-    configured = _toml_configured_pipeline(Path.cwd())
+    configured = _toml_configured_pipeline(current_runtime_project_root())
     return configured.parent if configured is not None else None
 
 
 def _resolve_runtime_data_path(data_path: str) -> str:
     """Anchor a (possibly relative) runtime data path to the pipeline dir.
 
-    Shared by every in-process node builder that consumes a user-facing data
-    path at execute time: the v2 apiInput source (``_make_api_source_v2`` →
-    ``load_v2_api_source``), the flat-file ``API_INPUT`` reads (via
-    :func:`_config_with_resolved_data_path` → ``read_data_source``), and the
-    ``EXTERNAL_FILE`` object load (``load_external_object``).
+    This retains the historical builder-level path contract for the direct
+    helper call sites below. Registered API Input and External File builders
+    now delegate their full config-driven load to :mod:`haute._node_apply`,
+    which applies the same project/pipeline candidate policy.
 
     Relative ``path`` values are pipeline-directory-relative (the GUI file
     browser reports them from the pipeline's location, and codegen emits them
@@ -477,59 +476,21 @@ def _make_api_source_v2(
 @_register(NodeType.API_INPUT, opaque=True)
 def _build_api_input(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
-    path = config.get("path", "")
 
-    api_source_fn: Callable[..., Any]
-    if is_json_api_input_path(path):
-        # v2 per-frame shred is the only JSON apiInput codec. When the
-        # config carries `tables[]` we dispatch into the v2 source
-        # builder (every eligible count returns dict[label, frame]). Anything
-        # else is an editor-state error: the user must
-        # populate `tables[]` via the Infer Tables button before the
-        # pipeline can run.
-        from haute._api_input_schema import is_v2_shape as _is_v2_shape
-
-        if _is_v2_shape(config):
-            return ctx.func_name, _make_api_source_v2(path, config), True
-
-        def _api_source_no_tables(
-            _label: str = ctx.func_name,
-        ) -> _Frame:
-            raise RuntimeError(
-                f"API Input '{_label}' has no v2 schema (tables[]). Open the "
-                "node and click 'Infer Tables' to populate the schema "
-                "mapping, then preview again."
-            )
-
-        api_source_fn = _api_source_no_tables
-    else:
-
-        def _api_source_flat(
-            _profile: str | None = ctx.execution_profile,
-            _columns: frozenset[str] | set[str] | None = ctx.required_output_columns,
-            _config: dict[str, Any] = config,
-            _node_id: str = ctx.node.id,
-        ) -> _Frame:
-            projected = _source_scan_projection(
-                _profile,
-                _columns,
-                _config,
-                node_id=_node_id,
-            )
-            # Anchor a relative flat-file path to the pipeline dir before the
-            # read — the flat (CSV/parquet) apiInput codec is the third sibling
-            # of the API_INPUT sites above: the JSON apiInput fix (09a5500f)
-            # only anchored _make_api_source_v2, so a flat apiInput feeding an
-            # OUTPUT via the empty-source_file dry-run route still resolved
-            # config["path"] against cwd.
-            return read_data_source(
-                _config_with_resolved_data_path(_config),
-                profile=_profile,
-                columns=projected.columns,
-                validate_columns=projected.validate_columns,
-            )
-
-        api_source_fn = _api_source_flat
+    def api_source_fn(
+        _profile: str | None = ctx.execution_profile,
+        _columns: frozenset[str] | set[str] | None = ctx.required_output_columns,
+        _config: dict[str, Any] = config,
+        _node_id: str = ctx.node.id,
+    ) -> _Frame | dict[str, _Frame]:
+        projected = _source_scan_projection(_profile, _columns, _config, node_id=_node_id)
+        return resolve_api_input_from_config(
+            _config,
+            base_dir=_configured_pipeline_dir(),
+            profile=_profile,
+            columns=projected.columns,
+            validate_columns=projected.validate_columns,
+        )
 
     return ctx.func_name, api_source_fn, True
 
@@ -688,9 +649,6 @@ def _build_external_file(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
         kind="external",
         param_names=ctx.source_names,
     )
-    path = config.get("path", "")
-    file_type = config.get("fileType", "pickle")
-    model_class = config.get("modelClass", "classifier")
     _src_names = list(ctx.source_names)
 
     _orig_src = list(ctx.orig_source_names) if ctx.orig_source_names else None
@@ -706,9 +664,7 @@ def _build_external_file(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
             # served from the project root would otherwise hash/open the wrong
             # (or a missing) file. Resolved at call time, mirroring codegen.
             ens = {
-                "obj": load_external_object(
-                    _resolve_runtime_data_path(path), file_type, model_class
-                )
+                "obj": load_external_object_from_config(config, base_dir=_configured_pipeline_dir())
             }
             ens.update(_preamble_ext)
             if dfs_by_name:

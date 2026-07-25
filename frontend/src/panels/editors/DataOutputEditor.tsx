@@ -1,12 +1,17 @@
-import { useRef, useState } from "react"
-import { writeOutput } from "../../api/client"
+import { useEffect, useMemo, useState } from "react"
+import {
+  resolveOutputDestination,
+  writeOutput,
+  ApiError,
+} from "../../api/client"
 import type {
   IoCapabilityGroup,
   IoFormatCapability,
-  WriteOutputResponse,
+  OutputDestinationResponse,
 } from "../../api/types"
 import { EditorLabel } from "../../components/form"
 import useSettingsStore from "../../stores/useSettingsStore"
+import useOutputWriteStore from "../../stores/useOutputWriteStore"
 import { buildGraph } from "../../utils/buildGraph"
 import { useGraph } from "../useGraph"
 import IoFormatEditor from "./_IoFormatEditor"
@@ -145,9 +150,11 @@ export default function DataOutputEditor({
   const streamingChunkSize = useSettingsStore(
     (state) => state.streamingChunkSize,
   )
-  const [result, setResult] = useState<WriteOutputResponse | null>(null)
-  const [writing, setWriting] = useState(false)
-  const currentIdentity = useRef("")
+  const activeSource = useSettingsStore((state) => state.activeSource)
+  const writeState = useOutputWriteStore((state) => state.writes[nodeId])
+  const beginWrite = useOutputWriteStore((state) => state.begin)
+  const completeWrite = useOutputWriteStore((state) => state.complete)
+  const clearWrite = useOutputWriteStore((state) => state.clear)
 
   const groups = (capabilities?.groups ?? []).filter(
     (group) => group.output_available,
@@ -160,32 +167,129 @@ export default function DataOutputEditor({
   )
   const ready =
     group !== undefined && outputConfigReady(group, format, config)
-  const identity = `${nodeId}:${JSON.stringify(config)}`
-  currentIdentity.current = identity
+  const graph = useMemo(() => {
+    const built = buildGraph(allNodes, edges, submodels, preamble)
+    return {
+      ...built,
+      nodes: built.nodes.map((node) =>
+        node.id === nodeId
+          ? {
+              ...node,
+              data: {
+                ...node.data,
+                config,
+              },
+            }
+          : node,
+      ),
+    }
+  }, [allNodes, config, edges, nodeId, preamble, submodels])
+  const identity = useMemo(
+    () =>
+      JSON.stringify({
+        graph,
+        nodeId,
+        config,
+        source: activeSource,
+        streamingChunkSize,
+      }),
+    [activeSource, config, graph, nodeId, streamingChunkSize],
+  )
+  const isWriting = writeState?.phase === "writing"
+  const visibleState =
+    writeState?.phase === "writing" ||
+    writeState?.requestIdentity === identity
+      ? writeState
+      : undefined
+  const [destinationState, setDestinationState] = useState<
+    | {
+        identity: string
+        response?: OutputDestinationResponse
+        error?: string
+      }
+    | undefined
+  >()
+  const destination =
+    ready && destinationState?.identity === identity
+      ? destinationState
+      : undefined
 
-  const write = async () => {
+  useEffect(() => {
+    if (
+      writeState &&
+      writeState.phase !== "writing" &&
+      writeState.requestIdentity !== identity
+    ) {
+      clearWrite(nodeId, writeState.requestId)
+    }
+  }, [clearWrite, identity, nodeId, writeState])
+
+  useEffect(
+    () => () => {
+      const active = useOutputWriteStore.getState().writes[nodeId]
+      if (active?.phase !== "writing") {
+        clearWrite(nodeId, active?.requestId ?? -1)
+      }
+    },
+    [clearWrite, nodeId],
+  )
+
+  useEffect(() => {
     if (!ready) return
+    const controller = new AbortController()
+    void resolveOutputDestination({
+      graph,
+      nodeId,
+      signal: controller.signal,
+    }).then(
+      (response) => {
+        if (!controller.signal.aborted) {
+          setDestinationState({ identity, response })
+        }
+      },
+      (caught: unknown) => {
+        if (controller.signal.aborted) return
+        const message =
+          caught instanceof ApiError && caught.detail
+            ? caught.detail
+            : caught instanceof Error
+              ? caught.message
+              : "Could not resolve output destination."
+        setDestinationState({ identity, error: message })
+      },
+    )
+    return () => controller.abort()
+  }, [graph, identity, nodeId, ready])
+
+  const write = async (overwrite: boolean) => {
+    if (!ready || isWriting) return
+    if (overwrite && visibleState?.phase !== "confirm_overwrite") return
     const requestIdentity = identity
-    setWriting(true)
-    setResult(null)
+    const requestId = beginWrite(nodeId, requestIdentity)
+    if (requestId === null) return
     try {
       const response = await writeOutput({
-        graph: buildGraph(allNodes, edges, submodels, preamble),
+        graph,
         nodeId,
-        source: useSettingsStore.getState().activeSource,
+        source: activeSource,
         streamingChunkSize,
+        overwrite,
       })
-      if (currentIdentity.current === requestIdentity) setResult(response)
+      completeWrite(nodeId, requestId, requestIdentity, {
+        phase: "success",
+        result: response,
+      })
     } catch (caught) {
-      if (currentIdentity.current === requestIdentity) {
-        setResult({
-          status: "error",
-          message:
-            caught instanceof Error ? caught.message : "Output write failed.",
-        })
-      }
-    } finally {
-      setWriting(false)
+      const message =
+        caught instanceof ApiError && caught.detail
+          ? caught.detail
+          : caught instanceof Error
+            ? caught.message
+            : "Output write failed."
+      completeWrite(nodeId, requestId, requestIdentity, {
+        phase: caught instanceof ApiError && caught.status === 409 ? "confirm_overwrite" : "error",
+        message,
+      })
     }
   }
 
@@ -247,32 +351,72 @@ export default function DataOutputEditor({
         />
       )}
 
+      {destination?.response?.path && (
+        <p className="text-xs" style={{ color: "var(--text-muted)" }}>
+          Destination: {destination.response.path}
+        </p>
+      )}
+      {destination?.response?.suffix_mismatch && (
+        <p role="alert" className="text-xs" style={{ color: "var(--danger-text)" }}>
+          The destination extension does not match the selected format.
+        </p>
+      )}
+      {destination?.error && (
+        <p role="alert" className="text-xs" style={{ color: "var(--danger-text)" }}>
+          Could not resolve destination: {destination.error}
+        </p>
+      )}
+
       <button
         type="button"
-        disabled={!ready || writing}
-        onClick={() => void write()}
+        disabled={!ready || isWriting}
+        onClick={() => void write(false)}
         className="px-3 py-1.5 rounded-lg text-xs font-medium disabled:opacity-50"
         style={{ background: "var(--accent)", color: "white" }}
       >
-        {writing ? "Writing..." : "Write"}
+        {isWriting ? "Writing..." : "Write"}
       </button>
 
-      {result && (
+      {visibleState?.phase === "writing" && (
+        <p role="status" className="text-xs" style={{ color: "var(--text-muted)" }}>
+          Writing output…
+        </p>
+      )}
+
+      {visibleState?.phase === "confirm_overwrite" && (
+        <div className="space-y-1">
+          <p role="alert" className="text-xs" style={{ color: "var(--danger-text)" }}>
+            {visibleState.message}
+          </p>
+          <button
+            type="button"
+            onClick={() => void write(true)}
+            className="px-3 py-1.5 rounded-lg text-xs font-medium"
+            style={{ background: "var(--danger)", color: "white" }}
+          >
+            Replace existing file
+          </button>
+        </div>
+      )}
+
+      {visibleState && (visibleState.phase === "success" || visibleState.phase === "error") && (
         <p
-          role="status"
+          role={visibleState.phase === "error" ? "alert" : "status"}
           className="text-xs"
           style={{
             color:
-              result.status === "ok"
+              visibleState.phase === "success"
                 ? "var(--success)"
                 : "var(--danger-text)",
           }}
         >
-          {result.message ?? result.status}
-          {result.row_count !== undefined
-            ? ` | ${result.row_count} rows`
+          {visibleState.phase === "error"
+            ? visibleState.message
+            : visibleState.result?.message ?? visibleState.result?.status}
+          {visibleState.result?.row_count !== undefined
+            ? ` | ${visibleState.result.row_count} rows`
             : ""}
-          {result.path ? ` | ${result.path}` : ""}
+          {visibleState.result?.path ? ` | ${visibleState.result.path}` : ""}
         </p>
       )}
     </div>

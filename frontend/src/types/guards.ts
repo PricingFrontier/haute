@@ -72,6 +72,7 @@ import type {
   GitWorkingBranchResponse,
   IoCapabilitiesResponse,
   IoCapabilityGroup,
+  OutputDestinationResponse,
   IoFieldCapability,
   IoFormatCapability,
   IoInputCapability,
@@ -1288,6 +1289,29 @@ export function parseWriteOutputResponse(value: unknown): WriteOutputResponse {
     path: optionalString("parseWriteOutputResponse", obj, "path"),
     format: optionalString("parseWriteOutputResponse", obj, "format", "parquet"),
     execution_metrics: optionalExecutionMetrics("parseWriteOutputResponse", obj),
+  }
+}
+
+export function parseOutputDestinationResponse(
+  value: unknown,
+): OutputDestinationResponse {
+  const obj = expectPlainObject("parseOutputDestinationResponse", value)
+  return {
+    path: expectString(
+      "parseOutputDestinationResponse",
+      obj.path,
+      "field `path`",
+    ),
+    format: expectString(
+      "parseOutputDestinationResponse",
+      obj.format,
+      "field `format`",
+    ),
+    suffix_mismatch: expectBoolean(
+      "parseOutputDestinationResponse",
+      obj.suffix_mismatch,
+      "field `suffix_mismatch`",
+    ),
   }
 }
 

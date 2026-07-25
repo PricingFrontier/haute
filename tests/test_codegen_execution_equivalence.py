@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import pickle
 import sys
 import uuid
 from collections.abc import Iterator
@@ -33,7 +34,7 @@ import pytest
 from polars.testing import assert_frame_equal
 
 from haute._builders import _build_node_fn
-from haute._config_io import collect_node_configs
+from haute._config_io import collect_node_configs, config_path_for_node
 from haute._execute_lazy import _execute_lazy
 from haute._json_flatten import _json_cache_dir
 from haute._json_shred import build_per_port_cache
@@ -489,3 +490,214 @@ def test_output_run_matches_executor_batch(tmp_path):
     assert "premium" not in standalone.columns
     assert standalone.to_dicts() == [{"quote": {"premium": 120, "tax": 12}}]
     assert_frame_equal(standalone, reference)
+
+
+def test_output_late_nested_fields_survive_full_document_schema_inference(
+    isolated_project: Path,
+) -> None:
+    """A field appearing after Polars' default 100-row inference window is
+    still part of the OUTPUT schema through generated and executor paths."""
+    records = [{"id": index, "late": None, "detail": {"value": None}} for index in range(101)] + [
+        {"id": 101, "late": 7, "detail": {"value": 9}}
+    ]
+    data_path = isolated_project / "late.json"
+    data_path.write_text(json.dumps(records), encoding="utf-8")
+    api = _node(
+        "api",
+        "rows",
+        NodeType.API_INPUT,
+        {
+            "path": str(data_path),
+            "contract": "opaque",
+            "tables": [
+                {
+                    "path": "$[:]",
+                    "label": "rows",
+                    "emit": True,
+                    "columns": [
+                        _column("id", "$[:].id"),
+                        _column("late", "$[:].late"),
+                        _column("detail_value", "$[:].detail.value"),
+                    ],
+                }
+            ],
+        },
+    )
+    out = _node(
+        "out",
+        "response",
+        NodeType.OUTPUT,
+        {
+            "outputMapping": [
+                {
+                    "source_port": "rows",
+                    "source_column": "id",
+                    "output_path": "$[:].payload.id",
+                    "enabled": True,
+                },
+                {
+                    "source_port": "rows",
+                    "source_column": "late",
+                    "output_path": "$[:].payload.late",
+                    "enabled": True,
+                },
+                {
+                    "source_port": "rows",
+                    "source_column": "detail_value",
+                    "output_path": "$[:].payload.detail.value",
+                    "enabled": True,
+                },
+            ]
+        },
+    )
+    graph = PipelineGraph(
+        nodes=[api, out],
+        edges=[_edge("api", "out", source_port="rows")],
+    )
+
+    module = _write_and_import(graph, isolated_project)
+    standalone = _collect(module.pipeline.run())
+    reference = _executor_frame(graph, "out", source="batch")
+
+    assert standalone.height == 102
+    assert standalone.row(0, named=True) == {"payload": {"id": 0, "late": None, "detail": None}}
+    assert standalone.row(-1, named=True) == {
+        "payload": {"id": 101, "late": 7, "detail": {"value": 9}}
+    }
+    assert_frame_equal(standalone, reference)
+
+
+# ---------------------------------------------------------------------------
+# Retained input sidecars — generated bodies must read the current sidecar,
+# not the config snapshot that happened to exist during code generation.
+# ---------------------------------------------------------------------------
+
+
+def test_generated_api_input_observes_sidecar_only_path_edit(
+    isolated_project: Path,
+) -> None:
+    first = isolated_project / "first.parquet"
+    second = isolated_project / "second.parquet"
+    pl.DataFrame({"value": [1]}).write_parquet(first)
+    pl.DataFrame({"value": [2]}).write_parquet(second)
+    api = _node(
+        "api",
+        "quotes",
+        NodeType.API_INPUT,
+        {"path": "first.parquet", "contract": "opaque"},
+    )
+    graph = PipelineGraph(nodes=[api], edges=[])
+    module = _write_and_import(graph, isolated_project)
+
+    assert _collect(module.pipeline.run())["value"].to_list() == [1]
+
+    sidecar = isolated_project / config_path_for_node(NodeType.API_INPUT, "quotes")
+    sidecar.write_text(
+        json.dumps({"path": "second.parquet", "contract": "opaque"}),
+        encoding="utf-8",
+    )
+    assert _collect(module.pipeline.run())["value"].to_list() == [2]
+
+
+def test_generated_and_canvas_inputs_share_project_anchor_outside_cwd(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = tmp_path / "project"
+    pipeline_dir = project / "pipelines"
+    data_dir = pipeline_dir / "data"
+    unrelated = tmp_path / "unrelated"
+    pipeline_dir.mkdir(parents=True)
+    data_dir.mkdir()
+    unrelated.mkdir()
+    (project / "haute.toml").write_text(
+        '[project]\npipeline = "pipelines/main.py"\n',
+        encoding="utf-8",
+    )
+    source = data_dir / "source.parquet"
+    pl.DataFrame({"value": [7]}).write_parquet(source)
+    graph = PipelineGraph(
+        nodes=[
+            _node(
+                "api",
+                "quotes",
+                NodeType.API_INPUT,
+                {"path": "data/source.parquet", "contract": "opaque"},
+            )
+        ],
+        edges=[],
+    )
+
+    original_root = _get_project_root()
+    set_project_root(project)
+    try:
+        module = _write_and_import(graph, pipeline_dir)
+        monkeypatch.chdir(unrelated)
+
+        generated = _collect(module.pipeline.run())
+        canvas = _executor_frame(graph, "api", source="batch")
+    finally:
+        set_project_root(original_root)
+
+    assert generated.to_dict(as_series=False) == {"value": [7]}
+    assert_frame_equal(generated, canvas)
+
+
+def test_generated_external_file_observes_sidecar_loader_edits_and_rejects_malformed(
+    isolated_project: Path,
+) -> None:
+    (isolated_project / "first.json").write_text('{"factor": 2}', encoding="utf-8")
+    (isolated_project / "second.pkl").write_bytes(pickle.dumps({"factor": 5}))
+    source = _const("source", "rows", [{"name": "value", "value": 3}])
+    external = _node(
+        "external",
+        "lookup",
+        NodeType.EXTERNAL_FILE,
+        {
+            "path": "first.json",
+            "fileType": "json",
+            "code": "df = rows.with_columns(pl.lit(obj['factor']).alias('factor'))",
+        },
+    )
+    graph = PipelineGraph(
+        nodes=[source, external],
+        edges=[_edge("source", "external")],
+    )
+    module = _write_and_import(graph, isolated_project)
+
+    assert _collect(module.pipeline.run())["factor"].to_list() == [2]
+
+    sidecar = isolated_project / config_path_for_node(NodeType.EXTERNAL_FILE, "lookup")
+    sidecar.write_text(
+        json.dumps({"path": "second.pkl", "fileType": "pickle"}),
+        encoding="utf-8",
+    )
+    assert _collect(module.pipeline.run())["factor"].to_list() == [5]
+
+    sidecar.write_text(json.dumps({"path": "second.pkl"}), encoding="utf-8")
+    with pytest.raises(ValueError, match="fileType"):
+        module.pipeline.run()
+
+
+def test_generated_retained_input_fails_on_malformed_sidecar(
+    isolated_project: Path,
+) -> None:
+    source = isolated_project / "source.parquet"
+    pl.DataFrame({"value": [1]}).write_parquet(source)
+    graph = PipelineGraph(
+        nodes=[
+            _node(
+                "api",
+                "quotes",
+                NodeType.API_INPUT,
+                {"path": "source.parquet", "contract": "opaque"},
+            )
+        ],
+        edges=[],
+    )
+    module = _write_and_import(graph, isolated_project)
+    sidecar = isolated_project / config_path_for_node(NodeType.API_INPUT, "quotes")
+    sidecar.write_text("[]", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="must contain an object"):
+        module.pipeline.run()

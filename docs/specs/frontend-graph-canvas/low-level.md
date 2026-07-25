@@ -12,7 +12,7 @@
 | `frontend/src/panels/GraphContext.tsx` | `GraphProvider` component; memoises the context value on `{allNodes, edges, submodels, preamble}` identity. |
 | `frontend/src/stores/useGraphStore.ts` | Zustand store owning `nodes`/`edges`/`preamble`/`submodels`, undo/redo history (four-field graph snapshots interleaved with VC entries), and three derived fingerprints (`structuralFingerprint`, `panelContextFingerprint`, `persistedFingerprint`) plus the `dirty` boolean derived from them. |
 | `frontend/src/hooks/useNodeHandlers.ts` | Node CRUD handlers: `handleDeleteNode` (atomic node+edges delete, deferred cache cleanup), `handleDuplicateNode`, `handleCreateInstance`, `handleRenameNode` (opens the rename dialog), `handleAutoLayout` (ELK, in-flight guarded). |
-| `frontend/src/hooks/useEdgeHandlers.ts` | Connection/gesture handlers: `onConnectStart` plus pointer movement maintain the transient compatible edge-join candidate; `commitConnection`/`onConnectEnd` interpret React Flow handle-drag endings into a normal edge or a revalidated edge-join insertion and always clear gesture feedback; the hook also owns `onSelectionChange`/`onNodeClick` (panel + debounced preview), `handleDeleteEdge`, `onNodeContextMenu`, and `onDragOver`/`onDrop` (palette node creation). |
+| `frontend/src/hooks/useEdgeHandlers.ts` | Connection/gesture handlers: `onConnectStart` plus pointer movement maintain the transient compatible edge-join candidate; `commitConnection`/`onConnectEnd` interpret React Flow handle-drag endings into a normal edge or a revalidated edge-join insertion and always clear gesture feedback; the hook also owns `onSelectionChange`/`onNodeClick` (panel + debounced preview, gated while a JSON API-input has no `tables[]` schema), `handleDeleteEdge`, `onNodeContextMenu`, and `onDragOver`/`onDrop` (palette node creation). |
 | `frontend/src/hooks/usePipelineAPI.ts` | Pipeline load-on-mount; debounced, cache-first, concurrency-limited-cascade preview fetching (`fetchPreview`/`fetchPreviewImmediate`/`refreshPreview`/`previewNodeFrame`); an active-source-change effect (`invalidateStaleColumnStashes`) that strips any node's column stash tagged with a different (or no) `_columnsSource`; and `handleSave` (config-ref/edge-join pre-save validation, snapshot-scoped save-concurrency guard, `markSaved`). |
 | `frontend/src/hooks/useWebSocketSync.ts` | The `/ws/sync` WebSocket client: connect/reconnect with exponential backoff, fingerprint-based resync, applying `graph_update`/`parse_error` frames (with dirty-blocking and rollback-on-failure), and session-expiry handling. |
 | `frontend/src/hooks/useSubmodelNavigation.ts` | `handleCreateSubmodel`/`handleDrillIntoSubmodel`/`handleBreadcrumbNavigate`/`handleDissolveSubmodel` — the view-stack state machine, cross-boundary port-node/edge synthesis on drill-in, and the three submodel API calls. |
@@ -531,6 +531,13 @@ is the authoritative module map for their responsibilities:
   mismatch on source or row limit alone re-fetches even though the cached
   data paints immediately in the meantime — never blocking the UI on a
   settings change.
+- **A JSON API-input without a `tables` array is not automatically
+  previewed when selected.** `previewOptionsForClick` classifies that
+  incomplete authoring state as unavailable for click-to-preview,
+  `onNodeClick` clears any prior preview, and no request is sent. The editor
+  remains open for Infer Tables, and explicit Refresh is not suppressed:
+  the backend's typed schema error remains authoritative if the user asks
+  to execute before inference.
 - **`refreshPreview`'s stale-upstream detection only looks at direct
   parents lacking `_columns`, or whose `_columnsSource` no longer matches
   the active source**, not the full upstream closure — it lazily fills
@@ -767,9 +774,10 @@ The pure connection/frame helpers are defended by `frontend/src/utils/__tests__/
     resolution via `changedTouches`; selection-change drag-safety and
     `graphRefreshingRef`-guarded deselection skip; node-click panel-open +
     preview fetch (including Optimiser debounce, modelling/explore
-    preview, submodel-port preview skip, same-node re-click skip, rapid
-    distinct selections); edge deletion; context menu singleton/submodel
-    flags; drag-over/drop node creation from palette metadata.
+    preview, API-input-without-`tables[]` automatic-preview skip,
+    submodel-port preview skip, same-node re-click skip, rapid distinct
+    selections); edge deletion; context menu singleton/submodel flags;
+    drag-over/drop node creation from palette metadata.
   - `useEdgeHandlers` (same file) "edge-join failures and multi-port
     handles" block — connection endings with no source node; a touch
     ending with no pointer coordinates fails loudly; third-input rejection

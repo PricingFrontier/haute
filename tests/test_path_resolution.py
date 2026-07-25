@@ -152,6 +152,29 @@ def test_implicit_root_uses_configured_current_project(tmp_path: Path) -> None:
     assert resolved == (project_root / "inputs" / "data.parquet").resolve()
 
 
+def test_relative_source_does_not_override_selected_project_with_working_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    working_directory = tmp_path / "working-directory"
+    working_directory.mkdir()
+    source = working_directory / "pipelines" / "pricing.py"
+    source.parent.mkdir()
+    source.write_text("# pipeline", encoding="utf-8")
+    selected_root = tmp_path / "selected-project"
+    selected_root.mkdir()
+    set_project_root(selected_root)
+    monkeypatch.chdir(working_directory)
+
+    resolved = resolve_runtime_file_path(
+        "inputs/data.parquet",
+        source_file="pipelines/pricing.py",
+        enforce_project_root=True,
+    )
+
+    assert resolved == (selected_root / "inputs" / "data.parquet").resolve()
+
+
 def test_source_spelled_inside_project_cannot_resolve_outside(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

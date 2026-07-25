@@ -1,10 +1,17 @@
 import { describe, it, expect, vi, beforeEach } from "vitest"
 import { renderHook, act, waitFor } from "@testing-library/react"
 import { useSchemaFetch } from "../useSchemaFetch"
-import { fetchSchema } from "../../api/client"
+import { ApiError, fetchSchema } from "../../api/client"
 
 vi.mock("../../api/client", () => ({
   fetchSchema: vi.fn(),
+  ApiError: class ApiError extends Error {
+    detail?: string
+    constructor(message: string, _status: number, detail?: string) {
+      super(message)
+      this.detail = detail
+    }
+  },
 }))
 
 const mockFetchSchema = fetchSchema as ReturnType<typeof vi.fn>
@@ -46,6 +53,13 @@ describe("useSchemaFetch", () => {
     })
     expect(result.current.schema).toBeNull()
     expect(result.current.error).toBe("fail")
+  })
+
+  it("prefers an API error detail over its generic message", async () => {
+    mockFetchSchema.mockRejectedValue(new ApiError("HTTP 422", 422, "Unsupported delimiter"))
+    const { result } = renderHook(() => useSchemaFetch("bad.csv"))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+    expect(result.current.error).toBe("Unsupported delimiter")
   })
 
   it("fetchForPath triggers manual fetch", async () => {

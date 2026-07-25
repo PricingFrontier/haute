@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -85,7 +86,7 @@ def _infer_project_root(
 
 
 def current_runtime_project_root() -> Path:
-    """Return the execution-scoped root, falling back to the current project."""
+    """Return the execution-scoped root, falling back to the selected project."""
     return _RUNTIME_PROJECT_ROOT.get() or _get_project_root().resolve()
 
 
@@ -122,10 +123,11 @@ def _candidate_if_allowed(
     *,  # pragma: no mutate
     enforce_project_root: bool,  # pragma: no mutate
 ) -> Path | None:  # pragma: no mutate
-    resolved = candidate.resolve()
+    spelling_preserved = Path(os.path.abspath(candidate))
+    resolved = spelling_preserved.resolve()
     if enforce_project_root and not resolved.is_relative_to(project_root):
         return None
-    return resolved
+    return spelling_preserved
 
 
 def resolve_runtime_file_path(
@@ -148,12 +150,13 @@ def resolve_runtime_file_path(
     raw = Path(_normalise_path_text(raw_path))
 
     if raw.is_absolute():
-        resolved = raw.resolve()
+        spelling_preserved = Path(os.path.abspath(raw))
+        resolved = spelling_preserved.resolve()
         if enforce_project_root and not resolved.is_relative_to(root):
             raise RuntimePathOutsideProjectError(
                 f"Path {raw_path!r} resolves outside the project root"
             )
-        return resolved
+        return spelling_preserved
 
     pdir: Path | None
     if pipeline_dir is not None:

@@ -770,15 +770,16 @@ class TestExecuteAndSinkCleanupAbsentPaths:
         ckpt_missing = "/nonexistent/haute_ckpt_absent"
         real_mkstemp = _tempfile.mkstemp
         real_unlink = os.unlink  # capture before the with-block mocks os.unlink
+        real_close = os.close
 
         def _mkstemp_training_absent(*a, **k):
             fd, path = real_mkstemp(*a, **k)
             if k.get("prefix") == "haute_train_":
                 # Drop the training temp immediately so the cleanup guards see it
                 # as already gone. Windows cannot unlink an open mkstemp file,
-                # so replace its descriptor with another valid descriptor for
-                # the caller's unconditional os.close.
-                os.close(fd)
+                # so close it first and return a harmless replacement descriptor
+                # for the caller's unconditional os.close.
+                real_close(fd)
                 real_unlink(path)
                 fd = os.open(os.devnull, os.O_RDONLY)
             return fd, path

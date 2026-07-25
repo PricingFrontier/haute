@@ -744,9 +744,10 @@ class TestBuildApiInput:
         data_file.write_text("quote_id,premium_raw,unused\n001,10.5,x\n", encoding="utf-8")
         captured: dict[str, object] = {}
 
-        def fake_read_data_source(
+        def fake_resolve_api_input_from_config(
             config,
             *,
+            base_dir=None,
             profile=None,
             columns=None,
             validate_columns=None,
@@ -756,7 +757,10 @@ class TestBuildApiInput:
             captured["validate_columns"] = validate_columns
             return pl.DataFrame({"quote_id": ["001"], "premium_raw": [10.5]}).lazy()
 
-        monkeypatch.setattr("haute._builders.read_data_source", fake_read_data_source)
+        monkeypatch.setattr(
+            "haute._builders.resolve_api_input_from_config",
+            fake_resolve_api_input_from_config,
+        )
         node = _n(
             {
                 "id": "api",
@@ -792,9 +796,10 @@ class TestBuildApiInput:
         data_file.write_text("a,b\n1,2\n", encoding="utf-8")
         captured: dict[str, object] = {}
 
-        def fake_read_data_source(
+        def fake_resolve_api_input_from_config(
             config,
             *,
+            base_dir=None,
             profile=None,
             columns=None,
             validate_columns=None,
@@ -803,7 +808,10 @@ class TestBuildApiInput:
             captured["validate_columns"] = validate_columns
             return pl.DataFrame({"a": [1], "b": [2]}).lazy()
 
-        monkeypatch.setattr("haute._builders.read_data_source", fake_read_data_source)
+        monkeypatch.setattr(
+            "haute._builders.resolve_api_input_from_config",
+            fake_resolve_api_input_from_config,
+        )
         node = _n(
             {
                 "id": "api",

@@ -14,6 +14,7 @@
 | `frontend/src/panels/editors/CodeEditor.tsx`, `frontend/src/panels/editors/CodeMirrorEditor.tsx`, `frontend/src/panels/editors/shared/PolarsCodePanel.tsx` | Code-editor wrappers and Polars-specific panel. |
 | `frontend/src/panels/editors/ConstantEditor.tsx`, `frontend/src/panels/editors/TransformEditor.tsx`, `frontend/src/panels/editors/EdgeJoinEditor.tsx`, `frontend/src/panels/editors/LiveSwitchEditor.tsx`, `frontend/src/panels/editors/ScenarioExpanderEditor.tsx` | Editors for scalar, transform, join, conditional-switch and scenario nodes. `EdgeJoinEditor` exposes fixed canvas-derived base/join roles, atomic swap, the seven supported join modes, mutually exclusive same-name/asymmetric key forms, and advanced Polars options. |
 | `frontend/src/panels/editors/ExternalFileEditor.tsx`, `frontend/src/panels/editors/DataInputEditor.tsx`, `frontend/src/panels/editors/DataOutputEditor.tsx` | External-object, grouped tabular input, and grouped tabular output configuration. |
+| `frontend/src/stores/useOutputWriteStore.ts` | Per-node output-write request identity, pending/terminal lifecycle, and overwrite-confirmation state retained across editor remounts. |
 | `frontend/src/panels/editors/_IoFormatEditor.tsx`, `frontend/src/panels/editors/_ioFormats.ts`, `frontend/src/panels/editors/_DatabricksSelector.tsx`, `frontend/src/panels/editors/_InputCacheControls.tsx` | Registry-driven IO arguments, cached capabilities, dedicated Databricks browsing, and shared input-cache lifecycle controls. |
 | `frontend/src/panels/editors/ApiInputEditor.tsx`, `frontend/src/panels/editors/apiInputSchema.ts`, `frontend/src/panels/editors/apiInputInherit.ts`, `frontend/src/panels/editors/FrameTableActions.tsx` | API-input frame/schema editing, persisted/inferred schema conversion, reconciliation and row actions. |
 | `frontend/src/panels/editors/OutputEditor.tsx`, `frontend/src/panels/editors/outputMappingSchema.ts`, `frontend/src/panels/editors/outputPathTools.ts`, `frontend/src/panels/editors/jsonpath.ts`, `frontend/src/panels/editors/pathCanonicalWarning.ts`, `frontend/src/panels/editors/JsonPreview.tsx` | Output mappings, JSON-path validation/rewrites, canonical-path hints and preview. |
@@ -244,3 +245,38 @@ round-trip, output direction filtering, write gating/status, and no output code 
 provider grouping, snapshot refresh, cached offline execution, multiple format legs, atomic file
 write, and removed-node absence. The legacy node-continuity migration suite is deleted rather
 than adapted.
+
+## I/O authoring feedback and output lifecycle
+
+- `DataInputEditor` calls `useSchemaFetch` with the configured file path only
+  when `format.input.needs_schema_when_bounded` is true. It imports
+  `SchemaPreview`, renders the hook's loading/error states, and merges
+  `Object.fromEntries(schema.columns.map(({name, dtype}) => ...))` into the
+  current arguments on confirmation.
+- `useSchemaFetch` recognises `ApiError` and stores `detail ?? message`.
+  `ApiInputEditor` consumes and renders its `error` return.
+- A small Zustand output-write store owns entries keyed by node id. Each entry
+  carries request id, full request identity, phase
+  (`writing | success | error | confirm_overwrite`), and structured result or
+  message. Terminal actions update only the matching request id.
+- `DataOutputEditor` asks `/api/pipeline/output-destination` for the display
+  destination and extension mismatch; it does not reimplement backend path or
+  default-extension rules. Stale destination responses cannot replace a newer
+  request's state.
+- The write identity covers the complete flattened graph, output node, active
+  source, and streaming chunk size. Overwrite confirmation remains visible and
+  actionable only while that whole request is unchanged. A graph or setting
+  edit invalidates the grant before an `overwrite=true` retry.
+- A node-level write remains mutually exclusive across config edits. While an
+  older identity is still writing, the editor continues to show that pending
+  state instead of presenting a disabled button with no explanation. Obsolete
+  terminal entries are cleared when the editor observes a different request
+  identity, and terminal state is removed when its editor unmounts so a deleted
+  and recreated node id cannot inherit an earlier overwrite grant.
+- The editor starts the API promise after recording store state; the promise
+  updates the store even if the component unmounts. It sends `overwrite=false`,
+  handles `ApiError.status === 409` as `confirm_overwrite`, and retries true
+  only from the confirmation action.
+- `WriteOutputArgs` adds `overwrite?: boolean` and serialises an explicit
+  boolean. Tests reset the write store between cases and exercise unmount/
+  remount while a deferred request is unresolved.
