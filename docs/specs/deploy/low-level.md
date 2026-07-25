@@ -279,6 +279,11 @@ JSON have separate structured payloads. A body exactly at the configured limit i
 - **Container `output_fields` type check**: `score_graph_lazy` explicitly rejects
   `output_fields` passed as a bare `str`/`bytes` (which would otherwise silently iterate
   per-character) with `ValueError`.
+- **Deploy contract validity is row-count invariant.** `DEPLOY_LIVE` and `DEPLOY_BATCH` retain
+  different admission, cache, and bounded-I/O policies, but both use strict contract resolution.
+  A known builder-contract resolution failure therefore returns the same typed failure for a
+  single quote and a multi-row request. `score_graph_lazy` releases its owned execution context
+  when plan construction fails before a `DeployScorePlan` can be returned.
 - **Static sources must support bounded batch reads.** Schema-declared static plain JSON
   is rejected during bundle verification under `DEPLOY_BATCH`; undeclared JSON can pass an
   at-most-one-row `DEPLOY_LIVE` schema dry-run but fail when a multi-row request selects
@@ -309,6 +314,7 @@ JSON have separate structured payloads. A body exactly at the configured limit i
 | `RequestBodyLimitError` / `RequestBodyHeaderError` / `RequestBodyParseError` | `_request_limits.py::read_limited_json_body` | Caught explicitly in the generated container `app.py`'s `/quote` handler → HTTP 413 / 400 / 422 with a structured `to_payload()` body. |
 | `ExecutionAdmissionError` / `ExecutionMemoryLimitExceededError` | Raised by the execution-engine's admission layer, invoked via `admit_deploy_execution` | Caught in `/quote` → HTTP 507. |
 | `ExecutionCancelledError` | Execution engine | Caught in `/quote` → HTTP 499 with `job_id`/`operation` context. |
+| Public `HauteError` (`ContractResolutionError`, `PreambleError`, and other errors with a stable `error_code`) | Execution engine or preamble compilation during scoring | Caught in `/quote` → HTTP 422 with `to_payload()`; server routes use the same stable public payload contract. |
 | `NotImplementedError` | `__init__.py::_validate_target` (planned targets: `sagemaker`, `azure-ml`), `_container.py::_update_service` (platform-container service update not yet built) | Uncaught to caller; the `_update_service` message names the built image tag (which is pushed only when a registry was configured). |
 | Any other `Exception` | Runtime scoring inside `/quote` | Caught by the container's catch-all, logged via `logger.exception("deploy_quote_failed")`, returned as HTTP 500 with `error_code: "deploy_internal_error"`. The MLflow `pyfunc` predict path has no equivalent catch-all. |
 

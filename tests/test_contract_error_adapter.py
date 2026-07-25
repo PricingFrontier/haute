@@ -9,6 +9,7 @@ from haute.errors import (
     ContractResolutionError,
     GroupByExecutionUnsupportedError,
     LiveSwitchScenarioError,
+    PreambleError,
     RatingExtremaUndefinedError,
     RatingFactorMissingError,
     TraceCorrelationUnsupportedError,
@@ -25,6 +26,10 @@ from haute.routes._contract_errors import (
 
 def _public_error_cases() -> list[tuple[BaseException, dict[str, object]]]:
     return [
+        (
+            PreambleError("preamble failed", source_line=7),
+            {"error_code": "preamble_failed", "message": "preamble failed", "source_line": 7},
+        ),
         (
             ContractResolutionError(
                 "Unable to resolve the node column contract.",

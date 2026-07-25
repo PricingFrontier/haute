@@ -175,9 +175,15 @@ class ContractResolution:
     failure_kind: str | None = None
 
 
-def _strict_contract_resolution(profile: ExecutionProfile) -> bool:
-    """Use the projection planner's canonical profile strictness predicate."""
-    return projection_planner.strict_projection_required(profile, None)
+def _strict_contract_resolution(profile: ExecutionProfile | None) -> bool:
+    """Return whether builder-contract resolution must fail loudly.
+
+    Contract validity is independent of projection/materialisation policy:
+    every explicitly profiled production execution is strict, including
+    ``DEPLOY_LIVE``. Context-less calls retain the historical non-strict
+    compatibility behaviour of this low-level helper.
+    """
+    return profile is not None and profile != ExecutionProfile.PREVIEW_EAGER
 
 
 def _resolve_effective_contract(
@@ -188,9 +194,10 @@ def _resolve_effective_contract(
     """Resolve the effective node contract under the active profile policy.
 
     User-declared concrete sides overlay the builder-derived contract. Known
-    external/configuration failures fail bounded profiles with a typed,
-    redacted error; the two admitted materialising profiles retain a diagnosed
-    opaque degradation. Programmer errors always propagate unchanged.
+    external/configuration failures fail profiled production execution with a
+    typed, redacted error; interactive preview and context-less compatibility
+    calls retain a diagnosed opaque degradation. Programmer errors always
+    propagate unchanged.
     """
     try:
         builder = Contract.from_tuple(get_column_contract(node.data.nodeType, node.data.config))
@@ -817,7 +824,7 @@ def _execute_lazy(
         order,
     )
     strict_contract_resolution = _strict_contract_resolution(
-        execution_context.profile if execution_context is not None else ExecutionProfile.LAZY_SINK
+        execution_context.profile if execution_context is not None else None
     )
     cache_request = dataframe_cache_request
 
@@ -1751,9 +1758,7 @@ def _execute_eager_core(
         order,
     )
     strict_contract_resolution = _strict_contract_resolution(
-        execution_context.profile
-        if execution_context is not None
-        else ExecutionProfile.PREVIEW_EAGER
+        execution_context.profile if execution_context is not None else None
     )
     materialized_ids = None if materialize_node_ids is None else frozenset(materialize_node_ids)
     materialize_column_limits = dict(materialize_column_limits_by_node or {})

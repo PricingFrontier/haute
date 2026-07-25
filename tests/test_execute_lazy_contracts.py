@@ -111,6 +111,7 @@ def test_non_strict_contract_resolution_reports_opaque_degradation() -> None:
         ExecutionProfile.EXPLORE_ANALYSIS,
         ExecutionProfile.AUTO_RANGE,
         ExecutionProfile.DEPLOY_BATCH,
+        ExecutionProfile.DEPLOY_LIVE,
         ExecutionProfile.CHUNKED_MAP_REDUCE,
     ],
 )
@@ -122,12 +123,35 @@ def test_bounded_profiles_require_strict_contract_resolution(
 
 @pytest.mark.parametrize(
     "profile",
-    [ExecutionProfile.PREVIEW_EAGER, ExecutionProfile.DEPLOY_LIVE],
+    [ExecutionProfile.PREVIEW_EAGER],
 )
 def test_materialising_profiles_allow_diagnosed_contract_degradation(
     profile: ExecutionProfile,
 ) -> None:
     assert _strict_contract_resolution(profile) is False
+
+
+def test_contextless_lazy_execution_degrades_contract_resolution_for_compatibility() -> None:
+    graph = make_graph(
+        {
+            "nodes": [
+                {"id": "source", "data": {"label": "source", "nodeType": "dataInput", "config": {}}}
+            ],
+            "edges": [],
+        }
+    )
+
+    def build_node_fn(node: GraphNode, **_kwargs):
+        return node.id, lambda: pl.LazyFrame({"value": [1]}), True
+
+    with patch(
+        "haute._execute_lazy.get_column_contract", side_effect=ConfigError("known missing contract")
+    ):
+        outputs, *_ = _execute_lazy(
+            graph, build_node_fn, target_node_id="source", enforce_contracts=True
+        )
+
+    assert outputs["source"].collect().to_dict(as_series=False) == {"value": [1]}
 
 
 def test_lazy_and_eager_bounded_execution_share_typed_resolution_failure() -> None:

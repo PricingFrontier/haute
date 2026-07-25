@@ -13,6 +13,7 @@ import time
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
+from functools import cache
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +25,8 @@ _DEFAULT_MAX_RETAINED_STAGES = 200
 _DEFAULT_MAX_RETAINED_MEMORY_PRESSURE_EVENTS = 32
 _MAX_RETAINED_COLUMN_WIDTHS = 128
 _MAX_STREAMABILITY_EVIDENCE = 32
+_MAX_TELEMETRY_ATTRIBUTES = 32
+_MAX_TELEMETRY_STRING_LENGTH = 128
 _MEMORY_PRESSURE_THRESHOLDS: tuple[float, ...] = (0.50, 0.75, 0.90)
 _TERMINAL_NON_STATES = frozenset({"pending", "queued", "running"})
 _CURRENT_EXECUTION_CONTEXT: contextvars.ContextVar[ExecutionContext | None] = (
@@ -72,7 +75,9 @@ class ExecutionTelemetryEvent:
         }
 
 
+@cache
 def _execution_telemetry_enabled() -> bool:
+    """Parse the process-wide telemetry toggle once."""
     raw = os.environ.get("HAUTE_EXECUTION_TELEMETRY")
     if raw is None:
         return False
@@ -84,6 +89,33 @@ def _execution_telemetry_enabled() -> bool:
     raise ValueError(
         "HAUTE_EXECUTION_TELEMETRY must be an explicit boolean (true/false, yes/no, on/off, or 1/0)"
     )
+
+
+def configure_execution_telemetry() -> bool:
+    """Validate and warm telemetry configuration after server environment loading."""
+    _execution_telemetry_enabled.cache_clear()
+    return _execution_telemetry_enabled()
+
+
+def _bounded_telemetry_attributes(
+    raw_attributes: Mapping[str, object],
+) -> dict[str, str | int | float | bool | None]:
+    """Normalise one complete bounded telemetry allow-list without truncation."""
+    if len(raw_attributes) > _MAX_TELEMETRY_ATTRIBUTES:
+        raise ValueError(
+            f"Execution telemetry attribute allow-list exceeds {_MAX_TELEMETRY_ATTRIBUTES} entries"
+        )
+    attributes: dict[str, str | int | float | bool | None] = {}
+    for name, value in raw_attributes.items():
+        if value is None or isinstance(value, (bool, int)):
+            attributes[name] = value
+        elif isinstance(value, float):
+            attributes[name] = value if math.isfinite(value) else None
+        elif isinstance(value, str):
+            attributes[name] = value[:_MAX_TELEMETRY_STRING_LENGTH]
+        else:
+            attributes[name] = None
+    return attributes
 
 
 class ExecutionCancelledError(RuntimeError):
@@ -871,9 +903,9 @@ class ExecutionContext:
     def _cleanup_failure_note(error: BaseException) -> str:
         return f"Execution cleanup failed: {type(error).__name__}: {error}"
 
-    def release_admission(self) -> None:
-        """Release runtime resources and any in-flight memory reservation."""
-        primary_error = sys.exception()
+    def release_admission(self, *, preserve_primary_error: bool = False) -> None:
+        """Release resources, optionally preserving an exception propagating through ``finally``."""
+        primary_error = sys.exception() if preserve_primary_error else None
         release: Callable[[], None] | None = None
         errors = self._release_cleanups()
         with self._admission_release_lock:
@@ -1158,14 +1190,14 @@ class ExecutionContext:
                 return
             self._telemetry_emitted.add(emission_key)
 
-        attributes = self._telemetry_attributes(payload)
-        event = ExecutionTelemetryEvent(
-            schema_version=EXECUTION_TELEMETRY_SCHEMA_VERSION,
-            event="execution_terminal",
-            attributes=attributes,
-        )
-        sink = self.telemetry_sink
         try:
+            attributes = self._telemetry_attributes(payload)
+            event = ExecutionTelemetryEvent(
+                schema_version=EXECUTION_TELEMETRY_SCHEMA_VERSION,
+                event="execution_terminal",
+                attributes=attributes,
+            )
+            sink = self.telemetry_sink
             if sink is None:
                 logger.info(
                     event.event,
@@ -1223,17 +1255,7 @@ class ExecutionContext:
             "rss_limit_bytes": payload.get("rss_limit_bytes"),
             "column_widths_state": widths_payload.get("state"),
         }
-        attributes: dict[str, str | int | float | bool | None] = {}
-        for name, value in tuple(raw_attributes.items())[:32]:
-            if value is None or isinstance(value, (bool, int)):
-                attributes[name] = value
-            elif isinstance(value, float):
-                attributes[name] = value if math.isfinite(value) else None
-            elif isinstance(value, str):
-                attributes[name] = value[:128]
-            else:
-                attributes[name] = None
-        return attributes
+        return _bounded_telemetry_attributes(raw_attributes)
 
     def _execution_evidence_payload(
         self,

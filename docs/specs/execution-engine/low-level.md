@@ -315,10 +315,12 @@ rather than replacing it.
 
 ## Error handling
 
-- `PreambleError` (`executor.py`, extends `HauteError`) — preamble compile/exec
-  failure, carries an optional `source_line`; caught inside `_eager_execute` and
-  attached only to `POLARS`/`LIVE_SWITCH` nodes rather than aborting the whole
-  preview.
+- `PreambleError` (`haute.errors`, extends `ExecutionError`) — preamble compile/exec
+  failure with stable public code `preamble_failed` and optional public
+  `source_line`. Interactive preview catches it inside `_eager_execute` and
+  attaches it only to `POLARS`/`LIVE_SWITCH` nodes rather than aborting the whole
+  preview; every non-preview profile propagates it through the shared HTTP/job
+  contract-error adapter.
 - `PreviewProjectionError` (`executor.py`, extends `ValueError`) — a requested
   preview-column projection references columns not present on the target frame.
 - `CycleError` (`_topo.py`, extends `HauteError`) — raised from `topo_sort_ids` on a
@@ -640,20 +642,23 @@ writes, failure cleanup, and the complete absence of removed enum members and br
   `_execute_lazy` and `_execute_eager_core` consume it. `_effective_contract` remains the
   compatibility helper returning only the contract for non-strict callers.
 - A resolution exception classified by `_is_boundary_check_exception` becomes
-  `ContractResolutionError(ExecutionError)` when the active profile requires strict projection.
+  `ContractResolutionError(ExecutionError)` when the active execution profile requires strict
+  contract resolution.
   Its public contract is `error_code="contract_resolution_failed"` plus `node_id`,
   `node_type`, and `failure_kind`; the original exception remains the Python cause and is never
-  copied into the public payload. `PREVIEW_EAGER` and `DEPLOY_LIVE` may instead return a
+  copied into the public payload. Only interactive `PREVIEW_EAGER` execution may return a
   `degraded` resolution containing `Contract.opaque()`.
-- Strictness is derived from the same profile predicate used by the projection planner, not from
-  a second route-owned profile table. An absent context uses the entry point's existing default:
-  lazy execution is `LAZY_SINK` and eager execution is `PREVIEW_EAGER`.
+- Contract-resolution strictness is a separate policy from projection/materialisation strictness.
+  Both `DEPLOY_LIVE` and `DEPLOY_BATCH` fail identically, so changing only request row count cannot
+  change contract validity. A context-less low-level eager or lazy call retains the historical
+  non-strict compatibility behaviour; production entry points supply an `ExecutionContext` and
+  therefore an explicit profile.
 - `_builders.py::_model_score_columns` recognises the validated internal deploy-contract inputs
   attached by the deploy scorer for a remapped native model. Those inputs are resolved from the
   local served artifact before both projection planning and boundary enforcement, so strict
-  `DEPLOY_BATCH` execution remains fail-loud without re-resolving the graph's obsolete external
-  MLflow source. Empty local feature metadata stays opaque rather than being presented as a
-  concrete zero-column model contract.
+  `DEPLOY_LIVE` and `DEPLOY_BATCH` execution remain fail-loud without re-resolving the graph's
+  obsolete external MLflow source. Empty local feature metadata stays opaque rather than being
+  presented as a concrete zero-column model contract.
 - Directory-backed Parquet data inputs continue through `read_polars_input`/`scan_parquet`.
   `arguments.hive_partitioning` is a registry-validated Polars argument; source user code supplies
   the partition predicate and projection analysis retains every predicate column. Regression
@@ -667,7 +672,8 @@ writes, failure cleanup, and the complete absence of removed enum members and br
   `error_code="chunk_memory_risk"`, `target_node_id`, `reason_code="single_row_exceeds_budget"`,
   `estimated_target_row_bytes`, and `target_chunk_bytes`. It is deliberately not a
   `ChunkPlanUnsupportedError`, so callers that may choose an unchunked fallback cannot erase a
-  known memory-risk rejection.
+  known memory-risk rejection. A one-row chunk bounds row count only; it cannot satisfy the
+  requested byte ceiling when one estimated target row already exceeds that ceiling.
 - Fixed-width target columns use dtype width and variable-width target columns use the existing
   bounded sample. Source-width evidence remains diagnostic only. An explicit row-count chunk size
   is outside this byte-guarantee and retains its current behaviour.
@@ -691,17 +697,21 @@ writes, failure cleanup, and the complete absence of removed enum members and br
   the origin. Controlled-clock tests enforce the profile-independent checkpoint-observation
   budget without flaky wall-clock sleeps.
 - `ExecutionContext.release_admission()` runs all cleanup callbacks in reverse registration order
-  and the admission release exactly once. It aggregates cleanup/release failures. With no active
-  primary exception, the first cleanup failure is raised and later failures are notes; while a
-  primary exception is propagating, cleanup failures are notes on that exception and are not
-  raised over it.
+  and the admission release exactly once. It aggregates cleanup/release failures. By default the
+  first cleanup failure is raised and later failures are notes, even if the caller happens to be
+  inside an unrelated `except` block. A caller in a `finally` that is preserving a genuinely
+  propagating primary exception must opt in with `preserve_primary_error=True`; cleanup failures
+  are then notes on that exception and do not replace it.
 - Terminal `metrics_payload()` calls may emit one telemetry event per terminal status/reason.
-  `HAUTE_EXECUTION_TELEMETRY` accepts only explicit boolean spellings and defaults false.
+  `HAUTE_EXECUTION_TELEMETRY` accepts only explicit boolean spellings and defaults false. The
+  parsed value is cached process-wide; server startup validates and warms it after loading the
+  environment, so an invalid value prevents startup instead of failing individual requests.
   `ExecutionContext.telemetry_sink` is injectable; the production default is one structured log
   event. The event has `schema_version=1`, at most 32 allow-listed scalar attributes, and string
   values capped at 128 characters. It contains no identifiers, paths, columns, plans, user data,
-  messages, or exception text. Sink failures are logged as telemetry failures and cannot change
-  execution status.
+  messages, or exception text. Attribute assembly never silently truncates the allow-list: an
+  invariant overflow drops the event and logs a telemetry failure. Assembly and sink failures
+  cannot change execution status.
 
 Focused acceptance tests live beside `test_execute_lazy_contracts.py`,
 `test_chunk_plan.py`, `test_projection_planner.py`, `test_execution_context.py`,

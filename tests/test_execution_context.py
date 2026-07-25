@@ -24,6 +24,7 @@ from haute._execution_context import (
     ExecutionProfile,
     ExecutionStageMetric,
     ExecutionTelemetryEvent,
+    _bounded_telemetry_attributes,
 )
 from haute.graph_utils import NodeType, _execute_eager_core, _execute_lazy
 from haute.schemas import ExecutionMetricsPayload
@@ -561,10 +562,26 @@ def test_execution_context_cleanup_failures_do_not_replace_primary_error() -> No
         try:
             raise KeyError("primary failed")
         finally:
-            context.release_admission()
+            context.release_admission(preserve_primary_error=True)
 
     assert released == ["cleanup", "admission"]
     assert any("RuntimeError" in note for note in exc_info.value.__notes__)
+
+
+def test_cleanup_failure_is_not_silently_attached_to_an_unrelated_caught_error() -> None:
+    context = ExecutionContext(operation="cleanup-failure", profile=ExecutionProfile.LAZY_SINK)
+    context.add_cleanup(lambda: (_ for _ in ()).throw(RuntimeError("cleanup failed")))
+    caught_error: KeyError | None = None
+
+    try:
+        raise KeyError("unrelated")
+    except KeyError as caught:
+        caught_error = caught
+        with pytest.raises(RuntimeError, match="cleanup failed"):
+            context.release_admission()
+
+    assert caught_error is not None
+    assert not getattr(caught_error, "__notes__", [])
 
 
 def test_heavy_admission_releases_reservation_when_finalizer_registration_fails(
@@ -848,13 +865,42 @@ def test_execution_telemetry_sink_failure_does_not_change_metrics_result() -> No
 def test_execution_telemetry_environment_rejects_ambiguous_boolean(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from haute._execution_context import configure_execution_telemetry
+
     monkeypatch.setenv("HAUTE_EXECUTION_TELEMETRY", "sometimes")
 
     with pytest.raises(ValueError, match="HAUTE_EXECUTION_TELEMETRY"):
-        ExecutionContext(
-            operation="telemetry-config",
-            profile=ExecutionProfile.LAZY_SINK,
-        )
+        configure_execution_telemetry()
+
+
+def test_execution_telemetry_environment_is_parsed_once_across_default_contexts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from haute import _execution_context as context_mod
+
+    context_mod._execution_telemetry_enabled.cache_clear()
+    monkeypatch.setenv("HAUTE_EXECUTION_TELEMETRY", "true")
+    ExecutionContext(operation="one", profile=ExecutionProfile.LAZY_SINK)
+    ExecutionContext(operation="two", profile=ExecutionProfile.LAZY_SINK)
+    assert context_mod._execution_telemetry_enabled.cache_info().misses == 1
+    context_mod._execution_telemetry_enabled.cache_clear()
+
+
+def test_bounded_telemetry_attributes_rejects_overflow_instead_of_slicing() -> None:
+    attributes = {f"key_{index}": index for index in range(32)}
+    assert _bounded_telemetry_attributes(attributes) == attributes
+    with pytest.raises(ValueError, match="32"):
+        _bounded_telemetry_attributes({**attributes, "overflow": 33})
+
+
+def test_telemetry_attribute_failure_does_not_change_metrics_payload() -> None:
+    context = ExecutionContext(
+        operation="telemetry", profile=ExecutionProfile.LAZY_SINK, telemetry_enabled=True
+    )
+    with patch.object(
+        ExecutionContext, "_telemetry_attributes", side_effect=RuntimeError("bad telemetry")
+    ):
+        assert context.metrics_payload(status="completed")["status"] == "completed"
 
 
 def test_preview_cache_unpins_entry_when_preview_projection_fails(tmp_path) -> None:

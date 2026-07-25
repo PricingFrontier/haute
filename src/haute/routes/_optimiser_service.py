@@ -3107,7 +3107,7 @@ class OptimiserSolveService:
             raise _memory_limit_http_exception(exc) from None
         finally:
             if execution_context is not None:
-                execution_context.release_admission()
+                execution_context.release_admission(preserve_primary_error=True)
             self._store.delete_job(job_id)
 
     def start_frontier_auto_range(

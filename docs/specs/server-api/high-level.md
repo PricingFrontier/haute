@@ -357,7 +357,9 @@ allows full materialisation and RAM admission succeeds, or fails before executio
 unprojected streaming boundary.
 
 The shared route and background-job mapper maps these public errors to HTTP 422 and terminal
-`contract_error`, respectively: `GroupByExecutionUnsupportedError`,
+`contract_error`, respectively: `PreambleError(ExecutionError)`,
+`ContractResolutionError(ExecutionError)`, `ChunkMemoryRiskError(BoundedMemoryUnsupportedError)`,
+`GroupByExecutionUnsupportedError`,
 `TraceCorrelationUnsupportedError(ExecutionError)`,
 `RatingExtremaUndefinedError(ExecutionError)`,
 `RatingFactorMissingError(SchemaMismatchError)`,

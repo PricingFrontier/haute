@@ -92,8 +92,19 @@ class ExecutionError(HauteError):
     """Runtime execution failure."""
 
 
+class PreambleError(ExecutionError):
+    """Raised when the pipeline preamble fails to compile or execute."""
+
+    error_code = "preamble_failed"
+    public_fields = ("source_line",)
+
+    def __init__(self, message: str, source_line: int | None = None) -> None:
+        self.source_line = source_line
+        super().__init__(message)
+
+
 class ContractResolutionError(ExecutionError):
-    """Raised when a bounded profile cannot resolve a node column contract."""
+    """Raised when profiled production execution cannot resolve a node contract."""
 
     error_code = "contract_resolution_failed"
     public_fields = ("node_id", "node_type", "failure_kind")

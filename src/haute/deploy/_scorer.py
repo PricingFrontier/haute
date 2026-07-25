@@ -143,7 +143,9 @@ class DeployScorePlan:
             )
         finally:
             self.retained_lazy_frames.clear()
-            self.execution_context.release_admission()
+            self.execution_context.release_admission(
+                preserve_primary_error=preserve_primary_error,
+            )
 
 
 def deploy_execution_profile(row_count: int) -> ExecutionProfile:
@@ -664,6 +666,31 @@ def score_graph_lazy(
             operation="deploy_score_graph",
             row_count=input_df.height,
         )
+    try:
+        return _score_graph_lazy(
+            graph=graph,
+            input_df=input_df,
+            input_node_ids=input_node_ids,
+            output_node_id=output_node_id,
+            artifact_paths=artifact_paths,
+            output_fields=output_fields,
+            execution_context=execution_context,
+        )
+    except BaseException:
+        execution_context.release_admission(preserve_primary_error=True)
+        raise
+
+
+def _score_graph_lazy(
+    graph: PipelineGraph,
+    input_df: pl.DataFrame,
+    input_node_ids: list[str],
+    output_node_id: str,
+    artifact_paths: dict[str, str] | None,
+    output_fields: list[str] | None,
+    execution_context: ExecutionContext,
+) -> DeployScorePlan:
+    """Construct the lazy score plan using an already-admitted context."""
     remap = artifact_paths or {}
     graph = _attach_bundled_feature_contracts(
         _remap_bundled_data_inputs(_resolve_runtime_graph_paths(graph), remap),

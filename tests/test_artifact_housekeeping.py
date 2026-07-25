@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -289,13 +290,15 @@ def test_server_lifespan_reaps_artifacts_before_serving(
     import haute.server as server
 
     calls: list[str] = []
+    lifespan_thread = threading.get_ident()
     monkeypatch.setattr(server, "_clear_bytecache", lambda: calls.append("clear_bytecache"))
     monkeypatch.setattr(server, "configure_logging", lambda: calls.append("configure_logging"))
     monkeypatch.setattr(deploy_config, "_load_env", lambda _path: calls.append("load_env"))
+    monkeypatch.setattr(server, "configure_execution_telemetry", lambda: calls.append("telemetry"))
     monkeypatch.setattr(
         server,
         "reap_stale_optimiser_artifacts",
-        lambda: calls.append("reap_artifacts"),
+        lambda: calls.append(f"reap_artifacts:{threading.get_ident()}"),
     )
     monkeypatch.setattr(server, "_ensure_pipeline_index", lambda: calls.append("pipeline_index"))
 
@@ -306,6 +309,9 @@ def test_server_lifespan_reaps_artifacts_before_serving(
 
     async def exercise_lifespan() -> None:
         async with server._lifespan(server.app):
-            assert calls.index("reap_artifacts") < calls.index("pipeline_index")
+            reaper_call = next(call for call in calls if call.startswith("reap_artifacts:"))
+            assert reaper_call != f"reap_artifacts:{lifespan_thread}"
+            assert calls.index(reaper_call) < calls.index("pipeline_index")
+            assert calls.index("load_env") < calls.index("telemetry") < calls.index(reaper_call)
 
     asyncio.run(exercise_lifespan())

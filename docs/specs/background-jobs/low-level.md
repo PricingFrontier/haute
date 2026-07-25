@@ -455,7 +455,8 @@ Remaining background-job improvement work is tracked in the
 - `_optimiser_service.py` creates apply-result and ratebook-factor artifact directories through
   this helper. `reap_stale_optimiser_artifacts()` targets only
   `_apply_artifact_root()` and `_ratebook_factors_artifact_root()`. `server._lifespan` calls it
-  once at startup and logs its bounded per-root report.
+  once at startup through `asyncio.to_thread` and logs its bounded per-root report, so directory
+  traversal, recursive reclaimed-byte sizing, and deletion do not block the server event loop.
   `HAUTE_ARTIFACT_STALE_SECONDS` is parsed strictly as a non-negative integer and defaults to
   86,400 seconds.
 - `IsolatedJobSupervisor.launch` catches an unexpected `Exception` escaping the parent-side

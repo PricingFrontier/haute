@@ -59,8 +59,8 @@ from haute._rating import _apply_banding  # noqa: F401 — re-exported for tests
 from haute._registry import ensure_registry_ready
 from haute._sandbox import safe_globals, validate_user_code
 from haute._types import NodeData
+from haute.errors import PreambleError
 from haute.graph_utils import (
-    HauteError,
     NodeType,
     PipelineGraph,
     _execute_eager_core,
@@ -164,14 +164,6 @@ def _pipeline_dir(graph: PipelineGraph) -> Path | None:  # pragma: no mutate
     if not p.is_absolute():
         p = Path.cwd() / p
     return p.resolve().parent
-
-
-class PreambleError(HauteError):
-    """Raised when the preamble (imports / utility code) fails to compile."""
-
-    def __init__(self, message: str, source_line: int | None = None):  # pragma: no mutate
-        super().__init__(message)
-        self.source_line = source_line
 
 
 class PreviewProjectionError(ValueError):
@@ -978,7 +970,7 @@ def execute_graph(
                 execution_context=admitted_context,
             )
         finally:
-            admitted_context.release_admission()
+            admitted_context.release_admission(preserve_primary_error=True)
 
     # Include enforce_contracts in the cache key so a toggle flips
     # between distinct cache slots instead of serving a stale entry

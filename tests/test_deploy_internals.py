@@ -1308,6 +1308,58 @@ class TestScoreGraphOutputFields:
         assert execute.call_args.kwargs["dataframe_cache_request"] is None
         plan.cleanup(preserve_primary_error=False)
 
+    def test_score_graph_lazy_releases_supplied_context_when_preamble_compile_fails(self):
+        from haute._execution_context import ExecutionContext, ExecutionProfile
+        from haute.deploy import _scorer
+        from haute.errors import PreambleError
+
+        graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "src",
+                        "data": {
+                            "label": "src",
+                            "nodeType": "apiInput",
+                            "config": _single_frame_api_input_config("x", "float", label="src"),
+                        },
+                    },
+                    {
+                        "id": "out",
+                        "data": {
+                            "label": "out",
+                            "nodeType": "output",
+                            "config": make_output_config([]),
+                        },
+                    },
+                ],
+                "edges": [{"id": "e1", "source": "src", "target": "out", "sourceHandle": "src"}],
+                "preamble": "broken",
+            }
+        )
+        releases: list[str] = []
+        context = ExecutionContext(
+            operation="deploy-score",
+            profile=ExecutionProfile.DEPLOY_LIVE,
+            admission_release=lambda: releases.append("released"),
+        )
+        error = PreambleError("invalid preamble", source_line=7)
+
+        with patch("haute.executor._compile_preamble", side_effect=error):
+            with pytest.raises(PreambleError) as exc_info:
+                _scorer.score_graph_lazy(
+                    graph=graph,
+                    input_df=pl.DataFrame({"x": [1.0]}),
+                    input_node_ids=["src"],
+                    output_node_id="out",
+                    execution_context=context,
+                )
+
+        assert exc_info.value is error
+        assert releases == ["released"]
+        context.release_admission()
+        assert releases == ["released"]
+
     def test_score_graph_lazy_retains_output_field_parent_until_cleanup(self):
         """Selecting output_fields must not drop the cache-pinning source LazyFrame."""
         from haute.deploy import _scorer
