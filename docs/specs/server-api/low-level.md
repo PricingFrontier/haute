@@ -568,9 +568,21 @@ Remaining server API improvement work is tracked in the
 
 - `WriteOutputRequest` adds `overwrite: StrictBool = False`; the route forwards it
   as a keyword argument to `write_data_output`.
+- `POST /api/pipeline/output-destination` accepts the current graph and output
+  node id, performs the same flattening, node/config validation, containment,
+  default-extension, and bare-name resolution as the write route, and returns
+  only the safe display path, format, and suffix-mismatch flag. It never
+  executes the graph or touches the destination.
 - `DataOutputDestinationExistsError` is caught before the generic sink failure
   branch and translated to 409. Its public text is constructed from
   `resolve_data_output_path`'s display path, never the absolute resolved path.
+- Unsupported create-only publication is returned with a safe actionable
+  detail. A post-publication directory-sync failure has its own safe response
+  explicitly stating that the artifact was published but durability could not
+  be confirmed.
+- `ApiInputSchemaError` opts into the stable public-contract adapter and maps to
+  422 across preview/write execution; JSON cache routes retain their existing
+  schema-error discriminator envelope.
 - `browse_files(extensions: str | None = None)` resolves omitted extensions
   through the registry and delegates enumeration through
   `run_in_threadpool`.

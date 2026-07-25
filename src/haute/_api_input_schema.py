@@ -136,6 +136,8 @@ class ApiInputSchemaError(HauteError):
     detail.
     """
 
+    error_code = "api_input_schema_invalid"
+
 
 class ColumnV2(TypedDict, total=False):
     """One column entry inside ``tables[].columns[]``."""

@@ -23,7 +23,7 @@ describe("useOutputWriteStore", () => {
 
     expect(useOutputWriteStore.getState().writes["output-1"]).toEqual({
       requestId: second,
-      configIdentity: "config-b",
+      requestIdentity: "config-b",
       phase: "writing",
     })
   })
@@ -44,5 +44,19 @@ describe("useOutputWriteStore", () => {
 
     expect(useOutputWriteStore.getState().writes["output-1"]?.phase).toBe("writing")
     expect(useOutputWriteStore.getState().writes["output-2"]?.phase).toBe("writing")
+  })
+
+  it("clears only the matching terminal request", () => {
+    const requestId = useOutputWriteStore.getState().begin("output-1", "request-a")!
+    useOutputWriteStore.getState().complete("output-1", requestId, "request-a", {
+      phase: "confirm_overwrite",
+      message: "exists",
+    })
+
+    useOutputWriteStore.getState().clear("output-1", requestId + 1)
+    expect(useOutputWriteStore.getState().writes["output-1"]).toBeDefined()
+
+    useOutputWriteStore.getState().clear("output-1", requestId)
+    expect(useOutputWriteStore.getState().writes["output-1"]).toBeUndefined()
   })
 })

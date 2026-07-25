@@ -1,7 +1,13 @@
-import { writeOutput, ApiError } from "../../api/client"
+import { useEffect, useMemo, useState } from "react"
+import {
+  resolveOutputDestination,
+  writeOutput,
+  ApiError,
+} from "../../api/client"
 import type {
   IoCapabilityGroup,
   IoFormatCapability,
+  OutputDestinationResponse,
 } from "../../api/types"
 import { EditorLabel } from "../../components/form"
 import useSettingsStore from "../../stores/useSettingsStore"
@@ -126,35 +132,6 @@ function outputConfigReady(
   )
 }
 
-function destinationPreview(
-  group: IoCapabilityGroup | undefined,
-  format: IoFormatCapability | undefined,
-  config: Record<string, unknown>,
-): { destination: string | null; suffixMismatch: boolean } {
-  if (group?.name === "database") {
-    const table = typeof config.table === "string" ? config.table.trim() : ""
-    return { destination: table || null, suffixMismatch: false }
-  }
-  if (group?.name !== "file") return { destination: null, suffixMismatch: false }
-  const path = typeof config.path === "string" ? config.path.trim() : ""
-  if (!path) return { destination: null, suffixMismatch: false }
-  const fileName = path.split(/[\\/]/).at(-1) ?? path
-  const lastDot = fileName.lastIndexOf(".")
-  const suffix =
-    lastDot > 0 && lastDot < fileName.length - 1
-      ? fileName.slice(lastDot)
-      : ""
-  const extensions = format?.extensions ?? []
-  const resolvedName = suffix ? path : `${path}${extensions[0] ?? ""}`
-  return {
-    destination: path.includes("/") || path.includes("\\")
-      ? resolvedName
-      : `outputs/${resolvedName}`,
-    suffixMismatch:
-      suffix.length > 0 && !extensions.some((extension) => extension.toLowerCase() === suffix.toLowerCase()),
-  }
-}
-
 export default function DataOutputEditor({
   config,
   onUpdate,
@@ -173,9 +150,11 @@ export default function DataOutputEditor({
   const streamingChunkSize = useSettingsStore(
     (state) => state.streamingChunkSize,
   )
+  const activeSource = useSettingsStore((state) => state.activeSource)
   const writeState = useOutputWriteStore((state) => state.writes[nodeId])
   const beginWrite = useOutputWriteStore((state) => state.begin)
   const completeWrite = useOutputWriteStore((state) => state.complete)
+  const clearWrite = useOutputWriteStore((state) => state.clear)
 
   const groups = (capabilities?.groups ?? []).filter(
     (group) => group.output_available,
@@ -188,21 +167,111 @@ export default function DataOutputEditor({
   )
   const ready =
     group !== undefined && outputConfigReady(group, format, config)
-  const identity = `${nodeId}:${JSON.stringify(config)}`
+  const graph = useMemo(() => {
+    const built = buildGraph(allNodes, edges, submodels, preamble)
+    return {
+      ...built,
+      nodes: built.nodes.map((node) =>
+        node.id === nodeId
+          ? {
+              ...node,
+              data: {
+                ...node.data,
+                config,
+              },
+            }
+          : node,
+      ),
+    }
+  }, [allNodes, config, edges, nodeId, preamble, submodels])
+  const identity = useMemo(
+    () =>
+      JSON.stringify({
+        graph,
+        nodeId,
+        config,
+        source: activeSource,
+        streamingChunkSize,
+      }),
+    [activeSource, config, graph, nodeId, streamingChunkSize],
+  )
   const isWriting = writeState?.phase === "writing"
-  const visibleState = writeState?.configIdentity === identity ? writeState : undefined
-  const destination = destinationPreview(group, format, config)
+  const visibleState =
+    writeState?.phase === "writing" ||
+    writeState?.requestIdentity === identity
+      ? writeState
+      : undefined
+  const [destinationState, setDestinationState] = useState<
+    | {
+        identity: string
+        response?: OutputDestinationResponse
+        error?: string
+      }
+    | undefined
+  >()
+  const destination =
+    ready && destinationState?.identity === identity
+      ? destinationState
+      : undefined
+
+  useEffect(() => {
+    if (
+      writeState &&
+      writeState.phase !== "writing" &&
+      writeState.requestIdentity !== identity
+    ) {
+      clearWrite(nodeId, writeState.requestId)
+    }
+  }, [clearWrite, identity, nodeId, writeState])
+
+  useEffect(
+    () => () => {
+      const active = useOutputWriteStore.getState().writes[nodeId]
+      if (active?.phase !== "writing") {
+        clearWrite(nodeId, active?.requestId ?? -1)
+      }
+    },
+    [clearWrite, nodeId],
+  )
+
+  useEffect(() => {
+    if (!ready) return
+    const controller = new AbortController()
+    void resolveOutputDestination({
+      graph,
+      nodeId,
+      signal: controller.signal,
+    }).then(
+      (response) => {
+        if (!controller.signal.aborted) {
+          setDestinationState({ identity, response })
+        }
+      },
+      (caught: unknown) => {
+        if (controller.signal.aborted) return
+        const message =
+          caught instanceof ApiError && caught.detail
+            ? caught.detail
+            : caught instanceof Error
+              ? caught.message
+              : "Could not resolve output destination."
+        setDestinationState({ identity, error: message })
+      },
+    )
+    return () => controller.abort()
+  }, [graph, identity, nodeId, ready])
 
   const write = async (overwrite: boolean) => {
     if (!ready || isWriting) return
+    if (overwrite && visibleState?.phase !== "confirm_overwrite") return
     const requestIdentity = identity
     const requestId = beginWrite(nodeId, requestIdentity)
     if (requestId === null) return
     try {
       const response = await writeOutput({
-        graph: buildGraph(allNodes, edges, submodels, preamble),
+        graph,
         nodeId,
-        source: useSettingsStore.getState().activeSource,
+        source: activeSource,
         streamingChunkSize,
         overwrite,
       })
@@ -282,14 +351,19 @@ export default function DataOutputEditor({
         />
       )}
 
-      {destination.destination && (
+      {destination?.response?.path && (
         <p className="text-xs" style={{ color: "var(--text-muted)" }}>
-          Destination: {destination.destination}
+          Destination: {destination.response.path}
         </p>
       )}
-      {destination.suffixMismatch && (
+      {destination?.response?.suffix_mismatch && (
         <p role="alert" className="text-xs" style={{ color: "var(--danger-text)" }}>
           The destination extension does not match the selected format.
+        </p>
+      )}
+      {destination?.error && (
+        <p role="alert" className="text-xs" style={{ color: "var(--danger-text)" }}>
+          Could not resolve destination: {destination.error}
         </p>
       )}
 

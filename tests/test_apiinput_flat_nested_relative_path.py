@@ -135,19 +135,10 @@ def test_apiinput_flat_reads_pipeline_relative_path_from_project_root(nested_pro
     assert results["src"].preview == _EXPECTED_RECORDS
 
 
-def test_apiinput_flat_out_of_cwd_absolute_passthrough(
+def test_apiinput_flat_out_of_cwd_absolute_is_rejected(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """An ABSOLUTE data path that resolves OUTSIDE cwd is loaded, NOT rejected and
-    NOT re-anchored to the pipeline dir.
-
-    ``canonical_dataframe_execution_graph`` may already have resolved the path
-    against ``graph.source_file`` to somewhere outside cwd (a codegen round-trip
-    re-execute, or ``haute run <pipeline outside cwd>``); the executor must load
-    it. This stage does not enforce project-root containment (that gate lives on
-    the route boundary), and ``read_source`` imposes none either. Regression
-    guard mirroring the DATA_INPUT sibling.
-    """
+    """Direct execution rejects absolute file inputs outside its project root."""
     monkeypatch.chdir(tmp_path)  # cwd == project root
     original = _get_project_root()
     set_project_root(tmp_path)
@@ -164,8 +155,8 @@ def test_apiinput_flat_out_of_cwd_absolute_passthrough(
         graph = _api_input_graph(str(outside))
         results = execute_graph(graph, target_node_id="src")
 
-        assert results["src"].status == "ok", results["src"].error
-        assert results["src"].preview == _EXPECTED_RECORDS
+        assert results["src"].status == "error"
+        assert "outside the project root" in (results["src"].error or "")
     finally:
         set_project_root(original)
         _preview_cache.invalidate()

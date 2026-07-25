@@ -408,6 +408,9 @@ Remaining pipeline-configuration improvement work is tracked in the
   validates `tables[]` before the JSON shred, and forwards projection/profile
   arguments for flat-file reads. External-file resolution validates non-empty
   `path` and `fileType` strings and forwards `modelClass`.
+- Missing or malformed API-input `tables[]` raises the typed
+  `ApiInputSchemaError` contract. Execution routes adapt it to a stable 422
+  response rather than allowing a bare runtime exception to become a 500.
 - Executor builders call the same helpers with their already-resolved inline
   graph config. Generated builders pass only the sidecar path and `base_dir`;
   no declarative field is interpolated into the function body.

@@ -63,15 +63,18 @@ def _anchored_required_path(config: Mapping[str, Any], base_dir: str | Path | No
         raise ValueError("retained input config requires non-empty 'path'")
 
     from haute._path_case_audit import warn_if_case_ambiguous
-    from haute._path_resolution import resolve_runtime_file_path
+    from haute._path_resolution import current_runtime_project_root, resolve_runtime_file_path
+
+    project_root = current_runtime_project_root()
 
     resolved = resolve_runtime_file_path(
         path,
         pipeline_dir=base_dir,
-        project_root=Path.cwd(),
+        project_root=project_root,
         prefer="project",
+        enforce_project_root=True,
     )
-    warn_if_case_ambiguous(resolved, stop=Path.cwd())
+    warn_if_case_ambiguous(resolved, stop=project_root)
     return str(resolved)
 
 
@@ -87,11 +90,15 @@ def resolve_api_input_from_config(
     config = _resolve_node_config(config_or_path, base_dir)
     path = _anchored_required_path(config, base_dir)
 
-    from haute._api_input_schema import is_json_api_input_path, validate_v2_schema
+    from haute._api_input_schema import (
+        ApiInputSchemaError,
+        is_json_api_input_path,
+        validate_v2_schema,
+    )
 
     if is_json_api_input_path(path):
         if not isinstance(config.get("tables"), list):
-            raise RuntimeError(
+            raise ApiInputSchemaError(
                 "API Input has no v2 schema (tables[]). Open the node and click "
                 "'Infer Tables' to populate the schema mapping, then preview again."
             )

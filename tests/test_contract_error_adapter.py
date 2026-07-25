@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from haute._api_input_schema import ApiInputSchemaError
 from haute._output_assembler import OutputNestingKeyError
 from haute.errors import (
     ContractMismatchError,
@@ -23,6 +24,13 @@ from haute.routes._contract_errors import (
 
 def _public_error_cases() -> list[tuple[BaseException, dict[str, object]]]:
     return [
+        (
+            ApiInputSchemaError("API Input has no v2 schema (tables[])"),
+            {
+                "error_code": "api_input_schema_invalid",
+                "message": "API Input has no v2 schema (tables[])",
+            },
+        ),
         (
             GroupByExecutionUnsupportedError(
                 "group-by needs a full materialisation boundary",

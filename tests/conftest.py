@@ -582,8 +582,10 @@ def haute_scratch(tmp_path: Path) -> Path:
     Same substrate as ``tmp_path`` (unique per test, platform-appropriate,
     auto-pruned) plus the sandbox semantics: it is exactly the root the
     layer-3 guard confines strict tests to and exports as
-    ``HAUTE_TEST_SANDBOX_ROOT``.
+    ``HAUTE_TEST_SANDBOX_ROOT``. It is also the declared Haute project root
+    for execution tests that build graphs against files in this directory.
     """
+    set_project_root(tmp_path)
     return tmp_path
 
 

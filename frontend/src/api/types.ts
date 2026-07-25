@@ -299,6 +299,12 @@ export interface WriteOutputResponse {
   execution_metrics?: ExecutionMetrics | null
 }
 
+export interface OutputDestinationResponse {
+  path: string
+  format: string
+  suffix_mismatch: boolean
+}
+
 /** Schema info returned by the schema endpoint. */
 export interface SchemaResult {
   path: string

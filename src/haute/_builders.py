@@ -331,17 +331,18 @@ def _configured_pipeline_dir() -> Path | None:
     This is the pipeline-directory candidate used by the cache-build route and
     by the shared retained-input helpers. It is the directory holding the
     pipeline's ``main.py``, taken from ``haute.toml [project].pipeline`` under
-    the current working directory.
+    the execution-scoped project root.
 
     Read through the core, deploy-safe :mod:`haute._project` reader (stdlib
     ``tomllib`` only) rather than ``routes._helpers.pipeline_dir`` so this
     builder never drags the FastAPI route layer into the executor/deploy import
     path.  ``None`` when there is no ``haute.toml`` or no ``[project].pipeline``,
-    so resolution falls back to the project root / cwd.
+    so resolution falls back to the execution-scoped project root.
     """
+    from haute._path_resolution import current_runtime_project_root
     from haute._project import _toml_configured_pipeline
 
-    configured = _toml_configured_pipeline(Path.cwd())
+    configured = _toml_configured_pipeline(current_runtime_project_root())
     return configured.parent if configured is not None else None
 
 

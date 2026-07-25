@@ -376,7 +376,7 @@ class DataFrameExecutionCache(LRUCache[str, DataFrameExecutionCacheEntry]):
             self._pin_scan(key.cache_key, entry)
         return self._open_scan(key.cache_key, entry)
 
-    def _scan_stored_entry(
+    def scan_stored_entry(
         self,
         key: DataFrameExecutionCacheKey,
         expected: DataFrameExecutionCacheEntry,
@@ -647,7 +647,7 @@ def materialize_lazy_frame_with_cache(
         # The successful writer + metadata read already validated this exact
         # generation. Ordinary independent hits still take ``scan`` and its
         # corruption validator; first consume only checks stored identity.
-        cached_after_store = cache._scan_stored_entry(key, stored)
+        cached_after_store = cache.scan_stored_entry(key, stored)
         if cached_after_store is None:
             raise DataFrameExecutionCacheError(
                 "Stored dataframe cache entry vanished immediately "

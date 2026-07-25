@@ -29,6 +29,8 @@ from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute.errors import SchemaMismatchError
 from haute.executor import (
     DataOutputDestinationExistsError,
+    DataOutputDurabilityError,
+    DataOutputPublicationError,
     resolve_data_output_path,
     write_data_output,
 )
@@ -503,6 +505,161 @@ class TestExecuteSinkDataOutput:
 
         assert out_path.read_bytes() == b"competing-publisher"
         assert list(haute_scratch.glob(".*.haute-stage-*")) == []
+
+    def test_windows_create_only_publication_uses_rename_not_link(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        stage = tmp_path / "stage.parquet"
+        target = tmp_path / "result.parquet"
+        stage.write_bytes(b"output")
+        calls: list[tuple[Path, Path]] = []
+        original_rename = executor_module.os.rename
+
+        def record_rename(source: Path, destination: Path) -> None:
+            calls.append((source, destination))
+            original_rename(source, destination)
+
+        def unexpected_link(*_args: object, **_kwargs: object) -> None:
+            raise AssertionError("Windows publication must not use hard links")
+
+        monkeypatch.setattr(executor_module, "_IS_WINDOWS", True)
+        monkeypatch.setattr(executor_module.os, "rename", record_rename)
+        monkeypatch.setattr(executor_module.os, "link", unexpected_link)
+
+        executor_module._publish_output_create_only(stage, target, "result.parquet")
+
+        assert calls == [(stage, target)]
+        assert target.read_bytes() == b"output"
+
+    def test_non_windows_unsupported_link_raises_safe_publication_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        stage = tmp_path / "stage.parquet"
+        target = tmp_path / "result.parquet"
+        stage.write_bytes(b"output")
+
+        def unsupported_link(*_args: object, **_kwargs: object) -> None:
+            raise OSError("hard links are unsupported on this filesystem")
+
+        monkeypatch.setattr(executor_module, "_IS_WINDOWS", False)
+        monkeypatch.setattr(executor_module.os, "link", unsupported_link)
+
+        with pytest.raises(DataOutputPublicationError) as exc:
+            executor_module._publish_output_create_only(stage, target, "result.parquet")
+
+        assert "result.parquet" in str(exc.value)
+        assert "hard links are unsupported" not in str(exc.value)
+        assert isinstance(exc.value.__cause__, OSError)
+
+    def test_non_windows_stage_unlink_failure_does_not_turn_publication_into_failure(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        stage = tmp_path / "stage.parquet"
+        target = tmp_path / "result.parquet"
+        stage.write_bytes(b"output")
+        original_unlink = Path.unlink
+
+        def blocked_stage_unlink(path: Path, *args: object, **kwargs: object) -> None:
+            if path == stage:
+                raise PermissionError("temporarily locked")
+            original_unlink(path, *args, **kwargs)
+
+        monkeypatch.setattr(executor_module, "_IS_WINDOWS", False)
+        monkeypatch.setattr(Path, "unlink", blocked_stage_unlink)
+
+        executor_module._publish_output_create_only(stage, target, "result.parquet")
+
+        assert target.read_bytes() == b"output"
+        assert stage.exists()
+
+    def test_windows_artifact_sync_retries_transient_permission_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        artifact = tmp_path / "stage.parquet"
+        artifact.write_bytes(b"output")
+        attempts = 0
+        sleeps: list[float] = []
+        original_fsync = executor_module.os.fsync
+
+        def transient_fsync(descriptor: int) -> None:
+            nonlocal attempts
+            attempts += 1
+            if attempts < 3:
+                raise PermissionError("temporarily locked")
+            original_fsync(descriptor)
+
+        monkeypatch.setattr(executor_module, "_IS_WINDOWS", True)
+        monkeypatch.setattr(executor_module.os, "fsync", transient_fsync)
+        monkeypatch.setattr(executor_module.time, "sleep", sleeps.append)
+
+        executor_module._sync_output_artifact(artifact)
+
+        assert attempts == 3
+        assert sleeps == list(executor_module._WINDOWS_OUTPUT_SYNC_RETRY_DELAYS[:2])
+
+    def test_windows_artifact_sync_raises_after_permission_retry_exhaustion(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        artifact = tmp_path / "stage.parquet"
+        artifact.write_bytes(b"output")
+        attempts = 0
+
+        def blocked_fsync(_descriptor: int) -> None:
+            nonlocal attempts
+            attempts += 1
+            raise PermissionError("locked")
+
+        monkeypatch.setattr(executor_module, "_IS_WINDOWS", True)
+        monkeypatch.setattr(executor_module, "_WINDOWS_OUTPUT_SYNC_RETRY_DELAYS", (0.0, 0.0))
+        monkeypatch.setattr(executor_module.os, "fsync", blocked_fsync)
+        monkeypatch.setattr(executor_module.time, "sleep", lambda _delay: None)
+
+        with pytest.raises(PermissionError, match="locked"):
+            executor_module._sync_output_artifact(artifact)
+
+        assert attempts == 3
+
+    def test_directory_sync_failure_reports_published_but_unconfirmed_durability(
+        self, haute_scratch: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        src_path = haute_scratch / "in.parquet"
+        out_path = haute_scratch / "result.parquet"
+        pl.DataFrame({"x": [1]}).write_parquet(src_path)
+        graph = PipelineGraph(
+            nodes=[
+                _data_input_node(
+                    "din",
+                    {
+                        "inputType": "file",
+                        "format": "parquet",
+                        "cacheMode": "direct",
+                        "path": str(src_path),
+                    },
+                ),
+                _data_output_node(
+                    "dout",
+                    {
+                        "outputType": "file",
+                        "format": "parquet",
+                        "path": str(out_path),
+                    },
+                ),
+            ],
+            edges=[_edge("din", "dout")],
+        )
+
+        def failed_directory_sync(_path: Path) -> None:
+            assert out_path.exists()
+            raise OSError("directory fsync failed")
+
+        monkeypatch.setattr(executor_module, "_sync_output_directory", failed_directory_sync)
+
+        with pytest.raises(DataOutputDurabilityError, match="was published") as exc:
+            write_data_output(graph, "dout")
+
+        assert exc.value.display_path == str(out_path)
+        assert isinstance(exc.value.__cause__, OSError)
+        assert out_path.exists()
 
     @pytest.mark.parametrize(
         ("arguments", "has_bom"),

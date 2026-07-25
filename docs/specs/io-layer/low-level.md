@@ -154,9 +154,16 @@ sinker and returns `None`, `mode="write"` streaming-collects then calls the
 
 ### `resolve_runtime_file_path(raw_path, *, source_file, pipeline_dir, project_root, prefer, enforce_project_root)` (`_path_resolution.py`)
 
-1. `_infer_project_root` — explicit `project_root` wins; else infer from
-   `source_file` (if absolute and outside `cwd`, its parent; otherwise
-   `cwd`).
+1. `_infer_project_root` — explicit `project_root` wins; otherwise use the
+   selected Haute project root. A relative `source_file` is interpreted within
+   that selected project and never makes the process working directory an
+   implicit path authority. An absolute `source_file` outside the selected
+   project establishes its own parent as the root, so an explicitly selected
+   external pipeline is contained relative to itself rather than an unrelated
+   working directory.
+   `_execute_lazy` and `_execute_eager_core` install that inferred root in an
+   execution-local context for builder calls; nested and concurrent executions
+   restore/isolate their roots through `ContextVar` tokens.
 2. `_normalise_path_text` the raw path (backslash → forward slash, reject
    embedded NUL).
 3. Absolute `raw_path` returns immediately (after an `enforce_project_root`
@@ -573,7 +580,9 @@ unavailable, never guessed.
   `FORMATS` entries with an input callable and no missing read engine. A
   blocking `_browse_files` helper performs sorted enumeration in
   `run_in_threadpool`, skips `is_symlink()` entries and per-entry `OSError`s,
-  and compares case-folded suffixes.
+  and compares case-folded suffixes. `IoFormat` rejects extension declarations
+  that are not lower-case, leading-dot suffixes, so a registry typo cannot
+  silently turn suffix matching into a bare string-ending match.
 - `_io.UnsupportedSourceFormatError(ValueError)` carries only a safe observed
   suffix and the fixed supported suffix tuple. `get_schema` catches that type
   and known Polars decoder errors before its generic `ValueError`/`Exception`
@@ -586,11 +595,18 @@ unavailable, never guessed.
   graph execution and performs collision-safe publication after the write.
   `DataOutputDestinationExistsError` is translated to HTTP 409 with the
   already-resolved display path only.
-- With overwrite disabled, `os.link(stage, target)` publishes a complete
-  same-filesystem artifact only when the target is absent, followed by
-  unlinking the stage. With overwrite enabled, `os.replace` publishes the
-  stage. `_sync_output_artifact` fsyncs the stage; on POSIX,
-  `_sync_output_directory` fsyncs its parent after publication.
+- With overwrite disabled, Windows uses its create-only `os.rename` semantics;
+  other platforms use `os.link(stage, target)` followed by unlinking the stage.
+  Both publish a complete same-filesystem artifact only when the target is
+  absent. With overwrite enabled, `os.replace` publishes the stage. An
+  unsupported create-only primitive raises a safe, actionable publication
+  error rather than leaking a raw `OSError` after execution.
+- `_sync_output_artifact` fsyncs the stage. On Windows, transient
+  `PermissionError`/sharing failures are retried against a small fixed delay
+  schedule before failing. On POSIX, `_sync_output_directory` fsyncs the parent
+  after publication. A directory-sync failure is reported distinctly as
+  "published but durability could not be confirmed", never as if publication
+  itself failed.
 - Streaming outputs with no writer-provided row count are re-scanned using
   the registered scanner and `pl.len()`. CSV counting translates the writer's
   header, delimiter, quote, decimal, and line-terminator arguments to their

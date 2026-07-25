@@ -599,6 +599,50 @@ def test_generated_api_input_observes_sidecar_only_path_edit(
     assert _collect(module.pipeline.run())["value"].to_list() == [2]
 
 
+def test_generated_and_canvas_inputs_share_project_anchor_outside_cwd(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = tmp_path / "project"
+    pipeline_dir = project / "pipelines"
+    data_dir = pipeline_dir / "data"
+    unrelated = tmp_path / "unrelated"
+    pipeline_dir.mkdir(parents=True)
+    data_dir.mkdir()
+    unrelated.mkdir()
+    (project / "haute.toml").write_text(
+        '[project]\npipeline = "pipelines/main.py"\n',
+        encoding="utf-8",
+    )
+    source = data_dir / "source.parquet"
+    pl.DataFrame({"value": [7]}).write_parquet(source)
+    graph = PipelineGraph(
+        nodes=[
+            _node(
+                "api",
+                "quotes",
+                NodeType.API_INPUT,
+                {"path": "data/source.parquet", "contract": "opaque"},
+            )
+        ],
+        edges=[],
+    )
+
+    original_root = _get_project_root()
+    set_project_root(project)
+    try:
+        module = _write_and_import(graph, pipeline_dir)
+        monkeypatch.chdir(unrelated)
+
+        generated = _collect(module.pipeline.run())
+        canvas = _executor_frame(graph, "api", source="batch")
+    finally:
+        set_project_root(original_root)
+
+    assert generated.to_dict(as_series=False) == {"value": [7]}
+    assert_frame_equal(generated, canvas)
+
+
 def test_generated_external_file_observes_sidecar_loader_edits_and_rejects_malformed(
     isolated_project: Path,
 ) -> None:

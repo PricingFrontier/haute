@@ -3,10 +3,22 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
+from functools import wraps
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal, TypeVar, cast
+
+from haute._sandbox import _get_project_root
+from haute._types import PipelineGraph
 
 PathPreference = Literal["project", "pipeline"]
+_CallableT = TypeVar("_CallableT", bound=Callable[..., Any])
+_RUNTIME_PROJECT_ROOT: ContextVar[Path | None] = ContextVar(
+    "haute_runtime_project_root",
+    default=None,
+)
 
 
 def _normalise_path_text(path: str | Path) -> str:  # pragma: no mutate
@@ -42,18 +54,48 @@ def _infer_project_root(
     if project_root is not None:
         return Path(project_root).resolve()
 
-    cwd = Path.cwd().resolve()
+    current_project = _get_project_root().resolve()
     if not source_file:
-        return cwd
+        return current_project
 
     source = Path(_normalise_path_text(source_file))
     if not source.is_absolute():
-        return cwd
+        return current_project
 
     resolved_source = source.resolve()
-    if resolved_source.is_relative_to(cwd):
-        return cwd
+    if resolved_source.is_relative_to(current_project):
+        return current_project
     return resolved_source.parent
+
+
+def current_runtime_project_root() -> Path:
+    """Return the execution-scoped root, falling back to the selected project."""
+    return _RUNTIME_PROJECT_ROOT.get() or _get_project_root().resolve()
+
+
+@contextmanager
+def runtime_project_root_scope(source_file: str | Path | None) -> Iterator[Path]:
+    """Scope builder path reads to the project selected by an execution graph."""
+    root = _infer_project_root(project_root=None, source_file=source_file)
+    token = _RUNTIME_PROJECT_ROOT.set(root)
+    try:
+        yield root
+    finally:
+        _RUNTIME_PROJECT_ROOT.reset(token)
+
+
+def runtime_project_root_scoped(function: _CallableT) -> _CallableT:
+    """Decorate an execution entry point whose first argument is a graph."""
+
+    @wraps(function)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        graph = args[0] if args else kwargs.get("graph")
+        if not isinstance(graph, PipelineGraph):
+            raise TypeError(f"{function.__name__} requires a PipelineGraph as its graph argument")
+        with runtime_project_root_scope(graph.source_file):
+            return function(*args, **kwargs)
+
+    return cast(_CallableT, wrapper)
 
 
 def _candidate_if_allowed(

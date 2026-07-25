@@ -67,6 +67,7 @@ import type {
   OptimiserSolveResponse,
   OptimiserStatusResponse,
   OutputAssembleDryRunResponse,
+  OutputDestinationResponse,
   PipelineGraph,
   PreviewNodeResponse,
   SaveOptimiserRequest,
@@ -134,6 +135,7 @@ import {
   parseSaveOptimiserResponse,
   parseSolveOptimiserResponse,
   parseOptimiserStatusResponse,
+  parseOutputDestinationResponse,
   parsePipelineResponse,
   parsePreviewNodeResponse,
   parseSavePipelineResponse,
@@ -688,6 +690,27 @@ export interface WriteOutputArgs {
   overwrite?: boolean
   signal?: AbortSignal
   timeout?: number
+}
+
+export interface ResolveOutputDestinationArgs {
+  graph: GraphPayload
+  nodeId: string
+  signal?: AbortSignal
+  timeout?: number
+}
+
+export function resolveOutputDestination(
+  args: ResolveOutputDestinationArgs,
+): Promise<OutputDestinationResponse> {
+  const { graph, nodeId, signal, timeout = 30_000 } = args
+  return post<unknown>(
+    "/api/pipeline/output-destination",
+    {
+      graph,
+      node_id: nodeId,
+    },
+    { signal, timeout },
+  ).then(parseOutputDestinationResponse)
 }
 
 export function writeOutput(args: WriteOutputArgs): Promise<WriteOutputResponse> {

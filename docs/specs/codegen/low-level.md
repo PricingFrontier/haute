@@ -385,6 +385,10 @@ Remaining code-generation improvement work is tracked in the
   `resolve_api_input_from_config(config_path, base_dir=Path(__file__).parent)`.
   It no longer emits `orjson` config loading, a portable baked data path, or a
   baked flat-file config literal.
+- The retained-input resolver combines that concrete pipeline directory with
+  the execution-scoped project root. Both generated and canvas execution use
+  the same candidate order and enforce containment against that root, including
+  when the selected pipeline is outside the process working directory.
 - The source-code extractor recognises
   `resolve_api_input_from_config(...)` as generated load boilerplate, so a
   parse/save/reload cycle does not copy that call into the user's `code` field.

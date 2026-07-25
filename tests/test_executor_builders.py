@@ -834,6 +834,7 @@ class TestBuildApiInput:
         assert captured["columns"] is None
         assert captured["validate_columns"] == frozenset()
 
+    @pytest.mark.usefixtures("_widen_sandbox_root")
     def test_source_projection_validates_stale_selected_columns(
         self,
         tmp_path: Path,

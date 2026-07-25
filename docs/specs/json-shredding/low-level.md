@@ -551,6 +551,11 @@ The corresponding high-level behaviour is
   `infer_schema_length=None`. Tests use more than the default inference-window
   number of null-first rows and a later nested struct field so the regression
   cannot pass accidentally.
+- This full-document inference is a deliberate exemption from bounded source
+  inference: OUTPUT assembly has already materialised the complete response
+  document required by its contract, and a finite prefix cannot preserve a
+  field that first appears later. The constructor performs no additional
+  upstream read; request/output limits remain the boundary for response size.
 - `_emit_row` applies the shared scalar-to-string renderer to any declared
   string column containing a genuine JSON scalar, not only the `$value`
   sentinel. `_buffer_to_frame` remains strict and rejects list/dict values;

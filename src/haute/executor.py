@@ -26,6 +26,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import uuid
 from collections.abc import Mapping
 from pathlib import Path
@@ -184,6 +185,33 @@ class DataOutputDestinationExistsError(FileExistsError):
     def __init__(self, display_path: str):
         self.display_path = display_path
         super().__init__(f"Output destination already exists: {display_path}")
+
+
+class DataOutputPublicationError(RuntimeError):
+    """A create-only Data Output publication could not be completed safely."""
+
+    def __init__(self, display_path: str):
+        self.display_path = display_path
+        super().__init__(
+            "Could not publish output without replacing an existing destination: "
+            f"{display_path}. Choose a destination on a filesystem that supports "
+            "atomic create-only publication."
+        )
+
+
+class DataOutputDurabilityError(RuntimeError):
+    """A Data Output was published, but its directory durability could not be confirmed."""
+
+    def __init__(self, display_path: str):
+        self.display_path = display_path
+        super().__init__(
+            f"Output was published to {display_path}, but storage durability could "
+            "not be confirmed. Verify the file before retrying."
+        )
+
+
+_IS_WINDOWS = os.name == "nt"
+_WINDOWS_OUTPUT_SYNC_RETRY_DELAYS = (0.05, 0.1, 0.2, 0.4, 0.8)
 
 
 def _execution_stage(
@@ -1658,21 +1686,43 @@ def _cleanup_output_staging_path(
         if not staging_path.resolve().is_relative_to(root):
             logger.warning("data_output_stage_cleanup_blocked", path=str(staging_path))
             return
-    staging_path.unlink(missing_ok=True)
+    try:
+        staging_path.unlink(missing_ok=True)
+    except OSError as exc:
+        logger.warning(
+            "data_output_stage_cleanup_failed",
+            path=str(staging_path),
+            error=repr(exc),
+        )
 
 
 def _sync_output_artifact(path: Path) -> None:
     """Flush a completed staged output artifact before it is published."""
     # Windows requires a write-capable descriptor for ``os.fsync``; POSIX
     # permits a read-only descriptor for an already-closed writer artifact.
-    mode = "rb+" if os.name == "nt" else "rb"
-    with path.open(mode) as artifact:
-        os.fsync(artifact.fileno())
+    mode = "rb+" if _IS_WINDOWS else "rb"
+
+    def sync_once() -> None:
+        with path.open(mode) as artifact:
+            os.fsync(artifact.fileno())
+
+    if not _IS_WINDOWS:
+        sync_once()
+        return
+
+    for delay in (*_WINDOWS_OUTPUT_SYNC_RETRY_DELAYS, None):
+        try:
+            sync_once()
+            return
+        except PermissionError:
+            if delay is None:
+                raise
+            time.sleep(delay)
 
 
 def _sync_output_directory(path: Path) -> None:
     """Flush a published output directory where directory fsync is supported."""
-    if os.name == "nt":
+    if _IS_WINDOWS:
         return
     flags = os.O_RDONLY
     if hasattr(os, "O_DIRECTORY"):
@@ -1682,6 +1732,29 @@ def _sync_output_directory(path: Path) -> None:
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
+
+
+def _publish_output_create_only(
+    staging_path: Path,
+    final_path: Path,
+    display_path: str,
+) -> None:
+    """Publish a staged artifact without replacing an existing destination."""
+    try:
+        if _IS_WINDOWS:
+            # Windows ``rename`` is create-only, unlike POSIX ``rename``.
+            os.rename(staging_path, final_path)
+        else:
+            os.link(staging_path, final_path)
+    except FileExistsError as exc:
+        raise DataOutputDestinationExistsError(display_path) from exc
+    except OSError as exc:
+        raise DataOutputPublicationError(display_path) from exc
+
+    if not _IS_WINDOWS:
+        # The final path is already a complete published hard link. Failure to
+        # remove its staging sibling is cleanup residue, not a failed write.
+        _cleanup_output_staging_path(staging_path, project_root=None)
 
 
 def _output_row_count_scan_kwargs(
@@ -1963,12 +2036,11 @@ def write_data_output(
             if overwrite:
                 os.replace(staging_out, out)
             else:
-                try:
-                    os.link(staging_out, out)
-                except FileExistsError as exc:
-                    raise DataOutputDestinationExistsError(path) from exc
-                staging_out.unlink()
-            _sync_output_directory(out.parent)
+                _publish_output_create_only(staging_out, out, path)
+            try:
+                _sync_output_directory(out.parent)
+            except OSError as exc:
+                raise DataOutputDurabilityError(path) from exc
         logger.info("data_output_written", path=path, format=config["format"])
 
         return WriteOutputResponse(

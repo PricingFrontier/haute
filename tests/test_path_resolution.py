@@ -13,8 +13,12 @@ import pytest
 from haute._path_resolution import (
     _candidate_if_allowed,
     _infer_project_root,
+    current_runtime_project_root,
     resolve_runtime_file_path,
+    runtime_project_root_scoped,
 )
+from haute._sandbox import set_project_root
+from haute._types import PipelineGraph
 
 
 def test_prefers_project_candidate_when_both_exist(tmp_path: Path) -> None:
@@ -134,6 +138,39 @@ def test_relative_source_file_uses_explicit_project_root(tmp_path: Path) -> None
     )
 
     assert resolved == (project_root / "inputs" / "data.parquet").resolve()
+
+
+def test_implicit_root_uses_configured_current_project(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    set_project_root(project_root)
+
+    resolved = resolve_runtime_file_path("inputs/data.parquet")
+
+    assert resolved == (project_root / "inputs" / "data.parquet").resolve()
+
+
+def test_relative_source_does_not_override_selected_project_with_working_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    working_directory = tmp_path / "working-directory"
+    working_directory.mkdir()
+    source = working_directory / "pipelines" / "pricing.py"
+    source.parent.mkdir()
+    source.write_text("# pipeline", encoding="utf-8")
+    selected_root = tmp_path / "selected-project"
+    selected_root.mkdir()
+    set_project_root(selected_root)
+    monkeypatch.chdir(working_directory)
+
+    resolved = resolve_runtime_file_path(
+        "inputs/data.parquet",
+        source_file="pipelines/pricing.py",
+        enforce_project_root=True,
+    )
+
+    assert resolved == (selected_root / "inputs" / "data.parquet").resolve()
 
 
 def test_relative_source_file_pipeline_preference_uses_source_parent(tmp_path: Path) -> None:
@@ -267,3 +304,24 @@ def test_candidate_if_allowed_returns_outside_path_when_not_enforced(tmp_path: P
     )
 
     assert resolved == outside.resolve()
+
+
+def test_runtime_project_root_scope_accepts_keyword_graph(tmp_path: Path) -> None:
+    source = tmp_path / "external" / "pipeline.py"
+    source.parent.mkdir()
+    graph = PipelineGraph(source_file=str(source))
+
+    @runtime_project_root_scoped
+    def selected_root(*, graph: PipelineGraph) -> Path:
+        return current_runtime_project_root()
+
+    assert selected_root(graph=graph) == source.parent.resolve()
+
+
+def test_runtime_project_root_scope_rejects_non_graph_argument() -> None:
+    @runtime_project_root_scoped
+    def selected_root(graph: PipelineGraph) -> Path:
+        return current_runtime_project_root()
+
+    with pytest.raises(TypeError, match="PipelineGraph"):
+        selected_root("not-a-graph")  # type: ignore[arg-type]

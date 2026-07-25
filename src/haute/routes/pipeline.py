@@ -30,7 +30,11 @@ from haute._io import read_user_text
 from haute._json_safe import rows_to_json_safe
 from haute._logging import get_logger
 from haute._path_resolution import resolve_runtime_file_path
-from haute._polars_io_registry import PolarsIoConfigError, validate_data_output_config
+from haute._polars_io_registry import (
+    PolarsIoConfigError,
+    format_for_config,
+    validate_data_output_config,
+)
 from haute._polars_utils import DEFAULT_STREAMING_CHUNK_SIZE, temporary_streaming_chunk_size
 from haute._sandbox import _get_project_root
 from haute._topo import ancestors
@@ -43,6 +47,8 @@ from haute.errors import (
 from haute.execution import _runtime_input_path_fields, prune_source_switch_edges
 from haute.executor import (
     DataOutputDestinationExistsError,
+    DataOutputDurabilityError,
+    DataOutputPublicationError,
     PreviewProjectionError,
     _preview_cache,
     execute_graph,
@@ -81,6 +87,8 @@ from haute.schemas import (
     ExecutionMetricsPayload,
     NodeMemoryInfo,
     NodeTimingInfo,
+    OutputDestinationRequest,
+    OutputDestinationResponse,
     PipelineSummary,
     PreviewNodeRequest,
     PreviewNodeResponse,
@@ -191,6 +199,37 @@ def _validate_data_output_path(
     except ValueError as exc:
         status_code = 400 if "embedded null byte" in str(exc) else 403
         raise HTTPException(status_code=status_code, detail=str(exc)) from None
+
+
+def _prepare_data_output_request(
+    graph_payload: Any,
+    node_id: str,
+) -> tuple[PipelineGraph, Any, dict[str, Any], Path]:
+    """Validate the graph/output target shared by destination preview and write."""
+    graph = flatten_graph(graph_payload)
+    _ensure_source_file(graph)
+    if not graph.nodes:
+        raise HTTPException(status_code=400, detail="Empty graph")
+    _ensure_printable_lookup_id(node_id, "node_id")
+    _validate_runtime_input_paths(graph)
+    output_node = graph.node_map.get(node_id)
+    if output_node is None:
+        raise HTTPException(status_code=404, detail=f"Data Output node '{node_id}' not found")
+    if output_node.data.nodeType != NodeType.DATA_OUTPUT:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Node '{node_id}' is not a Data Output",
+        )
+    try:
+        config = validate_data_output_config(output_node.data.config)
+    except (PolarsIoConfigError, TypeError, ValueError):
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid Data Output configuration.",
+        ) from None
+    project_root = Path.cwd().resolve()
+    _validate_data_output_path(graph, output_node, project_root=project_root)
+    return graph, output_node, config, project_root
 
 
 def _memory_limit_http_exception(exc: ExecutionAdmissionError) -> HTTPException:
@@ -812,35 +851,43 @@ async def preview_node(body: PreviewNodeRequest) -> PreviewNodeResponse:
             preview_context.release_admission()
 
 
+@router.post(
+    "/pipeline/output-destination",
+    response_model=OutputDestinationResponse,
+)
+async def output_destination(body: OutputDestinationRequest) -> OutputDestinationResponse:
+    """Resolve the exact display destination without executing or writing."""
+    graph, _output_node, config, project_root = _prepare_data_output_request(
+        body.graph,
+        body.node_id,
+    )
+    _resolved, display_path = resolve_data_output_path(
+        graph,
+        config,
+        project_root=project_root,
+    )
+    fmt = format_for_config(config)
+    raw_path = config.get("path")
+    suffix = (
+        Path(raw_path.replace("\\", "/")).suffix.casefold() if isinstance(raw_path, str) else ""
+    )
+    return OutputDestinationResponse(
+        path=display_path,
+        format=fmt.name,
+        suffix_mismatch=bool(suffix and fmt.extensions and suffix not in fmt.extensions),
+    )
+
+
 @router.post("/pipeline/write-output", response_model=WriteOutputResponse)
 async def write_output_node(body: WriteOutputRequest) -> WriteOutputResponse:
     """Execute the pipeline up to a Data Output and publish its destination.
 
     Only called on explicit user action (Write button), not during normal run/preview.
     """
-    graph = flatten_graph(body.graph)
-    _ensure_source_file(graph)
-    if not graph.nodes:
-        raise HTTPException(status_code=400, detail="Empty graph")
-    _ensure_printable_lookup_id(body.node_id, "node_id")
-    _validate_runtime_input_paths(graph)
-    output_node = graph.node_map.get(body.node_id)
-    if output_node is None:
-        raise HTTPException(status_code=404, detail=f"Data Output node '{body.node_id}' not found")
-    if output_node.data.nodeType != NodeType.DATA_OUTPUT:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Node '{body.node_id}' is not a Data Output",
-        )
-    try:
-        validate_data_output_config(output_node.data.config)
-    except (PolarsIoConfigError, TypeError, ValueError):
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid Data Output configuration.",
-        ) from None
-    project_root = Path.cwd().resolve()
-    _validate_data_output_path(graph, output_node, project_root=project_root)
+    graph, _output_node, _config, project_root = _prepare_data_output_request(
+        body.graph,
+        body.node_id,
+    )
 
     output_context: ExecutionContext | None = None
     try:
@@ -907,6 +954,20 @@ async def write_output_node(body: WriteOutputRequest) -> WriteOutputResponse:
         )
     except DataOutputDestinationExistsError as e:
         raise HTTPException(status_code=409, detail=str(e)) from None
+    except DataOutputPublicationError as e:
+        logger.warning(
+            "sink_publication_unsupported",
+            path=e.display_path,
+            error=repr(e.__cause__),
+        )
+        raise HTTPException(status_code=500, detail=str(e)) from None
+    except DataOutputDurabilityError as e:
+        logger.error(
+            "sink_durability_unconfirmed",
+            path=e.display_path,
+            error=repr(e.__cause__),
+        )
+        raise HTTPException(status_code=500, detail=str(e)) from None
     except HTTPException:
         raise
     except Exception as e:

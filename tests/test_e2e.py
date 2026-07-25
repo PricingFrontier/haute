@@ -52,6 +52,9 @@ def _isolate_json_cache(tmp_path, monkeypatch, _widen_sandbox_root):
 
     import haute._json_flatten as jf
     from haute._json_shred import build_per_port_cache
+    from haute._sandbox import set_project_root
+
+    set_project_root(Path(__file__).resolve().parents[1])
 
     cache_dir = str(tmp_path / "json_cache")
     monkeypatch.setattr(jf, "_CACHE_DIR", cache_dir)
@@ -220,6 +223,9 @@ class TestEndToEnd:
             cfg_file.parent.mkdir(parents=True, exist_ok=True)
             cfg_file.write_text(content)
 
+        from haute._sandbox import set_project_root
+
+        set_project_root(tmp_path)
         reparsed = parse_pipeline_source(code, _base_dir=tmp_path)
         assert len(reparsed.nodes) == len(graph.nodes)
 

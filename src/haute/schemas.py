@@ -821,6 +821,17 @@ class TraceResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+class OutputDestinationRequest(BaseModel):
+    graph: Graph
+    node_id: str
+
+
+class OutputDestinationResponse(BaseModel):
+    path: str
+    format: str
+    suffix_mismatch: bool
+
+
 class WriteOutputRequest(BaseModel):
     graph: Graph
     node_id: str

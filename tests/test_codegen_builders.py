@@ -13,6 +13,7 @@ from pathlib import Path
 import polars as pl
 import pytest
 
+from haute._api_input_schema import ApiInputSchemaError
 from haute._codegen_builders import _build_extra_kwargs
 from haute.codegen import _node_to_code, graph_to_code
 from haute.errors import ConfigError, ParseError
@@ -1245,7 +1246,7 @@ class TestCodegenExecValidation:
             ns,
         )
 
-        with pytest.raises(RuntimeError, match="no v2 schema") as exc_info:
+        with pytest.raises(ApiInputSchemaError, match="no v2 schema") as exc_info:
             ns["quotes"]()
         assert "Cache as Parquet" not in str(exc_info.value)
 
