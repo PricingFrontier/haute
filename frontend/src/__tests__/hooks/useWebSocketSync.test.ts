@@ -12,10 +12,15 @@ import type { Node } from "@xyflow/react"
 
 // ── Mock dependencies BEFORE importing the hook ──────────────────
 
-// Mock getLayoutedElements — called when graph update has no positions
+// Mock getLayoutedElements — called when graph updates have missing/non-finite positions
 vi.mock("../../utils/layout.ts", async (importOriginal) => ({
   ...await importOriginal<typeof import("../../utils/layout.ts")>(),
-  getLayoutedElements: vi.fn(async (nodes: unknown[]) => nodes),
+  getLayoutedElements: vi.fn(async (nodes: Node[]) =>
+    nodes.map((node, index) => ({
+      ...node,
+      position: { x: index * 300, y: 0 },
+    })),
+  ),
 }))
 
 // Mock the stores — we need to inspect and control their state
@@ -460,7 +465,7 @@ describe("useWebSocketSync", () => {
       expect(useGraphStore.getState().markSaved).toHaveBeenCalled()
     })
 
-    it("uses layout when nodes have no positions", async () => {
+    it("uses layout when nodes have non-finite positions", async () => {
       const { getLayoutedElements } = await import("../../utils/layout.ts")
       const params = makeHookParams()
       renderHook(() => useWebSocketSync(params))
@@ -473,7 +478,7 @@ describe("useWebSocketSync", () => {
         type: "graph_update",
         graph: {
           nodes: [
-            { id: "n1", position: { x: 0, y: 0 }, data: { label: "test" } },
+            { id: "n1", position: { x: Number.NaN, y: Number.NaN }, data: { label: "test" } },
           ],
           edges: [],
         },
@@ -723,7 +728,7 @@ describe("useWebSocketSync", () => {
             type: "graph_update",
             source_file: "rating/main.py",
             graph: {
-              nodes: [{ id: "disk", position: { x: 0, y: 0 }, data: {} }],
+              nodes: [{ id: "disk", position: { x: Number.NaN, y: Number.NaN }, data: {} }],
               edges: [],
             },
           }),
@@ -770,7 +775,7 @@ describe("useWebSocketSync", () => {
             type: "graph_update",
             source_file: "rating/main.py",
             graph: {
-              nodes: [{ id: "current", position: { x: 0, y: 0 }, data: {} }],
+              nodes: [{ id: "current", position: { x: Number.NaN, y: Number.NaN }, data: {} }],
               edges: [],
             },
           }),
@@ -879,7 +884,7 @@ describe("useWebSocketSync", () => {
             type: "graph_update",
             source_file: "rating/main.py",
             graph: {
-              nodes: [{ id: "stale", position: { x: 0, y: 0 }, data: {} }],
+              nodes: [{ id: "stale", position: { x: Number.NaN, y: Number.NaN }, data: {} }],
               edges: [],
             },
           }),
@@ -907,7 +912,7 @@ describe("useWebSocketSync", () => {
       expect(useUIStore.getState().setSyncBanner).not.toHaveBeenCalledWith(null)
     })
 
-    it("lays out only new default-position nodes and preserves an established origin", async () => {
+    it("lays out only new non-finite nodes and preserves an established origin", async () => {
       const { getLayoutedElements } = await import("../../utils/layout.ts")
       const established = {
         id: "origin",
@@ -934,7 +939,7 @@ describe("useWebSocketSync", () => {
                 established,
                 {
                   id: "new",
-                  position: { x: 0, y: 0 },
+                  position: { x: Number.NaN, y: Number.NaN },
                   data: { label: "New", nodeType: "polars", config: {} },
                 },
               ],
@@ -950,7 +955,14 @@ describe("useWebSocketSync", () => {
       expect(applied.find(node => node.id === "new")?.position).not.toEqual({ x: 0, y: 0 })
     })
 
-    it("drops invalid synced edges with one visible warning and keeps valid edges", async () => {
+    it("retains unresolved synced edges for save while only valid edges guide layout", async () => {
+      const { getLayoutedElements } = await import("../../utils/layout.ts")
+      vi.mocked(getLayoutedElements).mockImplementationOnce(async (nodes: Node[]) =>
+        nodes.map(node => ({
+          ...node,
+          position: node.id === "target" ? { x: 300, y: 10 } : node.position,
+        })),
+      )
       const params = makeHookParams()
       renderHook(() => useWebSocketSync(params))
 
@@ -977,7 +989,7 @@ describe("useWebSocketSync", () => {
                 },
                 {
                   id: "target",
-                  position: { x: 300, y: 10 },
+                  position: { x: Number.NaN, y: Number.NaN },
                   data: { label: "Transform", nodeType: "polars", config: {} },
                 },
               ],
@@ -991,13 +1003,55 @@ describe("useWebSocketSync", () => {
         }))
       })
 
+      expect(getLayoutedElements).toHaveBeenCalledWith(
+        expect.any(Array),
+        [expect.objectContaining({ id: "live", sourceHandle: "quotes" })],
+      )
       expect(params.setEdgesRaw).toHaveBeenCalledWith([
         expect.objectContaining({ id: "live", sourceHandle: "quotes" }),
+        expect.objectContaining({ id: "stale-handle", sourceHandle: "gone" }),
+        expect.objectContaining({ id: "missing-node", target: "gone" }),
       ])
       expect(useToastStore.getState().addToast).toHaveBeenCalledWith(
         "warning",
-        expect.stringMatching(/stale-handle.*missing-node|missing-node.*stale-handle/),
+        expect.stringMatching(/retained.*stale-handle.*missing-node|retained.*missing-node.*stale-handle/i),
       )
+    })
+
+    it("bounds unresolved-edge warning details and reports the omitted count", async () => {
+      const params = makeHookParams()
+      renderHook(() => useWebSocketSync(params))
+      const unresolvedEdges = Array.from({ length: 8 }, (_, index) => ({
+        id: `unresolved-${index}-${"x".repeat(180)}`,
+        source: "source",
+        target: `missing-${index}`,
+      }))
+
+      await act(async () => {
+        await latestWS().onmessage?.(new MessageEvent("message", {
+          data: JSON.stringify({
+            type: "graph_update",
+            graph: {
+              nodes: [{
+                id: "source",
+                position: { x: 10, y: 10 },
+                data: { label: "Source", nodeType: "polars", config: {} },
+              }],
+              edges: unresolvedEdges,
+            },
+          }),
+        }))
+      })
+
+      expect(params.setEdgesRaw).toHaveBeenCalledWith(
+        unresolvedEdges.map(edge => expect.objectContaining({ id: edge.id })),
+      )
+      const warningCall = vi.mocked(useToastStore.getState().addToast).mock.calls
+        .find(([type, text]) => type === "warning" && text.includes("unresolved synced edges"))
+      expect(warningCall).toBeDefined()
+      expect(warningCall?.[1]).toContain("8 unresolved synced edges")
+      expect(warningCall?.[1]).toContain("5 more")
+      expect(warningCall?.[1].length).toBeLessThanOrEqual(650)
     })
 
     it("clears remembered graph fingerprints after a parse_error", async () => {

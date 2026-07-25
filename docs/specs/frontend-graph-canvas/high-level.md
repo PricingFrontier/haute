@@ -599,19 +599,22 @@ This contract implements the live-update part of the
   identity, both identities are required and must resolve to the same file. An accepted message
   advances one monotonic generation before any asynchronous work: a later graph update or parse
   error permanently supersedes earlier layout work. Imported edges are checked against the
-  incoming live node and port set; invalid edges are omitted and reported in one visible warning
-  while the valid graph remains usable. Layout assigns positions only to incoming nodes without
-  a real position, preserves every established position including `{x: 0, y: 0}`, and
-  deterministically avoids overlap with preserved nodes.
+  incoming live node and port set. Unresolved edges remain in graph state and the next save
+  snapshot so advisory renderer-contract drift can never delete user topology; only the valid
+  subset participates in automatic layout, and one bounded visible warning names representative
+  problems. Layout assigns positions only when coordinates are absent or non-finite. Every finite
+  persisted position, including `{x: 0, y: 0}`, is authoritative.
 - **Non-goals.** This change does not introduce collaborative merge semantics, change the
   backend WebSocket protocol, reinterpret an intentionally dirty local graph, or relayout a
   complete imported graph.
 - **Failure and compatibility.** Source-less operation remains valid only when both sides are
   source-less (for isolated consumers and tests); a one-sided identity is fail-closed. A dirty
   local canvas continues to reject external graph replacement. Layout/apply exceptions retain
-  the prior graph and surface through the existing error toast. Edge rejection never fabricates
-  a replacement endpoint or handle.
+  the prior graph and surface through the existing error toast. Edge diagnostics never delete or
+  fabricate an endpoint or handle. If an unresolved edge reaches save, existing backend
+  validation/code generation fails visibly instead of regenerating a truncated pipeline.
 - **Acceptance.** Focused hook tests prove one-sided and foreign identities are ignored, a parse
   error wins over an older pending layout, stale updates cannot clear a newer banner, endpoint
-  and handle-invalid edges are visibly removed, valid live-port edges survive, and an existing
-  origin node remains fixed while only new unpositioned nodes receive non-overlapping layout.
+  and handle-invalid edges are retained with a bounded warning while only valid edges guide
+  layout, and finite origin nodes remain fixed while only non-finite nodes receive
+  non-overlapping layout.

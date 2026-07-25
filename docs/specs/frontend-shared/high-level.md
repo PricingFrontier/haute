@@ -327,19 +327,25 @@ This contract implements AUD-C16 in the
   current.
 - **Target behaviour.** Configuration identity is the exact deterministic canonical form of the
   JSON-shaped configuration: object keys are recursively sorted, array order is retained, and
-  ephemeral UI-only fields are excluded by the existing policy. Every cache lookup must match
-  every dimension that can affect that operation's visible result — canonical config, active
+  the existing top-level ephemeral UI-only fields are excluded. Nested fields with the same names
+  remain semantic configuration. Every cache lookup must match every dimension that can affect
+  that operation's visible result — canonical config, active
   source, structural generation and, for previews, row limit. Column/schema stashes remain scoped
   to their source generation. Each cache family retains deterministic least-recently-used
   eviction at its documented bound.
 - **Non-goals.** This change does not persist frontend caches, share them between browser
   sessions, hash source-file contents, or make transport chunk size part of semantic preview
   identity.
-- **Failure and compatibility.** Cyclic or otherwise non-JSON configuration is a programming
-  error and fails visibly; it is not assigned a fallback identity. The public store shape and
-  cache limits remain compatible, but callers may no longer assume that the `configHash` field is
-  a short digest.
+- **Failure and compatibility.** Canonicalisation first follows normal `JSON.stringify`
+  semantics: undefined object properties are omitted, non-finite numbers become `null`, arrays
+  retain JSON's null placeholders, and serialisable class/toJSON values remain accepted. Cycles,
+  BigInt values, and other genuine serialization failures still fail visibly rather than
+  receiving a fallback identity. The public store shape and cache limits remain compatible, but
+  callers may no longer assume that the `configHash` field is a short digest. Retaining the exact
+  identity is intentional: restoring the removed 32-bit digest would restore its executable
+  collision, while the result families holding identities are entry-count bounded.
 - **Acceptance.** Store and hook tests cover distinct configurations with a known legacy digest
-  collision, object-key-order equivalence, nested/array semantics, source and structural changes,
-  preview row-limit changes, source-scoped schema invalidation, cache hits, and deterministic
-  eviction at every bound.
+  collision, object-key-order equivalence, nested/array semantics, top-level-only ephemeral
+  stripping, ordinary JSON normalization, source and structural changes, preview row-limit
+  changes, source-scoped schema invalidation, cache hits, and deterministic eviction at every
+  bound.

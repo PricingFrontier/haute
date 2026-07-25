@@ -1039,20 +1039,23 @@ This contract implements AUD-C17 in the
   dialogs only if that generation is still current when the await completes.
 - Source matching normalises absolute/relative spellings as today, but succeeds with a missing
   value only when *both* values are missing. If exactly one side is missing, or both resolve to
-  different files, the message is ignored without changing graph or error state.
-- A pure incoming-edge validator runs after node normalisation and before layout. It retains an
-  edge only when both node ids exist and each non-null handle is one that the endpoint's current
+  different files, the message is ignored without changing graph or error state. In `App`,
+  WebSocket sync remains disabled until the initial HTTP load has populated `sourceFileRef`, so
+  fail-closed comparison does not discard the ordinary startup graph.
+- A pure incoming-edge validator runs after node normalisation and before layout. It partitions
+  edges by whether both node ids exist and each non-null handle is one that the endpoint's current
   node type/config renders. Default null handles remain valid only for endpoint directions that
   render a default handle; API-input frame handles, Edge Join role handles, and submodel named
-  ports are checked exactly. Rejected edge ids/reasons are aggregated into one warning toast;
-  healthy nodes and edges still apply.
-- A node has a real incoming position when both coordinates are finite and either it already
-  exists in the current graph or at least one coordinate is non-zero. Thus an established node
-  deliberately moved to the origin is preserved, while a newly parsed `{x: 0, y: 0}` node is
-  treated as unpositioned. ELK may calculate the whole graph, but its coordinates are copied only
-  to unpositioned node ids. Candidate boxes that overlap preserved boxes are moved by a
-  deterministic grid step until clear; established nodes are never moved to resolve the clash.
+  ports are checked exactly. The full normalised edge list is applied and retained for save; only
+  the valid partition is supplied to ELK. One warning contains the total rejected count, at most
+  three length-bounded id/reason details, and the omitted count.
+- A node has a real incoming position whenever both coordinates are finite. `{x: 0, y: 0}` is
+  never overloaded as an unset sentinel: the sidecar accepts and persists that coordinate, while
+  parser-created graphs already receive deterministic finite positions. ELK may calculate the
+  whole graph only when an incoming coordinate is missing/non-finite, and its coordinates are
+  copied only to those node ids. Candidate boxes that overlap preserved boxes are moved by a
+  deterministic grid step until clear; finite nodes are never moved to resolve the clash.
 - `hooks/__tests__/useWebSocketSync*.test.ts` owns the identity, generation, partial-layout, and
-  warning regressions. Pure endpoint/handle validation is covered beside the graph utilities so
-  API Input, Edge Join, submodel, ordinary, missing-node, and stale-handle cases do not depend on
-  React timing.
+  bounded-warning/preservation regressions. Pure endpoint/handle validation is covered beside the
+  graph utilities so API Input, Edge Join, submodel, ordinary, missing-node, and stale-handle
+  cases do not depend on React timing.

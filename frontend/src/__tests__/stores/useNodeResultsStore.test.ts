@@ -518,6 +518,39 @@ describe("useNodeResultsStore", () => {
       expect(hashConfig(base)).toBe(hashConfig(withInternals))
     })
 
+    it("keeps reserved key spellings semantic below the root config", () => {
+      expect(hashConfig({
+        nested: { _columns: ["premium"] },
+      })).not.toBe(hashConfig({
+        nested: { _columns: ["discount"] },
+      }))
+    })
+
+    it("uses ordinary JSON semantics for undefined and non-finite values", () => {
+      expect(hashConfig({ optional: undefined })).toBe(hashConfig({}))
+      expect(hashConfig({ value: Number.NaN })).toBe(hashConfig({ value: null }))
+      expect(hashConfig({
+        values: [undefined, Number.POSITIVE_INFINITY],
+      })).toBe(hashConfig({
+        values: [null, null],
+      }))
+    })
+
+    it("accepts nested values with a JSON toJSON contract", () => {
+      expect(hashConfig({
+        value: { toJSON: () => ({ b: 2, a: 1 }) },
+      })).toBe(hashConfig({
+        value: { a: 1, b: 2 },
+      }))
+    })
+
+    it("still rejects genuinely cyclic configuration", () => {
+      const cyclic: Record<string, unknown> = {}
+      cyclic.self = cyclic
+
+      expect(() => hashConfig(cyclic)).toThrow()
+    })
+
     it("normalizes nested objects inside arrays when hashing", () => {
       const first = { constraints: [{ name: "premium", bounds: { min: 0, max: 100 } }] }
       const second = { constraints: [{ bounds: { max: 100, min: 0 }, name: "premium" }] }

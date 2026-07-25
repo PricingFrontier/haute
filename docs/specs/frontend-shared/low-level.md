@@ -469,10 +469,15 @@ This contract implements AUD-C16 in the
 [frontend canvas roadmap](../../roadmap/frontend-canvas.md).
 
 - `stores/useNodeResultsStore.ts::hashConfig` retains its call signature but returns canonical
-  JSON identity rather than a fixed-width DJB2 digest. Canonicalisation recursively removes
-  `_nodeId`, `_columns`, `_schemaWarnings`, and `_availableColumns` from objects, sorts remaining
-  object keys, preserves array order and primitive types, and serialises once. It must not map a
-  serialization failure to an empty or guessed value.
+  JSON identity rather than a fixed-width DJB2 digest. It removes `_nodeId`, `_columns`,
+  `_schemaWarnings`, and `_availableColumns` only from the root config, normalises through
+  `JSON.stringify`/`JSON.parse`, recursively sorts the resulting JSON object keys, preserves array
+  order, and serialises the canonical value. Ordinary undefined/non-finite/toJSON inputs therefore
+  keep JSON's established semantics; nested keys with reserved spellings remain semantic. A real
+  serialization failure is never mapped to an empty or guessed value.
+- The exact canonical string is the deliberate collision-free comparison value. It is retained
+  only by the bounded solve, train, and explore result families plus their active jobs; the known
+  DJB2 collision test prevents replacing it with the former digest under the existing API name.
 - Solve, train, explore, estimate, and preview freshness use the dimensions applicable to their
   request. Preview additionally compares `rowLimit`; source and structural generation are never
   inferred from config identity. `useSettingsStore` source changes continue to clear
@@ -481,7 +486,8 @@ This contract implements AUD-C16 in the
   exactly the least-recently-used entry; invalid non-positive limits still throw. Re-fetching an
   evicted identity produces a miss rather than reviving hidden state.
 - `src/__tests__/stores/useNodeResultsStore.test.ts` owns canonical identity and all bounded-store
-  eviction cases. `hooks/__tests__/usePipelineAPI.gaps.test.ts`,
+  eviction cases, including root-only ephemeral stripping and JSON normalization.
+  `hooks/__tests__/usePipelineAPI.gaps.test.ts`,
   `hooks/__tests__/previewCache.test.ts`, and
   `hooks/__tests__/columnStashSourceIdentity.test.ts` own the source, row-limit, structural, and
   schema-stash dimensions. A regression fixture contains two literal configs that collide under

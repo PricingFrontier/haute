@@ -9,6 +9,7 @@ import {
   computeNextNodeId,
   filterIncomingEdges,
   normalizeEdges,
+  type RejectedIncomingEdge,
 } from "../utils/graphHelpers"
 import useToastStore from "../stores/useToastStore"
 import useUIStore from "../stores/useUIStore"
@@ -45,9 +46,26 @@ const INITIAL_BACKOFF_MS = 1_000
 const MAX_BACKOFF_MS = 30_000
 const ABNORMAL_CLOSE = 1006
 const GRAPH_FINGERPRINT_FIELD = "graph_fingerprint"
+const MAX_REJECTED_EDGE_WARNING_DETAILS = 3
+const MAX_REJECTED_EDGE_WARNING_DETAIL_LENGTH = 120
 
 function formatSyncError(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
+}
+
+function formatRejectedEdgeWarning(rejectedEdges: RejectedIncomingEdge[]): string {
+  const details = rejectedEdges
+    .slice(0, MAX_REJECTED_EDGE_WARNING_DETAILS)
+    .map(({ edge, reason }) => {
+      const detail = `${edge.id} (${reason})`
+      if (detail.length <= MAX_REJECTED_EDGE_WARNING_DETAIL_LENGTH) return detail
+      return `${detail.slice(0, MAX_REJECTED_EDGE_WARNING_DETAIL_LENGTH - 3)}...`
+    })
+    .join(", ")
+  const omitted = rejectedEdges.length - MAX_REJECTED_EDGE_WARNING_DETAILS
+  const omittedSummary = omitted > 0 ? `; ${omitted} more omitted` : ""
+  const edgeLabel = rejectedEdges.length === 1 ? "edge" : "edges"
+  return `Retained ${rejectedEdges.length} unresolved synced ${edgeLabel} to prevent data loss; only valid edges were used for layout. ${details}${omittedSummary}. Saving may fail until they are repaired.`
 }
 
 function normalizeSourceFile(value: unknown): string | null {
@@ -266,20 +284,16 @@ export default function useWebSocketSync({
 
           try {
             const newNodes = g.nodes || []
-            const normalizedEdges = normalizeEdges(g.edges || [])
+            const newEdges = normalizeEdges(g.edges || [])
             const {
-              validEdges: newEdges,
+              validEdges: layoutEdges,
               rejectedEdges,
-            } = filterIncomingEdges(newNodes, normalizedEdges)
-            const graphBeforeLayout = useGraphStore.getState() as Partial<{ nodes: Node[] }>
-            const currentNodes = Array.isArray(graphBeforeLayout.nodes)
-              ? graphBeforeLayout.nodes
-              : []
-            const missingNodeIds = nodeIdsNeedingLayout(newNodes, currentNodes)
+            } = filterIncomingEdges(newNodes, newEdges)
+            const missingNodeIds = nodeIdsNeedingLayout(newNodes)
             const nodesToApply = missingNodeIds.size > 0
               ? mergeLayoutedNodePositions(
                   newNodes,
-                  await getLayoutedElements(newNodes, newEdges),
+                  await getLayoutedElements(newNodes, layoutEdges),
                   missingNodeIds,
                 )
               : newNodes
@@ -355,12 +369,9 @@ export default function useWebSocketSync({
 
             addToast("info", "Pipeline updated from file")
             if (rejectedEdges.length > 0) {
-              const rejectedSummary = rejectedEdges
-                .map(({ edge, reason }) => `${edge.id} (${reason})`)
-                .join(", ")
               addToast(
                 "warning",
-                `Ignored ${rejectedEdges.length} invalid synced ${rejectedEdges.length === 1 ? "edge" : "edges"}: ${rejectedSummary}`,
+                formatRejectedEdgeWarning(rejectedEdges),
               )
             }
             if (g.warning) addToast("warning", g.warning)

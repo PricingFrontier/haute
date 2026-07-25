@@ -175,48 +175,40 @@ interface ActiveExploreJob {
 // ─── Config hashing ──────────────────────────────────────────────
 
 export function hashConfig(config: Record<string, unknown>): string {
-  const ephemeralKeys = new Set(["_nodeId", "_columns", "_schemaWarnings", "_availableColumns"])
-  const ancestors = new WeakSet<object>()
+  const {
+    _nodeId,
+    _columns,
+    _schemaWarnings,
+    _availableColumns,
+    ...semanticConfig
+  } = config
+  void _nodeId
+  void _columns
+  void _schemaWarnings
+  void _availableColumns
 
-  const canonicalise = (value: unknown): unknown => {
-    if (value === null || typeof value === "string" || typeof value === "boolean") return value
-    if (typeof value === "number") {
-      if (Number.isFinite(value)) return value
-      throw new TypeError("Config identity requires JSON-compatible finite numbers")
-    }
+  // Normalise through JSON first so identity follows the same value semantics
+  // as persisted config: undefined object fields are omitted, non-finite
+  // numbers become null, and serialisable values may use toJSON.
+  const json = JSON.stringify(semanticConfig)
+  const jsonValue: unknown = JSON.parse(json)
+
+  const sortObjectKeys = (value: unknown): unknown => {
     if (Array.isArray(value)) {
-      if (ancestors.has(value)) throw new TypeError("Config identity cannot serialize cyclic values")
-      ancestors.add(value)
-      try {
-        return value.map(canonicalise)
-      } finally {
-        ancestors.delete(value)
-      }
+      return value.map(sortObjectKeys)
     }
-    if (typeof value !== "object") {
-      throw new TypeError("Config identity requires JSON-compatible values")
-    }
-
-    const prototype = Object.getPrototypeOf(value)
-    if (prototype !== Object.prototype && prototype !== null) {
-      throw new TypeError("Config identity requires plain JSON objects")
-    }
-    if (ancestors.has(value)) throw new TypeError("Config identity cannot serialize cyclic values")
-    ancestors.add(value)
-    try {
+    if (value !== null && typeof value === "object") {
       const object = value as Record<string, unknown>
       return Object.fromEntries(
         Object.keys(object)
-          .filter(key => !ephemeralKeys.has(key))
           .sort()
-          .map(key => [key, canonicalise(object[key])]),
+          .map(key => [key, sortObjectKeys(object[key])]),
       )
-    } finally {
-      ancestors.delete(value)
     }
+    return value
   }
 
-  return JSON.stringify(canonicalise(config))
+  return JSON.stringify(sortObjectKeys(jsonValue))
 }
 
 // ─── Derived-getter caches (Issue #13) ──────────────────────────

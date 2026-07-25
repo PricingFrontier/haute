@@ -166,22 +166,20 @@ describe("getLayoutedElements", () => {
 })
 
 describe("partial imported-graph layout", () => {
-  it("treats an established origin as positioned and a new origin as unpositioned", () => {
+  it("treats every finite origin as positioned, including a newly imported node", () => {
     const incoming = [
       makeNode("established", 0, 0),
       makeNode("new-default", 0, 0),
       makeNode("new-positioned", 400, 200),
     ]
-    const current = [makeNode("established", 120, 80)]
-
-    expect([...nodeIdsNeedingLayout(incoming, current)]).toEqual(["new-default"])
+    expect([...nodeIdsNeedingLayout(incoming)]).toEqual([])
   })
 
   it("treats non-finite incoming coordinates as unpositioned", () => {
     const invalid = makeNode("invalid")
     invalid.position = { x: Number.NaN, y: 10 }
 
-    expect([...nodeIdsNeedingLayout([invalid], [])]).toEqual(["invalid"])
+    expect([...nodeIdsNeedingLayout([invalid])]).toEqual(["invalid"])
   })
 
   it("copies layout only to missing nodes and moves them clear of preserved nodes", () => {

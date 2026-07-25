@@ -104,25 +104,13 @@ function hasFinitePosition(node: Node): boolean {
 /**
  * Identify imported nodes that do not yet carry a real canvas position.
  *
- * An established node at the origin is intentional and remains fixed. A new
- * node at the parser's default origin is the only finite-position case that
- * needs layout.
+ * Every finite coordinate pair is authoritative, including the origin. Only
+ * absent or non-finite coordinates need generated layout.
  */
-export function nodeIdsNeedingLayout(
-  incomingNodes: Node[],
-  currentNodes: Node[],
-): Set<string> {
-  const establishedIds = new Set(currentNodes.map(node => node.id))
+export function nodeIdsNeedingLayout(incomingNodes: Node[]): Set<string> {
   return new Set(
     incomingNodes
-      .filter(node => (
-        !hasFinitePosition(node)
-        || (
-          !establishedIds.has(node.id)
-          && node.position.x === 0
-          && node.position.y === 0
-        )
-      ))
+      .filter(node => !hasFinitePosition(node))
       .map(node => node.id),
   )
 }
