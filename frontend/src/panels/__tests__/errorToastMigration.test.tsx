@@ -269,7 +269,6 @@ const H = vi.hoisted(() => ({
   storeSelectPoint: vi.fn(),
   storeUpdateAfterSelect: vi.fn(),
   // GitPanel ------------------------------------------------------
-  getGitStatus: vi.fn(),
   gitArchiveBranch: vi.fn(),
   gitDeleteBranch: vi.fn(),
   // GitPanel (v1: history + branch manager) -----------------------
@@ -314,7 +313,6 @@ vi.mock("../../api/client", () => {
     saveOptimiser: (...a: unknown[]) => H.saveOptimiser(...a),
     logOptimiserToMlflow: (...a: unknown[]) => H.logOptimiserToMlflow(...a),
     // GitPanel
-    getGitStatus: (...a: unknown[]) => H.getGitStatus(...a),
     gitArchiveBranch: (...a: unknown[]) => H.gitArchiveBranch(...a),
     gitDeleteBranch: (...a: unknown[]) => H.gitDeleteBranch(...a),
     getMilestones: (...a: unknown[]) => H.getMilestones(...a),

@@ -34,7 +34,6 @@ from haute._git import (
     delete_working_pair,
     fast_forward_pair,
     get_prefs,
-    get_status,
     graph_topology,
     list_remotes,
     milestone_saves,
@@ -84,7 +83,6 @@ from haute.schemas import (
     GitSetIdentityResponse,
     GitSetWorkingBranchRequest,
     GitSetWorkingBranchResponse,
-    GitStatusResponse,
     GitUndeleteRequest,
     GitUndeleteResponse,
     GitWorkingBranchesResponse,
@@ -124,30 +122,13 @@ def _handle_git_error(e: GitError) -> NoReturn:
 
 
 # ---------------------------------------------------------------------------
-# GET /api/git/status
-# ---------------------------------------------------------------------------
-
-
-@router.get("/status", response_model=GitStatusResponse)
-def git_status() -> GitStatusResponse:
-    """Current branch, changed files, and main-ahead status."""
-    try:
-        return get_status()
-    except GitError as e:
-        _handle_git_error(e)
-    except Exception as e:
-        logger.error("git_status_failed", error=str(e), exc_info=True)
-        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
-
-
-# ---------------------------------------------------------------------------
 # GET /api/git/working-branch — readiness signal for the startup flow
 # ---------------------------------------------------------------------------
 
 
 @router.get("/working-branch", response_model=GitWorkingBranchResponse)
 def git_get_working_branch() -> GitWorkingBranchResponse:
-    """Working-branch state (ready/unset/invalid/divergent), identity, and the
+    """Six-state repository readiness, identity, and the
     branches choosable as a working branch — everything the startup modal and
     toolbar indicator need in one call."""
     try:

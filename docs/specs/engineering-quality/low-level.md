@@ -136,6 +136,12 @@
    `HAUTE_E2E_READINESS_PORT` may select alternate loopback ports when a
    developer already has Haute running; the harness and Playwright config
    validate and share those values.
+   `frontend/scripts/check-bundle-size.mjs` counts the production entry and
+   modulepreload chunks against a default 247 KiB initial-JavaScript gzip
+   ceiling. That is the smallest whole-KiB ceiling above the measured merged
+   246.2 KiB bundle, retaining less than 1 KiB of headroom while still catching
+   accidental eager imports; CI may override it only through the documented
+   `HAUTE_BUNDLE_MAX_INITIAL_GZIP_KIB` environment variable.
 6. Mutation CI calls `scripts/run_mutation_suite.py --phase plan`, executes
    each isolated target/shard, downloads all artifacts, and calls `--phase merge`
    to enforce total survivor budgets. Scheduled performance calls

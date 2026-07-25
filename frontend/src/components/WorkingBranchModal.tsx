@@ -3,6 +3,7 @@ import { useState } from "react"
 import { setGitIdentity, setWorkingBranch } from "../api/client"
 import useGitStore from "../stores/useGitStore"
 import useToastStore from "../stores/useToastStore"
+import { gitErrorMessage } from "../utils/gitError"
 import ConfigCheckbox from "./form/ConfigCheckbox"
 import ModalShell from "./ModalShell"
 
@@ -59,7 +60,7 @@ export default function WorkingBranchModal({ onConfirmed, onClose }: WorkingBran
       addToast("success", `Working branch set to ${branchName}`)
       onConfirmed()
     } catch (err: unknown) {
-      const detail = err instanceof Error ? err.message : "unknown error"
+      const detail = gitErrorMessage(err, "unknown error")
       addToast("error", `Could not set working branch: ${detail}`)
     } finally {
       setBusy(false)
