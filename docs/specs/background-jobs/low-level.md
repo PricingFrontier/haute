@@ -466,7 +466,9 @@ Remaining background-job improvement work is tracked in the
   write and immediately before heavy-object cleanup scheduling. The seam is constructor-injected
   and absent in production by default.
 
-Tests create marked, unmarked, malformed, wrong-owner, symlink, fresh, and stale directories under
-one temporary root and prove only the stale valid child is removed. Optimiser tests prove new
-artifact directories are marked and live handle cleanup remains valid. Supervisor tests prove an
-unexpected parent-side exception cannot strand a running job.
+Tests create marked, unmarked, malformed, wrong-owner, symlink, fresh, and stale directories and
+prove only a stale valid direct child is removed. Symlink targets sit outside the registered root;
+POSIX uses a real directory symlink while Windows deterministically exercises the same
+`Path.is_symlink()` classification without a privilege-dependent conditional skip. Optimiser
+tests prove new artifact directories are marked and live handle cleanup remains valid. Supervisor
+tests prove an unexpected parent-side exception cannot strand a running job.

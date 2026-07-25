@@ -21,6 +21,7 @@ import polars as pl
 import haute.projection as projection
 from haute._cache import canonical_json
 from haute._code_extraction import _strip_generated_boilerplate_from_code
+from haute._contracts import _DEPLOY_MODEL_INPUT_COLUMNS_CONFIG_KEY
 from haute._execution_admission import create_admitted_execution_context
 from haute._execution_context import ExecutionContext, ExecutionProfile
 from haute._graph_utils import edge_input_name, upstream_node_ids
@@ -316,6 +317,96 @@ def _attach_bundled_feature_contracts(
     return graph.model_copy(update={"nodes": nodes})
 
 
+def _attach_bundled_model_contract_inputs(
+    graph: PipelineGraph,
+    remap: dict[str, str],
+    relevant_node_ids: set[str],
+) -> PipelineGraph:
+    """Annotate remapped modelScore nodes from the model actually served.
+
+    A bundled feature-contract sidecar is richer and remains authoritative.
+    Without one, the stat-gated local model cache supplies the native model's
+    feature names and offset before projection and boundary planning. An
+    explicit empty list means the local artifact resolved but its inputs are
+    opaque; planners must not fall through to the graph's original MLflow
+    source.
+    """
+    if not remap:
+        return graph
+
+    nodes: list[GraphNode] = []
+    changed = False
+    for node in graph.nodes:
+        config = node.data.config
+        if (
+            node.id not in relevant_node_ids
+            or node.data.nodeType != NodeType.MODEL_SCORE
+            or config.get("feature_contract_path")
+        ):
+            nodes.append(node)
+            continue
+
+        model_path = _remap_artifact(node.id, config, remap, "artifact_path")
+        if model_path is None:
+            nodes.append(node)
+            continue
+
+        scoring_model = _load_local_model_cached(
+            model_path,
+            config.get("task", "regression"),
+        )
+        raw_features: Any = scoring_model.feature_names
+        invalid_feature_container = isinstance(raw_features, str | bytes)
+        if invalid_feature_container:
+            feature_names: list[Any] = []
+        else:
+            try:
+                feature_names = list(raw_features)
+            except TypeError as exc:
+                from haute.errors import DeployError
+
+                raise DeployError(
+                    f"Bundled model for modelScore node {node.id!r} exposed "
+                    "non-iterable feature metadata.",
+                    node_id=node.id,
+                ) from exc
+
+        offset_column = scoring_model.offset_column
+        invalid_features = any(
+            not isinstance(column, str) or not column for column in feature_names
+        )
+        duplicate_features = not invalid_features and len(
+            {column for column in feature_names if isinstance(column, str)}
+        ) != len(feature_names)
+        invalid_offset = offset_column is not None and (
+            not isinstance(offset_column, str) or not offset_column
+        )
+        if invalid_feature_container or invalid_features or duplicate_features or invalid_offset:
+            from haute.errors import DeployError
+
+            raise DeployError(
+                f"Bundled model for modelScore node {node.id!r} exposed "
+                "invalid feature or offset metadata.",
+                node_id=node.id,
+            )
+
+        deploy_inputs = list(feature_names)
+        if offset_column is not None and offset_column not in deploy_inputs:
+            deploy_inputs.append(offset_column)
+        data = node.data.model_copy(
+            update={
+                "config": {
+                    **config,
+                    _DEPLOY_MODEL_INPUT_COLUMNS_CONFIG_KEY: deploy_inputs,
+                }
+            }
+        )
+        nodes.append(node.model_copy(update={"data": data}))
+        changed = True
+
+    return graph.model_copy(update={"nodes": nodes}) if changed else graph
+
+
 def _remap_artifact(
     node_id: str,
     config: dict,
@@ -578,10 +669,11 @@ def score_graph_lazy(
         _remap_bundled_data_inputs(_resolve_runtime_graph_paths(graph), remap),
         remap,
     )
+    relevant_node_ids = set(upstream_node_ids(output_node_id, graph.parents_of)) | {output_node_id}
+    graph = _attach_bundled_model_contract_inputs(graph, remap, relevant_node_ids)
     _validate_deploy_input_edges(graph)
     node_by_id = {node.id: node for node in graph.nodes}
     parents_of = graph.parents_of
-    relevant_node_ids = set(upstream_node_ids(output_node_id, parents_of)) | {output_node_id}
     for node in graph.nodes:
         if node.id in relevant_node_ids:
             # Strategy planning now precedes function construction. Preserve

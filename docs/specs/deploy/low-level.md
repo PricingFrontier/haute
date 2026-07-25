@@ -172,7 +172,13 @@ directory before re-raising.
 **Runtime scoring (`_scorer.py::score_graph_lazy` → `score_graph`)**
 1. Resolve the graph's relative path configs against `graph.source_file`
    (`_resolve_runtime_graph_paths`) and attach bundled feature-contract paths to
-   `modelScore` node configs (`_attach_bundled_feature_contracts`).
+   `modelScore` node configs (`_attach_bundled_feature_contracts`). When a remapped
+   native model has no bundled feature-contract sidecar, load that local model through
+   the stat-gated deploy cache and attach its feature names plus any offset column as
+   the node's internal deploy-contract inputs before strategy planning. Projection and
+   boundary checks therefore describe the artifact actually served and never contact
+   the original MLflow run or registry merely to resolve a remapped model's columns.
+   A bundled feature contract remains authoritative when present.
 2. Build a `NodeBuildHooks(before_build=_intercept)` wrapper around the shared
    `_build_node_fn` builder. `_intercept` returns a replacement `(func_name, fn,
    returns_frame)` tuple — or `None` to fall through to the base builder — for six node

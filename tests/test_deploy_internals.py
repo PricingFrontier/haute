@@ -2250,7 +2250,6 @@ class TestScoreGraphModelScoreRemap:
 
     def test_model_score_remap_loads_bundled_model(self, tmp_path):
         """modelScore with remap loads from bundled local path."""
-        from haute._mlflow_io import ScoringModel
         from haute.deploy._scorer import score_graph
 
         cbm_path = tmp_path / "model.cbm"
@@ -2259,12 +2258,6 @@ class TestScoreGraphModelScoreRemap:
         mock_model = MagicMock()
         mock_model.feature_names_ = ["x"]
         mock_model.predict.return_value = np.array([42.0])
-        scoring_model = ScoringModel(
-            model=mock_model,
-            feature_names=["x"],
-            cat_feature_names=frozenset(),
-            flavor="catboost",
-        )
 
         graph = _g(
             {
@@ -2317,7 +2310,10 @@ class TestScoreGraphModelScoreRemap:
 
         with (
             patch("haute._mlflow_io._load_catboost_model", return_value=mock_model),
-            patch("haute._mlflow_io.load_mlflow_model", return_value=scoring_model),
+            patch(
+                "haute._mlflow_io.load_mlflow_model",
+                side_effect=AssertionError("bundled scoring must not contact MLflow"),
+            ) as remote_loader,
         ):
             result = score_graph(
                 graph=graph,
@@ -2328,6 +2324,7 @@ class TestScoreGraphModelScoreRemap:
             )
 
         assert "pred" in result.columns
+        remote_loader.assert_not_called()
 
     def test_model_score_remap_with_output_fields_uses_bundled_contract(
         self,
@@ -3016,11 +3013,17 @@ class TestScoreGraphModelScoreRemap:
 
     def test_multi_row_model_score_uses_deploy_batch_source(self, tmp_path):
         """Multi-row deploy modelScore should use the batch scorer contract."""
+        from haute._mlflow_io import ScoringModel
         from haute.deploy._scorer import score_graph
 
         cbm_path = tmp_path / "model.cbm"
         cbm_path.write_bytes(b"fake")
-        scoring_model = MagicMock()
+        scoring_model = ScoringModel(
+            model=MagicMock(),
+            feature_names=["x"],
+            cat_feature_names=frozenset(),
+            flavor="catboost",
+        )
         captured: dict[str, object] = {}
 
         def fake_run_score_pipeline(*_args, **kwargs):
@@ -3075,11 +3078,10 @@ class TestScoreGraphModelScoreRemap:
 
         with (
             patch("haute._mlflow_io.load_local_model", return_value=scoring_model),
-            # The v2 OUTPUT references its mapped column (``pred``), so deploy
-            # batch projection planning resolves the modelScore column contract,
-            # which loads the model. Mock the planner's loader too (the v1
-            # passthrough OUTPUT seeded no projection, so this never fired).
-            patch("haute._mlflow_io.load_mlflow_model", return_value=scoring_model),
+            patch(
+                "haute._mlflow_io.load_mlflow_model",
+                side_effect=AssertionError("bundled scoring must not contact MLflow"),
+            ) as remote_loader,
             patch(
                 "haute._model_scorer._run_score_pipeline",
                 side_effect=fake_run_score_pipeline,
@@ -3095,14 +3097,21 @@ class TestScoreGraphModelScoreRemap:
 
         assert result["pred"].to_list() == [10.0, 20.0]
         assert captured["source"] == "deploy_batch"
+        remote_loader.assert_not_called()
 
     def test_single_row_model_score_keeps_live_source(self, tmp_path):
         """Single-row deploy modelScore should keep the eager live scorer path."""
+        from haute._mlflow_io import ScoringModel
         from haute.deploy._scorer import score_graph
 
         cbm_path = tmp_path / "model.cbm"
         cbm_path.write_bytes(b"fake")
-        scoring_model = MagicMock()
+        scoring_model = ScoringModel(
+            model=MagicMock(),
+            feature_names=["x"],
+            cat_feature_names=frozenset(),
+            flavor="catboost",
+        )
         captured: dict[str, object] = {}
 
         def fake_run_score_pipeline(*_args, **kwargs):
@@ -3157,7 +3166,10 @@ class TestScoreGraphModelScoreRemap:
 
         with (
             patch("haute._mlflow_io.load_local_model", return_value=scoring_model),
-            patch("haute._mlflow_io.load_mlflow_model", return_value=scoring_model),
+            patch(
+                "haute._mlflow_io.load_mlflow_model",
+                side_effect=AssertionError("bundled scoring must not contact MLflow"),
+            ) as remote_loader,
             patch(
                 "haute._model_scorer._run_score_pipeline",
                 side_effect=fake_run_score_pipeline,
@@ -3173,6 +3185,7 @@ class TestScoreGraphModelScoreRemap:
 
         assert result["pred"].to_list() == [10.0]
         assert captured["source"] == "live"
+        remote_loader.assert_not_called()
 
     def test_model_score_remap_forwards_required_output_columns(self, tmp_path):
         """Bundled deploy scoring should honour projection demand from output_fields."""
@@ -3535,11 +3548,10 @@ class TestScoreGraphModelScoreRemap:
 
         with (
             patch("haute._mlflow_io.load_local_model", return_value=scoring_model),
-            # The v2 OUTPUT references its mapped column (``pred``), so deploy
-            # batch projection planning resolves the modelScore column contract,
-            # which loads the model. Mock the planner's loader too (the v1
-            # passthrough OUTPUT seeded no projection, so this never fired).
-            patch("haute._mlflow_io.load_mlflow_model", return_value=scoring_model),
+            patch(
+                "haute._mlflow_io.load_mlflow_model",
+                side_effect=AssertionError("bundled scoring must not contact MLflow"),
+            ) as remote_loader,
             patch("haute._model_scorer._batch_score_to_parquet", side_effect=fake_batch_score),
         ):
             result = score_graph(
@@ -3552,6 +3564,7 @@ class TestScoreGraphModelScoreRemap:
 
         assert result["pred"].to_list() == [10.0, 20.0]
         assert not scored_path.exists()
+        remote_loader.assert_not_called()
 
 
 class TestRemapArtifact:

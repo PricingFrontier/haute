@@ -25,6 +25,25 @@ def _marker(directory: Path, *, owner: str = "test-owner", created_at: float = 0
     )
 
 
+def _directory_symlink_for_test(
+    target: Path,
+    link: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Create a POSIX directory symlink or classify a Windows stand-in as one."""
+    if os.name != "nt":
+        os.symlink(target, link, target_is_directory=True)
+        return
+
+    link.mkdir()
+    original_is_symlink = Path.is_symlink
+
+    def is_symlink(path: Path) -> bool:
+        return path == link or original_is_symlink(path)
+
+    monkeypatch.setattr(Path, "is_symlink", is_symlink)
+
+
 def test_reaper_removes_only_marked_owned_stale_direct_child(tmp_path: Path) -> None:
     stale = tmp_path / "stale"
     _marker(stale)
@@ -57,21 +76,23 @@ def test_reaper_removes_only_marked_owned_stale_direct_child(tmp_path: Path) -> 
     )
 
 
-def test_reaper_skips_symlink_and_reaps_exact_stale_cutoff(tmp_path: Path) -> None:
-    stale = tmp_path / "stale"
+def test_reaper_skips_symlink_and_reaps_exact_stale_cutoff(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    stale = root / "stale"
     _marker(stale, created_at=90.0)
     target = tmp_path / "outside"
     _marker(target, created_at=0.0)
-    link = tmp_path / "linked"
-    try:
-        os.symlink(target, link, target_is_directory=True)
-    except OSError:
-        pytest.skip("symlink creation unavailable")
+    link = root / "linked"
+    _directory_symlink_for_test(target, link, monkeypatch)
 
-    report = reap_stale_artifact_directories(tmp_path, "test-owner", 10, now=100.0)
+    report = reap_stale_artifact_directories(root, "test-owner", 10, now=100.0)
 
     assert report["removed"] == 1
-    assert report["skipped"] == 2
+    assert report["skipped"] == 1
     assert not stale.exists()
     assert target.exists()
     assert link.is_symlink()
@@ -173,14 +194,14 @@ def test_housekeeping_rejects_empty_owner(tmp_path: Path, owner: str) -> None:
         reap_stale_artifact_directories(tmp_path, owner, 10, now=100.0)
 
 
-def test_housekeeping_refuses_symlink_root(tmp_path: Path) -> None:
+def test_housekeeping_refuses_symlink_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     target = tmp_path / "target"
     target.mkdir()
     root = tmp_path / "root-link"
-    try:
-        os.symlink(target, root, target_is_directory=True)
-    except OSError:
-        pytest.skip("symlink creation unavailable")
+    _directory_symlink_for_test(target, root, monkeypatch)
 
     with pytest.raises(ValueError, match="root must not be a symlink"):
         create_owned_artifact_directory(root, "apply_", "test-owner")

@@ -648,6 +648,12 @@ writes, failure cleanup, and the complete absence of removed enum members and br
 - Strictness is derived from the same profile predicate used by the projection planner, not from
   a second route-owned profile table. An absent context uses the entry point's existing default:
   lazy execution is `LAZY_SINK` and eager execution is `PREVIEW_EAGER`.
+- `_builders.py::_model_score_columns` recognises the validated internal deploy-contract inputs
+  attached by the deploy scorer for a remapped native model. Those inputs are resolved from the
+  local served artifact before both projection planning and boundary enforcement, so strict
+  `DEPLOY_BATCH` execution remains fail-loud without re-resolving the graph's obsolete external
+  MLflow source. Empty local feature metadata stays opaque rather than being presented as a
+  concrete zero-column model contract.
 - Directory-backed Parquet data inputs continue through `read_polars_input`/`scan_parquet`.
   `arguments.hive_partitioning` is a registry-validated Polars argument; source user code supplies
   the partition predicate and projection analysis retains every predicate column. Regression
