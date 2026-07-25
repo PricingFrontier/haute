@@ -351,12 +351,12 @@ class TestServe:
         ):
             result = runner.invoke(
                 cli,
-                ["serve", "--no-browser", "--host", "0.0.0.0", "--port", "9000"],
+                ["serve", "--no-browser", "--host", "127.0.0.42", "--port", "9000"],
             )
 
         assert result.exit_code == 0, result.output
         call_kwargs = mock_run.call_args.kwargs
-        assert call_kwargs["host"] == "0.0.0.0"
+        assert call_kwargs["host"] == "127.0.0.42"
         assert call_kwargs["port"] == 9000
 
     def test_dev_mode_starts_vite_and_uvicorn(
@@ -474,11 +474,11 @@ class TestServe:
             patch("uvicorn.run"),
             patch("threading.Timer", return_value=mock_timer) as timer_cls,
         ):
-            result = runner.invoke(cli, ["serve", "--host", "0.0.0.0", "--port", "9999"])
+            result = runner.invoke(cli, ["serve", "--host", "127.0.0.42", "--port", "9999"])
 
         assert result.exit_code == 0, result.output
         call_kwargs = timer_cls.call_args
-        assert "0.0.0.0" in str(call_kwargs) and "9999" in str(call_kwargs)
+        assert "127.0.0.42" in str(call_kwargs) and "9999" in str(call_kwargs)
 
     def test_dev_mode_cleanup_terminates_vite(
         self,

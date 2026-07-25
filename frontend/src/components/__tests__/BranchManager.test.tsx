@@ -52,6 +52,11 @@ describe("BranchManager", () => {
     useGitStore.setState({
       status: null,
       loading: false,
+      statusError: null,
+      branches: [],
+      branchesLoaded: false,
+      branchesLoading: false,
+      branchesError: null,
       modal: null,
       pendingAction: null,
       peekBranch: null,
@@ -59,7 +64,7 @@ describe("BranchManager", () => {
       commitNonce: 0,
     })
     // In-app branch ops record undoable VC entries on the graph store.
-    useGraphStore.setState({ undoStack: [], redoStack: [], vcBusy: false })
+    useGraphStore.setState({ undoStack: [], redoStack: [], vcBusy: false, dirty: false })
     mockGetWorkingBranches.mockResolvedValue(listing)
     mockSetWorkingBranch.mockResolvedValue({})
     mockCreateWorkingBranch.mockResolvedValue({ working_branch: "x", moved: false, switched: false, last_save_sha: null })
@@ -123,6 +128,61 @@ describe("BranchManager", () => {
     expect(mockSetWorkingBranch).not.toHaveBeenCalled() // not yet
     fireEvent.click(screen.getByTestId("branch-manager-confirm-switch-go"))
     await waitFor(() => expect(mockSetWorkingBranch).toHaveBeenCalledWith("experiment", false))
+  })
+
+  it("guards a dirty switch after the ordinary confirmation until it is discarded", async () => {
+    useGraphStore.setState({ dirty: true })
+    render(<BranchManager />)
+    await waitFor(() => expect(screen.getByTestId("branch-manager-switch")).toBeInTheDocument())
+    fireEvent.click(screen.getByTestId("branch-manager-switch"))
+    fireEvent.click(await screen.findByTestId("branch-manager-confirm-switch-go"))
+    expect(await screen.findByTestId("git-navigation-confirm")).toBeInTheDocument()
+    fireEvent.click(screen.getByTestId("git-navigation-cancel"))
+    expect(mockSetWorkingBranch).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByTestId("branch-manager-switch"))
+    fireEvent.click(await screen.findByTestId("branch-manager-confirm-switch-go"))
+    fireEvent.click(await screen.findByTestId("git-navigation-discard"))
+    await waitFor(() => expect(mockSetWorkingBranch).toHaveBeenCalledWith("experiment", false))
+  })
+
+  it("only continues a dirty switch after onSave succeeds", async () => {
+    useGraphStore.setState({ dirty: true })
+    const onSave = vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(true)
+    render(<BranchManager onSave={onSave} />)
+    await waitFor(() => expect(screen.getByTestId("branch-manager-switch")).toBeInTheDocument())
+    fireEvent.click(screen.getByTestId("branch-manager-switch"))
+    fireEvent.click(await screen.findByTestId("branch-manager-confirm-switch-go"))
+    fireEvent.click(await screen.findByTestId("git-navigation-save"))
+    await waitFor(() => expect(onSave).toHaveBeenCalledOnce())
+    expect(mockSetWorkingBranch).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByTestId("git-navigation-save"))
+    await waitFor(() => expect(mockSetWorkingBranch).toHaveBeenCalledWith("experiment", false))
+  })
+
+  it("does not let the skip-switch-confirm preference bypass the dirty guard", async () => {
+    mockGetPrefs.mockResolvedValue({ skip_switch_confirm: true })
+    useGraphStore.setState({ dirty: true })
+    render(<BranchManager />)
+    await waitFor(() => expect(mockGetPrefs).toHaveBeenCalledOnce())
+    fireEvent.click(await screen.findByTestId("branch-manager-switch"))
+    expect(await screen.findByTestId("git-navigation-confirm")).toBeInTheDocument()
+    expect(screen.queryByTestId("branch-manager-confirm-switch")).not.toBeInTheDocument()
+    expect(mockSetWorkingBranch).not.toHaveBeenCalled()
+  })
+
+  it("guards dirty Create & Move before calling the create API", async () => {
+    useGraphStore.setState({ dirty: true })
+    render(<BranchManager />)
+    await waitFor(() => expect(screen.getByTestId("branch-manager-create-input")).toBeInTheDocument())
+    fireEvent.change(screen.getByTestId("branch-manager-create-input"), { target: { value: "moved" } })
+    fireEvent.click(screen.getByTestId("branch-manager-create-menu"))
+    fireEvent.click(screen.getByTestId("branch-manager-create-move"))
+    fireEvent.click(await screen.findByTestId("branch-manager-confirm-move-go"))
+    expect(await screen.findByTestId("git-navigation-confirm")).toBeInTheDocument()
+    expect(mockCreateWorkingBranch).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByTestId("git-navigation-discard"))
+    await waitFor(() => expect(mockCreateWorkingBranch).toHaveBeenCalledWith("moved", { move: true }))
   })
 
   it("persists 'don't ask again' on switch", async () => {
@@ -246,8 +306,9 @@ describe("BranchManager", () => {
       })
 
     render(<BranchManager />)
+    await waitFor(() => expect(mockGetWorkingBranches).toHaveBeenCalledOnce())
     useGitStore.getState().notifyHistoryChanged()
-    await waitFor(() => expect(screen.getByTestId("branch-manager-current")).toBeInTheDocument())
+    expect(mockGetWorkingBranches).toHaveBeenCalledOnce()
 
     await act(async () => {
       resolveInitial({
@@ -262,6 +323,8 @@ describe("BranchManager", () => {
       await initial
     })
 
+    await waitFor(() => expect(mockGetWorkingBranches).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(screen.getByTestId("branch-manager-current")).toBeInTheDocument())
     expect(screen.queryByTestId("branch-manager-uncommitted")).not.toBeInTheDocument()
     expect(screen.queryByTestId("branch-manager-unsaved")).not.toBeInTheDocument()
   })

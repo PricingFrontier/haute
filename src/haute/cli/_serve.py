@@ -8,16 +8,9 @@ Split into:
 
 Host-binding safety
 -------------------
-Haute is a dev-only tool with local-session protection.  The default bind has
-to be loopback-only (``127.0.0.1``) so a user running ``haute serve``
-on a corporate LAN does not accidentally expose a local Polars
-execution endpoint and file browser to every peer on the network.  Any
-explicit non-loopback bind (``0.0.0.0``, a public IP, a
-hostname that resolves off-loopback, …) is honoured but logs a loud
-structured warning via structlog so the choice is auditable in server
-logs.  The same policy applies whether the host was supplied on the
-CLI (``--host ...``) or via ``[server] host = "..."`` in
-``haute.toml``.
+Haute is a local UI, so every serve path is loopback-only. Non-loopback
+values fail before port probing or either frontend/backend process starts,
+whether supplied on the CLI or through ``haute.toml``.
 """
 
 from __future__ import annotations
@@ -45,14 +38,11 @@ logger = get_logger(component="serve")
 
 _BACKEND_READY_TIMEOUT_SECONDS = 30.0
 _BACKEND_READY_POLL_INTERVAL_SECONDS = 0.1
-_TRUSTED_BIND_BASE_HOSTS = ("localhost", "127.0.0.1", "::1")
-
-
 # ``127.0.0.1`` is the canonical IPv4 loopback; ``::1`` is the IPv6
 # loopback; ``localhost`` is the DNS name conventionally resolved to
 # one of those.  Any of the three are treated as loopback-safe.  Every
 # other host — including the wildcard ``0.0.0.0`` and ``::`` — is
-# non-loopback and therefore triggers the exposure warning.
+# non-loopback and therefore rejected.
 _LOOPBACK_HOSTNAMES: frozenset[str] = frozenset({"localhost"})
 
 
@@ -82,7 +72,7 @@ def _is_loopback_host(host: str) -> bool:
 
     Anything else (including the wildcards ``0.0.0.0`` and ``::``,
     public IPs, and off-loopback hostnames) returns ``False`` and is
-    subject to the exposure warning.
+    rejected.
     """
     normalised = host.strip().lower()
     if normalised in _LOOPBACK_HOSTNAMES:
@@ -93,8 +83,20 @@ def _is_loopback_host(host: str) -> bool:
         # Not a valid IP literal — treat as a hostname that isn't
         # ``localhost``.  A user binding to a hostname other than
         # ``localhost`` almost certainly means a network-routable
-        # address, so warn.
+        # address, so reject it.
         return False
+
+
+def _http_url(config: ServeConfig) -> str:
+    """Return a valid local HTTP URL, including brackets for IPv6 literals."""
+    host = config.host.strip()
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        authority_host = host
+    else:
+        authority_host = f"[{address.compressed}]" if address.version == 6 else address.compressed
+    return f"http://{authority_host}:{config.port}"
 
 
 def _load_toml_server_host(project_dir: Path) -> str | None:
@@ -260,55 +262,19 @@ def _wait_for_tcp_ready(
     ) from last_not_ready
 
 
-def _warn_if_non_loopback(config: ServeConfig) -> None:
-    """Emit the structured exposure warning when binding off-loopback.
-
-    Fires before port probing and frontend lookup so the warning
-    reaches the operator even if a later step bails out. The contract
-    with callers / tests is "any non-loopback host triggers a
-    structured ``warning``-level event whose payload mentions
-    'exposing beyond localhost'"; the event name and field layout are
-    implementation details.
-    """
+def _require_loopback_host(config: ServeConfig) -> None:
+    """Reject every network-visible bind before any startup side effect."""
     if _is_loopback_host(config.host):
         return
-    logger.warning(
-        "server_bind_non_loopback",
-        host=config.host,
-        port=config.port,
-        hint=(
-            "Binding to a non-loopback host is exposing beyond "
-            "localhost — every peer that can reach this machine "
-            "on the network can now reach the Haute API surface. "
-            "Pass --host 127.0.0.1 to revert to the safe default."
-        ),
+    raise click.ClickException(
+        "Haute only serves locally; --host must be localhost or a loopback IP address."
     )
 
 
-def _trusted_hosts_for_bind(host: str) -> str | None:
-    """Return TrustedHostMiddleware config for an explicit bind host."""
-    normalised = host.strip()
-    try:
-        address = ipaddress.ip_address(normalised)
-        if address.is_loopback:
-            return None
-        if address.is_unspecified:
-            return "*"
-        if address.version == 6:
-            return ",".join([*_TRUSTED_BIND_BASE_HOSTS, address.compressed])
-    except ValueError:
-        pass
-    if _is_loopback_host(host):
-        return None
-    return ",".join([*_TRUSTED_BIND_BASE_HOSTS, normalised])
-
-
 def _configure_trusted_hosts(config: ServeConfig) -> None:
-    trusted_hosts = _trusted_hosts_for_bind(config.host)
-    if trusted_hosts is None:
-        os.environ.pop(TRUSTED_HOSTS_ENV, None)
-        return
-    os.environ[TRUSTED_HOSTS_ENV] = trusted_hosts
+    """Remove stale remote-bind policy after the loopback gate has passed."""
+    _require_loopback_host(config)
+    os.environ.pop(TRUSTED_HOSTS_ENV, None)
 
 
 def _abort_if_port_in_use(config: ServeConfig) -> None:
@@ -398,7 +364,10 @@ def _open_browser_after_backend_ready(
     ).start()
 
 
-def _start_vite_subprocess(frontend_dir: Path) -> subprocess.Popen[bytes]:
+def _start_vite_subprocess(
+    frontend_dir: Path,
+    config: ServeConfig,
+) -> subprocess.Popen[bytes]:
     """Launch ``npm run dev`` in *frontend_dir* and wire signals for cleanup.
 
     Registers ``SIGINT`` / ``SIGTERM`` handlers that terminate the
@@ -407,9 +376,9 @@ def _start_vite_subprocess(frontend_dir: Path) -> subprocess.Popen[bytes]:
     """
     node_env = _node_env()
     env = os.environ.copy() if node_env is None else dict(node_env)
-    token = ensure_local_session_token_env()
-    if token:
-        env["VITE_HAUTE_SESSION_TOKEN"] = token
+    ensure_local_session_token_env()
+    env.pop("VITE_HAUTE_SESSION_TOKEN", None)
+    env["HAUTE_BACKEND_URL"] = _http_url(config)
 
     vite_proc = subprocess.Popen(
         [_npm(), "run", "dev"],
@@ -451,10 +420,10 @@ def _run_dev_mode(config: ServeConfig, frontend_dir: Path) -> None:
 
     click.echo("[dev] Dev mode: starting Vite dev server + FastAPI backend")
     click.echo("  Frontend -> http://localhost:5173  (open this)")
-    click.echo(f"  Backend  -> http://{config.host}:{config.port}   (API only)")
+    click.echo(f"  Backend  -> {_http_url(config)}   (API only)")
     click.echo("")
 
-    vite_proc = _start_vite_subprocess(frontend_dir)
+    vite_proc = _start_vite_subprocess(frontend_dir, config)
     if not config.no_browser:
         _open_browser_after_backend_ready(
             "http://localhost:5173",
@@ -536,7 +505,7 @@ def _run_prod_mode(config: ServeConfig) -> None:
         raise SystemExit(1)
 
     if not config.no_browser:
-        _schedule_browser_open(f"http://{config.host}:{config.port}", delay=1.5)
+        _schedule_browser_open(_http_url(config), delay=1.5)
     uvicorn.run(
         "haute.server:app",
         host=config.host,
@@ -551,13 +520,10 @@ def handle_serve(config: ServeConfig) -> None:
     exists; otherwise falls through to production mode (serving built
     static files).  Fails loudly when neither is available.
 
-    ``handle_serve`` is the single point where the host-exposure
-    warning fires (see the module docstring). Every code path that
-    starts the server — the Click wrapper, programmatic callers in
-    tests, future alternative frontends — goes through this function,
-    so the warning cannot be bypassed by skipping the CLI layer.
+    ``handle_serve`` is the single local-only bind gate. Every code path
+    that starts the server goes through this function.
     """
-    _warn_if_non_loopback(config)
+    _require_loopback_host(config)
     _configure_trusted_hosts(config)
     _abort_if_port_in_use(config)
     frontend_dir = _detect_dev_frontend_dir()
@@ -573,8 +539,7 @@ def handle_serve(config: ServeConfig) -> None:
     default=None,
     help=(
         "Host to bind to. Defaults to ``haute.toml``'s ``[server] host`` "
-        "if set, otherwise 127.0.0.1 (loopback-only). Non-loopback hosts "
-        "trigger a structured warning."
+        "if set, otherwise 127.0.0.1. Only loopback hosts are accepted."
     ),
 )
 @click.option("--port", default=8000, type=int, help="Backend API port.")
@@ -589,8 +554,7 @@ def serve(host: str | None, port: int, no_browser: bool) -> None:
        working directory.
     3. ``127.0.0.1`` (loopback-only default).
 
-    Whichever source wins, any non-loopback value triggers a
-    structured warning so the exposure is auditable in server logs.
+    Whichever source wins, non-loopback values are rejected before startup.
     """
     if host is None:
         host = _load_toml_server_host(Path.cwd()) or "127.0.0.1"

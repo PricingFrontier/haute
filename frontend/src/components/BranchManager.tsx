@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useState } from "react"
 import {
   GitBranch, Archive, Trash2, Plus, AlertTriangle,
   RotateCcw, ChevronRight, ChevronDown, ArrowRightLeft,
@@ -7,7 +7,6 @@ import {
 import {
   createWorkingBranch,
   getGitPrefs,
-  getWorkingBranches,
   gitArchiveBranch,
   gitDeleteBranch,
   restoreBranch,
@@ -16,15 +15,19 @@ import {
 } from "../api/client"
 import type { GitManagedBranch } from "../api/types"
 import useGitStore from "../stores/useGitStore"
+import useGraphStore from "../stores/useGraphStore"
 import useToastStore from "../stores/useToastStore"
 import { recordArchive, recordDelete, recordRestore, recordSwitch } from "../utils/vcHistory"
+import { gitErrorMessage } from "../utils/gitError"
 import Tooltip from "./Tooltip"
+import GitNavigationConfirm from "./GitNavigationConfirm"
 
 interface BranchManagerProps {
   /** Branch whose history is currently shown in the panel (peek/current). */
   selectedBranch?: string | null
   /** Peek a branch's history without switching to it. */
   onPeek?: (name: string) => void
+  onSave?: () => Promise<boolean>
 }
 
 /**
@@ -35,8 +38,10 @@ interface BranchManagerProps {
  * PEEKS its history (onPeek) without switching. Switching prompts a confirm with
  * a "don't ask again" that persists to the local environment.
  */
-export default function BranchManager({ selectedBranch, onPeek }: BranchManagerProps) {
+export default function BranchManager({ selectedBranch, onPeek, onSave }: BranchManagerProps) {
   const loadStatus = useGitStore((s) => s.loadStatus)
+  const branches = useGitStore((s) => s.branches)
+  const loadBranches = useGitStore((s) => s.loadBranches)
   const openModal = useGitStore((s) => s.openModal)
   const branchesExpandNonce = useGitStore((s) => s.branchesExpandNonce)
   // Undo/redo of a VC operation changes the branch forest from outside this
@@ -44,8 +49,8 @@ export default function BranchManager({ selectedBranch, onPeek }: BranchManagerP
   const historyNonce = useGitStore((s) => s.historyNonce)
   const commitNonce = useGitStore((s) => s.commitNonce)
   const addToast = useToastStore((s) => s.addToast)
+  const dirty = useGraphStore((s) => s.dirty)
 
-  const [branches, setBranches] = useState<GitManagedBranch[]>([])
   const [newBranch, setNewBranch] = useState("")
   const [busy, setBusy] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
@@ -58,25 +63,20 @@ export default function BranchManager({ selectedBranch, onPeek }: BranchManagerP
   const [confirmMove, setConfirmMove] = useState<string | null>(null)
   const [archiveDirty, setArchiveDirty] = useState<GitManagedBranch | null>(null)
   const [dontAskSwitch, setDontAskSwitch] = useState(false)
+  const [dirtyNavigation, setDirtyNavigation] = useState<(() => void) | null>(null)
 
   // Persisted "don't ask again" for switching (loaded once; whole-environment).
   const [skipSwitchConfirm, setSkipSwitchConfirm] = useState(false)
   // A save/commit can start a refresh while the mount request is still in
   // flight. Only the newest request may publish its branch flags; otherwise an
   // older dirty listing can restore badges that the newer request just cleared.
-  const refreshGeneration = useRef(0)
-
   const refresh = useCallback(async () => {
-    const generation = ++refreshGeneration.current
     try {
-      const res = await getWorkingBranches()
-      if (generation !== refreshGeneration.current) return
-      setBranches(res.branches)
+      await loadBranches()
     } catch (err) {
-      if (generation !== refreshGeneration.current) return
-      setActionError(`Failed to load branches: ${err instanceof Error ? err.message : "error"}`)
+      setActionError(`Failed to load branches: ${gitErrorMessage(err, "error")}`)
     }
-  }, [])
+  }, [loadBranches])
 
   useEffect(() => {
     void refresh()
@@ -94,8 +94,12 @@ export default function BranchManager({ selectedBranch, onPeek }: BranchManagerP
   // milestone commits). The commit refresh is essential because the preceding
   // save refresh still sees its ledger entries as unmerged.
   useEffect(() => {
-    if (historyNonce > 0 || commitNonce > 0) void refresh()
-  }, [historyNonce, commitNonce, refresh])
+    if (historyNonce > 0 || commitNonce > 0) {
+      void loadBranches({ refresh: true }).catch((err) => {
+        setActionError(`Failed to load branches: ${gitErrorMessage(err, "error")}`)
+      })
+    }
+  }, [historyNonce, commitNonce, loadBranches])
 
   // Right-click on a branch row: the row's actions as a context menu.
   const [rowMenu, setRowMenu] = useState<{ b: GitManagedBranch; x: number; y: number } | null>(
@@ -125,12 +129,12 @@ export default function BranchManager({ selectedBranch, onPeek }: BranchManagerP
         return
       }
       await loadStatus()
-      await refresh()
       // A branch op changes the fork forest — nudge the Git panel to refetch
-      // its history + graph (it listens on the history nonce).
+      // its history + graph; BranchManager's nonce effect performs the one
+      // shared branch-list refresh.
       useGitStore.getState().notifyHistoryChanged()
     } catch (err) {
-      const detail = err instanceof Error ? err.message : "unknown error"
+      const detail = gitErrorMessage(err, "unknown error")
       setActionError(`Could not ${verb}: ${detail}`) // persistent
       addToast("error", `Could not ${verb}: ${detail}`) // splash
     } finally {
@@ -157,7 +161,7 @@ export default function BranchManager({ selectedBranch, onPeek }: BranchManagerP
   const onCreateMoveClick = () => {
     const name = newBranch.trim()
     setCreateMenuOpen(false)
-    if (name) setConfirmMove(name) // confirm the relocation first
+    if (name) setConfirmMove(name)
   }
 
   // -- switch -----------------------------------------------------------------
@@ -165,23 +169,30 @@ export default function BranchManager({ selectedBranch, onPeek }: BranchManagerP
   // canvas via the websocket sync, and the completed switch is recorded as an
   // undoable history entry.
   const switchNow = (b: GitManagedBranch, dontAsk: boolean) => {
-    if (dontAsk) {
-      setSkipSwitchConfirm(true)
-      void setGitPrefs({ skip_switch_confirm: true }).catch(() => {})
-    }
-    setConfirmSwitch(null)
-    setDontAskSwitch(false)
-    const from = branches.find((x) => x.is_current && !x.is_archived)?.name ?? null
-    void run(b.name, "switch", async () => {
-      await setWorkingBranch(b.name, false)
-      addToast("success", `Switched to ${b.name}`)
-      if (from !== null) recordSwitch(from, b.name)
+    guardNavigation(() => {
+      if (dontAsk) {
+        setSkipSwitchConfirm(true)
+        void setGitPrefs({ skip_switch_confirm: true }).catch(() => {})
+      }
+      setConfirmSwitch(null)
+      setDontAskSwitch(false)
+      const from = branches.find((x) => x.is_current && !x.is_archived)?.name ?? null
+      void run(b.name, "switch", async () => {
+        await setWorkingBranch(b.name, false)
+        addToast("success", `Switched to ${b.name}`)
+        if (from !== null) recordSwitch(from, b.name)
+      })
     })
   }
 
   const onSwitchClick = (b: GitManagedBranch) => {
     if (skipSwitchConfirm) switchNow(b, false)
     else setConfirmSwitch(b)
+  }
+
+  const guardNavigation = (proceed: () => void) => {
+    if (dirty) setDirtyNavigation(() => proceed)
+    else proceed()
   }
 
   // -- archive / delete / restore --------------------------------------------
@@ -265,6 +276,21 @@ export default function BranchManager({ selectedBranch, onPeek }: BranchManagerP
                 ✕
               </button>
             </div>
+          )}
+
+          {dirtyNavigation && (
+            <GitNavigationConfirm
+              onCancel={() => setDirtyNavigation(null)}
+              onDiscard={() => { const proceed = dirtyNavigation; setDirtyNavigation(null); proceed() }}
+              onSave={async () => {
+                try {
+                  if (!await (onSave?.() ?? Promise.resolve(false))) return
+                  const proceed = dirtyNavigation
+                  setDirtyNavigation(null)
+                  proceed?.()
+                } catch { /* Saving failed; leave the choice visible. */ }
+              }}
+            />
           )}
 
           {/* Current branch — boxed, at the top. Dimmer when not the peeked one. */}
@@ -379,7 +405,7 @@ export default function BranchManager({ selectedBranch, onPeek }: BranchManagerP
                 </button>
                 <button
                   data-testid="branch-manager-confirm-move-go"
-                  onClick={() => doCreate(confirmMove, true)}
+                  onClick={() => guardNavigation(() => { void doCreate(confirmMove, true) })}
                   className="px-2.5 py-1 text-[12px] font-semibold rounded-md"
                   style={{ background: "var(--structure-action)", color: "var(--text-on-accent)" }}
                 >

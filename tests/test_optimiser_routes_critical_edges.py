@@ -62,8 +62,10 @@ def _frontier_job(*, artifact_handles: object | None = None) -> dict:
 
 
 def test_estimate_returns_input_metrics_when_metadata_lookup_fails(client, tmp_path: Path):
+    from haute._sandbox import set_project_root
     from tests.conftest import make_edge, make_file_input_config, make_graph
 
+    set_project_root(tmp_path)
     data_path = tmp_path / "scored.parquet"
     pl.DataFrame(
         {

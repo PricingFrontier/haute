@@ -5,13 +5,15 @@ import {
 } from "lucide-react"
 import PanelShell from "./PanelShell"
 import BranchManager from "../components/BranchManager"
+import GitNavigationConfirm from "../components/GitNavigationConfirm"
 import RemotePushControl from "../components/RemotePushControl"
 import Tooltip from "../components/Tooltip"
 import useToastStore from "../stores/useToastStore"
 import useGitStore from "../stores/useGitStore"
+import useGraphStore from "../stores/useGraphStore"
 import {
   createWorkingBranch, getGitGraph, getMilestones, getMilestoneSaves, getPendingSaves,
-  getWorkingBranches, setWorkingBranch,
+  setWorkingBranch,
 } from "../api/client"
 import type {
   GitMilestoneEntry, GitGraphResponse, GitLedgerSave, GitFileChange, GitManagedBranch,
@@ -20,6 +22,7 @@ import { computeGitGraphLayout, computeRailRuns, railWidth } from "./gitgraph/la
 import type { RailModel, RailRow, RailRowGeom, RowDescriptor } from "./gitgraph/layout"
 import { GraphRailCell, GraphRailHeader, GraphRailOverlay } from "./gitgraph/GraphCell"
 import { recordSwitch } from "../utils/vcHistory"
+import { gitErrorMessage } from "../utils/gitError"
 import {
   readBranchHistory, writeBranchHistory, readGraphCache, writeGraphCache,
   readMilestoneSaves, writeMilestoneSaves, serializePayload,
@@ -47,16 +50,20 @@ const SAVE_ROW_GAP = 6
 
 interface GitPanelProps {
   onClose: () => void
+  onSave?: () => Promise<boolean>
 }
 
 // Per-milestone expansion state: undefined = collapsed, "loading" = fetching,
 // array = the folded ledger saves.
 type ExpandState = Record<string, GitLedgerSave[] | "loading">
 
-export default function GitPanel({ onClose }: GitPanelProps) {
+export default function GitPanel({ onClose, onSave }: GitPanelProps) {
   const addToast = useToastStore((s) => s.addToast)
   const status = useGitStore((s) => s.status)
   const loadStatus = useGitStore((s) => s.loadStatus)
+  const branches = useGitStore((s) => s.branches)
+  const branchesLoaded = useGitStore((s) => s.branchesLoaded)
+  const dirty = useGraphStore((s) => s.dirty)
   // Peek state lives in the store so the toolbar indicator can return to the
   // current branch without the panel being open (S38).
   const viewBranch = useGitStore((s) => s.peekBranch)
@@ -98,6 +105,9 @@ export default function GitPanel({ onClose }: GitPanelProps) {
   // Working branches keyed by the commit they were spawned from, so a milestone
   // or save can back-link to the branch(es) it spawned (S38).
   const [forkBranches, setForkBranches] = useState<GitManagedBranch[]>(seed?.forkBranches ?? [])
+  const forkBranchesRef = useRef(forkBranches)
+  forkBranchesRef.current = forkBranches
+  const [dirtyNavigation, setDirtyNavigation] = useState<(() => void) | null>(null)
   // Right-click "new branch from here" (S38): the anchor is the menu position +
   // fork point; the draft is the naming step once an option is picked.
   const [forkAnchor, setForkAnchor] = useState<
@@ -177,10 +187,9 @@ export default function GitPanel({ onClose }: GitPanelProps) {
       () => {},
     )
     try {
-      const [ms, ps, wb] = await Promise.all([
+      const [ms, ps] = await Promise.all([
         getMilestones(50, viewBranch),
         getPendingSaves(viewBranch),
-        getWorkingBranches(),
       ])
       // Land the rows WITH the rail rather than a beat before it: hold the
       // row commit until the graph settles or 250ms passes, whichever is
@@ -196,7 +205,10 @@ export default function GitPanel({ onClose }: GitPanelProps) {
       // write (it would overwrite a fresher snapshot with older data).
       if (generation !== refreshGeneration.current) return null
       const resolvedBranch = viewBranch ?? ms.working_branch
-      const forks = wb.branches.filter((b) => b.forked_from)
+      const branchState = useGitStore.getState()
+      const forks = branchState.branchesLoaded
+        ? branchState.branches.filter((b) => b.forked_from)
+        : forkBranchesRef.current
       const msJson = serializePayload(ms.entries)
       const psJson = serializePayload(ps.saves)
       const fbJson = serializePayload(forks)
@@ -227,7 +239,7 @@ export default function GitPanel({ onClose }: GitPanelProps) {
     } catch (err) {
       // A superseded refresh failing is moot — the newest one owns the toast.
       if (generation !== refreshGeneration.current) return null
-      const detail = err instanceof Error ? err.message : "unknown error"
+      const detail = gitErrorMessage(err, "unknown error")
       addToast("error", `Failed to load version history: ${detail}`)
       return null
     } finally {
@@ -257,6 +269,15 @@ export default function GitPanel({ onClose }: GitPanelProps) {
     loadStatus()
     refresh()
   }, [loadStatus, refresh])
+
+  useEffect(() => {
+    if (!branchesLoaded) return
+    const forks = branches.filter((branch) => branch.forked_from)
+    const forksJson = serializePayload(forks)
+    if (forksJson === applied.current.forks) return
+    applied.current = { ...applied.current, forks: forksJson }
+    setForkBranches(forks)
+  }, [branches, branchesLoaded])
 
   // Viewing a different branch shows a different history — reset expansion and
   // clear the selection (it referred to the previous branch's save). The row
@@ -408,7 +429,7 @@ export default function GitPanel({ onClose }: GitPanelProps) {
         // response must not resurrect a milestone the user moved on from.
         setExpanded((prev) => (prev[sha] === "loading" ? { ...prev, [sha]: saves } : prev))
       } catch (err) {
-        const detail = err instanceof Error ? err.message : "unknown error"
+        const detail = gitErrorMessage(err, "unknown error")
         addToast("error", `Failed to load the saves in this milestone: ${detail}`)
         setExpanded((prev) => {
           if (prev[sha] !== "loading") return prev
@@ -434,8 +455,11 @@ export default function GitPanel({ onClose }: GitPanelProps) {
 
   const startFork = (move: boolean) => {
     if (!forkAnchor) return
-    setForkDraft({ sha: forkAnchor.sha, move, name: "", x: forkAnchor.x, y: forkAnchor.y })
-    setForkAnchor(null)
+    const openDraft = () => {
+      setForkDraft({ sha: forkAnchor.sha, move, name: "", x: forkAnchor.x, y: forkAnchor.y })
+      setForkAnchor(null)
+    }
+    openDraft()
   }
 
   const submitFork = async () => {
@@ -459,11 +483,16 @@ export default function GitPanel({ onClose }: GitPanelProps) {
       }
       await refresh()
     } catch (err) {
-      const detail = err instanceof Error ? err.message : "unknown error"
+      const detail = gitErrorMessage(err, "unknown error")
       addToast("error", `Could not create branch: ${detail}`)
     } finally {
       setForking(false)
     }
+  }
+
+  const requestForkSubmit = () => {
+    if (forkDraft?.move) guardNavigation(() => { void submitFork() })
+    else void submitFork()
   }
 
   // Switch the working branch in place (no page reload) — the lane menu's
@@ -481,7 +510,7 @@ export default function GitPanel({ onClose }: GitPanelProps) {
       await loadStatus()
       await refresh()
     } catch (err) {
-      const detail = err instanceof Error ? err.message : "unknown error"
+      const detail = gitErrorMessage(err, "unknown error")
       addToast("error", `Could not switch branch: ${detail}`)
     } finally {
       setSwitching(false)
@@ -490,6 +519,11 @@ export default function GitPanel({ onClose }: GitPanelProps) {
 
   const forksAt = (sha: string): GitManagedBranch[] =>
     forkBranches.filter((b) => b.forked_from === sha)
+
+  const guardNavigation = (proceed: () => void) => {
+    if (dirty) setDirtyNavigation(() => proceed)
+    else proceed()
+  }
 
   // Open the read-only side-by-side comparison on a version (S11).
   const viewVersion = (sha: string, label: string) => openComparison({ sha, label })
@@ -689,7 +723,27 @@ export default function GitPanel({ onClose }: GitPanelProps) {
         </div>
 
         {/* Branch manager (S19/S28: the Git panel hosts it) */}
-        <BranchManager selectedBranch={viewBranch ?? workingBranch} onPeek={setViewBranch} />
+        {dirtyNavigation && (
+          <GitNavigationConfirm
+            onCancel={() => setDirtyNavigation(null)}
+            onDiscard={() => {
+              const proceed = dirtyNavigation
+              setDirtyNavigation(null)
+              proceed()
+            }}
+            onSave={async () => {
+              try {
+                if (!await (onSave?.() ?? Promise.resolve(false))) return
+                const proceed = dirtyNavigation
+                setDirtyNavigation(null)
+                proceed?.()
+              } catch {
+                // Saving failed; keep the choice visible.
+              }
+            }}
+          />
+        )}
+        <BranchManager selectedBranch={viewBranch ?? workingBranch} onPeek={setViewBranch} onSave={onSave} />
 
         {/* Save history — a distinct, inset section set apart from the branch
             list above (BranchManager already draws the seam border); the inset
@@ -1078,7 +1132,7 @@ export default function GitPanel({ onClose }: GitPanelProps) {
             </div>
             <button
               data-testid="git-graph-lane-menu-switch"
-              onClick={() => { const b = laneMenu.branch; setLaneMenu(null); void performSwitch(b) }}
+              onClick={() => { const b = laneMenu.branch; setLaneMenu(null); guardNavigation(() => { void performSwitch(b) }) }}
               disabled={switching || laneMenu.branch === workingBranch}
               className="flex items-center gap-1.5 px-3 py-1.5 w-full text-left hover:bg-[var(--bg-hover)] disabled:opacity-40"
               style={{ color: "var(--text-primary)" }}
@@ -1119,7 +1173,7 @@ export default function GitPanel({ onClose }: GitPanelProps) {
               data-testid="git-panel-fork-name"
               value={forkDraft.name}
               onChange={(e) => setForkDraft({ ...forkDraft, name: e.target.value })}
-              onKeyDown={(e) => { if (e.key === "Enter") void submitFork() }}
+              onKeyDown={(e) => { if (e.key === "Enter") requestForkSubmit() }}
               placeholder="New branch name…"
               className="px-2 py-1 text-[12px] rounded-md focus:outline-none focus:ring-2"
               style={{ background: "var(--bg-input)", border: "1px solid var(--border)", color: "var(--text-primary)", caretColor: "var(--accent)" }}
@@ -1130,7 +1184,7 @@ export default function GitPanel({ onClose }: GitPanelProps) {
               </button>
               <button
                 data-testid="git-panel-fork-create"
-                onClick={() => void submitFork()}
+                onClick={requestForkSubmit}
                 disabled={forking || forkDraft.name.trim() === ""}
                 className="px-2.5 py-1 text-[12px] font-semibold rounded-md disabled:opacity-50"
                 style={{ background: "var(--structure-action)", color: "var(--text-on-accent)" }}

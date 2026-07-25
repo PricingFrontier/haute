@@ -734,6 +734,7 @@ class TestBuildApiInput:
         )
         assert func_name.isidentifier()
 
+    @pytest.mark.usefixtures("_widen_sandbox_root")
     def test_source_projection_maps_renamed_output_columns_to_physical_columns(
         self,
         tmp_path: Path,
@@ -781,6 +782,7 @@ class TestBuildApiInput:
         assert captured["columns"] == frozenset({"quote_id", "premium_raw"})
         assert captured["validate_columns"] == frozenset({"quote_id", "premium_raw", "unused"})
 
+    @pytest.mark.usefixtures("_widen_sandbox_root")
     def test_source_projection_avoids_ambiguous_rename_pushdown(
         self,
         tmp_path: Path,
@@ -826,6 +828,7 @@ class TestBuildApiInput:
         assert captured["columns"] is None
         assert captured["validate_columns"] == frozenset()
 
+    @pytest.mark.usefixtures("_widen_sandbox_root")
     def test_source_projection_validates_stale_selected_columns(
         self,
         tmp_path: Path,

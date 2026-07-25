@@ -33,7 +33,11 @@ from haute._polars_io_registry import (
 )
 from haute._polars_utils import DEFAULT_STREAMING_CHUNK_SIZE, streaming_collect
 from haute._types import GraphEdge, GraphNode, NodeType, PipelineGraph
-from haute.errors import ChunkPlanUnsupportedError, ContractMismatchError
+from haute.errors import (
+    ChunkMemoryRiskError,
+    ChunkPlanUnsupportedError,
+    ContractMismatchError,
+)
 from haute.execution import plan_prepared_execution_strategy
 from haute.projection import _children_of, prepare_graph
 
@@ -646,6 +650,13 @@ def _plan_chunk_sizes(
             target_node_id=chunk_start_node_id,
         )
     )
+    if target_row_bytes > request.target_chunk_bytes:
+        raise ChunkMemoryRiskError(
+            "One estimated target row exceeds the configured chunk byte budget.",
+            target_node_id=request.target_node_id,
+            estimated_target_row_bytes=target_row_bytes,
+            target_chunk_bytes=request.target_chunk_bytes,
+        )
     chunk_size = max(1, request.target_chunk_bytes // target_row_bytes)
     source_chunk_size = max(1, chunk_size // expansion)
     return chunk_size, source_chunk_size, source_row_bytes, target_row_bytes
@@ -1276,8 +1287,19 @@ def run_chunked_reduce(
             "is not allowed on chunked_map_reduce paths.",
             target_node_id=request.plan.target_node_id,
         )
+    context = request.execution_context
     for batch in iter_chunked_frames(request):
+        if context is not None:
+            context.fault_point(
+                "reducer_add",
+                node_id=request.plan.target_node_id,
+            )
         reducer.add(batch)
+    if context is not None:
+        context.fault_point(
+            "reducer_finish",
+            node_id=request.plan.target_node_id,
+        )
     return reducer.finish()
 
 

@@ -113,21 +113,19 @@ Out of scope (owned elsewhere, linked where relevant):
   `safe_unpickle`/`safe_joblib_load` must first resolve inside the project root
   (`validate_project_path`) — a case-insensitive-filesystem-safe containment check,
   not a raw string-prefix check.
-- **Local API/WebSocket access to the dev server is gated by Host, Origin, and
-  token checks.** Host middleware applies to HTTP and WebSocket scopes. Its
-  allowlist is captured when `server.py` is imported: loopback names/addresses are
-  the defaults when `HAUTE_TRUSTED_HOSTS` is empty; a non-empty setting replaces
-  those defaults and may include supported `*.suffix` patterns. `/api/*` requests
-  and `/ws/sync` additionally receive Origin/session-token checks; static/non-API
-  HTTP paths receive only the Host check. `Origin`
-  may be absent (same-origin navigation and non-browser clients commonly omit it),
-  loopback, or an exact configured trusted host; origin checking does not apply the
-  Host middleware's wildcard matching. Authenticated requests also need a per-process
-  bearer token compared with constant-time `hmac.compare_digest`. Malformed Host/
-  Origin values and missing/invalid tokens fail closed. `OPTIONS` preflight requests
-  skip only the token check, not Host/Origin checks. The session-token/origin scheme
-  can be disabled via `HAUTE_DISABLE_LOCAL_SESSION_AUTH`; Host middleware remains a
-  separate gate.
+- **Local API/WebSocket access is gated by loopback Host, exact Origin, and an
+  HttpOnly session cookie.** Host middleware rejects non-loopback authorities and
+  every forwarded/proxy header on HTTP and WebSocket scopes. The browser establishes
+  its per-process credential only through `POST /api/session/bootstrap`, which
+  requires an explicit HTTP(S) Origin with the same scheme, normalized loopback host,
+  and effective port as the request Host. The response is no-store and places the
+  credential only in an HttpOnly, SameSite=Strict cookie. Protected API calls accept
+  that cookie or the legacy non-browser `x-haute-session-token` header; an absent
+  Origin is accepted only when one of those credentials is already valid. WebSocket
+  handshakes always require an explicit matching Origin and cookie/header credential.
+  Query-string token transport is unsupported. `OPTIONS` skips only the token check,
+  never Origin/Host checks. `HAUTE_DISABLE_LOCAL_SESSION_AUTH` remains an explicit
+  local development escape hatch; the loopback/forwarded-header gate remains active.
 - **Knobs routed through `_env.py` are read live from `os.environ` at call time.**
   A malformed value logs a warning and degrades to the supplied default (`None` for
   `optional_int_env`). This contract covers the named request timeout/chunk/history
@@ -169,10 +167,10 @@ Out of scope (owned elsewhere, linked where relevant):
   a naive `==` string comparison would leave open, even though the local-network
   threat model (a same-machine browser tab, not a remote attacker) makes timing
   attacks a lower-probability vector than the Origin/Host checks it's layered with.
-- **Loopback-only default bind plus a loud non-default-bind warning** (see
-  `cli/_serve.py`) rather than an interactive prompt or a hard block: the tool
-  needs to support intentional LAN exposure (e.g. a shared dev box) without
-  making that the accidental default.
+- **Loopback-only serving is a hard product boundary.** `cli/_serve.py` rejects
+  wildcard, LAN/public, and custom-hostname binds before startup. Haute has no
+  reverse-proxy or shared-host mode because this UI can execute project code and
+  access project files.
 - **Lazy env-var reads over import-time constants.** A constant frozen at import
   silently ignores overrides applied afterward (programmatic server start, test
   `monkeypatch.setenv`, uvicorn reload) — this was an actual regression class, not
@@ -273,3 +271,40 @@ Remaining sandbox and security improvement work is tracked in the
 Acceptance reuses the unsafe-code corpus for `dataInput`, proves output code is rejected before
 execution, covers traversal/symlink/null-byte cases on direct and staged paths, and scans
 user-visible failures/namespaces for resolved secrets.
+
+## Approved change contract — local-only supply-chain hardening
+
+Haute's editor is a locally served UI, not a hosted application. The security
+boundary therefore assumes a browser and backend on the same machine and does
+not provide a reverse-proxy, forwarded-host, LAN, or public-hosting mode.
+
+- Every local filesystem path consumed by direct eager or lazy execution is
+  resolved and checked at the execution boundary, even when no HTTP route was
+  involved. Relative paths, absolute paths, mixed separators, and symlinks must
+  resolve within the execution project root. An explicitly selected pipeline
+  outside the current directory establishes its own parent as that root; it
+  does not grant access to sibling directories. That re-rooting is available
+  only to direct, operator-controlled execution: an HTTP graph body cannot
+  redefine the active project root, and a source path spelled inside the active
+  root but resolving outside through a symlink is rejected. Named provider
+  connections and their non-filesystem identifiers remain the explicit
+  external-resource mechanism and are not reinterpreted as local paths.
+- `haute serve` accepts loopback bind targets only. Forwarded/proxy headers and
+  non-loopback Host values fail closed for HTTP and WebSocket scopes.
+- The built SPA and Vite client contain no session token. A browser first calls
+  `POST /api/session/bootstrap`; only an explicit trusted Origin whose authority
+  matches the request Host may bootstrap. The response establishes the
+  per-process token in an HttpOnly, SameSite=Strict cookie with no-store cache
+  policy. Absent-Origin requests never bootstrap.
+- Protected API requests require both a trusted Origin or an already valid
+  token and a valid header/cookie token. WebSockets always require an explicit
+  trusted Origin and a valid header/cookie token before `accept()`. WebSocket
+  query-string token transport is unsupported.
+- The token must not occur in served HTML or JavaScript, URLs, access-log
+  fields, rejection reasons, error bodies, or exception responses. A normal
+  local browser bootstrap and reconnect refresh the cookie without asking the
+  user to copy a secret.
+- The pickle/joblib boundary remains an exact `(module, qualname)` allowlist.
+  Callable gadget globals and near-prefix module names stay rejected, while
+  each supported model class is proven by a real serialized round trip before
+  a new allowlist entry is accepted.

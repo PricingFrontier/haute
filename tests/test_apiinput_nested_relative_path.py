@@ -219,6 +219,7 @@ def test_resolve_runtime_data_path_passthrough_and_absolute(tmp_path, monkeypatc
     from haute._builders import _resolve_runtime_data_path
 
     monkeypatch.chdir(tmp_path)
+    set_project_root(tmp_path)
     assert _resolve_runtime_data_path("") == ""
 
     absolute = tmp_path / "rating" / "data" / "quotes.json"
@@ -233,6 +234,7 @@ def test_resolve_runtime_data_path_anchors_relative_to_pipeline_dir(tmp_path, mo
     from haute._builders import _resolve_runtime_data_path
 
     monkeypatch.chdir(tmp_path)
+    set_project_root(tmp_path)
     (tmp_path / "haute.toml").write_text('[project]\npipeline = "rating/main.py"\n')
     target = tmp_path / "rating" / "data" / "quotes.json"
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -242,19 +244,14 @@ def test_resolve_runtime_data_path_anchors_relative_to_pipeline_dir(tmp_path, mo
     assert resolved == str(target)
 
 
-def test_resolve_runtime_data_path_allows_out_of_cwd_absolute(tmp_path, monkeypatch) -> None:
-    """An absolute data path that resolves OUTSIDE cwd is passed through, NOT
-    rejected. ``canonical_dataframe_execution_graph`` may already have resolved
-    the path against ``graph.source_file`` to somewhere outside cwd (e.g. a
-    codegen round-trip re-execute, or ``haute run <pipeline outside cwd>``); the
-    executor must load it, so this stage does not enforce project-root
-    containment (that gate lives on the route boundary). Regression guard for
-    tests/test_e2e.py::test_full_lifecycle.
-    """
+def test_resolve_runtime_data_path_rejects_out_of_cwd_absolute(tmp_path, monkeypatch) -> None:
+    """The builder's final runtime resolver enforces the active project root."""
     from haute._builders import _resolve_runtime_data_path
 
     monkeypatch.chdir(tmp_path)
+    set_project_root(tmp_path)
     outside = tmp_path.parent / "elsewhere" / "data" / "api_input.json"
     outside.parent.mkdir(parents=True, exist_ok=True)
     outside.write_text("[]")
-    assert _resolve_runtime_data_path(str(outside)) == str(outside)
+    with pytest.raises(ValueError, match="outside the project root"):
+        _resolve_runtime_data_path(str(outside))

@@ -18,7 +18,8 @@ def _assert_static_assets_present() -> None:
 def _assert_server_routes_present() -> None:
     from haute.server import app
 
-    route_paths = {route.path for route in app.routes}
+    schema = app.openapi()
+    route_paths = set(schema["paths"])
     expected = {
         "/api/pipeline",
         "/api/optimiser/solve",
@@ -28,9 +29,6 @@ def _assert_server_routes_present() -> None:
     }
     missing = sorted(expected - route_paths)
     assert not missing, f"Installed app is missing expected routes: {missing}"
-
-    schema = app.openapi()
-    assert "/api/pipeline" in schema["paths"], "OpenAPI generation failed for installed package"
 
 
 def main() -> None:

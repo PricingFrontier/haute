@@ -27,12 +27,12 @@ classifiers = [
 ]
 
 dependencies = [
-    "fastapi>=0.129.0,<0.130",
+    "fastapi>=0.139.2,<0.140",
     "uvicorn[standard]>=0.40.0,<0.41",
     "websockets>=16.0,<17",
     "pydantic>=2.12.5,<3",
     "polars>=1.39.3,<2",
-    "click>=8.3.1,<9",
+    "click>=8.4.2,<9",
     "python-multipart>=0.0.31,<0.1",
     "python-dotenv>=1.2.2,<2",
     "libcst>=1.8.6,<2",

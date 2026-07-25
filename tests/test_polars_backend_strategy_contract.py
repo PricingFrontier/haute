@@ -36,6 +36,8 @@ from haute.schemas import (
 from haute.trace import execute_trace
 from tests.conftest import make_edge, make_file_input_config, make_graph
 
+pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
+
 _STATUS_BY_STRATEGY = {
     ExecutionStrategy.PROJECTED: ExecutionStrategyStatus.PROJECTED,
     ExecutionStrategy.SCHEMA_ALL_EXCEPT: ExecutionStrategyStatus.PROJECTED,

@@ -35,6 +35,8 @@ from tests._deploy_helpers import make_resolved_deploy as _make_resolved
 from tests.conftest import make_graph as _g
 from tests.conftest import make_output_config
 
+pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
+
 PIPELINE_FILE = FIXTURE_DIR / "pipeline.py"
 
 

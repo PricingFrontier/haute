@@ -4,8 +4,9 @@
 
 | File | Responsibility |
 |---|---|
-| `src/haute/_git.py` | All git CLI interaction. Subprocess wrappers, guardrails, the working/ledger branch-pair engine, content-addressed caches, remote fetch/push/fast-forward, branch manager operations (archive/delete/undelete/restore), read paths (status, graph, milestones, ledger expansion, commit context). ~3,280 lines, no HTTP or filesystem-state concerns beyond git itself. |
-| `src/haute/_git_state.py` | Per-clone, untracked JSON state under `<project_root>/.haute/`: working-branch association (`state.json`), UI preferences (`prefs.json`), fork-point back-links (`forks.json`), last-pushed SHAs (`pushed.json`), delete tombstones (`trash.json`). Pure read/write helpers with fail-soft parsing — no git subprocess calls. |
+| `src/haute/_git.py` | All git CLI interaction. Subprocess wrappers, guardrails, the working/ledger branch-pair engine, content-addressed caches, deliberate remote fetch/push/fast-forward, branch manager operations (archive/delete/undelete/restore), and read paths (repository readiness, graph, milestones, ledger expansion, commit context). |
+| `src/haute/_git_lock.py` | Reentrant per-repository mutation-lock registry shared by the engine and clone-state helpers. Uses a bounded marker-aware identity cache, a stable project-path key across `git init`, a common-Git-directory key for linked worktrees, and weak lock values so idle repositories are evicted. It never invokes Git. |
+| `src/haute/_git_state.py` | Per-clone, untracked JSON state under `<project_root>/.haute/`: working-branch association (`state.json`), UI preferences (`prefs.json`), fork-point back-links (`forks.json`), last-pushed SHAs (`pushed.json`), delete tombstones (`trash.json`). Fail-soft parsing plus lock-scoped atomic replace; no git subprocess calls. |
 | `src/haute/_gitignore_guard.py` | Shared `.gitignore` deny-list and append-only `ensure_gitignore_guards()` used both by project initialization and unborn-repository seeding; preserves tracked `*.haute.json` sidecars while excluding per-clone/cache/data/venv state. |
 | `src/haute/routes/git.py` | FastAPI router at `/api/git`. One `def` (sync) handler per endpoint, each a thin `try/except` around a single `_git` call; converts `_git`'s typed exceptions to HTTP responses via `_handle_git_error`. |
 
@@ -19,6 +20,10 @@ conversion in the routes).
 - `GitError(HauteError)` — base; wraps raw subprocess stderr.
   - `GitDomainError(GitError)` — hand-written, safe-to-surface message.
     - `GitGuardrailError(GitDomainError)` — guardrail block → HTTP 403.
+    - `GitTransactionError(GitDomainError)` — the primary mutation and at least one
+      compensating rollback step both failed.
+    - `GitHistoryReadError(GitDomainError)` — historical archive/extraction/parsing could
+      not produce a trustworthy pipeline graph.
     - `GitPushRejectedError(GitDomainError)` — carries a `GitPushRejection`; constructed
       only by `_push_rejection()`.
     - `GitMilestoneForkError(GitDomainError)` — carries a `GitMilestoneFork`; constructed
@@ -46,9 +51,21 @@ falls through to an uncached live subprocess on every call.
 `skipSwitchConfirm`), `forks.json` (`{branch_name: fork_point_sha}`), `pushed.json`
 (`{"<remote>/<ref>": sha}`), `trash.json` (`{deleted_branch_name: {branch_tip, ledger_tip,
 forked_from, was_archived, deleted_at}}`, capped at `_TRASH_MAX_ENTRIES = 20`, insertion
-order = recency). `record_pushed_shas` serializes its process-local read/merge/write
-transaction and replaces `pushed.json` atomically, preserving concurrent entries while
-readers observe either the old complete document or the new complete document.
+order = recency). Every writer holds the repository mutation lock, stages a complete UTF-8
+document beside its destination, and atomically replaces the target. Every read-modify-write
+helper holds that lock across both phases, preserving concurrent entries while readers
+observe either the old complete document or the new complete document.
+
+**Mutation-lock identity and lifetime** (`_git_lock.py`): the normalized absolute caller
+path is a stable local key. Once `.git` exists, the resolved common Git directory is a
+second key acquired after the local key; linked worktrees therefore meet on the common key,
+while a mutation that began before `git init` still blocks a post-init mutation on the
+unchanged local key. Path resolution and marker-aware identity lookup use separate bounded
+256-entry LRU caches; the identity cache key includes the direct `.git` marker fingerprint.
+In steady state a clone-state read performs one marker `stat` plus cache lookup, not
+`resolve()` plus an ancestor walk and marker/`commondir` reads. The lock registry is a
+`WeakValueDictionary`: active and waiting contexts retain a strong reference, while a
+repository with no callers leaves no permanent registry entry.
 
 **Gitignore guards** (`_gitignore_guard.py`): `GITIGNORE_GUARD_ENTRIES` is exactly
 `.env`, `.haute/`, `impact_report.md`, `.haute_cache/`, `mlruns/`, `data/`, and `.venv/`.
@@ -57,10 +74,13 @@ appends only missing exact lines under a `# Haute` block. Existing non-UTF-8 byt
 with replacement for membership testing. It deliberately does not ignore `*.haute.json`,
 because pipeline position sidecars belong on the save ledger.
 
-**`GitWorkingBranchResponse.state`** (computed by `working_branch_status`) is one of four
-literal values: `"unset"` (no working branch recorded), `"invalid"` (recorded branch
-missing / ineligible / invariants violated), `"divergent"` (HEAD is on neither the recorded
-branch nor its ledger — moved outside haute), `"ready"`.
+**`GitWorkingBranchResponse.state`** (computed by `working_branch_status`) is one of six
+literal values: `"no-repository"` (there is no Git repository), `"unset"` (repository
+present, attached HEAD, no working branch recorded), `"detached"` (HEAD has no branch;
+`head_sha` supplies the accurate commit context), `"invalid"` (Git metadata or the recorded
+pair is missing / ineligible / invariant-violating), `"divergent"` (attached HEAD is on
+neither the recorded branch nor its ledger), or `"ready"`. This read is total for missing
+and invalid repository metadata; transport/server failures remain non-200 responses.
 
 **HTTP contracts.** Every handler is synchronous `def`, so FastAPI runs git subprocess work
 in its thread pool. Request bodies are the named Pydantic models; omitted fields take the
@@ -69,8 +89,7 @@ validation envelope.
 
 | Method and path | Input | Success response |
 |---|---|---|
-| `GET /api/git/status` | None | `GitStatusResponse {branch,is_main,is_read_only,changed_files=[],main_ahead=false,main_ahead_by=0,main_last_updated=null}` |
-| `GET /api/git/working-branch` | None | `GitWorkingBranchResponse` (`state` is `ready`, `unset`, `invalid`, or `divergent`) |
+| `GET /api/git/working-branch` | None | `GitWorkingBranchResponse` (six-state readiness contract above, including `head_sha` when resolvable) |
 | `POST /api/git/working-branch` | `GitSetWorkingBranchRequest {branch,create=false}` | `GitSetWorkingBranchResponse {working_branch,state,last_save_sha?}` |
 | `POST /api/git/move` | `GitMoveRequest {sha}` | `GitMoveResponse {sha,short_sha,prior_branch,is_detached=true}` |
 | `POST /api/git/identity` | `GitSetIdentityRequest {user_name,user_email,set_global=false}` | `GitSetIdentityResponse {user_name,user_email,scope}` |
@@ -102,6 +121,12 @@ current) → `git status --porcelain -- <paths>` to check anything in *paths* ac
 changed (idempotent no-op returns `None`) → `git add -- <paths>` → `git commit -m <msg> --
 <paths>` (pathspec-scoped, so it commits only those paths' working-tree state regardless of
 what else the user may have pre-staged) → returns the new SHA.
+
+Every public mutation entry point acquires the reentrant repository lock before its first
+precondition read and holds it through Git changes, clone-state writes, and any compensation.
+Nested calls such as `commit_milestone` → `commit_save` → `resolve_ledger` reuse the same
+lock. Read-only functions do not acquire the engine lock (individual clone-state reads may
+briefly synchronize with an atomic state replacement).
 
 **Milestone.** `commit_milestone(message, project_root, version_label, cwd, allow_fork)` →
 reads the recorded working branch from `_git_state.read_working_branch` → unless
@@ -142,11 +167,14 @@ equals the last-merged ledger commit's tree, not an ancestor relationship.
     steering the user to a parallel fork instead. Otherwise: computes the new ledger tip
     (reuse the pending chain, or `_replay_onto` the crystallized base via `commit-tree`
     per-commit, preserving author/committer identity and dates through `GIT_AUTHOR_*` /
-    `GIT_COMMITTER_*` env vars), creates both new branches, checks out the new ledger
+    `GIT_COMMITTER_*` env vars). Before replay, every to-be-relocated commit must have
+    exactly one parent; an external merge is rejected because linear replay would destroy
+    topology. The operation then creates both new branches and checks out the new ledger
     (its tree matches old HEAD's, so uncommitted edits carry across untouched), rewinds the
     spawning branch's ledger to the fork point, and records the new working branch. Any
-    exception in this multi-step sequence triggers `_rollback_fork` (best-effort, never
-    raises) before re-raising.
+    exception in this multi-step sequence triggers `_rollback_fork`; a complete rollback
+    re-raises the original error, while any failed compensation raises
+    `GitTransactionError`.
 
 **Move (`move_to_commit`).** Refuses if a git op is in progress (`_assert_no_git_op_in_progress`
 checks `MERGE_HEAD`/`CHERRY_PICK_HEAD`/`REVERT_HEAD`/`rebase-merge`/`rebase-apply` under
@@ -177,6 +205,16 @@ leave an unborn branch renamed to `main`, newly appended `.gitignore` guards, an
 staging changes; a root commit that succeeded is deliberately permanent. These operations
 leave working-tree file contents in place. Once seeding has completed, branch/ledger refs,
 HEAD, and recorded working-branch state are the state the pair-creation rollback protects.
+
+Adopting an existing pair is transactional too: the previous symbolic/detached HEAD,
+whether the target ledger existed, and the previous clone association are captured before
+checkout. A failed ledger spawn, checkout, or state-file replacement restores all three.
+
+**Milestone metadata and commit context.** Log rows use NUL-delimited fields, so tabs in
+external commit subjects cannot shift the SHA/message/timestamp columns. Version labels are
+read once per request with `for-each-ref`. `commit_context` reads the milestone spine and
+the target's ancestor set in bounded batched commands, derives fold points from the already
+returned parent columns, and never launches one subprocess per milestone.
 
 **Graph topology (`graph_topology`).** Reads every working pair's tip via one
 `for-each-ref` call (`_list_branches_with_tips`), then for each branch reads its full
@@ -290,7 +328,9 @@ mid-move/detached states) and a clean tracked tree. Force-fetches, then requires
 to be `"behind"` or already synced — any `"ahead"`/`"diverged"` leg refuses outright (the
 user must reconcile via `branch_away` instead; this function never merges). The ledger
 (checked out) advances via `git merge --ff-only`; the working ref (not checked out)
-advances via a CAS `update-ref`.
+advances via a CAS `update-ref`. If the checked-out ledger advances but the working-ref CAS
+fails, the ledger and working tree reset to their captured tip. A failed reset is reported
+as `GitTransactionError`, never as a clean refusal or success.
 
 **Branch away (`branch_away`).** The reconciliation path when a remote fork is detected.
 Renames the current pair to a unique dated aside name (`_unique_aside_name`), creates fresh
@@ -298,8 +338,14 @@ Renames the current pair to a unique dated aside name (`_unique_aside_name`), cr
 merge-base of the old and new working tips as the aside branch's fork point (for the branch
 manager's back-link). If the remote has no ledger (`X2`), the local ledger is respawned at
 the adopted tip rather than adopted. The whole sequence is wrapped with
-`_rollback_branch_away` (best-effort; drops any freshly created canonical refs, renames the
-aside pair back, restores HEAD) on any `GitError`/`OSError`.
+`_rollback_branch_away` (drops any freshly created canonical refs, renames the aside pair
+back, and restores HEAD) on any `GitError`/`OSError`; incomplete compensation raises
+`GitTransactionError`.
+
+**Archive/delete active-pair fallback.** The fallback is resolved immediately before the
+mutation and must not be either leg of the pair. A distinct existing local base branch is
+preferred; if none exists, HEAD detaches at the captured pair tip. This covers adopted
+repositories whose only apparent default is the active managed pair.
 
 **Delete / trash (`delete_working_pair` / `undelete_working_pair`).** Delete refuses on
 unmerged ledger saves unless `confirm=True`. Before removing the branch refs, both tips are
@@ -310,6 +356,19 @@ delete. `undelete_working_pair` is the exact inverse: recreates both refs at the
 tips (verifying each still resolves — a tombstone can outlive its objects if the trash refs
 were hand-deleted and gc ran), restores the forks.json back-link, and consumes the trash
 refs + tombstone. The restored pair is NOT auto-adopted as the working branch.
+
+**Historical extraction (`archive_commit` / `commit_pipeline_graph`).** `ls-tree` first
+enumerates the selected commit and filters to `haute.toml`, Python modules, Haute sidecars,
+and files below `config/` or `prompts/`; `git archive` receives only those literal paths.
+Tar extraction is implemented with Python-3.11-compatible regular-file/directory handling
+and validates the complete member list before writing. It rejects traversal, unsupported
+members, more than `_HISTORY_ARCHIVE_MAX_MEMBERS = 10_000` entries, and cumulative
+regular-file size above `_HISTORY_ARCHIVE_MAX_BYTES = 64 * 1024 * 1024`. Malformed or
+over-limit tar data raises `GitHistoryReadError`. Parsing tries each discovered pipeline,
+but if every candidate fails it raises the same typed failure rather than returning
+`PipelineGraph()`. Temporary
+directory cleanup retries transient Windows sharing violations and logs an exhausted cleanup
+without replacing a successfully parsed response with a cleanup error.
 
 ## Edge cases and invariants
 
@@ -322,30 +381,26 @@ refs + tombstone. The restored pair is NOT auto-adopted as the working branch.
 - **No canonical remote** — `_canonical_remote` returns `origin` if present, the sole
   remote if exactly one exists, else `None` for genuine ambiguity (several non-origin
   remotes) or full offline. `None` propagates as "can't tell" through `divergence_state`
-  (the fork-gate then degrades OPEN, never blocking a local-only user) and through
-  `get_status`'s `main_ahead` computation (skipped entirely, never falsely reporting
-  in-sync).
-- **Concurrent worktrees sharing one process** — the fetch cooldown (`_fetch_cooldowns`) is
-  keyed per `(cwd, remote, kind)`, not global, specifically so one worktree's poll cannot
-  starve another's; the actual `git fetch` subprocess is still serialized process-wide via
-  `_fetch_exec_lock` because worktrees share one object store and git itself races on
-  concurrent fetches into it.
-- **Concurrent git mutations are not globally serialised** — `_fetch_time_lock` protects
-  cooldown bookkeeping, `_fetch_exec_lock` serialises fetch subprocesses, and
-  `_pushed_state_lock` protects only `pushed.json` reads and its merge/replace transaction;
-  there is no module-wide lock around archive/delete/fork/move/milestone/push operations.
-  FastAPI can run
-  their synchronous handlers on different worker threads. Individual operations rely on git
-  ref checks, pinned snapshots or CAS `update-ref` where implemented, dirty-tree/git-op
-  guardrails, and their documented best-effort rollback paths; callers must not infer whole-
-  engine transaction isolation across concurrent mutation requests.
-- **A slow / credential-walled remote** — every remote read disables terminal/SSH prompts
+  (the fork-gate then degrades OPEN, never blocking a local-only user). Remote listings
+  remain explicitly last-known rather than claiming an in-sync result.
+- **Concurrent worktrees sharing one process** — linked worktrees resolve through their
+  `.git` indirection and `commondir` to the same common-dir mutation key because they share
+  refs and object storage. Every call also acquires its stable local-path key first; that
+  key does not change when a previously uninitialized project gains `.git`, closing the
+  pre-init/post-init identity transition. Distinct repositories use distinct locks, and
+  their reads/mutations may proceed concurrently. `_fetch_exec_lock` remains process-wide
+  because Git object writes for a shared store must not race.
+- **Concurrent git mutations are serialized per repository** — FastAPI may run synchronous
+  handlers on different worker threads, but only one can cross a repository's mutation
+  boundary. Successful saves cannot be orphaned by an interleaved checkout, and state-file
+  read/merge/write transactions cannot lose sibling updates.
+- **A slow / credential-walled remote** — routine readiness, branch, history, graph, and
+  remote-list reads never perform network I/O. Every deliberate remote read disables terminal/SSH prompts
   (`GIT_TERMINAL_PROMPT=0`, SSH `BatchMode=yes`) and is wrapped in
   `subprocess.run(..., timeout=_FETCH_TIMEOUT_SECONDS)`, so a request thread cannot hang on
-  network I/O. Background/polling helpers (`_fetch_refs`, `_ls_remote_version_tags`) may
-  degrade to stale/empty best-effort data. The explicit Push inspection and expected-
-  default fetch are strict: timeout, launch failure, non-zero exit, or unreadable output
-  refuses publication and must never be reclassified as a zero-ref remote.
+  network I/O. Explicit Push inspection, expected-default fetch, Catch up, and Spin off a
+  copy are strict: timeout, launch failure, non-zero exit, or unreadable output refuses the
+  operation and must never be reclassified as a zero-ref remote or successful refresh.
 - **Remote baseline states at Push** — successful zero-object-ref advertisement is the sole
   bootstrap case; non-empty + expected default + related history publishes only the pair;
   non-empty + missing expected default and non-empty + unrelated default both refuse before
@@ -359,9 +414,10 @@ refs + tombstone. The restored pair is NOT auto-adopted as the working branch.
 - **Unicode / space-containing paths in log output** — `core.quotepath=false` is passed
   explicitly so git doesn't octal-escape and quote non-ASCII filenames in the parsed
   history output.
-- **A commit message containing the internal record separator** — `merge_to_working`
-  rejects any C0 control character except tab/newline/CR, because `_parse_ledger_saves`
-  delimits per-commit blocks with `\x1e` and a message containing it would corrupt parsing.
+- **Tabbed or externally-authored commit subjects** — milestone, graph, ledger-save, and
+  commit-context metadata use NUL-delimited fixed fields with the subject last. Tabs are
+  preserved verbatim and cannot shift timestamps or SHAs. Haute-authored milestone messages
+  still reject non-whitespace C0 controls.
 - **Full-SHA vs. ref-name cache eligibility** — every cache-fronted helper
   (`_merge_base`, `_is_ancestor`, `_tree_of`, `_first_parent_spine`, `_commit_parents`)
   branches on `_is_full_sha()` first; only a resolved 40-hex SHA takes the memoized path,
@@ -375,15 +431,17 @@ refs + tombstone. The restored pair is NOT auto-adopted as the working branch.
 
 ## Error handling
 
-`_run_git` is the single subprocess chokepoint for anything expected to succeed; on a
-non-zero exit it logs `git_command_failed` (full stderr) and raises plain `GitError`
+`_run_git` is the single subprocess chokepoint for anything expected to succeed; all text
+Git processes receive `LC_ALL=C`, `LANG=C`, and `LANGUAGE=C` in addition to UTF-8 decoding,
+so recognition of the small documented set of Git failure phrases is locale-independent.
+On a non-zero exit it logs `git_command_failed` (full stderr) and raises plain `GitError`
 (sanitize-by-default). `_run_git_ok` (returns `(bool, str)`) and `_run_git_rc` (returns
 `(int, str)`) do not raise merely for a non-zero git exit — used wherever that exit is an expected, meaningful
 outcome (e.g. `merge-base --is-ancestor` exiting 1 for "not an ancestor" vs. >1 for a
 genuinely unreadable object, which `_is_ancestor_cached` still raises on, to avoid
 memoizing a bad answer). None of these three general wrappers catches a subprocess-launch
-`OSError`; that propagates to the route's generic 500 handler. Only the hardened remote
-polling helpers explicitly catch timeout/OS failures and degrade to stale local refs.
+`OSError`; that propagates to the route's generic 500 handler. Deliberate remote helpers
+explicitly catch timeout/OS failures and convert required refresh failures to a Git error.
 
 Push-time remote inspection is not a polling helper and never degrades. It logs unsafe raw
 stderr server-side, returns only hand-authored safe detail when a specific domain condition
@@ -413,14 +471,15 @@ temporary directories via the shared helpers in `tests/_git_helpers.py` (`git_ru
 `init_repo`); narrow subprocess seams are mocked only to make malformed advertisements,
 process failures, and precise ref-movement races deterministic.
 
-- **`tests/test_git_engine.py`** — the primary unit suite for `_git.py`, ~3,050 lines
-  organized into 32 test classes covering: slugification, branch-category naming, ledger
+- **`tests/test_git_engine.py`** — the primary unit suite for `_git.py`, organized into
+  focused test classes covering: slugification, branch-category naming, ledger
   resolve/spawn, `commit_save` (including idempotent-no-op saves), milestone merge and its
-  invariant checks, git identity get/set, working-branch status across all four states,
+  invariant checks, git identity get/set, working-branch status across all six states,
   `set_working_branch` including the unborn-repo seed path and its gitignore-guard
   interaction (`TestSeedGitignoreGuards`, `TestSetWorkingBranchUnbornNonDefault`), move-to-
   commit, milestone history and commit-context breadcrumbs, rename-preserving ledger
-  expansion, the branch manager (archive/delete/undelete/restore), fetch throttling,
+  expansion, the branch manager (archive/delete/undelete/restore), request-path no-fetch
+  guarantees,
   canonical-remote resolution, fork/create-working-branch (both move and non-move), archive-
   commit read-only extraction, remotes/push/fast-forward/branch-away, the milestone fork
   gate, protected-branch env-var configuration, and subprocess text-encoding. Push coverage
@@ -434,6 +493,17 @@ process failures, and precise ref-movement races deterministic.
   missing-default remote, unrelated history, malformed advertisement, remote-only tag
   auto-follow during a refused preflight,
   inspection/auth/timeout failure, or any ref rejection.
+- **`tests/test_git_improvements.py`** — focused roadmap regressions for the shared
+  repository lock (including cached lookup, `git init` identity stability, and weak-registry
+  eviction), concurrent real saves, lock-scoped atomic clone-state updates,
+  six-state readiness, locale-stable Git execution, NUL-delimited history fields,
+  batched commit context, merge-replay refusal, network-free remote listing, targeted
+  historical extraction, archive member/byte ceilings, typed archive/parse failures, and
+  Windows cleanup retries.
+- **`tests/test_git_lifecycle_improvements.py`** — failure-injection coverage for
+  adopting an existing pair, deleting the only active pair, partial fast-forward,
+  archive state replacement, archive restore, undelete, and explicit incomplete-
+  compensation failures.
 - **`tests/test_git_rollback_coverage.py`** — crash-safety-net tests specifically for the
   partial-failure rollback paths: `_rollback_fork`, `_rollback_branch_away`, branch-away
   guard conditions, and that unreachable-remote push preflight and fast-forward failures
@@ -449,8 +519,8 @@ process failures, and precise ref-movement races deterministic.
 - **`tests/test_git_state_coverage.py`** — malformed-input fallback behaviour for every
   `_git_state.py` reader: corrupt JSON, wrong top-level type, missing file — each must
   degrade to the documented empty/default value rather than raising; deterministic thread
-  coordination also pins lossless concurrent `pushed.json` merges and atomic reader-visible
-  replacement.
+  coordination additionally pins lossless concurrent pushed-tip updates and atomic
+  reader-visible replacement.
 - **`tests/test_gitignore_guard.py`** — exact deny-list membership (including the positive
   assertion that `*.haute.json` remains tracked), file creation, idempotent byte preservation,
   append-only missing-entry repair, and non-UTF-8 input handling.

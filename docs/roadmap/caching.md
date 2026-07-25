@@ -10,7 +10,7 @@ contracts. Current behaviour is specified in
 
 ## Priorities
 
-No open caching packages.
+There are no active caching improvement packages.
 
 ## Planned improvements
 
