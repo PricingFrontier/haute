@@ -640,6 +640,7 @@ class TestInferOutputSchemaEdgeCases:
         with pytest.raises(ValueError, match="No API input nodes"):
             infer_output_schema(graph, "out", [])
 
+    @pytest.mark.usefixtures("_widen_sandbox_root")
     def test_cache_write_failure_does_not_raise(self, monkeypatch, tmp_path):
         """If cache writing fails, infer_output_schema still returns the schema."""
         from haute.deploy._schema import infer_output_schema
