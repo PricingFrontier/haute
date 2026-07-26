@@ -67,6 +67,8 @@ def _public_error_cases() -> list[tuple[BaseException, dict[str, object]]]:
                 "target_node_id": "output",
                 "reason_code": "single_row_exceeds_budget",
                 "estimated_target_row_bytes": 2_048,
+                "estimated_minimum_chunk_bytes": 2_048,
+                "row_expansion_factor": 1,
                 "target_chunk_bytes": 1_024,
             },
         ),

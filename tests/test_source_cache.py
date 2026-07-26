@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
+import subprocess
+import sys
 import threading
+import time
+import uuid
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -76,6 +81,7 @@ def test_identity_is_versioned_canonical_and_order_independent() -> None:
         {"token": "secret"},
         {"nested": {"password": "secret"}},
         {"uri": "postgresql://alice:secret@db.example/pricing"},
+        {"uri": "postgresql://db.example/pricing?access_token=secret"},
     ],
 )
 def test_identity_refuses_secret_bearing_material(descriptor: dict[str, object]) -> None:
@@ -179,6 +185,82 @@ def test_corrupt_current_generation_fails_without_fallback(tmp_path: Path) -> No
     with pytest.raises(SourceCacheCorruptError):
         store.open_generation(identity)
     assert store.status(identity).state == "corrupt"
+
+
+def test_open_generation_does_not_rehash_published_artifact(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = SourceCacheStore(tmp_path)
+    identity = _identity(path="data/input.parquet", format="parquet")
+    store.build(
+        identity,
+        _LazyBuilder(pl.DataFrame({"id": [1]}).lazy()),
+        context=_context(),
+    )
+
+    monkeypatch.setattr(
+        "haute._source_cache._sha256_file",
+        lambda _path: pytest.fail("ordinary generation open rehashed the full artifact"),
+    )
+
+    with store.lease(identity) as generation:
+        assert generation.lazy_frame.collect()["id"].to_list() == [1]
+
+
+def test_generation_digest_is_verified_once_per_stable_process_gate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from haute import _source_cache
+
+    store = SourceCacheStore(tmp_path)
+    identity = _identity(path="data/input.parquet", format="parquet")
+    generation = store.build(
+        identity,
+        _LazyBuilder(pl.DataFrame({"id": [1]}).lazy()),
+        context=_context(),
+    )
+    store._verified_generations.clear()
+    real_sha256_file = _source_cache._sha256_file
+    hashed: list[Path] = []
+
+    def record_hash(path: Path) -> str:
+        hashed.append(path)
+        return real_sha256_file(path)
+
+    monkeypatch.setattr(_source_cache, "_sha256_file", record_hash)
+
+    with store.lease(identity):
+        pass
+    with store.lease(identity):
+        pass
+
+    assert hashed == [generation.data_path]
+
+
+def test_transient_generation_access_error_is_not_reported_as_corruption(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = SourceCacheStore(tmp_path)
+    identity = _identity(path="data/input.parquet", format="parquet")
+    generation = store.build(
+        identity,
+        _LazyBuilder(pl.DataFrame({"id": [1]}).lazy()),
+        context=_context(),
+    )
+    original_read_text = Path.read_text
+
+    def fail_metadata_read(path: Path, *args: object, **kwargs: object) -> str:
+        if path == generation.metadata_path:
+            raise PermissionError("temporarily locked")
+        return original_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", fail_metadata_read)
+
+    with pytest.raises(PermissionError, match="temporarily locked"):
+        store.open_generation(identity)
 
 
 @pytest.mark.parametrize("generation_id", ["../../outside", "not-a-generation-id"])
@@ -440,7 +522,7 @@ def test_generation_quota_never_evicts_a_leased_snapshot(tmp_path: Path) -> None
     assert store.status(replacement).state == "ready"
 
 
-def test_first_store_for_root_cleans_abandoned_staging_and_unpublished_generations(
+def test_store_startup_preserves_unproven_cross_process_staging_and_generations(
     tmp_path: Path,
 ) -> None:
     identity_root = tmp_path / ".haute_cache" / "inputs" / "abandoned"
@@ -451,7 +533,97 @@ def test_first_store_for_root_cleans_abandoned_staging_and_unpublished_generatio
     (staging / "partial.parquet").write_bytes(b"partial")
     (generation / "data.parquet").write_bytes(b"unpublished")
 
+    subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "from haute._source_cache import SourceCacheStore; "
+                f"SourceCacheStore({str(tmp_path)!r})"
+            ),
+        ],
+        check=True,
+    )
+
+    assert staging.exists()
+    assert generation.exists()
+
+
+def test_store_startup_reclaims_only_stale_staging(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    inputs = tmp_path / ".haute_cache" / "inputs" / "identity"
+    stale = inputs / ".staging-stale"
+    recent = inputs / ".staging-recent"
+    generation = inputs / "generations" / str(uuid.uuid4())
+    stale.mkdir(parents=True)
+    recent.mkdir(parents=True)
+    generation.mkdir(parents=True)
+    stale_file = stale / "data.parquet"
+    recent_file = recent / "data.parquet"
+    stale_file.write_bytes(b"stale")
+    recent_file.write_bytes(b"recent")
+    (generation / "data.parquet").write_bytes(b"published")
+    old = time.time() - 120
+    os.utime(stale_file, (old, old))
+    os.utime(stale, (old, old))
+    monkeypatch.setenv("HAUTE_INPUT_CACHE_STAGING_MAX_AGE_SECONDS", "60")
+
     SourceCacheStore(tmp_path)
 
-    assert not staging.exists()
-    assert not generation.exists()
+    assert not stale.exists()
+    assert recent.exists()
+    assert generation.exists()
+
+
+def test_store_startup_preserves_staging_when_reclamation_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    staging = tmp_path / ".haute_cache" / "inputs" / "identity" / ".staging-temporarily-locked"
+    staging.mkdir(parents=True)
+    partial = staging / "data.parquet"
+    partial.write_bytes(b"partial")
+    old = time.time() - 120
+    os.utime(partial, (old, old))
+    os.utime(staging, (old, old))
+    monkeypatch.setenv("HAUTE_INPUT_CACHE_STAGING_MAX_AGE_SECONDS", "60")
+
+    def fail_reclamation(_path: Path) -> None:
+        raise PermissionError("temporarily locked")
+
+    monkeypatch.setattr("haute._source_cache.shutil.rmtree", fail_reclamation)
+
+    SourceCacheStore(tmp_path)
+
+    assert staging.exists()
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "nan", "inf"])
+def test_store_rejects_non_positive_or_non_finite_staging_age(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    value: str,
+) -> None:
+    monkeypatch.setenv("HAUTE_INPUT_CACHE_STAGING_MAX_AGE_SECONDS", value)
+
+    with pytest.raises(RuntimeError, match="must be positive"):
+        SourceCacheStore(tmp_path)
+
+
+def test_retained_staging_bytes_count_against_publication_quota(tmp_path: Path) -> None:
+    staging = tmp_path / ".haute_cache" / "inputs" / "other" / ".staging-live"
+    staging.mkdir(parents=True)
+    (staging / "data.parquet").write_bytes(b"x" * 1_000)
+    store = SourceCacheStore(tmp_path, max_bytes=1_000)
+    identity = _identity(path="new.parquet")
+
+    with pytest.raises(SourceCacheQuotaExceededError):
+        store.build(
+            identity,
+            _LazyBuilder(pl.DataFrame({"id": [1]}).lazy()),
+            context=_context(),
+        )
+
+    assert staging.exists()

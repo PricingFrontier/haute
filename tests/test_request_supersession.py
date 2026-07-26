@@ -11,6 +11,7 @@ from haute.routes._supersession import (
     SupersessionCoordinator,
     _SupersessionState,
 )
+from haute.routes._timeouts import BlockingWorkTimeoutError
 
 
 @pytest.mark.asyncio
@@ -101,6 +102,51 @@ async def test_superseded_running_worker_error_returns_superseded() -> None:
 
     with pytest.raises(SupersededRequestError):
         await first
+    assert await second == "latest"
+
+
+@pytest.mark.asyncio
+async def test_superseded_background_timeout_is_not_masked() -> None:
+    """The route must receive the timeout so it can defer context release."""
+    coordinator = SupersessionCoordinator()
+    key = ("preview", "graph")
+    started_first = asyncio.Event()
+    raise_timeout = asyncio.Event()
+    background_task: asyncio.Future[object] = asyncio.get_running_loop().create_future()
+
+    async def first_work() -> str:
+        started_first.set()
+        await raise_timeout.wait()
+        raise BlockingWorkTimeoutError("preview", 1, background_task)
+
+    async def second_work() -> str:
+        return "latest"
+
+    first = asyncio.create_task(
+        coordinator.run_latest(
+            key,
+            first_work,
+            superseded_message="superseded",
+        )
+    )
+    await started_first.wait()
+
+    second = asyncio.create_task(
+        coordinator.run_latest(
+            key,
+            second_work,
+            superseded_message="superseded",
+        )
+    )
+    await asyncio.sleep(0)
+    raise_timeout.set()
+
+    with pytest.raises(BlockingWorkTimeoutError) as exc_info:
+        await first
+    assert exc_info.value.background_task is background_task
+    assert not second.done()
+
+    background_task.set_result(None)
     assert await second == "latest"
 
 

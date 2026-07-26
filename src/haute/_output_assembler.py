@@ -24,7 +24,6 @@ Vocabulary (kept to tables / fields / join-constraints throughout):
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from itertools import combinations
 from typing import Any
 
 import polars as pl
@@ -446,7 +445,7 @@ def _assemble_document(field_frames: dict[str, pl.LazyFrame]) -> list[Any]:
             for port in parent_ports + child_ports:
                 for row in rows_by_port[port]:
                     for key in relation_keys:
-                        if row.get(key) is None:
+                        if key in row and row[key] is None:
                             raise OutputNestingKeyError(
                                 "a parent-to-child nesting key cannot be null",
                                 frame=port,
@@ -590,19 +589,6 @@ def _execute_plan(
 # ---------------------------------------------------------------------------
 
 
-def _prefix_comparable(a: str, b: str) -> bool:
-    """True if one output path's segments are a prefix of the other's (or equal).
-
-    Prefix-comparable paths put a value both *at* a slot and *inside* it — the
-    one would be a leaf, the other its enveloping container — which is not
-    acceptable JSON (§1.1). Within one source frame that is rejected (B1).
-    """
-    sa = _parse_output_path(a).segments
-    sb = _parse_output_path(b).segments
-    n = min(len(sa), len(sb))
-    return sa[:n] == sb[:n]
-
-
 def is_active_mapping_entry(entry: dict[str, Any]) -> bool:
     """Whether a mapping entry contributes — enabled AND fully filled in.
 
@@ -616,7 +602,14 @@ def is_active_mapping_entry(entry: dict[str, Any]) -> bool:
     """
     if not entry["enabled"]:
         return False
-    return bool(entry["source_column"].strip()) and bool(entry["output_path"].strip())
+    source_column = entry.get("source_column", "")
+    output_path = entry.get("output_path", "")
+    return (
+        isinstance(source_column, str)
+        and isinstance(output_path, str)
+        and bool(source_column.strip())
+        and bool(output_path.strip())
+    )
 
 
 def validate_v2_output_mapping(mapping: list[dict[str, Any]]) -> None:
@@ -629,18 +622,27 @@ def validate_v2_output_mapping(mapping: list[dict[str, Any]]) -> None:
     * **injectivity** — within one source frame, no two *different* columns map to
       the same path (§1.2);
     * **pairwise prefix-incomparability** — within one source frame, no two
-      distinct paths are prefix-comparable (B1, :func:`_prefix_comparable`).
+      distinct paths are prefix-comparable (B1);
+    * **one output branch per frame** — every path for one source frame has a
+      prefix-comparable array prefix.
 
     Type-consistency across a shared path (§1.3) is **not** checked here — it
     needs the input frames' column types, which the caller supplies separately at
     assemble/save time.
     """
     by_port: dict[str, list[tuple[str, str]]] = {}
+    parsed_by_path: dict[str, _ParsedPath] = {}
+
+    def _cached_parse(path: str) -> _ParsedPath:
+        if path not in parsed_by_path:
+            parsed_by_path[path] = _parse_output_path(path)
+        return parsed_by_path[path]
+
     for entry in mapping:
         if not is_active_mapping_entry(entry):
             continue
         path = entry["output_path"]
-        _parse_output_path(path)  # grammar — raises on a rejected selector
+        _cached_parse(path)  # grammar — raises on a rejected selector
         by_port.setdefault(entry["source_port"], []).append((entry["source_column"], path))
 
     for port, entries in by_port.items():
@@ -654,9 +656,14 @@ def validate_v2_output_mapping(mapping: list[dict[str, Any]]) -> None:
                 )
             path_to_col[path] = col
 
-        distinct = list(dict.fromkeys(path for _, path in entries))
-        for a, b in combinations(distinct, 2):
-            if _prefix_comparable(a, b):
+        distinct = sorted(
+            dict.fromkeys(path for _, path in entries),
+            key=lambda path: _cached_parse(path).segments,
+        )
+        for a, b in zip(distinct, distinct[1:], strict=False):
+            a_segments = _cached_parse(a).segments
+            b_segments = _cached_parse(b).segments
+            if a_segments == b_segments[: len(a_segments)]:
                 raise OutputMappingSchemaError(
                     "output paths within a source frame must be pairwise "
                     "prefix-incomparable (a leaf cannot also be a container)",
@@ -664,8 +671,9 @@ def validate_v2_output_mapping(mapping: list[dict[str, Any]]) -> None:
                     output_path=f"{a} vs {b}",
                 )
 
-        prefixes = [(path, _array_prefix(_parse_output_path(path))) for path in distinct]
-        for (a, a_prefix), (b, b_prefix) in combinations(prefixes, 2):
+        prefixes = [(path, _array_prefix(_cached_parse(path))) for path in distinct]
+        prefixes.sort(key=lambda item: item[1])
+        for (a, a_prefix), (b, b_prefix) in zip(prefixes, prefixes[1:], strict=False):
             if not (a_prefix[: len(b_prefix)] == b_prefix or b_prefix[: len(a_prefix)] == a_prefix):
                 raise OutputMappingSchemaError(
                     "one source frame cannot emit into divergent array branches",

@@ -9,8 +9,17 @@ from unittest.mock import patch
 import pytest
 from click import ClickException
 from click.testing import CliRunner
+from starlette.applications import Starlette
+from starlette.responses import PlainTextResponse
+from starlette.routing import Route
+from starlette.testclient import TestClient
 
-from haute._local_security import TRUSTED_HOSTS_ENV
+from haute._local_security import (
+    DEFAULT_TRUSTED_HOSTS,
+    TRUSTED_HOSTS_ENV,
+    LocalSessionMiddleware,
+    LocalTrustedHostMiddleware,
+)
 from haute.cli import cli
 from haute.cli._serve import (
     ServeConfig,
@@ -39,6 +48,9 @@ def test_loopback_hosts_are_accepted(host: str, monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setattr("haute.cli._serve._detect_dev_frontend_dir", lambda: None)
     monkeypatch.setattr("haute.cli._serve._run_prod_mode", lambda config: None)
     handle_serve(ServeConfig(host=host, port=8000, no_browser=True))
+    assert os.environ[TRUSTED_HOSTS_ENV].split(",") == list(
+        dict.fromkeys((*DEFAULT_TRUSTED_HOSTS, host))
+    )
 
 
 @pytest.mark.parametrize("host", ["0.0.0.0", "192.168.1.5", "8.8.8.8", "unresolved.example"])
@@ -97,10 +109,47 @@ def test_cli_loopback_flag_overrides_non_loopback_config(
     assert handle.call_args.args[0].host == "127.0.0.42"
 
 
-def test_loopback_clears_stale_trusted_hosts(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_loopback_replaces_stale_trusted_hosts(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv(TRUSTED_HOSTS_ENV, "*")
     _configure_trusted_hosts(ServeConfig(host="127.0.0.42", port=8000, no_browser=True))
-    assert TRUSTED_HOSTS_ENV not in os.environ
+    assert os.environ[TRUSTED_HOSTS_ENV].split(",") == [
+        *DEFAULT_TRUSTED_HOSTS,
+        "127.0.0.42",
+    ]
+    assert "*" not in os.environ[TRUSTED_HOSTS_ENV]
+
+
+def test_configured_bind_host_reaches_trusted_host_middleware(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def ok(_request):
+        return PlainTextResponse("ok")
+
+    monkeypatch.setenv(TRUSTED_HOSTS_ENV, "*")
+    _configure_trusted_hosts(ServeConfig(host="127.0.0.42", port=8000, no_browser=True))
+    restricted = Starlette(
+        routes=[
+            Route("/", ok),
+            Route("/api/session/bootstrap", ok, methods=["POST"]),
+        ]
+    )
+    restricted.add_middleware(LocalSessionMiddleware)
+    restricted.add_middleware(LocalTrustedHostMiddleware)
+
+    with TestClient(restricted, base_url="http://127.0.0.42:8000") as client:
+        assert client.get("/", headers={"host": "127.0.0.42:8000"}).status_code == 200
+        assert (
+            client.post(
+                "/api/session/bootstrap",
+                headers={
+                    "host": "localhost:5173",
+                    "origin": "http://localhost:5173",
+                },
+            ).status_code
+            == 200
+        )
+        assert client.get("/", headers={"host": "*"}).status_code == 400
+        assert client.get("/", headers={"host": "192.168.1.5:8000"}).status_code == 400
 
 
 def test_vite_does_not_expose_session_token(

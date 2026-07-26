@@ -16,6 +16,10 @@ import polars as pl
 from haute._execution_context import ExecutionProfile
 from haute._hashing import content_hash
 from haute._logging import get_logger
+from haute._polars_utils import (
+    is_bounded_execution_profile,
+    normalise_execution_profile,
+)
 from haute.errors import BoundedMemoryUnsupportedError, SchemaMismatchError
 
 logger = get_logger(component="io")
@@ -55,20 +59,6 @@ def _observed_source_suffix(path: str) -> str:
     return suffixes[-1] if suffixes else ""
 
 
-_EAGER_JSON_ALLOWED_PROFILES = frozenset(
-    {
-        ExecutionProfile.PREVIEW_EAGER,
-        ExecutionProfile.DEPLOY_LIVE,
-    }
-)
-
-_CSV_INFERENCE_ALLOWED_PROFILES = frozenset(
-    {
-        ExecutionProfile.PREVIEW_EAGER,
-        ExecutionProfile.DEPLOY_LIVE,
-    }
-)
-
 _POLARS_DTYPE_ALIASES: Mapping[str, Any] = {
     "bool": pl.Boolean,
     "boolean": pl.Boolean,
@@ -88,14 +78,6 @@ _POLARS_DTYPE_ALIASES: Mapping[str, Any] = {
     "uint64": pl.UInt64,
     "utf8": pl.String,
 }
-
-
-def _normalise_profile(profile: ExecutionProfile | str | None) -> ExecutionProfile | None:
-    if profile is None:
-        return None
-    if isinstance(profile, ExecutionProfile):
-        return profile
-    return ExecutionProfile(profile)
 
 
 def _normalise_columns(columns: Iterable[str] | None) -> tuple[str, ...] | None:
@@ -246,7 +228,7 @@ def _csv_header_columns(path: str) -> list[str]:
 
 
 def _is_bounded_csv_profile(profile: ExecutionProfile | None) -> bool:
-    return profile is not None and profile not in _CSV_INFERENCE_ALLOWED_PROFILES
+    return is_bounded_execution_profile(profile)
 
 
 def _validate_csv_declared_schema_for_profile(
@@ -491,7 +473,7 @@ def read_source(
         BoundedMemoryUnsupportedError: If plain JSON is used in a bounded profile.
     """
     path_string = _validate_source_path(path)
-    normalised_profile = _normalise_profile(profile)
+    normalised_profile = normalise_execution_profile(profile)
     projection_columns = _normalise_columns(columns)
     validation_columns = _normalise_columns(validate_columns)
     source_schema_overrides = _normalise_schema_overrides(schema_overrides)
@@ -516,10 +498,7 @@ def read_source(
         return _select_columns(lf, projection_columns, validate_columns=validation_columns)
 
     if fmt == SourceFormat.JSON:
-        if (
-            normalised_profile is not None
-            and normalised_profile not in _EAGER_JSON_ALLOWED_PROFILES
-        ):
+        if normalised_profile is not None and is_bounded_execution_profile(normalised_profile):
             raise BoundedMemoryUnsupportedError(
                 "Plain JSON sources require eager parsing and are not supported "
                 "for bounded-memory execution profiles. Cache the JSON as parquet "

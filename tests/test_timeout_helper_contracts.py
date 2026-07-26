@@ -114,3 +114,70 @@ async def test_run_blocking_with_response_timeout_cancellation_waits_for_worker(
         await task
 
     assert finished.is_set()
+
+
+@pytest.mark.asyncio
+async def test_request_cancellation_wins_over_late_worker_exception() -> None:
+    started = threading.Event()
+    release_worker = threading.Event()
+
+    def fail_after_release() -> None:
+        started.set()
+        release_worker.wait(1)
+        raise ValueError("late worker failure")
+
+    task = asyncio.create_task(
+        run_blocking_with_response_timeout(
+            fail_after_release,
+            timeout=1,
+            operation="unit_cancel_failure",
+        )
+    )
+    assert await asyncio.to_thread(started.wait, 1)
+
+    with patch("haute.routes._timeouts.logger") as mock_logger:
+        task.cancel()
+        await asyncio.sleep(0.05)
+        assert not task.done()
+
+        release_worker.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    mock_logger.error.assert_called_once()
+    assert mock_logger.error.call_args.kwargs["error_type"] == "ValueError"
+
+
+@pytest.mark.asyncio
+async def test_request_cancellation_wins_over_late_worker_base_exception() -> None:
+    class FatalWorkerError(BaseException):
+        pass
+
+    started = threading.Event()
+    release_worker = threading.Event()
+
+    def fail_after_release() -> None:
+        started.set()
+        release_worker.wait(1)
+        raise FatalWorkerError("fatal late worker failure")
+
+    task = asyncio.create_task(
+        run_blocking_with_response_timeout(
+            fail_after_release,
+            timeout=1,
+            operation="unit_cancel_fatal_failure",
+        )
+    )
+    assert await asyncio.to_thread(started.wait, 1)
+
+    with patch("haute.routes._timeouts.logger") as mock_logger:
+        task.cancel()
+        await asyncio.sleep(0.05)
+        assert not task.done()
+
+        release_worker.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    mock_logger.error.assert_called_once()
+    assert mock_logger.error.call_args.kwargs["error_type"] == "FatalWorkerError"
