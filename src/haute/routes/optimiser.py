@@ -25,6 +25,10 @@ from haute._rating import is_rating_dtype_descriptor
 from haute._sandbox import _get_project_root
 from haute._types import SolveResultLike
 from haute.errors import BoundedMemoryUnsupportedError
+from haute.routes._background_jobs import (
+    BackgroundJobStoppedError,
+    CancellableJobRegistry,
+)
 from haute.routes._contract_errors import (
     PUBLIC_CONTRACT_ERROR_TYPES,
     contract_error_http_exception,
@@ -97,6 +101,9 @@ router = APIRouter(prefix="/api/optimiser", tags=["optimiser"])
 _store = get_job_store("optimiser")
 _solve_service = OptimiserSolveService(_store)
 _FRONTIER_APPLY_HANDLE_PREFIX = "frontier_apply_result:"
+_MAX_FRONTIER_APPLY_ARTIFACTS = 8
+_frontier_state_lock = threading.RLock()
+_frontier_jobs = CancellableJobRegistry()
 _FRONTIER_POINT_SPECIFIC_RESULT_KEYS = (
     "iterations",
     "cd_iterations",
@@ -397,6 +404,30 @@ def _frontier_ranges_for_request(
 
 def _frontier_apply_handle_key(point_index: int) -> str:
     return f"{_FRONTIER_APPLY_HANDLE_PREFIX}{point_index}"
+
+
+def _with_bounded_frontier_apply_handle(
+    existing_handles: dict[str, Any],
+    handle_key: str,
+    new_handle: dict[str, Any],
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Append one point artifact and evict the oldest point handles over the cap."""
+    updated_handles = dict(existing_handles)
+    updated_handles.pop(handle_key, None)
+    updated_handles[handle_key] = new_handle
+    frontier_keys = [
+        key for key in updated_handles if key.startswith(_FRONTIER_APPLY_HANDLE_PREFIX)
+    ]
+    evicted_handles: list[dict[str, Any]] = []
+    for stale_key in frontier_keys[:-_MAX_FRONTIER_APPLY_ARTIFACTS]:
+        stale_handle = updated_handles.pop(stale_key)
+        if not isinstance(stale_handle, dict):
+            raise HTTPException(
+                status_code=500,
+                detail="Job frontier apply artifact handle is invalid",
+            )
+        evicted_handles.append(stale_handle)
+    return updated_handles, evicted_handles
 
 
 def _as_finite_float(value: Any, *, field: str) -> float:
@@ -1038,33 +1069,47 @@ def _materialise_frontier_point_apply(
     per-quote dataframe to materialise — see
     ``_RATEBOOK_APPLY_DETAIL_UNSUPPORTED``.
     """
-    job = _store.require_completed_job(job_id)
-    # Defense in depth behind the route gate: running ``apply_from_grid``
-    # for a ratebook job would silently discard the solved factor tables.
-    _reject_ratebook_apply_detail(job)
-    base_result = _base_result_for_frontier(job)
-    result_dict = _frontier_point_result_dict({**job, "base_result": base_result}, point_index)
-    artifact_handles = _artifact_handles_or_raise(job)
-    handle_key = _frontier_apply_handle_key(point_index)
-    existing_handle = artifact_handles.get(handle_key)
-    if existing_handle is not None:
-        if not isinstance(existing_handle, dict):
-            raise HTTPException(
-                status_code=500,
-                detail="Job frontier apply artifact handle is invalid",
-            )
-        _store.atomic_update(
-            job_id,
-            {
-                "base_result": base_result,
-                "selected_frontier_point": point_index,
-                "result": result_dict,
-            },
-            expected_status="completed",
+    with _frontier_state_lock:
+        job = _store.require_completed_job(job_id)
+        # Defense in depth behind the route gate: running ``apply_from_grid``
+        # for a ratebook job would silently discard the solved factor tables.
+        _reject_ratebook_apply_detail(job)
+        base_result = _base_result_for_frontier(job)
+        result_dict = _frontier_point_result_dict(
+            {**job, "base_result": base_result},
+            point_index,
         )
-        return _load_apply_result_artifact(existing_handle), result_dict, True
+        frontier_generation = job.get("frontier_data")
+        artifact_handles = _artifact_handles_or_raise(job)
+        handle_key = _frontier_apply_handle_key(point_index)
+        existing_handle = artifact_handles.get(handle_key)
+        if existing_handle is not None:
+            if not isinstance(existing_handle, dict):
+                raise HTTPException(
+                    status_code=500,
+                    detail="Job frontier apply artifact handle is invalid",
+                )
+            updated_job = _store.atomic_update(
+                job_id,
+                {
+                    "base_result": base_result,
+                    "selected_frontier_point": point_index,
+                    "result": result_dict,
+                },
+                expected_status="completed",
+            )
+            if updated_job is None:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "Optimiser job state changed while loading the frontier point. "
+                        "Re-run the solve to materialise it again."
+                    ),
+                )
+            return _load_apply_result_artifact(existing_handle), result_dict, True
 
     new_handle: dict[str, Any] | None = None
+    owns_new_handle = False
     try:
         if not _store.touch_heavy_objects(job_id, required_keys=("quote_grid",)):
             raise HTTPException(
@@ -1074,16 +1119,25 @@ def _materialise_frontier_point_apply(
                     "materialise this frontier point."
                 ),
             )
-        job = _store.require_completed_job(job_id)
-        quote_grid = job.get("quote_grid")
-        if quote_grid is None:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "Quote grid is not available for this job. Re-run the solve to "
-                    "materialise this frontier point."
-                ),
-            )
+        with _frontier_state_lock:
+            job = _store.require_completed_job(job_id)
+            if job.get("frontier_data") is not frontier_generation:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "The frontier changed while materialising the selected point. "
+                        "Select a point from the current frontier and try again."
+                    ),
+                )
+            quote_grid = job.get("quote_grid")
+            if quote_grid is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "Quote grid is not available for this job. Re-run the solve to "
+                        "materialise this frontier point."
+                    ),
+                )
 
         from price_contour import apply_from_grid
 
@@ -1095,47 +1149,110 @@ def _materialise_frontier_point_apply(
         df = _dataframe_or_raise(apply_result, context="Apply result")
         new_handle = _persist_apply_result_artifact(apply_result)
         if new_handle is None:
-            _store.atomic_update(
-                job_id,
-                {
-                    "base_result": base_result,
-                    "selected_frontier_point": point_index,
-                    "result": result_dict,
-                },
-                expected_status="completed",
-            )
+            with _frontier_state_lock:
+                latest_job = _store.require_completed_job(job_id)
+                if latest_job.get("frontier_data") is not frontier_generation:
+                    raise HTTPException(
+                        status_code=409,
+                        detail=(
+                            "The frontier changed while materialising the selected point. "
+                            "Select a point from the current frontier and try again."
+                        ),
+                    )
+                updated_job = _store.atomic_update(
+                    job_id,
+                    {
+                        "base_result": base_result,
+                        "selected_frontier_point": point_index,
+                        "result": result_dict,
+                    },
+                    expected_status="completed",
+                )
+                if updated_job is None:
+                    raise HTTPException(
+                        status_code=409,
+                        detail=(
+                            "Optimiser job state changed while materialising the frontier "
+                            "point. Re-run the solve to materialise it again."
+                        ),
+                    )
             return df, result_dict, False
 
-        latest_job = _store.require_completed_job(job_id)
-        latest_handles = _artifact_handles_or_raise(latest_job)
-        updated_handles = dict(latest_handles)
-        updated_handles[handle_key] = new_handle
-        update_fields = {
-            "artifact_handles": updated_handles,
-            "base_result": base_result,
-            "selected_frontier_point": point_index,
-            "result": result_dict,
-        }
-        updated_job = _store.atomic_update_if_heavy_present(
-            job_id,
-            update_fields,
-            required_keys=("quote_grid",),
-            expected_status="completed",
-        )
-        if updated_job is None:
+        owns_new_handle = True
+        duplicate_handle = False
+        evicted_handles: list[dict[str, Any]] = []
+        with _frontier_state_lock:
+            latest_job = _store.require_completed_job(job_id)
+            if latest_job.get("frontier_data") is not frontier_generation:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "The frontier changed while materialising the selected point. "
+                        "Select a point from the current frontier and try again."
+                    ),
+                )
+            latest_handles = _artifact_handles_or_raise(latest_job)
+            existing_latest_handle = latest_handles.get(handle_key)
+            if existing_latest_handle is not None:
+                if not isinstance(existing_latest_handle, dict):
+                    raise HTTPException(
+                        status_code=500,
+                        detail="Job frontier apply artifact handle is invalid",
+                    )
+                duplicate_handle = True
+                updated_job = _store.atomic_update(
+                    job_id,
+                    {
+                        "base_result": base_result,
+                        "selected_frontier_point": point_index,
+                        "result": result_dict,
+                    },
+                    expected_status="completed",
+                )
+            else:
+                updated_handles, evicted_handles = _with_bounded_frontier_apply_handle(
+                    latest_handles,
+                    handle_key,
+                    new_handle,
+                )
+                updated_job = _store.atomic_update_if_heavy_present(
+                    job_id,
+                    {
+                        "artifact_handles": updated_handles,
+                        "base_result": base_result,
+                        "selected_frontier_point": point_index,
+                        "result": result_dict,
+                    },
+                    required_keys=("quote_grid",),
+                    expected_status="completed",
+                )
+                if updated_job is not None:
+                    owns_new_handle = False
+            if updated_job is None:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "Optimiser runtime state changed while materialising the frontier "
+                        "point. Re-run the solve to materialise it again."
+                    ),
+                )
+
+        if duplicate_handle:
             _cleanup_orphan_apply_artifact(new_handle, job_id=job_id)
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    "Optimiser runtime state changed while materialising the frontier point. "
-                    "Re-run the solve to materialise it again."
-                ),
+            owns_new_handle = False
+        for evicted_handle in evicted_handles:
+            _cleanup_orphan_apply_artifact(
+                evicted_handle,
+                job_id=job_id,
+                event="frontier_apply_artifact_cap_cleanup_failed",
             )
         return df, result_dict, False
     except HTTPException:
+        if owns_new_handle and new_handle is not None:
+            _cleanup_orphan_apply_artifact(new_handle, job_id=job_id)
         raise
     except Exception as exc:
-        if new_handle is not None:
+        if owns_new_handle and new_handle is not None:
             _cleanup_orphan_apply_artifact(new_handle, job_id=job_id)
         logger.error(
             "frontier_apply_materialise_failed",
@@ -1380,6 +1497,39 @@ def apply_lambdas(body: OptimiserApplyRequest) -> OptimiserApplyResponse:
 _frontier_lifecycle = JobLifecycle(_store)
 
 
+def _raise_if_frontier_stopped(frontier_job_id: str) -> None:
+    reason = _frontier_jobs.cancellation_reason(frontier_job_id)
+    if reason is not None:
+        raise BackgroundJobStoppedError(frontier_job_id, reason)
+    job = _store.require_job(frontier_job_id)
+    if job.get("status") != "running":
+        terminal_reason = job.get("terminal_reason")
+        reason_text = terminal_reason if isinstance(terminal_reason, str) else str(job["status"])
+        raise BackgroundJobStoppedError(frontier_job_id, reason_text)
+
+
+def _frontier_status_response(job: dict[str, Any]) -> OptimiserFrontierStatusResponse:
+    stored_status = require_job_status(job)
+    result = None
+    if stored_status == "completed" and job.get("result") is not None:
+        result = OptimiserFrontierResponse.model_validate(job["result"])
+    elapsed_seconds = job.get("elapsed_seconds", 0.0)
+    if stored_status == "running":
+        elapsed_seconds = _job_elapsed_seconds(job, elapsed_seconds)
+    return OptimiserFrontierStatusResponse(
+        status=stored_status,
+        progress=job.get("progress", 0.0),
+        message=job.get("message", ""),
+        elapsed_seconds=elapsed_seconds,
+        result=result,
+        terminal_reason=job.get("terminal_reason"),
+        error_code=job.get("error_code"),
+        http_status_code=job.get("http_status_code"),
+        error_detail=job.get("error_detail"),
+        execution_metrics=job.get("execution_metrics"),
+    )
+
+
 def _has_running_frontier_job(parent_job_id: str) -> bool:
     def _matches(job: dict[str, Any]) -> bool:
         return (
@@ -1415,6 +1565,7 @@ def _run_frontier_sweep(
     """
     try:
         with solver_worker_context():
+            _raise_if_frontier_stopped(frontier_job_id)
             frontier_result = _compute_frontier(
                 solver,
                 quote_grid,
@@ -1424,7 +1575,9 @@ def _run_frontier_sweep(
                 threshold_ranges=ranges,
                 n_points_per_dim=n_points_per_dim,
                 initial_lambdas=initial_lambdas,
+                check_cancelled=lambda: _raise_if_frontier_stopped(frontier_job_id),
             )
+            _raise_if_frontier_stopped(frontier_job_id)
         response = OptimiserFrontierResponse(
             **limited_frontier_payload(
                 frontier_result.points,
@@ -1436,52 +1589,59 @@ def _run_frontier_sweep(
         result_dict["frontier"] = frontier_dict
         result_dict.pop("frontier_error", None)
         result_dict.pop("selected_frontier_point", None)
-        latest_job = _store.require_completed_job(parent_job_id)
-        retained_handles, invalidated_handles = _invalidate_frontier_apply_artifact_handles(
-            latest_job
-        )
-        update_fields: dict[str, Any] = {
-            "result": result_dict,
-            "base_result": dict(result_dict),
-            "frontier_data": frontier_dict,
-            "selected_frontier_point": None,
-            "artifact_handles": retained_handles,
-        }
-        updated_job = _store.atomic_update(
-            parent_job_id,
-            update_fields,
-            expected_status="completed",
-        )
-        if updated_job is None:
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    "Optimiser job state changed while recomputing the frontier. "
-                    "Re-run the solve to compute a new frontier."
-                ),
+        with _frontier_state_lock:
+            _raise_if_frontier_stopped(frontier_job_id)
+            latest_job = _store.require_completed_job(parent_job_id)
+            retained_handles, invalidated_handles = _invalidate_frontier_apply_artifact_handles(
+                latest_job
             )
-        for handle in invalidated_handles:
-            _cleanup_orphan_apply_artifact(
-                handle,
-                job_id=parent_job_id,
-                event="frontier_recompute_stale_apply_artifact_cleanup_failed",
+            updated_job = _store.atomic_update(
+                parent_job_id,
+                {
+                    "result": result_dict,
+                    "base_result": dict(result_dict),
+                    "frontier_data": frontier_dict,
+                    "selected_frontier_point": None,
+                    "artifact_handles": retained_handles,
+                },
+                expected_status="completed",
             )
-        _frontier_lifecycle.transition(
-            frontier_job_id,
-            to="completed",
-            message="Frontier computed",
-            fields={"result": frontier_dict},
-            elapsed_seconds=time.monotonic() - start_time,
-        )
+            if updated_job is None:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "Optimiser job state changed while recomputing the frontier. "
+                        "Re-run the solve to compute a new frontier."
+                    ),
+                )
+            for handle in invalidated_handles:
+                _cleanup_orphan_apply_artifact(
+                    handle,
+                    job_id=parent_job_id,
+                    event="frontier_recompute_stale_apply_artifact_cleanup_failed",
+                )
+            completed_job = _frontier_lifecycle.transition(
+                frontier_job_id,
+                to="completed",
+                message="Frontier computed",
+                fields={"result": frontier_dict},
+                elapsed_seconds=time.monotonic() - start_time,
+            )
+            if completed_job is None:
+                _raise_if_frontier_stopped(frontier_job_id)
+                raise RuntimeError("Frontier completion could not be recorded")
+    except BackgroundJobStoppedError:
+        return
     except HTTPException as exc:
         reason: TerminalReason = "contract_error" if exc.status_code in (400, 409, 422) else "error"
-        _frontier_lifecycle.transition(
-            frontier_job_id,
-            to=reason,
-            message=str(exc.detail),
-            fields={"http_status_code": exc.status_code, "error_detail": exc.detail},
-            elapsed_seconds=time.monotonic() - start_time,
-        )
+        with _frontier_state_lock:
+            _frontier_lifecycle.transition(
+                frontier_job_id,
+                to=reason,
+                message=str(exc.detail),
+                fields={"http_status_code": exc.status_code, "error_detail": exc.detail},
+                elapsed_seconds=time.monotonic() - start_time,
+            )
     except Exception as exc:
         logger.error(
             "frontier_failed",
@@ -1490,12 +1650,15 @@ def _run_frontier_sweep(
             frontier_job_id=frontier_job_id,
             exc_info=True,
         )
-        _frontier_lifecycle.transition(
-            frontier_job_id,
-            to="error",
-            message=_INTERNAL_ERROR_DETAIL,
-            elapsed_seconds=time.monotonic() - start_time,
-        )
+        with _frontier_state_lock:
+            _frontier_lifecycle.transition(
+                frontier_job_id,
+                to="error",
+                message=_INTERNAL_ERROR_DETAIL,
+                elapsed_seconds=time.monotonic() - start_time,
+            )
+    finally:
+        _frontier_jobs.release(frontier_job_id)
 
 
 @router.post("/frontier", response_model=OptimiserFrontierResponse)
@@ -1549,6 +1712,13 @@ def run_frontier(body: OptimiserFrontierRequest) -> OptimiserFrontierResponse:
             # workload exceeds the library cap; the message names both the
             # projection and the cap.
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("frontier_failed", error=str(exc), job_id=body.job_id, exc_info=True)
+        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
+
+    with _frontier_state_lock:
         if _has_running_frontier_job(body.job_id):
             raise HTTPException(
                 status_code=409,
@@ -1557,24 +1727,22 @@ def run_frontier(body: OptimiserFrontierRequest) -> OptimiserFrontierResponse:
                     "Wait for it to finish before starting another sweep."
                 ),
             )
-    except HTTPException:
-        raise
-    except Exception as exc:
-        logger.error("frontier_failed", error=str(exc), job_id=body.job_id, exc_info=True)
-        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
-
-    start_time = time.monotonic()
-    frontier_job_id = _store.create_job(
-        {
-            "status": "running",
-            _JOB_TYPE_KEY: _FRONTIER_RECOMPUTE_JOB_TYPE,
-            "progress": 0.0,
-            "message": "Computing efficient frontier",
-            "parent_job_id": body.job_id,
-            "start_time": start_time,
-            "timeout": _solve_timeout_from_config(job.get("config", {})),
-        }
-    )
+        start_time = time.monotonic()
+        frontier_job_id = _store.create_job(
+            {
+                "status": "running",
+                _JOB_TYPE_KEY: _FRONTIER_RECOMPUTE_JOB_TYPE,
+                "progress": 0.0,
+                "message": "Computing efficient frontier",
+                "parent_job_id": body.job_id,
+                "start_time": start_time,
+                "timeout": _solve_timeout_from_config(job.get("config", {})),
+            }
+        )
+        _frontier_jobs.register_latest(
+            (_FRONTIER_RECOMPUTE_JOB_TYPE, body.job_id),
+            frontier_job_id,
+        )
 
     def _frontier_background() -> None:
         _run_frontier_sweep(
@@ -1603,12 +1771,14 @@ def run_frontier(body: OptimiserFrontierRequest) -> OptimiserFrontierResponse:
             frontier_job_id=frontier_job_id,
             exc_info=True,
         )
-        _frontier_lifecycle.transition(
-            frontier_job_id,
-            to="error",
-            message=f"Failed to start frontier worker: {exc}",
-            elapsed_seconds=time.monotonic() - start_time,
-        )
+        with _frontier_state_lock:
+            _frontier_lifecycle.transition(
+                frontier_job_id,
+                to="error",
+                message=f"Failed to start frontier worker: {exc}",
+                elapsed_seconds=time.monotonic() - start_time,
+            )
+            _frontier_jobs.release(frontier_job_id)
         raise HTTPException(
             status_code=500,
             detail="Frontier worker failed to start. Check the server logs for details.",
@@ -1619,44 +1789,61 @@ def run_frontier(body: OptimiserFrontierRequest) -> OptimiserFrontierResponse:
 @router.get("/frontier/status/{job_id}", response_model=OptimiserFrontierStatusResponse)
 async def frontier_status(job_id: str) -> OptimiserFrontierStatusResponse:
     """Return status for a background frontier sweep job."""
-    job = _store.require_job(job_id)
-    if job.get(_JOB_TYPE_KEY) != _FRONTIER_RECOMPUTE_JOB_TYPE:
-        raise HTTPException(status_code=404, detail=f"Frontier job '{job_id}' not found")
+    with _frontier_state_lock:
+        job = _store.require_job(job_id)
+        if job.get(_JOB_TYPE_KEY) != _FRONTIER_RECOMPUTE_JOB_TYPE:
+            raise HTTPException(status_code=404, detail=f"Frontier job '{job_id}' not found")
 
-    if job.get("status") == "running":
-        start = job.get("start_time")
-        timeout = job.get("timeout")
-        if start and timeout and (time.monotonic() - start) > timeout:
+        if job.get("status") == "running":
+            start = job.get("start_time")
+            timeout = job.get("timeout")
+            if (
+                isinstance(start, int | float)
+                and not isinstance(start, bool)
+                and isinstance(timeout, int | float)
+                and not isinstance(timeout, bool)
+                and timeout > 0
+                and (time.monotonic() - start) > timeout
+            ):
+                _frontier_jobs.cancel(job_id, reason="timed_out")
+                updated_job = _frontier_lifecycle.transition(
+                    job_id,
+                    to="timed_out",
+                    message=(
+                        f"Frontier timed out after {timeout}s. "
+                        "Reduce the sweep resolution or increase the solve timeout."
+                    ),
+                    elapsed_seconds=time.monotonic() - start,
+                )
+                job = updated_job if updated_job is not None else _store.require_job(job_id)
+
+        return _frontier_status_response(job)
+
+
+@router.post(
+    "/frontier/cancel/{job_id}",
+    response_model=OptimiserFrontierStatusResponse,
+)
+def cancel_frontier(job_id: str) -> OptimiserFrontierStatusResponse:
+    """Cancel a background frontier sweep without allowing late publication."""
+    with _frontier_state_lock:
+        job = _store.require_job(job_id)
+        if job.get(_JOB_TYPE_KEY) != _FRONTIER_RECOMPUTE_JOB_TYPE:
+            raise HTTPException(status_code=404, detail=f"Frontier job '{job_id}' not found")
+        if job.get("status") == "running":
+            _frontier_jobs.cancel(job_id, reason="cancelled")
+            start = job.get("start_time")
+            elapsed_seconds = job.get("elapsed_seconds", 0.0)
+            if isinstance(start, int | float) and not isinstance(start, bool):
+                elapsed_seconds = time.monotonic() - start
             updated_job = _frontier_lifecycle.transition(
                 job_id,
-                to="timed_out",
-                message=(
-                    f"Frontier timed out after {timeout}s. "
-                    "Reduce the sweep resolution or increase the solve timeout."
-                ),
-                elapsed_seconds=time.monotonic() - start,
+                to="cancelled",
+                message="Frontier cancelled",
+                elapsed_seconds=elapsed_seconds,
             )
             job = updated_job if updated_job is not None else _store.require_job(job_id)
-
-    stored_status = require_job_status(job)
-    result = None
-    if stored_status == "completed" and job.get("result") is not None:
-        result = OptimiserFrontierResponse.model_validate(job["result"])
-    elapsed_seconds = job.get("elapsed_seconds", 0.0)
-    if stored_status == "running":
-        elapsed_seconds = _job_elapsed_seconds(job, elapsed_seconds)
-    return OptimiserFrontierStatusResponse(
-        status=stored_status,
-        progress=job.get("progress", 0.0),
-        message=job.get("message", ""),
-        elapsed_seconds=elapsed_seconds,
-        result=result,
-        terminal_reason=job.get("terminal_reason"),
-        error_code=job.get("error_code"),
-        http_status_code=job.get("http_status_code"),
-        error_detail=job.get("error_detail"),
-        execution_metrics=job.get("execution_metrics"),
-    )
+        return _frontier_status_response(job)
 
 
 @router.post("/frontier/select", response_model=OptimiserFrontierSelectResponse)

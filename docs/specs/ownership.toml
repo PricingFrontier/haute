@@ -71,6 +71,18 @@ consumers = ["assistant", "engineering-quality"]
 reason = "Package metadata also configures quality tools and declares the assistant dependency."
 
 [[shared_file]]
+path = "src/haute/_builders.py"
+primary = "execution-engine"
+consumers = ["optimiser", "pipeline-config"]
+reason = "Execution owns the runtime builder registry; optimiser owns the saved-artifact contracts consumed by its OPTIMISER_APPLY closures."
+
+[[shared_file]]
+path = "src/haute/_cache.py"
+primary = "caching"
+consumers = ["explore-eda"]
+reason = "Caching owns dataframe cache-key invariants; Explore consumes the overview-field exclusion that keeps dataframe and report caching independent."
+
+[[shared_file]]
 path = "src/haute/_gitignore_guard.py"
 primary = "sandbox-security"
 consumers = ["git-integration"]
@@ -87,6 +99,12 @@ path = "src/haute/_path_resolution.py"
 primary = "sandbox-security"
 consumers = ["execution-engine", "io-layer"]
 reason = "Security owns runtime containment; execution and I/O consume the shared resolver."
+
+[[shared_file]]
+path = "src/haute/_polars_utils.py"
+primary = "io-layer"
+consumers = ["explore-eda"]
+reason = "The I/O layer owns profiled Polars materialisation primitives; Explore consumes native cancellable streaming collection for background analysis."
 
 [[shared_file]]
 path = "src/haute/routes/_save_pipeline.py"

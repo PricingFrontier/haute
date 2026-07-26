@@ -19,6 +19,7 @@ from haute._polars_utils import (
     atomic_write,
     bounded_collect_batches,
     bounded_sink,
+    cancellable_streaming_collect,
     read_parquet_metadata,
     streaming_collect,
     temporary_streaming_chunk_size,
@@ -161,6 +162,79 @@ def test_streaming_collect_preserves_execution_cancellation() -> None:
         streaming_collect(Lazy())  # type: ignore[arg-type]
 
     assert exc_info.value is cancellation
+
+
+def test_cancellable_streaming_collect_cancels_native_query_on_checkpoint_failure() -> None:
+    cancellation = ExecutionCancelledError("explore_cache")
+
+    class Query:
+        cancelled = False
+        fetch_calls = 0
+
+        def fetch(self) -> None:
+            self.fetch_calls += 1
+
+        def cancel(self) -> None:
+            self.cancelled = True
+
+    class Lazy:
+        collect_kwargs: dict[str, object] | None = None
+
+        def __init__(self, query: Query) -> None:
+            self.query = query
+
+        def collect(self, **kwargs) -> Query:
+            self.collect_kwargs = kwargs
+            return self.query
+
+    class CancellingContext:
+        recorded_collects = 0
+        checkpoint_calls = 0
+
+        def fault_point(self, *args, **kwargs) -> None:
+            pass
+
+        def record_collect(self) -> None:
+            self.recorded_collects += 1
+
+        def checkpoint(self, *args, **kwargs) -> None:
+            self.checkpoint_calls += 1
+            if self.checkpoint_calls > 1:
+                raise cancellation
+
+    query = Query()
+    lazy_frame = Lazy(query)
+    context = CancellingContext()
+
+    with pytest.raises(ExecutionCancelledError) as exc_info:
+        cancellable_streaming_collect(
+            lazy_frame,  # type: ignore[arg-type]
+            execution_context=context,  # type: ignore[arg-type]
+        )
+
+    assert exc_info.value is cancellation
+    assert lazy_frame.collect_kwargs == {"engine": "streaming", "background": True}
+    assert query.fetch_calls == 1
+    assert query.cancelled is True
+    assert context.recorded_collects == 1
+    assert context.checkpoint_calls == 2
+
+
+@pytest.mark.parametrize("poll_seconds", [0, -0.01, float("nan"), float("inf"), True])
+def test_cancellable_streaming_collect_rejects_invalid_poll_interval(
+    poll_seconds: float,
+) -> None:
+    context = ExecutionContext(
+        operation="explore",
+        profile=ExecutionProfile.EXPLORE_ANALYSIS,
+    )
+
+    with pytest.raises(ValueError, match="positive finite"):
+        cancellable_streaming_collect(
+            pl.LazyFrame({"x": [1]}),
+            execution_context=context,
+            poll_seconds=poll_seconds,
+        )
 
 
 def test_streaming_collect_preserves_execution_memory_limit() -> None:

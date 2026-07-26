@@ -39,7 +39,7 @@ from haute._artifact_housekeeping import (
 )
 from haute._banding_config import normalise_banding_factors
 from haute._contracts import Contract, get_column_contract
-from haute._env import int_env, optional_int_env
+from haute._env import int_env
 from haute._execution_admission import (
     ExecutionAdmissionError,
     create_admitted_execution_context,
@@ -84,7 +84,6 @@ from haute.errors import (
 from haute.execution import (
     ProjectionRequest,
     build_dataframe_execution_cache_request,
-    build_linear_execution_chain_functions,
     dataframe_graph_input_fingerprint,
     execute_lazy_graph,
     plan_execution_strategy,
@@ -119,7 +118,10 @@ from haute.routes._job_lifecycle import (
     require_job_status,
 )
 from haute.routes._job_store import JobStore, register_artifact_cleaner
-from haute.routes._optimiser_limits import limited_frontier_payload
+from haute.routes._optimiser_limits import (
+    enforce_frontier_compute_budget,
+    limited_frontier_payload,
+)
 from haute.schemas import (
     OptimiserEstimateRequest,
     OptimiserFrontierAutoRangeRequest,
@@ -142,7 +144,18 @@ _DEFAULT_MAX_ITER = 50  # max solver iterations (online & ratebook)
 # Env-tunable defaults — resolved per call so overrides set after import
 # take effect.
 def _default_solver_timeout() -> int | None:
-    return optional_int_env("HAUTE_SOLVER_TIMEOUT")
+    raw = os.environ.get("HAUTE_SOLVER_TIMEOUT")
+    if raw is None or raw == "":
+        return None
+    try:
+        timeout = int(raw)
+    except ValueError as exc:
+        raise RuntimeError(
+            "HAUTE_SOLVER_TIMEOUT must be a positive integer when configured."
+        ) from exc
+    if timeout <= 0:
+        raise RuntimeError("HAUTE_SOLVER_TIMEOUT must be a positive integer when configured.")
+    return timeout
 
 
 def _default_auto_range_timeout() -> int:
@@ -1320,6 +1333,19 @@ def _cleanup_ratebook_factors_artifact(handle: dict[str, Any]) -> None:
         shutil.rmtree(artifact_dir)
 
 
+def _log_artifact_load_failure(
+    event: str,
+    handle: Mapping[str, Any],
+    exc: BaseException,
+) -> None:
+    logger.error(
+        event,
+        path=str(handle.get("path") or "<unknown>"),
+        error=str(exc),
+        exc_info=True,
+    )
+
+
 def _load_apply_result_artifact(handle: dict[str, Any]) -> Any:
     """Load a persisted optimiser apply dataframe from a validated handle."""
     import polars as pl
@@ -1327,6 +1353,7 @@ def _load_apply_result_artifact(handle: dict[str, Any]) -> Any:
     try:
         artifact_path, _artifact_dir = _validate_apply_result_artifact_handle(handle)
     except ValueError as exc:
+        _log_artifact_load_failure("optimiser_apply_artifact_validation_failed", handle, exc)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     if not artifact_path.is_file():
         raise HTTPException(
@@ -1337,6 +1364,7 @@ def _load_apply_result_artifact(handle: dict[str, Any]) -> Any:
     try:
         return pl.read_parquet(artifact_path)
     except Exception as exc:
+        _log_artifact_load_failure("optimiser_apply_artifact_read_failed", handle, exc)
         raise HTTPException(
             status_code=500,
             detail="Optimiser apply artifact is corrupt. Re-run the solve to regenerate it.",
@@ -1350,6 +1378,7 @@ def _load_ratebook_factors_artifact(handle: dict[str, Any]) -> Any:
     try:
         artifact_path, _artifact_dir = _validate_ratebook_factors_artifact_handle(handle)
     except ValueError as exc:
+        _log_artifact_load_failure("optimiser_ratebook_artifact_validation_failed", handle, exc)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     if not artifact_path.is_file():
         raise HTTPException(
@@ -1359,6 +1388,7 @@ def _load_ratebook_factors_artifact(handle: dict[str, Any]) -> Any:
     try:
         return pl.read_parquet(artifact_path)
     except Exception as exc:
+        _log_artifact_load_failure("optimiser_ratebook_artifact_read_failed", handle, exc)
         raise HTTPException(
             status_code=500,
             detail="Optimiser ratebook factor artifact is corrupt. Re-run the solve.",
@@ -1372,13 +1402,25 @@ def _scan_ratebook_factors_artifact(handle: dict[str, Any]) -> Any:
     try:
         artifact_path, _artifact_dir = _validate_ratebook_factors_artifact_handle(handle)
     except ValueError as exc:
+        _log_artifact_load_failure(
+            "optimiser_ratebook_artifact_scan_validation_failed",
+            handle,
+            exc,
+        )
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     if not artifact_path.is_file():
         raise HTTPException(
             status_code=500,
             detail="Optimiser ratebook factor artifact is missing. Re-run the solve.",
         )
-    return pl.scan_parquet(artifact_path)
+    try:
+        return pl.scan_parquet(artifact_path)
+    except Exception as exc:
+        _log_artifact_load_failure("optimiser_ratebook_artifact_scan_failed", handle, exc)
+        raise HTTPException(
+            status_code=500,
+            detail="Optimiser ratebook factor artifact is corrupt. Re-run the solve.",
+        ) from exc
 
 
 register_artifact_cleaner(_APPLY_RESULT_HANDLE_KIND, _cleanup_apply_result_artifact)
@@ -1472,8 +1514,11 @@ def _compute_frontier(
     n_points_per_dim: int,
     factor_columns: list[list[str]] | None = None,
     initial_lambdas: dict[str, float] | None = None,
+    check_cancelled: Callable[[], None] | None = None,
 ) -> Any:
     """Call the mode-specific frontier API."""
+    if check_cancelled is not None:
+        check_cancelled()
     if mode == "ratebook":
         if ratebook_factors is None:
             raise RuntimeError("Ratebook frontier requires prepared factor contexts.")
@@ -1485,18 +1530,24 @@ def _compute_frontier(
             frontier_kwargs["factor_columns"] = factor_columns
         if initial_lambdas is not None:
             frontier_kwargs["initial_lambdas"] = initial_lambdas
-        return solver.frontier(
+        result = solver.frontier(
             quote_grid,
             ratebook_factors,
             **frontier_kwargs,
         )
+        if check_cancelled is not None:
+            check_cancelled()
+        return result
     frontier_kwargs = {
         "threshold_ranges": threshold_ranges,
         "n_points_per_dim": n_points_per_dim,
     }
     if initial_lambdas is not None:
         frontier_kwargs["initial_lambdas"] = initial_lambdas
-    return solver.frontier(quote_grid, **frontier_kwargs)
+    result = solver.frontier(quote_grid, **frontier_kwargs)
+    if check_cancelled is not None:
+        check_cancelled()
+    return result
 
 
 def _auto_frontier_ranges_from_config(config: dict[str, Any]) -> dict[str, tuple[float, float]]:
@@ -2277,6 +2328,7 @@ def _finalize_solve_result(
     ratebook_factors_handle: dict[str, Any] | None = None,
     ratebook_factor_contexts: Any | None = None,
     factor_columns: list[list[str]] | None = None,
+    check_cancelled: Callable[[], None] | None = None,
 ) -> None:
     """Build the result dict and update the job with the solve outcome.
 
@@ -2336,6 +2388,10 @@ def _finalize_solve_result(
             frontier_steps = config.get("frontier_steps", 15)
             ranges = _auto_frontier_ranges_from_config(config)
             if ranges:
+                enforce_frontier_compute_budget(
+                    n_points_per_dim=frontier_steps,
+                    n_constraints=len(ranges),
+                )
                 progress_job = store.atomic_update(
                     job_id,
                     {
@@ -2362,6 +2418,7 @@ def _finalize_solve_result(
                     threshold_ranges=ranges,
                     n_points_per_dim=frontier_steps,
                     initial_lambdas=solve_result.lambdas,
+                    check_cancelled=check_cancelled,
                 )
                 frontier_data = limited_frontier_payload(
                     frontier_result.points,
@@ -2372,6 +2429,8 @@ def _finalize_solve_result(
                     n_points=frontier_data["n_points"],
                     job_id=job_id,
                 )
+        except (BackgroundJobStoppedError, ExecutionCancelledError):
+            raise
         except Exception as exc:
             frontier_error = f"Frontier unavailable: {exc}"
             logger.warning(
@@ -2466,16 +2525,20 @@ def _finalize_solve_result(
 
 @require_solver_worker_context
 def _solve_online(
+    ctx: SolveContext,
+    *,
     quote_grid: QuoteGrid,
     config: dict[str, Any],
-    store: JobStore,
-    job_id: str,
-    start_time: float,
-    *,
-    check_cancelled: Callable[[], None] | None = None,
 ) -> None:
     """Run the online optimiser solver on a pre-built QuoteGrid."""
     from price_contour import OnlineOptimiser
+
+    if ctx.store is None:
+        raise RuntimeError("_solve_online requires SolveContext.store to be set.")
+    store = ctx.store
+    job_id = ctx.job_id
+    check_cancelled = ctx.check_cancelled
+    start_time = ctx.start_time if ctx.start_time is not None else time.monotonic()
 
     if check_cancelled is not None:
         check_cancelled()
@@ -2512,6 +2575,7 @@ def _solve_online(
             "n_steps": solve_result.n_steps,
             "history": solve_result.history if config.get("record_history") else None,
         },
+        check_cancelled=check_cancelled,
     )
 
 
@@ -2651,6 +2715,7 @@ def _solve_ratebook(
             _RATEBOOK_FACTOR_LEVEL_ORDER_KEY: resolved_level_order,
             "setup_chunking": setup_chunking,
         },
+        check_cancelled=check_cancelled,
     )
 
 
@@ -2667,9 +2732,7 @@ class OptimiserSolveService:
         self._store = store
         self._lifecycle = JobLifecycle(store)
         self._start_lock = threading.Lock()
-        self._auto_range_jobs = CancellableJobRegistry()
-        self._solve_jobs = CancellableJobRegistry()
-        self._graph_node_setup_jobs = CancellableJobRegistry()
+        self._jobs = CancellableJobRegistry()
         self._graph_node_setup_singleflight = SingleFlightCoordinator()
 
     # ------------------------------------------------------------------
@@ -2715,17 +2778,12 @@ class OptimiserSolveService:
                 }
             )
             execution_token = ExecutionCancellationToken()
-            self._register_graph_node_setup_job(
-                setup_job_key,
-                job_id,
-                execution_token=execution_token,
-            )
             self._graph_node_setup_singleflight.acquire(
                 setup_job_key,
                 job_id=job_id,
                 kind=_SOLVE_JOB_TYPE,
             )
-            self._solve_jobs.register_latest(
+            self._jobs.register_latest(
                 (_SOLVE_JOB_TYPE, job_id),
                 job_id,
                 execution_token=execution_token,
@@ -2787,9 +2845,7 @@ class OptimiserSolveService:
                 message=f"Failed to start optimiser setup worker: {exc}",
                 elapsed_seconds=_job_elapsed_seconds(self._store.require_job(job_id)),
             )
-            self._solve_jobs.release(job_id)
-            self._graph_node_setup_jobs.release(job_id)
-            self._graph_node_setup_singleflight.release(setup_job_key, job_id=job_id)
+            self._release_job_ownership(job_id, setup_singleflight_key=setup_job_key)
             raise HTTPException(
                 status_code=500,
                 detail="Optimiser setup worker failed to start. Check the server logs for details.",
@@ -3037,12 +3093,7 @@ class OptimiserSolveService:
                 if not launch_started:
                     if execution_context is not None:
                         execution_context.release_admission()
-                    self._solve_jobs.release(job_id)
-                    self._graph_node_setup_jobs.release(job_id)
-                    self._graph_node_setup_singleflight.release(
-                        setup_job_key,
-                        job_id=job_id,
-                    )
+                    self._release_job_ownership(job_id, setup_singleflight_key=setup_job_key)
                     if (
                         mode == "ratebook"
                         and isinstance(ratebook_factors_handle, dict)
@@ -3112,7 +3163,7 @@ class OptimiserSolveService:
                 job_id=job_id,
                 kind=_FRONTIER_AUTO_RANGE_JOB_TYPE,
             )
-            _token, previous_job_id = self._auto_range_jobs.register_latest(
+            _token, previous_job_id = self._jobs.register_latest(
                 job_key,
                 job_id,
                 execution_token=execution_token,
@@ -3123,11 +3174,6 @@ class OptimiserSolveService:
                     status=_FRONTIER_AUTO_RANGE_SUPERSEDED_STATUS,
                     message="Superseded by a newer auto-range request.",
                 )
-            self._register_graph_node_setup_job(
-                setup_job_key,
-                job_id,
-                execution_token=execution_token,
-            )
         try:
             self._launch_frontier_auto_range_background(
                 body,
@@ -3137,9 +3183,8 @@ class OptimiserSolveService:
                 **prepared,
             )
         except Exception:
-            self._auto_range_jobs.release(job_id)
-            self._graph_node_setup_jobs.release(job_id)
-            self._graph_node_setup_singleflight.release(setup_job_key, job_id=job_id)
+            execution_context.release_admission()
+            self._release_job_ownership(job_id, setup_singleflight_key=setup_job_key)
             raise
         return OptimiserFrontierAutoRangeStartResponse(status="started", job_id=job_id)
 
@@ -3156,7 +3201,7 @@ class OptimiserSolveService:
             start = job.get("start_time")
             timeout = job.get("timeout", _default_auto_range_timeout())
             if start and (time.monotonic() - start) > timeout:
-                self._auto_range_jobs.cancel(job_id, reason="timed_out")
+                self._jobs.cancel(job_id, reason="timed_out")
                 updated_job = self._lifecycle.transition(
                     job_id,
                     to="timed_out",
@@ -3167,7 +3212,6 @@ class OptimiserSolveService:
                     elapsed_seconds=time.monotonic() - start,
                 )
                 job = updated_job if updated_job is not None else self._store.require_job(job_id)
-                self._auto_range_jobs.release(job_id)
 
         return self._frontier_auto_range_status_response(job)
 
@@ -3190,16 +3234,13 @@ class OptimiserSolveService:
             raise HTTPException(status_code=404, detail=f"Solve job '{job_id}' not found")
         if job.get("status") != "running":
             return job
-        self._solve_jobs.cancel(job_id, reason="cancelled")
-        self._graph_node_setup_jobs.cancel(job_id, reason="cancelled")
+        self._jobs.cancel(job_id, reason="cancelled")
         updated_job = self._lifecycle.transition(
             job_id,
             to="cancelled",
             message="Cancelled",
             elapsed_seconds=_job_elapsed_seconds(job),
         )
-        self._solve_jobs.release(job_id)
-        self._graph_node_setup_jobs.release(job_id)
         return updated_job if updated_job is not None else self._store.require_job(job_id)
 
     def timeout_solve(
@@ -3210,8 +3251,7 @@ class OptimiserSolveService:
         start_time: float,
     ) -> dict[str, Any]:
         """Mark a running optimiser solve as timed out and request cancellation."""
-        self._solve_jobs.cancel(job_id, reason="timed_out")
-        self._graph_node_setup_jobs.cancel(job_id, reason="timed_out")
+        self._jobs.cancel(job_id, reason="timed_out")
         updated_job = self._lifecycle.transition(
             job_id,
             to="timed_out",
@@ -3220,8 +3260,6 @@ class OptimiserSolveService:
             ),
             elapsed_seconds=time.monotonic() - start_time,
         )
-        self._solve_jobs.release(job_id)
-        self._graph_node_setup_jobs.release(job_id)
         return updated_job if updated_job is not None else self._store.require_job(job_id)
 
     def _frontier_auto_range_status_response(
@@ -3285,51 +3323,37 @@ class OptimiserSolveService:
             ),
         )
 
-    def _register_graph_node_setup_job(
+    def _release_job_ownership(
         self,
-        key: tuple[str, str, str],
         job_id: str,
         *,
-        execution_token: ExecutionCancellationToken,
+        setup_singleflight_key: tuple[str, str, str] | None = None,
     ) -> None:
-        _token, previous_job_id = self._graph_node_setup_jobs.register_latest(
-            key,
-            job_id,
-            execution_token=execution_token,
-        )
-        if previous_job_id is not None:
-            self._stop_graph_node_setup_job(
-                previous_job_id,
-                message="Superseded by a newer optimiser setup request.",
+        """Release cancellation and graph/node ownership after worker exit."""
+
+        self._jobs.release(job_id)
+        if setup_singleflight_key is not None:
+            self._graph_node_setup_singleflight.release(
+                setup_singleflight_key,
+                job_id=job_id,
             )
 
-    def _stop_graph_node_setup_job(
+    @contextlib.contextmanager
+    def _job_ownership_scope(
         self,
         job_id: str,
         *,
-        message: str,
-    ) -> dict[str, Any]:
-        job = self._store.require_job(job_id)
-        if job.get("status") != "running":
-            return job
-        job_type = job.get(_JOB_TYPE_KEY, _SOLVE_JOB_TYPE)
-        self._graph_node_setup_jobs.cancel(job_id, reason="superseded")
-        if job_type == _FRONTIER_AUTO_RANGE_JOB_TYPE:
-            self._auto_range_jobs.cancel(job_id, reason="superseded")
-        elif job_type == _SOLVE_JOB_TYPE:
-            self._solve_jobs.cancel(job_id, reason="superseded")
-        updated_job = self._lifecycle.transition(
-            job_id,
-            to="superseded",
-            message=message,
-            elapsed_seconds=_job_elapsed_seconds(job),
-        )
-        self._graph_node_setup_jobs.release(job_id)
-        if job_type == _FRONTIER_AUTO_RANGE_JOB_TYPE:
-            self._auto_range_jobs.release(job_id)
-        elif job_type == _SOLVE_JOB_TYPE:
-            self._solve_jobs.release(job_id)
-        return updated_job if updated_job is not None else self._store.require_job(job_id)
+        setup_singleflight_key: tuple[str, str, str] | None = None,
+    ) -> Iterator[None]:
+        """Hold cancellation and graph/node ownership until the worker exits."""
+
+        try:
+            yield
+        finally:
+            self._release_job_ownership(
+                job_id,
+                setup_singleflight_key=setup_singleflight_key,
+            )
 
     def _stop_frontier_auto_range_job(
         self,
@@ -3347,16 +3371,13 @@ class OptimiserSolveService:
             return job
 
         terminal_reason = cast(TerminalReason, status)
-        self._auto_range_jobs.cancel(job_id, reason=terminal_reason)
-        self._graph_node_setup_jobs.cancel(job_id, reason=terminal_reason)
+        self._jobs.cancel(job_id, reason=terminal_reason)
         updated_job = self._lifecycle.transition(
             job_id,
             to=terminal_reason,
             message=message,
             elapsed_seconds=_job_elapsed_seconds(job),
         )
-        self._auto_range_jobs.release(job_id)
-        self._graph_node_setup_jobs.release(job_id)
         return updated_job if updated_job is not None else self._store.require_job(job_id)
 
     def _raise_if_frontier_auto_range_stopped(self, job_id: str) -> None:
@@ -3367,9 +3388,7 @@ class OptimiserSolveService:
                 job_id,
                 str(job.get("terminal_reason", status)),
             )
-        reason = self._auto_range_jobs.cancellation_reason(job_id)
-        if reason is None:
-            reason = self._graph_node_setup_jobs.cancellation_reason(job_id)
+        reason = self._jobs.cancellation_reason(job_id)
         if reason is not None:
             raise BackgroundJobStoppedError(job_id, reason)
 
@@ -3386,9 +3405,7 @@ class OptimiserSolveService:
                 job_id,
                 str(job.get("terminal_reason", status)),
             )
-        token_reason = self._solve_jobs.cancellation_reason(job_id)
-        if token_reason is None:
-            token_reason = self._graph_node_setup_jobs.cancellation_reason(job_id)
+        token_reason = self._jobs.cancellation_reason(job_id)
         if token_reason is not None:
             raise BackgroundJobStoppedError(job_id, token_reason)
         try:
@@ -3665,7 +3682,7 @@ class OptimiserSolveService:
         except BackgroundJobStoppedError:
             raise
         except ExecutionCancelledError as exc:
-            reason = self._auto_range_jobs.cancellation_reason(job_id) or "cancelled"
+            reason = self._jobs.cancellation_reason(job_id) or "cancelled"
             raise BackgroundJobStoppedError(job_id, reason) from exc
         except ExecutionMemoryLimitExceededError as exc:
             http_exc = _memory_limit_http_exception(exc)
@@ -3966,7 +3983,7 @@ class OptimiserSolveService:
         except BackgroundJobStoppedError:
             raise
         except ExecutionCancelledError as exc:
-            reason = self._auto_range_jobs.cancellation_reason(job_id) or "cancelled"
+            reason = self._jobs.cancellation_reason(job_id) or "cancelled"
             raise BackgroundJobStoppedError(job_id, reason) from exc
         except ExecutionMemoryLimitExceededError as exc:
             http_exc = _memory_limit_http_exception(exc)
@@ -4071,49 +4088,6 @@ class OptimiserSolveService:
                 detail="Frontier auto range failed. Check the server logs for details.",
             ) from exc
 
-    def _build_streaming_auto_range_chain_functions(
-        self,
-        body: OptimiserFrontierAutoRangeRequest,
-        streaming_plan: _StreamingAutoRangePlan,
-    ) -> dict[str, tuple[Callable, bool]]:
-        from haute.executor import _compile_preamble, _pipeline_dir
-
-        preamble_ns = (
-            _compile_preamble(
-                body.graph.preamble or "",
-                force_refresh=False,
-                pipeline_dir=_pipeline_dir(body.graph),
-            )
-            or None
-        )
-
-        return build_linear_execution_chain_functions(
-            body.graph,
-            _build_node_fn,
-            target_node_id=body.node_id,
-            base_node_id=streaming_plan.base_node_id,
-            chain_node_ids=streaming_plan.chain_node_ids,
-            preamble_ns=preamble_ns,
-            routing_source="batch",
-            build_source="live",
-            required_output_columns_by_node=streaming_plan.required_output_columns_by_node,
-            reuse_model_score_functions=True,
-        )
-
-    @staticmethod
-    def _streaming_scenario_steps(
-        body: OptimiserFrontierAutoRangeRequest,
-        streaming_plan: _StreamingAutoRangePlan,
-    ) -> int:
-        from haute._node_apply import _DEFAULT_SCENARIO_STEPS
-
-        node = body.graph.node_map[streaming_plan.scenario_node_id]
-        raw_steps = node.data.config.get("steps")
-        steps = int(raw_steps) if raw_steps is not None else _DEFAULT_SCENARIO_STEPS
-        if steps < 1:
-            raise ValueError(f"Scenario expander requires steps >= 1, got {steps}")
-        return steps
-
     def _launch_frontier_auto_range_background(
         self,
         body: OptimiserFrontierAutoRangeRequest,
@@ -4132,51 +4106,45 @@ class OptimiserSolveService:
         )
 
         def _auto_range_background() -> None:
-            try:
-                self._run_frontier_auto_range_job(body, job_id, **prepared)
-            except BackgroundJobStoppedError:
-                return
-            except HTTPException:
-                return
-            except Exception as exc:
-                logger.error(
-                    "frontier_auto_range_worker_failed",
-                    error=str(exc),
-                    node_id=body.node_id,
-                    exc_info=True,
-                )
-            finally:
-                execution_context = prepared.get("execution_context")
-                if isinstance(execution_context, ExecutionContext):
-                    terminal_reason = None
-                    try:
-                        job = self._store.require_job(job_id)
-                    except HTTPException:
-                        job = {}
-                    stored_reason = job.get("terminal_reason")
-                    if isinstance(stored_reason, str) and stored_reason:
-                        terminal_reason = stored_reason
-                    self._record_execution_metrics(
-                        job_id,
-                        execution_context,
-                        terminal_reason=terminal_reason,
+            with self._job_ownership_scope(
+                job_id,
+                setup_singleflight_key=setup_singleflight_key,
+            ):
+                try:
+                    self._run_frontier_auto_range_job(body, job_id, **prepared)
+                except BackgroundJobStoppedError:
+                    return
+                except HTTPException:
+                    return
+                except Exception as exc:
+                    logger.error(
+                        "frontier_auto_range_worker_failed",
+                        error=str(exc),
+                        node_id=body.node_id,
+                        exc_info=True,
                     )
-                    execution_context.release_admission()
-                self._auto_range_jobs.release(job_id)
-                self._graph_node_setup_jobs.release(job_id)
-                if setup_singleflight_key is not None:
-                    self._graph_node_setup_singleflight.release(
-                        setup_singleflight_key,
-                        job_id=job_id,
-                    )
+                finally:
+                    execution_context = prepared.get("execution_context")
+                    if isinstance(execution_context, ExecutionContext):
+                        terminal_reason = None
+                        try:
+                            job = self._store.require_job(job_id)
+                        except HTTPException:
+                            job = {}
+                        stored_reason = job.get("terminal_reason")
+                        if isinstance(stored_reason, str) and stored_reason:
+                            terminal_reason = stored_reason
+                        self._record_execution_metrics(
+                            job_id,
+                            execution_context,
+                            terminal_reason=terminal_reason,
+                        )
+                        execution_context.release_admission()
 
         thread = threading.Thread(target=_auto_range_background, daemon=True)
         try:
             thread.start()
         except Exception as exc:
-            execution_context = prepared.get("execution_context")
-            if isinstance(execution_context, ExecutionContext):
-                execution_context.release_admission()
             logger.error(
                 "frontier_auto_range_worker_start_failed",
                 error=str(exc),
@@ -4189,13 +4157,6 @@ class OptimiserSolveService:
                 message=f"Failed to start auto-range worker: {exc}",
                 elapsed_seconds=time.monotonic() - start_time,
             )
-            self._auto_range_jobs.release(job_id)
-            self._graph_node_setup_jobs.release(job_id)
-            if setup_singleflight_key is not None:
-                self._graph_node_setup_singleflight.release(
-                    setup_singleflight_key,
-                    job_id=job_id,
-                )
             raise HTTPException(
                 status_code=500,
                 detail="Auto-range worker failed to start. Check the server logs for details.",
@@ -5011,7 +4972,7 @@ class OptimiserSolveService:
         )
         if execution_context is None:
             execution_token = ExecutionCancellationToken()
-            self._solve_jobs.register_latest(
+            self._jobs.register_latest(
                 (_SOLVE_JOB_TYPE, job_id),
                 job_id,
                 execution_token=execution_token,
@@ -5023,7 +4984,7 @@ class OptimiserSolveService:
                 cancellation_token=execution_token,
             )
         elif not ctx.registration_already_active:
-            self._solve_jobs.register_latest(
+            self._jobs.register_latest(
                 (_SOLVE_JOB_TYPE, job_id),
                 job_id,
                 execution_token=execution_context.cancellation_token,
@@ -5068,16 +5029,19 @@ class OptimiserSolveService:
                             )
                     else:
                         with execution_context.stage("optimiser_solver_solve", node_id=node_id):
-                            _solve_online(
-                                quote_grid,
-                                config,
-                                self._store,
-                                job_id,
-                                start_time,
+                            solve_ctx = dataclasses.replace(
+                                ctx,
+                                store=self._store,
+                                start_time=start_time,
                                 check_cancelled=lambda: self._raise_if_solve_stopped(
                                     job_id,
                                     execution_context=execution_context,
                                 ),
+                            )
+                            _solve_online(
+                                solve_ctx,
+                                quote_grid=quote_grid,
+                                config=config,
                             )
             except BackgroundJobStoppedError:
                 logger.info("solve_worker_stopped", job_id=job_id)
@@ -5143,14 +5107,7 @@ class OptimiserSolveService:
                             ),
                         ),
                     )
-                self._solve_jobs.release(job_id)
-                self._graph_node_setup_jobs.release(job_id)
                 execution_context.release_admission()
-                if setup_singleflight_key is not None:
-                    self._graph_node_setup_singleflight.release(
-                        setup_singleflight_key,
-                        job_id=job_id,
-                    )
                 if (
                     mode == "ratebook"
                     and isinstance(ratebook_factors_handle, dict)
@@ -5172,8 +5129,12 @@ class OptimiserSolveService:
                         )
 
         def _solve_background_in_worker_context() -> None:
-            with solver_worker_context():
-                _solve_background()
+            with self._job_ownership_scope(
+                job_id,
+                setup_singleflight_key=setup_singleflight_key,
+            ):
+                with solver_worker_context():
+                    _solve_background()
 
         thread = threading.Thread(target=_solve_background_in_worker_context, daemon=True)
         try:
@@ -5191,13 +5152,12 @@ class OptimiserSolveService:
                 message=f"Failed to start optimiser worker: {exc}",
                 elapsed_seconds=time.monotonic() - start_time,
             )
-            self._solve_jobs.release(job_id)
-            self._graph_node_setup_jobs.release(job_id)
-            if setup_singleflight_key is not None:
-                self._graph_node_setup_singleflight.release(
-                    setup_singleflight_key,
-                    job_id=job_id,
+            if not ctx.registration_already_active:
+                self._release_job_ownership(
+                    job_id,
+                    setup_singleflight_key=setup_singleflight_key,
                 )
+                execution_context.release_admission()
             if (
                 mode == "ratebook"
                 and isinstance(ratebook_factors_handle, dict)

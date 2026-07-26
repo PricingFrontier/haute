@@ -419,3 +419,16 @@ def run_frontier_and_wait(
     assert body["status"] == "started"
     assert body["job_id"]
     return poll_frontier_until_done(client, body["job_id"], timeout=timeout)
+
+
+def frontier_result(
+    client: Any,
+    payload: dict[str, Any],
+    timeout: float = 30.0,
+) -> dict[str, Any]:
+    """Run a frontier sweep to completion and return its result payload."""
+    status = run_frontier_and_wait(client, payload, timeout=timeout)
+    assert status["status"] == "completed", status.get("message", "")
+    result = status.get("result")
+    assert isinstance(result, dict)
+    return result

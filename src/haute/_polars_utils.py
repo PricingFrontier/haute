@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import math
 import threading
+import time
 from collections.abc import Generator, Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -33,6 +35,45 @@ def streaming_collect(
         metrics_context.fault_point("collect_before_native")
         metrics_context.record_collect()
     return lf.collect(engine="streaming")
+
+
+def cancellable_streaming_collect(
+    lf: pl.LazyFrame,
+    *,
+    execution_context: ExecutionContext,
+    poll_seconds: float = 0.01,
+) -> pl.DataFrame:
+    """Collect through Polars streaming while propagating native cancellation."""
+
+    if (
+        isinstance(poll_seconds, bool)
+        or not isinstance(poll_seconds, (int, float))
+        or not math.isfinite(poll_seconds)
+        or poll_seconds <= 0
+    ):
+        raise ValueError("poll_seconds must be a positive finite number")
+
+    execution_context.checkpoint(label="streaming_collect_before_native")
+    execution_context.fault_point("collect_before_native")
+    execution_context.record_collect()
+    query = lf.collect(engine="streaming", background=True)
+    while True:
+        result = query.fetch()
+        if result is not None:
+            return result
+        try:
+            execution_context.checkpoint(label="streaming_collect_poll")
+        except BaseException:
+            try:
+                query.cancel()
+            except Exception as cancel_exc:
+                logger.warning(
+                    "native_query_cancel_failed",
+                    error=str(cancel_exc),
+                    exc_info=True,
+                )
+            raise
+        time.sleep(poll_seconds)
 
 
 def bounded_collect_batches(

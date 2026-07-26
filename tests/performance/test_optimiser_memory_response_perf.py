@@ -13,6 +13,7 @@ import pytest
 
 from haute.routes._job_store import JobStore
 from haute.routes._optimiser_limits import FRONTIER_POINT_LIMIT
+from tests.optimiser_fixtures import poll_frontier_until_done
 
 pytestmark = pytest.mark.perf
 
@@ -155,16 +156,7 @@ def test_frontier_route_caps_response_before_serialising_large_point_frame(
     )
     assert start.status_code == 200, start.text
     frontier_job_id = start.json()["job_id"]
-    deadline = time.monotonic() + 30.0
-    while True:
-        response = client.get(f"/api/optimiser/frontier/status/{frontier_job_id}")
-        assert response.status_code == 200, response.text
-        if response.json()["status"] != "running":
-            break
-        assert time.monotonic() < deadline, "frontier sweep did not finish in time"
-        time.sleep(0.02)
-
-    status_payload = response.json()
+    status_payload = poll_frontier_until_done(client, frontier_job_id)
     assert status_payload["status"] == "completed", status_payload.get("message", "")
     payload = status_payload["result"]
     assert payload["n_points"] == _LARGE_FRONTIER_POINT_COUNT
@@ -173,6 +165,8 @@ def test_frontier_route_caps_response_before_serialising_large_point_frame(
     assert payload["points_truncated"] is True
     assert len(payload["points"]) == FRONTIER_POINT_LIMIT
     assert payload["constraint_names"] == ["loss_ratio"]
+    response = client.get(f"/api/optimiser/frontier/status/{frontier_job_id}")
+    assert response.status_code == 200, response.text
     assert len(response.content) < _MAX_CAPPED_FRONTIER_RESPONSE_BYTES
 
     assert solver.calls == [

@@ -6,6 +6,8 @@
 | --- | --- |
 | `src/haute/routes/explore.py` | FastAPI router (`/api/explore`): thin `run`/`status`/`cancel` endpoints. Wires `flatten_graph`, `_ensure_source_file`, and `_validate_runtime_input_paths` before delegating to a module-level `ExploreService` singleton. |
 | `src/haute/routes/_explore_service.py` | Core service: cache-key derivation (`ExploreCacheSpec`), background job execution (`_run_job`, `_materialise_and_summarise`), and all statistics/summary computation (`_build_frame_stats`, `_build_data_quality_summary`, `_build_categorical_summary`, `_build_overview_summary`). |
+| `src/haute/_cache.py` | Dataframe execution-cache invariant used by the execution path: the materialised Explore dataframe is reused independently of the in-process report cache. |
+| `src/haute/_polars_utils.py` | I/O-layer-owned `cancellable_streaming_collect` primitive consumed by Explore so a cancelled analysis interrupts its in-flight native Polars query. |
 | `src/haute/_explore_overview.py` | Standalone validator for the Explore node's `overview` config dict (`validate_explore_overview`, `EXPLORE_OVERVIEW_TOGGLE_KEYS`). Imported by codegen (`_codegen_builders.py`) and the parser (`_config_builder.py`), not by the service or route module. |
 | `src/haute/schemas.py` | Shared Explore API/report contracts: column kinds/stats, distinct/categorical profiles, data-quality and overview summaries, cache report, run request/response, and status response. |
 
@@ -41,10 +43,11 @@
   "round-trippable" value per `_is_round_trippable_overview_value` (recursively: `None`, `str`,
   `bool`, `int`, finite `float`, or `list`/`dict` of the same, with dict keys required to be
   `str`).
-- **`EXPLORE_CACHE_VERSION = 3`** and **`EXPLORE_REPORT_CACHE_MAX_ENTRIES = 16`** — module
+- **`EXPLORE_CACHE_VERSION = 4`** and **`EXPLORE_REPORT_CACHE_MAX_ENTRIES = 16`** — module
   constants in `_explore_service.py`. The version is folded into `report_cache_key` so an
   incompatible report schema never collides with old cached payloads; the LRU is capped at 16
-  entries (`LRUCache`, from `caching`). Bumped from 2 to 3 when NaN counts were added and
+  entries (`LRUCache`, from `caching`). Bumped from 3 to 4 when categorical truncation began
+  following display-label groups rather than raw-value cardinality; v3 already added NaN counts and
   `distinct_count` was changed to count valid values only — both change what a cached report
   computes for an *unchanged* underlying dataframe, so a v2 report would otherwise be served with
   stale distinct counts and no NaN data under an identical dataframe cache key.
@@ -151,12 +154,16 @@ Given `lf: pl.LazyFrame` and `schema: pl.Schema`:
      `negative::{name}` boolean-sum counts; additionally, if `_is_float_dtype(dtype)`:
      `is_nan().sum().alias(f"nan::{name}")` — `is_nan()` yields null (not true) for null rows, so
      `.sum()` counts only genuine NaN values, distinct from the null count.
-   - `elif _has_categorical_value_counts(dtype)`: one `_categorical_value_counts_expr(name,
-     dtype)` — `value_counts(sort=True).struct.rename_fields(...).head(50).implode()` — aliased
-     `categorical_values::{name}`.
-2. `streaming_collect(lf.select(aggregations), profile=EXPLORE_ANALYSIS,
-   execution_context=execution_context).row(0, named=True)` — exactly one Polars collection for
-   the entire frame, regardless of column count.
+   - `elif _has_categorical_value_counts(dtype)`: `_categorical_value_counts_expr(name, dtype)`
+     — `value_counts(sort=True).struct.rename_fields(...).head(50).implode()` — aliased
+     `categorical_values::{name}`, plus `n_unique()` over the same display-label expression,
+     aliased `categorical_label_groups::{name}`.
+2. The shared I/O-layer helper
+   `cancellable_streaming_collect(lf.select(aggregations), execution_context=execution_context)`
+   checkpoints before starting native work, then calls
+   `collect(engine="streaming", background=True)`, polls `InProcessQuery.fetch()` at a bounded
+   interval, checkpoints between polls, and calls `query.cancel()` before re-raising a checkpoint
+   failure. It is still exactly one native Polars collection for the entire frame.
 3. Iterates columns again to build `ExploreColumnStat` entries from the single aggregate row,
    plus a `categorical_values_by_column` dict for columns with
    `_has_categorical_value_counts(dtype)`, parsed via `_parse_categorical_value_counts` (which
@@ -208,14 +215,12 @@ For each `ExploreColumnStat` whose dtype (looked up in `schema`) is not numeric,
 - `expandable = distinct_count not in (None, 0) and _has_categorical_value_counts(dtype) and
   bool(values)` — i.e. the column both qualifies for bounded value counts *and* actually has
   computed values (an all-null column with 0 rows would not be expandable).
-- `values_truncated`: the underlying `value_counts(...).head(50)` expression emits one group per
-  distinct value *including* the null bucket, then clips to 50 — but `distinct_count` now excludes
-  the null bucket (valid-values-only, see above), so comparing `distinct_count > 50` directly would
-  under-count the groups the aggregation actually produced whenever the column has any nulls. The
-  actual comparison instead reconstructs `group_count = distinct_count + (1 if null_count > 0 else
-  0)` (or `None` if `distinct_count is None`) and sets `values_truncated = group_count is not None
-  and group_count > 50` — e.g. a column with exactly 50 distinct non-null values *and* some nulls
-  produces 51 aggregation groups and is truncated, even though `distinct_count` alone reads 50.
+- `values_truncated`: the `value_counts(...).head(50)` expression groups the display-label
+  expression (including a null label) before clipping. The aggregation separately counts those
+  exact label groups with `n_unique`, so truncation is true only when that count exceeds 50. This
+  avoids false truncation when several raw `Binary` values lossily decode to one label; it is false
+  when no value-count aggregation was computed (for example, `List`). `distinct_count` remains the
+  analyst-facing raw-value count.
 - `values` comes from the `values_by_column` dict built in `_build_frame_stats`; columns without
   an entry get `[]`.
 
@@ -257,8 +262,8 @@ For each `ExploreColumnStat` whose dtype (looked up in `schema`) is not numeric,
   in the Schema and Categorical cards, instead of Python's `str(bool)` capitalisation.
 - **High-cardinality columns**: value counts are capped at exactly 50
   (`_CATEGORICAL_VALUE_COUNT_LIMIT`) via `.head(50)`; `values_truncated` is `True` only when the
-  reconstructed group count (`distinct_count` plus 1 if the column has any nulls — see Categorical
-  summary above) exceeds 50 (exactly 50 distinct non-null values with no nulls is not truncated —
+  separately aggregated display-label group count (including a null label) exceeds 50 (exactly 50
+  display-label groups is not truncated —
   see `test_build_frame_stats_returns_all_values_for_exactly_50_categorical_groups`; exactly 50
   distinct non-null values *plus* nulls is 51 groups and *is* truncated — see
   `test_categorical_truncation_counts_null_bucket_as_a_group`). `expandable`/`values_truncated`
@@ -267,10 +272,10 @@ For each `ExploreColumnStat` whose dtype (looked up in `schema`) is not numeric,
   `_has_categorical_value_counts` is `False`; `distinct_count` is still computed (nested types
   are hashable in Polars) but the profile has `expandable=False`, `values=[]`.
   `_column_kind` classifies any `dtype.is_nested()` as `"Nested"`.
-  `_supports_categorical_value_counts` is a superset check used only to decide the
-  Categorical/Schema *card* eligibility (`_build_categorical_summary` still emits a profile row
-  for these columns), while `_has_categorical_value_counts` gates whether the aggregation
-  actually collects value counts for that column.
+  `_supports_categorical_value_counts` defines dtypes whose values have a stable direct display;
+  `_has_categorical_value_counts` additionally excludes numeric and unhashable dtypes and is the
+  single gate for both the aggregation and parse. `_build_categorical_summary` emits a profile for
+  every non-numeric column, including unsupported nested types.
 - **Column named `count`**: the aliasing scheme (`categorical_values::{name}`,
   `_CATEGORICAL_VALUE_FIELD`/`_CATEGORICAL_COUNT_FIELD` prefixed with `__haute_`) avoids
   colliding with a user column literally named `count` (regression test
@@ -280,9 +285,10 @@ For each `ExploreColumnStat` whose dtype (looked up in `schema`) is not numeric,
 - **Value truncation for display**: any min/max or categorical value longer than 80 characters
   (`_VALUE_DISPLAY_MAX_CHARS`) is clipped to exactly 80 characters plus a single `"…"` marker
   (`_VALUE_DISPLAY_TRUNCATION_MARKER`), so the returned string is always ≤81 characters.
-- **Single aggregation guarantee**: `_build_frame_stats` performs exactly one `streaming_collect`
-  call regardless of the number of columns or how many need categorical value counts — asserted
-  directly in tests by monkeypatching `streaming_collect` and counting invocations, and by
+- **Single aggregation guarantee**: `_build_frame_stats` performs exactly one
+  `cancellable_streaming_collect` call regardless of the number of columns or how many need
+  categorical value counts — asserted directly in tests by monkeypatching that helper and counting
+  invocations, and by
   inspecting the query plan for absence of `UNION`/`CACHE` nodes (ruling out an unpivot-based
   implementation).
 - **`overview` config round-trip**: an explicit `False` toggle value must be preserved through
@@ -299,13 +305,14 @@ For each `ExploreColumnStat` whose dtype (looked up in `schema`) is not numeric,
 
 - `HTTPException(status_code=400, ...)` — raised synchronously (not inside the background job)
   from `_prepare_spec` when the target node has zero or multiple upstream parents, and from
-  `find_typed_node` when the node id is missing or not Explore-typed. These surface directly as
-  the HTTP response; no job is created.
+  `find_typed_node` when the node is not Explore-typed. A missing node id returns HTTP 404. These
+  surface directly as the HTTP response; no job is created.
 - `ConfigError` (from `haute.errors`) — raised by `validate_explore_overview` for structurally
   invalid `overview` dicts (non-dict value, non-string key, wrong-typed known toggle, or
   non-round-trippable unknown value). Raised during codegen/parse, not during the run/status/
   cancel routes.
 - `ExecutionCancelledError`, `ExecutionAdmissionError`, `ExecutionMemoryLimitExceededError`,
+  `PUBLIC_CONTRACT_ERROR_TYPES` (mapped with `contract_error_job_fields` to `contract_error`),
   `ContractMismatchError`, `SchemaMismatchError`, `BoundedMemoryUnsupportedError` — all caught
   inside `_run_job` and translated into a terminal job status with a message payload (see
   Control flow); none propagate out of the background thread, and none abort the process.
@@ -338,7 +345,8 @@ For each `ExploreColumnStat` whose dtype (looked up in `schema`) is not numeric,
     invalidation invariants directly via `_prepare_spec(...).dataframe_cache_key` comparisons.
   - `test_explore_rejects_non_explore_node_before_execution` — 400 with a message containing
     `"is not a explore node"`.
-  - `test_explore_cancel_stops_in_flight_job` — gates `streaming_collect` on a `threading.Event`
+  - `test_explore_cancel_stops_in_flight_job` — gates the Explore collect helper on a
+    `threading.Event`
     to force a mid-flight cancel, then asserts the worker thread actually exits (not just that
     the status flips).
   - `test_explore_status_unknown_job_is_404`.
@@ -366,8 +374,9 @@ For each `ExploreColumnStat` whose dtype (looked up in `schema`) is not numeric,
     (`test_build_frame_stats_single_valid_value_with_nan_is_not_constant`,
     `test_build_frame_stats_all_nan_column_is_not_flagged_constant`,
     `test_build_frame_stats_single_valid_value_with_nulls_is_not_constant`), and the categorical
-    `values_truncated` group-count reconstruction counting the null bucket as its own group
-    (`test_categorical_truncation_counts_null_bucket_as_a_group`).
+    `values_truncated` display-label group count, including the null label
+    (`test_categorical_truncation_counts_null_bucket_as_a_group`) and the no-false-truncation
+    regressions for unsupported Lists and colliding Binary display labels.
   - `_clean_explore_state` autouse fixture snapshots/restores `_store.jobs` and clears
     `_explore_service._report_cache` around each test so report-cache and job-store state never
     leaks between tests.
@@ -376,12 +385,5 @@ For each `ExploreColumnStat` whose dtype (looked up in `schema`) is not numeric,
   `schema`, both together), explicit `False` toggle preservation, unknown-key round trip with
   simple literal values (including nested dict/list and `None`), and that an empty `overview`
   dict is dropped from generated source rather than emitted as `overview={}`. This is the
-  authoritative test suite for `_explore_overview.py`; there is no separate unit-test module for
-  that file's `ConfigError` branches (e.g. non-dict input, non-string key, non-round-trippable
-  unknown value) — those validation branches are not directly exercised by any test currently in
-  the suite.
-
-> NOTE: no test in the codebase directly calls `validate_explore_overview` with an invalid input
-> to assert the `ConfigError` branches (non-dict, non-string key, wrong-typed toggle,
-> non-round-trippable unknown value). Coverage for that function is entirely indirect, through the
-> round-trip tests' valid-input paths.
+  authoritative round-trip suite for `_explore_overview.py`; its validation behaviour is also
+  covered by the focused overview-validation tests.

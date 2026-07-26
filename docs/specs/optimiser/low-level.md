@@ -7,6 +7,7 @@
 | `src/haute/routes/optimiser.py` | FastAPI router (`/api/optimiser/*`). Owns request/response assembly, frontier-point summary derivation, artifact-payload building/validation for save and MLflow log, and the module-level `_store`/`_solve_service` singletons. |
 | `src/haute/routes/_optimiser_service.py` | `OptimiserSolveService` and its supporting free functions: pipeline execution, schema/value-contract validation, quote-grid construction, solver dispatch (online and ratebook), background frontier-auto-range estimation, ownership-marked apply/ratebook-factor artifact persistence and stale-startup reporting, and ratebook factor-table canonicalisation/serialisation. |
 | `src/haute/routes/_optimiser_limits.py` | Shared response-size and solver-compute budgets: `APPLY_PREVIEW_ROW_LIMIT`, `FRONTIER_POINT_LIMIT`, `FRONTIER_COMPUTE_LIMIT`, `enforce_frontier_compute_budget`, `limited_apply_preview_payload`, `limited_frontier_payload`. |
+| `src/haute/_builders.py` | Cross-component runtime registry owned by [execution-engine](../execution-engine/low-level.md). The optimiser component consumes its `OPTIMISER_APPLY` online/ratebook closures; saved artifact validation and trace reconstruction must remain contract-compatible with those closures. |
 | `src/haute/_optimiser_io.py` | Loads a previously saved optimiser artifact for the `OPTIMISER_APPLY` node — from a local JSON file (content-hash cached) or from MLflow (run-id/version cached). Analogous to `_mlflow_io.py` and `_io.py`. |
 | `src/haute/_optimiser_apply_explainability.py` | Builds a structured trace-detail payload for one clicked `OPTIMISER_APPLY` output row, for both online and ratebook modes. Consumed by the tracing subsystem, not exposed as its own route. |
 | `src/haute/schemas.py` | Shared Pydantic contracts for optimiser solve/estimate/status, auto-range, frontier, apply, save, and MLflow-log routes. |
@@ -25,18 +26,14 @@ in `optimiser.py`). Instance state:
 - `_start_lock: threading.Lock` — a coarse, process-wide lock held only across the global
   solve-slot check and/or graph-node registration sections of `start()` and
   `start_frontier_auto_range()` — not held for the duration of either job.
-- `_auto_range_jobs`, `_solve_jobs`, `_graph_node_setup_jobs`: three independent
-  `CancellableJobRegistry` instances. `_solve_jobs`/`_auto_range_jobs` key single-job
-  cancellation by `(job_type, job_id)`/a job key respectively; `_graph_node_setup_jobs` keys by
-  the *graph+node* coordination key so solve setup and background auto-range setup cannot overlap
-  for a given graph/node. Synchronous `/estimate` does not register in this coordinator.
-  `register_latest` on the registry supersedes/stops whatever was previously
-  registered under the same key — the single-flight check normally rejects such overlap first.
-- `_graph_node_setup_singleflight: SingleFlightCoordinator` — a second bookkeeping structure
-  keyed identically to `_graph_node_setup_jobs`, used to *reject* (409) a concurrent submission
-  for the same graph/node rather than superseding it. The two structures overlap by design (one
-  supersedes within a job-type handoff chain, the other enforces "only one active op" across job
-  types). Every registered solve/background-auto-range exit path releases both together.
+- `_jobs: CancellableJobRegistry` — the single cancellation-token registry for solve and
+  background auto-range workers. Each job id is registered once and shares the same
+  `ExecutionCancellationToken` with its execution context.
+- `_graph_node_setup_singleflight: SingleFlightCoordinator` — the graph+node admission
+  coordinator that rejects (409) overlap between solve setup and background auto-range setup.
+  Worker runners hold its registration through a scoped `finally` release together with `_jobs`,
+  so normal, exceptional, cancelled, and thread-start-failure paths cannot release only half of
+  the coordination state.
 
 ### `SolveContext` (`src/haute/routes/_optimiser_service.py`, frozen dataclass)
 
@@ -133,9 +130,8 @@ in `src/haute/routes/_optimiser_service.py`, which:
 3. Under `_start_lock`: rejects (409) if another blocking solve is already `running`
    (`_check_no_concurrent_jobs`) or if this exact graph+node already has an active setup/solve/
    auto-range job (`_active_graph_node_setup`); otherwise creates the job (`status: "running"`),
-   registers a fresh `ExecutionCancellationToken` in `_graph_node_setup_jobs` (superseding any
-   prior job for the key) and the singleflight coordinator, then registers the same job id in
-   `_solve_jobs`.
+   registers a fresh `ExecutionCancellationToken` once in `_jobs` and acquires the graph/node
+   single-flight coordinator.
 4. Outside the lock, spawns a daemon thread (`_launch_setup_background` →
    `_run_solve_setup_and_launch`) and returns
    `OptimiserSolveResponse(status="started", job_id=...)` immediately.
@@ -148,7 +144,7 @@ can still leave OS-temporary files behind.
    by the setup worker and published as the solve job's `memory_limited` terminal status, not
    returned as a synchronous HTTP 507 from the already-completed `/solve` submission.
 2. Runs the pipeline up to the optimiser node via `_execute_pipeline` — see below.
-3. Resolves the actual scored-data lazy frame via `_resolve_data_source`.
+3. Resolves the actual scored-data lazy frame via `_resolve_data_input_frame`.
 4. Validates schema and value contracts and projects/casts to solver dtypes via
    `_validate_and_project`.
 5. For ratebook mode only, extracts and persists the banding-source factor columns to a parquet
@@ -236,9 +232,10 @@ phase and a background sweep phase, mirroring the solve submission pattern:
    runtime state (touching heavy objects back into presence if evicted), enforces the compute
    budget (`haute.routes._optimiser_limits.enforce_frontier_compute_budget` — rejects with 422 before
    the solver is invoked if `n_points_per_dim ** n_constraints` would exceed
-   `FRONTIER_COMPUTE_LIMIT`), then checks `_has_running_frontier_job(body.job_id)` (a
-   store scan for a `running` job of type `frontier_recompute` whose `parent_job_id` matches),
-   rejecting with 409 if a sweep is already in flight for this solve job.
+   `FRONTIER_COMPUTE_LIMIT`). Under `_frontier_state_lock`, it then checks
+   `_has_running_frontier_job(body.job_id)`, creates the job, and registers its cancellation
+   token as one atomic admission step; a sweep already in flight for this solve job is rejected
+   with 409.
 2. Creates a `frontier_recompute`-typed job (`status: "running"`, `parent_job_id` set to the solve
    job id, `timeout` derived from the solve job's own config via `_solve_timeout_from_config`) and
    spawns a daemon thread running `_run_frontier_sweep` inside `solver_worker_context()`.
@@ -248,8 +245,8 @@ phase and a background sweep phase, mirroring the solve submission pattern:
 3. **Background** (`_run_frontier_sweep`): calls
    `haute.routes._optimiser_service._compute_frontier`, a thin dispatcher: ratebook passes
    `ratebook_factors`/`factor_columns` kwargs to `solver.frontier(...)`, while online omits them.
-   The
-   response is capped via `haute.routes._optimiser_limits.limited_frontier_payload` (caps to
+   A cancellation checkpoint runs before and after the external frontier call. The response is
+   capped via `haute.routes._optimiser_limits.limited_frontier_payload` (caps to
    `FRONTIER_POINT_LIMIT` while always reporting the true total and truncation flag) and the
    result stored as both the size-limited `result["frontier"]` and the raw `frontier_data` field
    on the *parent solve job* (via `_store.atomic_update(parent_job_id, ..., expected_status=
@@ -257,7 +254,9 @@ phase and a background sweep phase, mirroring the solve submission pattern:
    changed concurrently, since the atomic update itself cannot raise past the background thread).
    Any previously materialised frontier-point apply artifacts are invalidated (their handles
    removed from `artifact_handles` and their files cleaned up) since a recomputed frontier makes
-   old point indices meaningless. On success the frontier job itself transitions to `completed`
+   old point indices meaningless. The stop check, parent update, and frontier-job completion
+   transition share `_frontier_state_lock`; therefore cancel/timeout cannot become terminal
+   between the check and parent mutation. On success the frontier job itself transitions to `completed`
    with the frontier payload as its own `result` field (a full `OptimiserFrontierResponse`, so a
    status poll and the (historical) inline response shape carry the same fields). Every failure
    path — an `HTTPException` raised inside the sweep (classified `contract_error` for 400/409/422,
@@ -268,11 +267,16 @@ phase and a background sweep phase, mirroring the solve submission pattern:
 
 `GET /frontier/status/{job_id}` (`haute.routes.optimiser.frontier_status`) polls the frontier job:
 404s if the job type isn't `frontier_recompute`, lazily enforces the job's timeout on poll (the
-same "no dedicated timeout-watcher thread" pattern as frontier auto-range — see below), and
+same "no dedicated timeout-watcher thread" pattern as frontier auto-range — see below), requests
+cooperative cancellation before the `timed_out` transition, and
 returns `OptimiserFrontierStatusResponse` (`status`, `progress`, `message`, `elapsed_seconds`,
 `result: OptimiserFrontierResponse | None`, `terminal_reason`, `error_code`, `http_status_code`,
 `error_detail`, `execution_metrics`) — the same status-envelope shape used elsewhere in the
 component (solve status, frontier auto-range status).
+
+`POST /frontier/cancel/{job_id}` requests cooperative cancellation and atomically transitions a
+running frontier job to `cancelled`. A terminal job is returned unchanged. The worker treats
+`BackgroundJobStoppedError` as an expected exit and never publishes a late result to the parent.
 
 `POST /frontier/select` (`haute.routes.optimiser.select_frontier_point`) resolves one frontier
 point's totals/constraints/lambdas into a full result summary
@@ -293,6 +297,9 @@ handle lookup thereafter) or the base solve result — from the still-live in-me
 `solve_result.dataframe` if present, or from the persisted apply-result artifact otherwise. The
 response is capped via `haute.routes._optimiser_limits.limited_apply_preview_payload` (first
 `APPLY_PREVIEW_ROW_LIMIT` rows plus explicit `row_count`/`preview_truncated` metadata).
+Handle insertion re-reads and merges the latest mapping while holding `_frontier_state_lock`.
+At most eight `frontier_apply_result:*` handles are retained; the oldest excess handle is
+removed from the job before its owned parquet is deleted.
 
 ### Save and MLflow log (`src/haute/routes/optimiser.py`)
 
@@ -337,7 +344,8 @@ Two artifact families, both rooted under the versioned marker-aware OS-temp hier
   `_scan_ratebook_factors_artifact`): eager or lazy re-reads of the persisted parquet; any
   missing file, corrupt parquet, or invalid handle is wrapped into a 500 `HTTPException` with a
   "re-run the solve" message — the underlying OS/parquet exception text is never surfaced to the
-  caller.
+  caller. Validation and parquet-library failures are logged server-side with `exc_info=True`
+  before they are wrapped.
 - **Cleanup**: `_cleanup_apply_result_artifact`/`_cleanup_ratebook_factors_artifact` are
   registered with the job store's own artifact-cleaner registry
   (`register_artifact_cleaner` in `src/haute/routes/_optimiser_service.py`) so a job's TTL/eviction sweep
@@ -468,7 +476,8 @@ whether the table is a composite (joins on multiple columns, split via
 `unique(keep="last")` deduplication), applies the multiplicative neutral element `1.0` and marks
 the factor `unseen` if no entry matches (the engine's own loud-neutral miss-path behaviour, not
 an error), and accumulates a running product. The ladder is reconciled against the actual output
-column at the end; a mismatch raises `OptimiserApplyTraceError`.
+column at the end; a mismatch raises `OptimiserApplyTraceError`. An artifact with no usable
+factor-table entries also raises because an empty ladder has no value that can be reconciled.
 
 Every raised exception anywhere in this call graph is caught by
 `explain_optimiser_apply_from_config`'s outer `try`/`except` and converted to `_error_detail(...)`
@@ -510,8 +519,8 @@ returned as a generic `status: "error"` payload.
   (`_NON_FINITE_DETAIL_PREFIX` vs. `_NULL_VALUE_DETAIL_PREFIX`) if both fire.
 - **Frontier sweep concurrency is scoped to the parent solve job, not the graph/node coordination
   key.** `_has_running_frontier_job` scans for a running `frontier_recompute` job whose
-  `parent_job_id` matches — a mechanism independent of `_graph_node_setup_jobs`/
-  `_graph_node_setup_singleflight` (which key by graph+node and gate solve/background-auto-range
+  `parent_job_id` matches while `_frontier_state_lock` makes the scan and job creation atomic.
+  This mechanism is independent of `_graph_node_setup_singleflight` (which keys by graph+node and gates solve/background-auto-range
   submission). `_FRONTIER_RECOMPUTE_JOB_TYPE` is also listed in `_NON_BLOCKING_RUNNING_JOB_TYPES`
   precisely because it never reserved a solve slot when frontier computation ran inline, and the
   background offload preserves that semantics — an in-flight frontier sweep never blocks a new
@@ -522,11 +531,10 @@ returned as a generic `status: "error"` payload.
   row-local (global state, ordering-sensitive logic, arbitrary custom code) silently falls back
   to the full non-streaming estimate path rather than raising — this is a memory/latency
   trade-off, not a correctness gate.
-- **Two overlapping single-active-job mechanisms.** `_graph_node_setup_jobs` (a
-  `CancellableJobRegistry`) and `_graph_node_setup_singleflight` (a `SingleFlightCoordinator`)
-  are both keyed identically by graph+node and released together at every exit path found in the
-  file; this dual bookkeeping increases the surface area for a future edit that adds a new exit
-  path and releases only one of the two.
+- **Cancellation and graph/node exclusion have separate owners.** `_jobs` owns one cancellation
+  token per solve/auto-range job; `_graph_node_setup_singleflight` owns only graph/node exclusion.
+  Worker scopes release both once, after the actual worker has stopped, so a cancelled job keeps
+  the exclusion lease until it can no longer mutate state.
 - **Inconsistent error-detail exposure between two "generic setup failure" branches.**
   `_execute_pipeline`'s catch-all deliberately hides the real exception text from the client
   ("Pipeline execution failed. Check the server logs for details.") while `_build_grid`'s
@@ -602,11 +610,11 @@ for this component; coverage is unit + integration + golden-fixture + real-libra
 tests.
 
 Since the frontier sweep became a background job, every test file that calls `POST /frontier` and
-expects a completed result now polls it via two shared helpers added to
-`tests/optimiser_fixtures.py`: `poll_frontier_until_done(client, job_id, timeout=30.0)` (polls
-`/frontier/status/{job_id}` to any terminal status) and `run_frontier_and_wait(client, payload,
-timeout=30.0)` (posts to `/frontier`, asserts the immediate response is `status: "started"` with a
-`job_id`, then polls it to completion) — used across `test_optimiser_routes.py`,
+expects a completed result uses the shared helpers in `tests/optimiser_fixtures.py`:
+`poll_frontier_until_done(client, job_id, timeout=30.0)` polls to any terminal status;
+`run_frontier_and_wait(client, payload, timeout=30.0)` posts, checks the immediate job handle, and
+polls; `frontier_result(client, payload, timeout=30.0)` additionally requires completion and
+returns the nested result. The helpers are used across `test_optimiser_routes.py`,
 `test_optimiser_routes_critical_edges.py`, `test_optimiser_routes_real_library.py`, and
 `tests/performance/test_optimiser_memory_response_perf.py`.
 
@@ -701,12 +709,6 @@ price-contour-emitted level-label tie-breaking logic beyond the specific fixture
 `test_optimiser_apply_trace_enrichment.py`; the dtype agreement matrix itself is exhaustive
 over the supported dtype families.
 
-> NOTE: repository-wide reference checks find no caller in `src/` or `tests/` for
-> `OptimiserSolveService._build_streaming_auto_range_chain_functions` or
-> `OptimiserSolveService._streaming_scenario_steps`; the live streaming path uses
-> `iter_chunked_frames` directly. These two untested helpers are vestigial implementation surface,
-> not part of the active auto-range control flow.
-
 ## Polars backend contracts (0.6.0)
 
 The optimiser service boundary accepts the universal execution facade's single typed
@@ -714,31 +716,6 @@ plan result for estimates, setup, solve, and auto-range. It forwards bounded dia
 and final feature provenance unchanged to optimiser results and uses that same result
 for related admission decisions. Execution-engine defines the planner. Remaining optimiser
 improvement work is tracked in the [optimiser roadmap](../../roadmap/optimiser.md).
-
-## Approved change contract — 0.7.0 unified data-input consumption
-
-Remaining optimiser improvement work is tracked in the
-[optimiser roadmap](../../roadmap/optimiser.md).
-
-- In `routes/_optimiser_service.py`, replace `_source_node_schema_has_column`'s
-  `NodeType.DATA_SOURCE`/`read_data_source` special case with the shared retained-input
-  schema/projection contract. A direct local `dataInput` may inspect schema through provider
-  dispatch; a snapshot provider inspects only its validated generation. Missing remote snapshots
-  fail with the common typed cache error and never trigger acquisition.
-- `_execute_pipeline`, `_resolve_data_source` (rename to `_resolve_data_input_frame`), estimate,
-  solve setup, and auto-range consume the execution facade's resolved source metadata and keep
-  any cache generation lease for the full lazy read. They do not parse provider config or cache
-  paths themselves.
-- Optimiser request/job fingerprints include the execution result's safe input identity and
-  selected generation signature in addition to graph/config identity. A refresh cannot join,
-  supersede, or serve a result keyed to the prior generation as if it were current.
-- Preserve the configured-direct-parent validation and sole-direct-banding fallback; neither is
-  rewritten to select a global graph input. Remove only legacy node-type branches and fixtures.
-
-Focused route/service tests cover canonical data-input schema discovery, file and snapshot
-projection, missing/corrupt/stale generations, optional-code output columns, multiple direct
-parents, fingerprint changes across refresh, lease lifetime/cancellation, no provider calls on
-cache reads, and absence of `DATA_SOURCE`.
 
 ## Approved change contract — prerelease canonical frontier ranges
 

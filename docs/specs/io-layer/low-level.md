@@ -16,7 +16,7 @@
 | `src/haute/_path_case_audit.py` | `case_equivalent_siblings`/`warn_if_case_ambiguous`/`wrap_path_case_audit` — cross-platform case-ambiguity detection for user-facing paths. |
 | `src/haute/discovery.py` | `discover_pipelines` — finds `.py` files containing `haute.Pipeline`, honouring a `haute.toml` override. |
 | `src/haute/_polars_dtypes.py` | `parse_dtype`/`dtype_to_spec`/`parse_schema_mapping` — the struct-capable dtype JSON codec shared by the registry's `schema`/`schema_overrides`/`hive_schema`/`dtypes` arguments. |
-| `src/haute/_polars_utils.py` | `streaming_collect`, `bounded_collect_batches`, `bounded_sink`, `atomic_write`, `read_parquet_metadata`, `temporary_streaming_chunk_size`, `_malloc_trim`. |
+| `src/haute/_polars_utils.py` | `streaming_collect`, `cancellable_streaming_collect`, `bounded_collect_batches`, `bounded_sink`, `atomic_write`, `read_parquet_metadata`, `temporary_streaming_chunk_size`, `_malloc_trim`. |
 
 ## Key types and data structures
 
@@ -233,6 +233,14 @@ sinker and returns `None`, `mode="write"` streaming-collects then calls the
   fault point/collect metric and calls `lf.collect(engine="streaming")`
   exactly once. Native exceptions propagate unchanged; there is no profile
   argument, compatibility classifier, or broad/eager fallback.
+- `cancellable_streaming_collect(lf, *, execution_context, poll_seconds)`:
+  checkpoints before starting native work, records the same fault point/collect
+  metric, then calls `lf.collect(engine="streaming", background=True)` and polls
+  `InProcessQuery.fetch()` at the validated positive interval. A checkpoint
+  runs between polls; if it raises, the helper calls the native query's
+  `cancel()` before re-raising. Query failures propagate unchanged; a failure
+  of the best-effort `cancel()` call is logged without masking the checkpoint
+  failure. Neither path has an eager or non-streaming fallback.
 - `bounded_collect_batches(lf, *, chunk_size, ...)`: validates the chunk
   size, calls `lf.collect_batches(..., engine="streaming")`, and inserts
   `execution_context` checkpoints between batches when a context is active.
@@ -398,10 +406,11 @@ Tests live across several files, split roughly by module:
   glob scan, empty/single/multiple matches, `_SKIP` filtering, content-matching
   (`haute.Pipeline` substring), fail-loud unreadable-file handling,
   symlink/dedup behaviour, and `haute.toml` edge cases.
-- `tests/test_polars_utils.py` — `streaming_collect`/`bounded_collect_batches`
-  streaming-engine usage, metrics/context integration, and unchanged native
-  error propagation; `bounded_sink` behaviour for CSV and Parquet;
-  `atomic_write` and `read_parquet_metadata`; the
+- `tests/test_polars_utils.py` — `streaming_collect`/
+  `cancellable_streaming_collect`/`bounded_collect_batches` streaming-engine
+  usage, metrics/context integration, native-query cancellation, poll-interval
+  validation, and unchanged native error propagation; `bounded_sink` behaviour
+  for CSV and Parquet; `atomic_write` and `read_parquet_metadata`; the
   process-global `temporary_streaming_chunk_size` lock; `_malloc_trim`
   dispatch across simulated platforms.
 

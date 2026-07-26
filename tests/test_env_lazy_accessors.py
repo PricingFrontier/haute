@@ -8,8 +8,9 @@ malformed value crashed module import instead of the request.
 
 The fix (mirroring PR #64's ``HAUTE_MEM_LOG`` treatment) resolves each knob per
 call via ``haute._env``. Every test below sets the env var AFTER the module is
-imported and proves the new value takes effect; the malformed-value tests prove
-a bad value degrades to the default instead of raising.
+imported and proves the new value takes effect. Shared fail-soft helpers still
+degrade malformed values to defaults; ``HAUTE_SOLVER_TIMEOUT`` is a deliberate
+strict call-site contract because silently dropping that timeout is unsafe.
 """
 
 from __future__ import annotations
@@ -162,16 +163,16 @@ def test_accessor_malformed_value_degrades_to_default(
 
 
 def test_solver_timeout_optional_semantics(monkeypatch):
-    """``HAUTE_SOLVER_TIMEOUT`` is optional: unset means None (no timeout)."""
+    """The optional timeout is absent by default and strict when configured."""
     from haute.routes import _optimiser_service as opt
 
     monkeypatch.delenv("HAUTE_SOLVER_TIMEOUT", raising=False)
     assert opt._default_solver_timeout() is None
     monkeypatch.setenv("HAUTE_SOLVER_TIMEOUT", "42")
     assert opt._default_solver_timeout() == 42
-    # Malformed degrades to None, not a crash.
     monkeypatch.setenv("HAUTE_SOLVER_TIMEOUT", "not-an-int")
-    assert opt._default_solver_timeout() is None
+    with pytest.raises(RuntimeError, match="HAUTE_SOLVER_TIMEOUT.*positive integer"):
+        opt._default_solver_timeout()
 
 
 def test_auto_range_context_default_reflects_env(monkeypatch):

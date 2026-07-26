@@ -271,7 +271,7 @@ def test_component_roadmaps_are_flat_complete_and_self_contained() -> None:
         | {f"GIT-G{number:02d}" for number in range(1, 17)}
         | {f"IO-IO{number:02d}" for number in range(1, 13)}
         | {f"MOD-M{number:02d}" for number in range(1, 10)}
-        | {f"OPT-P{number:02d}" for number in range(1, 11)}
+        | {f"OPT-P{number:02d}" for number in range(1, 15)}
         | {f"ROAD-WORKER-{number:02d}" for number in range(1, 6)}
         | {f"ROAD-EXEC-{number:02d}" for number in range(1, 6)}
         | {f"ROAD-TEST-{number:02d}" for number in range(1, 6)}
