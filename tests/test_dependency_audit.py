@@ -87,6 +87,33 @@ def test_npm_transitive_meta_finding(tmp_path):
     assert audit.parse_npm_report(changed_dependency_path) == audit.parse_npm_report(report)
 
 
+def test_accepted_parent_meta_finding_does_not_waive_child_ghsa(tmp_path):
+    report = npm_report(
+        {
+            "parent": {"severity": "critical", "via": ["child"]},
+            "child": {
+                "severity": "high",
+                "via": [
+                    {
+                        "url": "https://github.com/advisories/GHSA-child-1234-abcd",
+                        "source": 2,
+                    }
+                ],
+            },
+        }
+    )
+    risks = registry(
+        tmp_path,
+        acceptance(package="parent", advisory="npm:transitive", ecosystem="npm"),
+    )
+
+    assert audit.parse_npm_report(report) == {
+        audit.Finding("npm", "parent", "npm:transitive"),
+        audit.Finding("npm", "child", "GHSA-CHILD-1234-ABCD"),
+    }
+    assert audit.evaluate(python_report(), report, risks, today=dt.date(2026, 7, 1)) == 1
+
+
 def test_valid_acceptance_passes(tmp_path):
     risks = registry(tmp_path, acceptance())
     assert (

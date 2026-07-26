@@ -34,7 +34,6 @@ docs/specs/assistant/low-level.md	missing-module-map-symbol	tool_started
 docs/specs/assistant/low-level.md	missing-module-map-symbol	update_node
 docs/specs/assistant/low-level.md	missing-module-map-symbol	update_preamble
 docs/specs/background-jobs/low-level.md	ambiguous-repo-reference	pipeline.py -> src/haute/pipeline.py, src/haute/routes/pipeline.py, tests/fixtures/pipeline.py
-docs/specs/background-jobs/low-level.md	shipped-contract-action	Approved change contract — 0.8.0 supervised process jobs: src/haute/_worker_protocol.py
 docs/specs/build-and-distribution/low-level.md	missing-module-map-symbol	RuntimeError
 docs/specs/caching/high-level.md	broken-link-anchor	../io-layer/high-level.md#approved-change-contract-070-data-io-convergence
 docs/specs/caching/high-level.md	empty-roadmap-pointer	../../roadmap/caching.md
@@ -42,8 +41,6 @@ docs/specs/caching/high-level.md	legacy-contract-section	Polars backend contract
 docs/specs/caching/low-level.md	empty-roadmap-pointer	../../roadmap/caching.md
 docs/specs/caching/low-level.md	legacy-contract-section	Polars backend contracts (0.6.0)
 docs/specs/caching/low-level.md	missing-module-map-symbol	_utility_file_hash
-docs/specs/caching/low-level.md	shipped-contract-action	Approved change contract — 0.7.0 shared input snapshots: src/haute/_source_cache.py
-docs/specs/caching/low-level.md	shipped-contract-action	Approved change contract — 0.7.0 shared input snapshots: src/haute/schemas.py
 docs/specs/cli/high-level.md	ambiguous-repo-reference	_impact.py -> src/haute/cli/_impact.py, src/haute/deploy/_impact.py
 docs/specs/cli/low-level.md	ambiguous-repo-reference	_helpers.py -> src/haute/cli/_helpers.py, src/haute/routes/_helpers.py
 docs/specs/cli/low-level.md	ambiguous-repo-reference	_impact.py -> src/haute/cli/_impact.py, src/haute/deploy/_impact.py
@@ -249,7 +246,6 @@ docs/specs/json-shredding/high-level.md	empty-roadmap-pointer	../../roadmap/io-l
 docs/specs/json-shredding/high-level.md	legacy-contract-section	Polars backend contracts (0.6.0)
 docs/specs/json-shredding/low-level.md	empty-roadmap-pointer	../../roadmap/io-layer.md
 docs/specs/json-shredding/low-level.md	legacy-contract-section	Polars backend contracts (0.6.0)
-docs/specs/json-shredding/low-level.md	shipped-contract-action	Polars backend contracts (0.6.0): tests/test_output_assembler.py
 docs/specs/mlflow-model-registry/high-level.md	legacy-contract-section	Polars backend contracts (0.6.0)
 docs/specs/mlflow-model-registry/low-level.md	legacy-contract-section	Polars backend contracts (0.6.0)
 docs/specs/modelling/high-level.md	legacy-contract-section	Polars backend contracts (0.6.0)
@@ -286,8 +282,6 @@ docs/specs/sandbox-security/low-level.md	missing-module-map-symbol	exec()
 docs/specs/server-api/high-level.md	legacy-contract-section	Polars backend contracts (0.6.0)
 docs/specs/server-api/low-level.md	legacy-contract-section	Polars backend contracts (0.6.0)
 docs/specs/server-api/low-level.md	missing-module-map-symbol	contract_error
-docs/specs/server-api/low-level.md	shipped-contract-action	Approved change contract — 0.7.0 data I/O API: src/haute/routes/files.py, src/haute/routes/io_capabilities.py
-docs/specs/server-api/low-level.md	shipped-contract-action	Approved change contract — 0.7.0 data I/O API: src/haute/routes/input_cache.py
 docs/specs/submodels/low-level.md	missing-module-map-symbol	SUBMODEL
 docs/specs/tracing/high-level.md	legacy-contract-section	Polars backend contracts (0.6.0)
 docs/specs/tracing/low-level.md	legacy-contract-section	Polars backend contracts (0.6.0)

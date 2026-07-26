@@ -18,6 +18,8 @@ from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
 
+import pytest
+
 from haute._config_io import NODE_TYPE_TO_FOLDER
 from haute._edge_join import _ALLOWED_HOW
 from haute._scaffold import TARGETS, haute_toml
@@ -56,6 +58,7 @@ _BACKEND_BEHAVIOUR_ASSETS = frozenset(
 # and bytecode caches are generated outputs rather than source-of-truth modules.
 _BACKEND_COVERAGE_EXCLUDED_FILES = frozenset({"py.typed"})
 _BACKEND_COVERAGE_EXCLUDED_DIRS = frozenset({"__pycache__", "static"})
+_GENERATED_REFERENCE_PREFIXES = ("src/haute/static",)
 
 _FRONTEND_OPERATIONAL_FILES = (
     ".npmrc",
@@ -142,15 +145,20 @@ _TEMPORARY_CONTRACT_PREFIXES = (
 )
 _LEGACY_CONTRACT_PREFIX = "Polars backend contracts"
 _FUTURE_ACTION = re.compile(
-    r"\b(?:add|create|introduce|move|moves|moved)\b(?:\s+to)?",
+    r"\b(?:add|create|introduce|move|moves|moved)\b",
     flags=re.IGNORECASE,
 )
 _TARGET_LABEL = re.compile(r"\bTarget behavio(?:u)?r\b", flags=re.IGNORECASE)
+_ACCEPTANCE_LABEL = re.compile(
+    r"^\s*(?:[-*]\s*)?(?:\*\*)?Acceptance(?: evidence)?\b",
+    flags=re.IGNORECASE | re.MULTILINE,
+)
 _TEST_PATH = re.compile(r"(?:^|/)(?:test_[^/]+[.]py|[^/]+[.](?:test|spec)[.](?:ts|tsx))$")
 _DELIVERED_ROADMAP_STATE = re.compile(
-    r"\|\s*(?:Complete(?:d)?|Implemented|Verified|Audited|Delivered)\b",
+    r"^(?:Complete(?:d)?|Implemented|Verified|Audited|Delivered)\b",
     flags=re.IGNORECASE,
 )
+_DEFERRED_ROADMAP_STATE = re.compile(r"^Deferred\b", flags=re.IGNORECASE)
 _TRACKED_WORK_POINTER = re.compile(
     r"\b(?:remaining|completed)\b.{0,240}\b(?:work|improvements?|packages?)\b",
     flags=re.IGNORECASE | re.DOTALL,
@@ -256,25 +264,53 @@ def test_component_roadmaps_are_flat_complete_and_self_contained() -> None:
 
         package_ids = _COMPONENT_PACKAGE_HEADING.findall(text)
         priorities = headings["Priorities"]
+        priority_rows = (
+            _markdown_table_records(
+                priorities,
+                required_columns=("package", "state", "priority", "outcome"),
+                context=path.relative_to(ROOT).as_posix(),
+            )
+            if _module_map_rows(priorities)
+            else []
+        )
         delivered_rows = [
-            row
-            for row in _module_map_rows(priorities)
-            if len(row) >= 2 and _DELIVERED_ROADMAP_STATE.match(f"| {row[1]}")
+            row for row in priority_rows if _DELIVERED_ROADMAP_STATE.match(row["state"])
         ]
         assert not delivered_rows, (
             f"{path.relative_to(ROOT)} retains delivered package priorities: {delivered_rows}"
+        )
+        all_packages_deferred = (
+            bool(package_ids)
+            and bool(priority_rows)
+            and all(_DEFERRED_ROADMAP_STATE.match(row["state"]) for row in priority_rows)
         )
         if not package_ids:
             assert "There are no active" in text, (
                 f"{path.relative_to(ROOT)} has no work packages without declaring that state"
             )
+        if not package_ids or all_packages_deferred:
             assert start_with.get(component) == "—", (
-                f"{component} has no active package, so its Start with cell must be —"
+                f"{component} has no non-deferred package, so its Start with cell must be —"
             )
         else:
             assert start_with.get(component) in package_ids, (
-                f"{component} Start with must name an active package; "
+                f"{component} Start with must name a non-deferred package; "
                 f"got {start_with.get(component)!r}, expected one of {package_ids}"
+            )
+            start_row = next(
+                (
+                    row
+                    for row in priority_rows
+                    if _roadmap_package_cell_contains(row["package"], start_with[component])
+                ),
+                None,
+            )
+            assert start_row is not None, (
+                f"{component} Start with package {start_with[component]!r} is absent "
+                "from the Priorities table"
+            )
+            assert not _DEFERRED_ROADMAP_STATE.match(start_row["state"]), (
+                f"{component} Start with package {start_with[component]!r} is Deferred"
             )
         for package_id in package_ids:
             assert package_id not in package_owners, (
@@ -455,18 +491,15 @@ def _h2_sections(text: str) -> dict[str, str]:
 
 
 def _repo_files(root: Path) -> set[Path]:
-    try:
-        result = subprocess.run(
-            ["git", "ls-files", "-z"],
-            cwd=root,
-            check=True,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-        )
-        return {root / item for item in result.stdout.split("\0") if item}
-    except (OSError, subprocess.CalledProcessError):
-        return {path for path in root.rglob("*") if path.is_file()}
+    result = subprocess.run(
+        ["git", "ls-files", "-z"],
+        cwd=root,
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    return {path for item in result.stdout.split("\0") if item and (path := root / item).is_file()}
 
 
 def _strip_path_suffix(reference: str) -> tuple[str, str | None]:
@@ -486,6 +519,10 @@ def _is_placeholder(reference: str) -> bool:
 def _looks_like_repo_reference(value: str, root_files: set[str]) -> bool:
     path, symbol = _strip_path_suffix(value)
     if not path or path.startswith("/") or _is_placeholder(path) or re.search(r"\s", path):
+        return False
+    if any(
+        path == prefix or path.startswith(f"{prefix}/") for prefix in _GENERATED_REFERENCE_PREFIXES
+    ):
         return False
     return (
         path in root_files
@@ -519,7 +556,7 @@ def _repo_reference_candidates(
         }
     else:
         exact = root / path
-        if exact.exists():
+        if exact in files or any(item.is_relative_to(exact) for item in files):
             candidates = {exact}
         else:
             suffix = f"/{path}"
@@ -640,6 +677,60 @@ def _module_map_rows(section: str) -> list[list[str]]:
     ]
 
 
+def _markdown_table_records(
+    section: str,
+    *,
+    required_columns: tuple[str, ...],
+    context: str,
+) -> list[dict[str, str]]:
+    rows = _module_map_rows(section)
+    assert rows, f"{context} has no Markdown table"
+    headers = [re.sub(r"\s+", " ", cell).strip().casefold() for cell in rows[0]]
+    assert len(headers) == len(set(headers)), f"{context} has duplicate table columns: {headers}"
+    assert set(headers) == set(required_columns), (
+        f"{context} table columns must be {list(required_columns)}, got {headers}"
+    )
+
+    records: list[dict[str, str]] = []
+    for row in rows[1:]:
+        assert len(row) == len(headers), (
+            f"{context} table row has {len(row)} cells for {len(headers)} columns: {row}"
+        )
+        records.append(dict(zip(headers, row, strict=True)))
+    return records
+
+
+def _roadmap_package_cell_contains(cell: str, package_id: str) -> bool:
+    return (
+        re.search(
+            rf"(?<![A-Z0-9]){re.escape(package_id)}(?![A-Z0-9])",
+            cell.replace("`", ""),
+        )
+        is not None
+    )
+
+
+def test_markdown_table_records_address_columns_by_header() -> None:
+    records = _markdown_table_records(
+        """
+| State | Outcome | Package | Priority |
+|---|---|---|---|
+| Deferred | Wait for persistence | `ROAD-WORKER-04` | P1 |
+""",
+        required_columns=("package", "state", "priority", "outcome"),
+        context="reordered table",
+    )
+
+    assert records == [
+        {
+            "state": "Deferred",
+            "outcome": "Wait for persistence",
+            "package": "`ROAD-WORKER-04`",
+            "priority": "P1",
+        }
+    ]
+
+
 def _is_test_reference(value: str) -> bool:
     path, _ = _strip_path_suffix(value)
     if re.search(r"\s", path):
@@ -656,16 +747,39 @@ def _is_frontend_test_reference(reference: str, candidates: tuple[Path, ...], ro
     )
 
 
+def _is_temporary_contract_heading(heading: str) -> bool:
+    return heading.startswith(_TEMPORARY_CONTRACT_PREFIXES)
+
+
 def _contract_sections(sections: Mapping[str, str]) -> list[tuple[str, str]]:
     return [
         (heading, body)
         for heading, body in sections.items()
-        if heading.startswith(_TEMPORARY_CONTRACT_PREFIXES)
+        if _is_temporary_contract_heading(heading)
     ]
 
 
-def _route_exists(route: str, source_text: str) -> bool:
-    return bool(route.startswith("/") and route in source_text)
+def _symbol_delivery_evidence(
+    block: str,
+    *,
+    document: str,
+    root: Path,
+    files: set[Path],
+    file_names: set[str],
+    tests_only: bool = False,
+) -> tuple[str, ...]:
+    references = [
+        item
+        for item in _MARKDOWN_CODE_SPAN.findall(block)
+        if _looks_like_repo_reference(item, file_names)
+        and _strip_path_suffix(item)[1]
+        and (not tests_only or _is_test_reference(item))
+    ]
+    if not references or any(
+        _reference_violation(document, item, root, files) is not None for item in references
+    ):
+        return ()
+    return tuple(dict.fromkeys(references))
 
 
 def _roadmap_evidence_blocks(text: str) -> list[str]:
@@ -675,20 +789,18 @@ def _roadmap_evidence_blocks(text: str) -> list[str]:
     )
 
 
-def _docs_violations(root: Path = ROOT, specs_root: Path | None = None) -> list[DocViolation]:
+def _docs_violations(
+    root: Path = ROOT,
+    specs_root: Path | None = None,
+    *,
+    repo_files: set[Path] | None = None,
+) -> list[DocViolation]:
     specs_root = specs_root or root / "docs" / "specs"
-    files = _repo_files(root)
+    files = _repo_files(root) if repo_files is None else set(repo_files)
     file_names = {item.relative_to(root).as_posix() for item in files}
     violations: set[DocViolation] = set()
     referenced_tests: set[str] = set()
     roadmap_root = root / "docs" / "roadmap"
-    source_text = "\n".join(
-        path.read_text(encoding="utf-8", errors="replace")
-        for path in files
-        if path.is_file()
-        and path.suffix in {".py", ".ts", ".tsx"}
-        and path.relative_to(root).as_posix().startswith(("src/", "frontend/src/"))
-    )
 
     for document in sorted(specs_root.rglob("*.md")):
         relative = document.relative_to(root).as_posix()
@@ -757,20 +869,43 @@ def _docs_violations(root: Path = ROOT, specs_root: Path | None = None) -> list[
                     for item in _MARKDOWN_CODE_SPAN.findall(sentence)
                     if _looks_like_repo_reference(item, file_names)
                 ]
-                existing_refs = [
-                    item
-                    for item in refs
-                    if _reference_violation(relative, item, root, files) is None
-                ]
-                if existing_refs and _FUTURE_ACTION.search(sentence):
+                delivery_refs = _symbol_delivery_evidence(
+                    sentence,
+                    document=relative,
+                    root=root,
+                    files=files,
+                    file_names=file_names,
+                )
+                if refs and len(delivery_refs) == len(refs) and _FUTURE_ACTION.search(sentence):
                     violations.add(
                         DocViolation(
                             relative,
                             "shipped-contract-action",
-                            f"{heading}: {', '.join(existing_refs)}",
+                            f"{heading}: {', '.join(delivery_refs)}",
                         )
                     )
-            for target_block in re.split(r"\n\s*\n|(?=^\s*[-*]\s)", contract, flags=re.MULTILINE):
+
+            contract_blocks = re.split(
+                r"\n\s*\n|(?=^\s*[-*]\s)",
+                contract,
+                flags=re.MULTILINE,
+            )
+            acceptance_evidence = tuple(
+                dict.fromkeys(
+                    reference
+                    for block in contract_blocks
+                    if _ACCEPTANCE_LABEL.search(block)
+                    for reference in _symbol_delivery_evidence(
+                        block,
+                        document=relative,
+                        root=root,
+                        files=files,
+                        file_names=file_names,
+                        tests_only=True,
+                    )
+                )
+            )
+            for target_block in contract_blocks:
                 if not _TARGET_LABEL.search(target_block):
                     continue
                 refs = [
@@ -778,24 +913,24 @@ def _docs_violations(root: Path = ROOT, specs_root: Path | None = None) -> list[
                     for item in _MARKDOWN_CODE_SPAN.findall(target_block)
                     if _looks_like_repo_reference(item, file_names)
                 ]
-                routes = [
-                    item
-                    for item in _MARKDOWN_CODE_SPAN.findall(target_block)
-                    if item.startswith("/") and not item.startswith("//")
-                ]
-                if (
-                    (refs or routes)
-                    and all(
-                        _reference_violation(relative, item, root, files) is None for item in refs
-                    )
-                    and all(_route_exists(route, source_text) for route in routes)
-                ):
-                    detail = ", ".join([*refs, *routes])
+                target_evidence = _symbol_delivery_evidence(
+                    target_block,
+                    document=relative,
+                    root=root,
+                    files=files,
+                    file_names=file_names,
+                )
+                evidence = (
+                    target_evidence
+                    if refs and len(target_evidence) == len(refs)
+                    else acceptance_evidence
+                )
+                if evidence:
                     violations.add(
                         DocViolation(
                             relative,
                             "contract-target-present",
-                            f"{heading}: {detail}",
+                            f"{heading}: {', '.join(evidence)}",
                         )
                     )
 
@@ -1154,16 +1289,22 @@ def test_shared_module_map_files_have_one_primary_owner_and_complete_ledger() ->
             mentioned = any(
                 path == _normalise_doc_reference(item)
                 for doc in consumer_spec.glob("*.md")
-                for item in _MARKDOWN_CODE_SPAN.findall(
+                for section_heading, section_body in _h2_sections(
                     _without_fences(doc.read_text(encoding="utf-8"))
-                )
+                ).items()
+                if not _is_temporary_contract_heading(section_heading)
+                for item in _MARKDOWN_CODE_SPAN.findall(section_body)
             )
             assert mentioned, f"{path} consumer {consumer} does not reference the exact path"
 
     for document in sorted(SPECS_ROOT.glob("*/*.md")):
         component = document.parent.name
         sections = _h2_sections(_without_fences(document.read_text(encoding="utf-8")))
-        prose = "\n\n".join(body for heading, body in sections.items() if heading != "Module map")
+        prose = "\n\n".join(
+            body
+            for heading, body in sections.items()
+            if heading != "Module map" and not _is_temporary_contract_heading(heading)
+        )
         paragraphs = re.split(
             r"\n\s*\n",
             prose,
@@ -1330,6 +1471,58 @@ def _seed_spec(root: Path, low_level: str) -> Path:
     return root / "docs/specs"
 
 
+def _fixture_repo_files(root: Path) -> set[Path]:
+    return {path for path in root.rglob("*") if path.is_file()}
+
+
+def _seed_high_level_contract(root: Path, heading: str, *contract_lines: str) -> Path:
+    component = root / "docs" / "specs" / "example"
+    component.mkdir(parents=True)
+    (component / "high-level.md").write_text(
+        "\n".join(
+            [
+                "## Purpose",
+                "Example.",
+                "## Scope",
+                "Example.",
+                "## Behaviour",
+                "Example.",
+                "## Design rationale",
+                "Example.",
+                "## Interactions",
+                "Example.",
+                "## Failure model",
+                "Example.",
+                f"## {heading}",
+                *contract_lines,
+            ]
+        ),
+        encoding="utf-8",
+    )
+    return root / "docs" / "specs"
+
+
+def test_repo_files_fails_loudly_when_git_inventory_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    def fail_git(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        raise subprocess.CalledProcessError(128, ["git", "ls-files", "-z"])
+
+    monkeypatch.setattr(subprocess, "run", fail_git)
+
+    with pytest.raises(subprocess.CalledProcessError):
+        _repo_files(tmp_path)
+
+
+def test_repo_reference_candidates_respect_explicit_inventory(tmp_path: Path) -> None:
+    untracked = tmp_path / "src" / "untracked.py"
+    untracked.parent.mkdir()
+    untracked.write_text("value = 1\n", encoding="utf-8")
+
+    assert _repo_reference_candidates("src/untracked.py", tmp_path, set()) == ((), None)
+
+
 def test_docs_guard_seeded_s3_regressions(tmp_path: Path) -> None:
     # The fixture seeds each claim class from the review's S3 table.
     specs = _seed_spec(
@@ -1351,6 +1544,7 @@ This substring must not satisfy the required heading.
 `tests/test_ok.py::test_missing`
 ## Approved change contract
 Add `src/existing.py`.
+Add `src/existing.py::x`.
 """,
     )
     (tmp_path / "src").mkdir()
@@ -1358,7 +1552,7 @@ Add `src/existing.py`.
     document = tmp_path / "docs/specs/example/low-level.md"
     text = document.read_text(encoding="utf-8") + "\n[bad](#missing-anchor)\n"
     document.write_text(text, encoding="utf-8")
-    violations = set(_docs_violations(tmp_path, specs))
+    violations = set(_docs_violations(tmp_path, specs, repo_files=_fixture_repo_files(tmp_path)))
     relative = "docs/specs/example/low-level.md"
     expected = {
         DocViolation(relative, "missing-repo-reference", "src/missing.py"),
@@ -1370,45 +1564,87 @@ Add `src/existing.py`.
         DocViolation(
             relative,
             "shipped-contract-action",
-            "Approved change contract: src/existing.py",
+            "Approved change contract: src/existing.py::x",
         ),
     }
     assert expected <= violations
+    assert (
+        DocViolation(
+            relative,
+            "shipped-contract-action",
+            "Approved change contract: src/existing.py",
+        )
+        not in violations
+    )
+
+
+def test_docs_guard_does_not_treat_existing_target_file_as_delivery(tmp_path: Path) -> None:
+    source = tmp_path / "src" / "existing.py"
+    source.parent.mkdir()
+    source.write_text("def existing() -> None:\n    pass\n", encoding="utf-8")
+    specs = _seed_high_level_contract(
+        tmp_path,
+        "Approved change contract — pending edit",
+        "- **Target behaviour.** Change `src/existing.py`.",
+    )
+
+    assert DocViolation(
+        "docs/specs/example/high-level.md",
+        "contract-target-present",
+        "Approved change contract — pending edit: src/existing.py",
+    ) not in _docs_violations(
+        tmp_path,
+        specs,
+        repo_files=_fixture_repo_files(tmp_path),
+    )
 
 
 def test_docs_guard_retires_contract_when_named_target_is_present(tmp_path: Path) -> None:
-    component = tmp_path / "docs" / "specs" / "example"
     source = tmp_path / "src" / "ready.py"
-    component.mkdir(parents=True)
     source.parent.mkdir()
     source.write_text("def ready() -> None:\n    pass\n", encoding="utf-8")
-    (component / "high-level.md").write_text(
-        "\n".join(
-            [
-                "## Purpose",
-                "Example.",
-                "## Scope",
-                "Example.",
-                "## Behaviour",
-                "Example.",
-                "## Design rationale",
-                "Example.",
-                "## Interactions",
-                "Example.",
-                "## Failure model",
-                "Example.",
-                "## Approved change contract — ready target",
-                "- **Target behaviour.** Call `src/ready.py::ready`.",
-            ]
-        ),
-        encoding="utf-8",
+    specs = _seed_high_level_contract(
+        tmp_path,
+        "Approved change contract — ready target",
+        "- **Target behaviour.** Call `src/ready.py::ready`.",
     )
 
     assert DocViolation(
         "docs/specs/example/high-level.md",
         "contract-target-present",
         "Approved change contract — ready target: src/ready.py::ready",
-    ) in _docs_violations(tmp_path, tmp_path / "docs" / "specs")
+    ) in _docs_violations(
+        tmp_path,
+        specs,
+        repo_files=_fixture_repo_files(tmp_path),
+    )
+
+
+def test_docs_guard_retires_contract_when_acceptance_test_symbol_is_present(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "src" / "existing.py"
+    acceptance = tmp_path / "tests" / "test_ready.py"
+    source.parent.mkdir()
+    acceptance.parent.mkdir()
+    source.write_text("def existing() -> None:\n    pass\n", encoding="utf-8")
+    acceptance.write_text("def test_ready() -> None:\n    pass\n", encoding="utf-8")
+    specs = _seed_high_level_contract(
+        tmp_path,
+        "Approved change contract — tested target",
+        "- **Target behaviour.** Change `src/existing.py`.",
+        "- **Acceptance.** `tests/test_ready.py::test_ready` proves delivery.",
+    )
+
+    assert DocViolation(
+        "docs/specs/example/high-level.md",
+        "contract-target-present",
+        "Approved change contract — tested target: tests/test_ready.py::test_ready",
+    ) in _docs_violations(
+        tmp_path,
+        specs,
+        repo_files=_fixture_repo_files(tmp_path),
+    )
 
 
 def test_docs_guard_rejects_remaining_work_pointer_to_empty_roadmap(
@@ -1456,4 +1692,8 @@ def test_docs_guard_rejects_remaining_work_pointer_to_empty_roadmap(
         "docs/specs/example/high-level.md",
         "empty-roadmap-pointer",
         "../../roadmap/example.md",
-    ) in _docs_violations(tmp_path, tmp_path / "docs" / "specs")
+    ) in _docs_violations(
+        tmp_path,
+        tmp_path / "docs" / "specs",
+        repo_files=_fixture_repo_files(tmp_path),
+    )

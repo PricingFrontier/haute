@@ -19,7 +19,8 @@ the change has shipped. When implementation lands, the release step folds the ap
 into the normal present-tense sections, removes the temporary section, and verifies that code,
 tests, and specification agree. The historical `## Polars backend contracts (<version>)`
 heading is legacy temporary-contract debt: no new section may use it, and existing sections follow
-the same fold-and-remove rule.
+the same fold-and-remove rule. A bare repository path in a temporary contract identifies an
+intended edit; retirement requires positive symbol-level target or acceptance-test evidence.
 
 `tests/test_docs_accuracy.py` enforces paths, symbols, headings, links and anchors, Testing
 references, roadmap evidence, ownership claims, and temporary-contract retirement. Existing
@@ -92,6 +93,9 @@ each `liveSwitch` to its live branch. The same deploy scorer then handles reques
 or many records; the request batch size changes, but the authored pipeline is not duplicated into
 separate live and batch implementations.
 
+This is node-type convergence, not graph cardinality: a pipeline may contain multiple data inputs
+and outputs.
+
 Backend and frontend module-by-module layouts are not duplicated here — each component's
 `low-level.md` has an accurate, current module map; see the component tables below.
 
@@ -120,7 +124,9 @@ The component specs cover maintained behaviour, not just the importable runtime:
   ownership claim in prose is subject to the same discipline even when only the primary component
   module-maps the file. The complete, machine-checked set is
   [ownership.toml](ownership.toml); new shared files and prose ownership claims must be added there
-  rather than silently acquiring multiple owners.
+  rather than silently acquiring multiple owners. A proposed ownership claim confined to a
+  temporary change contract does not become current ownership until delivery folds it into the
+  present-tense specification.
 
 Current delivery intent lives in the flat [engineering roadmap](../roadmap/README.md): the index
 links to one self-contained, non-normative improvement file per component. Roadmaps do not replace

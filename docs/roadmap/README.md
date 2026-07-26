@@ -10,11 +10,13 @@ specifications. `Reverify` packages came from older evidence and must be
 reproduced against `HEAD` before implementation. `Decision` packages require
 an explicit product or architecture choice. Remove a package when its outcome
 is covered by current specifications and ordinary regression tests.
+`Start with` names a non-deferred package; it is `—` when a component has no
+currently startable package.
 
 | Component | Improvement surface | Start with |
 |---|---|---|
 | [Assistant](assistant.md) | Session fidelity, authoring feedback, provider/model workflow | `ASSIST-01` |
-| [Background jobs and API lifecycle](background-jobs-api.md) | Worker terminal states, artifacts, events, cleanup | `ROAD-WORKER-04` |
+| [Background jobs and API lifecycle](background-jobs-api.md) | Worker terminal states, artifacts, events, cleanup | — |
 | [Caching](caching.md) | Fingerprint completeness, invalidation, lifetime, concurrency | — |
 | [Deploy and platform](deploy-platform.md) | Deployment paths, scaffolding, platform/resource boundaries | `AUD-DEPLOY-01` |
 | [Engineering quality](engineering-quality.md) | Invariants, oracles, fixtures, CI, types, documentation truth | `ROAD-TEST-01` |

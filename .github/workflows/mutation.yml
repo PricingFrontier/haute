@@ -129,7 +129,7 @@ jobs:
   #    Named `mutation` so it remains the single pass/fail gate check.
   mutation:
     needs: [plan, shard]
-    if: ${{ always() && !cancelled() }}
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:

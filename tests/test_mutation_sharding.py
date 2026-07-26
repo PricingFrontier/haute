@@ -1,4 +1,4 @@
-"""Contracts for the mutation-suite sharding + parallel-exec primitives.
+"""Contracts for mutation-suite sharding and serial shard execution.
 
 These exercise the SQLite session plumbing that lets a single ``cosmic-ray init``
 session be split into disjoint mutant shards, executed independently, and
@@ -12,9 +12,11 @@ end-to-end equivalence on a real target is proven separately by running
 
 from __future__ import annotations
 
-import inspect
+import re
 import sqlite3
 from pathlib import Path
+
+import yaml
 
 from scripts.run_mutation_suite import (
     REPO_ROOT,
@@ -147,20 +149,23 @@ def test_slice_keeps_only_requested_job_ids(tmp_path: Path) -> None:
     assert _all_job_ids(src) == sorted(job_ids)
 
 
-def test_slice_session_has_no_dead_rebase_parameter() -> None:
-    assert list(inspect.signature(_slice_session).parameters) == [
-        "src",
-        "dst",
-        "keep_job_ids",
-    ]
-
-
 def test_mutation_gate_runs_and_fails_when_plan_fails() -> None:
-    workflow = (REPO_ROOT / ".github" / "workflows" / "mutation.yml").read_text(encoding="utf-8")
+    workflow = yaml.safe_load(
+        (REPO_ROOT / ".github" / "workflows" / "mutation.yml").read_text(encoding="utf-8")
+    )
+    gate = workflow["jobs"]["mutation"]
 
-    assert "if: ${{ always() && !cancelled() }}" in workflow
-    assert "if: ${{ needs.plan.result != 'success' }}" in workflow
-    assert "Mutation planning failed; the gate cannot be evaluated." in workflow
+    assert set(gate["needs"]) == {"plan", "shard"}
+    condition = re.sub(r"\s+", "", gate["if"])
+    assert "!cancelled()" in condition
+    assert "success()" not in condition
+    assert "needs." not in condition
+
+    steps_by_name = {step.get("name"): step for step in gate["steps"] if "name" in step}
+    plan_guard = steps_by_name["Require a successful mutation plan"]
+    guard_condition = re.sub(r"\s+", "", plan_guard["if"])
+    assert "needs.plan.result!='success'" in guard_condition
+    assert any(line.strip() == "exit 1" for line in plan_guard["run"].splitlines())
 
 
 # --- union / round-trip equivalence ---------------------------------------

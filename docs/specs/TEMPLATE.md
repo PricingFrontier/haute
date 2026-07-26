@@ -82,7 +82,12 @@ the key scenarios covered, and known coverage gaps.
 - Reference source with an exact repository-root-relative path such as `src/haute/parser.py`, and
   functions as `haute.parser.parse_pipeline_file()`. Do not use an ambiguous basename when a path
   is available. Do not paste long code excerpts; the spec must survive refactors that keep
-  behaviour. A `path::symbol` reference must resolve to that symbol in the named file.
+  behaviour. A `path::symbol` reference must resolve to that symbol in the named file. Within a
+  temporary contract, a bare path identifies a file to be changed and is not evidence that the
+  target has shipped. Qualify a newly delivered target as `path::symbol`, or name its executable
+  acceptance test as `test-path::test_symbol`, so the retirement guard has positive evidence.
+  Cite a pre-existing symbol that will be modified as a bare path until a new acceptance symbol
+  proves the changed behaviour.
 - Every file named in `## Testing` resolves unambiguously in the repository. Frontend unit and
   browser references are additionally repository-root-relative and start with `frontend/`; a
   frontend basename or path relative only to `frontend/src/` is invalid even when it happens to
@@ -95,7 +100,9 @@ the key scenarios covered, and known coverage gaps.
   second component may name it only to describe a real direct interaction; then it is a consumer
   and the exact primary/consumer set must be recorded in [ownership.toml](ownership.toml).
   Explicit ownership claims in prose follow the same ledger discipline even when only the primary
-  component names the file in its Module map.
+  component names the file in its Module map. Ownership proposed only inside a temporary change
+  contract is future intent, not current shared ownership; add it to the ledger when the delivered
+  claim is folded into present-tense prose.
 - Cross-link related components with relative links. From a component document the target is
   `../caching/high-level.md`; see [caching](caching/high-level.md) for a live link from this file.
 - British or American spelling both fine; match the terminology used in the code
@@ -108,9 +115,11 @@ the key scenarios covered, and known coverage gaps.
 
 `pyproject.toml` is the single product/package release version. The installed
 `haute.__version__` and FastAPI/OpenAPI `app.version` derive from that package metadata; they are
-not independent API generations. A version embedded in a temporary contract heading records the
-planned change cohort only. It neither changes nor predicts the shipped product version, and the
-heading disappears when the contract is folded into the present-tense specification.
+not independent API generations. The browser chrome displays the Vite build constant derived from
+the same metadata rather than maintaining a separate literal. A version embedded in a temporary
+contract heading records the planned change cohort only. It neither changes nor predicts the
+shipped product version, and the heading disappears when the contract is folded into the
+present-tense specification.
 
 ## Accuracy ratchet
 

@@ -83,7 +83,9 @@ Out of scope:
   component. Each package records its problem, implementation direction,
   acceptance criteria, dependencies, and current code/test evidence. The
   catalogue remains non-normative: an item must be re-verified against `HEAD`,
-  specified, and regression-tested before implementation.
+  specified, and regression-tested before implementation. The index points to
+  a non-deferred package only; it shows no starting package when every
+  remaining package is explicitly deferred.
 
 ## Design rationale
 
@@ -144,3 +146,6 @@ Out of scope:
 - The single mutation gate runs after its dependencies even when planning or a
   required shard fails. It fails explicitly when no valid plan/result set exists,
   so a failed planner cannot turn the required gate into a skipped check.
+- Documentation-contract retirement requires positive delivery evidence from a
+  resolvable target symbol or executable acceptance-test symbol. The existence
+  of a file named as an intended edit is not delivery evidence.

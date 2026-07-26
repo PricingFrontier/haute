@@ -13,7 +13,7 @@
 | `.github/workflows/ci.yml` | Defines PR/main CI jobs: canary, install/package smoke, dependency floors, static/type checks, coverage shards/gate, compatibility/probe, performance, optional dependencies, platform, mutation-config, frontend, and browser E2E lanes. Branch protection, outside this repository workflow file, determines which checks are required for merge. |
 | `.github/workflows/dependencies.yml` | Runs the scheduled/manual fresh unlocked-resolve monitor plus the locked Python/frontend advisory gate on schedule, manual dispatch, main lock-policy changes, and relevant PRs; retains failed reports and raises/updates dependency-watch issues on eligible monitoring failures. |
 | `.github/workflows/frontend-shuffle.yml` | Runs the scheduled/manual shuffled Vitest monitor and raises/updates shuffle-watch issues with its seed on eligible failures. |
-| `.github/workflows/mutation.yml` | Plans changed mutation targets, runs separate CI-job shards whose mutants execute serially per runner, and always runs the single merge gate so plan/shard failures become failed rather than skipped checks. |
+| `.github/workflows/mutation.yml` | Plans changed mutation targets, runs separate CI-job shards whose mutants execute serially per runner, and uses a failure-aware non-cancelled status condition on the single merge gate so plan/shard failures become failed rather than skipped checks. |
 | `.github/workflows/performance.yml` | Runs scheduled/manual Python and browser-performance lanes and uploads their artifacts. |
 | `frontend/package.json` | Defines frontend lint/type/unit/coverage/bundle/E2E/benchmark command entry points and frontend critical-coverage entries. |
 | `frontend/eslint.config.js` | Defines blocking browser TypeScript/React ESLint rules, two explicit pre-existing file/rule exceptions, generated-report ignores, and underscore-prefixed intentionally-unused names. |
@@ -166,8 +166,9 @@
    repeated captures prove stable system-font or native-control differences.
 6. Mutation CI calls `scripts/run_mutation_suite.py --phase plan`, executes
    each isolated target/shard, downloads all artifacts, and calls `--phase merge`
-   to enforce total survivor budgets. The merge job uses `always()` semantics
-   and fails explicitly when planning or a required shard was unsuccessful.
+   to enforce total survivor budgets. The merge job's `!cancelled()` status
+   condition ensures dependency failures do not skip it, and it fails explicitly
+   when planning or a required shard was unsuccessful.
    Scheduled performance calls
    `scripts/run_perf_suite.py`; scheduled dependency/shuffle workflows use their
    own commands and issue-alarm paths.
@@ -196,8 +197,8 @@
   every selected mutant to contribute exactly once.
 - A component roadmap contains active/deferred/decision/reverify work only.
   Delivered packages are removed once present-tense specs and ordinary tests
-  own their outcome; the index's `Start with` cell names an existing active
-  package or `—`.
+  own their outcome; the index's `Start with` cell names an existing
+  non-deferred package, or `—` when no such package exists.
 - Mutation thresholds measure observable behaviour. Syntax-only mutants in
   postponed annotations and keyword-only call markers are explicitly excluded
   with `# pragma: no mutate`; executable expressions and branch decisions must
@@ -267,14 +268,16 @@
   `tests/test_memory_smoke_script.py`, `tests/test_frontend_bundle_budget_ci.py`,
   `tests/test_infrastructure_contracts.py`, and `tests/test_docs_accuracy.py`
   cover important assurance tooling and repository-policy contracts. The
-  documentation-accuracy checks validate complete-document repository paths,
-  `path::symbol` and Module-map responsibility symbols, exact headings,
-  Testing references and backend-test indexing, link anchors, roadmap evidence,
-  ownership claims, temporary-contract retirement, and the one-line ratchet.
+  documentation-accuracy checks validate complete-document repository paths
+  from a fail-loud tracked-file inventory, `path::symbol` and Module-map
+  responsibility symbols, exact headings, Testing references and backend-test
+  indexing, link anchors, roadmap evidence, present-tense ownership claims,
+  positive-evidence temporary-contract retirement, and the one-line ratchet.
 - `tests/test_dependency_audit.py` covers clean/blocking reports, npm
   high/critical and transitive identities, valid/expired/malformed/duplicate/
-  unused acceptances, malformed fail-closed reports, and live-command return-code
-  orchestration without contacting advisory services.
+  unused acceptances, the invariant that an accepted parent meta-finding cannot
+  waive a child's concrete GHSA, malformed fail-closed reports, and live-command
+  return-code orchestration without contacting advisory services.
 - `mutation/` is tested as configuration/orchestration through its active
   script/tests and CI workflow. `docs/roadmap/`, `repro/`, and generated
   artifacts are intentionally not claimed as a current test suite.
