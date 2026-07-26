@@ -41,7 +41,7 @@ from haute.routes._timeouts import (
     BlockingWorkTimeoutError,
     run_blocking_with_response_timeout,
 )
-from haute.routes.pipeline import _validate_runtime_input_paths
+from haute.routes.pipeline import _memory_limit_http_exception, _validate_runtime_input_paths
 from haute.schemas import Graph
 
 logger = get_logger(component="server.output_assemble")
@@ -110,28 +110,35 @@ async def output_assemble_dry_run(
 
     # 3. Run up to the OUTPUT node. The render points prune the assembled frame,
     #    so ``preview`` is the response document.
-    context = create_admitted_execution_context(
-        operation="output_assemble_dry_run",
-        profile=ExecutionProfile.PREVIEW_EAGER,
-    )
-
-    def _run() -> dict[str, Any]:
-        return execute_graph(
-            graph,
-            target_node_id=body.node_id,
-            row_limit=body.row_limit,
-            source=body.source,
-            target_preview_only=True,
-            execution_context=context,
+    context = None
+    try:
+        context = create_admitted_execution_context(
+            operation="output_assemble_dry_run",
+            profile=ExecutionProfile.PREVIEW_EAGER,
         )
 
-    try:
+        def _run() -> dict[str, Any]:
+            return execute_graph(
+                graph,
+                target_node_id=body.node_id,
+                row_limit=body.row_limit,
+                source=body.source,
+                target_preview_only=True,
+                execution_context=context,
+            )
+
         results = await run_blocking_with_response_timeout(
             _run,
             timeout=_dry_run_timeout(),
             operation="output_assemble_dry_run",
         )
     except BlockingWorkTimeoutError as exc:
+        if context is not None:
+            timed_out_context = context
+            exc.background_task.add_done_callback(
+                lambda _future: timed_out_context.release_admission()
+            )
+            context = None
         raise HTTPException(status_code=504, detail="Output dry-run timed out") from exc
     except PUBLIC_CONTRACT_ERROR_TYPES as exc:
         raise contract_error_http_exception(exc) from None
@@ -141,20 +148,24 @@ async def output_assemble_dry_run(
     except (ConfigError, ContractMismatchError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except ExecutionAdmissionError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+        raise _memory_limit_http_exception(exc) from None
     except HTTPException:
         raise
     except Exception:
         logger.exception("output_assemble_dry_run failed")
         raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL) from None
 
-    node_result = results.get(body.node_id)
-    if node_result is None or node_result.status != "ok":
-        detail = (node_result.error if node_result else None) or "Assembly failed"
-        return OutputAssembleDryRunResponse(status="error", error=detail)
+    else:
+        node_result = results.get(body.node_id)
+        if node_result is None or node_result.status != "ok":
+            detail = (node_result.error if node_result else None) or "Assembly failed"
+            return OutputAssembleDryRunResponse(status="error", error=detail)
 
-    return OutputAssembleDryRunResponse(
-        status="ok",
-        document=node_result.preview,
-        row_count=node_result.row_count,
-    )
+        return OutputAssembleDryRunResponse(
+            status="ok",
+            document=node_result.preview,
+            row_count=node_result.row_count,
+        )
+    finally:
+        if context is not None:
+            context.release_admission(preserve_primary_error=True)

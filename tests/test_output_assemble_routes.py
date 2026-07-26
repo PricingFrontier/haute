@@ -9,18 +9,25 @@ canonical data-model example so the route's assembled output matches the
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
+from haute._execution_admission import ExecutionAdmissionError
+from haute._execution_context import ExecutionProfile
 from haute._json_flatten import _json_cache_dir
 from haute._json_shred import build_per_port_cache
 from haute._sandbox import _get_project_root, set_project_root
 from haute._types import NodeType
 from haute.executor import _preview_cache
+from haute.routes._timeouts import BlockingWorkTimeoutError
+from haute.schemas import NodeResult
 from tests.test_output_nested_roundtrip import (
     _FIXTURE,
     _api_input_config,
@@ -162,3 +169,110 @@ def test_dry_run_non_output_node_returns_400(project) -> None:
         },
     )
     assert resp.status_code == 400, resp.text
+
+
+def test_dry_run_admission_refusal_returns_structured_507(project) -> None:
+    client, data_path = project
+    error = ExecutionAdmissionError(
+        "output_assemble_dry_run",
+        profile=ExecutionProfile.PREVIEW_EAGER,
+        memory_limit_bytes=1024,
+        rss_at_admission_bytes=2048,
+        reason="memory budget exhausted",
+    )
+
+    with patch(
+        "haute.routes.output_assemble.create_admitted_execution_context",
+        side_effect=error,
+    ):
+        resp = client.post(
+            "/api/output-assemble/dry-run",
+            json={
+                "graph": _graph_json(_api_input_config(data_path)),
+                "node_id": "out",
+                "output_mapping": [],
+            },
+        )
+
+    assert resp.status_code == 507
+    assert resp.json() == {"detail": error.to_payload()}
+
+
+def test_dry_run_releases_admission_after_success(project) -> None:
+    client, data_path = project
+    release_calls: list[bool] = []
+
+    class _Context:
+        def release_admission(self, *, preserve_primary_error: bool = False) -> None:
+            release_calls.append(preserve_primary_error)
+
+    with (
+        patch(
+            "haute.routes.output_assemble.create_admitted_execution_context",
+            return_value=_Context(),
+        ),
+        patch(
+            "haute.routes.output_assemble.execute_graph",
+            return_value={"out": NodeResult(status="ok", preview=[], row_count=0)},
+        ),
+    ):
+        resp = client.post(
+            "/api/output-assemble/dry-run",
+            json={
+                "graph": _graph_json(_api_input_config(data_path)),
+                "node_id": "out",
+                "output_mapping": [],
+            },
+        )
+
+    assert resp.status_code == 200
+    assert release_calls == [True]
+
+
+@pytest.mark.asyncio
+async def test_dry_run_timeout_defers_admission_release_until_worker_finishes(project) -> None:
+    _, data_path = project
+    release_calls: list[bool] = []
+    background_task: asyncio.Future[object] = asyncio.get_running_loop().create_future()
+
+    class _Context:
+        def release_admission(self, *, preserve_primary_error: bool = False) -> None:
+            release_calls.append(preserve_primary_error)
+
+    async def _raise_timeout(*args, **kwargs):
+        del args, kwargs
+        raise BlockingWorkTimeoutError(
+            "output_assemble_dry_run",
+            1,
+            background_task,
+        )
+
+    from haute.server import app
+
+    with (
+        patch(
+            "haute.routes.output_assemble.create_admitted_execution_context",
+            return_value=_Context(),
+        ),
+        patch(
+            "haute.routes.output_assemble.run_blocking_with_response_timeout",
+            _raise_timeout,
+        ),
+    ):
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            resp = await client.post(
+                "/api/output-assemble/dry-run",
+                json={
+                    "graph": _graph_json(_api_input_config(data_path)),
+                    "node_id": "out",
+                    "output_mapping": [],
+                },
+            )
+
+    assert resp.status_code == 504
+    assert release_calls == []
+
+    background_task.set_result(None)
+    await asyncio.sleep(0)
+    assert release_calls == [False]

@@ -197,6 +197,33 @@ class TestGetFirstPipeline:
         assert graph["source_file"] == "main.py"
         assert graph["pipeline_name"] == "my_project"
 
+    def test_parse_failure_returns_422_instead_of_blank_canvas(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A broken discovered pipeline must never look like a new empty project."""
+        broken = tmp_path / "broken.py"
+        broken.write_text("this is not a valid Haute pipeline")
+        monkeypatch.chdir(tmp_path)
+
+        from haute.server import app
+
+        with (
+            patch(
+                "haute.routes.pipeline.discover_pipelines",
+                return_value=[broken],
+            ),
+            patch(
+                "haute.routes.pipeline.parse_pipeline_to_graph",
+                side_effect=ValueError("pipeline structure is invalid"),
+            ),
+        ):
+            resp = TestClient(app).get("/api/pipeline")
+
+        assert resp.status_code == 422
+        assert resp.json() == {"detail": "pipeline structure is invalid"}
+
 
 # ---------------------------------------------------------------------------
 # GET /api/pipeline/{name}
@@ -3457,6 +3484,67 @@ class TestFileWatcherRecovery:
         asyncio.run(_run())
 
         assert any(event == "graph.update" for event, _ in published)
+
+    def test_module_only_flush_does_not_invalidate_pipeline_index(
+        self,
+        pipeline_dir: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A dependency edit changes graphs, not the pipeline name-to-path index."""
+        from haute.server import _file_watcher
+
+        monkeypatch.chdir(pipeline_dir)
+        modules_dir = pipeline_dir / "modules"
+        modules_dir.mkdir()
+        module_file = modules_dir / "shared.py"
+        module_file.write_text("VALUE = 2\n")
+
+        async def _single_module_change(*dirs, **kw):
+            yield [(Change.modified, str(module_file))]
+
+        async def _run() -> None:
+            with (
+                patch("watchfiles.awatch", _single_module_change),
+                patch("haute.server.is_self_write", return_value=False),
+                patch("haute.server.pipelines_importing_module", return_value=[]),
+                patch("haute.server.invalidate_pipeline_index") as invalidate,
+                patch("haute.server._DEBOUNCE_SECONDS", 0),
+            ):
+                await _file_watcher()
+                assert invalidate.call_count == 0
+
+        asyncio.run(_run())
+
+    def test_persistently_failing_flush_stops_after_bounded_retries(
+        self,
+        pipeline_dir: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A poisoned batch must not create an infinite chain of retry tasks."""
+        from haute.server import _file_watcher
+
+        monkeypatch.chdir(pipeline_dir)
+        py_file = str(pipeline_dir / "test_pipeline.py")
+
+        async def _single_change(*dirs, **kw):
+            yield [(Change.modified, py_file)]
+
+        async def _run() -> int:
+            with (
+                patch("watchfiles.awatch", _single_change),
+                patch("haute.server.is_self_write", return_value=False),
+                patch(
+                    "haute.server.invalidate_pipeline_index",
+                    side_effect=RuntimeError("persistent cache failure"),
+                ) as invalidate,
+                patch("haute.server._DEBOUNCE_SECONDS", 0),
+                patch("haute.server._WATCHER_FLUSH_RETRY_BASE_SECONDS", 0),
+                patch("haute.server._WATCHER_FLUSH_MAX_RETRIES", 2),
+            ):
+                await _file_watcher()
+                return invalidate.call_count
+
+        assert asyncio.run(_run()) == 3
 
     def test_flush_error_recovery_allows_later_change(
         self,

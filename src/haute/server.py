@@ -106,6 +106,8 @@ logger = get_logger(component="server")
 _watcher_task: asyncio.Task | None = None
 _optimiser_reaper_task: asyncio.Task[None] | None = None
 _WATCHER_RESTART_DELAY_SECONDS = 0.1
+_WATCHER_FLUSH_MAX_RETRIES = 3
+_WATCHER_FLUSH_RETRY_BASE_SECONDS = 0.1
 WS_FRAME_GRAPH_UPDATE = "graph_update"
 WS_FRAME_PARSE_ERROR = "parse_error"
 
@@ -672,11 +674,8 @@ async def _file_watcher() -> None:
     debounce_task: asyncio.Task[None] | None = None
     completed_normally = False
 
-    async def _flush() -> None:
-        """Parse and broadcast after debounce window expires."""
-        nonlocal debounce_task
-        await asyncio.sleep(_DEBOUNCE_SECONDS)
-
+    async def _flush_once() -> None:
+        """Parse and broadcast one pending watcher batch."""
         to_process: set[tuple[Change, str]] = set()
         try:
             # Snapshot and clear before processing so new events can queue
@@ -724,9 +723,12 @@ async def _file_watcher() -> None:
                 else:
                     direct_py_changes.append(p)
 
-            known_pipelines = _known_pipeline_paths() if direct_py_changes else {}
-
-            invalidate_pipeline_index()
+            known_pipelines: dict[str, Path] = {}
+            if direct_py_changes:
+                # Only direct pipeline-source edits can add, remove, or rename
+                # an indexed pipeline or change its module dependencies.
+                known_pipelines = _known_pipeline_paths()
+                invalidate_pipeline_index()
 
             discovered_pipelines: dict[str, Path] | None = None
 
@@ -808,15 +810,42 @@ async def _file_watcher() -> None:
                             "source_file": _wire_source_file(p),
                         },
                     )
-        except Exception as exc:  # noqa: BLE001
+        except Exception:  # noqa: BLE001
             pending_changes.update(to_process)
-            logger.error(
-                "file_watcher_flush_failed",
-                error=str(exc),
-                traceback=traceback.format_exc(),
-                requeued_changes=len(to_process),
-            )
-            debounce_task = asyncio.create_task(_flush())
+            raise
+
+    async def _flush() -> None:
+        """Debounce, then retry one batch with a bounded exponential backoff."""
+        await asyncio.sleep(_DEBOUNCE_SECONDS)
+        for attempt in range(_WATCHER_FLUSH_MAX_RETRIES + 1):
+            try:
+                await _flush_once()
+                return
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                logger.error(
+                    "file_watcher_flush_failed",
+                    error=str(exc),
+                    traceback=traceback.format_exc(),
+                    requeued_changes=len(pending_changes),
+                    attempt=attempt + 1,
+                )
+                if attempt >= _WATCHER_FLUSH_MAX_RETRIES:
+                    logger.error(
+                        "file_watcher_flush_abandoned",
+                        attempts=attempt + 1,
+                        pending_changes=len(pending_changes),
+                    )
+                    return
+                retry_delay = _WATCHER_FLUSH_RETRY_BASE_SECONDS * (2**attempt)
+                logger.warning(
+                    "file_watcher_flush_retry_scheduled",
+                    retry=attempt + 1,
+                    max_retries=_WATCHER_FLUSH_MAX_RETRIES,
+                    retry_delay_s=retry_delay,
+                )
+                await asyncio.sleep(retry_delay)
 
     try:
         async for changes in awatch(*watch_dirs, recursive=True):

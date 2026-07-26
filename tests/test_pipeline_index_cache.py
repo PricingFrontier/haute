@@ -521,6 +521,51 @@ class TestConcurrentReadsDoNotRace:
         # Sanity: the agreed-upon contents must be the expected two pipelines.
         assert set(results[0].keys()) == {"pipeline_a", "pipeline_b"}
 
+    def test_module_dependency_invalidation_wins_over_inflight_build(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """An invalidator must not be overwritten by a stale dependency-map publish."""
+        import haute.routes._helpers as helpers
+
+        pipeline_file = tmp_path / "pipeline.py"
+        build_started = threading.Event()
+        allow_build_to_finish = threading.Event()
+        invalidation_finished = threading.Event()
+        results: list[dict[str, set[Path]]] = []
+
+        monkeypatch.setattr(helpers, "discover_pipelines", lambda: [pipeline_file])
+
+        def _slow_read(_path: Path) -> str:
+            build_started.set()
+            assert allow_build_to_finish.wait(2)
+            return 'pipeline.submodel("modules/shared.py")\n'
+
+        monkeypatch.setattr(helpers, "read_user_text", _slow_read)
+
+        builder = threading.Thread(target=lambda: results.append(helpers._ensure_module_deps()))
+        builder.start()
+        assert build_started.wait(2)
+
+        def _invalidate() -> None:
+            helpers.invalidate_pipeline_index()
+            invalidation_finished.set()
+
+        invalidator = threading.Thread(target=_invalidate)
+        invalidator.start()
+
+        assert not invalidation_finished.wait(0.05)
+        allow_build_to_finish.set()
+        builder.join(timeout=2)
+        invalidator.join(timeout=2)
+
+        assert not builder.is_alive()
+        assert not invalidator.is_alive()
+        assert invalidation_finished.is_set()
+        assert results == [{"shared": {pipeline_file}}]
+        assert helpers._module_deps is None
+
     def test_reader_during_rebuild_never_sees_none(
         self,
         pipeline_project: Path,

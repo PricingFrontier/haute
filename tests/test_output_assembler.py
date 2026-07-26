@@ -17,6 +17,7 @@ import polars as pl
 import pytest
 
 from haute._jsonpath import _Seg
+from haute._node_apply import assemble_output_from_config
 from haute._output_assembler import (
     OutputMappingSchemaError,
     OutputNestingKeyError,
@@ -768,6 +769,27 @@ def test_validate_accepts_a_well_formed_mapping() -> None:
     )
 
 
+def test_validate_parses_each_distinct_active_path_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    import haute._output_assembler as assembler
+
+    original = assembler._parse_output_path
+    calls: list[str] = []
+
+    def spy(path: str):
+        calls.append(path)
+        return original(path)
+
+    monkeypatch.setattr(assembler, "_parse_output_path", spy)
+    mapping = [
+        _entry("p", f"value_{index}", f"$[:].items[:].value_{index}") for index in range(200)
+    ]
+    mapping.extend([_entry("q", "same", "$[:].items[:].value_0") for _ in range(50)])
+
+    assembler.validate_v2_output_mapping(mapping)
+
+    assert len(calls) == 200
+
+
 def test_validate_rejects_prefix_comparable_paths_within_a_port() -> None:
     # $[:].a is a strict prefix of $[:].a.b — a would be both a leaf and the
     # container of b. Rejected within one port (B1).
@@ -875,6 +897,43 @@ def test_assemble_allows_null_scalar_payload_that_is_not_a_nesting_key() -> None
         "child": pl.LazyFrame({"$[:].id": [1], "$[:].items[:].value": ["v"]}),
     }
     assert _assemble_document(frames) == [{"id": 1, "items": [{"value": "v"}]}]
+
+
+def test_assemble_ignores_absent_nesting_key_in_partial_frame() -> None:
+    frames = {
+        "a": pl.LazyFrame(
+            {
+                "$[:].quote_id": [1],
+                "$[:].drivers[:].name": ["Ann"],
+            }
+        ),
+        "b": pl.LazyFrame({"$[:].drivers[:].age": [42]}),
+    }
+
+    assert _assemble_document(frames) == [
+        {"quote_id": 1, "drivers": [{"name": "Ann"}]},
+        {"drivers": [{"age": 42}]},
+    ]
+
+
+def test_config_assembly_ignores_incomplete_enabled_mapping_port() -> None:
+    result = assemble_output_from_config(
+        pl.DataFrame({"value": [1]}),
+        pl.DataFrame({"other": [2]}),
+        config={
+            "outputMapping": [
+                {
+                    "source_port": "phantom",
+                    "source_column": "",
+                    "output_path": "",
+                    "enabled": True,
+                }
+            ]
+        },
+        source_names=["real", "other"],
+    )
+
+    assert result.collect().to_dicts() == []
 
 
 def test_assemble_indexes_child_rows_once_per_relation_key(monkeypatch: pytest.MonkeyPatch) -> None:

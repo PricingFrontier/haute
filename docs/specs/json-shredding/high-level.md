@@ -96,13 +96,32 @@ or at an ancestor boundary so an ancestor value can be distributed into child
 rows. The OUTPUT side consumes only active, complete mapping rows and requires
 the same single array-outer path grammar: `$[:]` at the root, dotted ASCII
 identifier keys, and `[:]` for array traversal. Its explicit structural
-validator rejects same-port duplicate or prefix-comparable destinations.
+validator rejects same-port duplicate or prefix-comparable destinations and a
+single source frame mapped to divergent emit prefixes. The runtime assembler invokes
+that validator before frame collection, so dry-run, direct runtime, generated, and
+deployed execution share one acceptance boundary. Each distinct path is parsed once
+per validation, then sorted adjacent comparisons enforce prefix rules in
+`O(n log n)` time rather than reparsing an `O(n²)` pair matrix. Incomplete editor
+rows are inactive and ignored consistently.
 Assembly returns a top-level list of objects:
 sibling array branches are nested independently (never cross-multiplied),
 same-level frames use a deterministic cut plan and bag semantics, unmatched
 partials survive, and null-valued/empty-collection object fields are pruned
 from the rendered document (null or empty-list elements already inside arrays
-remain array elements).
+remain array elements). A relation key is checked only in frames that actually
+carry that key: a missing column in another mapping frame is absence, not a null.
+An actual null relation-key component raises `OutputNestingKeyError`; nullable
+non-key payloads remain valid. In shredding, an ancestor `$value` column does not
+turn a descendant object table into a scalar table — scalar classification requires
+the sentinel at the table's own array depth.
+
+The complete bounded output document is converted to Polars with
+`infer_schema_length=None`, preserving a nested field whose first non-null value
+occurs beyond the default inference window. Input inference and shredding use one
+JSON-scalar compatibility rule: genuine scalars can render deterministically into a
+declared string, while objects and arrays remain shape values and fail or count as
+shape mismatches. Inference rejects source keys outside the canonical ASCII
+identifier grammar (and the reserved `$value` sentinel) before returning a schema.
 
 **Edge Join semantics.** The built-in `edgeJoin` accepts exactly the Polars
 strategies `inner`, `left`, `right`, `full`, `semi`, `anti`, and `cross`.
@@ -163,7 +182,17 @@ retries transient Windows file-handle locks and attempts to restore the previous
 directory if the second rename raises. A process-local per-cache lock prevents two
 threads building the *same* cache from interleaving their write phases; builds of
 different caches remain independent. The same swap primitive is used both by the
-shred's own build and by promoting `working/` to `committed/` at save time.
+shred's own build and by promoting `working/` to `committed/` at save time. Table
+spec construction, source-signature calculation, validity checking, staging, and
+publish all occur inside that critical section. Locks are weakly retained after use
+but strongly referenced for the whole active section. Cache paths are rooted from
+the process working directory selected for the project; callers must not assume they
+are relative to the source file.
+
+Within one logical raw-file load or cache-build operation, the source signature
+(size, mtime, and SHA-256) is computed once and shared by its consumers. A separate
+operation recomputes the signature, so same-size/same-mtime rewrites remain
+detectable.
 
 > NOTE: Replacing an existing directory is a two-rename swap, not one atomic
 > filesystem operation. Between `live -> backup` and `temp -> live`, a concurrent
@@ -209,14 +238,15 @@ strict build and raises a specific, column-named error instead.
 
 - A malformed v2 schema config (bad table/column shape) is rejected up front by
   schema validation before any shredding happens, not discovered mid-walk.
-- The OUTPUT dry-run route calls the structural validator before execution, so
-  its malformed mappings raise `OutputMappingSchemaError` before data is
-  assembled. The lower-level runtime assembly entry point does not call that
-  validator itself; malformed path syntax is still rejected while parsing, but
-  duplicate/prefix conflicts can instead reach Polars or produce ambiguous
-  assembly if a caller skipped validation. A missing source port/column still
-  surfaces from normal mapping/Polars lookup rather than being replaced with an
-  empty document.
+- Every OUTPUT assembly entry point calls the structural validator before frame
+  collection. Malformed syntax, duplicate/prefix conflicts, divergent per-frame
+  emit prefixes, and missing source ports/columns therefore fail loudly rather than
+  becoming ambiguous or empty output.
+- Any active parent or child row whose *present* simple/composite relation key has a
+  null component raises `OutputNestingKeyError(OutputMappingSchemaError)` with
+  `frame`, `output_path`, and `key`; the HTTP adapter maps it to 422. A frame that
+  does not carry that relation key is not participating and is not treated as a null
+  row. Null scalar payloads outside relation keys remain valid.
 - A source JSON key that would collide with the reserved scalar-array sentinel, or
   that contains the object-nesting separator character, is rejected loudly at
   inference time — there is no way to address it unambiguously as a column, so
@@ -240,103 +270,3 @@ strict build and raises a specific, column-named error instead.
 - `edgeJoin` node misconfiguration (ambiguous/missing base or join role, unsupported
   join strategy, keys on `cross`, missing/conflicting key forms, or mismatched key
   counts) raises `ConfigError` before any join runs.
-
-## Polars backend contracts (0.6.0)
-
-Remaining JSON-shredding improvement work is tracked in the
-[I/O layer roadmap](../../roadmap/io-layer.md).
-
-### OUTPUT assembly (Review-P04)
-
-Assembly must preserve the existing output shape, bag semantics, deterministic cut
-planning, pruning, and active-row rules while replacing repeated per-mapping-frame
-filtering with an indexed or near-linear grouping strategy.  The implementation
-must not introduce a Python-level quadratic scan over mapping rows or frame rows.
-
-Nesting uses a fail-loud orphan policy. Any active parent or child row participating
-in a nesting relation with null in any component of its simple or composite nesting
-key raises `OutputNestingKeyError(OutputMappingSchemaError)` before assembly or
-rendering. The error identifies the source frame, output path, and offending key, and
-the route/API contract maps it to HTTP 422. Such rows are never silently excluded or
-treated as non-matching. Null scalar payload values remain valid when those values do
-not participate in a relation key.
-
-One frame may not silently supply columns for multiple divergent `emit` prefixes.
-Such a mapping is rejected with `OutputMappingSchemaError` before collection or
-rendering, unless a future specification introduces an explicit, unambiguous mapping
-contract for it.  A rejection must name the frame and conflicting prefixes.  No
-source column may be silently dropped while applying this guard.
-
-The direct assembler, dry-run/route path, generated pipeline, and deployed execution
-path must accept, reject, and render equivalent mappings identically, including the
-null nesting-key error type, fields, and HTTP mapping.
-
-### Raw-file signatures (Review-P06 / FR17)
-
-Within one logical raw-file load or cache-build operation, the source signature
-(size, mtime, and content hash) is computed once and shared by all consumers of that
-operation.  This removes redundant hashing without weakening cache integrity:
-independent operations still verify source content, and a rewrite that preserves
-size and mtime is still detected by its changed hash.
-
-### Required tests and non-goals
-
-Tests must pin near-linear assembler work on large mapping/frame fixtures; fail-loud
-simple and composite null nesting keys on active parent and child rows; allowed null
-scalar payloads; divergent-prefix rejection; no silent row or column loss; HTTP 422;
-and direct/route/generated/deploy parity. Signature tests must pin one hash computation per logical operation,
-fresh hashing by an independent operation, and same-size/same-mtime content rewrite
-detection.
-
-The 0.6 pre-1.0 migration notes must call out that relation-key nulls now fail rather
-than being silently orphaned. This change does not alter output-path grammar, bag
-semantics for valid keys, pruning rules, cache directory layout, source-signature
-fields, or cache validity requirements. It does not define a divergent-prefix mapping
-feature; that requires a separate explicit contract.
-
-## I/O roadmap correctness hardening
-
-JSON shredding implements the accepted parts of
-[IO-IO03, IO-IO04, IO-IO07, IO-IO10, and IO-IO11](../../roadmap/io-layer.md).
-
-- OUTPUT document materialisation infers the Polars schema from the complete
-  bounded assembled document, including nested structs. A field whose first
-  non-null value occurs after Polars' default inference window remains present
-  with its inferred nullable type. The already-shared canvas/generated assembler
-  remains the sole execution path, and parity coverage includes this late-field
-  case.
-- API-input inference and shredding use one JSON-scalar compatibility rule.
-  When observations widen a column to `str`, strings remain unchanged and
-  numbers/booleans are rendered deterministically as strings; null remains null.
-  Objects and arrays are shape values, not strings, and still fail or count as a
-  shape mismatch according to the table contract. In a scalar-array table, a
-  nested array is counted as a skipped row rather than fabricated as a null
-  scalar row.
-- Inference rejects every source object key outside the path grammar's ASCII
-  identifier set, as well as the reserved `$value` sentinel, before returning a
-  schema. The error names the key and tells the user to rename it. Hand-authored
-  keys outside the dotted identifier grammar are rejected because the runtime
-  cannot represent them.
-- Config sidecars continue to use duplicate-key-rejecting loading. Raw
-  JSON/NDJSON source records retain the streaming decoder's native duplicate-key
-  semantics and are not rescanned solely to reject duplicates; inference and
-  build consume the same record iterator, so they remain mutually consistent.
-- JSON-cache build/status `columns` payloads contain real, label-qualified
-  column names and dtype strings from the emitted frames. Placeholder names and
-  the constant `"v2"` pseudo-dtype are not part of the public response.
-- Per-cache build locks may be weakly retained so completed, unreachable cache
-  identities do not grow a process-lifetime dictionary. A lock remains strongly
-  referenced for its entire active critical section, preserving same-key
-  serialisation.
-
-The operation-scoped raw-file signature contract already satisfies IO-IO10:
-one logical load/build hashes the source once and shares that signature, while
-each independent operation hashes again. This change does not introduce a
-cross-operation `(size, mtime)` validity shortcut, a columnar-buffer rewrite
-without benchmark evidence, or any relaxation of signed cache validation.
-
-Acceptance evidence covers late/null-first nested OUTPUT fields through direct
-and generated execution; an inference/build accepted-and-rejected value matrix;
-scalar-table nested-list skip accounting; early invalid-key diagnostics; real
-  cache-response columns; non-canonical path rejection; and lock reclamation without
-loss of concurrent build serialisation.

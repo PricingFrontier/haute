@@ -6,7 +6,7 @@
 |---|---|
 | `src/haute/_api_input_schema.py` | V2 apiInput schema codec: `TypedDict` shapes, extension recognition, canonical table and column path semantics, filesystem label sanitisation, and fail-loud validation. |
 | `src/haute/_json_shred.py` | v2 per-frame JSON shred: single-pass record walk, buffer→parquet build, cache validity/load, schema inference from data. |
-| `src/haute/_json_flatten.py` | Dual-layer (`working/`/`committed/`) cache-directory infrastructure for JSON apiInput sources: path resolution, delete, save-time promotion, preview-cache fingerprint contribution. |
+| `src/haute/_json_flatten.py` | Dual-layer (`working/`/`committed/`) cache-directory infrastructure for JSON apiInput sources: process-CWD-rooted path resolution, delete, save-time promotion, and preview-cache fingerprint contribution. |
 | `src/haute/_json_safe.py` | Recursively converts Python/pipeline values into JSON-safe representations for API responses and preview rows. |
 | `src/haute/_jsonpath.py` | The shared canonical array-outer JSON path parser and writer used by both INPUT and OUTPUT path addressing. |
 | `src/haute/_output_assembler.py` | V2 OUTPUT mapping validation and document assembly: GYO residue/cut planning, bag-natural joins, array-prefix nesting, pruning, and collected-frame rendering. |
@@ -28,9 +28,11 @@ Submodel graph expansion and boundary rewiring are owned by
 
 **`_output_assembler.py`**
 
-- `OutputMappingSchemaError(HauteError)` is the OUTPUT grammar/structural
-  mapping error. `_Core` and `_CutPlan` record the deterministic feedback-edge
-  cut and the residual per-frame fields used for same-level assembly.
+- `OutputMappingSchemaError(HauteError)` is the OUTPUT grammar/structural mapping
+  error. `OutputNestingKeyError(OutputMappingSchemaError)` is the fail-loud
+  relation-key-null error with stable `frame`, `output_path`, and `key` fields.
+  `_Core` and `_CutPlan` record the deterministic feedback-edge cut and the
+  residual per-frame fields used for same-level assembly.
 - An active mapping row is enabled and has non-blank `source_column` and
   `output_path` fields; incomplete editor rows are ignored consistently by
   validation, contracts, and assembly.
@@ -119,30 +121,40 @@ delegates canonical rendering to the same writer.
 > annotations.
 
 **OUTPUT mapping** — `assemble_output_from_mapping(frames, mapping)` groups active
-rows by source port, selects/aliases source columns to output paths, and passes the
-field frames to `_assemble_document`. Frames emitting at the same array prefix are
+rows by source port after running `validate_v2_output_mapping`, selects/aliases source
+columns to output paths, and passes the field frames to `_assemble_document`. The
+validator parses every distinct active path once, sorts the parsed destinations, and
+uses adjacent comparisons for duplicate/prefix and array-prefix-chain conflicts
+(`O(n log n)`, not an `O(n²)` pair scan). It also rejects divergent emit prefixes
+within one source frame before any frame collection. Frames emitting at the same array prefix are
 planned by `_plan_cut` and `_execute_plan`; residual shared fields are full bag-
 joined (fan-out is retained), cut/disconnected groups are diagonal-concatenated as
 partials, and the prefix-tree builder nests child arrays by ancestor values without
-joining siblings. `_prune` removes null-valued object fields and empty collection
+joining siblings. Relation-key guards examine a row only when that row actually
+contains the key; an absent column in another mapping frame is not a null. A present
+null component raises `OutputNestingKeyError`. `_prune` removes null-valued object fields and empty collection
 values from objects, and removes empty-object elements from arrays; null or
 empty-list elements already present inside arrays are retained.
 `render_output_document` applies that same pruning to the collected Polars shape.
 
-`assemble_output_from_mapping` does not call `validate_v2_output_mapping`.
-Callers that need the injectivity/prefix-incomparability gate must invoke it
-explicitly; the dry-run route does, while the shared runtime/generated-code
-assembly path currently does not.
+`assemble_output_from_config` uses the same assembler and constructs the final
+document frame with `infer_schema_length=None`. The assembled response is already
+bounded and materialised, so complete-schema inference preserves late non-null nested
+fields without another upstream read.
 
 **Build a JSON cache** — `build_per_port_cache(data_path, v2_config, cache_dir)`:
 1. `validate_v2_schema(v2_config)` up front.
-2. Acquire the per-cache-directory lock (`_build_lock_for`).
+2. Acquire the per-cache-directory lock (`_build_lock_for`) and retain that lock
+   strongly for the complete critical section.
 3. No-op trapdoor: if `is_per_port_cache_valid` already holds for the current
    in-memory schema and on-disk data file, return the existing `meta.json` payload
    without rebuilding.
-4. Record the data-file signature (`_data_file_signature`) *before* reading records.
-5. Build the shared `_EmittingTableSpec`s once (`table_is_emitting` plus parsed
-   table/column paths); the walk and parquet frame construction consume the same specs.
+4. Still under the lock, record the data-file signature (`_data_file_signature`)
+   *before* reading records.
+5. Still under the lock, build the shared `_EmittingTableSpec`s once
+   (`table_is_emitting` plus parsed table/column paths); the walk and parquet frame
+   construction consume the same specs. The signature is shared for this logical
+   operation rather than rehashed by each consumer.
 6. `shred_to_buffers(_counted_records(), v2_config, stats=skip_stats)` — the shred
    core (below) — consuming `_iter_records` directly (not materialised into a list).
 7. Conservation assertion at the root level: for every emit-true root table,
@@ -161,7 +173,9 @@ assembly path currently does not.
    a shallower ancestor depth for a W1 "distribute a parent value to every
    descendant row" column).
 2. `_reject_reserved_leaf_collision` per table: a `$value` leaf may not coexist with
-   another own-depth column.
+   another own-depth column. A table is scalar only when `$value` itself lives at
+   that table's depth; an ancestor `$value` distributed into a descendant object
+   table does not change the descendant's shape classification.
 3. Group tables by their full `(key, is_array)` segment position
    (`tables_by_pos`), and compute the object-hop + array-key "descents" needed to
    reach each child array from its parent position (`descents_by_pos`).
@@ -169,7 +183,10 @@ assembly path currently does not.
    at `pos` (skipping — and counting — a shape-mismatched record for that table),
    then descends into each child array via `_walk_array`, which iterates the array
    and recurses into `_emit_at` per element (a `None` element is a real row for a
-   scalar table, a counted skip for an object table).
+   scalar table, a counted skip for an object table; a nested list is a counted
+   shape mismatch, never fabricated as a null scalar row). Declared string columns
+   use the shared deterministic JSON-scalar renderer; dict/list values remain
+   shape values and are rejected or counted rather than stringified.
 5. Returns `{table_label: [row_dict, ...]}`.
 
 **Runtime load** — `load_v2_api_source(data_path, config)`:
@@ -329,6 +346,20 @@ equal-length `leftOn`/`rightOn` values, and rejects mixing the two forms.
   footer schema probe, so a footer-readable data-page corruption is rejected.
 - **The build lock is process-local**, keyed by the normcased resolved cache-dir
   path; concurrent builds of *different* caches never block each other.
+  `_BUILD_LOCKS` weakly retains inactive identities, while the caller strongly owns
+  its lock throughout table-spec construction, source signing, validation, staging,
+  and publish. Cache directories are resolved from the selected project process CWD,
+  not relative to the source data file.
+- **Source signatures are operation-scoped**: one logical load/build shares its
+  `(size, mtime, SHA-256)` result, while a separately initiated operation hashes
+  again. No `(size, mtime)`-only cross-operation shortcut exists.
+- **Inference accepts only expressible keys** through
+  `_jsonpath.is_identifier_name`; non-ASCII/non-identifier keys, dots, and the
+  reserved `$value` sentinel fail before a schema is returned. Config sidecars use
+  duplicate-key-rejecting loading; raw JSON/NDJSON retains the streaming decoder's
+  native duplicate-key semantics and is not rescanned.
+- **Cache metadata exposes real columns** as label-qualified names with their dtype
+  strings. Placeholder names and the constant `"v2"` pseudo-dtype are never returned.
 - **`mirror_cache_to_committed`'s consulted-hash gate is intentionally never
   cleared** except by a test-only hook (`_clear_session`) that simulates a process
   restart — the user stays authoritative for a data file for the lifetime of the
@@ -337,14 +368,7 @@ equal-length `leftOn`/`rightOn` values, and rejects mixing the two forms.
   with at least one key and a non-empty suffix; `cross`/`full`/`right`, keyless
   joins, and an ambiguous suffixed-name-that-is-itself-a-real-column all return
   `None` (keep the parent boundary full-width) rather than guess.
-- **AST-based Polars demand inference is order-sensitive when it must be**: plain
-  rename-free code uses an unordered union walk (safe over-approximation); code
-  containing a `rename`, a `select`/`select_seq`, or a reference to a
-  column the same node derives is routed through an *ordered* backward
-  propagation instead, because the unordered walk would either re-add a
-  post-rename/derived name to the parent demand (over-demand a nonexistent parent
-  column) or under-demand a `select`'s unused-downstream inputs (the `select`
-  still executes every output expression regardless of what's needed downstream).
+
 ## Error handling
 
 - `haute._api_input_schema.ApiInputSchemaError` — raised by `_json_shred.py` for
@@ -371,16 +395,16 @@ equal-length `leftOn`/`rightOn` values, and rejects mixing the two forms.
   the caller injected as `error` — `ApiInputSchemaError` from the INPUT side,
   `OutputMappingSchemaError` from the OUTPUT side — carrying the offending
   `output_path`.
-- `OutputMappingSchemaError` also covers a non-array root, two different columns
-  from one port targeting the same path, and leaf/container prefix collisions.
-  Missing `frames[port]` or `pl.col(source_column)` failures are deliberately not
-  caught or converted into an empty output.
-  > NOTE: the duplicate/prefix cases are guarantees of
-  > `validate_v2_output_mapping`, not of `assemble_output_from_mapping` itself.
-  > The latter parses active output paths during assembly but does not run the
-  > structural validator, so runtime callers that bypass the dry-run validation
-  > boundary can receive a Polars error or ambiguous output instead of this typed
-  > exception.
+- `OutputMappingSchemaError` covers a non-array root, two different columns from
+  one port targeting the same path, leaf/container prefix collisions, and one frame
+  targeting divergent emit prefixes. `assemble_output_from_mapping` itself runs the
+  validator before collecting any frame, so direct/runtime and route callers receive
+  the same typed failure. Missing `frames[port]` or `pl.col(source_column)` failures
+  remain loud and are never converted into an empty output.
+- `OutputNestingKeyError(OutputMappingSchemaError)` is raised when an active
+  participating row contains null in a simple/composite nesting key. It identifies
+  `frame`, `output_path`, and `key` and maps to HTTP 422. Rows from frames that do not
+  carry the key are non-participants, not null-key orphans.
 
 ## Testing
 
@@ -390,7 +414,8 @@ Shred / inference / cache lifecycle (`_json_shred.py`, `_json_flatten.py`):
   root row per record, one scalar-array child row per element, order-independent
   inference (set-based type widening), full conservation accounting.
 - `tests/test_v2_codec_and_shred.py` — canonical schema validation and layered
-  per-port shred behaviour.
+  per-port shred behaviour, including that an ancestor `$value` distributed into
+  a descendant object table does not suppress that object's rows.
 - `tests/test_v2_object_nesting_inference.py` — the 2026-06-17 object-nesting
   transparency ruling, end to end through inference/shred/grammar agreement.
 - `tests/test_scalar_array_and_inference.py` — scalar-array-as-its-own-child-table
@@ -450,20 +475,20 @@ V2 schema codec and OUTPUT shape:
   rules.
 - `tests/test_output_assembler.py` owns mapping validation, deterministic cyclic
   cuts, bag fan-out, unmatched partials, sibling-array non-explosion, pruning,
-  rendering, and exact assembled shapes; `tests/test_output_nest_example_contract.py`
+  rendering, exact assembled shapes, one-parse-per-distinct-path validation,
+  incomplete editor rows, and multi-frame relation keys absent from a
+  non-participating frame; `tests/test_output_nest_example_contract.py`
   pins the fixture-level nested-document contract, while
   `tests/test_executor_builders.py` and `tests/test_codegen_builders.py` own the
   executor/generated-code integration boundary.
+- `tests/test_v1_removal_contract.py` owns the assertion that removed v1 schema
+  symbols stay absent; that compatibility-removal contract is not part of
+  `test_v2_codec_and_shred.py`.
 - `frontend/src/__tests__/editors/OutputEditor.test.tsx`,
   `frontend/src/__tests__/editors/OutputEditorPathTools.test.tsx`, and
   `frontend/src/__tests__/editors/jsonpath.test.ts` own the UI-adjacent mapping,
   conflict-display, CSV import/export, and canonical-path contracts;
   their production modules remain owned by the frontend editor spec.
-
-Known coverage gap: the direct/runtime assembler is not tested to enforce the
-structural validator's duplicate-path and prefix-collision rules, because it does
-not call that validator. Validation and assembly are tested separately, and only
-the dry-run route wires them together before execution.
 
 Edge join (`_edge_join.py`):
 
@@ -477,106 +502,6 @@ Edge join (`_edge_join.py`):
 
 Projection planning and its `tests/test_projection_planner.py` coverage are owned
 by [execution-engine](../execution-engine/low-level.md).
-
-## Polars backend contracts (0.6.0)
-
-Remaining JSON-shredding improvement work is tracked in the
-[I/O layer roadmap](../../roadmap/io-layer.md).
-
-### OUTPUT assembler (Review-P04)
-
-`_output_assembler.py` must construct reusable indexes/groupings for active mapping
-rows and collected-frame rows so the assembly pipeline is indexed or near-linear in
-the mapping/frame inputs.  It must preserve the existing deterministic cut plan and
-bag-natural-join output semantics; optimisation may not alter row multiplicity or
-the ordering contract already covered by assembler tests.
-
-Every internal nesting relation uses the shared fail-loud orphan guard. Before any
-grouping, assembly, or rendering, each active parent and child row participating in
-that relation is checked across every component of its simple or composite nesting
-key. A null component raises
-`OutputNestingKeyError(OutputMappingSchemaError)` with stable frame, output-path, and
-key fields; API translation returns HTTP 422. The guard belongs in the shared
-assembler relation primitive rather than one call site. It must not silently drop,
-exclude, or merely fail to match the row. Scalar payload columns remain nullable when
-they are not relation-key components.
-
-Before materialising or rendering, mapping validation must group each source frame's
-active rows by their `emit` prefix.  More than one divergent prefix for a frame must
-raise `OutputMappingSchemaError` containing the source frame/port and conflicting
-prefixes.  The guard must run in every execution entry point, including the direct
-assembler, route/dry-run flow, and generated/deploy flow.  It may not discard a
-column to make the mapping appear valid.  A future relaxation requires a separately
-specified, explicit unambiguous source-to-prefix mapping; none is introduced here.
-
-### Raw-file signatures (Review-P06 / FR17)
-
-`_json_shred.py` and cache-validity/build callers must carry an operation-scoped
-raw-file signature object containing the observed size, mtime, and SHA-256.  A
-logical `load_v2_api_source` attempt or cache build computes that signature once and
-passes it to every freshness/manifest consumer instead of independently rehashing
-the same file.  The scope must not persist between independently initiated loads,
-builds, or promotions: each independently initiated operation recomputes and checks
-content.  Stat values remain part of the manifest/signature, and SHA-256 remains
-authoritative, so a same-size/same-mtime rewrite is detected.
-
-### Tests and non-goals
-
-`tests/test_output_assembler.py` (and route/codegen/deploy integration coverage) must add
-large-fixture work-count or spy coverage proving indexed/near-linear behaviour;
-simple-key and every-position composite-key null rejection for active parent and child
-rows; allowed non-key scalar nulls; exact error fields and HTTP 422; divergent-prefix
-rejection; preservation of every valid source row and column; and equivalent direct,
-route, generated, and deployed acceptance, error, and rendering.
-JSON cache tests must prove one raw-file hash per logical operation, a fresh hash for
-an independent operation, and invalidation after a same-size/same-mtime rewrite.
-
-The 0.6 pre-1.0 migration notes document that null relation keys now raise instead of
-silently producing orphan/non-matching rows. No output-path grammar change,
-cache-layout migration, relaxation of cache content verification, or divergent-prefix
-feature is part of this work. Existing bag semantics for valid keys, deterministic
-cuts, pruning, and cache manifest fields remain unchanged.
-
-## I/O roadmap correctness hardening
-
-The corresponding high-level behaviour is
-[I/O roadmap correctness hardening](high-level.md#io-roadmap-correctness-hardening).
-
-- `assemble_output_from_config` constructs its final `LazyFrame` with
-  `infer_schema_length=None`. Tests use more than the default inference-window
-  number of null-first rows and a later nested struct field so the regression
-  cannot pass accidentally.
-- This full-document inference is a deliberate exemption from bounded source
-  inference: OUTPUT assembly has already materialised the complete response
-  document required by its contract, and a finite prefix cannot preserve a
-  field that first appears later. The constructor performs no additional
-  upstream read; request/output limits remain the boundary for response size.
-- `_emit_row` applies the shared scalar-to-string renderer to any declared
-  string column containing a genuine JSON scalar, not only the `$value`
-  sentinel. `_buffer_to_frame` remains strict and rejects list/dict values;
-  numeric/date silent-coercion guards are unchanged.
-- `_emit_at` distinguishes dictionaries, genuine JSON scalars, and lists.
-  Lists match neither object tables nor scalar tables and increment that
-  table's skip count. The explicit null-element branch remains a valid scalar
-  row.
-- `_jsonpath.is_identifier_name` owns the ASCII identifier predicate used by
-  the parser and inference. `_reject_unexpressible_key` uses it after its
-  sentinel/dot-specific diagnostics. `parse_path` accepts only the canonical
-  dotted spelling.
-- Sidecar loading rejects duplicate keys. Raw JSON/NDJSON records are decoded
-  once by the streaming record iterator and retain decoder-native duplicate-key
-  handling; inference and build deliberately share that iterator rather than
-  adding a second hot-path duplicate-key scan.
-- Per-table cache metadata records the canonical `columns` name-to-dtype map.
-  `_aggregate_v2_tables` exposes each as `<label>.<column>` directly from that
-  metadata; it does not infer columns by reading Parquet files when metadata is
-  incomplete.
-- `_BUILD_LOCKS` is a `WeakValueDictionary[str, threading.Lock]` protected by
-  `_BUILD_LOCKS_GUARD`. Callers retain the returned lock while it is acquired.
-
-The existing `data_file_signature` argument remains the only intra-operation
-hash-reuse seam. Tests continue to prove that a separate operation recomputes
-SHA-256 and detects a same-size/same-mtime rewrite.
 
 ## Approved change contract — canonical-only cache artifacts
 
