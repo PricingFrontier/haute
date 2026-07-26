@@ -28,6 +28,7 @@ DISABLE_AUTH_ENV = "HAUTE_DISABLE_LOCAL_SESSION_AUTH"
 TRUSTED_HOSTS_ENV = "HAUTE_TRUSTED_HOSTS"
 SESSION_TOKEN_COOKIE = "haute_session"
 SESSION_BOOTSTRAP_PATH = "/api/session/bootstrap"
+DEFAULT_TRUSTED_HOSTS = ("localhost", "127.0.0.1", "::1")
 
 _BOOT_SESSION_TOKEN = secrets.token_urlsafe(32)
 _TRUTHY_ENV_VALUES = {"1", "true", "yes", "on"}
@@ -207,7 +208,7 @@ def _request_token_matches(headers: Headers) -> bool:
 def _configured_local_hosts() -> list[str]:
     raw_hosts = os.environ.get(TRUSTED_HOSTS_ENV, "")
     configured = [host.strip() for host in raw_hosts.split(",") if host.strip()]
-    return configured or ["localhost", "127.0.0.1", "::1"]
+    return configured or list(DEFAULT_TRUSTED_HOSTS)
 
 
 def _validate_local_host_configuration(hosts: Sequence[str]) -> None:
@@ -227,6 +228,11 @@ class LocalTrustedHostMiddleware:
         self.app = app
         self.allowed_hosts = list(allowed_hosts or _configured_local_hosts())
         _validate_local_host_configuration(self.allowed_hosts)
+        self._allowed_authorities = tuple(
+            authority
+            for raw_host in self.allowed_hosts
+            if (authority := _normalise_authority(raw_host)) is not None
+        )
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] not in ("http", "websocket"):
@@ -243,7 +249,10 @@ class LocalTrustedHostMiddleware:
             return
 
         authority = _normalise_authority(headers.get("host"))
-        if authority is not None and _is_loopback_host(authority[0]):
+        if authority is not None and any(
+            authority[0] == allowed_host and (allowed_port is None or authority[1] == allowed_port)
+            for allowed_host, allowed_port in self._allowed_authorities
+        ):
             await self.app(scope, receive, send)
             return
 

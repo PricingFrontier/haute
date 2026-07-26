@@ -57,11 +57,12 @@ running heavy work in a child process the parent can kill on timeout or memory l
   of the assembled document.
 
 **Out of scope** (owned elsewhere, linked where relevant):
-- *What* each node type computes (reading a data source, applying a banding table,
-  scoring a model) — that is the per-`NodeType` builder registered in `NODE_REGISTRY`,
-  owned by [pipeline-config](../pipeline-config/high-level.md). This component only
-  calls the builder-supplied callable (`build_node_fn`) and orchestrates *when* and
-  *how* it runs.
+- Static node schemas, sidecar validation, and registry configuration are owned by
+  [pipeline-config](../pipeline-config/high-level.md). This component owns the
+  per-`NodeType` runtime builder implementations registered in `NODE_REGISTRY` and
+  the `NodeBuildHooks` interception seam, then orchestrates when and how the resulting
+  callables run. The node's public configuration contract remains pipeline-config's
+  responsibility.
 - Whether a materialised DataFrame or lazy scan is reused across calls without
   recomputation — the dataframe execution cache's storage/eviction/fingerprinting
   policy belongs to [caching](../caching/high-level.md); this component only decides
@@ -85,17 +86,35 @@ running heavy work in a child process the parent can kill on timeout or memory l
   per-node timing/memory. Repeated calls against the *same* graph reuse previously
   materialised node outputs from an in-process cache; calls that need more of the
   graph than is cached extend the cache rather than starting over. Node failures are
-  captured per-node (`status="error"`) rather than aborting the whole preview, except
-  for `ContractMismatchError`, cancellation, and memory-limit exhaustion, which are
-  always raised. A join-key dtype `SchemaMismatchError` is currently captured as a
-  node error on this swallow-errors path (but propagates from lazy/fail-fast execution).
-- **Sink/batch execution** (`executor.execute_sink`, `execution.execute_lazy_graph`)
+  captured per-node (`status="error"`) rather than aborting the whole preview. Once
+  `_execute_eager_core` is running, every `HauteError` with a stable public
+  `error_code`, cancellation, and memory-limit exhaustion is always raised. This includes
+  `ContractMismatchError`, `ContractResolutionError`,
+  `ChunkMemoryRiskError`, `GroupByExecutionUnsupportedError`, and
+  `LiveSwitchScenarioError`. An uncoded join-key dtype `SchemaMismatchError` is
+  currently captured as a node error on this swallow-errors path (but propagates
+  from lazy/fail-fast execution). Preamble compilation happens outside that core:
+  interactive preview attaches a `PreambleError` only to nodes that consume its
+  namespace, while non-preview execution propagates it.
+- **Sink/batch execution** (`executor.write_data_output`, `execution.execute_lazy_graph`)
   builds one Polars lazy plan for the whole graph (or up to a target node). Native
   sink-capable file formats use bounded Polars sinks and fail loudly if the plan cannot
   be sunk in streaming mode. A `dataOutput` format with only an eager writer, and
   database output, instead uses `streaming_collect` and therefore materialises the
   result DataFrame before writing; it still refuses Polars' non-streaming broad-collect
   fallback for bounded profiles.
+- **`dataInput` and `dataOutput` are the sole tabular I/O node types.** A data input
+  executes either through its provider's declared direct capability or from a
+  validated leased snapshot generation; graph execution never builds/refreshes a
+  snapshot or performs a remote-provider fetch for snapshot-only modes. Optional
+  input code runs exactly once through `_exec_user_code` after provider resolution.
+  Source identity, mode, generation/signature, and code participate in fingerprints
+  without resolved secrets.
+- **Output publication is explicit and contained.** `dataOutput` is preview
+  pass-through; only `write_data_output` persists it. Local files stage to a unique
+  contained same-filesystem sibling, validate completion, and replace atomically.
+  Cancellation before commit removes staging; once an atomic/transactional commit
+  succeeds, later cancellation or cleanup cannot claim rollback or erase success.
 - **Every local runtime input is contained before eager or lazy execution.**
   `canonical_dataframe_execution_graph` normalizes separators, resolves symlinks,
   and rejects absolute/traversal/mixed-separator paths outside the execution root.
@@ -114,6 +133,19 @@ running heavy work in a child process the parent can kill on timeout or memory l
   parallel. A non-root `chunk_start_node_id` requires the caller to supply a
   `start_frame`; the runner bounds the suffix from that frame onward and does not
   claim that producing or retaining the caller-owned start frame was bounded.
+- **Strategy decisions use one versioned public vocabulary.** The shared planner
+  reports version 1 as `projected`, `schema-all-except`,
+  `full-width-admitted-eager`, `unprojected-streaming-boundary`,
+  `materialisation-boundary`, `unsupported`, or `not-planned`, with an exact API
+  status, profile, boundedness, reason code, and available/unavailable/truncated
+  detail state. Diagnostics are JSON-safe, deterministically capped, and never carry
+  plans, frames, source values, or other user data.
+- **Group-by is never smuggled through chunking or streaming.** Only
+  `PREVIEW_EAGER` and `DEPLOY_LIVE` may use an admitted materialisation boundary,
+  and only when a present positive admission plus an available estimate fits both
+  memory limit and headroom. Every batch/bounded profile rejects before execution;
+  missing admission, unavailable estimate, and excess headroom have distinct typed
+  reason codes.
 - Route/service long-running operations create an admitted `ExecutionContext` bound
   to an `ExecutionProfile` (preview, lazy sink, training prep, optimiser setup, deploy
   live/batch, chunked map-reduce, ...). An admitted context enforces a resident-memory
@@ -131,6 +163,17 @@ running heavy work in a child process the parent can kill on timeout or memory l
   offending node rather than as an opaque Polars error three nodes later. Missing
   columns use `ContractMismatchError`; join-key dtype disagreement uses
   `SchemaMismatchError`, with the eager-preview reporting asymmetry noted above.
+- **Contract resolution is fail-loud outside interactive preview.** Only
+  `PREVIEW_EAGER` may turn classified configuration/I/O/model-boundary resolution
+  failures into a diagnosed opaque contract. Every non-preview profile, and an
+  unprofiled low-level eager or lazy call, raises `ContractResolutionError` before
+  node work. This policy is independent of projection/materialisation strictness.
+- **Partitioned Parquet remains lazy and projected.** Directory-backed inputs retain
+  Hive-partition predicates and required columns in the optimized scan, pruning
+  irrelevant files/columns before checkpointing, caching, or response materialisation.
+  Fan-in demand attribution comes only from operand/contract/join-key/schema evidence;
+  ambiguous ownership is an observable boundary (or a strict-profile failure), never
+  a guessed source assignment.
 - **Input identity is 1:1 and edge-derived.** Every incoming edge of a node has
   exactly one *input name*, derived by `edge_input_name` (`_graph_utils.py`): an
   `apiInput`-frame edge's name is its frame label verbatim (frame labels are
@@ -197,13 +240,20 @@ running heavy work in a child process the parent can kill on timeout or memory l
   instant and always available, at the cost of being an estimate rather than an exact
   measurement — hence a 3× empirical overhead multiplier and a configurable safety
   factor rather than a computed exact figure.
+- **Operational evidence is deterministic and bounded.** Execution contexts expose
+  request-local sequenced fault points at named collect/sink/checkpoint/reducer/
+  response/terminal boundaries, record cancellation latency from the first request,
+  and release cleanup callbacks in reverse order plus admission exactly once.
+  Optional terminal telemetry is disabled by default; when enabled it emits at most
+  one schema-versioned, allow-listed aggregate event per terminal status/reason,
+  excluding identifiers, paths, columns, plans, messages, exception text, and user
+  data. Telemetry failure cannot change execution status.
 
 ## Interactions
 
-- [pipeline-config](../pipeline-config/high-level.md): supplies `NODE_REGISTRY` and
-  the per-`NodeType` builder callables (`build_node_fn`) that `_build_funcs` invokes;
-  this component owns none of the per-node computation, only the traversal and
-  materialisation strategy around it.
+- [pipeline-config](../pipeline-config/high-level.md): owns node schemas, sidecar
+  validation, and registry/configuration contracts. Execution-engine owns the runtime
+  builder implementations and interception seam registered behind those contracts.
 - [caching](../caching/high-level.md): the dataframe execution cache
   (`DataFrameExecutionCache`) that `_execute_lazy` seeds from and materialises into on
   a cache miss; the graph-fingerprint helpers this component's preview cache and
@@ -219,7 +269,7 @@ running heavy work in a child process the parent can kill on timeout or memory l
   supply the actual scan/read functions that source-node builders call; this
   component only decides when a source is re-read vs. reused.
 - [server-api](../server-api/high-level.md): the FastAPI preview/run/sink/train
-  routes call into `executor.execute_graph`/`execute_sink` and construct
+  routes call into `executor.execute_graph`/`write_data_output` and construct
   `ExecutionContext`s via `_execution_admission.create_admitted_execution_context`.
 
 ## Failure model
@@ -227,10 +277,13 @@ running heavy work in a child process the parent can kill on timeout or memory l
 - **Per-node failures during preview are swallowed and reported, not raised** —
   `execute_graph` returns a `NodeResult(status="error", error=...)` for the failing
   node (and every downstream node that depended on it) so one bad node doesn't blank
-  the whole canvas. `ContractMismatchError`, cancellation, and memory-limit exhaustion
-  are the deliberate exceptions: these propagate even in swallow mode because they
-  are API-level correctness/resource signals. A join-key dtype `SchemaMismatchError`
-  does not share that exception clause today and is returned as a node error.
+  the whole canvas. Any `HauteError` that opts into the public contract with a stable
+  `error_code`, plus cancellation and memory-limit exhaustion, propagates from the
+  eager core even in swallow mode because these are API-level correctness/resource
+  signals. Interactive preamble compilation retains the node-local handling described
+  above. An uncoded
+  join-key dtype `SchemaMismatchError` does not share that exception clause today and
+  is returned as a node error.
 - **Lazy (sink/batch/deploy) execution never swallows node failures** — any exception
   during plan construction or the final streaming collect propagates to the caller.
 - **Contract mismatches are typed at the offending node.** Missing/extra columns raise
@@ -240,7 +293,9 @@ running heavy work in a child process the parent can kill on timeout or memory l
   ordinary eager preview.
 - **Memory-budget exhaustion raises `ExecutionMemoryLimitExceededError`** (a
   `MemoryError` subclass) at the next checkpoint after RSS crosses the resolved
-  budget; **admission is refused up front** with `ExecutionAdmissionError` if a
+  budget. A sampler that becomes unavailable mid-run raises the same typed error with
+  `reason="memory_sampler_unavailable"` rather than silently disabling enforcement;
+  **admission is refused up front** with `ExecutionAdmissionError` if a
   current-RSS sample is unavailable, the process is already over its RSS cap, or a
   heavy profile's process-wide in-flight reservation is exhausted before the run
   starts. These guarantees apply only
@@ -249,7 +304,8 @@ running heavy work in a child process the parent can kill on timeout or memory l
 - **Invalid admission configuration raises `RuntimeError` before admission.** An
   unknown `HAUTE_EXECUTION_MEMORY_POLICY`, malformed/non-positive memory/RSS limit,
   or invalid reserve setting is configuration failure, not an
-  `ExecutionAdmissionError`; no context is created.
+  `ExecutionAdmissionError`; no context is created. Numeric admission overrides are
+  parsed from one environment read before local unit conversion.
 - **Cancellation raises `ExecutionCancelledError`** at the next checkpoint once a
   context's cancellation token has been set; the engine does not poll independently,
   so cancellation latency is bounded by the distance between checkpoints, not
@@ -268,246 +324,13 @@ running heavy work in a child process the parent can kill on timeout or memory l
   failures are collected into `IsolatedWorkerCleanupError`. A cleanup-only failure is
   raised; when there is already a primary worker failure, cleanup detail is attached
   to it with `add_note()` rather than replacing it or raising a second exception.
+- **Worker memory enforcement has a closed policy.**
+  `HAUTE_WORKER_MEMORY_ENFORCEMENT=best_effort|required`; unknown values and missing
+  required limits fail loudly. Required mode rejects before spawn when a hard process
+  cap is unavailable, while best-effort retains process isolation and in-child
+  admission/RSS checkpoints without misrepresenting them as an OS hard cap.
 - **RAM estimation degrades to "unknown" rather than guessing.** When source row
   counts or column schema cannot be determined from parquet metadata (Databricks
   sources, JSON-shape apiInput caches), `estimate_safe_training_rows` returns
   `safe_row_limit=None` / `total_rows=None` — the caller proceeds without a downsample
   rather than receiving a fabricated number.
-
-## Polars backend contracts (0.6.0)
-
-This is an approved spec-first change. Remaining execution-engine improvement work is tracked in
-the [execution-engine roadmap](../../roadmap/execution-engine.md).
-
-### Current limitations
-
-Execution strategy selection is projection-centred but does not yet provide one stable,
-versioned vocabulary at the `haute.execution` boundary, nor cover every execution entry
-point when no projection seed is available. Strategy diagnostics do not yet consistently
-describe boundedness, boundaries, cost, and feature provenance. Chunk planning rejects
-group-by implicitly through capability limits rather than exposing a deliberate execution
-boundary/rejection contract. Several execution paths also retain avoidable overhead or
-ambiguous operational behaviour: Windows RSS sampler setup is repeated, eager diamonds
-may cache consumers rather than their shared producer, RAM estimation can suppress
-unexpected failures or repeat work, and selected context/lifecycle paths have inconsistent
-timing, error, and cleanup semantics.
-
-### Approved target behaviour
-
-- `haute.execution` shall expose the sole projection-owned, stable, versioned strategy
-  vocabulary. Version 1 has the internal strategies `projected`, `schema-all-except`,
-  `full-width-admitted-eager`, `unprojected-streaming-boundary`,
-  `materialisation-boundary`, `unsupported`, and `not-planned`. Existing consumers shall
-  migrate to that facade rather than carrying parallel strategy representations.
-- Every strategy result shall contain integer `schema_version=1`, API `status`, internal
-  `strategy`, `profile`, `boundedness` (`bounded`, `unbounded`, or `unknown`), stable
-  `reason_code`, and `detail_state` (`available`, `unavailable`, or `truncated`). Optional
-  blocking/remediation, cost, metric, and provenance detail is bounded and contains no
-  plans, frames, or user data. Boundary and reason collections are capped at 32 entries,
-  provenance at 128 entries, and human messages/remediation at 512 characters, with
-  deterministic truncation.
-- The version-1 strategy-to-status mapping is authoritative: `projected` and
-  `schema-all-except` map to `projected`; `full-width-admitted-eager` maps to
-  `admitted_eager`; both boundary strategies map to `boundary`; `unsupported` maps to
-  `rejected`; and `not-planned` maps to `not_planned`.
-- The execution planner shall cover projection-seeded and seedless preview and deploy-live
-  entry points. When no safe bounded plan is available, the result shall explicitly describe
-  the admitted eager/materialised boundary or raise the applicable typed unsupported error;
-  it shall not silently claim bounded execution.
-- Group-by version 1 is never chunked and follows this authoritative profile matrix:
-
-  | `ExecutionProfile` | Version-1 group-by outcome |
-  | --- | --- |
-  | `PREVIEW_EAGER` | `materialisation-boundary` only after the admission and estimate checks below; otherwise typed rejection |
-  | `DEPLOY_LIVE` | `materialisation-boundary` only after the admission and estimate checks below; otherwise typed rejection |
-  | `LAZY_SINK` | reject with `profile_requires_bounded_execution` regardless of estimate |
-  | `TRAINING_PREP` | reject with `profile_requires_bounded_execution` regardless of estimate |
-  | `OPTIMISER_SETUP` | reject with `profile_requires_bounded_execution` regardless of estimate |
-  | `EXPLORE_ANALYSIS` | reject with `profile_requires_bounded_execution` regardless of estimate |
-  | `AUTO_RANGE` | reject with `profile_requires_bounded_execution` regardless of estimate |
-  | `DEPLOY_BATCH` | reject with `profile_requires_bounded_execution` regardless of estimate |
-  | `CHUNKED_MAP_REDUCE` | reject with `profile_requires_bounded_execution` regardless of estimate |
-
-  For `PREVIEW_EAGER` and `DEPLOY_LIVE`, a boundary is admitted only when an
-  `ExecutionContext` with an admission exists, both `admission.memory_limit_bytes` and
-  `admission.headroom_bytes` are positive, the `MaterialisationEstimate` has
-  `state=available`, and `estimated_peak_bytes <= min(admission.memory_limit_bytes,
-  admission.headroom_bytes)`. Equality is admitted. A missing context/admission or
-  non-positive admission value rejects with `execution_admission_unavailable`; an
-  unavailable estimate rejects with `materialisation_estimate_unavailable`; and an
-  available estimate above effective headroom rejects with
-  `materialisation_exceeds_headroom`. Every rejection raises
-  `GroupByExecutionUnsupportedError`, a `BoundedMemoryUnsupportedError`, before execution,
-  with stable fields `node_id`, `operator`, `profile`, `reason_code`, `remediation`, nullable
-  `estimated_peak_bytes`, and nullable `headroom_bytes`. Nullable fields are populated when
-  their values are known at decision time.
-- Group-by must never be represented as ordinary checked execution or an
-  `unprojected-streaming-boundary`, and has no streaming or chunk fallback. Chunk-local
-  partial/final reducers are not part of this change. The implementation plan's P1 group-by
-  integration depends on the P4 `MaterialisationEstimate` work: P1 may establish the typed
-  rejection surface first, but its admitted boundary must not ship until P4 supplies the
-  estimate contract.
-- Execution diagnostics shall remain bounded in size and safe to expose to callers; they
-  shall identify the decisive unsupported/opaque feature and any materialisation boundary
-  without embedding unbounded plans, frames, or user data.
-- Windows RSS sampling shall memoise process/DLL bindings per factory object identity,
-  without changing sampling failure semantics, and expose an explicit reset seam. The
-  cache must initialise once under concurrent access for one identity and initialise a new
-  binding after a factory switch. Eager diamond execution shall create one cached lazy-plan
-  node at the common producer and share that same `LazyFrame` with dependent branches; it
-  must not add an eager collection or wrap an already-materialised `DataFrame`.
-- RAM estimation shall distinguish unavailable metadata from unexpected failures (which
-  propagate), memoise metadata/schema resolution for a single estimate, and account
-  conservatively for variable-width string columns. P4 shall expose an explicit
-  `MaterialisationEstimate` with `state=available|unavailable`: an available estimate has a
-  non-negative integer `estimated_peak_bytes`, while an unavailable estimate has
-  `estimated_peak_bytes=None`. Zero bytes is a legitimate available estimate for empty input
-  and must never be overloaded to mean unknown. The estimator shall not fabricate a safe
-  row limit.
-- Execution-owned lifecycle semantics shall report stage timings in milliseconds,
-  raise `LiveSwitchScenarioError` (an `ExecutionError`) with a stable code and named fields
-  for invalid `liveSwitch` selection, and release every
-  acquired admission reservation on every terminal path. FR33's eager contract-cache miss
-  behaviour is already delivered and is not reopened by this change.
-- The dormant `COLLECT_LAZY` action and its unreachable guard are absent. Duplicate
-  execution predicates and measured execution hot-path cleanup are consolidated without
-  changing supported semantics.
-
-### Non-goals and compatibility
-
-- This change does not add chunked group-by reducers, alter node computation semantics,
-  introduce broad best-effort fallbacks, or promise that all Polars operations are bounded.
-- Before 1.0, 0.6 intentionally replaces unsafe silent fallback with typed failure. Existing
-  version-1 consumers may ignore unknown additive fields, but missing/malformed required
-  fields, unknown version-1 enum values, and unsupported higher schema versions are invalid.
-  Release notes and a migration note are required; no compatibility shim may preserve the
-  unsafe group-by or live-switch behaviour.
-- Performance cleanups require representative benchmarks; unmeasured speculative Review-P11 changes
-  are not required merely because they appear in the review.
-
-### Acceptance evidence
-
-- Contract tests prove all public execution entry points consume the same versioned strategy
-  result, including seedless preview and deploy-live paths, enforce the authoritative mapping,
-  version rules and deterministic caps, and keep diagnostics data-free and size-bounded.
-- Table-driven scenario tests cover every `ExecutionProfile` and every group-by reason code,
-  and prove the sole admitted result is a `materialisation-boundary`. For both eligible
-  profiles they cover missing context, missing/invalid admission, unavailable estimate,
-  empty-input zero estimate, estimate below headroom, estimate equal to headroom, and
-  estimate over headroom. No test may route group-by through streaming, chunking, ordinary
-  checked execution, or an unprojected streaming boundary.
-- Focused tests prove sampler initialisation is once per factory identity under concurrency,
-  switching factories creates a fresh binding, the reset seam works, one shared producer
-  materialisation across an eager diamond, RAM-estimate
-  unknown/fail-loud/memoisation/string-width behaviour, millisecond timing, typed live-switch
-  mapping failure, and reservation release after success,
-  cancellation, and exceptions.
-- The relevant execution, projection, RAM-estimate, admission/context, eager/lazy, and
-  deploy/preview test suites pass; benchmark evidence accompanies any Review-P11 optimisation claim.
-
-## Approved change contract — 0.7.0 unified data I/O execution
-
-Remaining execution-engine improvement work is tracked in the
-[execution-engine roadmap](../../roadmap/execution-engine.md)
-and the approved [I/O contract](../io-layer/high-level.md#approved-change-contract-070-data-io-convergence).
-
-- `dataInput` is the sole tabular source type understood by eager, lazy, projected, chunked,
-  tracing, optimiser, RAM-estimation, and deployment execution paths. A pipeline may have
-  multiple inputs; source discovery and explicit `chunk_start_node_id` retain their existing
-  multi-source semantics. `dataSource` is removed rather than aliased.
-- A data input executes either directly through its provider or from a validated shared Parquet
-  snapshot. Runtime execution never builds or refreshes a snapshot. Database and Databricks
-  inputs without a ready matching snapshot fail before the graph runs; local-file/lakehouse
-  direct reads follow their declared capability.
-- The optional input Polars body is applied after source resolution. It participates in column
-  contracts, projection, fingerprints, tracing, and codegen exactly once. Chunk planning accepts
-  it only when the shared AST proof establishes row-local semantics; it never treats whole-frame
-  code as independently correct on each batch.
-- Chunk-source selection is provider/format capability-driven. A valid direct-batch source or
-  valid cached Parquet generation feeds `bounded_collect_batches`; there is no CSV/Parquet
-  extension switch. Capability is opt-in and versioned. A scanner-backed format is still rejected
-  until format-specific evidence proves bounded ordered batches with the pinned Polars version.
-- Strategy diagnostics distinguish direct scan, cached scan, bounded snapshot build (reported by
-  the cache job rather than graph execution), admitted-eager build, native output sink, eager
-  writer, and unsupported boundaries. “Cached” never implies externally fresh and “Parquet”
-  never implies the cache build was bounded.
-- `dataOutput` is the sole persistence target and remains a preview pass-through. Only the
-  explicit write endpoint runs it. Native sink formats preserve bounded lazy execution;
-  writer-only formats require materialisation admission. Local single-file publication is staged
-  and atomic. Database/lakehouse publication reports its transactional semantics. `dataSink` is
-  removed rather than routed through a compatibility branch.
-
-The hard cutover deletes legacy node branches from graph path resolution, source enumeration,
-projection coverage, RAM estimation, chunk declarations, executor builders, sink dispatch,
-tracing/deploy hooks, and tests. Acceptance covers each execution strategy with direct and cached
-inputs, multiple roots, row-local and rejected global code, stale/missing/corrupt snapshots,
-format-capability mismatch, native/eager output modes, cancellation/admission, and assertions
-that graph execution causes no cache-build or remote-provider call.
-
-## Approved change contract — 0.8.0 worker transport and enforcement
-
-The process-isolation boundary gains the versioned request/event/result/failure protocol defined
-by [background jobs](../background-jobs/high-level.md#approved-change-contract-080-supervised-process-jobs).
-It is a containment and transfer layer, not a replacement for projection, chunking, admission,
-or execution checkpoints.
-
-Spawn is required on every platform so workers do not inherit the host's native heaps. Linux
-workers apply an address-space limit when configured. Windows and macOS are explicitly
-unsupported for that hard cap: `best_effort` continues with process containment and in-child
-RSS checkpoints, while `required` fails before process creation. Unknown enforcement values,
-missing required limits, malformed protocol data, and unavailable required caps fail loudly.
-No API or diagnostic calls best-effort RSS sampling a hard OS limit.
-
-## Approved execution-roadmap hardening contract
-
-The execution-engine roadmap packages improve the codebase and are accepted with the following
-bounded scope. The two audit packages retain their shipped behaviour where re-verification proves
-the contract already holds; they do not justify a second planner or execution path.
-
-- **One production contract-resolution policy.** Eager and lazy execution use the same
-  resolved-node contract result. Contract-resolution strictness is independent of projection and
-  materialisation policy: every profiled production execution fails before node work with one
-  typed `contract_resolution_failed` error when a builder contract cannot be resolved, including
-  both deploy-live and deploy-batch. Only interactive preview may retain explicitly diagnosed
-  opaque degradation; unprofiled low-level calls are strict. A broken preamble remains node-local
-  only for interactive preview; every non-preview profile propagates the typed
-  `preamble_failed` failure before materialisation.
-- **Partitioned Parquet remains a lazy source boundary.** A direct Parquet data input may identify
-  a directory-backed dataset and use Polars' declared Hive-partition arguments. A downstream
-  partition predicate and target-column demand must remain in the optimised scan: irrelevant
-  partitions and unrelated columns are pruned before any checkpoint, cache materialisation, or
-  eager response is built. No directory walk or eager concatenation is introduced in Haute.
-- **Target-width chunk bounds are authoritative.** Byte-budget planning continues to cost the
-  projected target schema and conservatively sample variable-width target columns. If one
-  estimated target row is already wider than the configured chunk budget, planning raises a
-  typed `chunk_memory_risk` error instead of manufacturing a one-row plan that still exceeds the
-  stated bound. A one-row plan bounds row count, not bytes, and therefore is not an equivalent
-  byte-bounded fallback. Stage/checkpoint RSS sampling remains coarse post-operation evidence; it
-  is not described as continuous native-memory enforcement.
-- **Projection attribution remains explicit.** Fan-in demand is assigned only from operand,
-  contract, join-key, or producer-schema evidence. Ambiguous ownership fails in strict profiles
-  and remains an observable boundary in the two non-strict profiles. A blocked caller seed has a
-  distinct diagnostic, and code generation omits stale parent attribution rather than guessing.
-- **Deterministic fault and cleanup evidence.** Execution contexts expose a testable fault-point
-  seam at native collect, sink/checkpoint, reducer, response-shaping, and lifecycle boundaries.
-  Cancellation records the monotonic delay from request to observed checkpoint. Cleanup always
-  releases every registered resource and admission reservation; a cleanup failure is raised when
-  it is the only failure. Preserving a propagating primary failure is explicit at the releasing
-  `finally` boundary; merely calling cleanup while an unrelated exception is being handled never
-  swallows a cleanup failure.
-- **Optional bounded telemetry.** `HAUTE_EXECUTION_TELEMETRY` is disabled by default. When enabled,
-  terminal metric publication emits one schema-versioned event containing only an allow-list of
-  aggregate profile, status, strategy, timing, RSS, byte, chunk, collect, checkpoint, and
-  truncation fields. It excludes job/node identifiers, paths, column names, plans, source values,
-  messages, and exception text. Configuration is parsed once and validated during server startup;
-  the attribute allow-list is emitted in full or rejected observably, never silently sliced.
-  Disabled mode performs no payload assembly or sink call. Telemetry assembly/sink failures do not
-  change execution status. Trace payloads remain in the existing bounded in-memory
-  caches/responses; this contract deliberately adds no persistent trace artifact.
-
-Acceptance evidence covers both execution strategies and every profile, proves identical typed
-resolution failures in bounded eager/lazy paths, proves directory-backed Parquet partition and
-column pruning from the optimised scan, rejects an over-budget single target row, preserves the
-existing projection-attribution diagnostics, measures deterministic cancellation latency, injects
-faults across all named boundaries while proving cleanup precedence, and verifies telemetry's
-disabled no-op and enabled redaction/caps.

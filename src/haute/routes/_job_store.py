@@ -18,7 +18,8 @@ import functools
 import threading
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from typing import Any
 
 from fastapi import HTTPException
@@ -34,7 +35,19 @@ _HEAVY_OBJECT_EXPIRES_AT_KEY = "heavy_objects_expires_at"
 logger = get_logger(component="server.job_store")
 
 ArtifactCleaner = Callable[[dict[str, Any]], None]
+_ArtifactCleanup = tuple[str, tuple[dict[str, Any], ...]]
 _ARTIFACT_CLEANERS: dict[str, ArtifactCleaner] = {}
+
+
+class _ArtifactCleanupState(threading.local):
+    """Per-thread cleanup collector shared by nested store operations."""
+
+    def __init__(self) -> None:
+        self.depth = 0
+        self.cleanups: list[_ArtifactCleanup] = []
+
+
+_ARTIFACT_CLEANUP_STATE = _ArtifactCleanupState()
 
 
 def register_artifact_cleaner(kind: str, cleaner: ArtifactCleaner) -> None:
@@ -89,19 +102,38 @@ class JobStore:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _evict_stale(self) -> None:
-        """Remove expired jobs and slim expired heavy payloads."""
-        with self._write_lock:
-            now = time.time()
-            self._clear_expired_heavy_objects_locked(now)
-            cutoff = now - self._ttl_seconds
-            stale = [
-                jid
-                for jid, j in self._jobs.items()
-                if self._job_eviction_timestamp_locked(jid, j) < cutoff
-            ]
-            for jid in stale:
-                self._remove_job_locked(jid)
+    @contextmanager
+    def _write_locked_with_artifact_cleanup(self) -> Iterator[list[_ArtifactCleanup]]:
+        """Drain shared cleanup work only after the outermost store lock releases."""
+        state = _ARTIFACT_CLEANUP_STATE
+        if state.depth == 0:
+            state.cleanups = []
+        state.depth += 1
+        try:
+            with self._write_lock:
+                yield state.cleanups
+        finally:
+            state.depth -= 1
+            if state.depth == 0:
+                cleanups = state.cleanups
+                state.cleanups = []
+                self._run_artifact_cleanups(cleanups)
+
+    def _evict_stale_locked(
+        self,
+        now: float,
+        cleanups: list[_ArtifactCleanup],
+    ) -> None:
+        """Detach expired jobs and append their artifact cleanup work."""
+        self._clear_expired_heavy_objects_locked(now)
+        cutoff = now - self._ttl_seconds
+        stale = [
+            jid
+            for jid, job in self._jobs.items()
+            if self._job_eviction_timestamp_locked(jid, job) < cutoff
+        ]
+        for job_id in stale:
+            self._remove_job_locked(job_id, cleanups)
 
     def _job_eviction_timestamp_locked(self, job_id: str, job: dict[str, Any]) -> float:
         """Return the timestamp used for metadata TTL eviction."""
@@ -110,19 +142,27 @@ class JobStore:
         self._running_activity_at.pop(job_id, None)
         return float(job["created_at"])
 
-    def _remove_job_locked(self, job_id: str) -> None:
-        job = self._jobs.pop(job_id, None)
+    def _remove_job_locked(
+        self,
+        job_id: str,
+        cleanups: list[_ArtifactCleanup],
+    ) -> None:
+        job = self._jobs.get(job_id)
         if job is None:
             return
+        handles = tuple(dict(handle) for handle in job.get("artifact_handles", {}).values())
+        self._jobs.pop(job_id)
+        cleanups.append((job_id, handles))
         self._running_activity_at.pop(job_id, None)
-        self._cleanup_artifact_handles(job_id, job)
         self._cancel_heavy_object_timer_locked(job_id)
 
     @staticmethod
-    def _cleanup_artifact_handles(job_id: str, job: dict[str, Any]) -> None:
+    def _cleanup_artifact_handles(
+        job_id: str,
+        handles: tuple[dict[str, Any], ...],
+    ) -> None:
         """Remove persisted artifact files when the owning job expires."""
-        handles = job.get("artifact_handles", {})
-        for handle in handles.values():
+        for handle in handles:
             kind = handle["kind"]
             cleaner = _ARTIFACT_CLEANERS.get(kind)
             if cleaner is None:
@@ -144,6 +184,12 @@ class JobStore:
                     error=str(exc),
                     exc_info=True,
                 )
+
+    @classmethod
+    def _run_artifact_cleanups(cls, cleanups: list[_ArtifactCleanup]) -> None:
+        """Run detached filesystem cleanup without blocking store operations."""
+        for job_id, handles in cleanups:
+            cls._cleanup_artifact_handles(job_id, handles)
 
     def _clear_expired_heavy_objects_locked(self, now: float) -> None:
         """Strip completed-job heavy objects once their short retention expires."""
@@ -305,30 +351,31 @@ class JobStore:
         """
         schedule_cleanup = False  # pragma: no mutate
         expires_at: float | None = None
-        with self._write_lock:
-            self._evict_stale()
+        result = False
+        with self._write_locked_with_artifact_cleanup() as artifact_cleanups:
+            self._evict_stale_locked(time.time(), artifact_cleanups)
             job = self._jobs.get(job_id)
-            if job is None:
-                return False
-            if job.get("status") != "completed":
-                return False
-            if any(job.get(key) is None for key in required_keys):
-                return False
-
-            now = time.time()
-            metadata_expires_at = float(job["created_at"]) + self._ttl_seconds
-            refreshed_expires_at = min(now + self._heavy_object_ttl_seconds, metadata_expires_at)
-            current_expires_at = self._heavy_objects_expires_at(job)
-            if refreshed_expires_at <= current_expires_at:
-                return True
-
-            updated = dict(job)
-            updated[_HEAVY_OBJECT_EXPIRES_AT_KEY] = refreshed_expires_at
-            self._jobs[job_id] = updated
-            schedule_cleanup = True
-            expires_at = refreshed_expires_at
+            if (
+                job is not None
+                and job.get("status") == "completed"
+                and not any(job.get(key) is None for key in required_keys)
+            ):
+                result = True
+                now = time.time()
+                metadata_expires_at = float(job["created_at"]) + self._ttl_seconds
+                refreshed_expires_at = min(
+                    now + self._heavy_object_ttl_seconds,
+                    metadata_expires_at,
+                )
+                current_expires_at = self._heavy_objects_expires_at(job)
+                if refreshed_expires_at > current_expires_at:
+                    updated = dict(job)
+                    updated[_HEAVY_OBJECT_EXPIRES_AT_KEY] = refreshed_expires_at
+                    self._jobs[job_id] = updated
+                    schedule_cleanup = True
+                    expires_at = refreshed_expires_at
         self._schedule_heavy_object_cleanup_if_needed(job_id, schedule_cleanup, expires_at)
-        return True
+        return result
 
     # ------------------------------------------------------------------
     # Public API
@@ -339,8 +386,8 @@ class JobStore:
 
         Automatically evicts stale jobs before inserting.
         """
-        with self._write_lock:
-            self._evict_stale()
+        with self._write_locked_with_artifact_cleanup() as artifact_cleanups:
+            self._evict_stale_locked(time.time(), artifact_cleanups)
             job_id = uuid.uuid4().hex[:12]
             now = time.time()
             job = dict(initial_status)
@@ -357,9 +404,10 @@ class JobStore:
 
         Evicts stale jobs first so callers never see expired entries.
         """
-        with self._write_lock:
-            self._evict_stale()
-            return self._jobs.get(job_id)
+        with self._write_locked_with_artifact_cleanup() as artifact_cleanups:
+            self._evict_stale_locked(time.time(), artifact_cleanups)
+            job = self._jobs.get(job_id)
+        return job
 
     def update_job(self, job_id: str, **fields: Any) -> None:
         """Merge *fields* into the stored job dict — atomic swap.
@@ -464,8 +512,8 @@ class JobStore:
 
     def delete_job(self, job_id: str) -> None:
         """Remove a job and clean up any owned artifacts."""
-        with self._write_lock:
-            self._remove_job_locked(job_id)
+        with self._write_locked_with_artifact_cleanup() as artifact_cleanups:
+            self._remove_job_locked(job_id, artifact_cleanups)
 
     def require_completed_job(self, job_id: str) -> dict[str, Any]:
         """Return the job dict for *job_id*, raising if missing or not completed.
@@ -490,15 +538,17 @@ class JobStore:
         on a raw ``jobs.items()`` iteration and never count already-expired
         entries.
         """
-        with self._write_lock:
-            self._evict_stale()
-            return any(job.get("status") == status for job in self._jobs.values())
+        with self._write_locked_with_artifact_cleanup() as artifact_cleanups:
+            self._evict_stale_locked(time.time(), artifact_cleanups)
+            result = any(job.get("status") == status for job in self._jobs.values())
+        return result
 
     def has_job_matching(self, predicate: Callable[[dict[str, Any]], bool]) -> bool:
         """Return ``True`` if any live job matches *predicate* under the store lock."""
-        with self._write_lock:
-            self._evict_stale()
-            return any(predicate(job) for job in self._jobs.values())
+        with self._write_locked_with_artifact_cleanup() as artifact_cleanups:
+            self._evict_stale_locked(time.time(), artifact_cleanups)
+            result = any(predicate(job) for job in self._jobs.values())
+        return result
 
     def clear_result_data(
         self,
