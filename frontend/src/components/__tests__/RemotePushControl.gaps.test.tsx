@@ -206,6 +206,35 @@ describe("RemotePushControl — error paths and catch-up matrix", () => {
     expect(screen.queryByTestId("git-push-rejected")).not.toBeInTheDocument()
   })
 
+  it("keeps a parsed rejection visible when its best-effort remote refresh fails", async () => {
+    mockGetGitRemotes
+      .mockResolvedValueOnce({ remotes: [remote()], working_branch: "dev" })
+      .mockRejectedValueOnce(new Error("transient remote refresh failure"))
+    const rejection = {
+      status: "rejected_diverged",
+      remote: "origin",
+      working: { status: "diverged", ahead: 1, behind: 2 },
+      ledger: { status: "synced", ahead: 0, behind: 0 },
+      message: "Remote history diverged.",
+    }
+    mockGitPush.mockRejectedValue(
+      new ApiError("HTTP 409", 409, JSON.stringify({ detail: rejection }), {
+        detail: rejection,
+      }),
+    )
+
+    render(<RemotePushControl pendingSaveCount={0} />)
+    await waitFor(() => expect(screen.getByTestId("git-push-control")).toBeInTheDocument())
+    fireEvent.click(screen.getByTestId("git-push-button"))
+
+    await waitFor(() => expect(screen.getByTestId("git-push-rejected")).toBeInTheDocument())
+    expect(mockGetGitRemotes).toHaveBeenCalledTimes(2)
+    expect(mockAddToast).not.toHaveBeenCalledWith(
+      "error",
+      expect.stringMatching(/Push failed|malformed divergence response/),
+    )
+  })
+
   // ── canCatchUp mixed leg-state matrix ────────────────────────────────────
   // Behind-only on either leg, no leg ahead/diverged → "Catch up" offered.
   it("offers Catch up when only the working leg is behind (ledger synced)", async () => {

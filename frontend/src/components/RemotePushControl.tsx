@@ -80,8 +80,8 @@ export default function RemotePushControl({
             : "",
       )
     } catch {
-      // Remotes are best-effort chrome; a failure just leaves the control empty.
-      if (id === reqId.current) setRemotes([])
+      // Remotes are best-effort chrome. Preserve the last-good list on a
+      // refresh failure; a cold load already starts from the empty list.
     } finally {
       if (id === reqId.current) setLoaded(true)
     }
@@ -115,15 +115,19 @@ export default function RemotePushControl({
       // (offline, auth, server) stays a toast.
       if (err instanceof ApiError && err.status === 409) {
         const body = (err.body as { detail?: unknown } | undefined)?.detail
+        let parsed: GitPushRejection | null
         try {
-          const parsed = parseGitPushRejection(body)
-          if (parsed) {
-            setRejection(parsed)
-            await load() // badges now reflect the freshly-known divergence
-            return
-          }
+          parsed = parseGitPushRejection(body)
         } catch (parseError) {
-          addToast("error", `Push failed: ${gitErrorMessage(parseError, "malformed divergence response")}`)
+          addToast(
+            "error",
+            `Push failed: ${gitErrorMessage(parseError, "malformed divergence response")}`,
+          )
+          return
+        }
+        if (parsed) {
+          setRejection(parsed)
+          await load() // badges now reflect the freshly-known divergence
           return
         }
       }

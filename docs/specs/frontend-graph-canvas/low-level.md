@@ -294,11 +294,14 @@
     with a cold-start retry policy (`INITIAL_PIPELINE_RETRY_POLICY`, 6
     retries at 250ms base delay); the response is validated through
     `parsePipelineResponse` before touching the graph. On success, applies
-    nodes/edges/preamble/submodels via the raw setters (`setSubmodelsRaw`
-    also refreshes the request-facing `submodelsRef`), seeds `nodeIdCounter` from
-    `computeNextNodeId`, and calls `useGraphStore.getState().markSaved()` —
-    the just-loaded state IS the on-disk state, so it starts clean. Aborted
-    via `AbortController` on unmount.
+    nodes/edges/preamble/submodels via the raw setters. A nullable or omitted
+    HTTP `submodels` field is the empty map: the hook writes `{}` through
+    `setSubmodelsRaw` and into the request-facing `submodelsRef`, so a reload
+    cannot retain an earlier graph's submodels. It then seeds `nodeIdCounter`
+    from `computeNextNodeId` and calls
+    `useGraphStore.getState().markSaved()` — the just-loaded state IS the
+    on-disk state, so it starts clean. Aborted via `AbortController` on
+    unmount.
 16. **Preview fetch (`usePipelineAPI.fetchPreview` →
     `fetchPreviewImmediate`).** `fetchPreview` cancels any in-flight
     request/debounce, paints cached data (or a `"loading"` placeholder)

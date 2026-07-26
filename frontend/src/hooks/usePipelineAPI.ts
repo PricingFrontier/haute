@@ -309,10 +309,9 @@ export default function usePipelineAPI({
           sourceFileRef.current = data.source_file
           setCurrentSourceFile?.(data.source_file)
         }
-        if (data.submodels != null) {
-          submodelsRef.current = data.submodels
-          setSubmodelsRaw?.(data.submodels)
-        }
+        const loadedSubmodels = data.submodels ?? {}
+        submodelsRef.current = loadedSubmodels
+        setSubmodelsRaw?.(loadedSubmodels)
         // Populate source state from backend sidecar
         if (data.sources) {
           useSettingsStore.getState().setSources(data.sources)
