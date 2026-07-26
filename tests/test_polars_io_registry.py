@@ -25,6 +25,7 @@ from haute._polars_io_registry import (
     registry_capabilities,
     resolve_input_mode,
     resolve_output_mode,
+    validate_data_input_config,
     write_polars_output,
 )
 from haute._polars_io_schema import io_functions_by_key
@@ -110,6 +111,27 @@ def test_partitioned_parquet_prunes_partition_and_columns_before_execution(
     assert "year=2024" not in optimised_plan
     assert "unused_payload" not in optimised_plan
     assert output.collect().to_dict(as_series=False) == {"value": [20]}
+
+
+@pytest.mark.parametrize(
+    "uri",
+    [
+        "postgresql://user:password@db.example/pricing",
+        "postgresql://db.example/pricing?access_token=secret",
+        "postgresql://db.example/pricing?PASSWORD=secret",
+    ],
+)
+def test_database_config_rejects_inline_uri_credentials(uri: str) -> None:
+    with pytest.raises(PolarsIoConfigError, match="credentials"):
+        validate_data_input_config(
+            {
+                "inputType": "database",
+                "format": "database",
+                "cacheMode": "snapshot",
+                "uri": uri,
+                "query": "SELECT 1",
+            }
+        )
 
 
 class TestRegistrySchemaCompleteness:

@@ -15,7 +15,7 @@ from collections.abc import Iterator, Mapping
 from contextlib import closing
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
-from urllib.parse import unquote, urlsplit
+from urllib.parse import parse_qsl, unquote, urlsplit
 
 import pyarrow as pa
 
@@ -32,6 +32,19 @@ _READ_ONLY_PREFIX_RE = re.compile(r"^\s*(?:SELECT|WITH)\b", re.IGNORECASE)
 _FORBIDDEN_SQL_RE = re.compile(
     r"\b(?:ALTER|ATTACH|CREATE|DELETE|DETACH|DROP|EXEC|EXECUTE|GRANT|INSERT|"
     r"PRAGMA|REPLACE|REVOKE|TRUNCATE|UPDATE|VACUUM)\b",
+    re.IGNORECASE,
+)
+_SECRET_QUERY_PARTS = (
+    "token",
+    "password",
+    "secret",
+    "credential",
+    "access_key",
+    "apikey",
+    "api_key",
+)
+_FROM_TABLE_RE = re.compile(
+    r"\bFROM\s+(?P<table>(?:\"[^\"]+\"|`[^`]+`|\[[^\]]+\]|[A-Za-z_][\w.]*))",
     re.IGNORECASE,
 )
 
@@ -51,6 +64,18 @@ def validate_read_query(query: str) -> str:
             f"Database query contains forbidden keyword {forbidden.group()!r}."
         )
     return stripped
+
+
+def validate_credential_free_uri(uri: str) -> str:
+    """Return *uri* when it contains no inline credential material."""
+    parsed = urlsplit(uri)
+    if parsed.username is not None or parsed.password is not None:
+        raise DatabaseConfigError("Database URI must not contain credentials.")
+    for raw_key, _value in parse_qsl(parsed.query, keep_blank_values=True):
+        key = raw_key.casefold().replace("-", "_")
+        if any(part in key for part in _SECRET_QUERY_PARTS):
+            raise DatabaseConfigError("Database URI must not contain credential query parameters.")
+    return uri
 
 
 def resolve_connection_uri(config: Mapping[str, Any]) -> str:
@@ -84,14 +109,12 @@ def resolve_sqlite_path(
     base_dir: str | Path | None = None,
 ) -> str:
     """Resolve a SQLite URI using SQLAlchemy's relative-path convention."""
-    parsed = urlsplit(uri)
+    parsed = urlsplit(validate_credential_free_uri(uri))
     if parsed.scheme != "sqlite":
         raise DatabaseConfigError(
             f"Database snapshot scheme {parsed.scheme or '<missing>'!r} is unsupported; "
             "this build supports bounded SQLite snapshots only."
         )
-    if parsed.username is not None or parsed.password is not None:
-        raise DatabaseConfigError("Database URI must not contain credentials.")
     if parsed.netloc not in ("", "localhost"):
         raise DatabaseConfigError("SQLite URI must not name a remote host.")
 
@@ -181,7 +204,12 @@ class DatabaseSnapshotBuilder:
 
         def batches() -> Iterator[pa.RecordBatch]:
             context.checkpoint()
-            with closing(sqlite3.connect(database_path)) as connection:
+            if database_path == ":memory:":
+                raise DatabaseConfigError(
+                    "SQLite snapshot sources must be existing on-disk databases."
+                )
+            readonly_uri = f"{Path(database_path).as_uri()}?mode=ro"
+            with closing(sqlite3.connect(readonly_uri, uri=True)) as connection:
                 connection.execute("PRAGMA query_only = ON")
                 connection.execute("BEGIN")
                 with closing(connection.execute(self._query)) as cursor:
@@ -189,20 +217,93 @@ class DatabaseSnapshotBuilder:
                     if description is None:
                         raise DatabaseConfigError("Database query did not return a table.")
                     columns = [str(item[0]) for item in description]
+                    schema = _sqlite_result_schema(connection, self._query, columns)
                     yielded = False
                     while True:
                         context.checkpoint()
                         rows = cursor.fetchmany(self._batch_size)
                         if not rows:
                             if not yielded:
-                                yield pa.RecordBatch.from_arrays(
-                                    [pa.array([], type=pa.null()) for _ in columns],
-                                    names=columns,
-                                )
+                                yield pa.RecordBatch.from_pylist([], schema=schema)
                             break
                         yielded = True
                         yield pa.RecordBatch.from_pylist(
-                            [dict(zip(columns, row, strict=True)) for row in rows]
+                            [dict(zip(columns, row, strict=True)) for row in rows],
+                            schema=schema,
                         )
 
         return batches()
+
+
+def _sqlite_declared_type_to_arrow(declared_type: str) -> pa.DataType | None:
+    upper = declared_type.strip().upper()
+    if not upper:
+        return None
+    if "INT" in upper:
+        return pa.int64()
+    if any(part in upper for part in ("CHAR", "CLOB", "TEXT", "DATE", "TIME")):
+        return pa.string()
+    if "BLOB" in upper:
+        return pa.binary()
+    if any(part in upper for part in ("REAL", "FLOA", "DOUB", "NUM", "DEC")):
+        return pa.float64()
+    if "BOOL" in upper:
+        return pa.bool_()
+    return None
+
+
+def _sqlite_runtime_type_to_arrow(runtime_type: str) -> pa.DataType | None:
+    return {
+        "integer": pa.int64(),
+        "real": pa.float64(),
+        "text": pa.string(),
+        "blob": pa.binary(),
+    }.get(runtime_type.casefold())
+
+
+def _unquote_sqlite_identifier(identifier: str) -> str:
+    if identifier[:1] == identifier[-1:] and identifier[:1] in {'"', "`"}:
+        return identifier[1:-1]
+    if identifier.startswith("[") and identifier.endswith("]"):
+        return identifier[1:-1]
+    return identifier.rsplit(".", 1)[-1]
+
+
+def _quote_sqlite_identifier(identifier: str) -> str:
+    return '"' + identifier.replace('"', '""') + '"'
+
+
+def _sqlite_result_schema(
+    connection: sqlite3.Connection,
+    query: str,
+    columns: list[str],
+) -> pa.Schema:
+    """Derive one result schema before any output batch is emitted."""
+    declared: dict[str, str] = {}
+    table_match = _FROM_TABLE_RE.search(query)
+    if table_match is not None:
+        table = _unquote_sqlite_identifier(table_match.group("table"))
+        declared = {
+            str(name).casefold(): str(type_name or "")
+            for name, type_name in connection.execute(
+                "SELECT name, type FROM pragma_table_info(?)",
+                (table,),
+            )
+        }
+
+    fields: list[pa.Field] = []
+    for column in columns:
+        arrow_type = _sqlite_declared_type_to_arrow(declared.get(column.casefold(), ""))
+        if arrow_type is None:
+            quoted = _quote_sqlite_identifier(column)
+            probe = connection.execute(
+                f"SELECT typeof({quoted}) FROM ({query}) AS _haute_source "
+                f"WHERE {quoted} IS NOT NULL LIMIT 1"
+            ).fetchone()
+            arrow_type = _sqlite_runtime_type_to_arrow(str(probe[0])) if probe is not None else None
+        if arrow_type is None:
+            raise DatabaseConfigError(
+                f"Database query cannot prove a stable Arrow type for column {column!r}."
+            )
+        fields.append(pa.field(column, arrow_type, nullable=True))
+    return pa.schema(fields)

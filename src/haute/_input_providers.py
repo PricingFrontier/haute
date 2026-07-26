@@ -102,7 +102,6 @@ def source_cache_identity(
             "http_path": str(validated["http_path"]),
             "table": _canonical_table(str(validated["table"])),
             "query": str(query).strip() if query else None,
-            "arguments": dict(validated.get("arguments") or {}),
             "host_ref": "DATABRICKS_HOST",
             "token_ref": "DATABRICKS_TOKEN",
         }
@@ -255,7 +254,13 @@ def resolve_data_input(
                 release_lease()
                 raise
         else:
-            weakref.finalize(frame, release_lease)
+            lease_token = _SnapshotLeaseToken(release_lease)
+
+            def retain_lease(batch: pl.DataFrame) -> pl.DataFrame:
+                lease_token.retain()
+                return batch
+
+            frame = frame.map_batches(retain_lease, streamable=True)
         return frame
 
     provider = validated["inputType"]
@@ -281,3 +286,15 @@ def resolve_data_input_from_config(
     base = _base_path(base_dir)
     config = load_node_config(config_path, base_dir=base)
     return resolve_data_input(config, base_dir=base, profile=profile)
+
+
+class _SnapshotLeaseToken:
+    """Plan-captured token that releases a snapshot lease with the final plan."""
+
+    __slots__ = ("_finalizer", "__weakref__")
+
+    def __init__(self, release: Callable[[], None]) -> None:
+        self._finalizer = weakref.finalize(self, release)
+
+    def retain(self) -> None:
+        """Keep this token observable to the plan callback."""

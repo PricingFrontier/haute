@@ -80,13 +80,12 @@ def _get_credentials(http_path: str | None = None) -> tuple[str, str, str]:
 
     Args:
         http_path: SQL Warehouse HTTP path from the node config.
-            Falls back to ``DATABRICKS_HTTP_PATH`` env var.
 
     Returns (host, token, http_path).
     """
     host = os.getenv("DATABRICKS_HOST", "")
     token = os.getenv("DATABRICKS_TOKEN", "")
-    resolved_http_path = http_path or os.getenv("DATABRICKS_HTTP_PATH", "")
+    resolved_http_path = http_path or ""
 
     missing: list[str] = []
     if not host:
@@ -110,8 +109,6 @@ def _get_credentials(http_path: str | None = None) -> tuple[str, str, str]:
     elif host.startswith("http://"):
         host = host[len("http://") :]
 
-    if resolved_http_path is None:
-        raise RuntimeError("resolved_http_path must not be None after credential resolution")
     return host, token, resolved_http_path
 
 
@@ -188,12 +185,14 @@ def _iter_databricks_batches(
     select_clause = query.strip() if query else "SELECT *"
     sql_query = f"{select_clause} FROM {table}"  # noqa: S608
     row_count = 0
+    context.checkpoint()
     with dbsql.connect(
         server_hostname=host,
         http_path=resolved_http_path,
         access_token=token,
     ) as connection:
         with connection.cursor() as cursor:
+            context.checkpoint()
             cursor.execute(sql_query)
             fetch_was_retried = False
             while True:

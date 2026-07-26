@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import contextlib
 import json
+import subprocess
+import sys
 import threading
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
@@ -76,6 +78,7 @@ def test_identity_is_versioned_canonical_and_order_independent() -> None:
         {"token": "secret"},
         {"nested": {"password": "secret"}},
         {"uri": "postgresql://alice:secret@db.example/pricing"},
+        {"uri": "postgresql://db.example/pricing?access_token=secret"},
     ],
 )
 def test_identity_refuses_secret_bearing_material(descriptor: dict[str, object]) -> None:
@@ -179,6 +182,51 @@ def test_corrupt_current_generation_fails_without_fallback(tmp_path: Path) -> No
     with pytest.raises(SourceCacheCorruptError):
         store.open_generation(identity)
     assert store.status(identity).state == "corrupt"
+
+
+def test_open_generation_does_not_rehash_published_artifact(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = SourceCacheStore(tmp_path)
+    identity = _identity(path="data/input.parquet", format="parquet")
+    store.build(
+        identity,
+        _LazyBuilder(pl.DataFrame({"id": [1]}).lazy()),
+        context=_context(),
+    )
+
+    monkeypatch.setattr(
+        "haute._source_cache._sha256_file",
+        lambda _path: pytest.fail("ordinary generation open rehashed the full artifact"),
+    )
+
+    with store.lease(identity) as generation:
+        assert generation.lazy_frame.collect()["id"].to_list() == [1]
+
+
+def test_transient_generation_access_error_is_not_reported_as_corruption(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = SourceCacheStore(tmp_path)
+    identity = _identity(path="data/input.parquet", format="parquet")
+    generation = store.build(
+        identity,
+        _LazyBuilder(pl.DataFrame({"id": [1]}).lazy()),
+        context=_context(),
+    )
+    original_read_text = Path.read_text
+
+    def fail_metadata_read(path: Path, *args: object, **kwargs: object) -> str:
+        if path == generation.metadata_path:
+            raise PermissionError("temporarily locked")
+        return original_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", fail_metadata_read)
+
+    with pytest.raises(PermissionError, match="temporarily locked"):
+        store.open_generation(identity)
 
 
 @pytest.mark.parametrize("generation_id", ["../../outside", "not-a-generation-id"])
@@ -440,7 +488,7 @@ def test_generation_quota_never_evicts_a_leased_snapshot(tmp_path: Path) -> None
     assert store.status(replacement).state == "ready"
 
 
-def test_first_store_for_root_cleans_abandoned_staging_and_unpublished_generations(
+def test_store_startup_preserves_unproven_cross_process_staging_and_generations(
     tmp_path: Path,
 ) -> None:
     identity_root = tmp_path / ".haute_cache" / "inputs" / "abandoned"
@@ -451,7 +499,17 @@ def test_first_store_for_root_cleans_abandoned_staging_and_unpublished_generatio
     (staging / "partial.parquet").write_bytes(b"partial")
     (generation / "data.parquet").write_bytes(b"unpublished")
 
-    SourceCacheStore(tmp_path)
+    subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "from haute._source_cache import SourceCacheStore; "
+                f"SourceCacheStore({str(tmp_path)!r})"
+            ),
+        ],
+        check=True,
+    )
 
-    assert not staging.exists()
-    assert not generation.exists()
+    assert staging.exists()
+    assert generation.exists()

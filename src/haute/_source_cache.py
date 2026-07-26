@@ -65,10 +65,15 @@ def _reject_secrets(value: object) -> None:
             _reject_secrets(child)
     elif isinstance(value, str):
         parsed = urlsplit(value)
-        if parsed.scheme and (parsed.username is not None or parsed.password is not None):
-            raise ValueError(
-                "source-cache identity must not contain secret or credential URI userinfo"
-            )
+        if parsed.scheme:
+            from haute._database_io import validate_credential_free_uri
+
+            try:
+                validate_credential_free_uri(value)
+            except ValueError as exc:
+                raise ValueError(
+                    "source-cache identity must not contain secret or credential URI material"
+                ) from exc
 
 
 @dataclass(frozen=True, slots=True)
@@ -261,8 +266,6 @@ def _validate_generation_id(value: object) -> str:
 class SourceCacheStore:
     """Own immutable source snapshots rooted at ``root/.haute_cache/inputs``."""
 
-    _startup_cleanup_lock = threading.Lock()
-    _startup_cleaned_roots: set[Path] = set()
     _coordination_lock = threading.Lock()
     _coordination_by_root: dict[Path, _SourceCacheCoordination] = {}
 
@@ -317,38 +320,6 @@ class SourceCacheStore:
         self._lock = coordination.lock
         self._identity_locks = coordination.identity_locks
         self._leases = coordination.leases
-        self._cleanup_startup_orphans_once()
-
-    def _cleanup_startup_orphans_once(self) -> None:
-        root_key = self.inputs_root.resolve()
-        with self._startup_cleanup_lock:
-            if root_key in self._startup_cleaned_roots:
-                return
-            for identity_dir in self.inputs_root.iterdir():
-                if not identity_dir.is_dir():
-                    continue
-                for staging in identity_dir.glob(".staging-*"):
-                    if staging.is_dir():
-                        shutil.rmtree(staging)
-                pointer_path = identity_dir / "current.json"
-                current: str | None = None
-                if pointer_path.is_file():
-                    try:
-                        payload = json.loads(pointer_path.read_text(encoding="utf-8"))
-                        candidate = payload.get("generation_id")
-                        if isinstance(candidate, str) and candidate:
-                            current = candidate
-                    except (OSError, TypeError, ValueError, json.JSONDecodeError):
-                        # A corrupt pointer is preserved for normal typed validation;
-                        # no generation can be proven orphaned in that state.
-                        continue
-                generations_dir = identity_dir / "generations"
-                if not generations_dir.is_dir():
-                    continue
-                for generation in generations_dir.iterdir():
-                    if generation.is_dir() and generation.name != current:
-                        shutil.rmtree(generation)
-            self._startup_cleaned_roots.add(root_key)
 
     def identity_path(self, identity: SourceCacheIdentity) -> Path:
         return self.inputs_root / identity.digest
@@ -403,7 +374,6 @@ class SourceCacheStore:
                 or metadata.schema_version != identity.schema_version
                 or metadata.generation_id != generation_id
                 or metadata.size_bytes != data_path.stat().st_size
-                or metadata.data_sha256 != _sha256_file(data_path)
                 or isinstance(metadata.row_count, bool)
                 or not isinstance(metadata.row_count, int)
                 or metadata.row_count < 0
@@ -427,6 +397,10 @@ class SourceCacheStore:
                 or {name: str(dtype) for name, dtype in polars_schema.items()} != metadata.columns
             ):
                 raise ValueError("metadata schema or row count does not match snapshot")
+        except FileNotFoundError as exc:
+            raise SourceCacheCorruptError("source-cache generation is corrupt") from exc
+        except OSError:
+            raise
         except Exception as exc:
             # Polars/PyArrow use implementation-specific exception types.
             if isinstance(exc, SourceCacheCorruptError):

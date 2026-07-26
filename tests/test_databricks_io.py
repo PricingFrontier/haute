@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pyarrow as pa
@@ -17,6 +18,8 @@ from haute._databricks_io import (
     _iter_databricks_batches,
     _validate_select_clause,
 )
+from haute._execution_context import ExecutionProfile
+from haute._source_cache import SourceCacheBuildContext, SourceCacheIdentity, SourceCacheStore
 
 
 def test_get_credentials_normalises_host_and_uses_node_http_path(
@@ -118,7 +121,34 @@ def test_iter_batches_streams_and_checks_cancellation() -> None:
     batches = _stream(cursor, context)
     assert [batch.num_rows for batch in batches] == [2]
     assert cursor.executed == ["SELECT * FROM cat.sch.tbl"]
-    assert context.checkpoint.call_count == 2
+    assert context.checkpoint.call_count == 4
+
+
+def test_iter_batches_checks_cancellation_before_connect_or_execute() -> None:
+    cursor = _Cursor([pa.table({"x": [1]})])
+    connection = MagicMock()
+    connection.cursor.return_value = cursor
+    connection.__enter__.return_value = connection
+    context = MagicMock()
+    context.checkpoint.side_effect = RuntimeError("cancelled")
+
+    with (
+        patch("databricks.sql.connect", return_value=connection) as connect,
+        patch("haute._databricks_io._get_credentials", return_value=("host", "token", "/wh")),
+    ):
+        with pytest.raises(RuntimeError, match="cancelled"):
+            list(
+                _iter_databricks_batches(
+                    table="cat.sch.tbl",
+                    http_path="/wh",
+                    query=None,
+                    batch_size=2,
+                    context=context,
+                )
+            )
+
+    connect.assert_not_called()
+    assert cursor.executed == []
 
 
 def test_iter_batches_retries_transient_failure() -> None:
@@ -140,3 +170,30 @@ def test_retry_integrity_detects_lost_rows() -> None:
 
 def test_retry_integrity_accepts_matching_row_count() -> None:
     _assert_no_rows_lost_after_retry(table="cat.sch.tbl", rows_received=3, rows_consumed=3)
+
+
+def test_snapshot_builder_publishes_through_source_cache_store(tmp_path: Path) -> None:
+    cursor = _Cursor([pa.table({"x": [1, 2]}), pa.table({"x": []})])
+    connection = MagicMock()
+    connection.cursor.return_value = cursor
+    connection.__enter__.return_value = connection
+    context = SourceCacheBuildContext(
+        profile=ExecutionProfile.LAZY_SINK,
+        build_class="bounded",
+    )
+    identity = SourceCacheIdentity(
+        provider="databricks",
+        descriptor={"http_path": "/wh", "table": "cat.sch.tbl"},
+    )
+
+    with (
+        patch("databricks.sql.connect", return_value=connection),
+        patch("haute._databricks_io._get_credentials", return_value=("host", "token", "/wh")),
+    ):
+        generation = SourceCacheStore(tmp_path).build(
+            identity,
+            DatabricksSnapshotBuilder({"table": "cat.sch.tbl", "http_path": "/wh"}),
+            context=context,
+        )
+
+    assert generation.lazy_frame.collect().to_dicts() == [{"x": 1}, {"x": 2}]

@@ -211,6 +211,41 @@ def test_same_identity_build_requests_join_one_active_job(
     assert _wait_for_terminal(client, first.json()["job_id"])["status"] == "error"
 
 
+def test_provider_failure_message_is_logged_but_not_exposed(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from haute.routes import input_cache
+
+    logger = input_cache.logger
+    logged: list[dict[str, object]] = []
+
+    def capture_error(_event: str, **fields: object) -> None:
+        logged.append(fields)
+
+    monkeypatch.setattr(logger, "error", capture_error)
+    monkeypatch.setattr(
+        input_cache,
+        "build_input_snapshot",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("warehouse unavailable")),
+    )
+
+    started = client.post(
+        "/api/input-cache/build",
+        json={"schema_version": 1, "config": _file_config()},
+    )
+    terminal = _wait_for_terminal(client, started.json()["job_id"])
+
+    assert terminal["message"] == "Input snapshot build failed."
+    assert logged == [
+        {
+            "job_id": started.json()["job_id"],
+            "error_type": "RuntimeError",
+            "error": "warehouse unavailable",
+        }
+    ]
+
+
 def test_different_identities_can_build_concurrently(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,

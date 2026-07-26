@@ -417,6 +417,7 @@ def _run_build(
             "input_cache_build_failed",
             job_id=job_id,
             error_type=type(exc).__name__,
+            error=str(exc),
         )
         lifecycle.transition(
             job_id,

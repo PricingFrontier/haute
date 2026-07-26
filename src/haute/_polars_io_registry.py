@@ -35,13 +35,13 @@ import importlib.util
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Literal, cast
-from urllib.parse import urlsplit
 
 import polars as pl
 
 from haute._execution_context import ExecutionProfile
 from haute._polars_dtypes import parse_schema_mapping
 from haute._polars_io_schema import argument_names
+from haute._polars_utils import is_bounded_execution_profile
 from haute.errors import BoundedMemoryUnsupportedError
 
 SourceKind = Literal["path", "database", "inline"]
@@ -304,8 +304,12 @@ def _require_nonempty_string(config: Mapping[str, Any], field: str, *, subject: 
 
 
 def _validate_raw_uri(uri: str) -> None:
-    if urlsplit(uri).username is not None or urlsplit(uri).password is not None:
-        raise PolarsIoConfigError("Raw database 'uri' must not contain credentials.")
+    from haute._database_io import DatabaseConfigError, validate_credential_free_uri
+
+    try:
+        validate_credential_free_uri(uri)
+    except DatabaseConfigError as exc:
+        raise PolarsIoConfigError("Raw database 'uri' must not contain credentials.") from exc
 
 
 def _validate_exactly_one_locator(config: Mapping[str, Any], *, subject: str) -> None:
@@ -622,18 +626,8 @@ def _require_engines(fmt: IoFormat, engines: tuple[str, ...], *, operation: str)
         )
 
 
-_BOUNDED_EXEMPT_PROFILES = frozenset({ExecutionProfile.PREVIEW_EAGER, ExecutionProfile.DEPLOY_LIVE})
-
-
-def _normalise_profile(profile: ExecutionProfile | str | None) -> ExecutionProfile | None:
-    if profile is None or isinstance(profile, ExecutionProfile):
-        return profile
-    return ExecutionProfile(profile)
-
-
 def _is_bounded_profile(profile: ExecutionProfile | str | None) -> bool:
-    normalised = _normalise_profile(profile)
-    return normalised is not None and normalised not in _BOUNDED_EXEMPT_PROFILES
+    return is_bounded_execution_profile(profile)
 
 
 def _resolve_input_source(fmt: IoFormat, config: Mapping[str, Any]) -> tuple[Any, ...]:
@@ -802,61 +796,6 @@ def anchor_config_source_path(config: Mapping[str, Any], base_dir: Any = None) -
         if not candidate.is_absolute():
             result["path"] = str(Path(base_dir) / candidate)
     return result
-
-
-def read_polars_input_from_config(
-    config_path: Any,
-    *,
-    base_dir: Any = None,
-    profile: ExecutionProfile | str | None = None,
-) -> pl.LazyFrame:
-    """Load a dataInput sidecar JSON and execute its input invocation.
-
-    The runtime body generated pipelines call: *config_path* is the node's
-    schema-mapping JSON (relative paths resolve against *base_dir*, the
-    pipeline dir), and a relative data ``path`` inside it anchors to
-    *base_dir* too.
-    """
-    from pathlib import Path
-
-    from haute._config_io import load_node_config
-
-    base = Path(base_dir) if base_dir is not None else None
-    config = load_node_config(config_path, base_dir=base)
-    return read_polars_input(anchor_config_source_path(config, base), profile=profile)
-
-
-def write_polars_output_from_config(
-    df: pl.LazyFrame | pl.DataFrame,
-    config_path: Any,
-    *,
-    base_dir: Any = None,
-) -> int | None:
-    """Load a dataOutput sidecar JSON and execute its output invocation.
-
-    The write-side sibling of :func:`read_polars_input_from_config` for
-    generated pipeline bodies: resolves a relative output ``path`` against
-    *base_dir*, creates the parent directory, and writes.
-    """
-    from pathlib import Path
-
-    from haute._config_io import load_node_config
-
-    base = Path(base_dir) if base_dir is not None else None
-    config = load_node_config(config_path, base_dir=base)
-    fmt = format_for_config(config)
-
-    resolved_path = None
-    if fmt.source_kind != "database":
-        target = _resolve_output_target(fmt, config)
-        candidate = Path(target["path"])
-        if not candidate.is_absolute() and base is not None:
-            candidate = base / candidate
-        candidate.parent.mkdir(parents=True, exist_ok=True)
-        resolved_path = candidate
-
-    lf = df.lazy() if isinstance(df, pl.DataFrame) else df
-    return write_polars_output(lf, config, resolved_path=resolved_path)
 
 
 def default_output_extension(fmt: IoFormat) -> str | None:
