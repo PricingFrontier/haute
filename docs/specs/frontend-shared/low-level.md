@@ -29,7 +29,7 @@
 | `frontend/src/components/Tooltip.tsx` | Zero-delay CSS-hover tooltip with edge-clamped horizontal position and top/bottom auto-flip. |
 | `frontend/src/components/ContextMenu.tsx` | Node right-click menu: rename/duplicate/create-instance/dissolve-submodel/delete, arrow-key roving focus. |
 | `frontend/src/components/KeyboardShortcuts.tsx` | `?`-triggered modal listing keyboard shortcuts, built on `ModalShell`. |
-| `frontend/src/components/Toolbar.tsx` | App top chrome: source selector, row-limit/chunk-size inputs, undo/redo, timing/memory breakdowns, utility/imports buttons, zoom, centre/layout, save split-button. Composes `BreakdownDropdown` and `BranchIndicator` (git-ui). |
+| `frontend/src/components/Toolbar.tsx` | App top chrome: package-derived browser version, source selector, row-limit/chunk-size inputs, undo/redo, timing/memory breakdowns, utility/imports buttons, zoom, centre/layout, save split-button. Composes `BreakdownDropdown` and `BranchIndicator` (git-ui). |
 | `frontend/src/panels/ImportsPanel.tsx` | Active pipeline-imports right panel: `PanelShell` plus `CodeEditor`, explanatory always-included imports, and callback-only preamble mutation/close handling. `App.tsx` supplies the graph-store-backed preamble and selects it through `importsOpen`. |
 | `frontend/src/components/BackgroundJobPolling.tsx` | Zero-render mount point (`memo`) that only invokes `useBackgroundJobs()`. |
 | `frontend/src/components/NodeSearch.tsx` | Ctrl+K command palette: dynamically imported by `App.tsx` only while open, filters/windows the current React Flow node list, supports arrow-key navigation, and jumps the canvas viewport to the selected node. |
@@ -358,7 +358,8 @@ same Vitest config.
   (root-level, under `__tests__/components/`), `ModalShell.test.tsx` +
   `ModalShell.focusTrap.test.tsx` (focus trap and restore-on-close in
   particular), `Toast.test.tsx`, `Tooltip.test.tsx`, `ContextMenu.test.tsx`,
-  `NodeSearch.test.tsx`, `Toolbar.test.tsx`,
+  `NodeSearch.test.tsx`, `Toolbar.test.tsx` (including the package-derived
+  browser-version display),
   `Toolbar.addSource.test.tsx` (the add-source form's rejection UI:
   empty-name and duplicate-name error text, `aria-invalid`/
   `aria-describedby` wiring, the error clearing on next keystroke and on
