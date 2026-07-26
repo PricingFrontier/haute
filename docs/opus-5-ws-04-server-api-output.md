@@ -1,9 +1,9 @@
 # WS-04 — Server API, routing & JSON output assembly
 
 Part of the Opus 5 review split (`opus-5-workstreams.md`). Evidence and fix guidance:
-`opus-5-review.md`. Owner: unassigned · Status: not started.
+`opus-5-review.md`. Owner: WS-04 · Status: complete; cross-stream deferrals recorded.
 
-**Branch:** `opus5/ws-04-server-api-output`
+**Branch:** `ws-04`
 
 ## Mission
 
@@ -107,6 +107,20 @@ Low (6): `failure-model-5`, `contracts-d-10`, `json-shredding-9`, `json-shreddin
 - `failure-model-2` frontend correction (`frontend-shared/high-level.md:270-273`) → WS-09.
 - `contracts-a-6` rename sweep touches `server-api` spec lines — WS-03 drives the rename;
   apply the two server-api lines here.
+
+## Implementation outcome
+
+The WS-04-owned server, route, OUTPUT/shred, canonical-spec, and regression-test changes are
+implemented on this branch. The following adjacent changes are deliberately deferred to
+their exclusive owners rather than being duplicated here:
+
+- `projection.py` incomplete-mapping parity remains with WS-03, which owns the execution
+  planner and its tests.
+- The canvas load-failure presentation and frontend-shared wording remain with WS-09; this
+  workstream supplies the backend 422 contract.
+- Save/submodel/codegen guarantee wording outside the server-api-owned text remains with
+  WS-05/WS-14, whose transaction boundaries determine those guarantees.
+- The FastAPI version stamp remains with WS-01's single coordinated version decision.
 
 ## Definition of done
 
