@@ -803,6 +803,35 @@ def test_validate_rejects_divergent_array_branches_before_frame_collection() -> 
         assemble_output_from_mapping({"p": CollectSpy()}, mapping)  # type: ignore[arg-type]
 
 
+def test_validate_rejects_divergent_array_branches_in_descending_order() -> None:
+    mapping = [
+        _entry("p", "right_id", "$[:].right[:].id"),
+        _entry("p", "left_id", "$[:].left[:].id"),
+    ]
+
+    with pytest.raises(OutputMappingSchemaError, match="divergent"):
+        validate_v2_output_mapping(mapping)
+
+
+@pytest.mark.parametrize(
+    ("first_path", "second_path"),
+    [
+        ("$[:].items[:].id", "$[:].items[:].subitems[:].value"),
+        ("$[:].items[:].subitems[:].value", "$[:].items[:].id"),
+    ],
+)
+def test_validate_allows_nested_array_prefix_in_either_order(
+    first_path: str,
+    second_path: str,
+) -> None:
+    validate_v2_output_mapping(
+        [
+            _entry("p", "first", first_path),
+            _entry("p", "second", second_path),
+        ]
+    )
+
+
 def test_validate_allows_multiple_columns_at_one_array_prefix() -> None:
     validate_v2_output_mapping(
         [_entry("p", "id", "$[:].items[:].id"), _entry("p", "name", "$[:].items[:].name")]

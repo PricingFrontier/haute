@@ -1578,7 +1578,7 @@ def _validate_output_publish_paths(
     final_path: Path,
     staging_path: Path,
     *,
-    project_root: str | Path,
+    project_root: str | Path,  # pragma: no mutate
 ) -> None:
     """Validate both sides of an atomic output publish against the project root.
 
@@ -1604,7 +1604,7 @@ def _validate_output_publish_paths(
 def _cleanup_output_staging_path(
     staging_path: Path,
     *,
-    project_root: str | Path,
+    project_root: str | Path,  # pragma: no mutate
 ) -> None:
     """Remove a failed staging artefact without following a swapped path outside the project."""
     root = Path(project_root).resolve()
@@ -1664,7 +1664,7 @@ def _publish_output_create_only(
     final_path: Path,
     display_path: str,
     *,
-    project_root: str | Path,
+    project_root: str | Path,  # pragma: no mutate
 ) -> None:
     """Publish a staged artifact without replacing an existing destination."""
     try:

@@ -18,6 +18,7 @@ import pytest
 from haute.executor import (
     PREVIEW_MAX_CELLS,
     _cache_has_required_materialization,
+    _contain_output_path,
     _is_dangerous_preamble_binding,
     _pipeline_dir,
     _preview_row_limit_for_width,
@@ -36,6 +37,23 @@ def test_pipeline_dir_relative_source_uses_path_join() -> None:
     result = _pipeline_dir(graph)
     assert isinstance(result, Path)
     assert result.is_absolute()
+
+
+def test_contain_output_path_anchors_relative_pipeline_to_project_root(tmp_path: Path) -> None:
+    """A relative graph source is resolved below the explicit project root.
+
+    This pins the path join in ``_contain_output_path`` and prevents output
+    resolution from accidentally falling back to the process working directory.
+    """
+    graph = types.SimpleNamespace(source_file="pipelines/pricing.py")
+
+    result = _contain_output_path(
+        graph,
+        "outputs/result.parquet",
+        project_root=tmp_path,
+    )
+
+    assert result == (tmp_path / "pipelines" / "outputs" / "result.parquet").resolve()
 
 
 # ── L215 / L225: dangerous-import sandbox check (``or`` chain) ────────

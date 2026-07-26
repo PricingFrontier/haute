@@ -24,6 +24,7 @@ Vocabulary (kept to tables / fields / join-constraints throughout):
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from itertools import combinations
 from typing import Any
 
 import polars as pl
@@ -654,27 +655,23 @@ def validate_v2_output_mapping(mapping: list[dict[str, Any]]) -> None:
             path_to_col[path] = col
 
         distinct = list(dict.fromkeys(path for _, path in entries))
-        for i, a in enumerate(distinct):
-            for b in distinct[i + 1 :]:
-                if _prefix_comparable(a, b):
-                    raise OutputMappingSchemaError(
-                        "output paths within a source frame must be pairwise "
-                        "prefix-incomparable (a leaf cannot also be a container)",
-                        source_port=port,
-                        output_path=f"{a} vs {b}",
-                    )
+        for a, b in combinations(distinct, 2):
+            if _prefix_comparable(a, b):
+                raise OutputMappingSchemaError(
+                    "output paths within a source frame must be pairwise "
+                    "prefix-incomparable (a leaf cannot also be a container)",
+                    source_port=port,
+                    output_path=f"{a} vs {b}",
+                )
 
         prefixes = [(path, _array_prefix(_parse_output_path(path))) for path in distinct]
-        for i, (a, a_prefix) in enumerate(prefixes):
-            for b, b_prefix in prefixes[i + 1 :]:
-                if not (
-                    a_prefix[: len(b_prefix)] == b_prefix or b_prefix[: len(a_prefix)] == a_prefix
-                ):
-                    raise OutputMappingSchemaError(
-                        "one source frame cannot emit into divergent array branches",
-                        source_port=port,
-                        output_path=f"{a} vs {b}",
-                    )
+        for (a, a_prefix), (b, b_prefix) in combinations(prefixes, 2):
+            if not (a_prefix[: len(b_prefix)] == b_prefix or b_prefix[: len(a_prefix)] == a_prefix):
+                raise OutputMappingSchemaError(
+                    "one source frame cannot emit into divergent array branches",
+                    source_port=port,
+                    output_path=f"{a} vs {b}",
+                )
 
 
 def assemble_output_from_mapping(
