@@ -80,8 +80,8 @@ Out of scope (owned by neighbouring components):
   deduplication). The same ordered graph therefore produces byte-identical output; codegen does
   not canonicalise arbitrary input edge ordering.
 - **One function per node**, named by sanitizing the node's label
-  (`haute._graph_utils._sanitize_func_name`). Two distinct node labels that
-  sanitize to the same identifier are a hard error at codegen time
+  (`haute._graph_utils._sanitize_func_name`). Any two node labels that
+  produce the same identifier, including exact duplicate labels, are a hard error at codegen time
   (`_error_on_name_collisions`), checked globally across the root graph and
   every submodel — not per file — because the flattened runtime graph is
   keyed by the sanitized name across module boundaries.
@@ -104,12 +104,34 @@ Out of scope (owned by neighbouring components):
   with `out__<child_id>` / `in__<child_id>` handle conventions.
   `graph_to_code` (single-file convenience wrapper) refuses to run on a
   submodel graph rather than silently returning an arbitrary one of the
-  files.
+  files. Each emitted submodel file carries that submodel's description,
+  preamble, and module-level preserved blocks, so hand-authored module support
+  code survives parse → save cycles.
 - **Config-folder rewrite.** Node types with a declarative JSON sidecar
   (`haute._config_io.has_config_folder`) get their decorator's inline kwargs
   replaced with a single `config="config/<type>/<name>.json"` reference after
   the type-specific body is generated. The config content itself is written
-  separately by the config-io save path.
+  separately by the config-io save path. A config-backed type without a
+  registered decorator, or a builder result without a function definition,
+  is a `HauteError`; codegen never defaults to a generic decorator or silently
+  skips the rewrite.
+- **Canonical data I/O generation.** `dataInput` emits
+  `@pipeline.data_input(config="config/data_input/<name>.json")`, loads the
+  configured direct or snapshot-backed provider through the shared helper,
+  binds the result to `df`, runs optional user Polars code, then returns
+  `df`. `dataOutput` emits
+  `@pipeline.data_output(config="config/data_output/<name>.json")` with a
+  side-effect-free pass-through body: persistence happens only through the
+  explicit output-write execution surface, never on import or an ordinary
+  `Pipeline.run()`. Removed `dataSource`/`dataSink` forms are neither emitted
+  nor accepted as codegen node types.
+- **Retained sidecar inputs stay live.** API Input and External File bodies
+  contain only their sidecar path and call the shared config-driven loaders
+  with `Path(__file__).resolve().parent` as the pipeline-directory candidate.
+  They do not bake the sidecar's current data path, schema, file type, or
+  model class into source. A sidecar-only edit therefore changes the next
+  generated-function execution, and malformed sidecars raise the same
+  validation error as canvas execution.
 - **Contract kwarg injection.** Every ordinary node gets a `contract=...` decorator kwarg
   documenting its column-level input/output contract (or the string sentinel `"opaque"` when it
   cannot be determined statically). An instance node with no explicit declared contract omits the
@@ -122,12 +144,16 @@ Out of scope (owned by neighbouring components):
   next save, `haute._code_extraction` strips exactly that boilerplate back
   out before re-wrapping, so repeated edit/save cycles do not accumulate
   duplicate scaffolding or lose the user's formatting/comments.
-- **Preserved blocks.** Free-form text wrapped in
-  `# haute:preserve-start` / `# haute:preserve-end` markers anywhere in a
-  previously-saved file survives regeneration and is re-emitted after the
-  `Pipeline(...)` construction and before generated node functions. The inner lines keep their
-  order and indentation, but leading/trailing blank lines inside each block are stripped and the
-  whole block is relocated; unmatched start markers are ignored.
+- **Preserved blocks.** Free-form module text wrapped by column-zero
+  `# haute:preserve-start` / `# haute:preserve-end` markers in a pipeline or
+  submodel file survives regeneration and is re-emitted after object
+  construction and before generated node functions. These completed spans
+  are excluded from preamble extraction, so repeated parse → generate cycles
+  reach a source fixpoint instead of duplicating the block. Indented markers
+  are owned by their enclosing function or construct and remain there; they
+  are not separately extracted or relocated to module scope. Leading/trailing
+  blank lines inside a completed module block are stripped, and unmatched
+  module-level starts are ignored.
 - **Fails loudly, never emits a corrupt file.** Every code path that could
   produce invalid Python — a missing codegen builder, an untokenizable
   decorator, an unparseable emitted file — raises rather than degrading to a
@@ -209,6 +235,9 @@ Out of scope (owned by neighbouring components):
   are two halves of one round-trip contract; a change to how codegen wraps
   user code generally requires a matching change to how extraction unwraps
   it.
+- **Supplies canonical user-code text to** `haute.chunking`: chunk planning
+  reads the parsed `dataInput` code field and applies its own row-locality
+  proof to the same boilerplate-free text that codegen re-emits.
 - **Depended on by** the save-pipeline route, which calls
   `graph_to_code_multi` to produce a multi-file tree and `graph_to_code`
   for graphs that produce one pipeline file.
@@ -231,6 +260,9 @@ execution time on a mis-wired pipeline). Concretely:
   defect (every `NodeType` must have both an exec and a codegen builder per
   `NODE_REGISTRY` contract), never silently handled by falling back to a
   generic transform template.
+- **Config-folder rewrite has no decorator mapping or no generated `def`** →
+  `HauteError` with the node id, label, and type. Codegen never substitutes
+  `@pipeline.polars` or leaves stale inline decorator arguments behind.
 - **Decorator argument list cannot be tokenized, or has no matching close
   paren, or no `@pipeline.*`/`@submodel.*` decorator was found at all** →
   `HauteError` from `_matching_close_paren` / `_inject_contract_kwarg`,
@@ -242,8 +274,8 @@ execution time on a mis-wired pipeline). Concretely:
   emitted parent with different columns** → `ParseError` from
   `_format_contract_source`; ambiguous data is never silently resolved by
   "keep the last writer."
-- **Node label collisions** (two distinct labels sanitizing to the same
-  Python identifier, anywhere in the root graph or any submodel) →
+- **Node label collisions** (two labels sanitizing to the same Python
+  identifier, including exact duplicates, anywhere in the root graph or any submodel) →
   `ParseError` enumerating every colliding bucket, from
   `_error_on_name_collisions`.
 - **Input-name collisions on one node** (two incoming edges deriving the same
@@ -266,7 +298,10 @@ execution time on a mis-wired pipeline). Concretely:
   `_assert_emitted_files_parse`, the final gate before a save is allowed to
   land on disk. Includes the offending file, line, and message text so a bad
   node-code block or a codegen bug is directly actionable; the save route
-  wraps this in a transaction so no partial file tree is written.
+  wraps this in a transaction and attempts to restore every touched file.
+  Rollback is best-effort: a compensating filesystem operation can itself
+  fail, in which case that rollback failure is logged while the original
+  save error remains the client-visible failure.
 - **Unparseable user-authored code passed into extraction** →
   `_UserCodeParseError` (a `ParseError`/`ValueError` subclass) from
   `haute._code_extraction._parse_user_code`, naming which extractor was
@@ -275,49 +310,3 @@ execution time on a mis-wired pipeline). Concretely:
   `RuntimeError` from `_gen_submodel_placeholder_unreachable`; this
   indicates `graph_to_code_multi`'s root/child-node filtering has a bug,
   since the placeholder should never be dispatched on.
-
-## Approved change contract — 0.7.0 data I/O code generation
-
-Remaining code-generation improvement work is tracked in the
-[pipeline authoring roadmap](../../roadmap/pipeline-authoring.md).
-
-- Codegen has exactly one tabular-input builder and one persistence-output builder:
-  `dataInput` emits `@pipeline.data_input(config="config/data_input/<name>.json")`, opens the
-  configured direct/cached provider through the shared generated-code helper, binds the result as
-  `df`, executes the optional user Polars body, and returns `df`; `dataOutput` emits
-  `@pipeline.data_output(config="config/data_output/<name>.json")` and a side-effect-free
-  pass-through body for ordinary module execution.
-- No `dataSource`/`dataSink` builder, decorator, template, extractor kind, or sidecar rewrite
-  remains. Codegen accepts only the retained enum and never translates a removed graph node.
-- Generated `dataInput` execution observes the same base-directory path anchoring, snapshot
-  identity, cache-only remote execution, code ordering, and config validation as canvas
-  execution. Generated `dataOutput` writes only when its explicit helper/endpoint is invoked;
-  importing or running the generated pipeline does not persist data.
-- Parse → graph → code → parse round trips preserve `inputType`/`outputType`, format/mode,
-  source/destination fields, arguments, cache mode, connection references, and input code without
-  inventing inactive fields.
-
-Acceptance executes generated direct and cached inputs with and without code, verifies offline
-remote-cache use, exercises each output publication class explicitly, round-trips multiple
-inputs/outputs and submodels, and asserts registry completeness/absence for the removed builders.
-
-## Retained input sidecar execution parity
-
-Generated code implements the code-generation half of
-[IO-IO02](../../roadmap/io-layer.md) through shared config-driven loaders.
-
-`_gen_api_input` and `_gen_external_file` emit config-sidecar decorators and
-delegate their runtime setup to shared helpers through `haute.graph_utils`.
-Their bodies contain the sidecar path, not snapshots of the sidecar's path,
-schema, file type, or model class. `Path(__file__).parent` supplies the
-pipeline-directory candidate to the shared project/pipeline path-resolution
-policy, and external-file user code still executes after `obj` is loaded.
-
-Generated API Input retains its flat-frame versus frame-bundle runtime
-semantics, but the current sidecar decides which path is active at call time.
-A hand edit that makes the sidecar malformed raises the same validation error
-as canvas execution; code generation never silently falls back to the stale
-decorator/body values.
-
-Executable-equivalence tests generate once, mutate only the sidecar, and run
-again for JSON/flat API Input and External File, including malformed config.

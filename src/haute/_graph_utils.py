@@ -51,11 +51,33 @@ def _edge_id(
     target: str,
     source_port: str | None = None,
     target_port: str | None = None,
+    *,
+    hidden_source_port: str | None = None,
+    hidden_target_port: str | None = None,
 ) -> str:
-    """Return a stable React Flow edge id for source/target/port metadata."""
-    if source_port is None and target_port is None:
+    """Return a stable React Flow edge id for all persisted port metadata.
+
+    The common four-field form retains its historical IDs. Boundary edges can
+    additionally carry authored ports in ``sourcePort`` / ``targetPort`` while
+    ``sourceHandle`` / ``targetHandle`` hold synthetic submodel handles; those
+    hidden fields participate in the identity whenever present.
+    """
+    has_hidden_ports = hidden_source_port is not None or hidden_target_port is not None
+    if source_port is None and target_port is None and not has_hidden_ports:
         return f"e_{source}_{target}"
-    if target_port is None:
+    if has_hidden_ports:
+        payload = "\0".join(
+            (
+                source,
+                target,
+                source_port or "",
+                target_port or "",
+                hidden_source_port or "",
+                hidden_target_port or "",
+                "boundary",
+            )
+        ).encode()
+    elif target_port is None:
         payload = "\0".join((source, target, source_port or "")).encode()
     else:
         payload = "\0".join((source, target, source_port or "", target_port)).encode()

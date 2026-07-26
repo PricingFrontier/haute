@@ -137,6 +137,26 @@ class TestParseSubmodelSource:
         graph = parse_submodel_source(_VALID_SUBMODEL, "modules/pricing.py")
         assert graph.source_file == "modules/pricing.py"
 
+    def test_submodel_preamble_and_preserved_block_round_trip(self) -> None:
+        source = """\
+import polars as pl
+import haute
+
+HELPER = 1
+# haute:preserve-start
+KEPT = "yes"
+# haute:preserve-end
+
+submodel = haute.Submodel("pricing", description="Pricing submodel")
+
+@submodel.polars
+def base_rate(df: pl.LazyFrame) -> pl.LazyFrame:
+    return df
+"""
+        graph = parse_submodel_source(source, "modules/pricing.py")
+        assert graph.preamble == "HELPER = 1"
+        assert graph.preserved_blocks == ['KEPT = "yes"']
+
     def test_syntax_error_raises_instead_of_returning_empty_graph(self) -> None:
         bad_source = "def broken(:\n    pass\n"
         with pytest.raises(ParseError, match="syntax errors") as exc_info:
