@@ -18,12 +18,14 @@ from hatchling.builders.hooks.plugin.interface import BuildHookInterface
 _BUILD_FRONTEND_ENV = "HAUTE_BUILD_FRONTEND"
 _TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
 _FALSE_VALUES = frozenset({"", "0", "false", "no", "off"})
+_COMMAND_TIMEOUT_SECONDS = 900
 
 
 class FrontendBuildHook(BuildHookInterface):
     PLUGIN_NAME = "frontend-build"
 
     def initialize(self, version: str, build_data: dict) -> None:  # noqa: ARG002
+        build_frontend = self._should_build_frontend()
         # Editable installs happen during dependency sync; wheel builds still
         # validate packaged frontend assets below.
         if version == "editable":
@@ -37,26 +39,23 @@ class FrontendBuildHook(BuildHookInterface):
         static_dir = Path(self.root) / "src" / "haute" / "static"
         index_html = static_dir / "index.html"
 
-        if not self._should_build_frontend():
+        if not build_frontend:
             self._validate_static_assets(frontend_dir, index_html)
             return
 
-        # Install deps if node_modules is missing
-        node_modules = frontend_dir / "node_modules"
-        if not node_modules.exists():
-            self._run([self._npm(), "ci", "--prefer-offline"], cwd=frontend_dir)
+        # An explicit build must use the lockfile exactly, including when a
+        # developer's node_modules directory happens to be present.
+        self._run([self._npm(), "ci", "--prefer-offline"], cwd=frontend_dir)
 
         # Skip rebuild if static assets are newer than all frontend sources
-        if index_html.exists() and not self._is_stale(frontend_dir, index_html):
+        if self._static_assets_ready(index_html) and not self._is_stale(frontend_dir, index_html):
             return
 
         # Build frontend → src/haute/static/
         self._run([self._npm(), "run", "build"], cwd=frontend_dir)
 
-        # Sanity check
-        if not index_html.exists():
-            msg = f"Frontend build did not produce {index_html}"
-            raise RuntimeError(msg)
+        # Sanity check: a build is only package-ready with its hashed assets.
+        self._require_static_readiness(index_html)
 
     @staticmethod
     def _should_build_frontend() -> bool:
@@ -75,13 +74,7 @@ class FrontendBuildHook(BuildHookInterface):
     @classmethod
     def _validate_static_assets(cls, frontend_dir: Path, index_html: Path) -> None:
         """Fail clearly when a wheel build would package missing or stale frontend."""
-        if not index_html.exists():
-            msg = (
-                f"Built frontend assets are missing at {index_html}. "
-                f"Run 'cd frontend && npm ci && npm run build', or set "
-                f"{_BUILD_FRONTEND_ENV}=1 for an explicit release build."
-            )
-            raise RuntimeError(msg)
+        cls._require_static_readiness(index_html)
         if cls._is_stale(frontend_dir, index_html):
             msg = (
                 f"Built frontend assets at {index_html.parent} are older than "
@@ -89,6 +82,25 @@ class FrontendBuildHook(BuildHookInterface):
                 f"set {_BUILD_FRONTEND_ENV}=1 so the package build refreshes them."
             )
             raise RuntimeError(msg)
+
+    @staticmethod
+    def _static_assets_ready(index_html: Path) -> bool:
+        """Return whether the complete minimum frontend artifact set exists."""
+        assets_dir = index_html.parent / "assets"
+        return index_html.is_file() and assets_dir.is_dir() and any(assets_dir.iterdir())
+
+    @classmethod
+    def _require_static_readiness(cls, index_html: Path) -> None:
+        """Require the complete minimum frontend artifact set."""
+        if cls._static_assets_ready(index_html):
+            return
+        msg = (
+            f"Built frontend assets are missing or incomplete at {index_html.parent}: "
+            "expected index.html and a non-empty assets directory. "
+            "Run 'cd frontend && npm ci && npm run build', or set "
+            f"{_BUILD_FRONTEND_ENV}=1 for an explicit release build."
+        )
+        raise RuntimeError(msg)
 
     @staticmethod
     def _is_stale(frontend_dir: Path, index_html: Path) -> bool:
@@ -100,7 +112,13 @@ class FrontendBuildHook(BuildHookInterface):
                 if f.stat().st_mtime > build_mtime:
                     return True
         # Also check vite/ts config changes
-        for cfg in ("vite.config.ts", "tsconfig.json", "tsconfig.app.json", "package.json"):
+        for cfg in (
+            "vite.config.ts",
+            "tsconfig.json",
+            "tsconfig.app.json",
+            "package.json",
+            "package-lock.json",
+        ):
             cfg_path = frontend_dir / cfg
             if cfg_path.exists() and cfg_path.stat().st_mtime > build_mtime:
                 return True
@@ -137,14 +155,20 @@ class FrontendBuildHook(BuildHookInterface):
         return None
 
     def _run(self, cmd: list[str], cwd: Path) -> None:
-        result = subprocess.run(
-            cmd,
-            cwd=cwd,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            env=self._node_env(),
-        )
+        try:
+            result = subprocess.run(
+                cmd,
+                cwd=cwd,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=_COMMAND_TIMEOUT_SECONDS,
+                env=self._node_env(),
+            )
+        except subprocess.TimeoutExpired as exc:
+            msg = f"Command timed out after {_COMMAND_TIMEOUT_SECONDS} seconds: {' '.join(cmd)}"
+            raise RuntimeError(msg) from exc
         if result.returncode != 0:
             print(result.stdout, file=sys.stderr)
             print(result.stderr, file=sys.stderr)

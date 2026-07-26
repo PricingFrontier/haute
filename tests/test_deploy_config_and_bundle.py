@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import os
+from contextlib import ExitStack
 from pathlib import Path
 
 import polars as pl
@@ -349,3 +350,77 @@ class TestBundledPathsAreAbsolute:
                 f"from CWD {os.getcwd()!r}"
             )
             assert p.read_bytes() == real_file.read_bytes()
+
+
+class TestSnapshotGenerationLease:
+    def test_refresh_cannot_retire_generation_before_deploy_releases_it(
+        self,
+        tmp_path_factory: pytest.TempPathFactory,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from haute._input_providers import build_input_snapshot
+        from haute._source_cache import SourceCacheStore
+
+        # Keep the root short enough for atomic metadata temp-file suffixes on
+        # Windows when this test runs under an xdist worker.
+        project_dir = tmp_path_factory.mktemp("lease")
+        source_path = project_dir / "drivers.parquet"
+        pl.DataFrame({"driver": ["old"]}).write_parquet(source_path)
+        input_config = {
+            "inputType": "file",
+            "format": "parquet",
+            "mode": "scan",
+            "cacheMode": "snapshot",
+            "path": "drivers.parquet",
+            "arguments": {},
+        }
+        graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "drivers",
+                        "data": {
+                            "nodeType": "dataInput",
+                            "config": input_config,
+                        },
+                    }
+                ]
+            }
+        )
+        store = SourceCacheStore(project_dir)
+        first = build_input_snapshot(
+            input_config,
+            store=store,
+            base_dir=project_dir,
+        )
+        monkeypatch.setattr("haute._sandbox._get_project_root", lambda: project_dir)
+        resources = ExitStack()
+        provenance: dict[str, dict[str, object]] = {}
+
+        artifacts = collect_artifacts(
+            graph,
+            [],
+            project_dir,
+            resources=resources,
+            snapshot_provenance=provenance,
+        )
+        leased_path = artifacts["drivers__snapshot.parquet"]
+
+        pl.DataFrame({"driver": ["new"]}).write_parquet(source_path)
+        second = build_input_snapshot(
+            input_config,
+            store=store,
+            base_dir=project_dir,
+            refresh=True,
+        )
+
+        assert second.generation_id != first.generation_id
+        assert leased_path.is_file()
+        assert pl.read_parquet(leased_path)["driver"].to_list() == ["old"]
+        assert provenance["drivers"]["generation_id"] == first.generation_id
+        assert provenance["drivers"]["identity_digest"] == first.metadata.identity_digest
+        assert provenance["drivers"]["data_sha256"] == first.metadata.data_sha256
+
+        resources.close()
+
+        assert not leased_path.exists()

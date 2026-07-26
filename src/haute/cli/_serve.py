@@ -38,6 +38,8 @@ logger = get_logger(component="serve")
 
 _BACKEND_READY_TIMEOUT_SECONDS = 30.0
 _BACKEND_READY_POLL_INTERVAL_SECONDS = 0.1
+_VITE_HOST = "127.0.0.1"
+_VITE_PORT = 5173
 # ``127.0.0.1`` is the canonical IPv4 loopback; ``::1`` is the IPv6
 # loopback; ``localhost`` is the DNS name conventionally resolved to
 # one of those.  Any of the three are treated as loopback-safe.  Every
@@ -287,6 +289,17 @@ def _abort_if_port_in_use(config: ServeConfig) -> None:
     raise SystemExit(1)
 
 
+def _abort_if_vite_port_in_use() -> None:
+    """Fail before dev startup when Vite's fixed local port is occupied."""
+    if _port_is_available(_VITE_HOST, _VITE_PORT):
+        return
+    click.echo(
+        f"Error: Vite port {_VITE_PORT} already in use. Stop the process using it and retry.",
+        err=True,
+    )
+    raise SystemExit(1)
+
+
 def _detect_dev_frontend_dir() -> Path | None:
     """Return the ``frontend/`` dir iff dev mode is viable, else ``None``.
 
@@ -342,6 +355,28 @@ def _wait_for_backend_then_open_browser(
     _open_browser(browser_url)
 
 
+def _wait_for_servers_then_open_browser(
+    browser_url: str, backend_host: str, backend_port: int
+) -> None:
+    """Open the browser only once both the API and Vite accept connections."""
+    try:
+        _wait_for_tcp_ready(_backend_probe_host(backend_host), backend_port)
+        _wait_for_tcp_ready(_VITE_HOST, _VITE_PORT)
+    except TimeoutError as exc:
+        logger.warning(
+            "browser_open_server_ready_timeout",
+            frontend_url=browser_url,
+            reason=str(exc),
+        )
+        click.echo(
+            "Servers did not become ready in time; the browser was not opened automatically. "
+            f"Open {browser_url} once they are ready.",
+            err=True,
+        )
+        return
+    _open_browser(browser_url)
+
+
 def _open_browser_after_backend_ready(
     browser_url: str,
     backend_host: str,
@@ -358,6 +393,22 @@ def _open_browser_after_backend_ready(
     ).start()
 
 
+def _open_browser_after_servers_ready(
+    browser_url: str,
+    backend_host: str,
+    backend_port: int,
+) -> None:
+    """Start a background readiness wait for the backend and Vite."""
+    import threading
+
+    threading.Thread(
+        target=_wait_for_servers_then_open_browser,
+        args=(browser_url, backend_host, backend_port),
+        name="haute-open-browser-after-servers-ready",
+        daemon=True,
+    ).start()
+
+
 def _start_vite_subprocess(
     frontend_dir: Path,
     config: ServeConfig,
@@ -368,8 +419,8 @@ def _start_vite_subprocess(
     Vite child before exiting, so a Ctrl-C on the parent doesn't
     orphan the dev server.
     """
-    node_env = _node_env()
-    env = os.environ.copy() if node_env is None else dict(node_env)
+    _node_env()
+    env = os.environ.copy()
     ensure_local_session_token_env()
     env.pop("VITE_HAUTE_SESSION_TOKEN", None)
     env["HAUTE_BACKEND_URL"] = _http_url(config)
@@ -413,14 +464,14 @@ def _run_dev_mode(config: ServeConfig, frontend_dir: Path) -> None:
     import uvicorn
 
     click.echo("[dev] Dev mode: starting Vite dev server + FastAPI backend")
-    click.echo("  Frontend -> http://localhost:5173  (open this)")
+    click.echo(f"  Frontend -> http://{_VITE_HOST}:{_VITE_PORT}  (open this)")
     click.echo(f"  Backend  -> {_http_url(config)}   (API only)")
     click.echo("")
 
     vite_proc = _start_vite_subprocess(frontend_dir, config)
     if not config.no_browser:
-        _open_browser_after_backend_ready(
-            "http://localhost:5173",
+        _open_browser_after_servers_ready(
+            f"http://{_VITE_HOST}:{_VITE_PORT}",
             config.host,
             config.port,
         )
@@ -519,11 +570,13 @@ def handle_serve(config: ServeConfig) -> None:
     """
     _require_loopback_host(config)
     _configure_trusted_hosts(config)
-    _abort_if_port_in_use(config)
     frontend_dir = _detect_dev_frontend_dir()
     if frontend_dir is not None:
+        _abort_if_port_in_use(config)
+        _abort_if_vite_port_in_use()
         _run_dev_mode(config, frontend_dir)
     else:
+        _abort_if_port_in_use(config)
         _run_prod_mode(config)
 
 

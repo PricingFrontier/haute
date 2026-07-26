@@ -54,7 +54,8 @@ Out of scope (owned elsewhere):
   time — see [mlflow-model-registry](../mlflow-model-registry/high-level.md) and
   [modelling](../modelling/high-level.md).
 - `haute.toml` parsing mechanics beyond deploy's own schema section, and the `deploy`,
-  `smoke`, `impact`, `status` CLI commands themselves (`src/haute/cli/_deploy.py`) — see
+  `smoke`, `impact`, `status` CLI commands themselves (`src/haute/cli/_deploy.py`,
+  `_smoke.py`, `_impact.py`, and `_status.py`) — see
   [cli](../cli/high-level.md).
 - Optimiser ratebook artefact format and application logic — see
   [optimiser](../optimiser/high-level.md).
@@ -67,12 +68,14 @@ node marked as output, prunes the graph to that node's ancestors (keeping only t
 branch of any `liveSwitch`), identifies the API input node(s), collects supported artefacts
 the pruned path references, and dry-runs the graph once to infer input and output
 schemas. The result is a `ResolvedDeploy` — the single handoff object every backend
-target consumes.
+target consumes. Snapshot-backed Data Inputs hold a cache-generation lease from
+resolution through backend shipment; the result owns that lifetime and records the
+selected generation's signed provenance in the deploy manifest.
 
 **Validation.** Before anything ships, `validate_deploy()` checks structural invariants
 (output/input nodes present in the pruned graph, input nodes are true sources, artefacts
-exist on disk, schemas are non-empty, no unimplemented Databricks source stubs survived
-pruning) and, when the configured test-quotes path is an existing directory, scores every
+exist on disk, schemas are non-empty, and every retained Data Input has a validated,
+deploy-ready direct source or snapshot) and, when the configured test-quotes path is an existing directory, scores every
 JSON file there through the
 resolved graph. Test-quote files may be plain input rows or "golden" rows with an
 `expected` output and a `tolerance_pct`; any row whose actual output falls outside
@@ -91,7 +94,11 @@ copies; `optimiserApply` nodes configured from an MLflow run or registered model
 that artefact at request time. This is the same
 scoring path used by pre-deploy dry-runs, golden test-quote validation, the generated
 FastAPI container, and the MLflow `pyfunc` model — deploy has exactly one scoring engine,
-not one per target.
+not one per target. Retained `dataInput` nodes are remapped through the
+canonical provider configuration to the exact bundled direct file or leased
+snapshot selected during resolution. `dataOutput` is a scoring pass-through
+and its writer is never invoked; persistence-only branches outside the served
+output's ancestry are pruned.
 
 > NOTE: `output_fields` is applied only by the deployed container/pyfunc calls. Output
 > schema inference and test-quote validation currently score the unprojected output, so a
@@ -106,7 +113,14 @@ not one per target.
   image, and pushes it to a registry if one is configured. `/quote` accepts a single JSON
   object or an array, enforces a byte limit before materialisation, and either returns a
   stable JSON envelope capped at 1,000 returned rows or streams all rows as ordered NDJSON
-  when requested through `Accept`.
+  when requested through `Accept`. NDJSON is collected into a bounded-memory spooled
+  temporary file before response headers are sent, so a scoring failure produces the
+  same logged HTTP 500 contract as ordinary JSON instead of a misleading 200 with a
+  truncated body.
+  Generated images select the fixed application admission policy
+  `HAUTE_EXECUTION_MEMORY_POLICY=strict_server`; `/health` reports
+  `memory_enforcement="admission_rss_best_effort"`. These are application-level
+  admission and sampled-RSS guarantees, not a substitute for a platform hard limit.
 
 Three further container-platform targets (Azure Container Apps, AWS ECS, GCP Cloud Run)
 share the container build step (and push only when `container.registry` is configured),
@@ -198,18 +212,21 @@ approving it.
 - **[modelling](../modelling/high-level.md)** — `_scorer.py` and `_bundler.py` both
   depend on `haute.modelling._feature_contract` (contract loading, matching, and
   categorical-level declarations) to detect train-vs-score drift.
-- **[optimiser](../optimiser/high-level.md)** (spec pending) — `_scorer.py` intercepts
+- **[optimiser](../optimiser/high-level.md)** — `_scorer.py` intercepts
   `optimiserApply` nodes and dispatches to `haute._optimiser_io` /
   `haute._builders._dispatch_apply` for both file-based and MLflow-sourced ratebook
   artefacts.
-- **[io-layer](../io-layer/high-level.md)** — `_bundler.py` and `_schema.py` read static
-  data sources and infer schemas via `haute._io.read_data_source` /
-  `haute.graph_utils.read_data_source`, respecting `ExecutionProfile.DEPLOY_BATCH` /
-  `DEPLOY_LIVE` bounded-execution semantics.
-- **[cli](../cli/high-level.md)** — `src/haute/cli/_deploy.py` is the production CLI
-  consumer of this component's callable surface (`deploy_resolved()`, `resolve_config()`,
-  `validate_deploy()`, `score_test_quotes()`, the `_impact` formatters). Deploy itself has
-  no CLI concerns; it exposes plain functions and dataclasses.
+- **[io-layer](../io-layer/high-level.md)** — `_bundler.py` validates retained Data
+  Inputs through the canonical provider registry and snapshot cache. `_schema.py` uses
+  that path for `dataInput`; its legacy `read_data_source` bridge remains only for the
+  retained non-JSON `apiInput` compatibility path. Both respect
+  `ExecutionProfile.DEPLOY_BATCH` / `DEPLOY_LIVE` bounded-execution semantics.
+- **[cli](../cli/high-level.md)** — `src/haute/cli/_deploy.py`, `_smoke.py`,
+  `_impact.py`, and `_status.py` are the production CLI consumers of this
+  component's callable surface (`deploy_resolved()`, `resolve_config()`,
+  `validate_deploy()`, `score_test_quotes()`, endpoint scorers/status, and the
+  impact formatters). Deploy itself has no Click concerns; it exposes plain
+  functions and dataclasses.
 - **Downstream consumers of a deployed pipeline** — the generated container's `app.py`
   and the MLflow `HauteModel` (`_model_code.py`) are themselves the runtime surface that
   policy-admin systems call; they are generated/packaged by this component but execute
@@ -275,50 +292,3 @@ most: a silent wrong answer here mis-prices real policies.
   total-percent-change calculation would divide by a zero production baseline against a
   non-zero staging value (`_impact.py::_raise_for_non_finite_predictions`,
   `_zero_baseline_change_count`, `_total_percent_change`).
-
-## Polars backend contracts (0.6.0)
-
-Batch deployment and seedless live scoring will use the universal execution-plan facade.
-This adds strategy/provenance diagnostics and consistent bounded execution decisions
-without changing established input-to-output scoring semantics. Execution-engine owns
-plan selection. Remaining deployment improvement work is tracked in the
-[deploy and platform roadmap](../../roadmap/deploy-platform.md).
-
-## Approved change contract — 0.7.0 unified data-input deployment
-
-Remaining deployment improvement work is tracked in the
-[deploy and platform roadmap](../../roadmap/deploy-platform.md).
-
-- Deploy source discovery recognises `dataInput`, `apiInput`, and `constant`; `dataSource` no
-  longer exists. Direct local-file inputs retained in the pruned graph are bundled and remapped
-  according to their registry format. Snapshot-mode inputs bundle the exact validated Parquet
-  generation and signed metadata selected at build time.
-- Database and Databricks inputs require a ready matching snapshot before bundle construction.
-  Deploy never fetches or refreshes remote data. Lakehouse direct mode is allowed only when the
-  deploy target explicitly supports the required network and named-secret contract; otherwise a
-  snapshot is required and the validator says so before packaging.
-- The deployed scorer opens bundled direct files/snapshots through the same provider dispatch and
-  applies the retained `dataInput` Polars body. Bundle identity, schema verification, path
-  remapping, and generated-code execution cannot select a different generation from the one
-  validated.
-- `dataOutput` is a pass-through node during scoring and deployment never invokes its explicit
-  writer. Persistence-only branches not ancestral to the served `output` are pruned normally.
-  A pipeline cannot cause file/database writes merely by being scored.
-- Removed node types, legacy sidecars, and provider-specific Databricks cache paths are not
-  recognised as deploy artefacts or inputs.
-
-Acceptance covers static files across supported formats, each remote snapshot provider, corrupt
-or identity-mismatched metadata, generation pinning during concurrent refresh, secret/network
-policy, offline scorer execution, post-input code, and proof that deploy validation/scoring
-performs no cache build, remote fetch, or data-output write.
-
-## Approved change contract — 0.8.0 deployment memory-policy declaration
-
-Generated scoring images set `HAUTE_EXECUTION_MEMORY_POLICY=strict_server` explicitly and expose
-`memory_enforcement="admission_rss_best_effort"` from health metadata. This guarantees fixed,
-profile-aware application admission and RSS checkpoints; it does not claim an OS/container hard
-limit. The operator remains responsible for configuring a hard memory limit in Docker or the
-selected hosting platform. Local/editor processes default to adaptive admission, and isolated
-background workers separately expose `best_effort|required` process-cap policy. Documentation,
-runtime diagnostics, and tests use these exact terms so a sampled RSS policy can never be
-mistaken for a hard cap.

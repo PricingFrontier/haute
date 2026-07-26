@@ -348,9 +348,8 @@ uv run python scripts/run_mutation_suite.py --output-dir mutation-artifacts --ch
   `ci.yml`'s `perf` job, not `performance.yml`.
 - **`docs.yml` deploy step** — Pages deployment is not a correctness gate; the
   gate is `mkdocs build --strict`, which is mirrored (conditional gate 14).
-  Note `mkdocstrings` imports from `src`, so `mkdocs build --strict` needs the
-  package importable — the dev group provides that. Docs CI runs on 3.11, so
-  this is the one lane where the local 3.11 `.venv` and CI agree on interpreter.
+  Docs CI runs on 3.11, so this is the one lane where the local 3.11 `.venv`
+  and CI agree on interpreter.
 - **Artifact-upload steps across all jobs** — `actions/upload-artifact` /
   `upload-pages-artifact` are post-hoc (`if: always()`); they cannot fail the
   underlying check. Excluded.

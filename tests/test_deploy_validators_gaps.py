@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -149,6 +150,41 @@ class TestValidateDeployUnparseableQuote:
         msg = str(exc_info.value)
         assert "broken.json" in msg
         assert "could not parse" in msg
+
+
+class TestDataInputValidationLogging:
+    def test_provider_cause_is_logged_but_redacted_from_user_error(self) -> None:
+        from haute.deploy._validators import validate_deploy
+
+        inp = _make_node(
+            "drivers",
+            node_type=NodeType.DATA_INPUT,
+            config={
+                "inputType": "database",
+                "format": "database",
+                "cacheMode": "snapshot",
+                "query": "select * from drivers",
+                "arguments": {},
+            },
+        )
+        out = _make_node("output", node_type=NodeType.OUTPUT)
+        resolved = _make_resolved(
+            nodes=[inp, out],
+            edges=[GraphEdge(id="edge", source="drivers", target="output")],
+            input_node_ids=["drivers"],
+        )
+
+        with (
+            patch("haute.deploy._validators.logger.exception") as logged,
+            pytest.raises(DeployError) as exc_info,
+        ):
+            validate_deploy(resolved)
+
+        assert "ready, valid matching snapshot" in str(exc_info.value)
+        logged.assert_called_once()
+        assert logged.call_args.args == ("deploy_data_input_validation_failed",)
+        assert logged.call_args.kwargs["node_id"] == "drivers"
+        assert logged.call_args.kwargs["error_type"]
 
 
 # ===========================================================================

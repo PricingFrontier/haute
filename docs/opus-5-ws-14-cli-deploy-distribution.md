@@ -1,9 +1,9 @@
 # WS-14 — CLI, deploy & distribution
 
 Part of the Opus 5 review split (`opus-5-workstreams.md`). Evidence and fix guidance:
-`opus-5-review.md`. Owner: unassigned · Status: not started.
+`opus-5-review.md`. Owner: WS-14 · Status: complete.
 
-**Branch:** `opus5/ws-14-cli-deploy-distribution`
+**Branch:** `ws-14`
 
 ## Mission
 

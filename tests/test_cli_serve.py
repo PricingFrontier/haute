@@ -301,6 +301,31 @@ class TestServe:
         mock_open.assert_not_called()
         assert "browser was not opened automatically" in capsys.readouterr().err
 
+    def test_dev_browser_waits_for_backend_and_vite(self) -> None:
+        events: list[tuple[str, object]] = []
+
+        def fake_wait(host: str, port: int) -> None:
+            events.append(("wait", (host, port)))
+
+        def fake_open(url: str) -> None:
+            events.append(("open", url))
+
+        with (
+            patch("haute.cli._serve._wait_for_tcp_ready", side_effect=fake_wait),
+            patch("haute.cli._serve._open_browser", side_effect=fake_open),
+        ):
+            serve_mod._wait_for_servers_then_open_browser(
+                "http://127.0.0.1:5173",
+                "127.0.0.1",
+                8000,
+            )
+
+        assert events == [
+            ("wait", ("127.0.0.1", 8000)),
+            ("wait", ("127.0.0.1", 5173)),
+            ("open", "http://127.0.0.1:5173"),
+        ]
+
     def test_prod_mode_with_static_dir(
         self,
         runner: CliRunner,
@@ -414,12 +439,12 @@ class TestServe:
             patch("uvicorn.run"),
             patch("signal.signal"),
             patch("threading.Timer") as timer_cls,
-            patch("haute.cli._serve._open_browser_after_backend_ready") as ready_open,
+            patch("haute.cli._serve._open_browser_after_servers_ready") as ready_open,
         ):
             result = runner.invoke(cli, ["serve", "--host", "127.0.0.1", "--port", "8765"])
 
         assert result.exit_code == 0, result.output
-        ready_open.assert_called_once_with("http://localhost:5173", "127.0.0.1", 8765)
+        ready_open.assert_called_once_with("http://127.0.0.1:5173", "127.0.0.1", 8765)
         timer_cls.assert_not_called()
 
     def test_plain_serve_uses_localhost_for_bind_and_browser(
@@ -570,3 +595,29 @@ class TestServe:
         assert "vite" in result.output.lower()
         assert "5173" in result.output
         assert "8000" in result.output
+
+    def test_dev_mode_refuses_occupied_vite_port(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        frontend = tmp_path / "frontend"
+        frontend.mkdir()
+        (frontend / "package.json").write_text("{}")
+        (frontend / "node_modules").mkdir()
+
+        with (
+            patch("haute.cli._serve._find_frontend_dir", return_value=frontend),
+            patch(
+                "haute.cli._serve._port_is_available",
+                side_effect=[True, False],
+            ),
+            patch("subprocess.Popen") as popen,
+        ):
+            result = runner.invoke(cli, ["serve", "--no-browser"])
+
+        assert result.exit_code == 1
+        assert "vite port 5173 already in use" in result.output.lower()
+        popen.assert_not_called()

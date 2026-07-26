@@ -88,6 +88,14 @@ def handle_deploy(config: DeployCliConfig) -> None:
     if toml_path.exists():
         deploy_config = DeployConfig.from_toml(toml_path)
         click.echo("  \u2713 Loaded config from haute.toml")
+        try:
+            pipeline_file = resolve_pipeline_file(
+                Path(config.pipeline_file) if config.pipeline_file else deploy_config.pipeline_file,
+            )
+        except (FileNotFoundError, ValueError) as exc:
+            click.echo(f"Error: {exc}", err=True)
+            raise SystemExit(1) from exc
+        deploy_config = deploy_config.override(pipeline_file=pipeline_file)
     else:
         try:
             resolved = resolve_pipeline_file(
@@ -115,8 +123,6 @@ def handle_deploy(config: DeployCliConfig) -> None:
 
     # Apply CLI overrides on top of the loaded config.
     overrides: dict[str, str | Path | None] = {}
-    if config.pipeline_file:
-        overrides["pipeline_file"] = Path(config.pipeline_file)
     if config.model_name:
         overrides["model_name"] = config.model_name
     if config.endpoint_suffix:
@@ -166,11 +172,19 @@ def handle_deploy(config: DeployCliConfig) -> None:
                 click.echo(f"    - {err}", err=True)
         else:
             click.echo(f"    - {exc}", err=True)
+        resolved_deploy.close()
         raise SystemExit(1)
+    except BaseException:
+        resolved_deploy.close()
+        raise
     click.echo("  \u2713 Validation passed")
 
     # 4. Score test quotes
-    tq_results = score_test_quotes(resolved_deploy)
+    try:
+        tq_results = score_test_quotes(resolved_deploy)
+    except BaseException:
+        resolved_deploy.close()
+        raise
     if tq_results:
         all_ok = True
         for r in tq_results:
@@ -187,10 +201,12 @@ def handle_deploy(config: DeployCliConfig) -> None:
                 "\n  \u2717 Test quote scoring failed. Fix errors before deploying.",
                 err=True,
             )
+            resolved_deploy.close()
             raise SystemExit(1)
 
     if config.dry_run:
         click.echo("\n  Dry run complete - no model was deployed.")
+        resolved_deploy.close()
         return
 
     # 5. Deploy to target
@@ -217,6 +233,8 @@ def handle_deploy(config: DeployCliConfig) -> None:
     except Exception as e:
         click.echo(f"\n  \u2717 Deployment failed: {e}", err=True)
         raise SystemExit(1)
+    finally:
+        resolved_deploy.close()
 
 
 @click.command()

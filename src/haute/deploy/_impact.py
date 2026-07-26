@@ -416,15 +416,14 @@ def build_report(
     staging_preds = _unwrap_prediction_envelopes(staging_preds)
     prod_preds = _unwrap_prediction_envelopes(prod_preds)
 
-    # Truncate raw prediction lists to matching length BEFORE building
-    # DataFrames to avoid materialising rows that will be discarded.
-    scored = min(len(staging_preds), len(prod_preds))
-    failed = len(input_df) - scored
-
-    if len(staging_preds) != len(prod_preds):
-        staging_preds = staging_preds[:scored]
-        prod_preds = prod_preds[:scored]
-        input_df = input_df.head(scored)
+    # Align all three row sources even when both endpoints drop the same
+    # number of rows. Keep the original sampled count for the report.
+    sampled_rows = len(input_df)
+    scored = min(len(staging_preds), len(prod_preds), sampled_rows)
+    failed = sampled_rows - scored
+    staging_preds = staging_preds[:scored]
+    prod_preds = prod_preds[:scored]
+    input_df = input_df.head(scored)
 
     stg_df = _preds_to_df(staging_preds)
     prd_df = _preds_to_df(prod_preds)
@@ -446,7 +445,7 @@ def build_report(
         prod_endpoint=prod_endpoint,
         dataset_path=dataset_path,
         total_rows=total_rows,
-        sampled_rows=len(input_df),
+        sampled_rows=sampled_rows,
         scored_rows=scored,
         failed_rows=failed,
         column_stats=stats,

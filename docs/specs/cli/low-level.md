@@ -72,7 +72,8 @@ a structural TOML edit rather than string templating so existing content survive
 writes `.env.example`, writes starter tests, writes CI workflow files for the chosen provider
 (pruning a *different* provider's stale files first on `--force`), installs a pre-commit hook into
 `.githooks/` and — if inside a git repo — `.git/hooks/`, and appends `.gitignore` guard entries via
-`haute._gitignore_guard.ensure_gitignore_guards`.
+`haute._gitignore_guard.ensure_gitignore_guards`. A pre-existing root `main.py` is preserved
+verbatim and reported; `--force` applies to Haute-owned scaffold files, not that root entry point.
 
 **`run`**: resolves the pipeline file via `haute._project.resolve_pipeline_file`, calls
 `parse_pipeline_file` then `execute_graph`, prints one line per node (row/column count or error),
@@ -88,7 +89,9 @@ run surfaces every issue rather than stopping at the first.
 via `importlib.util`, looks up a module-level `job` attribute, and calls
 `job.run(progress=_progress)` without an `isinstance(TrainingJob)` check. The documented/generated
 shape is a `TrainingJob`, but at runtime any object implementing that call and returning the fields
-the formatter reads is accepted.
+the formatter reads is accepted. Execution and rendering have separate exception boundaries:
+after `job.run()` returns, malformed result fields produce a “training succeeded, reporting
+failed” error and never a “Training failed” message.
 `_progress` renders a `\r`-carriage-return progress bar and explicitly flushes stdout after every
 write (documented as load-bearing — `click.echo(nl=False)` alone can leave the line buffered).
 
@@ -96,14 +99,16 @@ write (documented as load-bearing — `click.echo(nl=False)` alone can leave the
 value before any startup side effect), `_configure_trusted_hosts` (clears any stale
 `TRUSTED_HOSTS_ENV` remote-bind policy), `_abort_if_port_in_use`
 (pre-flight socket bind/close probe — `SO_EXCLUSIVEADDRUSE` on Windows to avoid a false-negative from
-`SO_REUSEADDR`), then `_detect_dev_frontend_dir` to choose dev vs. prod mode.
+`SO_REUSEADDR`), then `_detect_dev_frontend_dir` to choose dev vs. prod mode. Dev mode also
+pre-flights the fixed Vite listener at `127.0.0.1:5173`.
   - **Dev mode** (`_run_dev_mode`): spawns `npm run dev` as a subprocess (`_start_vite_subprocess`,
     with `SIGINT`/`SIGTERM` handlers wired to terminate the child). It creates the backend's
     process-local session token but removes `VITE_HAUTE_SESSION_TOKEN` from the child environment,
     so the frontend cannot read the credential. The server-only `HAUTE_BACKEND_URL` carries the
     selected loopback host/port into Vite's same-origin `/api` and `/ws` proxy (including bracketed
     IPv6) without becoming client code. It schedules a background thread
-    that polls the backend TCP port and opens the browser once it's accepting connections
+    that polls both the backend TCP port and Vite's fixed TCP port and opens the browser only
+    once both are accepting connections
     (`_open_browser_after_backend_ready` → `_wait_for_tcp_ready`), then runs `uvicorn.run(...,
     reload=True, reload_dirs=[haute package dir])`. The Vite subprocess is terminated in a `finally`
     block on every uvicorn exit path.
@@ -117,7 +122,9 @@ value before any startup side effect), `_configure_trusted_hosts` (clears any st
 
 **`deploy`**: `handle_deploy` loads `DeployConfig` from `haute.toml` if present, else builds one from
 CLI args via `resolve_pipeline_file` + `DeployConfig.from_cli_args`. Blocks non-dry-run deploys
-outside CI (`_detect_ci_env`). Applies CLI overrides (`pipeline_file`, `model_name`,
+outside CI (`_detect_ci_env`). A TOML-configured pipeline path is also normalised through
+`resolve_pipeline_file`; all command paths therefore share one missing/ambiguous-path contract.
+Applies CLI overrides (`pipeline_file`, `model_name`,
 `endpoint_suffix`) on top of the loaded config via `.override(**overrides)`. Then: `resolve_config`
 (parse/prune/collect artifacts/infer schemas) → `validate_deploy` (which already scores configured
 quotes as part of its aggregate gate) → `score_test_quotes` again for per-file timing/status output
@@ -129,13 +136,16 @@ override, requires a non-empty `tests/quotes/*.json` set, then dispatches on
 `resolve_transport(deploy_config).kind`:
   - `"databricks"` (`_smoke_databricks`): polls `ws.serving_endpoints.get(name)` every 30s up to 30
     minutes waiting for `state.ready == "READY"` and `config_update in ("", "NOT_UPDATING")`, then
-    queries the endpoint once per test-quote file.
+    queries the endpoint once per test-quote file. Only the SDK's explicit not-found exception is
+    retryable; every other endpoint lookup failure stops immediately with its cause.
   - `"http"` (`_smoke_http`): hits `<url>/health` once, then POSTs each test-quote file via
-    `score_http_endpoint_batched`.
+    `score_http_endpoint_batched`. An explicit suffix is rejected because an HTTP deployment must
+    supply its complete `[ci.staging].endpoint_url`.
   Both backends run every file even after an individual failure and report a combined pass/fail at
   the end.
 
-**`status`**: resolves the model name (`resolve_model_name`), loads catalog/schema from
+**`status`**: resolves the model name with CLI > `HAUTE_MODEL_NAME` > TOML precedence
+(`resolve_model_name`), loads catalog/schema from
 `haute.toml` if present else `DatabricksConfig()` defaults, calls
 `haute.deploy._mlflow.get_deploy_status`. `--version-only` mode prints only the version number (for
 scripting) and raises `click.ClickException` — rather than printing a misleading `0` — when no

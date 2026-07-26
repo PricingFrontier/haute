@@ -17,6 +17,7 @@ if TYPE_CHECKING:
 
 
 def _make_toml(tmp_path: Path) -> None:
+    (tmp_path / "main.py").write_text("# pipeline\n")
     (tmp_path / "haute.toml").write_text(
         '[project]\nname = "t"\npipeline = "main.py"\n'
         '[deploy]\nmodel_name = "test-model"\nendpoint_name = "test-ep"\n'
@@ -27,6 +28,7 @@ def _make_toml(tmp_path: Path) -> None:
 def _mock_resolved() -> MagicMock:
     """Build a mock ResolvedDeploy."""
     resolved = MagicMock()
+    resolved.close = MagicMock()
     resolved.config.target = "databricks"
     resolved.pruned_graph.nodes = [MagicMock(), MagicMock()]
     resolved.pruned_graph.edges = [MagicMock()]
@@ -81,6 +83,34 @@ class TestDeploy:
 
         assert result.exit_code == 0, result.output
         assert "dry run" in result.output.lower()
+        resolved.close.assert_called_once_with()
+
+    def test_toml_pipeline_uses_shared_resolver(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        _make_toml(tmp_path)
+
+        resolved = _mock_resolved()
+        resolved_path = (tmp_path / "main.py").resolve()
+
+        with (
+            patch(
+                "haute.cli._deploy.resolve_pipeline_file",
+                return_value=resolved_path,
+            ) as resolve_pipeline,
+            patch("haute.deploy._config.resolve_config", return_value=resolved) as resolve_deploy,
+            patch("haute.deploy._validators.validate_deploy", return_value=[]),
+            patch("haute.deploy._validators.score_test_quotes", return_value=[]),
+        ):
+            result = runner.invoke(cli, ["deploy", "--dry-run"])
+
+        assert result.exit_code == 0, result.output
+        resolve_pipeline.assert_called_once_with(Path("main.py"))
+        assert resolve_deploy.call_args.args[0].pipeline_file == resolved_path
 
     def test_resolution_failure(
         self,
@@ -123,6 +153,7 @@ class TestDeploy:
 
         assert result.exit_code == 1
         assert "validation failed" in result.output.lower()
+        resolved.close.assert_called_once_with()
 
     def test_test_quote_failure_blocks_deploy(
         self,

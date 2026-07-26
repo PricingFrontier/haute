@@ -193,6 +193,27 @@ class TestSmokeDatabricks:
 
 
 class TestSmokeHttp:
+    def test_http_rejects_endpoint_suffix(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _setup_smoke_project(
+            tmp_path,
+            monkeypatch,
+            target="container",
+            staging_url="http://localhost:8080/quote",
+        )
+
+        with patch("haute.cli._smoke._smoke_http") as smoke_http:
+            result = runner.invoke(cli, ["smoke", "--endpoint-suffix", "-canary"])
+
+        assert result.exit_code == 1
+        assert "only supported for databricks" in result.output.lower()
+        assert "endpoint_url" in result.output
+        smoke_http.assert_not_called()
+
     def test_http_success(
         self,
         runner: CliRunner,
@@ -295,18 +316,18 @@ class TestSmokeDatabricksEdgeCases:
         assert result.exit_code == 1
         assert "not ready" in result.output.lower() or "minutes" in result.output.lower()
 
-    def test_databricks_endpoint_get_error_retries(
+    def test_databricks_endpoint_get_error_fails_without_retry(
         self,
         runner: CliRunner,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Endpoint.get() errors should be retried until ready."""
+        """Only the SDK's NotFound signal is retryable."""
         _setup_smoke_project(tmp_path, monkeypatch)
 
         mock_ws = MagicMock()
 
-        # First call raises, second returns ready
+        # A transport/auth-style error must surface immediately.
         mock_ws.serving_endpoints.get.side_effect = [
             RuntimeError("endpoint not found"),
             _ready_endpoint_mock(),
@@ -319,9 +340,9 @@ class TestSmokeDatabricksEdgeCases:
         with patch("databricks.sdk.WorkspaceClient", return_value=mock_ws), patch("time.sleep"):
             result = runner.invoke(cli, ["smoke"])
 
-        assert result.exit_code == 0, result.output
-        assert mock_ws.serving_endpoints.get.call_count == 2
-        assert "passed" in result.output.lower()
+        assert result.exit_code == 1, result.output
+        assert mock_ws.serving_endpoints.get.call_count == 1
+        assert "could not check databricks endpoint" in result.output.lower()
 
     def test_databricks_multiple_predictions(
         self,

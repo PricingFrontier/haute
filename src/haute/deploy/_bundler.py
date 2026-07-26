@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from contextlib import ExitStack
 from pathlib import Path
+from typing import Any
 
 from haute._logging import get_logger
 from haute.graph_utils import NodeType, PipelineGraph
@@ -14,6 +16,9 @@ def collect_artifacts(
     pruned_graph: PipelineGraph,
     input_node_ids: list[str],
     pipeline_dir: Path,
+    *,
+    resources: ExitStack | None = None,
+    snapshot_provenance: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Path]:
     """Discover and collect all artifacts needed for deployment.
 
@@ -111,7 +116,14 @@ def collect_artifacts(
             _bundle_feature_contract(nid, local_path, artifacts)
 
         elif node_type == NodeType.DATA_INPUT and nid not in input_set:
-            _collect_static_data_input(nid, config, pipeline_dir, artifacts)
+            _collect_static_data_input(
+                nid,
+                config,
+                pipeline_dir,
+                artifacts,
+                resources=resources,
+                snapshot_provenance=snapshot_provenance,
+            )
 
     return artifacts
 
@@ -149,6 +161,9 @@ def _collect_static_data_input(
     config: dict,
     pipeline_dir: Path,
     artifacts: dict[str, Path],
+    *,
+    resources: ExitStack | None,
+    snapshot_provenance: dict[str, dict[str, Any]] | None,
 ) -> None:
     """Collect a retained canonical Data Input without refreshing it.
 
@@ -170,10 +185,23 @@ def _collect_static_data_input(
         if provider == "inline":
             return
         if cache_mode == "snapshot":
+            if resources is None:
+                raise DeployError(
+                    f"Data Input node {node_id!r} requires a deploy resource owner "
+                    "to hold its snapshot generation lease.",
+                    node_id=node_id,
+                )
             identity = source_cache_identity(validated, base_dir=pipeline_dir)
-            generation = SourceCacheStore(_get_project_root()).open_generation(identity)
+            generation = resources.enter_context(
+                SourceCacheStore(_get_project_root()).lease(identity)
+            )
             artifacts[f"{node_id}__snapshot.parquet"] = generation.data_path
             artifacts[f"{node_id}__snapshot.meta.json"] = generation.metadata_path
+            if snapshot_provenance is not None:
+                snapshot_provenance[node_id] = {
+                    "provider": identity.provider,
+                    **generation.metadata.to_dict(),
+                }
             return
         if provider not in {"file", "lakehouse"}:
             raise DeployError(

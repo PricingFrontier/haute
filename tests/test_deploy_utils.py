@@ -149,6 +149,7 @@ _EXPECTED_KEYS = {
     "input_schema",
     "output_schema",
     "artifacts",
+    "snapshot_provenance",
     "pruned_graph",
     "nodes_deployed",
     "nodes_skipped",
@@ -237,6 +238,20 @@ class TestBuildManifest:
         resolved = _make_resolved(artifacts={})
         manifest = build_manifest(resolved)
         assert manifest["artifacts"] == {}
+
+    def test_snapshot_provenance_is_preserved(self) -> None:
+        resolved = _make_resolved(artifacts={})
+        resolved.snapshot_provenance = {
+            "drivers": {
+                "provider": "database",
+                "identity_digest": "abc123",
+                "generation_id": "generation-1",
+            }
+        }
+
+        manifest = build_manifest(resolved)
+
+        assert manifest["snapshot_provenance"] == resolved.snapshot_provenance
 
     def test_input_node_ids_propagated(self) -> None:
         resolved = _make_resolved(input_node_ids=["api_1", "api_2"])

@@ -70,6 +70,39 @@ class TestOpenBrowser:
 
 
 # ---------------------------------------------------------------------------
+# resolve_model_name
+# ---------------------------------------------------------------------------
+
+
+class TestResolveModelName:
+    def test_environment_precedes_toml(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from haute.cli._helpers import resolve_model_name
+
+        toml_path = tmp_path / "haute.toml"
+        toml_path.write_text(
+            '[project]\nname = "project"\n[deploy]\nmodel_name = "from-toml"\n',
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HAUTE_MODEL_NAME", "from-env")
+
+        assert resolve_model_name(None, toml_path) == "from-env"
+
+    def test_cli_precedes_environment(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from haute.cli._helpers import resolve_model_name
+
+        monkeypatch.setenv("HAUTE_MODEL_NAME", "from-env")
+
+        assert resolve_model_name("from-cli", None) == "from-cli"
+
+
+# ---------------------------------------------------------------------------
 # _find_frontend_dir
 # ---------------------------------------------------------------------------
 

@@ -51,6 +51,7 @@ def build_manifest(resolved: ResolvedDeploy) -> dict[str, Any]:
         "input_schema": resolved.input_schema,
         "output_schema": resolved.output_schema,
         "artifacts": {name: path.as_posix() for name, path in resolved.artifacts.items()},
+        "snapshot_provenance": resolved.snapshot_provenance,
         "pruned_graph": resolved.pruned_graph.model_dump(),
         "nodes_deployed": len(resolved.pruned_graph.nodes),
         "nodes_skipped": len(resolved.removed_node_ids),

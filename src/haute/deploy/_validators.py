@@ -310,7 +310,12 @@ def validate_deploy(resolved: ResolvedDeploy) -> None:
                     f"Data Input node '{node.id}' cannot execute directly for deploy; "
                     "a ready snapshot is required."
                 )
-        except Exception:
+        except Exception as exc:
+            logger.exception(
+                "deploy_data_input_validation_failed",
+                node_id=node.id,
+                error_type=type(exc).__name__,
+            )
             errors.append(
                 f"Data Input node '{node.id}' requires a ready, valid matching snapshot "
                 "or a supported direct engine before packaging."

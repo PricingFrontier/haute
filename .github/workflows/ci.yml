@@ -61,7 +61,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 22.14.0
 
       - name: Fresh-install smoke
         run: uv run --no-project python scripts/init_smoke.py
@@ -107,7 +107,7 @@ jobs:
 
   # Version-independent static gates + package build — run once on the
   # reference interpreter (these were duplicated across the old 3-version
-  # backend matrix). Needs node for the frontend-embedding package build.
+  # backend matrix).
   backend-static:
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -117,10 +117,6 @@ jobs:
       - uses: astral-sh/setup-uv@v5
         with:
           python-version: "3.12"
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
 
       - run: uv sync --group dev --locked
 
@@ -132,9 +128,6 @@ jobs:
 
       - name: Mypy
         run: uv run mypy src/haute/
-
-      - name: Package build
-        run: HAUTE_BUILD_FRONTEND=1 uv build
 
   # Coverage authority: the full suite on the reference interpreter (3.12),
   # split into 2 balanced shards run in parallel (pytest-split). Each shard
@@ -305,6 +298,10 @@ jobs:
         with:
           python-version: "3.12"
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.14.0
+
       - run: uv sync --group dev --locked
       - run: HAUTE_BUILD_FRONTEND=1 uv build --out-dir dist-smoke --sdist --wheel
 
@@ -366,7 +363,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 22.14.0
 
       - run: npm ci
       - run: cd .. && bash scripts/preflight.sh --frontend-only
@@ -386,7 +383,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 22.14.0
 
       - run: uv sync --group dev --locked
         working-directory: .

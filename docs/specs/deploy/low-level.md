@@ -88,7 +88,10 @@
    through the shared profiled `streaming_collect` helper before its source is admitted to
    the bundle. Schema and dtype declarations live under the format-specific `arguments`
    object; the removed top-level `expected_columns` and `schema_overrides` fields are not
-   compatibility paths.
+   compatibility paths. Snapshot sources acquire a `SourceCacheStore.lease()` that is
+   retained by `ResolvedDeploy` until dispatch completes, and record provider, identity,
+   generation, signature, checksum, row/column counts, and creation time as manifest
+   provenance.
 8. `infer_input_schema()` (call `collect_schema()` on the first input node's source;
    lazy readers avoid row collection, while the existing plain-JSON reader may parse
    eagerly) and
@@ -102,7 +105,7 @@ output and do not catch missing selected columns.
 
 **Validation (`_validators.py::validate_deploy`)** — called by `deploy()` after
 `resolve_config()`, before dispatch. Runs seven structural checks (output, inputs,
-source-ness, artefact existence, unresolved Databricks sources, and non-empty input/output
+source-ness, artefact existence, canonical Data Input direct/snapshot readiness, and non-empty input/output
 schemas), then — if `config.test_quotes_dir` is a directory — pre-checks every `*.json` file's rows
 against the required input-schema columns (catching a missing column before scoring even
 starts, since a passthrough graph wouldn't otherwise surface it), then calls
@@ -130,7 +133,8 @@ directory is removed (`except BaseException: shutil.rmtree(...); raise`). Steps:
 manifest via `_utils.build_manifest`, remap artefact paths to `artifacts/<name>`
 container-relative paths, write `deploy_manifest.json`, copy every artefact file into
 `artifacts/`, generate `app.py` from an f-string template, generate `Dockerfile` (base
-image + pinned core deps + auto-detected extra deps from artefact file extensions), pick
+image + pinned core deps + auto-detected extra deps from artefact file extensions, with
+`HAUTE_EXECUTION_MEMORY_POLICY=strict_server`), pick
 an image tag (`<registry>/<model_name>:<git_sha>` or `<model_name>:<git_sha>`, falling
 back to `"local"` if not in a git repo), `docker build`, then `docker push` only if a
 registry is configured.
@@ -138,7 +142,9 @@ registry is configured.
 **Generated container HTTP runtime (`_container.py::_generate_app_source`)**
 1. Startup loads `deploy_manifest.json`, reconstructs `PipelineGraph`, and resolves the
    request-body limit. `GET /health` returns status, model/version, deployed-node count,
-   and the manifest input/output schemas.
+   the manifest input/output schemas, and
+   `memory_enforcement="admission_rss_best_effort"`. This describes application
+   admission/RSS checkpoints, not an OS or container hard memory limit.
 2. `POST /quote` reads JSON through `_request_limits.read_limited_json_body` before
    constructing a `DataFrame`. A JSON object becomes a one-row request; a JSON array is
    used as the batch; any other JSON top-level value returns HTTP 400. Array element
@@ -150,9 +156,11 @@ registry is configured.
    1,000 rows are returned in that envelope even though `row_count` records the full
    result.
 4. An `Accept` header containing `application/x-ndjson` or `application/ndjson` selects
-   `score_graph_lazy()` and ordered, bounded collection in 50,000-row chunks. This path
-   streams every result row as NDJSON rather than applying the 1,000-row JSON-envelope
-   response cap; plan cleanup runs in the generator's `finally`.
+   `score_graph_lazy()` and ordered, bounded collection in 50,000-row chunks. Rows are
+   encoded into a `SpooledTemporaryFile` before response headers are committed; the
+   spool spills to disk above its memory threshold and is then streamed to the client.
+   A late scoring error is therefore logged and returned as HTTP 500, never HTTP 200
+   with a truncated NDJSON body. Plan and spool cleanup run on every path.
 
 **Databricks deploy (`_mlflow.py::deploy_to_mlflow`)** — checks Databricks connectivity
 (HTTP GET with a short timeout, distinguishing 403 from unreachable), sets MLflow tracking
@@ -170,7 +178,8 @@ directory before re-raising.
 
 **Runtime scoring (`_scorer.py::score_graph_lazy` → `score_graph`)**
 1. Resolve the graph's relative path configs against `graph.source_file`
-   (`_resolve_runtime_graph_paths`) and attach bundled feature-contract paths to
+   (`_resolve_runtime_graph_paths`), rewrite retained `dataInput` direct paths or
+   snapshots to their bundled files (`_remap_bundled_data_inputs`), and attach bundled feature-contract paths to
    `modelScore` node configs (`_attach_bundled_feature_contracts`). When a remapped
    native model has no bundled feature-contract sidecar, load that local model through
    the stat-gated deploy cache and attach its feature names plus any offset column as
@@ -183,15 +192,14 @@ directory before re-raising.
    frame `sourceHandle`.
 2. Build a `NodeBuildHooks(before_build=_intercept)` wrapper around the shared
    `_build_node_fn` builder. `_intercept` returns a replacement `(func_name, fn,
-   returns_frame)` tuple — or `None` to fall through to the base builder — for six node
-   situations: apiInput source in the live input set (inject the live `DataFrame`
+   returns_frame)` tuple — or `None` to fall through to the base builder — for four node
+   categories: `apiInput` or `dataInput` source in the live input set (inject the live `DataFrame`
    directly); `externalFile` with a remapped bundled path (run its user code against the
    loaded object, or passthrough if no code); `optimiserApply` either file-based-remapped
    or MLflow-sourced (`run`/`registered`, downloaded at request time); `modelScore` in three sub-cases (remapped
    model artefact present → score; contract bundled but no model artefact → validate
    contract then raise `RuntimeError`; neither present and no usable model source
-   configured → raise `DeployError` immediately, never a silent passthrough); static
-   file-backed `dataInput` with a remapped bundled path.
+   configured → raise `DeployError` immediately, never a silent passthrough).
 3. Compile the graph's preamble once so transform-node user code has access to the same
    namespace as at dev time.
 4. For non-`DEPLOY_LIVE` profiles, build a `dataframe_cache_request` — the deployed
@@ -210,8 +218,9 @@ directory before re-raising.
 **Impact analysis (`_impact.py::build_report`)** — takes two prediction lists (Databricks
 SDK responses or HTTP `/quote` JSON, both normalised through
 `_normalise_http_prediction_payload` / `_unwrap_prediction_envelopes` to handle the
-`{rows, row_count, ...}` quote-envelope shape transparently), truncates both lists to the
-shorter length *before* building DataFrames (`failed_rows = len(input_df) - scored`),
+`{rows, row_count, ...}` quote-envelope shape transparently), aligns both lists and the
+sampled input to their common length *before* building DataFrames while preserving the
+original sampled-row count (`failed_rows = sampled_rows - scored`),
 computes per-numeric-column `ColumnStats`, and — for the first numeric column only —
 a `_segment_breakdown` over every categorical (`Utf8`, 2–50 unique values) input column
 with at least 10 rows per segment value, keeping the top 10 by absolute mean change.
@@ -294,6 +303,9 @@ JSON have separate structured payloads. A body exactly at the configured limit i
 - **Request and response bounds are independent.** The request byte limit controls JSON
   materialisation and defaults to 8 MiB; the ordinary JSON response envelope independently
   returns at most 1,000 rows. NDJSON is the explicit all-rows streaming response.
+- **Deploy scoring never performs persistence writes.** `dataOutput` is a
+  pass-through in the served graph, its configured writer is never invoked, and
+  persistence-only branches outside the output ancestry are removed by pruning.
 
 > NOTE: `_pruner.py::find_deploy_input_nodes` only returns `apiInput` nodes even though
 > `find_source_nodes` also recognises `dataInput` and `constant` node types as sources;
@@ -372,6 +384,9 @@ what they cover:
   `ColumnStats`/`SegmentRow`/report building, terminal/Markdown formatting — plus the
   `TestBugB4PrunerUsesOriginalEdges` and `TestBugB10LexicographicVersionComparison`
   regression classes.
+- **`test_impact.py`** — dedicated impact arithmetic, prediction-envelope
+  normalization, row-alignment/shortfall accounting, segment selection, and
+  terminal/Markdown report formatting.
 - **`test_deploy_mlflow_gaps.py`**, **`test_deploy_validators_gaps.py`** — targeted
   gap-filling for branches not hit by the main suites (progress callbacks, artefact copy,
   version selection, build-dir cleanup-on-error for MLflow; unparseable test-quote files,
@@ -407,50 +422,7 @@ suite.
 imported and exercised in-process through `TestClient`, but no test boots a built Docker
 image, contacts a real registry/Databricks workspace, or verifies a cloud service update.
 
-## Polars backend contracts (0.6.0)
-
-Deploy's batch scorer and seedless live-scoring entry points call the shared execution
-facade and propagate its typed diagnostics. Their score, schema, ordering, and output
-envelope contracts remain unchanged. No deploy module decides execution strategy;
-execution-engine owns that policy. Remaining deployment improvement work is tracked in the
-[deploy and platform roadmap](../../roadmap/deploy-platform.md).
-
-## Approved change contract — 0.7.0 unified data-input deployment
-
-Remaining deployment improvement work is tracked in the
-[deploy and platform roadmap](../../roadmap/deploy-platform.md).
-
-- `find_source_nodes` in `src/haute/deploy/_pruner.py` substitutes
-  `NodeType.DATA_INPUT` for the removed source type and retains api-input/constant semantics.
-- `src/haute/deploy/_bundler.py` dispatches retained static inputs by provider/cache mode.
-  Direct local path formats contribute their source artifact; snapshot inputs acquire a cache
-  generation lease, verify signed metadata/identity/schema, and bundle both data and metadata
-  under an immutable artifact name. Before publication, each direct input must resolve in the
-  bounded deploy profile and complete a one-row streaming readability probe using its canonical
-  format arguments. The manifest records provider, identity digest, generation id, and remap.
-- `src/haute/deploy/_scorer.py` remaps `DATA_INPUT` direct paths or snapshot roots through shared
-  provider dispatch. Remove static-data-source hooks and direct Databricks rejection. Secret
-  references resolve through target configuration only for explicitly supported direct remote
-  lakehouse execution.
-- `_schema.py` infers through the unified provider/snapshot reader; `_validators.py` checks
-  snapshot readiness, identity, corruption, direct-remote policy, and format engines. No deploy
-  module calls a cache builder.
-- Tests update pruner roots, artifact collection, schema drift, remap, scorer hooks, dry-run,
-  manifest, package contents, and offline execution. Concurrency tests pin one leased generation
-  while refresh publishes another. Negative tests assert no removed-node recognition and no
-  write invocation for `DATA_OUTPUT`.
-
-## Approved change contract — 0.8.0 deployment memory-policy declaration
-
-- `_generate_dockerfile` emits `ENV HAUTE_EXECUTION_MEMORY_POLICY=strict_server`.
-- The generated app keeps scoring in the API process and adds the stable health field
-  `memory_enforcement: "admission_rss_best_effort"`.
-- No generated source sets or implies `HAUTE_WORKER_MEMORY_ENFORCEMENT=required`, because the
-  scoring runtime does not launch a process worker per request.
-- Container-generation tests pin the environment line and health field. Execution-admission
-  tests continue to pin strict-server fixed budgets and API-visible 507 payloads.
-
-## Approved change contract — canonical-only scoring inputs
+## Canonical-only scoring inputs
 
 Under [ROAD-CANON-01](../../roadmap/engineering-quality.md#road-canon-01--prerelease-canonical-only-contract),
 generated deployment pruning and scoring bind inputs exclusively through the current named input

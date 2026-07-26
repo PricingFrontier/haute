@@ -40,27 +40,32 @@ Out of scope:
   Python 3.11 and later. Installed users receive the `haute` command and typing
   metadata.
 - Non-editable package builds made from a checkout that contains `frontend/`
-  require assets to exist in `src/haute/static/` and to be no older than the
+  require both `src/haute/static/index.html` and a non-empty
+  `src/haute/static/assets/` directory and require them to be no older than the
   checked frontend source and selected build configuration. In that context, a
   stale or missing asset set stops the build with instructions rather than
   producing a wheel whose web interface does not match its sources. When
   `frontend/` itself is absent, the hook returns without validating the static
   bundle.
 - Setting `HAUTE_BUILD_FRONTEND` to a recognised true value explicitly permits
-  the build hook to install locked Node dependencies when absent and run the
-  frontend production build. Recognised false values select validation only.
+  the build hook to run `npm ci --prefer-offline` on every explicit build and
+  then run the frontend production build when assets are stale. Recognised false
+  values select validation only. Invalid values fail before any editable-build
+  or missing-frontend early return.
 - The frontend build type-checks first, then Vite writes a fresh static bundle
-  to `src/haute/static/`; it uses stable vendor chunks and includes the package
-  version exposed as the browser application's version constant.
+  to `src/haute/static/`; it uses stable vendor chunks. The browser does not
+  receive a separate build-time package-version constant.
 - The source distribution intentionally excludes frontend source, documentation,
   tests and local/project artefacts, while the wheel includes the package and
   Hatch build artifacts. The generated static files are an explicit Hatch
   artifact so the wheel carries the browser client.
 - A push to `main` that changes any `docs/**` path or `mkdocs.yml` builds MkDocs
   in strict mode and deploys the resulting `site/` artifact to GitHub Pages.
-  `docs/specs/`, engineering roadmaps, review archives, and TRIP material are
-  excluded from the public site, but changes to those paths still trigger this
-  workflow.
+  `docs/specs/`, engineering roadmaps, `CI_MIRROR.md`, `COMMIT_STANDARDS.md`,
+  `PERFORMANCE_CHECKS.md`, the Opus review/workstream corpus, and TRIP material
+  are excluded from the public site, but changes to those paths still trigger
+  this workflow. A newer docs run queues behind an active Pages deployment
+  instead of cancelling it.
 
 ## Design rationale
 
@@ -73,6 +78,9 @@ Out of scope:
 - `npm ci` and the checked-in `frontend/package-lock.json` make frontend
   dependency installation deterministic. The frontend is private because it is
   a package-build input, not an independently published npm library.
+- Package workflows and frontend metadata pin the supported Node/npm toolchain.
+  CI has one authoritative package-build path so it cannot compare two wheels
+  produced by different implicit toolchains.
 - The browser bundle is emitted into the Python package instead of being fetched
   from a CDN, preserving offline/self-hosted deployment and keeping server and
   client versions together.
@@ -96,15 +104,18 @@ Out of scope:
 - An unrecognised `HAUTE_BUILD_FRONTEND` value raises `RuntimeError`; callers
   must choose an explicit true or false value.
 - A non-editable build with `frontend/` present and missing or stale
-  `src/haute/static/index.html` raises `RuntimeError` with the rebuild command.
+  `src/haute/static/index.html` or `src/haute/static/assets/` raises
+  `RuntimeError` with the rebuild command.
   It never substitutes a stale bundle.
 - If `frontend/` is absent, the hook skips both building and validation. This
   source-distribution/CI accommodation also means that such a build context can
   bypass the missing-static-asset failure; callers must ensure the static bundle
   is already included.
 - If Node/npm cannot be found, dependency installation fails, Vite fails, or no
-  output `index.html` is produced, the build hook raises `RuntimeError` and
-  forwards captured command output to stderr.
+  complete output asset set is produced, the build hook raises `RuntimeError`
+  and forwards captured command output to stderr. Subprocess output uses
+  replacement decoding for malformed bytes and every build subprocess has a
+  finite timeout whose expiry is reported as a `RuntimeError`.
 - Editable builds skip the hook's static-asset validation. This does not promise
   that an editable development environment can serve a production client.
 - A strict MkDocs build failure prevents the documentation artifact from being

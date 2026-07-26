@@ -13,6 +13,7 @@ from haute._logging import get_logger
 from haute._mlflow_utils import search_versions
 from haute.deploy._config import ResolvedDeploy
 from haute.deploy._utils import build_manifest
+from haute.errors import DeployError
 
 logger = get_logger(component="deploy.mlflow")
 
@@ -134,10 +135,13 @@ def deploy_to_mlflow(
         # 7. Get the registered model version
         client = mlflow.tracking.MlflowClient()
         versions = search_versions(client, uc_model_name)
-        if versions:
-            latest_version = max(versions, key=lambda v: int(v.version)).version
-        else:
-            latest_version = "1"
+        if not versions:
+            raise DeployError(
+                "MLflow did not return a registered model version after logging. "
+                "Refusing to deploy a synthetic version.",
+                registered_model=uc_model_name,
+            )
+        latest_version = max(versions, key=lambda v: int(v.version)).version
 
         model_uri = f"models:/{uc_model_name}/{latest_version}"
 
@@ -241,7 +245,15 @@ def _build_signature(resolved: ResolvedDeploy) -> object:
         for col_name, dtype_str in schema.items():
             # Handle parameterized types like Datetime('us', 'UTC')
             base_type = dtype_str.split("(")[0] if "(" in dtype_str else dtype_str
-            mlflow_type = dtype_map.get(base_type, DataType.string)
+            try:
+                mlflow_type = dtype_map[base_type]
+            except KeyError as exc:
+                raise DeployError(
+                    f"Cannot build an MLflow signature for column {col_name!r}: "
+                    f"unsupported Polars dtype {dtype_str!r}.",
+                    column=col_name,
+                    dtype=dtype_str,
+                ) from exc
             specs.append(ColSpec(type=mlflow_type, name=col_name))
         return specs
 

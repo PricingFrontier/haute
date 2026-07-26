@@ -84,6 +84,8 @@ def _load_generated_app(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     result_df: pl.DataFrame,
+    *,
+    artifacts: dict[str, str] | None = None,
 ):
     manifest = {
         "pruned_graph": PipelineGraph(
@@ -92,7 +94,7 @@ def _load_generated_app(
         ).model_dump(mode="json"),
         "input_node_ids": ["quotes"],
         "output_node_id": "quotes",
-        "artifacts": {},
+        "artifacts": artifacts or {},
         "output_fields": None,
     }
     (tmp_path / "deploy_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
@@ -278,6 +280,28 @@ class TestGenerateAppSource:
         assert 'operation="deploy_quote"' in source
         assert "row_count=row_count" in source
         assert "execution_context=execution_context" in source
+
+    def test_resolves_manifest_artifacts_relative_to_manifest(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        artifact_dir = tmp_path / "artifacts"
+        artifact_dir.mkdir()
+        artifact = artifact_dir / "lookup.parquet"
+        artifact.write_bytes(b"artifact")
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        monkeypatch.chdir(elsewhere)
+
+        module = _load_generated_app(
+            tmp_path,
+            monkeypatch,
+            pl.DataFrame({"premium": [1.0]}),
+            artifacts={"lookup": "artifacts/lookup.parquet"},
+        )
+
+        assert Path(module._artifact_paths["lookup"]) == artifact.resolve()
 
     def test_quote_admits_before_polars_dataframe_materialisation(
         self,
@@ -738,6 +762,48 @@ class TestGenerateAppSource:
             {"premium": 2.5},
         ]
         assert cleanup_calls == [False]
+
+    def test_ndjson_scoring_failure_returns_logged_500(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        module = _load_generated_app(
+            tmp_path,
+            monkeypatch,
+            pl.DataFrame({"premium": [999.0]}),
+        )
+        cleanup_calls: list[bool] = []
+
+        def fake_score_graph_lazy(**kwargs):
+            return SimpleNamespace(
+                lazy_frame=pl.DataFrame({"premium": [1.5, 2.5]}).lazy(),
+                execution_context=kwargs["execution_context"],
+                cleanup=lambda *, preserve_primary_error: cleanup_calls.append(
+                    preserve_primary_error
+                ),
+            )
+
+        def failing_batches(*_args, **_kwargs):
+            yield pl.DataFrame({"premium": [1.5]})
+            raise RuntimeError("late stream failure")
+
+        monkeypatch.setattr(module, "score_graph_lazy", fake_score_graph_lazy)
+        monkeypatch.setattr(module, "bounded_collect_batches", failing_batches)
+        log_failure = MagicMock()
+        monkeypatch.setattr(module.logger, "exception", log_failure)
+
+        response = TestClient(module.app).post(
+            "/quote",
+            json=[{"age": 30}, {"age": 31}],
+            headers={"accept": "application/x-ndjson"},
+        )
+
+        assert response.status_code == 500
+        assert response.json()["error_code"] == "deploy_internal_error"
+        assert "late stream failure" in response.json()["error"]
+        assert cleanup_calls == [True]
+        log_failure.assert_called_once_with("deploy_quote_failed")
 
 
 # ---------------------------------------------------------------------------

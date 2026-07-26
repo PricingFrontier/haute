@@ -245,6 +245,7 @@ def _generate_app_source(model_name: str, port: int) -> str:
 
 import json
 import logging
+import tempfile
 from pathlib import Path
 
 import polars as pl
@@ -276,11 +277,25 @@ _manifest = json.loads(_MANIFEST_PATH.read_text())
 _pruned_graph = PipelineGraph.model_validate(_manifest["pruned_graph"])
 _input_node_ids = _manifest["input_node_ids"]
 _output_node_id = _manifest["output_node_id"]
-_artifact_paths = _manifest["artifacts"]
+
+
+def _resolve_manifest_artifact_path(raw_path):
+    path = Path(raw_path)
+    if not path.is_absolute():
+        path = _MANIFEST_PATH.parent / path
+    return str(path.resolve())
+
+
+_artifact_paths = {{
+    name: _resolve_manifest_artifact_path(path)
+    for name, path in _manifest["artifacts"].items()
+}}
 _output_fields = _manifest.get("output_fields")
 _QUOTE_REQUEST_BODY_LIMIT_BYTES = deploy_quote_request_body_limit_bytes()
 _QUOTE_RESPONSE_ROW_LIMIT = {DEFAULT_QUOTE_RESPONSE_ROW_LIMIT}
 _DEPLOY_STREAM_CHUNK_SIZE = 50_000
+_DEPLOY_STREAM_SPOOL_MAX_SIZE = 8 * 1024 * 1024
+_DEPLOY_STREAM_READ_SIZE = 64 * 1024
 logger = logging.getLogger("haute.deploy.container")
 
 app = FastAPI(
@@ -325,7 +340,11 @@ def _wants_ndjson(request: Request) -> bool:
     return "application/x-ndjson" in accept or "application/ndjson" in accept
 
 
-def _quote_ndjson_chunks(plan):
+def _materialize_quote_ndjson(plan):
+    spool = tempfile.SpooledTemporaryFile(
+        max_size=_DEPLOY_STREAM_SPOOL_MAX_SIZE,
+        mode="w+b",
+    )
     preserve_primary_error = False
     try:
         for batch in bounded_collect_batches(
@@ -341,12 +360,23 @@ def _quote_ndjson_chunks(plan):
             text = batch.write_ndjson()
             if text and not text.endswith("\\n"):
                 text += "\\n"
-            yield text
+            spool.write(text.encode("utf-8"))
+        spool.seek(0)
+        return spool
     except BaseException:
         preserve_primary_error = True
+        spool.close()
         raise
     finally:
         plan.cleanup(preserve_primary_error=preserve_primary_error)
+
+
+def _quote_ndjson_chunks(spool):
+    try:
+        while chunk := spool.read(_DEPLOY_STREAM_READ_SIZE):
+            yield chunk
+    finally:
+        spool.close()
 
 
 @app.post("/quote")
@@ -399,8 +429,9 @@ async def quote(request: Request) -> JSONResponse:
                 output_fields=_output_fields,
                 execution_context=execution_context,
             )
+            spool = _materialize_quote_ndjson(plan)
             return StreamingResponse(
-                _quote_ndjson_chunks(plan),
+                _quote_ndjson_chunks(spool),
                 media_type="application/x-ndjson",
             )
         result = score_graph(

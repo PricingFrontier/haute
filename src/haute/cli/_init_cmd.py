@@ -520,10 +520,12 @@ def handle_init(config: InitConfig) -> None:
     (project_dir / "data").mkdir(exist_ok=True)
     (project_dir / "prompts").mkdir(exist_ok=True)
 
-    # -- Remove root main.py left over from `uv init` -------------------------
+    # -- Preserve root main.py ------------------------------------------------
     root_main = project_dir / "main.py"
     if root_main.exists():
-        root_main.unlink()
+        click.echo(
+            "  Preserved existing main.py (Haute uses rating/main.py for its starter pipeline)."
+        )
 
     # -- rating/ - user pipeline files -----------------------------------------
     rating_dir = project_dir / "rating"

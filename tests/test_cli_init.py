@@ -243,13 +243,15 @@ class TestInitCreatesProjectStructure:
         runner.invoke(cli, ["init"], catch_exceptions=False)
         assert not (tmp_path / ".git" / "hooks" / "pre-commit").exists()
 
-    def test_removes_root_main_py_from_uv_init(
+    def test_preserves_root_main_py_from_uv_init(
         self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):
         monkeypatch.chdir(tmp_path)
-        (tmp_path / "main.py").write_text("print('hello from uv init')\n")
-        runner.invoke(cli, ["init"], catch_exceptions=False)
-        assert not (tmp_path / "main.py").exists()
+        original = "print('hello from uv init')\n"
+        (tmp_path / "main.py").write_text(original)
+        result = runner.invoke(cli, ["init", "--force"], catch_exceptions=False)
+        assert (tmp_path / "main.py").read_text() == original
+        assert "preserved existing main.py" in result.output.lower()
         assert (tmp_path / "rating" / "main.py").exists()
 
     def test_creates_pyproject_toml_if_missing(
