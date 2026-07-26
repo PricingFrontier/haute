@@ -2,208 +2,22 @@
 
 ## Scope
 
-Git workflows safely manage repository state, history, remote operations, and
-understandable editor feedback.
+Owns repository setup and lifecycle, mutation safety, history integrity,
+bounded Git operations, frontend feedback, and the working-branch contract.
+
+The concrete `GIT-G01` through `GIT-G15` packages are delivered. Their current
+behaviour and evidence live in the git-integration and frontend-git-ui
+specifications and ordinary regression tests, so they no longer appear as
+roadmap work. `GIT-G16` was retired separately because it was a selection rule
+and standing quality umbrella with no behaviour to alter, not because that
+umbrella package shipped.
 
 ## Priorities
 
-| Package | State | Priority | Outcome |
-|---|---|---:|---|
-| GIT-G01–GIT-G03, GIT-G07–GIT-G08 | Complete | P0 | Mutations, repository setup/lifecycle, and unsaved work are protected. |
-| GIT-G04–GIT-G06, GIT-G09–GIT-G14 | Complete | P1 | History operations are bounded, explicit, and recoverable. |
-| GIT-G15 | Complete | P2 | Specifications, fixtures, and maintained symbols match the live contract. |
-| GIT-G16 | Standing quality gate | P2 | Apply only to a concrete, independently verified polish change. |
-
-## Audit outcome
-
-Every concrete item GIT-G01 through GIT-G15 is an improvement to correctness,
-performance, recoverability, or user experience and is now implemented. GIT-G02's safe
-unborn-repository seed and most of the backend batching in GIT-G05/GIT-G06 were already
-present; the audit retained and regression-tested them, then completed the remaining
-batching and client request de-duplication.
-
-GIT-G16 is not an independently implementable change: it is a selection rule for future
-small changes and deliberately names no behaviour to alter. Treating it as a standing
-quality gate avoids inventing speculative work merely to mark an umbrella item complete.
+There are no active Git integration improvement packages.
 
 ## Planned improvements
 
-### GIT-G01 — Repository mutation lock
-**Why:** Concurrent requests can contend on Git state or report an orphaned save as successful.
-
-**Plan:** Introduce a reentrant per-repository engine lock around every mutating
-operation and clone-state transaction while leaving unrelated Git reads concurrent.
-
-**Acceptance:** Concurrent real-repository tests show serialized commits, no index-lock
-leak, no lost successful save, stable serialization across `git init`, cached steady-state
-identity lookup, and eviction of idle lock entries.
-
-**Dependencies:** Precedes lifecycle and state-file changes.
-
-**Evidence:** `src/haute/_git_lock.py`; `src/haute/_git.py`; `tests/test_git_improvements.py`; `docs/specs/git-integration/high-level.md`.
-
-### GIT-G02 — Unborn repository seeding
-**Why:** Initial commits can sweep application state, credentials, and datasets into history.
-
-**Plan:** Seed an unborn repository with an explicit safe path set and consistent ignore rules rather than `git add -A`.
-
-**Acceptance:** Hand-initialised repository tests prove `.haute`, secrets, caches, and data remain untracked while intended files commit.
-
-**Dependencies:** GIT-G01.
-
-**Evidence:** `src/haute/_git.py`; `src/haute/cli.py`; `tests/test_git_engine.py`.
-
-### GIT-G03 — Pair lifecycle edges
-**Why:** Active-pair deletion, switching, rollback, and fast-forward can leave adopted repositories inconsistent.
-
-**Plan:** Resolve a safe fallback at operation time and make pair mutations transactional with compensating rollback.
-
-**Acceptance:** Tests cover active default-pair deletion, rollback failure, branch switching, and partial fast-forward.
-
-**Dependencies:** GIT-G01.
-
-**Evidence:** `src/haute/_git.py`; `src/haute/_git_state.py`; `tests/test_git_lifecycle_improvements.py`.
-
-### GIT-G04 — History integrity
-**Why:** Tabbed messages corrupt parsed milestone rows and move can linearise external merges.
-
-**Plan:** Use unambiguous Git field separators and preserve merge topology or reject unsafe move operations.
-
-**Acceptance:** Tests retain tabbed messages/timestamps and verify merge-history invariants.
-
-**Dependencies:** GIT-G01.
-
-**Evidence:** `src/haute/_git.py`; `tests/test_git_improvements.py`.
-
-### GIT-G05 — Version-label batching
-**Why:** Milestone labels and context use one subprocess per history item.
-
-**Plan:** Query labels and commit context in batched Git operations.
-
-**Acceptance:** Structural tests assert bounded subprocess calls and unchanged labels/context.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_git.py`; `tests/test_git_content_caches.py`; `tests/test_git_improvements.py`.
-
-### GIT-G06 — Working-branch batching
-**Why:** Branch listing and panel refetches multiply Git subprocesses.
-
-**Plan:** Batch branch metadata retrieval and remove duplicate client refetch chains.
-
-**Acceptance:** Tests assert bounded backend calls and one client refresh per relevant event.
-
-**Dependencies:** GIT-G05.
-
-**Evidence:** `src/haute/_git.py`; `frontend/src/stores/useGitStore.ts`; `tests/test_git_content_caches.py`; `frontend/src/stores/__tests__/useGitStore.test.ts`.
-
-### GIT-G07 — Backend error surfacing
-**Why:** The client replaces actionable Git messages with generic HTTP text.
-
-**Plan:** Preserve structured backend error detail through the Git client and relevant UI actions.
-
-**Acceptance:** UI tests show protected-branch, ledger, duplicate-label, and dirty-state messages.
-
-**Dependencies:** None.
-
-**Evidence:** `frontend/src/utils/gitError.ts`; `src/haute/routes/git.py`; `frontend/src/components/__tests__`; `frontend/src/panels/__tests__`.
-
-### GIT-G08 — Dirty-switch guard
-**Why:** Switching or creating-and-moving can discard unsaved editor work.
-
-**Plan:** Detect unsaved graph edits before destructive navigation and require an explicit user decision.
-
-**Acceptance:** UI tests cover cancel, discard, save-first, switch, and create-and-move flows.
-
-**Dependencies:** GIT-G07.
-
-**Evidence:** `frontend/src/components/GitNavigationConfirm.tsx`; `frontend/src/components/__tests__/BranchManager.test.tsx`; `frontend/src/panels/__tests__/GitPanel.test.tsx`; `docs/specs/frontend-git-ui/high-level.md`.
-
-### GIT-G09 — Locale-independent errors
-**Why:** Parsing translated Git prose makes expected failure handling unreliable.
-
-**Plan:** Pin Git command locale and map known failures to typed domain errors.
-
-**Acceptance:** Tests simulate recognised failures and retain safe sanitized unknown-error handling.
-
-**Dependencies:** GIT-G01.
-
-**Evidence:** `src/haute/_git.py`; `tests/test_git_improvements.py`; `tests/test_error_detail_sanitization.py`.
-
-### GIT-G10 — Status surface
-**Why:** The unused status endpoint is fragile and has a login-name crash path.
-
-**Plan:** Remove the dead route/client path, retaining only live-path fixes; reintroduce status only with a defined UI contract.
-
-**Acceptance:** Route/client removal and live Git workflow tests pass without the endpoint.
-
-**Dependencies:** GIT-G11.
-
-**Evidence:** `src/haute/routes/git.py`; `src/haute/schemas.py`; `frontend/src/api/client.ts`; `tests/test_api_contracts.py`.
-
-### GIT-G11 — Repository-state UX
-**Why:** Non-repository, invalid, divergent, and detached states are hidden or mislabelled.
-
-**Plan:** Surface distinct state labels, remediation, retry, and accurate branch context.
-
-**Acceptance:** UI tests cover no-repository, invalid, divergent, detached, and retry states.
-
-**Dependencies:** GIT-G07.
-
-**Evidence:** `frontend/src/components/BranchIndicator.tsx`; `src/haute/routes/git.py`; `frontend/src/components/__tests__/BranchIndicator.test.tsx`; `tests/test_git_improvements.py`.
-
-### GIT-G12 — Fetch off request paths
-**Why:** Routine requests synchronously fetch remotes and inherit network latency.
-
-**Plan:** Restrict fetches to deliberate operations or background refresh with explicit freshness state.
-
-**Acceptance:** Tests prove listing/status paths do not fetch and intentional remote operations still refresh safely.
-
-**Dependencies:** GIT-G01.
-
-**Evidence:** `src/haute/_git.py`; `src/haute/routes/git.py`; `tests/test_git_improvements.py`; `tests/test_git_engine.py`.
-
-### GIT-G13 — Show and compare robustness
-**Why:** Whole-tree archives, temp cleanup, and parse failure make version views costly or misleading.
-
-**Plan:** Limit extraction to needed artifacts, make cleanup Windows-safe, and return typed failure rather than an empty successful graph.
-
-**Acceptance:** Tests cover large unneeded files, cleanup contention, malformed archives,
-compatible tar handling, and explicit member-count/extracted-byte ceilings.
-
-**Dependencies:** GIT-G09.
-
-**Evidence:** `src/haute/_git.py`; `src/haute/routes/_helpers.py`; `tests/test_git_improvements.py`; `tests/test_git_engine.py`.
-
-### GIT-G14 — Atomic state files
-**Why:** Direct state-file writes can tear on crash or lose concurrent updates.
-
-**Plan:** Use atomic replace plus the repository mutation lock for all read-modify-write state changes.
-
-**Acceptance:** Failure-injection and concurrent-operation tests preserve valid state and both updates.
-
-**Dependencies:** GIT-G01.
-
-**Evidence:** `src/haute/_git_state.py`; `src/haute/_git.py`; `tests/test_git_improvements.py`; `tests/test_git_state_coverage.py`.
-
-### GIT-G15 — Documentation and fixture truth
-**Why:** User promises and fixtures can diverge from supported Git behaviour.
-
-**Plan:** Update live specifications and fixtures to match verified behaviour, deleting orphaned symbols.
-
-**Acceptance:** Documentation examples execute against maintained fixtures and tests.
-
-**Dependencies:** GIT-G02–GIT-G14.
-
-**Evidence:** `docs/specs/git-integration/high-level.md`; `docs/specs/frontend-git-ui/high-level.md`; `tests/test_api_contracts.py`; `tests/fixtures`.
-
-### GIT-G16 — Verified polish
-**Why:** Small UX, hygiene, test-gap, and CI improvements remain after behavioural work.
-
-**Plan:** Land only individually verified low-risk improvements with focused regression tests.
-
-**Acceptance:** Each selected change has a narrow test and no altered Git contract.
-
-**Dependencies:** GIT-G01–GIT-G15 as applicable.
-
-**Evidence:** Future concrete change, its focused regression, and the affected maintained specification.
+There are no queued Git integration improvements. A future polish change must
+enter this catalogue as a concrete package with reproduced evidence rather than
+survive as a standing umbrella item.

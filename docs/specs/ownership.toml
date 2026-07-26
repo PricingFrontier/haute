@@ -1,6 +1,7 @@
-# Files intentionally named by more than one component Module map.  The
-# primary component owns the file's specification; consumers document only
-# their direct interaction with it.
+# Files intentionally shared across component specifications. The primary
+# component owns the file's behaviour; consumers document only a direct
+# interaction. A record is mandatory when multiple Module maps name the file
+# or when prose makes an explicit cross-component ownership claim.
 
 version = 1
 

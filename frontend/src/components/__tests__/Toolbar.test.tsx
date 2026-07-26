@@ -42,6 +42,11 @@ describe("Toolbar", () => {
     expect(screen.getByText("Haute")).toBeInTheDocument()
   })
 
+  it("renders the package-derived browser version", () => {
+    render(<Toolbar {...makeProps()} />)
+    expect(screen.getByText("v999.0.0-test")).toBeInTheDocument()
+  })
+
   it("clicking Save calls onSave", () => {
     const props = makeProps()
     render(<Toolbar {...props} />)

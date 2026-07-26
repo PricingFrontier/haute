@@ -1,0 +1,372 @@
+# Documentation-accuracy ratchet baseline. One UTF-8 TSV line per violation:
+# document<TAB>rule<TAB>detail. Blank lines and comments are ignored.
+#
+# Delete a resolved violation's single line. Any added line is a reviewed
+# acknowledgement of new documentation debt.
+docs/roadmap/explore-eda.md	roadmap-evidence-missing-repo-reference	frontend/src/panels/editors/explore
+docs/roadmap/explore-eda.md	roadmap-evidence-missing-repo-reference	frontend/src/panels/editors/explore/*.test.tsx
+docs/roadmap/explore-eda.md	roadmap-evidence-missing-repo-reference	src/haute/_fingerprint.py
+docs/roadmap/explore-eda.md	roadmap-evidence-missing-repo-reference	tests/test_explore_service.py
+docs/roadmap/frontend-canvas.md	roadmap-evidence-missing-repo-reference	frontend/src/utils/__tests__/banding.test.ts
+docs/roadmap/modelling.md	roadmap-evidence-missing-repo-reference	src/haute/codegen
+docs/roadmap/optimiser.md	roadmap-evidence-missing-repo-reference	src/haute/optimiser
+docs/roadmap/optimiser.md	roadmap-evidence-missing-repo-reference	tests/test_optimiser.py
+docs/specs/README.md	ambiguous-repo-reference	low-level.md -> docs/specs/assistant/low-level.md, docs/specs/background-jobs/low-level.md, docs/specs/build-and-distribution/low-level.md, docs/specs/caching/low-level.md, docs/specs/cli/low-level.md, docs/specs/codegen/low-level.md, docs/specs/databricks-io/low-level.md, docs/specs/deploy/low-level.md, docs/specs/engineering-quality/low-level.md, docs/specs/execution-engine/low-level.md, docs/specs/explore-eda/low-level.md, docs/specs/expression-parsing/low-level.md, docs/specs/frontend-assistant-ui/low-level.md, docs/specs/frontend-git-ui/low-level.md, docs/specs/frontend-graph-canvas/low-level.md, docs/specs/frontend-modelling-optimiser-ui/low-level.md, docs/specs/frontend-node-editors/low-level.md, docs/specs/frontend-preview-explore/low-level.md, docs/specs/frontend-shared/low-level.md, docs/specs/frontend-trace-ui/low-level.md, docs/specs/git-integration/low-level.md, docs/specs/io-layer/low-level.md, docs/specs/json-shredding/low-level.md, docs/specs/mlflow-model-registry/low-level.md, docs/specs/modelling/low-level.md, docs/specs/optimiser/low-level.md, docs/specs/pipeline-config/low-level.md, docs/specs/rating/low-level.md, docs/specs/reference-pipeline/low-level.md, docs/specs/sandbox-security/low-level.md, docs/specs/server-api/low-level.md, docs/specs/submodels/low-level.md, docs/specs/tracing/low-level.md
+docs/specs/assistant/low-level.md	ambiguous-repo-reference	_config.py -> src/haute/assistant/_config.py, src/haute/deploy/_config.py
+docs/specs/assistant/low-level.md	missing-module-map-symbol	TypedDict
+docs/specs/assistant/low-level.md	missing-module-map-symbol	_databricks_io._get_credentials
+docs/specs/assistant/low-level.md	missing-module-map-symbol	_git_state
+docs/specs/assistant/low-level.md	missing-module-map-symbol	add_edge
+docs/specs/assistant/low-level.md	missing-module-map-symbol	add_node
+docs/specs/assistant/low-level.md	missing-module-map-symbol	assistant_session_persist_failed
+docs/specs/assistant/low-level.md	missing-module-map-symbol	assistant_session_unreadable
+docs/specs/assistant/low-level.md	missing-module-map-symbol	base_url
+docs/specs/assistant/low-level.md	missing-module-map-symbol	delete_edge
+docs/specs/assistant/low-level.md	missing-module-map-symbol	delete_node
+docs/specs/assistant/low-level.md	missing-module-map-symbol	get_pipeline
+docs/specs/assistant/low-level.md	missing-module-map-symbol	graph_updated
+docs/specs/assistant/low-level.md	missing-module-map-symbol	haute.routes.assistant
+docs/specs/assistant/low-level.md	missing-module-map-symbol	preserved_blocks
+docs/specs/assistant/low-level.md	missing-module-map-symbol	rename_node
+docs/specs/assistant/low-level.md	missing-module-map-symbol	text_delta
+docs/specs/assistant/low-level.md	missing-module-map-symbol	tool_finished
+docs/specs/assistant/low-level.md	missing-module-map-symbol	tool_started
+docs/specs/assistant/low-level.md	missing-module-map-symbol	update_node
+docs/specs/assistant/low-level.md	missing-module-map-symbol	update_preamble
+docs/specs/background-jobs/low-level.md	ambiguous-repo-reference	pipeline.py -> src/haute/pipeline.py, src/haute/routes/pipeline.py, tests/fixtures/pipeline.py
+docs/specs/build-and-distribution/low-level.md	missing-module-map-symbol	RuntimeError
+docs/specs/caching/high-level.md	broken-link-anchor	../io-layer/high-level.md#approved-change-contract-070-data-io-convergence
+docs/specs/caching/high-level.md	empty-roadmap-pointer	../../roadmap/caching.md
+docs/specs/caching/high-level.md	legacy-contract-section	Polars backend contracts (0.6.0)
+docs/specs/caching/low-level.md	empty-roadmap-pointer	../../roadmap/caching.md
+docs/specs/caching/low-level.md	legacy-contract-section	Polars backend contracts (0.6.0)
+docs/specs/caching/low-level.md	missing-module-map-symbol	_utility_file_hash
+docs/specs/cli/high-level.md	ambiguous-repo-reference	_impact.py -> src/haute/cli/_impact.py, src/haute/deploy/_impact.py
+docs/specs/cli/low-level.md	ambiguous-repo-reference	_helpers.py -> src/haute/cli/_helpers.py, src/haute/routes/_helpers.py
+docs/specs/cli/low-level.md	ambiguous-repo-reference	_impact.py -> src/haute/cli/_impact.py, src/haute/deploy/_impact.py
+docs/specs/cli/low-level.md	missing-module-map-symbol	click.Group
+docs/specs/codegen/low-level.md	missing-module-map-symbol	_SINK_PARQUET
+docs/specs/codegen/low-level.md	missing-module-map-symbol	_codegen_builders
+docs/specs/codegen/low-level.md	missing-module-map-symbol	_dedup_param_names
+docs/specs/codegen/low-level.md	missing-module-map-symbol	edge_input_name
+docs/specs/databricks-io/high-level.md	broken-link-anchor	../caching/high-level.md#approved-change-contract-070-shared-input-snapshots
+docs/specs/databricks-io/high-level.md	broken-link-anchor	../io-layer/high-level.md#approved-change-contract-070-data-io-convergence
+docs/specs/databricks-io/high-level.md	empty-roadmap-pointer	../../roadmap/io-layer.md
+docs/specs/databricks-io/low-level.md	empty-roadmap-pointer	../../roadmap/io-layer.md
+docs/specs/databricks-io/low-level.md	missing-repo-reference	tests/test_databricks_cache.py
+docs/specs/databricks-io/low-level.md	missing-test-reference	test_databricks_cache.py
+docs/specs/databricks-io/low-level.md	missing-test-reference	tests/test_databricks_cache.py
+docs/specs/deploy/high-level.md	ambiguous-repo-reference	__init__.py::_dispatch_resolved -> rating/utility/__init__.py, src/haute/__init__.py, src/haute/assistant/__init__.py, src/haute/cli/__init__.py, src/haute/deploy/__init__.py, src/haute/modelling/__init__.py, src/haute/routes/__init__.py, tests/__init__.py
+docs/specs/deploy/high-level.md	ambiguous-repo-reference	_config.py::_validate_base_image_pinning -> src/haute/assistant/_config.py, src/haute/deploy/_config.py
+docs/specs/deploy/high-level.md	ambiguous-repo-reference	_impact.py -> src/haute/cli/_impact.py, src/haute/deploy/_impact.py
+docs/specs/deploy/high-level.md	ambiguous-repo-reference	_impact.py::_raise_for_non_finite_predictions -> src/haute/cli/_impact.py, src/haute/deploy/_impact.py
+docs/specs/deploy/high-level.md	legacy-contract-section	Polars backend contracts (0.6.0)
+docs/specs/deploy/low-level.md	ambiguous-repo-reference	__init__.py -> rating/utility/__init__.py, src/haute/__init__.py, src/haute/assistant/__init__.py, src/haute/cli/__init__.py, src/haute/deploy/__init__.py, src/haute/modelling/__init__.py, src/haute/routes/__init__.py, tests/__init__.py
+docs/specs/deploy/low-level.md	ambiguous-repo-reference	__init__.py::_validate_target -> rating/utility/__init__.py, src/haute/__init__.py, src/haute/assistant/__init__.py, src/haute/cli/__init__.py, src/haute/deploy/__init__.py, src/haute/modelling/__init__.py, src/haute/routes/__init__.py, tests/__init__.py
+docs/specs/deploy/low-level.md	ambiguous-repo-reference	_config.py -> src/haute/assistant/_config.py, src/haute/deploy/_config.py
+docs/specs/deploy/low-level.md	ambiguous-repo-reference	_config.py::resolve_config -> src/haute/assistant/_config.py, src/haute/deploy/_config.py
+docs/specs/deploy/low-level.md	ambiguous-repo-reference	_impact.py -> src/haute/cli/_impact.py, src/haute/deploy/_impact.py
+docs/specs/deploy/low-level.md	ambiguous-repo-reference	_impact.py::build_report -> src/haute/cli/_impact.py, src/haute/deploy/_impact.py
+docs/specs/deploy/low-level.md	legacy-contract-section	Polars backend contracts (0.6.0)
+docs/specs/execution-engine/high-level.md	broken-link-anchor	../background-jobs/high-level.md#approved-change-contract-080-supervised-process-jobs
+docs/specs/execution-engine/high-level.md	broken-link-anchor	../io-layer/high-level.md#approved-change-contract-070-data-io-convergence
+docs/specs/execution-engine/high-level.md	empty-roadmap-pointer	../../roadmap/execution-engine.md
+docs/specs/execution-engine/high-level.md	legacy-contract-section	Polars backend contracts (0.6.0)
+docs/specs/execution-engine/low-level.md	empty-roadmap-pointer	../../roadmap/execution-engine.md
+docs/specs/execution-engine/low-level.md	legacy-contract-section	Polars backend contracts (0.6.0)
+docs/specs/execution-engine/low-level.md	missing-module-map-symbol	OUTPUT
+docs/specs/execution-engine/low-level.md	missing-module-map-symbol	PreparedGraph
+docs/specs/execution-engine/low-level.md	missing-module-map-symbol	RLIMIT_AS
+docs/specs/execution-engine/low-level.md	missing-module-map-symbol	execute_sink()
+docs/specs/execution-engine/low-level.md	missing-module-map-symbol	graph_utils
+docs/specs/execution-engine/low-level.md	missing-module-map-symbol	projection.prepare_graph
+docs/specs/execution-engine/low-level.md	missing-repo-reference	tests/test_chunking*.py
+docs/specs/expression-parsing/low-level.md	missing-module-map-symbol	with_columns()
+docs/specs/frontend-assistant-ui/low-level.md	missing-module-map-symbol	ApiError
+docs/specs/frontend-assistant-ui/low-level.md	missing-module-map-symbol	PanelHeader
+docs/specs/frontend-assistant-ui/low-level.md	missing-module-map-symbol	React.lazy
+docs/specs/frontend-assistant-ui/low-level.md	missing-module-map-symbol	ReadableStream
+docs/specs/frontend-assistant-ui/low-level.md	non-root-relative-test-reference	__tests__/App.assistantLazy.test.ts
+docs/specs/frontend-assistant-ui/low-level.md	non-root-relative-test-reference	api/__tests__/assistant.test.ts
+docs/specs/frontend-assistant-ui/low-level.md	non-root-relative-test-reference	stores/__tests__/useAssistantStore.test.ts
+docs/specs/frontend-git-ui/low-level.md	ambiguous-repo-reference	layout.ts -> frontend/src/panels/gitgraph/layout.ts, frontend/src/utils/layout.ts
+docs/specs/frontend-git-ui/low-level.md	missing-module-map-symbol	GitPanel
+docs/specs/frontend-git-ui/low-level.md	non-root-relative-test-reference	GitPanel.cache.test.tsx
+docs/specs/frontend-git-ui/low-level.md	non-root-relative-test-reference	GitPanel.gaps.test.tsx
+docs/specs/frontend-git-ui/low-level.md	non-root-relative-test-reference	GitPanel.staleRefresh.test.tsx
+docs/specs/frontend-git-ui/low-level.md	non-root-relative-test-reference	GitPanel.test.tsx
+docs/specs/frontend-git-ui/low-level.md	non-root-relative-test-reference	api/__tests__/client.test.ts
+docs/specs/frontend-git-ui/low-level.md	non-root-relative-test-reference	components/__tests__/BranchIndicator.test.tsx
+docs/specs/frontend-git-ui/low-level.md	non-root-relative-test-reference	components/__tests__/BranchManager.gaps.test.tsx
+docs/specs/frontend-git-ui/low-level.md	non-root-relative-test-reference	components/__tests__/BranchManager.test.tsx
+docs/specs/frontend-git-ui/low-level.md	non-root-relative-test-reference	components/__tests__/CommitBreadcrumb.test.tsx
+docs/specs/frontend-git-ui/low-level.md	non-root-relative-test-reference	components/__tests__/DivergenceModal.gaps.test.tsx
+docs/specs/frontend-git-ui/low-level.md	non-root-relative-test-reference	components/__tests__/DivergenceModal.test.tsx
+docs/specs/frontend-git-ui/low-level.md	non-root-relative-test-reference	components/__tests__/MilestoneCommitModal.test.tsx
+docs/specs/frontend-git-ui/low-level.md	non-root-relative-test-reference	components/__tests__/MoveConfirmModal.test.tsx
+docs/specs/frontend-git-ui/low-level.md	non-root-relative-test-reference	components/__tests__/RemotePushControl.gaps.test.tsx
+docs/specs/frontend-git-ui/low-level.md	non-root-relative-test-reference	components/__tests__/RemotePushControl.test.tsx
+docs/specs/frontend-git-ui/low-level.md	non-root-relative-test-reference	components/__tests__/WorkingBranchModal.test.tsx
+docs/specs/frontend-git-ui/low-level.md	non-root-relative-test-reference	gitPanelCache.test.ts
+docs/specs/frontend-git-ui/low-level.md	non-root-relative-test-reference	gitgraph/__tests__/GraphCell.test.tsx
+docs/specs/frontend-git-ui/low-level.md	non-root-relative-test-reference	gitgraph/__tests__/layout.test.ts
+docs/specs/frontend-git-ui/low-level.md	non-root-relative-test-reference	stores/__tests__/useGitStore.test.ts
+docs/specs/frontend-git-ui/low-level.md	non-root-relative-test-reference	types/__tests__/guards.contract.test.ts
+docs/specs/frontend-graph-canvas/low-level.md	ambiguous-repo-reference	buildGraph.test.ts -> frontend/src/__tests__/utils/buildGraph.test.ts, frontend/src/utils/__tests__/buildGraph.test.ts
+docs/specs/frontend-graph-canvas/low-level.md	ambiguous-repo-reference	layout.test.ts -> frontend/src/__tests__/utils/layout.test.ts, frontend/src/panels/gitgraph/__tests__/layout.test.ts, frontend/src/utils/__tests__/layout.test.ts
+docs/specs/frontend-graph-canvas/low-level.md	missing-module-map-symbol	Colors
+docs/specs/frontend-graph-canvas/low-level.md	missing-module-map-symbol	Labels
+docs/specs/frontend-graph-canvas/low-level.md	missing-module-map-symbol	edge_input_name
+docs/specs/frontend-graph-canvas/low-level.md	missing-test-reference	buildGraph.test.ts -> frontend/src/__tests__/utils/buildGraph.test.ts, frontend/src/utils/__tests__/buildGraph.test.ts
+docs/specs/frontend-graph-canvas/low-level.md	missing-test-reference	layout.test.ts -> frontend/src/__tests__/utils/layout.test.ts, frontend/src/panels/gitgraph/__tests__/layout.test.ts, frontend/src/utils/__tests__/layout.test.ts
+docs/specs/frontend-graph-canvas/low-level.md	non-root-relative-test-reference	App.backgroundJobsIsolation.test.tsx
+docs/specs/frontend-graph-canvas/low-level.md	non-root-relative-test-reference	App.connectionMode.test.ts
+docs/specs/frontend-graph-canvas/low-level.md	non-root-relative-test-reference	App.findCast.test.tsx
+docs/specs/frontend-graph-canvas/low-level.md	non-root-relative-test-reference	App.integration.test.tsx
+docs/specs/frontend-graph-canvas/low-level.md	non-root-relative-test-reference	App.shallowHash.test.ts
+docs/specs/frontend-graph-canvas/low-level.md	non-root-relative-test-reference	ComparisonInspector.test.tsx
+docs/specs/frontend-graph-canvas/low-level.md	non-root-relative-test-reference	ComparisonView.test.tsx
+docs/specs/frontend-graph-canvas/low-level.md	non-root-relative-test-reference	NodePanel.graphContext.test.tsx
+docs/specs/frontend-graph-canvas/low-level.md	non-root-relative-test-reference	PolarsIcon.test.tsx
+docs/specs/frontend-graph-canvas/low-level.md	non-root-relative-test-reference	RenameDialog.test.tsx
+docs/specs/frontend-graph-canvas/low-level.md	non-root-relative-test-reference	RenameDialog.validation.test.tsx
+docs/specs/frontend-graph-canvas/low-level.md	non-root-relative-test-reference	SubmodelDialog.test.tsx
+docs/specs/frontend-graph-canvas/low-level.md	non-root-relative-test-reference	activePreview.test.ts
+docs/specs/frontend-graph-canvas/low-level.md	non-root-relative-test-reference	buildGraph.test.ts
+docs/specs/frontend-graph-canvas/low-level.md	non-root-relative-test-reference	columnFingerprint.test.ts
+docs/specs/frontend-graph-canvas/low-level.md	non-root-relative-test-reference	columnStashSourceIdentity.test.ts
+docs/specs/frontend-graph-canvas/low-level.md	non-root-relative-test-reference	connectionValidation.test.ts
+docs/specs/frontend-graph-canvas/low-level.md	non-root-relative-test-reference	edgeJoinGraph.test.ts
+docs/specs/frontend-graph-canvas/low-level.md	non-root-relative-test-reference	edgeJoinValidation.test.ts
+docs/specs/frontend-graph-canvas/low-level.md	non-root-relative-test-reference	flowElements.test.ts
+docs/specs/frontend-graph-canvas/low-level.md	non-root-relative-test-reference	graphDiff.test.ts
+docs/specs/frontend-graph-canvas/low-level.md	non-root-relative-test-reference	graphHelpers.test.ts
+docs/specs/frontend-graph-canvas/low-level.md	non-root-relative-test-reference	graphPerformance.test.ts
+docs/specs/frontend-graph-canvas/low-level.md	non-root-relative-test-reference	layout.test.ts
+docs/specs/frontend-graph-canvas/low-level.md	non-root-relative-test-reference	makePreviewData.test.ts
+docs/specs/frontend-graph-canvas/low-level.md	non-root-relative-test-reference	nodeTypes.test.ts
+docs/specs/frontend-graph-canvas/low-level.md	non-root-relative-test-reference	nodes/__tests__/PipelineNode.test.tsx
+docs/specs/frontend-graph-canvas/low-level.md	non-root-relative-test-reference	useEdgeHandlers.dragJson.test.ts
+docs/specs/frontend-graph-canvas/low-level.md	non-root-relative-test-reference	useEdgeHandlers.test.ts
+docs/specs/frontend-graph-canvas/low-level.md	non-root-relative-test-reference	useGraph.gaps.test.ts
+docs/specs/frontend-graph-canvas/low-level.md	non-root-relative-test-reference	useGraphStore.consolidation.test.ts
+docs/specs/frontend-graph-canvas/low-level.md	non-root-relative-test-reference	useGraphStore.fieldEditUndo.test.tsx
+docs/specs/frontend-graph-canvas/low-level.md	non-root-relative-test-reference	useGraphStore.structuralVersion.test.ts
+docs/specs/frontend-graph-canvas/low-level.md	non-root-relative-test-reference	useGraphStore.undoAtomicity.test.ts
+docs/specs/frontend-graph-canvas/low-level.md	non-root-relative-test-reference	useGraphStore.vcHistory.test.ts
+docs/specs/frontend-graph-canvas/low-level.md	non-root-relative-test-reference	useNodeHandlers.deferCleanup.test.ts
+docs/specs/frontend-graph-canvas/low-level.md	non-root-relative-test-reference	useNodeHandlers.gaps.test.ts
+docs/specs/frontend-graph-canvas/low-level.md	non-root-relative-test-reference	useNodeHandlers.test.ts
+docs/specs/frontend-graph-canvas/low-level.md	non-root-relative-test-reference	usePipelineAPI.abortStale.test.ts
+docs/specs/frontend-graph-canvas/low-level.md	non-root-relative-test-reference	usePipelineAPI.gaps.test.ts
+docs/specs/frontend-graph-canvas/low-level.md	non-root-relative-test-reference	usePipelineAPI.previewLifecycle.test.ts
+docs/specs/frontend-graph-canvas/low-level.md	non-root-relative-test-reference	usePipelineAPI.propagation.test.ts
+docs/specs/frontend-graph-canvas/low-level.md	non-root-relative-test-reference	usePipelineAPI.refPattern.test.ts
+docs/specs/frontend-graph-canvas/low-level.md	non-root-relative-test-reference	usePipelineAPI.test.ts
+docs/specs/frontend-graph-canvas/low-level.md	non-root-relative-test-reference	useSubmodelNavigation.gaps.test.ts
+docs/specs/frontend-graph-canvas/low-level.md	non-root-relative-test-reference	useSubmodelNavigation.test.ts
+docs/specs/frontend-graph-canvas/low-level.md	non-root-relative-test-reference	useWebSocketSync.failLoudly.test.ts
+docs/specs/frontend-graph-canvas/low-level.md	non-root-relative-test-reference	useWebSocketSync.panelState.test.ts
+docs/specs/frontend-graph-canvas/low-level.md	non-root-relative-test-reference	useWebSocketSync.undoHistory.test.ts
+docs/specs/frontend-graph-canvas/low-level.md	non-root-relative-test-reference	validateConfigRefs.test.ts
+docs/specs/frontend-modelling-optimiser-ui/high-level.md	legacy-contract-section	Polars backend contracts (0.6.0)
+docs/specs/frontend-modelling-optimiser-ui/low-level.md	legacy-contract-section	Polars backend contracts (0.6.0)
+docs/specs/frontend-node-editors/high-level.md	broken-link-anchor	../io-layer/high-level.md#approved-change-contract-070-data-io-convergence
+docs/specs/frontend-node-editors/low-level.md	missing-repo-reference	frontend/src/panels/editors/DataSourceEditor.tsx
+docs/specs/frontend-node-editors/low-level.md	missing-repo-reference	frontend/src/panels/editors/SinkEditor.tsx
+docs/specs/frontend-preview-explore/high-level.md	legacy-contract-section	Polars backend contracts (0.6.0)
+docs/specs/frontend-preview-explore/low-level.md	legacy-contract-section	Polars backend contracts (0.6.0)
+docs/specs/frontend-shared/high-level.md	legacy-contract-section	Polars backend contracts (0.6.0)
+docs/specs/frontend-shared/low-level.md	ambiguous-repo-reference	formatValue.test.ts -> frontend/src/__tests__/utils/formatValue.test.ts, frontend/src/utils/__tests__/formatValue.test.ts
+docs/specs/frontend-shared/low-level.md	legacy-contract-section	Polars backend contracts (0.6.0)
+docs/specs/frontend-shared/low-level.md	missing-module-map-symbol	ApiInputEditor
+docs/specs/frontend-shared/low-level.md	missing-test-reference	.gaps.test.ts
+docs/specs/frontend-shared/low-level.md	missing-test-reference	.gaps.test.tsx
+docs/specs/frontend-shared/low-level.md	missing-test-reference	components/__tests__/ErrorBoundary.test.tsx
+docs/specs/frontend-shared/low-level.md	missing-test-reference	formatValue.test.ts -> frontend/src/__tests__/utils/formatValue.test.ts, frontend/src/utils/__tests__/formatValue.test.ts
+docs/specs/frontend-shared/low-level.md	missing-test-reference	frontend/src/__tests__/{hooks,components,stores,utils}
+docs/specs/frontend-shared/low-level.md	non-root-relative-test-reference	.gaps.test.ts
+docs/specs/frontend-shared/low-level.md	non-root-relative-test-reference	.gaps.test.tsx
+docs/specs/frontend-shared/low-level.md	non-root-relative-test-reference	BackgroundJobPolling.renderIsolation.test.tsx
+docs/specs/frontend-shared/low-level.md	non-root-relative-test-reference	BreadcrumbBar.test.tsx
+docs/specs/frontend-shared/low-level.md	non-root-relative-test-reference	ContextMenu.test.tsx
+docs/specs/frontend-shared/low-level.md	non-root-relative-test-reference	ImportsPanel.test.tsx
+docs/specs/frontend-shared/low-level.md	non-root-relative-test-reference	KeyboardShortcuts.test.tsx
+docs/specs/frontend-shared/low-level.md	non-root-relative-test-reference	ModalShell.focusTrap.test.tsx
+docs/specs/frontend-shared/low-level.md	non-root-relative-test-reference	ModalShell.test.tsx
+docs/specs/frontend-shared/low-level.md	non-root-relative-test-reference	NodeSearch.test.tsx
+docs/specs/frontend-shared/low-level.md	non-root-relative-test-reference	Toast.test.tsx
+docs/specs/frontend-shared/low-level.md	non-root-relative-test-reference	Toolbar.addSource.test.tsx
+docs/specs/frontend-shared/low-level.md	non-root-relative-test-reference	Toolbar.test.tsx
+docs/specs/frontend-shared/low-level.md	non-root-relative-test-reference	Tooltip.test.tsx
+docs/specs/frontend-shared/low-level.md	non-root-relative-test-reference	__tests__/components/
+docs/specs/frontend-shared/low-level.md	non-root-relative-test-reference	__tests__/components/form/ConfigCheckbox.test.tsx
+docs/specs/frontend-shared/low-level.md	non-root-relative-test-reference	__tests__/components/form/EditorLabel.test.tsx
+docs/specs/frontend-shared/low-level.md	non-root-relative-test-reference	__tests__/utils/formatBytes.test.ts
+docs/specs/frontend-shared/low-level.md	non-root-relative-test-reference	api/__tests__/client.test.ts
+docs/specs/frontend-shared/low-level.md	non-root-relative-test-reference	api/__tests__/dispersion.test.ts
+docs/specs/frontend-shared/low-level.md	non-root-relative-test-reference	client.contract.test.ts
+docs/specs/frontend-shared/low-level.md	non-root-relative-test-reference	client.retry.test.ts
+docs/specs/frontend-shared/low-level.md	non-root-relative-test-reference	color.test.ts
+docs/specs/frontend-shared/low-level.md	non-root-relative-test-reference	components/__tests__/ErrorBoundary.test.tsx
+docs/specs/frontend-shared/low-level.md	non-root-relative-test-reference	components/__tests__/ToggleButtonGroup.test.tsx
+docs/specs/frontend-shared/low-level.md	non-root-relative-test-reference	components/form/__tests__/CommittedTextField.test.tsx
+docs/specs/frontend-shared/low-level.md	non-root-relative-test-reference	dtypeColors.test.ts
+docs/specs/frontend-shared/low-level.md	non-root-relative-test-reference	formatTrace.test.ts
+docs/specs/frontend-shared/low-level.md	non-root-relative-test-reference	formatValue.test.ts
+docs/specs/frontend-shared/low-level.md	non-root-relative-test-reference	hooks/__tests__/useJobPolling.dedup.test.ts
+docs/specs/frontend-shared/low-level.md	non-root-relative-test-reference	hooks/__tests__/useStaleConfigEstimate.sourceKey.test.ts
+docs/specs/frontend-shared/low-level.md	non-root-relative-test-reference	sanitizeName.test.ts
+docs/specs/frontend-shared/low-level.md	non-root-relative-test-reference	sanitizeParity.diff.test.ts
+docs/specs/frontend-shared/low-level.md	non-root-relative-test-reference	stores/__tests__/useSettingsStore.addSource.test.ts
+docs/specs/frontend-shared/low-level.md	non-root-relative-test-reference	stores/__tests__/useToastStore.test.ts
+docs/specs/frontend-shared/low-level.md	non-root-relative-test-reference	stores/__tests__/useUIStore.test.ts
+docs/specs/frontend-shared/low-level.md	non-root-relative-test-reference	types/__tests__/guards.contract.test.ts
+docs/specs/frontend-shared/low-level.md	non-root-relative-test-reference	useBackgroundJobs.test.ts
+docs/specs/frontend-shared/low-level.md	non-root-relative-test-reference	useClickOutside.test.ts
+docs/specs/frontend-shared/low-level.md	non-root-relative-test-reference	useDragResize.test.ts
+docs/specs/frontend-shared/low-level.md	non-root-relative-test-reference	useJobPolling.progressThrottle.test.ts
+docs/specs/frontend-shared/low-level.md	non-root-relative-test-reference	useJobPolling.test.ts
+docs/specs/frontend-shared/low-level.md	non-root-relative-test-reference	useStaleConfigEstimate.sourceKey.test.ts
+docs/specs/frontend-shared/low-level.md	non-root-relative-test-reference	useToastStore.dedup.test.ts
+docs/specs/frontend-shared/low-level.md	non-root-relative-test-reference	useUIStore.dirty.derived.test.ts
+docs/specs/frontend-shared/low-level.md	non-root-relative-test-reference	useWebSocketSync.test.ts
+docs/specs/frontend-shared/low-level.md	non-root-relative-test-reference	utils/__tests__/chartHelpers.test.ts
+docs/specs/frontend-shared/low-level.md	non-root-relative-test-reference	utils/__tests__/formatTime.test.ts
+docs/specs/git-integration/low-level.md	missing-module-map-symbol	_git
+docs/specs/io-layer/high-level.md	ambiguous-repo-reference	__init__.py -> rating/utility/__init__.py, src/haute/__init__.py, src/haute/assistant/__init__.py, src/haute/cli/__init__.py, src/haute/deploy/__init__.py, src/haute/modelling/__init__.py, src/haute/routes/__init__.py, tests/__init__.py
+docs/specs/io-layer/high-level.md	empty-roadmap-pointer	../../roadmap/io-layer.md
+docs/specs/io-layer/high-level.md	legacy-contract-section	Polars backend contracts (0.6.0)
+docs/specs/io-layer/low-level.md	broken-link-anchor	high-level.md#approved-change-contract-070-data-io-convergence
+docs/specs/io-layer/low-level.md	empty-roadmap-pointer	../../roadmap/io-layer.md
+docs/specs/io-layer/low-level.md	legacy-contract-section	Polars backend contracts (0.6.0)
+docs/specs/io-layer/low-level.md	missing-module-map-symbol	hive_schema
+docs/specs/io-layer/low-level.md	missing-module-map-symbol	schema_overrides
+docs/specs/json-shredding/high-level.md	empty-roadmap-pointer	../../roadmap/io-layer.md
+docs/specs/json-shredding/high-level.md	legacy-contract-section	Polars backend contracts (0.6.0)
+docs/specs/json-shredding/low-level.md	empty-roadmap-pointer	../../roadmap/io-layer.md
+docs/specs/json-shredding/low-level.md	legacy-contract-section	Polars backend contracts (0.6.0)
+docs/specs/mlflow-model-registry/high-level.md	legacy-contract-section	Polars backend contracts (0.6.0)
+docs/specs/mlflow-model-registry/low-level.md	legacy-contract-section	Polars backend contracts (0.6.0)
+docs/specs/modelling/high-level.md	legacy-contract-section	Polars backend contracts (0.6.0)
+docs/specs/modelling/low-level.md	legacy-contract-section	Polars backend contracts (0.6.0)
+docs/specs/modelling/low-level.md	missing-module-map-symbol	TrainingJob
+docs/specs/optimiser/high-level.md	broken-link-anchor	low-level.md#with_explainer_columns-contract
+docs/specs/optimiser/high-level.md	legacy-contract-section	Polars backend contracts (0.6.0)
+docs/specs/optimiser/low-level.md	broken-link-anchor	#with_explainer_columns-contract
+docs/specs/optimiser/low-level.md	legacy-contract-section	Polars backend contracts (0.6.0)
+docs/specs/optimiser/low-level.md	missing-module-map-symbol	OPTIMISER_APPLY
+docs/specs/pipeline-config/high-level.md	legacy-contract-section	Polars backend contracts (0.6.0)
+docs/specs/pipeline-config/low-level.md	ambiguous-repo-reference	pipeline.py -> src/haute/pipeline.py, src/haute/routes/pipeline.py, tests/fixtures/pipeline.py
+docs/specs/pipeline-config/low-level.md	legacy-contract-section	Polars backend contracts (0.6.0)
+docs/specs/pipeline-config/low-level.md	missing-module-map-symbol	TypedDict
+docs/specs/pipeline-config/low-level.md	missing-module-map-symbol	_project._toml_configured_pipeline
+docs/specs/pipeline-config/low-level.md	missing-module-map-symbol	_scaffold.haute_toml()
+docs/specs/pipeline-config/low-level.md	missing-module-map-symbol	edge_input_name
+docs/specs/pipeline-config/low-level.md	missing-module-map-symbol	input_scenario_map
+docs/specs/pipeline-config/low-level.md	missing-repo-reference	rating/data/
+docs/specs/rating/high-level.md	empty-roadmap-pointer	../../roadmap/rating.md
+docs/specs/rating/low-level.md	empty-roadmap-pointer	../../roadmap/rating.md
+docs/specs/rating/low-level.md	legacy-contract-section	Polars backend contracts (0.6.0)
+docs/specs/reference-pipeline/high-level.md	ambiguous-repo-reference	config/quote_input/quotes.json -> rating/config/quote_input/quotes.json, tests/fixtures/config/quote_input/quotes.json
+docs/specs/reference-pipeline/high-level.md	missing-repo-reference	rating/config/expander/premium.json
+docs/specs/reference-pipeline/high-level.md	missing-repo-reference	rating/data/quotes/nest_example.json
+docs/specs/reference-pipeline/low-level.md	ambiguous-repo-reference	config/quote_input/quotes.json -> rating/config/quote_input/quotes.json, tests/fixtures/config/quote_input/quotes.json
+docs/specs/reference-pipeline/low-level.md	missing-module-map-symbol	model_stuff
+docs/specs/reference-pipeline/low-level.md	missing-module-map-symbol	my_pipeline
+docs/specs/reference-pipeline/low-level.md	missing-repo-reference	rating/config/expander/premium.json
+docs/specs/reference-pipeline/low-level.md	missing-repo-reference	rating/data/quotes/nest_example.json
+docs/specs/sandbox-security/high-level.md	empty-roadmap-pointer	../../roadmap/security-supply-chain.md
+docs/specs/sandbox-security/low-level.md	empty-roadmap-pointer	../../roadmap/security-supply-chain.md
+docs/specs/sandbox-security/low-level.md	missing-module-map-symbol	exec()
+docs/specs/server-api/high-level.md	legacy-contract-section	Polars backend contracts (0.6.0)
+docs/specs/server-api/low-level.md	legacy-contract-section	Polars backend contracts (0.6.0)
+docs/specs/server-api/low-level.md	missing-module-map-symbol	contract_error
+docs/specs/submodels/low-level.md	missing-module-map-symbol	SUBMODEL
+docs/specs/tracing/high-level.md	legacy-contract-section	Polars backend contracts (0.6.0)
+docs/specs/tracing/low-level.md	legacy-contract-section	Polars backend contracts (0.6.0)
+tests/performance/test_cache_identity_perf.py	unreferenced-test	not named in any low-level Testing section
+tests/performance/test_polars_scale_scenario.py	unreferenced-test	not named in any low-level Testing section
+tests/performance/test_training_scoring_wide_perf.py	unreferenced-test	not named in any low-level Testing section
+tests/test_apiinput_flat_nested_relative_path.py	unreferenced-test	not named in any low-level Testing section
+tests/test_apiinput_flat_output_dry_run.py	unreferenced-test	not named in any low-level Testing section
+tests/test_artifact_housekeeping.py	unreferenced-test	not named in any low-level Testing section
+tests/test_ave.py	unreferenced-test	not named in any low-level Testing section
+tests/test_bounded_collect_contracts.py	unreferenced-test	not named in any low-level Testing section
+tests/test_bounded_sink_contract.py	unreferenced-test	not named in any low-level Testing section
+tests/test_bug_regressions.py	unreferenced-test	not named in any low-level Testing section
+tests/test_bugfixes.py	unreferenced-test	not named in any low-level Testing section
+tests/test_builder_edge_cases.py	unreferenced-test	not named in any low-level Testing section
+tests/test_cache_identity_contract.py	unreferenced-test	not named in any low-level Testing section
+tests/test_codegen_input_identity.py	unreferenced-test	not named in any low-level Testing section
+tests/test_column_contracts_adoption.py	unreferenced-test	not named in any low-level Testing section
+tests/test_column_renames.py	unreferenced-test	not named in any low-level Testing section
+tests/test_compute_needed_columns.py	unreferenced-test	not named in any low-level Testing section
+tests/test_contract_error_adapter.py	unreferenced-test	not named in any low-level Testing section
+tests/test_coverage_gaps.py	unreferenced-test	not named in any low-level Testing section
+tests/test_data_input_chunking.py	unreferenced-test	not named in any low-level Testing section
+tests/test_data_input_nested_relative_path.py	unreferenced-test	not named in any low-level Testing section
+tests/test_data_io_config_contract.py	unreferenced-test	not named in any low-level Testing section
+tests/test_decoupling_contracts.py	unreferenced-test	not named in any low-level Testing section
+tests/test_dependency_contracts.py	unreferenced-test	not named in any low-level Testing section
+tests/test_dry_fixes.py	unreferenced-test	not named in any low-level Testing section
+tests/test_dry_refactors.py	unreferenced-test	not named in any low-level Testing section
+tests/test_error_detail_sanitization.py	unreferenced-test	not named in any low-level Testing section
+tests/test_error_response_shape.py	unreferenced-test	not named in any low-level Testing section
+tests/test_external_file_nested_relative_path.py	unreferenced-test	not named in any low-level Testing section
+tests/test_extract_column_refs.py	unreferenced-test	not named in any low-level Testing section
+tests/test_feature_validation_cache.py	unreferenced-test	not named in any low-level Testing section
+tests/test_flattening_dedup.py	unreferenced-test	not named in any low-level Testing section
+tests/test_frontend_backend_contract.py	unreferenced-test	not named in any low-level Testing section
+tests/test_gpu_fit_cancel.py	unreferenced-test	not named in any low-level Testing section
+tests/test_graph_input_identity.py	unreferenced-test	not named in any low-level Testing section
+tests/test_host_binding.py	unreferenced-test	not named in any low-level Testing section
+tests/test_impact.py	unreferenced-test	not named in any low-level Testing section
+tests/test_input_providers.py	unreferenced-test	not named in any low-level Testing section
+tests/test_lineage_preview_cache.py	unreferenced-test	not named in any low-level Testing section
+tests/test_mem_helpers.py	unreferenced-test	not named in any low-level Testing section
+tests/test_mlflow_log.py	unreferenced-test	not named in any low-level Testing section
+tests/test_mlflow_log_button_roundtrip.py	unreferenced-test	not named in any low-level Testing section
+tests/test_model_cache_observability.py	unreferenced-test	not named in any low-level Testing section
+tests/test_offset_scoring.py	unreferenced-test	not named in any low-level Testing section
+tests/test_optimiser_contracts.py	unreferenced-test	not named in any low-level Testing section
+tests/test_optional_dependency_extras.py	unreferenced-test	not named in any low-level Testing section
+tests/test_optional_dependency_matrix.py	unreferenced-test	not named in any low-level Testing section
+tests/test_output_nested_roundtrip.py	unreferenced-test	not named in any low-level Testing section
+tests/test_parser_internals.py	unreferenced-test	not named in any low-level Testing section
+tests/test_parser_project_layout.py	unreferenced-test	not named in any low-level Testing section
+tests/test_parser_sanitize_contracts.py	unreferenced-test	not named in any low-level Testing section
+tests/test_partial_failure.py	unreferenced-test	not named in any low-level Testing section
+tests/test_path_traversal_advanced.py	unreferenced-test	not named in any low-level Testing section
+tests/test_path_traversal_fixes.py	unreferenced-test	not named in any low-level Testing section
+tests/test_performance_docs.py	unreferenced-test	not named in any low-level Testing section
+tests/test_pipeline_index_cache.py	unreferenced-test	not named in any low-level Testing section
+tests/test_pipeline_read_json_route.py	unreferenced-test	not named in any low-level Testing section
+tests/test_pipeline_runtime_path_validation.py	unreferenced-test	not named in any low-level Testing section
+tests/test_polars_backend_strategy_contract.py	unreferenced-test	not named in any low-level Testing section
+tests/test_property.py	unreferenced-test	not named in any low-level Testing section
+tests/test_read_user_text.py	unreferenced-test	not named in any low-level Testing section
+tests/test_registry_contracts.py	unreferenced-test	not named in any low-level Testing section
+tests/test_repository_hygiene.py	unreferenced-test	not named in any low-level Testing section
+tests/test_runtime_input_cache_invalidation.py	unreferenced-test	not named in any low-level Testing section
+tests/test_safety.py	unreferenced-test	not named in any low-level Testing section
+tests/test_sanitize_parity_fixture.py	unreferenced-test	not named in any low-level Testing section
+tests/test_scenario_propagation.py	unreferenced-test	not named in any low-level Testing section
+tests/test_scoring_path_unified.py	unreferenced-test	not named in any low-level Testing section
+tests/test_scoring_prep_perf.py	unreferenced-test	not named in any low-level Testing section
+tests/test_serialization_invariants.py	unreferenced-test	not named in any low-level Testing section
+tests/test_sidecar_golden.py	unreferenced-test	not named in any low-level Testing section
+tests/test_sink.py	unreferenced-test	not named in any low-level Testing section
+tests/test_small_module_contracts.py	unreferenced-test	not named in any low-level Testing section
+tests/test_source_cache.py	unreferenced-test	not named in any low-level Testing section
+tests/test_starter_pipeline_e2e.py	unreferenced-test	not named in any low-level Testing section
+tests/test_stat_gated_cache.py	unreferenced-test	not named in any low-level Testing section
+tests/test_state_transitions.py	unreferenced-test	not named in any low-level Testing section
+tests/test_streaming_collect_contract.py	unreferenced-test	not named in any low-level Testing section
+tests/test_test_debt.py	unreferenced-test	not named in any low-level Testing section
+tests/test_trace_correlation_remediation.py	unreferenced-test	not named in any low-level Testing section
+tests/test_trace_evidence_contract.py	unreferenced-test	not named in any low-level Testing section
+tests/test_training_worker_protocol.py	unreferenced-test	not named in any low-level Testing section
+tests/test_worker_protocol.py	unreferenced-test	not named in any low-level Testing section
+tests/test_write_sandbox_guard.py	unreferenced-test	not named in any low-level Testing section
+tests/test_write_sandbox_lint.py	unreferenced-test	not named in any low-level Testing section
