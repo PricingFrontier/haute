@@ -214,6 +214,11 @@ _EXPECTED_DEBT_IDS = {
     "424aee6f3cb6d2c7",
     "b98bd1f0d20f0032",
     "e9cd0223c182cf3f",
+    # 4a.3 — empty-batch classifier schema parity is pinned against genuine
+    # CatBoost predictions for both integer and string labels. CatBoost is an
+    # optional extra, so the real-engine parity test importorskips it while
+    # the mock-backed scorer contract remains part of the core suite.
+    "70f2346590cf6186",
     # W0 sandbox hardening — the RandomForest tree-ensemble round-trip widens
     # unpickle-allowlist coverage over a fitted sklearn model; sklearn is an
     # optional extra, so the test importorskips ``sklearn.ensemble`` (same

@@ -4,9 +4,9 @@
 :func:`is_haute_project`. This file targets the pipeline-resolution
 helpers that those tests don't exercise:
 
-* :func:`_toml_configured_pipeline` — the ``[project].pipeline`` reader
-  and its three "return None" guards (no file, malformed TOML, missing
-  or non-string ``pipeline`` key).
+* :func:`_toml_configured_pipeline` — the ``[project].pipeline`` reader,
+  its "return None" guards (no file, missing or non-string ``pipeline``
+  key), and its fail-loud malformed-TOML contract.
 * :func:`_looks_like_pipeline_file` — the name/suffix reject branch and
   the ``OSError`` read guard.
 * :func:`resolve_pipeline_file` and :func:`_resolve_default_in` — the
@@ -28,6 +28,7 @@ from haute._project import (
     _toml_configured_pipeline,
     resolve_pipeline_file,
 )
+from haute.errors import ConfigError
 
 _PIPELINE_BODY = "import haute\np = haute.Pipeline()\n"
 
@@ -70,15 +71,11 @@ class TestTomlConfiguredPipeline:
         result = _toml_configured_pipeline(tmp_path)
         assert result == tmp_path / "rating/main.py"
 
-    def test_returns_none_for_malformed_toml(self, tmp_path: Path) -> None:
-        """Line 124: a TOML parse error is swallowed to ``None``.
-
-        The resolver has no opinion on TOML correctness — it just can't
-        use a broken file as a pipeline source. The error surfaces
-        elsewhere (DeployConfig.from_toml).
-        """
+    def test_malformed_toml_raises_config_error(self, tmp_path: Path) -> None:
+        """Malformed tier-one config must not silently fall through to discovery."""
         _make_haute_toml(tmp_path, "this is = = not valid toml [[[\n")
-        assert _toml_configured_pipeline(tmp_path) is None
+        with pytest.raises(ConfigError, match="Could not read haute.toml"):
+            _toml_configured_pipeline(tmp_path)
 
     def test_returns_none_when_no_project_table(self, tmp_path: Path) -> None:
         """Line 128/131: well-formed TOML with no ``[project].pipeline``."""

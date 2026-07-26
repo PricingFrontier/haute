@@ -64,7 +64,7 @@ vi.mock("../../stores/useUIStore.ts", () => {
 // and state assertions in these tests focus on the setter params (not
 // store reads) so the stub does nothing.
 vi.mock("../../stores/useGraphStore.ts", () => {
-  const store = { markSaved: vi.fn() }
+  const store = { nodes: [], edges: [], submodels: {}, preamble: "", markSaved: vi.fn() }
   const useGraphStore = Object.assign(() => store, {
     getState: () => store,
     setState: vi.fn(),
@@ -106,8 +106,10 @@ function makeHookParams() {
   return {
     setNodesRaw: vi.fn(),
     setEdgesRaw: vi.fn(),
+    setSubmodelsRaw: vi.fn(),
     setPreamble: vi.fn(),
     preambleRef: { current: "" },
+    submodelsRef: { current: {} as Record<string, unknown> },
     graphRefreshingRef: { current: 0 },
     nodeIdCounter: { current: 0 },
     fitView: vi.fn(),
@@ -151,6 +153,7 @@ describe("useWebSocketSync — WS sync must not corrupt undo history (#8)", () =
         data: JSON.stringify({
           type: "graph_update",
           graph: {
+            submodels: {},
             nodes: [{ id: "n1", position: { x: 5, y: 6 }, data: { label: "A" } }],
             edges: [],
           },
@@ -177,7 +180,10 @@ describe("useWebSocketSync — WS sync must not corrupt undo history (#8)", () =
     ]
     await act(async () => {
       latestWS().onmessage?.(new MessageEvent("message", {
-        data: JSON.stringify({ type: "graph_update", graph: { nodes: incoming, edges: [] } }),
+        data: JSON.stringify({
+          type: "graph_update",
+          graph: { nodes: incoming, edges: [], submodels: {} },
+        }),
       }))
     })
 
@@ -214,6 +220,7 @@ describe("useWebSocketSync — WS sync must not corrupt undo history (#8)", () =
           data: JSON.stringify({
             type: "graph_update",
             graph: {
+              submodels: {},
               nodes: [{ id: `n${i}`, position: { x: i, y: i }, data: {} }],
               edges: [],
             },

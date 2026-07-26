@@ -17,6 +17,7 @@ vi.mock("../../api/client", async () => {
 
 import MilestoneCommitModal from "../MilestoneCommitModal"
 import useGitStore from "../../stores/useGitStore"
+import useToastStore from "../../stores/useToastStore"
 import { ApiError } from "../../api/client"
 
 const WORKING_BRANCH = {
@@ -47,6 +48,7 @@ describe("MilestoneCommitModal", () => {
       pendingAction: null,
       loading: false,
     })
+    useToastStore.setState({ toasts: [] })
   })
   afterEach(cleanup)
 
@@ -111,6 +113,25 @@ describe("MilestoneCommitModal", () => {
       expect(mockCommit).toHaveBeenLastCalledWith("My milestone", null, { allowFork: true }),
     )
     await waitFor(() => expect(onConfirmed).toHaveBeenCalledOnce())
+  })
+
+  it("surfaces a malformed matching fork response instead of leaking a parser rejection", async () => {
+    const malformed = { detail: { status: "would_fork", remote: "origin" } }
+    mockCommit.mockRejectedValueOnce(
+      new ApiError("HTTP 409", 409, JSON.stringify(malformed), malformed),
+    )
+    render(<MilestoneCommitModal onConfirmed={vi.fn()} onClose={vi.fn()} />)
+    fireEvent.change(screen.getByTestId("milestone-message"), {
+      target: { value: "My milestone" },
+    })
+    fireEvent.click(screen.getByTestId("milestone-confirm"))
+
+    await waitFor(() => {
+      expect(useToastStore.getState().toasts.some(
+        (toast) => toast.type === "error" && toast.text.includes("Could not commit:"),
+      )).toBe(true)
+    })
+    expect(screen.queryByTestId("milestone-fork-confirm")).not.toBeInTheDocument()
   })
 
   it("can back out of the fork warning without committing", async () => {

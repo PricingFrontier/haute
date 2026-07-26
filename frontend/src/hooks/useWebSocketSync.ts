@@ -25,8 +25,10 @@ export type WsStatus = "connected" | "reconnecting" | "disconnected"
 interface WebSocketSyncParams {
   setNodesRaw: (nodes: Node[]) => void
   setEdgesRaw: (edges: Edge[]) => void
+  setSubmodelsRaw: (submodels: Record<string, unknown>) => void
   setPreamble: (p: string) => void
   preambleRef: React.MutableRefObject<string>
+  submodelsRef: React.MutableRefObject<Record<string, unknown>>
   sourceFileRef?: React.MutableRefObject<string>
   graphRefreshingRef: React.MutableRefObject<number>
   nodeIdCounter: React.MutableRefObject<number>
@@ -109,9 +111,20 @@ function sourceFileLabel(value: unknown, fallback = "the current pipeline"): str
   return value.replace(/\\/g, "/")
 }
 
+function requireSubmodels(value: unknown): Record<string, unknown> {
+  // PipelineGraph serializes an empty submodel collection as null. Keep that
+  // wire representation distinct from an omitted field: null clears the
+  // persisted map, while undefined must fail loudly to prevent stale writes.
+  if (value === null) return {}
+  if (typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("graph_update: missing or invalid `submodels` map")
+  }
+  return value as Record<string, unknown>
+}
+
 export default function useWebSocketSync({
-  setNodesRaw, setEdgesRaw, setPreamble, preambleRef, sourceFileRef, graphRefreshingRef,
-  nodeIdCounter, fitView, enabled = true,
+  setNodesRaw, setEdgesRaw, setSubmodelsRaw, setPreamble, preambleRef, submodelsRef,
+  sourceFileRef, graphRefreshingRef, nodeIdCounter, fitView, enabled = true,
 }: WebSocketSyncParams): WsStatus {
   const { setSyncBanner } = useUIStore()
   const { addToast } = useToastStore()
@@ -262,6 +275,7 @@ export default function useWebSocketSync({
             nodes?: Node[]
             edges?: Edge[]
             preamble?: string
+            submodels?: unknown
             warning?: string
             source_file?: string
           }
@@ -275,6 +289,7 @@ export default function useWebSocketSync({
           }
 
           try {
+            const newSubmodels = requireSubmodels(g.submodels)
             const newNodes = g.nodes || []
             const newEdges = normalizeEdges(g.edges || [])
             const {
@@ -301,6 +316,7 @@ export default function useWebSocketSync({
               nodes: Node[]
               edges: Edge[]
               preamble: string
+              submodels: Record<string, unknown>
             }>
             const canRollback =
               Array.isArray(previousGraph.nodes) && Array.isArray(previousGraph.edges)
@@ -308,6 +324,12 @@ export default function useWebSocketSync({
               typeof previousGraph.preamble === "string"
                 ? previousGraph.preamble
                 : preambleRef.current
+            const previousSubmodels =
+              previousGraph.submodels &&
+              typeof previousGraph.submodels === "object" &&
+              !Array.isArray(previousGraph.submodels)
+                ? previousGraph.submodels
+                : submodelsRef.current
 
             // Guard: prevent React Flow's onSelectionChange from clearing
             // the open panel while we replace nodes.
@@ -316,6 +338,8 @@ export default function useWebSocketSync({
             try {
               setNodesRaw(nodesToApply)
               setEdgesRaw(newEdges)
+              setSubmodelsRaw(newSubmodels)
+              submodelsRef.current = newSubmodels
               const nextPreamble = g.preamble !== undefined
                 ? (g.preamble || "")
                 : preambleRef.current
@@ -332,6 +356,8 @@ export default function useWebSocketSync({
                 try {
                   setNodesRaw(previousGraph.nodes!)
                   setEdgesRaw(previousGraph.edges!)
+                  setSubmodelsRaw(previousSubmodels)
+                  submodelsRef.current = previousSubmodels
                   if (g.preamble !== undefined) {
                     setPreamble(previousPreamble)
                     preambleRef.current = previousPreamble
@@ -433,7 +459,7 @@ export default function useWebSocketSync({
       }
       ws?.close()
     }
-  }, [enabled, setNodesRaw, setEdgesRaw, setPreamble, preambleRef, sourceFileRef, nodeIdCounter, fitView, setSyncBanner, addToast, graphRefreshingRef])
+  }, [enabled, setNodesRaw, setEdgesRaw, setSubmodelsRaw, setPreamble, preambleRef, submodelsRef, sourceFileRef, nodeIdCounter, fitView, setSyncBanner, addToast, graphRefreshingRef])
 
   return status
 }

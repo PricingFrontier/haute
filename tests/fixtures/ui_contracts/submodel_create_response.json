@@ -6,21 +6,21 @@
     "nodes": [
       {
         "id": "submodel__pricing",
-        "type": "custom",
+        "type": "submodel",
         "position": { "x": 0, "y": 0 },
-        "data": { "label": "Pricing" }
+        "data": { "label": "Pricing", "nodeType": "submodel" }
       },
       {
         "id": "source",
-        "type": "custom",
+        "type": "polars",
         "position": { "x": -200, "y": 0 },
-        "data": { "label": "Source" }
+        "data": { "label": "Source", "nodeType": "polars" }
       },
       {
         "id": "sink",
-        "type": "custom",
+        "type": "polars",
         "position": { "x": 200, "y": 0 },
-        "data": { "label": "Sink" }
+        "data": { "label": "Sink", "nodeType": "polars" }
       }
     ],
     "edges": [

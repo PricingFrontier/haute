@@ -1477,3 +1477,8 @@ class TestEvaluatedExpressionStructure:
         result = evaluate_expression(code, "b", {"a": 3.0})
         assert isinstance(result.input_values, dict)
         assert result.input_values == {"a": 3.0}
+
+    def test_unsupported_method_does_not_return_receiver_value(self):
+        code = 'df = df.with_columns(pl.col("x").floor().alias("y"))'
+        result = evaluate_expression(code, "y", {"x": 2.7})
+        assert result.result_value is None

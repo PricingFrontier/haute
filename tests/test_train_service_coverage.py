@@ -20,6 +20,7 @@ import pytest
 from fastapi import HTTPException
 
 from haute._execution_context import (
+    ExecutionCancelledError,
     ExecutionContext,
     ExecutionMemoryLimitExceededError,
     ExecutionProfile,
@@ -347,7 +348,8 @@ class TestStartGlmMergeAndKeepColumns:
             "all_factors": True,
             "weight": "exposure",
             "offset": "log_exp",
-            "exclude": ["junk"],
+            "feature_columns": ["x1"],
+            "exclude": ["junk", "x1"],
             "params": {"iterations": 3},
         }
         graph = make_graph(
@@ -422,9 +424,9 @@ class TestStartGlmMergeAndKeepColumns:
         # set (_training_required_metadata_columns), so membership — not order — is
         # the contract; assert order-independently.
         keep = captured["keep_columns"]
-        assert set(keep) == {"loss", "exposure", "log_exp"}
+        assert set(keep) == {"loss", "exposure", "log_exp", "x1"}
         # The excluded column is forwarded as the exclude list.
-        assert captured["exclude"] == ["junk"]
+        assert captured["exclude"] == ["junk", "x1"]
 
     def test_start_stamps_explicit_timeout_before_preparation(self):
         from haute.routes._job_store import JobStore
@@ -1002,6 +1004,49 @@ class TestStartExecutionContextLifecycle:
         jobs = list(store.jobs.values())
         assert jobs and jobs[0]["status"] == "memory_limited"
         # launch never started → finally released the admitted context.
+        assert released == [True]
+
+    def test_cancel_during_materialisation_reaches_execution_token(self):
+        """Cancellation is registered before synchronous materialisation starts."""
+        from haute.routes._job_store import JobStore
+
+        store = JobStore()
+        service = TrainService(store)
+        body = self._min_graph()
+        released: list[bool] = []
+        ctx = ExecutionContext(
+            operation="training_pipeline",
+            profile=ExecutionProfile.TRAINING_PREP,
+            job_id="ctx-job",
+            admission_release=lambda: released.append(True),
+        )
+
+        def cancel_during_execute(*args, execution_context, **_kwargs):
+            job_id = args[3]
+            assert service.cancel(job_id)["status"] == "cancelled"
+            execution_context.checkpoint(label="training_materialisation")
+            raise AssertionError("cancelled materialisation continued")
+
+        with (
+            patch.object(service, "_compile_preamble", return_value=None),
+            patch.object(service, "_estimate_ram", return_value=(None, None, 100, 3)),
+            patch.object(service, "_check_gpu_fallback", return_value=None),
+            patch(
+                "haute.routes._train_service.create_admitted_execution_context",
+                return_value=ctx,
+            ),
+            patch("haute.routes._train_service.bind_running_execution_metrics_publisher"),
+            patch.object(
+                service,
+                "_execute_and_sink",
+                side_effect=cancel_during_execute,
+            ),
+            pytest.raises(ExecutionCancelledError),
+        ):
+            service.start(body)
+
+        jobs = list(store.jobs.values())
+        assert jobs and jobs[0]["status"] == "cancelled"
         assert released == [True]
 
 

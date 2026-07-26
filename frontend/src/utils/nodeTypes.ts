@@ -1,30 +1,13 @@
 import { Database, Brain, TableProperties, CircleDot, HardDriveDownload, FileArchive, Package, ArrowRight, Radio, ToggleLeft, SlidersHorizontal, FlaskConical, Target, Crosshair, Rows3, Hash, Search, GitMerge } from "lucide-react"
 import PolarsIcon from "../components/PolarsIcon"
 import { NODE_GROUP_COLORS } from "../theme/colors"
+import {
+  PIPELINE_NODE_TYPES,
+  type NodeTypeValue,
+} from "../types/node"
 
-export const NODE_TYPES = {
-  API_INPUT: "apiInput",
-  DATA_INPUT: "dataInput",
-  DATA_OUTPUT: "dataOutput",
-  POLARS: "polars",
-  EDGE_JOIN: "edgeJoin",
-  MODEL_SCORE: "modelScore",
-  BANDING: "banding",
-  RATING_STEP: "ratingStep",
-  OUTPUT: "output",
-  EXPLORE: "explore",
-  EXTERNAL_FILE: "externalFile",
-  LIVE_SWITCH: "liveSwitch",
-  MODELLING: "modelling",
-  OPTIMISER: "optimiser",
-  OPTIMISER_APPLY: "optimiserApply",
-  SCENARIO_EXPANDER: "scenarioExpander",
-  CONSTANT: "constant",
-  SUBMODEL: "submodel",
-  SUBMODEL_PORT: "submodelPort",
-} as const
-
-export type NodeTypeValue = typeof NODE_TYPES[keyof typeof NODE_TYPES]
+export const NODE_TYPES = PIPELINE_NODE_TYPES
+export type { NodeTypeValue } from "../types/node"
 
 /**
  * Single source of truth for all node type metadata.

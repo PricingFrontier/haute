@@ -77,7 +77,21 @@ class Node:
         """
         return self._input_arity
 
+    def _raise_if_unresolved_instance(self) -> None:
+        if (
+            self.config.get("_instance")
+            or self.config.get("instanceOf")
+            or self.config.get("inputMapping")
+        ):
+            raise ExecutionError(
+                "Standalone run()/score() cannot resolve an @pipeline.instance "
+                "node's 'instanceOf'/'inputMapping' references. Run the pipeline through "
+                "the graph executor, or inline the referenced logic into this node.",
+                node=self.name,
+            )
+
     def __call__(self, *dfs: pl.DataFrame) -> pl.DataFrame:
+        self._raise_if_unresolved_instance()
         if self.is_source:
             result: pl.DataFrame = self.fn()
             return result
@@ -502,13 +516,6 @@ class Pipeline(NodeRegistry):
                 f"Node '{n.name}' is missing input(s) from: {missing}. "
                 "Upstream node(s) may have failed or not been registered."
             )
-        if n.config.get("_instance") or n.config.get("instanceOf") or n.config.get("inputMapping"):
-            raise ExecutionError(
-                "Standalone run()/score() cannot resolve an @pipeline.instance "
-                "node's 'instanceOf'/'inputMapping' references. Run the pipeline through "
-                "the graph executor, or inline the referenced logic into this node.",
-                node=n.name,
-            )
         from haute._execute_lazy import _pick_source_frame
 
         input_dfs: list[pl.DataFrame] = [
@@ -627,6 +634,7 @@ class Pipeline(NodeRegistry):
                     )
                 seed_value = df
             for n in sources:
+                n._raise_if_unresolved_instance()
                 if n.name in seed_names:
                     outputs[n.name] = seed_value
                 else:
@@ -643,55 +651,50 @@ class Pipeline(NodeRegistry):
             _scenario_ctx.reset(_token)
 
     def to_graph(self) -> dict:
-        """Convert the pipeline to a React Flow compatible graph."""
-        nodes = []
-        rf_edges = []
-        x_spacing = 280
+        """Convert the live registry through the canonical static graph builders."""
+        from haute._graph_builders import _build_edges, _build_rf_nodes
 
-        for i, n in enumerate(self._nodes):
-            is_last = i == len(self._nodes) - 1
-            if n.config.get("_node_type"):
-                rf_type = n.config["_node_type"]
-            elif n.is_source:
-                rf_type = NodeType.DATA_INPUT
-            elif is_last:
-                rf_type = NodeType.OUTPUT
-            else:
-                rf_type = NodeType.POLARS
-
-            nodes.append(
+        raw_nodes: list[dict[str, Any]] = []
+        for node in self._nodes:
+            signature = inspect.signature(node.fn)
+            positional_param_names = [
+                parameter.name
+                for parameter in signature.parameters.values()
+                if parameter.name != "self"
+                and parameter.kind
+                in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+            ]
+            raw_nodes.append(
                 {
-                    "id": n.name,
-                    "type": rf_type,
-                    "position": {"x": i * x_spacing, "y": 0},
-                    "data": {
-                        "label": n.name.replace("_", " ").title(),
-                        "description": n.description,
-                        "nodeType": rf_type,
-                        "config": {k: v for k, v in n.config.items() if not k.startswith("_")},
+                    "func_name": node.name,
+                    "node_type": node.config.get("_node_type", NodeType.POLARS),
+                    "description": node.description,
+                    "config": {
+                        key: value for key, value in node.config.items() if not key.startswith("_")
                     },
+                    "param_names": positional_param_names,
+                    "edge_param_names": positional_param_names,
                 }
             )
-
-        for edge in self._edges:
-            rf_edges.append(
-                {
-                    "id": _edge_id(edge.source, edge.target, edge.source_port, edge.target_port),
-                    "source": edge.source,
-                    "target": edge.target,
-                    "sourceHandle": edge.source_port,
-                    "targetHandle": edge.target_port,
-                }
-            )
-
-        return {"nodes": nodes, "edges": rf_edges}
+        explicit_edges = [
+            (edge.source, edge.target, edge.source_port, edge.target_port) for edge in self._edges
+        ]
+        return {
+            "nodes": [
+                node.model_dump(mode="json", by_alias=True) for node in _build_rf_nodes(raw_nodes)
+            ],
+            "edges": [
+                edge.model_dump(mode="json", by_alias=True)
+                for edge in _build_edges(raw_nodes, explicit_edges)
+            ],
+        }
 
     def submodel(self, file: str) -> Pipeline:
         """Import a submodel from a separate .py file.
 
-        The submodel's nodes and internal edges are registered on this
-        pipeline so they participate in execution.  The *file* path is
-        stored for round-tripping by the code-generator.
+        The *file* path is stored for the parser/code-generator to resolve
+        and round-trip. This live object does not import or execute the
+        referenced submodel.
 
         Can be chained: ``pipeline.submodel("a.py").submodel("b.py")``
         """
@@ -723,7 +726,7 @@ class Submodel(NodeRegistry):
         @submodel.data_input(config="config/data_input/policies.json")
         def policies() -> pl.LazyFrame: ...
 
-        @submodel.external_file(config="config/external_file/frequency_model.json")
+        @submodel.external_file(config="config/load_file/frequency_model.json")
         def frequency_model(policies: pl.LazyFrame) -> pl.LazyFrame: ...
 
         submodel.connect("policies", "frequency_model")

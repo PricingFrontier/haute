@@ -110,7 +110,9 @@ function makeHookParams() {
   return {
     setNodesRaw: vi.fn(),
     setEdgesRaw: vi.fn(),
+    setSubmodelsRaw: vi.fn(),
     setPreamble: vi.fn(),
+    submodelsRef: { current: {} },
     preambleRef: { current: "" },
     graphRefreshingRef: { current: 0 },
     nodeIdCounter: { current: 0 },
@@ -161,6 +163,7 @@ describe("useWebSocketSync — gap tests", () => {
           data: JSON.stringify({
             type: "graph_update",
             graph: {
+              submodels: {},
               nodes: [{ id: "n1", position: { x: 10, y: 20 }, data: { label: "A" } }],
               edges: [],
             },
@@ -195,6 +198,7 @@ describe("useWebSocketSync — gap tests", () => {
           data: JSON.stringify({
             type: "graph_update",
             graph: {
+              submodels: {},
               nodes: [{ id: "n1", position: { x: 10, y: 20 }, data: {} }],
               edges: [],
             },
@@ -264,6 +268,7 @@ describe("useWebSocketSync — gap tests", () => {
           data: JSON.stringify({
             type: "graph_update",
             graph: {
+              submodels: {},
               nodes: [{ id: "n1", position: { x: 1, y: 1 }, data: {} }],
               edges: [],
               // preamble key is intentionally absent
@@ -292,6 +297,7 @@ describe("useWebSocketSync — gap tests", () => {
           data: JSON.stringify({
             type: "graph_update",
             graph: {
+              submodels: {},
               nodes: [{ id: "n1", position: { x: 1, y: 1 }, data: {} }],
               edges: [],
               preamble: "",
@@ -324,6 +330,7 @@ describe("useWebSocketSync — gap tests", () => {
       const msg1 = {
         type: "graph_update",
         graph: {
+          submodels: {},
           nodes: [{ id: "n1", position: { x: 1, y: 1 }, data: { label: "first" } }],
           edges: [],
         },
@@ -331,6 +338,7 @@ describe("useWebSocketSync — gap tests", () => {
       const msg2 = {
         type: "graph_update",
         graph: {
+          submodels: {},
           nodes: [
             { id: "n1", position: { x: 10, y: 10 }, data: { label: "second" } },
             { id: "n2", position: { x: 20, y: 20 }, data: { label: "new" } },
@@ -372,6 +380,7 @@ describe("useWebSocketSync — gap tests", () => {
       const graphMsg = (id: string) => ({
         type: "graph_update",
         graph: {
+          submodels: {},
           nodes: [{ id, position: { x: 1, y: 1 }, data: {} }],
           edges: [],
         },
@@ -418,6 +427,7 @@ describe("useWebSocketSync — gap tests", () => {
           data: JSON.stringify({
             type: "graph_update",
             graph: {
+              submodels: {},
               nodes: [{
                 id: "node_99",
                 position: { x: Number.NaN, y: Number.NaN },
@@ -435,6 +445,7 @@ describe("useWebSocketSync — gap tests", () => {
           data: JSON.stringify({
             type: "graph_update",
             graph: {
+              submodels: {},
               nodes: [{
                 id: "node_2",
                 position: { x: Number.NaN, y: Number.NaN },
@@ -515,6 +526,7 @@ describe("useWebSocketSync — gap tests", () => {
           data: JSON.stringify({
             type: "graph_update",
             graph: {
+              submodels: {},
               nodes: [{
                 id: "after-unmount",
                 position: { x: Number.NaN, y: Number.NaN },
@@ -554,6 +566,7 @@ describe("useWebSocketSync — gap tests", () => {
           data: JSON.stringify({
             type: "graph_update",
             graph: {
+              submodels: {},
               nodes: [{ id: "n1", position: { x: 10, y: 10 }, data: {} }],
               edges: [],
             },

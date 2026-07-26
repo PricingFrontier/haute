@@ -1,7 +1,32 @@
 /** Shared node data shape used across hooks and components. */
 
 import type { Edge, Node } from "@xyflow/react"
-import type { NodeTypeValue } from "../utils/nodeTypes"
+
+/** Persisted node-type vocabulary shared by runtime guards and canvas metadata. */
+export const PIPELINE_NODE_TYPES = {
+  API_INPUT: "apiInput",
+  DATA_INPUT: "dataInput",
+  DATA_OUTPUT: "dataOutput",
+  POLARS: "polars",
+  EDGE_JOIN: "edgeJoin",
+  MODEL_SCORE: "modelScore",
+  BANDING: "banding",
+  RATING_STEP: "ratingStep",
+  OUTPUT: "output",
+  EXPLORE: "explore",
+  EXTERNAL_FILE: "externalFile",
+  LIVE_SWITCH: "liveSwitch",
+  MODELLING: "modelling",
+  OPTIMISER: "optimiser",
+  OPTIMISER_APPLY: "optimiserApply",
+  SCENARIO_EXPANDER: "scenarioExpander",
+  CONSTANT: "constant",
+  SUBMODEL: "submodel",
+  SUBMODEL_PORT: "submodelPort",
+} as const
+
+export type NodeTypeValue =
+  typeof PIPELINE_NODE_TYPES[keyof typeof PIPELINE_NODE_TYPES]
 
 export interface ColumnInfo {
   name: string

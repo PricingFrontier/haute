@@ -61,11 +61,16 @@ export default function MilestoneCommitModal({ onConfirmed, onClose }: Milestone
       // U4/D4: a 409 means committing now would fork the remote — surface the
       // warn + "commit anyway" confirm rather than a dead-end error toast.
       if (err instanceof ApiError && err.status === 409) {
-        const parsed = parseGitMilestoneFork(
-          (err.body as { detail?: unknown } | undefined)?.detail,
-        )
-        if (parsed) {
-          setFork(parsed)
+        try {
+          const parsed = parseGitMilestoneFork(
+            (err.body as { detail?: unknown } | undefined)?.detail,
+          )
+          if (parsed) {
+            setFork(parsed)
+            return
+          }
+        } catch (parseError) {
+          addToast("error", `Could not commit: ${gitErrorMessage(parseError, "malformed fork response")}`)
           return
         }
       }

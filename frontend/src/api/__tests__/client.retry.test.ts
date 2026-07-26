@@ -297,8 +297,7 @@ describe("no retry: 4xx client errors", () => {
     }
   })
 
-  it("fails immediately on 404 (for a non-catching caller) without retry", async () => {
-    // listUtilityFiles does not swallow 404s the way loadPipeline does.
+  it("fails immediately on 404 without retry", async () => {
     const stub = stubBackoffTimers()
     try {
       mockFetch.mockReturnValueOnce(errorResponse(404, { detail: "not found" }))

@@ -61,6 +61,7 @@ import type {
   GitPrefs,
   GitBranchAwayResponse,
   GitFastForwardResponse,
+  GitGraphResponse,
   GitMilestoneFork,
   GitRemote,
   GitRemoteLeg,
@@ -84,10 +85,15 @@ import type {
   InputCacheProgress,
   InputCacheSnapshotResponse,
   JsonCacheBuildResponse,
+  FileListItem,
   JsonCacheProgressResponse,
   JsonCacheStatusResponse,
   MlflowCheckResponse,
+  MlflowExperiment,
   MlflowLogResponse,
+  MlflowModel,
+  MlflowModelVersion,
+  MlflowRun,
   OptimiserHistoryEntry,
   OptimiserEstimate,
   OptimiserSolveResponse,
@@ -111,7 +117,13 @@ import type {
   UtilityReadResponse,
   UtilityWriteResult,
 } from "../api/types"
-import type { BackendNodeStatus, ColumnInfo, PipelineEdge } from "./node"
+import { JOB_STATUS_VALUES } from "../api/types"
+import {
+  PIPELINE_NODE_TYPES,
+  type BackendNodeStatus,
+  type ColumnInfo,
+  type PipelineEdge,
+} from "./node"
 import type {
   TraceCorrelationDiagnostic,
   TraceInputSource,
@@ -810,49 +822,45 @@ function parseDiagnosticCollection<T>(
   return { state, total_count: totalCount, items }
 }
 
-/** Parses the additive V1 strategy diagnostic. Invalid or unknown versions are unavailable. */
+/** Parses the additive V1 strategy diagnostic. Unknown versions are unavailable. */
 export function parseExecutionStrategyDiagnostic(value: unknown): ExecutionStrategyDiagnostic | null {
   if (value === undefined || value === null) return null
-  try {
-    const obj = expectPlainObject("execution strategy", value)
-    if (expectInteger(obj.schema_version, "schema_version") !== 1) return null
-    const strategy = expectStringLiteral("execution strategy", obj.strategy, "strategy", Object.keys(STRATEGY_STATUS) as (keyof typeof STRATEGY_STATUS)[])
-    const status = expectStringLiteral("execution strategy", obj.status, "status", ["projected", "admitted_eager", "boundary", "rejected", "not_planned"])
-    if (status !== STRATEGY_STATUS[strategy]) throw new Error("execution strategy: status does not match strategy")
-    const profile = expectStringLiteral("execution strategy", obj.profile, "profile", ["preview_eager", "lazy_sink", "training_prep", "optimiser_setup", "explore_analysis", "auto_range", "deploy_live", "deploy_batch", "chunked_map_reduce"])
-    const boundedness = expectStringLiteral("execution strategy", obj.boundedness, "boundedness", ["bounded", "unbounded", "unknown"])
-    const reasonCode = expectString("execution strategy", obj.reason_code, "reason_code")
-    const boundaries = parseDiagnosticCollection<ExecutionStrategyBoundary>(obj.boundaries, "boundaries", 32, (item, field) => {
-      const itemObj = expectPlainObject("execution strategy", item, field)
-      return {
-        topological_rank: expectInteger(itemObj.topological_rank, `${field}.topological_rank`, true),
-        node_id: expectString("execution strategy", itemObj.node_id, `${field}.node_id`),
-        operator: expectString("execution strategy", itemObj.operator, `${field}.operator`),
-        boundary_kind: expectStringLiteral("execution strategy", itemObj.boundary_kind, `${field}.boundary_kind`, ["unprojected-streaming-boundary", "materialisation-boundary"]),
-      }
-    }, (item) => [item.topological_rank, item.node_id, item.operator, item.boundary_kind])
-    const reasons = parseDiagnosticCollection<ExecutionStrategyReason>(obj.reasons, "reasons", 32, (item, field) => {
-      const itemObj = expectPlainObject("execution strategy", item, field)
-      const message = expectOptionalNullableDiagnosticString(itemObj, "message")
-      if (message !== undefined && message !== null && message.length > 512) throw new Error(`execution strategy: ${field}.message exceeds 512 characters`)
-      return { reason_code: expectString("execution strategy", itemObj.reason_code, `${field}.reason_code`), topological_rank: itemObj.topological_rank === undefined || itemObj.topological_rank === null ? null : expectInteger(itemObj.topological_rank, `${field}.topological_rank`, true), node_id: expectOptionalNullableDiagnosticString(itemObj, "node_id") ?? null, operator: expectOptionalNullableDiagnosticString(itemObj, "operator") ?? null, ...(message === undefined ? {} : { message }), ...(itemObj.parent_node_id === undefined ? {} : { parent_node_id: expectOptionalNullableDiagnosticString(itemObj, "parent_node_id") }) }
-    }, (item) => [item.topological_rank ?? Number.MAX_SAFE_INTEGER, item.node_id ?? "", item.reason_code, item.operator ?? ""])
-    const provenance = parseDiagnosticCollection<ExecutionStrategyProvenance>(obj.provenance, "provenance", 128, (item, field) => {
-      const itemObj = expectPlainObject("execution strategy", item, field)
-      return { column: expectString("execution strategy", itemObj.column, `${field}.column`), origin_kind: expectStringLiteral("execution strategy", itemObj.origin_kind, `${field}.origin_kind`, ["seed", "contract", "expression", "join_key", "conservative_boundary"]), ...(itemObj.source_node_id === undefined ? {} : { source_node_id: expectOptionalNullableDiagnosticString(itemObj, "source_node_id") }), ...(itemObj.source_column === undefined ? {} : { source_column: expectOptionalNullableDiagnosticString(itemObj, "source_column") }) }
-    }, (item) => [item.column, item.origin_kind, item.source_node_id ?? "", item.source_column ?? ""])
-    const detailState = expectStringLiteral("execution strategy", obj.detail_state, "detail_state", DETAIL_STATES)
-    const expectedDetailState = [boundaries.state, reasons.state, provenance.state].reduce((worst, state) => DETAIL_STATES.indexOf(state) > DETAIL_STATES.indexOf(worst) ? state : worst)
-    if (detailState !== expectedDetailState) throw new Error("execution strategy: detail_state is inconsistent")
-    const remediation = expectOptionalNullableDiagnosticString(obj, "remediation")
-    if (remediation !== undefined && remediation !== null && remediation.length > 512) throw new Error("execution strategy: remediation exceeds 512 characters")
-    const estimatedPeakBytes = obj.estimated_peak_bytes === undefined || obj.estimated_peak_bytes === null ? obj.estimated_peak_bytes : expectInteger(obj.estimated_peak_bytes, "estimated_peak_bytes", true)
-    const headroomBytes = obj.headroom_bytes === undefined || obj.headroom_bytes === null ? obj.headroom_bytes : expectInteger(obj.headroom_bytes, "headroom_bytes", true)
-    const assumptions = obj.assumptions === undefined ? undefined : expectArray("execution strategy", obj.assumptions, "assumptions").map((assumption, index) => expectString("execution strategy", assumption, `assumptions[${index}]`))
-    return { schema_version: 1, status, strategy, profile, boundedness, reason_code: reasonCode, detail_state: detailState, boundaries, reasons, provenance, ...(obj.blocking_node_id === undefined ? {} : { blocking_node_id: expectOptionalNullableDiagnosticString(obj, "blocking_node_id") }), ...(obj.blocking_operator === undefined ? {} : { blocking_operator: expectOptionalNullableDiagnosticString(obj, "blocking_operator") }), ...(remediation === undefined ? {} : { remediation }), ...(estimatedPeakBytes === undefined ? {} : { estimated_peak_bytes: estimatedPeakBytes }), ...(headroomBytes === undefined ? {} : { headroom_bytes: headroomBytes }), ...(assumptions === undefined ? {} : { assumptions }) }
-  } catch {
-    return null
-  }
+  const obj = expectPlainObject("execution strategy", value)
+  if (expectInteger(obj.schema_version, "schema_version") !== 1) return null
+  const strategy = expectStringLiteral("execution strategy", obj.strategy, "strategy", Object.keys(STRATEGY_STATUS) as (keyof typeof STRATEGY_STATUS)[])
+  const status = expectStringLiteral("execution strategy", obj.status, "status", ["projected", "admitted_eager", "boundary", "rejected", "not_planned"])
+  if (status !== STRATEGY_STATUS[strategy]) throw new Error("execution strategy: status does not match strategy")
+  const profile = expectStringLiteral("execution strategy", obj.profile, "profile", ["preview_eager", "lazy_sink", "training_prep", "optimiser_setup", "explore_analysis", "auto_range", "deploy_live", "deploy_batch", "chunked_map_reduce"])
+  const boundedness = expectStringLiteral("execution strategy", obj.boundedness, "boundedness", ["bounded", "unbounded", "unknown"])
+  const reasonCode = expectString("execution strategy", obj.reason_code, "reason_code")
+  const boundaries = parseDiagnosticCollection<ExecutionStrategyBoundary>(obj.boundaries, "boundaries", 32, (item, field) => {
+    const itemObj = expectPlainObject("execution strategy", item, field)
+    return {
+      topological_rank: expectInteger(itemObj.topological_rank, `${field}.topological_rank`, true),
+      node_id: expectString("execution strategy", itemObj.node_id, `${field}.node_id`),
+      operator: expectString("execution strategy", itemObj.operator, `${field}.operator`),
+      boundary_kind: expectStringLiteral("execution strategy", itemObj.boundary_kind, `${field}.boundary_kind`, ["unprojected-streaming-boundary", "materialisation-boundary"]),
+    }
+  }, (item) => [item.topological_rank, item.node_id, item.operator, item.boundary_kind])
+  const reasons = parseDiagnosticCollection<ExecutionStrategyReason>(obj.reasons, "reasons", 32, (item, field) => {
+    const itemObj = expectPlainObject("execution strategy", item, field)
+    const message = expectOptionalNullableDiagnosticString(itemObj, "message")
+    if (message !== undefined && message !== null && message.length > 512) throw new Error(`execution strategy: ${field}.message exceeds 512 characters`)
+    return { reason_code: expectString("execution strategy", itemObj.reason_code, `${field}.reason_code`), topological_rank: itemObj.topological_rank === undefined || itemObj.topological_rank === null ? null : expectInteger(itemObj.topological_rank, `${field}.topological_rank`, true), node_id: expectOptionalNullableDiagnosticString(itemObj, "node_id") ?? null, operator: expectOptionalNullableDiagnosticString(itemObj, "operator") ?? null, ...(message === undefined ? {} : { message }), ...(itemObj.parent_node_id === undefined ? {} : { parent_node_id: expectOptionalNullableDiagnosticString(itemObj, "parent_node_id") }) }
+  }, (item) => [item.topological_rank ?? Number.MAX_SAFE_INTEGER, item.node_id ?? "", item.reason_code, item.operator ?? ""])
+  const provenance = parseDiagnosticCollection<ExecutionStrategyProvenance>(obj.provenance, "provenance", 128, (item, field) => {
+    const itemObj = expectPlainObject("execution strategy", item, field)
+    return { column: expectString("execution strategy", itemObj.column, `${field}.column`), origin_kind: expectStringLiteral("execution strategy", itemObj.origin_kind, `${field}.origin_kind`, ["seed", "contract", "expression", "join_key", "conservative_boundary"]), ...(itemObj.source_node_id === undefined ? {} : { source_node_id: expectOptionalNullableDiagnosticString(itemObj, "source_node_id") }), ...(itemObj.source_column === undefined ? {} : { source_column: expectOptionalNullableDiagnosticString(itemObj, "source_column") }) }
+  }, (item) => [item.column, item.origin_kind, item.source_node_id ?? "", item.source_column ?? ""])
+  const detailState = expectStringLiteral("execution strategy", obj.detail_state, "detail_state", DETAIL_STATES)
+  const expectedDetailState = [boundaries.state, reasons.state, provenance.state].reduce((worst, state) => DETAIL_STATES.indexOf(state) > DETAIL_STATES.indexOf(worst) ? state : worst)
+  if (detailState !== expectedDetailState) throw new Error("execution strategy: detail_state is inconsistent")
+  const remediation = expectOptionalNullableDiagnosticString(obj, "remediation")
+  if (remediation !== undefined && remediation !== null && remediation.length > 512) throw new Error("execution strategy: remediation exceeds 512 characters")
+  const estimatedPeakBytes = obj.estimated_peak_bytes === undefined || obj.estimated_peak_bytes === null ? obj.estimated_peak_bytes : expectInteger(obj.estimated_peak_bytes, "estimated_peak_bytes", true)
+  const headroomBytes = obj.headroom_bytes === undefined || obj.headroom_bytes === null ? obj.headroom_bytes : expectInteger(obj.headroom_bytes, "headroom_bytes", true)
+  const assumptions = obj.assumptions === undefined ? undefined : expectArray("execution strategy", obj.assumptions, "assumptions").map((assumption, index) => expectString("execution strategy", assumption, `assumptions[${index}]`))
+  return { schema_version: 1, status, strategy, profile, boundedness, reason_code: reasonCode, detail_state: detailState, boundaries, reasons, provenance, ...(obj.blocking_node_id === undefined ? {} : { blocking_node_id: expectOptionalNullableDiagnosticString(obj, "blocking_node_id") }), ...(obj.blocking_operator === undefined ? {} : { blocking_operator: expectOptionalNullableDiagnosticString(obj, "blocking_operator") }), ...(remediation === undefined ? {} : { remediation }), ...(estimatedPeakBytes === undefined ? {} : { estimated_peak_bytes: estimatedPeakBytes }), ...(headroomBytes === undefined ? {} : { headroom_bytes: headroomBytes }), ...(assumptions === undefined ? {} : { assumptions }) }
 }
 
 function optionalExecutionMetrics(
@@ -869,9 +877,61 @@ function optionalExecutionMetrics(
 // Pipeline graph + preview contracts
 // ---------------------------------------------------------------------------
 
+const PIPELINE_NODE_TYPE_VALUES = Object.values(PIPELINE_NODE_TYPES)
+
+function isKnownPipelineNode(value: unknown): boolean {
+  if (!isPlainObject(value)) return false
+  if (
+    value.type !== undefined &&
+    (
+      typeof value.type !== "string" ||
+      !PIPELINE_NODE_TYPE_VALUES.some((nodeType) => nodeType === value.type)
+    )
+  ) return false
+  if (value.data !== undefined) {
+    const data = value.data
+    if (!isPlainObject(data)) return false
+    if (
+      data.nodeType !== undefined &&
+      (
+        typeof data.nodeType !== "string" ||
+        !PIPELINE_NODE_TYPE_VALUES.some((nodeType) => nodeType === data.nodeType)
+      )
+    ) return false
+  }
+  return true
+}
+
+function parsePipelineNode(value: unknown, index: number): Node {
+  const parser = "parsePipelineResponse"
+  const field = `nodes[${index}]`
+  const node = expectPlainObject(parser, value, `field \`${field}\``)
+  if (node.type !== undefined) {
+    expectStringLiteral(
+      parser,
+      node.type,
+      `field \`${field}.type\``,
+      PIPELINE_NODE_TYPE_VALUES,
+    )
+  }
+  if (node.data !== undefined) {
+    const data = expectPlainObject(parser, node.data, `field \`${field}.data\``)
+    if (data.nodeType !== undefined) {
+      expectStringLiteral(
+        parser,
+        data.nodeType,
+        `field \`${field}.data.nodeType\``,
+        PIPELINE_NODE_TYPE_VALUES,
+      )
+    }
+  }
+  return node as unknown as Node
+}
+
 export function isPipelineResponse(value: unknown): value is PipelineResponse {
   if (!isPlainObject(value)) return false
   if (!Array.isArray(value.nodes)) return false
+  if (!value.nodes.every(isKnownPipelineNode)) return false
   if (!Array.isArray(value.edges)) return false
   if (value.pipeline_name !== undefined && value.pipeline_name !== null && typeof value.pipeline_name !== "string") return false
   if (value.pipeline_description !== undefined && value.pipeline_description !== null && typeof value.pipeline_description !== "string") return false
@@ -892,10 +952,11 @@ export function isPipelineResponse(value: unknown): value is PipelineResponse {
 export function parsePipelineResponse(value: unknown): PipelineResponse {
   const obj = expectPlainObject("parsePipelineResponse", value)
   const nodes = expectArray("parsePipelineResponse", obj.nodes, "field `nodes`")
+    .map(parsePipelineNode)
   const edges = expectArray("parsePipelineResponse", obj.edges, "field `edges`")
 
   return {
-    nodes: nodes as Node[],
+    nodes,
     edges: edges as PipelineEdge[],
     pipeline_name: obj.pipeline_name === undefined ? undefined : optionalNullableString("parsePipelineResponse", obj, "pipeline_name"),
     pipeline_description: obj.pipeline_description === undefined ? undefined : optionalNullableString("parsePipelineResponse", obj, "pipeline_description"),
@@ -917,7 +978,7 @@ function parseNestedPipelineResponse(
     return parsePipelineResponse(obj[key])
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
-    throw new Error(`${parser}: invalid field \`${key}\`: ${message}`)
+    throw new Error(`${parser}: invalid field \`${key}\`: ${message}`, { cause: error })
   }
 }
 
@@ -1335,8 +1396,6 @@ const BUILD_CLASSES = ["bounded", "admitted_eager", "unsupported"] as const
 const INPUT_CACHE_PHASES = ["queued", "building", "publishing", "completed", "failed", "cancelled"] as const
 const INPUT_CACHE_SNAPSHOT_STATES = ["missing", "building", "ready", "corrupt", "failed"] as const
 const INPUT_CACHE_FRESHNESS = ["fresh", "stale", "unknown"] as const
-const JOB_STATUS_VALUES = ["running", "completed", "error", "cancelled", "superseded", "timed_out", "memory_limited", "contract_error"] as const
-
 function parseInputCacheStringRecord(parser: string, value: unknown, field: string): Record<string, string> {
   const obj = expectPlainObject(parser, value, field)
   return Object.fromEntries(Object.entries(obj).map(([key, item]) => [key, expectString(parser, item, `${field}.${key}`)]))
@@ -1589,17 +1648,6 @@ export function parseTrainFeatureSelection(value: unknown): NonNullable<TrainRes
   }
 }
 
-const JOB_STATUSES = [
-  "running",
-  "completed",
-  "error",
-  "cancelled",
-  "superseded",
-  "timed_out",
-  "memory_limited",
-  "contract_error",
-] as const
-
 export function parseTrainResponse(value: unknown): TrainResponse {
   const obj = expectPlainObject("parseTrainResponse", value)
   const rawRegularization = optionalNullableObject("parseTrainResponse", obj, "glm_regularization_path")
@@ -1651,7 +1699,7 @@ export function parseTrainResponse(value: unknown): TrainResponse {
 export function parseTrainStatusResponse(value: unknown): TrainStatusResponse {
   const obj = expectPlainObject("parseTrainStatusResponse", value)
   return {
-    status: expectStringLiteral("parseTrainStatusResponse", obj.status, "field `status`", JOB_STATUSES),
+    status: expectStringLiteral("parseTrainStatusResponse", obj.status, "field `status`", JOB_STATUS_VALUES),
     progress: optionalNumber("parseTrainStatusResponse", obj, "progress"),
     message: optionalString("parseTrainStatusResponse", obj, "message"),
     iteration: optionalNumber("parseTrainStatusResponse", obj, "iteration"),
@@ -1798,7 +1846,7 @@ export function parseExploreRunResponse(value: unknown): ExploreRunResponse {
 export function parseExploreStatusResponse(value: unknown): ExploreStatusResponse {
   const obj = expectPlainObject("parseExploreStatusResponse", value)
   return {
-    status: expectStringLiteral("parseExploreStatusResponse", obj.status, "field `status`", JOB_STATUSES),
+    status: expectStringLiteral("parseExploreStatusResponse", obj.status, "field `status`", JOB_STATUS_VALUES),
     progress: optionalNumber("parseExploreStatusResponse", obj, "progress"),
     message: optionalString("parseExploreStatusResponse", obj, "message"),
     result: obj.result === undefined || obj.result === null ? null : parseExploreCacheReport(obj.result),
@@ -1917,7 +1965,7 @@ export function parseFrontierStatusResponse(value: unknown): FrontierStatusRespo
       "parseFrontierStatusResponse",
       obj.status,
       "field `status`",
-      JOB_STATUSES,
+      JOB_STATUS_VALUES,
     ),
     progress: optionalNumber("parseFrontierStatusResponse", obj, "progress"),
     message: optionalString("parseFrontierStatusResponse", obj, "message"),
@@ -1992,7 +2040,7 @@ export function parseFrontierAutoRangeStatusResponse(value: unknown): FrontierAu
       "parseFrontierAutoRangeStatusResponse",
       obj.status,
       "field `status`",
-      JOB_STATUSES,
+      JOB_STATUS_VALUES,
     ),
     progress: optionalNumber("parseFrontierAutoRangeStatusResponse", obj, "progress"),
     message: optionalString("parseFrontierAutoRangeStatusResponse", obj, "message"),
@@ -2126,7 +2174,7 @@ export function parseSaveOptimiserResponse(value: unknown): SaveOptimiserRespons
 export function parseOptimiserStatusResponse(value: unknown): OptimiserStatusResponse {
   const obj = expectPlainObject("parseOptimiserStatusResponse", value)
   return {
-    status: expectStringLiteral("parseOptimiserStatusResponse", obj.status, "field `status`", JOB_STATUSES),
+    status: expectStringLiteral("parseOptimiserStatusResponse", obj.status, "field `status`", JOB_STATUS_VALUES),
     progress: optionalNumber("parseOptimiserStatusResponse", obj, "progress"),
     message: optionalString("parseOptimiserStatusResponse", obj, "message"),
     elapsed_seconds: optionalNumber("parseOptimiserStatusResponse", obj, "elapsed_seconds"),
@@ -2245,6 +2293,110 @@ export function parseJsonCacheStatusResponse(value: unknown): JsonCacheStatusRes
     columns: optionalStringRecord("parseJsonCacheStatusResponse", obj, "columns"),
     skipped_records: optionalNumber("parseJsonCacheStatusResponse", obj, "skipped_records"),
     skipped_rows: optionalNumberRecord("parseJsonCacheStatusResponse", obj, "skipped_rows"),
+  }
+}
+
+export function parseHauteSessionResponse(value: unknown): { ok: boolean } {
+  const obj = expectPlainObject("parseHauteSessionResponse", value)
+  return { ok: expectBoolean("parseHauteSessionResponse", obj.ok, "field `ok`") }
+}
+
+export function parseOutputAssembleDryRunResponse(value: unknown): { status: string; document: unknown[]; row_count: number; error?: string | null } {
+  const obj = expectPlainObject("parseOutputAssembleDryRunResponse", value)
+  const error = obj.error
+  if (error !== undefined && error !== null && typeof error !== "string") {
+    throw new Error(`parseOutputAssembleDryRunResponse: expected field \`error\` to be a string or null, got ${typeName(error)}`)
+  }
+  return {
+    status: expectString("parseOutputAssembleDryRunResponse", obj.status, "field `status`"),
+    document: expectArray("parseOutputAssembleDryRunResponse", obj.document, "field `document`"),
+    row_count: expectNumber("parseOutputAssembleDryRunResponse", obj.row_count, "field `row_count`"),
+    ...(error === undefined ? {} : { error }),
+  }
+}
+
+export function parseJsonCacheDeleteResponse(value: unknown): { cached: boolean; data_path: string } {
+  const obj = expectPlainObject("parseJsonCacheDeleteResponse", value)
+  return {
+    cached: expectBoolean("parseJsonCacheDeleteResponse", obj.cached, "field `cached`"),
+    data_path: expectString("parseJsonCacheDeleteResponse", obj.data_path, "field `data_path`"),
+  }
+}
+
+export function parseJsonCacheSchemaInferenceResponse(value: unknown): { tables: Array<Record<string, unknown>> } {
+  const obj = expectPlainObject("parseJsonCacheSchemaInferenceResponse", value)
+  return { tables: parsePlainObjectArray("parseJsonCacheSchemaInferenceResponse", obj.tables, "field `tables`") }
+}
+
+export function parseMlflowExperiments(value: unknown): MlflowExperiment[] {
+  return parseArray("parseMlflowExperiments", value, "response", (item, field) => {
+    const obj = expectPlainObject("parseMlflowExperiments", item, field)
+    return {
+      experiment_id: expectString("parseMlflowExperiments", obj.experiment_id, `${field}.experiment_id`),
+      name: expectString("parseMlflowExperiments", obj.name, `${field}.name`),
+    }
+  })
+}
+
+export function parseMlflowRuns(value: unknown): MlflowRun[] {
+  return parseArray("parseMlflowRuns", value, "response", (item, field) => {
+    const obj = expectPlainObject("parseMlflowRuns", item, field)
+    return {
+      run_id: expectString("parseMlflowRuns", obj.run_id, `${field}.run_id`),
+      run_name: expectString("parseMlflowRuns", obj.run_name, `${field}.run_name`),
+      metrics: parseNumberRecord("parseMlflowRuns", obj.metrics, `${field}.metrics`),
+      artifacts: parseStringArray("parseMlflowRuns", obj.artifacts, `${field}.artifacts`),
+      ...(obj.status === undefined ? {} : { status: expectString("parseMlflowRuns", obj.status, `${field}.status`) }),
+      ...(obj.start_time === undefined ? {} : { start_time: expectNullableNumber("parseMlflowRuns", obj.start_time, `${field}.start_time`) }),
+      ...(obj.params === undefined ? {} : { params: parseStringRecord("parseMlflowRuns", obj.params, `${field}.params`) }),
+    }
+  })
+}
+
+export function parseMlflowModels(value: unknown): MlflowModel[] {
+  return parseArray("parseMlflowModels", value, "response", (item, field) => {
+    const obj = expectPlainObject("parseMlflowModels", item, field)
+    return {
+      name: expectString("parseMlflowModels", obj.name, `${field}.name`),
+      latest_versions: parseArray("parseMlflowModels", obj.latest_versions, `${field}.latest_versions`, (version, versionField) => {
+        const versionObj = expectPlainObject("parseMlflowModels", version, versionField)
+        return {
+          version: expectString("parseMlflowModels", versionObj.version, `${versionField}.version`),
+          status: expectString("parseMlflowModels", versionObj.status, `${versionField}.status`),
+          run_id: expectString("parseMlflowModels", versionObj.run_id, `${versionField}.run_id`),
+        }
+      }),
+    }
+  })
+}
+
+export function parseMlflowModelVersions(value: unknown): MlflowModelVersion[] {
+  return parseArray("parseMlflowModelVersions", value, "response", (item, field) => {
+    const obj = expectPlainObject("parseMlflowModelVersions", item, field)
+    return {
+      version: expectString("parseMlflowModelVersions", obj.version, `${field}.version`),
+      run_id: expectString("parseMlflowModelVersions", obj.run_id, `${field}.run_id`),
+      status: expectString("parseMlflowModelVersions", obj.status, `${field}.status`),
+      description: expectString("parseMlflowModelVersions", obj.description, `${field}.description`),
+      ...(obj.params === undefined ? {} : { params: parseStringRecord("parseMlflowModelVersions", obj.params, `${field}.params`) }),
+      ...(obj.creation_timestamp === undefined ? {} : { creation_timestamp: expectNullableNumber("parseMlflowModelVersions", obj.creation_timestamp, `${field}.creation_timestamp`) }),
+    }
+  })
+}
+
+export function parseFileListResponse(value: unknown): { items?: FileListItem[] } {
+  const obj = expectPlainObject("parseFileListResponse", value)
+  if (obj.items === undefined) return {}
+  return {
+    items: parseArray("parseFileListResponse", obj.items, "field `items`", (item, field) => {
+      const itemObj = expectPlainObject("parseFileListResponse", item, field)
+      return {
+        name: expectString("parseFileListResponse", itemObj.name, `${field}.name`),
+        path: expectString("parseFileListResponse", itemObj.path, `${field}.path`),
+        type: expectStringLiteral("parseFileListResponse", itemObj.type, `${field}.type`, ["file", "directory"]),
+        ...(itemObj.size === undefined ? {} : { size: expectNumber("parseFileListResponse", itemObj.size, `${field}.size`) }),
+      }
+    }),
   }
 }
 
@@ -2398,6 +2550,40 @@ export function parseGitMilestonesResponse(value: unknown): GitMilestonesRespons
   return {
     working_branch: optionalNullableString("parseGitMilestonesResponse", obj, "working_branch"),
     entries: optionalArray("parseGitMilestonesResponse", obj, "entries", parseGitMilestoneEntry),
+  }
+}
+
+export function parseGitGraphResponse(value: unknown): GitGraphResponse {
+  const obj = expectPlainObject("parseGitGraphResponse", value)
+  return {
+    working_branch: expectNullableString("parseGitGraphResponse", obj.working_branch, "field `working_branch`"),
+    order: parseStringArray("parseGitGraphResponse", obj.order, "field `order`"),
+    branches: parseArray("parseGitGraphResponse", obj.branches, "field `branches`", (branch, field) => {
+      const branchObj = expectPlainObject("parseGitGraphResponse", branch, field)
+      return {
+        name: expectString("parseGitGraphResponse", branchObj.name, `${field}.name`),
+        is_archived: expectBoolean("parseGitGraphResponse", branchObj.is_archived, `${field}.is_archived`),
+        is_current: expectBoolean("parseGitGraphResponse", branchObj.is_current, `${field}.is_current`),
+        tip_sha: expectString("parseGitGraphResponse", branchObj.tip_sha, `${field}.tip_sha`),
+        fork_point_sha: expectNullableString("parseGitGraphResponse", branchObj.fork_point_sha, `${field}.fork_point_sha`),
+        fork_of: expectNullableString("parseGitGraphResponse", branchObj.fork_of, `${field}.fork_of`),
+        fork_source_sha: expectNullableString("parseGitGraphResponse", branchObj.fork_source_sha, `${field}.fork_source_sha`),
+        fork_credit_sha: expectNullableString("parseGitGraphResponse", branchObj.fork_credit_sha, `${field}.fork_credit_sha`),
+        truncated: expectBoolean("parseGitGraphResponse", branchObj.truncated, `${field}.truncated`),
+        entries: parseArray("parseGitGraphResponse", branchObj.entries, `${field}.entries`, (entry, entryField) => {
+          const entryObj = expectPlainObject("parseGitGraphResponse", entry, entryField)
+          return {
+            sha: expectString("parseGitGraphResponse", entryObj.sha, `${entryField}.sha`),
+            short_sha: expectString("parseGitGraphResponse", entryObj.short_sha, `${entryField}.short_sha`),
+            message: expectString("parseGitGraphResponse", entryObj.message, `${entryField}.message`),
+            timestamp: expectString("parseGitGraphResponse", entryObj.timestamp, `${entryField}.timestamp`),
+            version_label: expectNullableString("parseGitGraphResponse", entryObj.version_label, `${entryField}.version_label`),
+            ...(entryObj.is_root === undefined ? {} : { is_root: expectBoolean("parseGitGraphResponse", entryObj.is_root, `${entryField}.is_root`) }),
+            parents: parseStringArray("parseGitGraphResponse", entryObj.parents, `${entryField}.parents`),
+          }
+        }),
+      }
+    }),
   }
 }
 
@@ -2575,39 +2761,29 @@ export function parseGitBranchAwayResponse(value: unknown): GitBranchAwayRespons
   }
 }
 
-/** Parse a 409 push-rejection body (P7 M7); returns null if the shape doesn't
- *  match, so a caller can fall back to a plain error toast rather than throw. */
+/** Parse a 409 push-rejection body; non-matching discriminators return null. */
 export function parseGitPushRejection(value: unknown): GitPushRejection | null {
-  try {
-    const obj = expectPlainObject("parseGitPushRejection", value)
-    if (obj.status !== "rejected_diverged") return null
-    return {
-      status: "rejected_diverged",
-      remote: expectString("parseGitPushRejection", obj.remote, "remote"),
-      working: parseGitRemoteLeg(obj.working, "working"),
-      ledger: obj.ledger == null ? null : parseGitRemoteLeg(obj.ledger, "ledger"),
-      message: expectString("parseGitPushRejection", obj.message, "message"),
-      is_rewrite: obj.is_rewrite === true,
-    }
-  } catch {
-    return null
+  if (!isPlainObject(value) || value.status !== "rejected_diverged") return null
+  return {
+    status: "rejected_diverged",
+    remote: expectString("parseGitPushRejection", value.remote, "remote"),
+    working: parseGitRemoteLeg(value.working, "working"),
+    ledger: value.ledger == null ? null : parseGitRemoteLeg(value.ledger, "ledger"),
+    message: expectString("parseGitPushRejection", value.message, "message"),
+    is_rewrite: value.is_rewrite === undefined
+      ? false
+      : expectBoolean("parseGitPushRejection", value.is_rewrite, "is_rewrite"),
   }
 }
 
-/** Parse a 409 milestone-fork body (P7 U4/D4); returns null on shape mismatch so
- *  the caller can fall back to a plain error toast. */
+/** Parse a 409 milestone-fork body; non-matching discriminators return null. */
 export function parseGitMilestoneFork(value: unknown): GitMilestoneFork | null {
-  try {
-    const obj = expectPlainObject("parseGitMilestoneFork", value)
-    if (obj.status !== "would_fork") return null
-    return {
-      status: "would_fork",
-      remote: expectString("parseGitMilestoneFork", obj.remote, "remote"),
-      working: parseGitRemoteLeg(obj.working, "working"),
-      message: expectString("parseGitMilestoneFork", obj.message, "message"),
-    }
-  } catch {
-    return null
+  if (!isPlainObject(value) || value.status !== "would_fork") return null
+  return {
+    status: "would_fork",
+    remote: expectString("parseGitMilestoneFork", value.remote, "remote"),
+    working: parseGitRemoteLeg(value.working, "working"),
+    message: expectString("parseGitMilestoneFork", value.message, "message"),
   }
 }
 

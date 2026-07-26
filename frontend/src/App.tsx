@@ -496,8 +496,8 @@ function FlowEditor() {
   }, [loadGitReadiness, addToast])
 
   const wsStatus = useWebSocketSync({
-    setNodesRaw, setEdgesRaw, setPreamble, preambleRef, graphRefreshingRef,
-    sourceFileRef, nodeIdCounter, fitView,
+    setNodesRaw, setEdgesRaw, setSubmodelsRaw, setPreamble, preambleRef,
+    submodelsRef, graphRefreshingRef, sourceFileRef, nodeIdCounter, fitView,
     enabled: !loading,
   })
   useEffect(() => { setPreviewDataRef.current = setPreviewData }, [setPreviewData])

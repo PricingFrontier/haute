@@ -85,7 +85,10 @@ ratebook) factor tables are available as a job summary. From there a user can:
   compute-budget cap) and returns a pollable frontier job id, and the caller polls a separate
   frontier-status endpoint to a terminal state. Only one frontier sweep may be in flight per solve
   job at a time; a second `/frontier` request against the same solve job while one is running is
-  rejected as a conflict.
+  rejected as a conflict. Admission is one locked check-and-create operation. A running sweep can
+  be stopped through `POST /frontier/cancel/{job_id}`; timeout polling requests the same
+  cooperative stop before publishing `timed_out`. A stopped sweep may never publish frontier data
+  to the parent solve job, even if the underlying solver call returns later.
 - Preview the online result as a capped table of per-quote selected scenarios (ratebook has no
   such per-quote view — see Failure model).
 - Save the result to a JSON artifact on disk, or log it to MLflow together with a frontier CSV
@@ -117,6 +120,10 @@ Invariants:
   affordances are only ever meaningful for online mode.
 - Every capped/paginated response (apply preview, frontier points) states its true total count
   and whether it was truncated; nothing is silently dropped without saying so.
+- A completed solve retains at most eight per-frontier-point apply artifacts. Materialising a
+  ninth point evicts and deletes the oldest point artifact; returning to that point recomputes it.
+  Concurrent point materialisations merge handles under the frontier-state lock, so one handle
+  cannot overwrite and orphan another.
 - Crash-surviving apply-result and ratebook-factor directories carry distinct versioned Haute
   ownership markers. Startup cleanup can remove only stale marked direct children of those two
   dedicated roots; unmarked or foreign temporary data is never swept.
@@ -183,10 +190,9 @@ implementation of "how a scenario is scored."
 
 Response-size and compute budgets (frontier point count, apply preview row count, frontier
 solver-grid size) exist because both the frontier grid and the per-quote apply table can grow
-unboundedly with problem size; the budgets are enforced at the request boundary — the frontier
-compute cap in particular is checked *before* the solver runs, using the same growth formula
-`price-contour` itself uses, so an oversized request is rejected with an actionable message
-rather than dying inside the solver as an opaque failure.
+unboundedly with problem size. The frontier compute cap is checked before either frontier entry
+point invokes `price-contour`: both an explicit `/frontier` request and the optional frontier
+computed as part of a solve use the same growth formula and cap.
 
 Two further alternatives shape the frontier design. Treating frontier ranges as multipliers of
 a baseline was rejected for the reason above — a multiplier is ambiguous once constraints have
@@ -256,7 +262,9 @@ failure inside the sweep itself (a lost race against a concurrent job-state chan
 persisted apply-artifact handle, an unclassified exception) is reported through the frontier
 job's own terminal status rather than as a synchronous HTTP error from the original `/frontier`
 request — the caller only learns of it by polling the frontier-status endpoint to a terminal
-state.
+state. Cancellation and timeout are terminal-state guards as well as user-visible labels: after
+either transition, the worker checks the stop signal before any parent-job mutation and discards
+its late result.
 
 Ratebook mode has no per-quote result dataframe, so the apply-preview and apply-trace
 affordances return an explicit 422 contract error naming the correct alternative (the factor
@@ -282,6 +290,15 @@ underlying reconciliation checks it performs are themselves strict (an unreconci
 always treated as an error, never patched over), but a broken trace is not allowed to break the
 click that triggered it.
 
+An empty ratebook factor ladder is not a successful explanation: because there is no factor
+product to reconcile against the clicked output, trace enrichment returns its normal structured
+`status: "error"` payload. Online trace correlation always reads the quote id from the
+artifact-configured quote-id column, including when the output row also contains a different
+literal `quote_id` field.
+
+`HAUTE_SOLVER_TIMEOUT` is optional, but when present it must be a positive integer. A malformed,
+zero, or negative value fails loudly as a server configuration error; it never disables timeouts.
+
 > NOTE: `_load_apply_result_artifact`/`_load_ratebook_factors_artifact` always report a missing
 > or corrupt artifact as a 500 ("Re-run the solve..."), even though a missing artifact caused by
 > user action (e.g. a stale handle after the job's TTL evicted it) is arguably a 400/404-shaped
@@ -294,30 +311,6 @@ result for a given graph and request context. Each exposes the same bounded stra
 diagnostics and deterministic feature provenance, so admission estimates and execution
 cannot silently select divergent plans. Execution-engine owns planner internals. Remaining
 optimiser improvement work is tracked in the [optimiser roadmap](../../roadmap/optimiser.md).
-
-## Approved change contract — 0.7.0 unified data-input consumption
-
-Remaining optimiser improvement work is tracked in the
-[optimiser roadmap](../../roadmap/optimiser.md).
-
-- Optimiser inputs remain explicit connected upstream node ids; “data input” in optimiser
-  configuration does not mean there can be only one `dataInput` node in the graph. When several
-  direct parents are possible, the existing explicit-selection contract applies and no provider
-  or root is guessed.
-- The optimiser execution and schema paths recognise canonical `dataInput` provider metadata and
-  no `dataSource` type. They consume the same direct/snapshot resolution, selected generation,
-  projection, and post-read Polars code as ordinary execution instead of reopening a file or
-  connector through an optimiser-only branch.
-- Database and Databricks optimisation therefore require a ready matching snapshot and perform
-  no remote build/fetch. Refreshing a generation changes optimiser setup identity; a job/result
-  from the preceding generation cannot be reused for the new source.
-- Boundedness and projection remain execution-engine decisions. The optimiser may request the
-  columns it needs but never upgrades an unsupported provider leg, eager cache build, or
-  non-row-local input body into a streaming plan.
-
-Acceptance covers multiple roots/direct parents, explicit source selection, direct and cached
-inputs, generation invalidation, post-input code columns, no remote fetch during setup/solve, and
-complete removal of legacy source branches.
 
 ## Approved change contract — prerelease canonical frontier ranges
 
