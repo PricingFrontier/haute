@@ -83,8 +83,11 @@ def parse_npm_report(report: Any) -> set[Finding]:
             for advisory in advisory_objects:
                 findings.add(Finding("npm", package, _advisory_id(advisory)))
         elif via and all(isinstance(item, str) for item in via):
-            # npm's meta finding has no advisory object; keep a deterministic identity.
-            findings.add(Finding("npm", package, f"npm:transitive:{'|'.join(sorted(via))}"))
+            # npm's meta finding has no advisory object. Its dependency path is
+            # lockfile topology, not advisory identity, so keep the acceptance
+            # stable when npm reports the same affected package through a
+            # different transitive route.
+            findings.add(Finding("npm", package, "npm:transitive"))
         else:
             raise PolicyError("npm high/critical vulnerability has incomplete via data")
     return findings

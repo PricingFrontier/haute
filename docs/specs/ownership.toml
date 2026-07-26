@@ -1,6 +1,7 @@
-# Files intentionally named by more than one component Module map.  The
-# primary component owns the file's specification; consumers document only
-# their direct interaction with it.
+# Files intentionally shared across component specifications. The primary
+# component owns the file's behaviour; consumers document only a direct
+# interaction. A record is mandatory when multiple Module maps name the file
+# or when prose makes an explicit cross-component ownership claim.
 
 version = 1
 
@@ -111,6 +112,12 @@ path = "src/haute/_registry.py"
 primary = "pipeline-config"
 consumers = ["codegen", "execution-engine"]
 reason = "Pipeline configuration owns the node registry shared with graph generation and execution."
+
+[[shared_file]]
+path = "src/haute/_source_cache.py"
+primary = "io-layer"
+consumers = ["caching"]
+reason = "I/O owns source snapshot publication and leases; caching consumes the checked identity and immutable generation contract."
 
 [[shared_file]]
 path = "src/haute/routes/_save_pipeline.py"
