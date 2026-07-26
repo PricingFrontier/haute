@@ -90,6 +90,12 @@ consumers = ["execution-engine", "io-layer"]
 reason = "Security owns runtime containment; execution and I/O consume the shared resolver."
 
 [[shared_file]]
+path = "src/haute/_source_cache.py"
+primary = "io-layer"
+consumers = ["caching"]
+reason = "I/O owns source snapshot publication and leases; caching consumes the checked identity and immutable generation contract."
+
+[[shared_file]]
 path = "src/haute/routes/_save_pipeline.py"
 primary = "server-api"
 consumers = ["assistant"]

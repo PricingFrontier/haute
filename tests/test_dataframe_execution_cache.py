@@ -807,6 +807,54 @@ def test_dataframe_execution_cache_replacement_removes_old_artifact(tmp_path: Pa
     assert cache.get(key) == entry_b
 
 
+def test_oversized_replacement_retains_existing_same_key_artifact(tmp_path: Path) -> None:
+    old_path = tmp_path / "old.parquet"
+    oversized_path = tmp_path / "oversized.parquet"
+    pl.DataFrame({"x": [1]}).write_parquet(old_path)
+    pl.DataFrame({"x": list(range(10_000))}).write_parquet(oversized_path)
+    cache = DataFrameExecutionCache(
+        root=tmp_path,
+        max_entries=4,
+        max_bytes=old_path.stat().st_size + 1,
+    )
+    key = dataframe_execution_cache_key(
+        _graph(),
+        node_id="target",
+        namespace="unit",
+        source="batch",
+        profile=ExecutionProfile.LAZY_SINK,
+        input_fingerprint="input:v1",
+    )
+    old_entry = cache.store_artifact(
+        key,
+        old_path,
+        {
+            "row_count": 1,
+            "column_count": 1,
+            "columns": {"x": "Int64"},
+            "size_bytes": old_path.stat().st_size,
+            "uncompressed_size_bytes": old_path.stat().st_size,
+        },
+    )
+
+    with pytest.raises(CacheArtifactTooLargeError):
+        cache.store_artifact(
+            key,
+            oversized_path,
+            {
+                "row_count": 10_000,
+                "column_count": 1,
+                "columns": {"x": "Int64"},
+                "size_bytes": oversized_path.stat().st_size,
+                "uncompressed_size_bytes": oversized_path.stat().st_size,
+            },
+        )
+
+    assert cache.get(key) == old_entry
+    assert old_path.exists()
+    assert oversized_path.exists()
+
+
 def test_dataframe_execution_cache_pins_live_scans_during_eviction(tmp_path: Path) -> None:
     cache = DataFrameExecutionCache(root=tmp_path, max_entries=1, max_bytes=10_000_000)
     key_a = dataframe_execution_cache_key(
