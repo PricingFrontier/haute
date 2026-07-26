@@ -42,6 +42,24 @@ class TestChainSingleWithColumns:
         assert len(chain) == 1
         assert chain[0].expression_type == "conditional"
 
+    def test_assignment_to_non_df_name_uses_same_wrapping_as_evaluator(self):
+        code = 'result = df.with_columns((pl.col("a") * 2).alias("y"))'
+        chain = parse_expression_chain(code, "y")
+        evaluated = evaluate_expression(code, "y", {"a": 3})
+        assert chain is not None
+        assert [item.expression_text for item in chain] == ["a * 2"]
+        assert evaluated.expression_text == chain[0].expression_text
+        assert evaluated.result_value == 6
+
+    def test_indented_dot_chain_uses_same_wrapping_as_evaluator(self):
+        code = '  .with_columns((pl.col("a") * 2).alias("y"))'
+        chain = parse_expression_chain(code, "y")
+        evaluated = evaluate_expression(code, "y", {"a": 3})
+        assert [item.expression_text for item in chain] == ["a * 2"]
+        assert evaluated.expression_type == "arithmetic"
+        assert evaluated.expression_text == chain[0].expression_text
+        assert evaluated.result_value == 6
+
 
 class TestChainMultipleWithColumnsDependency:
     def test_two_step_dependency(self):
@@ -336,10 +354,16 @@ class TestEvaluateMissingColumn:
         result = evaluate_expression(code, "result", {})
         assert result is not None
 
-    def test_target_in_row_values_as_fallback(self):
+    def test_target_in_row_values_is_not_used_as_fallback(self):
         code = 'df = df.with_columns((pl.col("missing_col") + 1).alias("result"))'
         result = evaluate_expression(code, "result", {"result": 42})
-        assert result is not None
+        assert result.result_value is None
+
+    def test_unresolved_target_does_not_reuse_observed_value(self):
+        code = 'df = df.filter(pl.col("x") > 0)'
+        result = evaluate_expression(code, "result", {"x": 1, "result": 42})
+        assert result.expression_type == "opaque"
+        assert result.result_value is None
 
 
 class TestEvaluateNaNComparisons:

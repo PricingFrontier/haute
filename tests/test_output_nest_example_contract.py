@@ -58,8 +58,10 @@ import polars as pl
 
 from haute._json_shred import shred_to_buffers
 from haute._output_assembler import assemble_output_from_mapping
+from haute.parser import parse_pipeline_file
 
 _FIXTURE = Path(__file__).parent / "fixtures" / "output_assembler" / "nest_example.json"
+_REFERENCE_PIPELINE = Path(__file__).parent.parent / "rating" / "main.py"
 
 
 def _canonicalize(document: object) -> str:
@@ -138,6 +140,19 @@ _OUTPUT_MAPPING: list[dict[str, Any]] = [
     _entry("licenses", "policy_id", "$[:].policy_id"),
     _entry("licenses", "driver_id", "$[:].drivers[:].driver_id"),
 ]
+
+
+def test_checked_in_reference_pipeline_parses() -> None:
+    """The repository's configured default must remain a parseable Haute graph."""
+    graph = parse_pipeline_file(_REFERENCE_PIPELINE)
+    assert [node.id for node in graph.nodes] == ["quotes", "Quote_Response_9"]
+    assert len(graph.edges) == 4
+    assert {edge.sourceHandle for edge in graph.edges} == {
+        "quotes",
+        "drivers",
+        "vehicles",
+        "licenses",
+    }
 
 
 def _shred_to_frames(records: list[dict[str, Any]]) -> dict[str, pl.LazyFrame]:

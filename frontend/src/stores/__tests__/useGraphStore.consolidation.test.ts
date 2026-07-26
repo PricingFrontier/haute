@@ -89,6 +89,7 @@ export interface GraphSnapshot {
   nodes: Node[]
   edges: Edge[]
   preamble: string
+  submodels: Record<string, unknown>
 }
 
 // This interface is exported purely for documentation — the store file
@@ -98,6 +99,7 @@ export interface GraphStoreShape {
   nodes: Node[]
   edges: Edge[]
   preamble: string
+  submodels: Record<string, unknown>
   lastSavedSnapshot: GraphSnapshot | null
   undoStack: GraphSnapshot[]
   redoStack: GraphSnapshot[]
@@ -113,6 +115,7 @@ export interface GraphStoreShape {
   // Actions (raw — bypass undo history, used for WebSocket sync / load)
   setNodesRaw: (nodes: Node[] | ((nds: Node[]) => Node[])) => void
   setEdgesRaw: (edges: Edge[] | ((eds: Edge[]) => Edge[])) => void
+  setSubmodelsRaw: (submodels: Record<string, unknown>) => void
   setPreambleRaw: (value: string) => void
 
   // Undo/redo
@@ -322,7 +325,9 @@ describe("useGraphStore — consolidation", () => {
       // Seed an undoStack so its length is stable and not confounded by
       // snapshot-pushing inside setEdges.
       act(() => {
-        store.setState({ undoStack: [{ nodes: [], edges: [], preamble: "" }] })
+        store.setState({
+          undoStack: [{ nodes: [], edges: [], preamble: "", submodels: {} }],
+        })
       })
 
       const { result } = renderHook(() =>
@@ -524,6 +529,28 @@ describe("useGraphStore — consolidation", () => {
       expect(store.getState().undoStack[0].nodes).toHaveLength(1)
       expect(store.getState().undoStack[0].nodes[0].id).toBe("n1")
     })
+
+    it("101st undo evicts the oldest redoStack entry", () => {
+      const store = requireStore()
+      const snapshots = Array.from({ length: 101 }, (_, index) => ({
+        nodes: [makeNode(`n${index}`)],
+        edges: [],
+        preamble: "",
+        submodels: {},
+      }))
+      act(() => {
+        store.setState({ undoStack: snapshots })
+        for (let index = 0; index < snapshots.length; index += 1) {
+          store.getState().undo()
+        }
+      })
+
+      expect(store.getState().redoStack).toHaveLength(100)
+      const oldestRetained = store.getState().redoStack[0]
+      expect(oldestRetained).toMatchObject({
+        nodes: [expect.objectContaining({ id: "n100" })],
+      })
+    })
   })
 
   // ───────────────────────────────────────────────────────────────
@@ -600,6 +627,28 @@ describe("useGraphStore — consolidation", () => {
       })
       expect(store.getState().isDirty()).toBe(true)
       expect(store.getState().dirty).toBe(true)
+    })
+
+    it("returns true after submodel metadata changes post-save", () => {
+      const store = requireStore()
+      act(() => {
+        store.getState().markSaved()
+        store.getState().setSubmodelsRaw({
+          pricing: {
+            nodes: [makeNode("nested")],
+            edges: [],
+          },
+        })
+      })
+
+      expect(store.getState().dirty).toBe(true)
+      expect(store.getState().isDirty()).toBe(true)
+
+      act(() => {
+        store.getState().markSaved()
+      })
+      expect(store.getState().dirty).toBe(false)
+      expect(store.getState().isDirty()).toBe(false)
     })
 
     it("returns to false after a subsequent markSaved()", () => {

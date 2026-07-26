@@ -127,7 +127,7 @@ class TestStripDocstringEscapedTrailingQuote:
 
 
 class TestParameterBucketConservation:
-    def test_posonly_and_kwonly_params_yield_implicit_edges(self) -> None:
+    def test_only_positional_params_yield_implicit_edges(self) -> None:
         source = textwrap.dedent(
             """\
             import polars as pl
@@ -156,7 +156,48 @@ class TestParameterBucketConservation:
         pairs = {(e.source, e.target) for e in graph.edges}
         assert ("a", "target") in pairs  # positional-only
         assert ("b", "target") in pairs  # positional-or-keyword
-        assert ("c", "target") in pairs  # keyword-only
+        assert ("c", "target") not in pairs  # keyword-only configuration
+
+    def test_live_switch_inputs_exclude_keyword_only_config(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        config_dir = tmp_path / "config" / "source_switch"
+        config_dir.mkdir(parents=True)
+        (config_dir / "switch.json").write_text(
+            '{"input_scenario_map":{"a":"live"},"inputs":["a","c"]}',
+            encoding="utf-8",
+        )
+        pipeline_file = _write(
+            tmp_path,
+            "main.py",
+            textwrap.dedent(
+                """\
+                import haute
+
+                pipeline = haute.Pipeline("m")
+
+                @pipeline.polars
+                def a(df):
+                    return df
+
+                @pipeline.polars
+                def c(df):
+                    return df
+
+                @pipeline.live_switch(config="config/source_switch/switch.json")
+                def switch(a, *, c=None):
+                    return a
+                """
+            ),
+        )
+
+        graph = parse_pipeline_file(pipeline_file)
+        switch = next(node for node in graph.nodes if node.id == "switch")
+        assert switch.data.config["inputs"] == ["a"]
+        assert {(edge.source, edge.target) for edge in graph.edges} == {
+            ("a", "switch"),
+        }
 
 
 # ---------------------------------------------------------------------------

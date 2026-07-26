@@ -116,6 +116,15 @@ Out of scope (owned by neighbouring components, linked where they exist):
   type. Rendering has three zoom-dependent levels of detail — compact,
   medium, full — chosen by a canvas zoom threshold, plus a distinct
   marker/pill render path for edge-join nodes that never uses the LOD levels.
+- **Canonical data-I/O nodes.** The 19-type frontend vocabulary matches the
+  backend enum and includes `dataInput` and `dataOutput`, never historical
+  Data Source/Data Sink aliases. Data Input is source-only; Data Output is a
+  sink with one upstream input. Neither is a singleton. Their new-node
+  defaults contain only the active discriminated branch, and an incomplete
+  required choice remains visibly incomplete rather than gaining an
+  invented provider or format. Data Output is intentionally
+  non-previewable: selecting the sink opens its editor without invoking a
+  potentially side-effecting output operation.
 - **Handles.** A standard node gets one target handle (left) and one source
   handle (right). Source-only and sink-only node types suppress the handle
   they don't have. Edge-join nodes render a base target handle, a join
@@ -179,9 +188,11 @@ Out of scope (owned by neighbouring components, linked where they exist):
 - **Undo/redo** operates over a single stack that can hold either a graph
   snapshot or a version-control history entry, so a branch switch and a
   graph edit interleave and reverse in the order they actually happened.
+  Both undo and redo stacks retain at most `MAX_HISTORY` (100) entries.
 - **Dirty state** is derived, not imperatively toggled: it's a fingerprint
-  comparison against the last-saved snapshot, recomputed on every mutation.
-  Undoing back to exactly the saved state always reports clean.
+  comparison over persisted nodes, edges, preamble, and submodels against the
+  last-saved snapshot, recomputed on every persisted mutation. Undoing back
+  to exactly the saved state always reports clean.
 - **Graph context.** `GraphProvider`/`useGraph()` exposes a render-stable
   `{allNodes, edges, submodels, preamble}` snapshot to the node inspector's
   subtree. Calling `useGraph()` outside a provider throws immediately.
@@ -235,7 +246,9 @@ Out of scope (owned by neighbouring components, linked where they exist):
 - **Pipeline load and save.** The pipeline loads once on mount with a
   cold-start retry policy; a backend-contract violation in the response
   throws before it reaches the graph, surfacing as a load-failure toast
-  rather than a downstream crash. Save validates config references and
+  rather than a downstream crash. A node whose persisted `type` or
+  `data.nodeType` is outside the canonical vocabulary is rejected at that parser boundary;
+  there is no legacy renderer or client migration. Save validates config references and
   edge-join wiring first — a broken edge-join blocks the save outright with
   an error toast, while broken config references only warn. A concurrent
   second save can never let an older response's `markSaved` clobber a newer
@@ -264,6 +277,19 @@ Out of scope (owned by neighbouring components, linked where they exist):
 - **Live code sync.** External edits to a pipeline's `.py` file arrive over
   WebSocket and replace the in-memory graph — but never while the user has
   unsaved local edits, where a banner asks them to reload or discard first.
+  Once either side supplies a source identity, both sides must resolve to the
+  same file; one-sided or foreign updates are ignored. Each accepted
+  update advances a generation before asynchronous layout, so a later graph
+  update or parse error permanently supersedes older work. Incoming edges
+  are checked against the live node/handle set: unresolved edges remain in
+  graph state and the save snapshot, a bounded warning names representative
+  problems, and only the valid partition guides layout. Finite incoming
+  positions, including `{x: 0, y: 0}`, remain authoritative; layout fills
+  only missing/non-finite positions. Nodes, edges, preamble, and the required
+  `submodels` value are applied as one guarded update, with the backend's
+  explicit `null` empty-collection representation normalised to `{}` and the
+  submodel ref updated before `markSaved`; any apply failure restores all four
+  prior values. An omitted submodels field still fails loudly.
   A resync on reconnect sends the last-applied graph fingerprint so the
   server can skip re-sending an unchanged graph.
 - **Submodel navigation.** Drilling into a submodel builds boundary port
@@ -446,8 +472,8 @@ Out of scope (owned by neighbouring components, linked where they exist):
 - [server-api](../server-api/high-level.md) — the backend counterpart to
   `usePipelineAPI` (`/api/pipeline/*` load/save/preview) and
   `useWebSocketSync` (`/ws/sync`); both hooks feed the store via
-  `setNodesRaw`/`setEdgesRaw`/`setPreamble`, and `usePipelineAPI` calls
-  `markSaved()` on a successful save.
+  `setNodesRaw`/`setEdgesRaw`/`setSubmodelsRaw`/`setPreamble`, and
+  `usePipelineAPI` calls `markSaved()` on a successful save.
 - `frontend-shared` — `api/client.ts`'s typed HTTP/WebSocket functions
   (`loadPipeline`, `savePipeline`, `previewNode`, `createSubmodel`,
   `loadSubmodel`, `dissolveSubmodel`, session-bootstrap helper) are the
@@ -539,9 +565,11 @@ Out of scope (owned by neighbouring components, linked where they exist):
   client-side preview *timeout* additionally shows an `error` toast.
 - `useWebSocketSync` toasts on WebSocket construction errors, on
   unparsable message JSON, and on any error raised while applying an
-  incoming `graph_update`; a failed apply attempts to roll the graph back
-  to its pre-update snapshot (best-effort — a rollback failure is swallowed
-  so it doesn't mask the original error in the toast). A session-expiry
+  incoming `graph_update`, including an omitted or invalid non-object
+  `submodels` value (explicit `null` means an empty map); a failed apply
+  attempts to roll nodes, edges, submodels, and preamble
+  back to their pre-update snapshot (best-effort — a rollback failure is
+  swallowed so it doesn't mask the original error in the toast). A session-expiry
   close code stops reconnect attempts and calls
   `notifyHauteSessionExpired` instead.
 - `useSubmodelNavigation`'s create/drill-in/dissolve calls each catch their
@@ -559,62 +587,3 @@ Out of scope (owned by neighbouring components, linked where they exist):
 > always calls it with `[]`/`[]` and the real graph arrives later via
 > `setNodesRaw`/`setEdgesRaw` from `usePipelineAPI`, so this reset is
 > effectively a one-time clear, not a load path.
-
-## Approved change contract — 0.7.0 canonical data-I/O canvas nodes
-
-Remaining graph-canvas improvement work is tracked in the
-[frontend canvas roadmap](../../roadmap/frontend-canvas.md).
-
-- Canvas node metadata, the React Flow registry, palette ordering, derived source/sink sets,
-  node-search results, comparison inspector dispatch, and factories contain **Data Input** and
-  **Data Output**, never Data Source/Data Sink. The exact frontend node set becomes 19 and must
-  match the backend enum.
-- `dataInput` is source-only and `dataOutput` is sink-only with one upstream input; neither is a
-  singleton, so a graph may contain multiple instances. Data Output remains previewable as a
-  side-effect-free pass-through; preview never invokes its explicit Write action.
-- New-node defaults contain only one active discriminated branch. Required values not yet chosen
-  are visibly incomplete and block save/execution; metadata never copies inactive fields or
-  invents a provider/format after capability loading fails.
-- Loading a graph containing a removed node fails at the guarded API/parser boundary. The canvas,
-  comparison view, WebSocket sync, undo history, and graph factories provide no hidden legacy
-  renderer or migration. Repository-owned affected graphs are reset to the standard blank graph
-  before they reach this layer.
-
-Acceptance pins 19-type registry parity, palette/search/derived-set membership, source/sink
-handles, multiple input/output creation and save/reload, side-effect-free Data Output preview,
-strict default branch shape, comparison dispatch, and legacy graph rejection.
-
-## Approved change contract — canvas live-update reconciliation
-
-This contract implements the live-update part of the
-[frontend canvas roadmap](../../roadmap/frontend-canvas.md) (AUD-C17).
-
-- **Current limitation.** WebSocket graph updates currently admit an update when either side of
-  the source-file comparison is blank, a parse error does not supersede layout work already in
-  flight, incoming edges are normalised without proving that their endpoints and handles still
-  exist, and automatic layout is all-or-nothing. Those behaviours can apply an update to the
-  wrong pipeline, clear a newer error, retain a dangling edge, or move an established node at
-  the canvas origin.
-- **Target behaviour.** Once either the open pipeline or a WebSocket message carries a source
-  identity, both identities are required and must resolve to the same file. An accepted message
-  advances one monotonic generation before any asynchronous work: a later graph update or parse
-  error permanently supersedes earlier layout work. Imported edges are checked against the
-  incoming live node and port set. Unresolved edges remain in graph state and the next save
-  snapshot so advisory renderer-contract drift can never delete user topology; only the valid
-  subset participates in automatic layout, and one bounded visible warning names representative
-  problems. Layout assigns positions only when coordinates are absent or non-finite. Every finite
-  persisted position, including `{x: 0, y: 0}`, is authoritative.
-- **Non-goals.** This change does not introduce collaborative merge semantics, change the
-  backend WebSocket protocol, reinterpret an intentionally dirty local graph, or relayout a
-  complete imported graph.
-- **Failure and compatibility.** Source-less operation remains valid only when both sides are
-  source-less (for isolated consumers and tests); a one-sided identity is fail-closed. A dirty
-  local canvas continues to reject external graph replacement. Layout/apply exceptions retain
-  the prior graph and surface through the existing error toast. Edge diagnostics never delete or
-  fabricate an endpoint or handle. If an unresolved edge reaches save, existing backend
-  validation/code generation fails visibly instead of regenerating a truncated pipeline.
-- **Acceptance.** Focused hook tests prove one-sided and foreign identities are ignored, a parse
-  error wins over an older pending layout, stale updates cannot clear a newer banner, endpoint
-  and handle-invalid edges are retained with a bounded warning while only valid edges guide
-  layout, and finite origin nodes remain fixed while only non-finite nodes receive
-  non-overlapping layout.

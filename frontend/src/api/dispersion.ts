@@ -10,6 +10,7 @@
  */
 
 import { ApiError, post, request } from "./client"
+import { JOB_STATUS_VALUES, TERMINAL_JOB_STATUSES } from "./types"
 import type {
   DispersionEstimateStart,
   DispersionEstimateStatus,
@@ -47,8 +48,11 @@ function parseDispersionEstimateResponse(value: unknown): DispersionEstimateStar
 
 function parseDispersionStatusResponse(value: unknown): DispersionEstimateStatus {
   const obj = asRecord(value, "parseDispersionStatusResponse")
-  if (typeof obj.status !== "string" || !obj.status) {
-    throw new Error("parseDispersionStatusResponse: missing `status`")
+  if (
+    typeof obj.status !== "string"
+    || !JOB_STATUS_VALUES.includes(obj.status as JobStatus)
+  ) {
+    throw new Error(`parseDispersionStatusResponse: invalid \`status\` ${String(obj.status)}`)
   }
   return {
     status: obj.status as JobStatus,
@@ -103,16 +107,6 @@ export function cancelDispersion(
   ).then(parseDispersionStatusResponse)
 }
 
-const _DISPERSION_TERMINAL_STATUSES = new Set([
-  "completed",
-  "error",
-  "cancelled",
-  "superseded",
-  "timed_out",
-  "memory_limited",
-  "contract_error",
-])
-
 /** Start a dispersion estimation and poll it to completion.
  *
  * Resolves with the estimated value; rejects with the job's message on any
@@ -126,21 +120,27 @@ export async function runDispersionEstimate(
 ): Promise<number> {
   const { job_id } = await estimateGlmDispersion({ ...args, signal: options?.signal })
   const pollInterval = options?.pollIntervalMs ?? 500
-  for (;;) {
-    if (options?.signal?.aborted) {
-      void cancelDispersion(job_id).catch(() => undefined)
-      throw new DOMException("Dispersion estimation aborted", "AbortError")
-    }
-    const status = await getDispersionStatus(job_id, { signal: options?.signal })
-    if (status.status === "completed") {
-      if (status.value === null) {
-        throw new ApiError("Dispersion estimation completed without a value", 500)
+  try {
+    for (;;) {
+      if (options?.signal?.aborted) {
+        throw new DOMException("Dispersion estimation aborted", "AbortError")
       }
-      return status.value
+      const status = await getDispersionStatus(job_id, { signal: options?.signal })
+      if (status.status === "completed") {
+        if (status.value === null) {
+          throw new Error("Dispersion estimation completed without a value")
+        }
+        return status.value
+      }
+      if (TERMINAL_JOB_STATUSES.has(status.status)) {
+        throw new ApiError(status.error || status.message || `Dispersion estimation ${status.status}`, 500)
+      }
+      await new Promise((resolve) => setTimeout(resolve, pollInterval))
     }
-    if (_DISPERSION_TERMINAL_STATUSES.has(status.status)) {
-      throw new ApiError(status.error || status.message || `Dispersion estimation ${status.status}`, 500)
+  } catch (error) {
+    if (options?.signal?.aborted) {
+      await cancelDispersion(job_id)
     }
-    await new Promise((resolve) => setTimeout(resolve, pollInterval))
+    throw error
   }
 }

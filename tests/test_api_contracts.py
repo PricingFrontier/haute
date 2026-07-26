@@ -443,6 +443,12 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
             "success_schema": {"$ref": "#/components/schemas/OptimiserFrontierResponse"},
         },
     },
+    "/api/optimiser/frontier/cancel/{job_id}": {
+        "POST": {
+            "request_ref": None,
+            "success_schema": {"$ref": "#/components/schemas/OptimiserFrontierStatusResponse"},
+        },
+    },
     "/api/optimiser/frontier/status/{job_id}": {
         "GET": {
             "request_ref": None,

@@ -512,7 +512,7 @@ class TestLogExperiment:
             )
 
             m_register.assert_called_once_with(
-                "runs:/abc123/model.cbm",
+                "runs:/abc123/model",
                 "my-registered-model",
             )
 

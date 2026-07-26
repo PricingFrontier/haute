@@ -71,6 +71,7 @@ vi.mock("../../stores/useGraphStore.ts", () => {
     nodes: [] as Node[],
     edges: [] as import("@xyflow/react").Edge[],
     preamble: "",
+    submodels: {} as Record<string, unknown>,
     markSaved: vi.fn(),
   }
   const useGraphStore = Object.assign(() => store, {
@@ -129,8 +130,10 @@ function makeHookParams(sourceFile = "") {
   return {
     setNodesRaw: vi.fn(),
     setEdgesRaw: vi.fn(),
+    setSubmodelsRaw: vi.fn(),
     setPreamble: vi.fn(),
     preambleRef: { current: "" },
+    submodelsRef: { current: {} as Record<string, unknown> },
     sourceFileRef: { current: sourceFile },
     graphRefreshingRef: { current: 0 },
     nodeIdCounter: { current: 0 },
@@ -157,6 +160,7 @@ describe("useWebSocketSync", () => {
     useGraphStore.getState().nodes = []
     useGraphStore.getState().edges = []
     useGraphStore.getState().preamble = ""
+    useGraphStore.getState().submodels = {}
   })
 
   afterEach(() => {
@@ -289,6 +293,7 @@ describe("useWebSocketSync", () => {
             source_file: "rating/main.py",
             graph_fingerprint: "applied-fp",
             graph: {
+              submodels: {},
               nodes: [{ id: "n1", position: { x: 100, y: 200 }, data: {} }],
               edges: [],
             },
@@ -324,6 +329,7 @@ describe("useWebSocketSync", () => {
             source_file: "rating/main.py",
             graph_fingerprint: "main-fp",
             graph: {
+              submodels: {},
               nodes: [{ id: "n1", position: { x: 100, y: 200 }, data: {} }],
               edges: [],
             },
@@ -414,6 +420,7 @@ describe("useWebSocketSync", () => {
       const graphMsg = {
         type: "graph_update",
         graph: {
+          submodels: {},
           nodes: [
             { id: "transform_3", position: { x: 100, y: 200 }, data: { label: "test" } },
             { id: "transform_4", position: { x: 400, y: 200 }, data: { label: "target" } },
@@ -462,6 +469,78 @@ describe("useWebSocketSync", () => {
       expect(useGraphStore.getState().markSaved).toHaveBeenCalled()
     })
 
+    it("applies incoming submodels to the store and the subsequent-save mirror before marking saved", async () => {
+      const params = makeHookParams()
+      params.setSubmodelsRaw.mockImplementation((submodels) => {
+        useGraphStore.getState().submodels = submodels
+      })
+      params.submodelsRef.current = {
+        old: { nodes: [{ id: "stale" }], edges: [] },
+      }
+      renderHook(() => useWebSocketSync(params))
+
+      act(() => {
+        latestWS().onopen?.(new Event("open"))
+      })
+
+      const incomingSubmodels = {
+        external: {
+          nodes: [{ id: "fresh", position: { x: 10, y: 20 }, data: { label: "Fresh" } }],
+          edges: [],
+        },
+      }
+      await act(async () => {
+        latestWS().onmessage?.(new MessageEvent("message", {
+          data: JSON.stringify({
+            type: "graph_update",
+            graph: {
+              nodes: [],
+              edges: [],
+              preamble: "",
+              submodels: incomingSubmodels,
+            },
+          }),
+        }))
+      })
+
+      expect(params.setSubmodelsRaw).toHaveBeenCalledWith(incomingSubmodels)
+      expect(useGraphStore.getState().submodels).toEqual(incomingSubmodels)
+      expect(params.submodelsRef.current).toEqual(incomingSubmodels)
+      expect(params.setSubmodelsRaw.mock.invocationCallOrder[0]).toBeLessThan(
+        vi.mocked(useGraphStore.getState().markSaved).mock.invocationCallOrder[0],
+      )
+      expect(params.submodelsRef.current).not.toHaveProperty("old")
+    })
+
+    it("normalizes the backend's null empty-submodels representation without treating it as omitted", async () => {
+      const params = makeHookParams()
+      params.submodelsRef.current = {
+        old: { nodes: [{ id: "stale" }], edges: [] },
+      }
+      renderHook(() => useWebSocketSync(params))
+
+      act(() => {
+        latestWS().onopen?.(new Event("open"))
+      })
+
+      await act(async () => {
+        latestWS().onmessage?.(new MessageEvent("message", {
+          data: JSON.stringify({
+            type: "graph_update",
+            graph: {
+              nodes: [],
+              edges: [],
+              submodels: null,
+            },
+          }),
+        }))
+      })
+
+      expect(params.setSubmodelsRaw).toHaveBeenCalledWith({})
+      expect(params.submodelsRef.current).toEqual({})
+      expect(useGraphStore.getState().markSaved).toHaveBeenCalled()
+    })
+
     it("uses layout when nodes have non-finite positions", async () => {
       const { getLayoutedElements } = await import("../../utils/layout.ts")
       const params = makeHookParams()
@@ -474,6 +553,7 @@ describe("useWebSocketSync", () => {
       const graphMsg = {
         type: "graph_update",
         graph: {
+          submodels: {},
           nodes: [
             { id: "n1", position: { x: Number.NaN, y: Number.NaN }, data: { label: "test" } },
           ],
@@ -502,6 +582,7 @@ describe("useWebSocketSync", () => {
         type: "graph_update",
         source_file: "modules/foreign_submodel.py",
         graph: {
+          submodels: {},
           nodes: [{ id: "n1", position: { x: 100, y: 200 }, data: {} }],
           edges: [],
         },
@@ -527,6 +608,7 @@ describe("useWebSocketSync", () => {
           data: JSON.stringify({
             type: "graph_update",
             graph: {
+              submodels: {},
               nodes: [{ id: "unidentified", position: { x: 100, y: 200 }, data: {} }],
               edges: [],
             },
@@ -548,6 +630,7 @@ describe("useWebSocketSync", () => {
             type: "graph_update",
             source_file: "rating/main.py",
             graph: {
+              submodels: {},
               nodes: [{ id: "unmatched", position: { x: 100, y: 200 }, data: {} }],
               edges: [],
             },
@@ -574,6 +657,7 @@ describe("useWebSocketSync", () => {
             type: "graph_update",
             source_file: "modules/main.py",
             graph: {
+              submodels: {},
               nodes: [{ id: "wrong-case", position: { x: 100, y: 200 }, data: {} }],
               edges: [],
             },
@@ -601,6 +685,7 @@ describe("useWebSocketSync", () => {
             type: "graph_update",
             source_file: "C:\\Users\\prici\\haute\\rating\\main.py",
             graph: {
+              submodels: {},
               nodes: [{ id: "n1", position: { x: 100, y: 200 }, data: {} }],
               edges: [],
             },
@@ -624,6 +709,7 @@ describe("useWebSocketSync", () => {
             type: "graph_update",
             source_file: "rating/main.py",
             graph: {
+              submodels: {},
               nodes: [{ id: "n1", position: { x: 100, y: 200 }, data: {} }],
               edges: [],
             },
@@ -651,6 +737,7 @@ describe("useWebSocketSync", () => {
             type: "graph_update",
             source_file: "C:\\Users\\prici\\haute\\rating\\main.py",
             graph: {
+              submodels: {},
               nodes: [{ id: "n1", position: { x: 100, y: 200 }, data: {} }],
               edges: [],
             },
@@ -678,6 +765,7 @@ describe("useWebSocketSync", () => {
             type: "graph_update",
             source_file: "rating/main.py",
             graph: {
+              submodels: {},
               nodes: [{ id: "disk", position: { x: 100, y: 200 }, data: {} }],
               edges: [],
             },
@@ -725,6 +813,7 @@ describe("useWebSocketSync", () => {
             type: "graph_update",
             source_file: "rating/main.py",
             graph: {
+              submodels: {},
               nodes: [{ id: "disk", position: { x: Number.NaN, y: Number.NaN }, data: {} }],
               edges: [],
             },
@@ -772,6 +861,7 @@ describe("useWebSocketSync", () => {
             type: "graph_update",
             source_file: "rating/main.py",
             graph: {
+              submodels: {},
               nodes: [{ id: "current", position: { x: Number.NaN, y: Number.NaN }, data: {} }],
               edges: [],
             },
@@ -787,6 +877,7 @@ describe("useWebSocketSync", () => {
             type: "graph_update",
             source_file: "modules/foreign.py",
             graph: {
+              submodels: {},
               nodes: [{ id: "foreign", position: { x: 100, y: 200 }, data: {} }],
               edges: [],
             },
@@ -817,6 +908,7 @@ describe("useWebSocketSync", () => {
       const graphMsg = {
         type: "graph_update",
         graph: {
+          submodels: {},
           nodes: [
             { id: "transform_1", position: { x: 100, y: 200 }, data: { label: "test" } },
           ],
@@ -881,6 +973,7 @@ describe("useWebSocketSync", () => {
             type: "graph_update",
             source_file: "rating/main.py",
             graph: {
+              submodels: {},
               nodes: [{ id: "stale", position: { x: Number.NaN, y: Number.NaN }, data: {} }],
               edges: [],
             },
@@ -932,6 +1025,7 @@ describe("useWebSocketSync", () => {
           data: JSON.stringify({
             type: "graph_update",
             graph: {
+              submodels: {},
               nodes: [
                 established,
                 {
@@ -968,6 +1062,7 @@ describe("useWebSocketSync", () => {
           data: JSON.stringify({
             type: "graph_update",
             graph: {
+              submodels: {},
               nodes: [
                 {
                   id: "api",
@@ -1029,6 +1124,7 @@ describe("useWebSocketSync", () => {
           data: JSON.stringify({
             type: "graph_update",
             graph: {
+              submodels: {},
               nodes: [{
                 id: "source",
                 position: { x: 10, y: 10 },
@@ -1062,6 +1158,7 @@ describe("useWebSocketSync", () => {
             source_file: "rating/main.py",
             graph_fingerprint: "applied-before-error",
             graph: {
+              submodels: {},
               nodes: [{ id: "n1", position: { x: 100, y: 200 }, data: {} }],
               edges: [],
             },

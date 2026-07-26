@@ -291,20 +291,20 @@ class TestFailLoudOnMalformedInput:
 
     The pre-AST regex silently produced wrong-but-plausible values for
     inputs like ``percent=50%`` (regex matched ``percent=50``); the AST
-    parser surfaces them as exceptions.  These tests pin that behaviour
+    parser surfaces them as ``ParseError``.  These tests pin that behaviour
     so no future 'softening' can silently reintroduce lossy parsing.
     """
 
     def test_percent_sign_raises(self) -> None:
-        with pytest.raises((SyntaxError, ValueError)):
+        with pytest.raises(ParseError, match="decorator kwargs could not be parsed"):
             _parse_decorator_kwargs_regex("@pipeline.polars(percent=50%)")
 
     def test_unbalanced_bracket_raises(self) -> None:
-        with pytest.raises((SyntaxError, ValueError)):
+        with pytest.raises(ParseError, match="decorator kwargs could not be parsed"):
             _parse_decorator_kwargs_regex('@pipeline.polars(cols=["a",)')
 
     def test_dangling_equals_raises(self) -> None:
-        with pytest.raises((SyntaxError, ValueError)):
+        with pytest.raises(ParseError, match="decorator kwargs could not be parsed"):
             _parse_decorator_kwargs_regex("@pipeline.polars(key=)")
 
     def test_bare_name_reference_raises(self) -> None:

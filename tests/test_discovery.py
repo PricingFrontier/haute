@@ -47,10 +47,11 @@ class TestConfiguredPipeline:
         toml.write_text('[project]\nname = "foo"\n')
         assert _configured_pipeline(tmp_path) is None
 
-    def test_returns_none_on_toml_parse_error(self, tmp_path: Path) -> None:
+    def test_toml_parse_error_fails_loud(self, tmp_path: Path) -> None:
         toml = tmp_path / "haute.toml"
         toml.write_text("this is not valid toml [[[")
-        assert _configured_pipeline(tmp_path) is None
+        with pytest.raises(ConfigError, match="haute.toml"):
+            _configured_pipeline(tmp_path)
 
     def test_returns_subdirectory_path(self, tmp_path: Path) -> None:
         toml = tmp_path / "haute.toml"
@@ -128,16 +129,14 @@ class TestConfiguredPipelinePrecedence:
         (tmp_path / "haute.toml").write_text('[project]\npipeline = "nope.py"\n')
         (tmp_path / "nope.py").write_text(NO_PIPELINE_CONTENT)
         (tmp_path / "real.py").write_text(PIPELINE_CONTENT)
-        result = discover_pipelines(tmp_path)
-        assert len(result) == 1
-        assert result[0] == tmp_path / "real.py"
+        with pytest.raises(FileNotFoundError, match="nope.py"):
+            discover_pipelines(tmp_path)
 
     def test_configured_pipeline_file_missing(self, tmp_path: Path) -> None:
         (tmp_path / "haute.toml").write_text('[project]\npipeline = "missing.py"\n')
         (tmp_path / "real.py").write_text(PIPELINE_CONTENT)
-        result = discover_pipelines(tmp_path)
-        assert len(result) == 1
-        assert result[0] == tmp_path / "real.py"
+        with pytest.raises(FileNotFoundError, match="missing.py"):
+            discover_pipelines(tmp_path)
 
 
 # ---------------------------------------------------------------------------
@@ -199,12 +198,11 @@ class TestContentMatching:
 
 
 class TestErrorHandling:
-    def test_toml_parse_error_still_discovers_root_files(self, tmp_path: Path) -> None:
+    def test_toml_parse_error_does_not_bind_a_different_file(self, tmp_path: Path) -> None:
         (tmp_path / "haute.toml").write_text("not valid toml [[[")
         (tmp_path / "pipe.py").write_text(PIPELINE_CONTENT)
-        result = discover_pipelines(tmp_path)
-        assert len(result) == 1
-        assert result[0].name == "pipe.py"
+        with pytest.raises(ConfigError, match="haute.toml"):
+            discover_pipelines(tmp_path)
 
 
 # ---------------------------------------------------------------------------

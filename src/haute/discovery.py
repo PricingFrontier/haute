@@ -4,33 +4,15 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from haute._logging import get_logger
+from haute._project import _looks_like_pipeline_file, _toml_configured_pipeline
 from haute.errors import ConfigError
-
-logger = get_logger(component="discovery")
 
 _SKIP = {"__init__.py", "setup.py", "conftest.py"}
 
 
 def _configured_pipeline(root: Path) -> Path | None:
-    """Read ``haute.toml`` and return the configured pipeline path, if any."""
-    toml_path = root / "haute.toml"
-    if not toml_path.exists():
-        logger.error(
-            "haute_toml_missing", root=str(root), hint="Run 'haute init' to create a project"
-        )
-        return None
-    try:
-        import tomllib
-
-        with open(toml_path, "rb") as f:
-            data = tomllib.load(f)
-        rel: str | None = data.get("project", {}).get("pipeline")
-        if rel:
-            return root / rel
-    except Exception:
-        logger.error("haute_toml_read_failed", path=str(toml_path), exc_info=True)
-    return None
+    """Return the canonical resolver's configured pipeline candidate."""
+    return _toml_configured_pipeline(root)
 
 
 def discover_pipelines(root: Path | None = None) -> list[Path]:
@@ -64,7 +46,18 @@ def discover_pipelines(root: Path | None = None) -> list[Path]:
 
     # 1. Check the configured pipeline path from haute.toml
     configured = _configured_pipeline(root)
-    if configured is not None and configured.exists():
+    if configured is not None:
+        if not configured.exists():
+            raise FileNotFoundError(
+                "Pipeline file configured in haute.toml [project].pipeline "
+                f"does not exist: {configured}. Fix the path in haute.toml or create the file."
+            )
+        if not _looks_like_pipeline_file(configured):
+            raise FileNotFoundError(
+                "Pipeline file configured in haute.toml [project].pipeline "
+                f"does not look like a Haute pipeline: {configured}. "
+                "Point [project].pipeline at a .py file containing 'haute.Pipeline'."
+            )
         try:
             text = configured.read_text(errors="replace")
         except OSError as exc:

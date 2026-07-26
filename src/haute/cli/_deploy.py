@@ -88,14 +88,6 @@ def handle_deploy(config: DeployCliConfig) -> None:
     if toml_path.exists():
         deploy_config = DeployConfig.from_toml(toml_path)
         click.echo("  \u2713 Loaded config from haute.toml")
-        try:
-            pipeline_file = resolve_pipeline_file(
-                Path(config.pipeline_file) if config.pipeline_file else deploy_config.pipeline_file,
-            )
-        except (FileNotFoundError, ValueError) as exc:
-            click.echo(f"Error: {exc}", err=True)
-            raise SystemExit(1) from exc
-        deploy_config = deploy_config.override(pipeline_file=pipeline_file)
     else:
         try:
             resolved = resolve_pipeline_file(
@@ -123,11 +115,19 @@ def handle_deploy(config: DeployCliConfig) -> None:
 
     # Apply CLI overrides on top of the loaded config.
     overrides: dict[str, str | Path | None] = {}
+    if config.pipeline_file:
+        overrides["pipeline_file"] = Path(config.pipeline_file)
     if config.model_name:
         overrides["model_name"] = config.model_name
     if config.endpoint_suffix:
         overrides["endpoint_suffix"] = config.endpoint_suffix
     deploy_config = deploy_config.override(**overrides)
+    pipeline_candidate = (
+        Path(config.pipeline_file)
+        if config.pipeline_file
+        else deploy_config.project_dir or Path.cwd()
+    )
+    deploy_config.pipeline_file = resolve_pipeline_file(pipeline_candidate)
 
     click.echo(f"\nDeploying pipeline: {deploy_config.model_name}")
     click.echo(f"  Pipeline: {deploy_config.pipeline_file}")

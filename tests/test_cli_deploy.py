@@ -17,11 +17,14 @@ if TYPE_CHECKING:
 
 
 def _make_toml(tmp_path: Path) -> None:
-    (tmp_path / "main.py").write_text("# pipeline\n")
     (tmp_path / "haute.toml").write_text(
         '[project]\nname = "t"\npipeline = "main.py"\n'
         '[deploy]\nmodel_name = "test-model"\nendpoint_name = "test-ep"\n'
         '[test_quotes]\ndir = "tests/quotes"\n',
+    )
+    (tmp_path / "main.py").write_text(
+        'import haute\n\npipeline = haute.Pipeline("test")\n',
+        encoding="utf-8",
     )
 
 
@@ -109,7 +112,7 @@ class TestDeploy:
             result = runner.invoke(cli, ["deploy", "--dry-run"])
 
         assert result.exit_code == 0, result.output
-        resolve_pipeline.assert_called_once_with(Path("main.py"))
+        resolve_pipeline.assert_called_once_with(tmp_path)
         assert resolve_deploy.call_args.args[0].pipeline_file == resolved_path
 
     def test_resolution_failure(

@@ -13,7 +13,7 @@
 | `src/haute/_polars_io_schema.py` | Cached index over the committed Polars callable schema. |
 | `src/haute/_polars_io_arguments.json` | Generated Polars callable signature data checked against the pinned Polars version. |
 | `src/haute/_polars_dtypes.py` | Struct-capable dtype JSON codec used by registry schema arguments. |
-| `src/haute/_polars_utils.py` | Streaming collect, bounded/atomic sink, Parquet metadata, chunk-size scope, and allocator trim helpers. |
+| `src/haute/_polars_utils.py` | Streaming and cancellable streaming collect, bounded/atomic sink, Parquet metadata, chunk-size scope, and allocator trim helpers. |
 | `src/haute/_file_ops.py` | Atomic byte/text writers used for pointer and metadata publication. |
 | `src/haute/_path_resolution.py` | Shared runtime path containment/resolution consumed by I/O. |
 | `src/haute/_path_case_audit.py` | Cross-platform case-ambiguity warnings for user-facing paths. |
@@ -99,6 +99,15 @@ projection, excluding only the build currently being admitted.
 bounded sink discipline. Sidecar loading and parent-directory preparation are owned by the
 generated pipeline/runtime seam, not dead registry wrappers.
 
+### Streaming collection
+
+`streaming_collect()` performs one native streaming collect and propagates native failures
+unchanged. `cancellable_streaming_collect()` starts one native streaming background query,
+polls `InProcessQuery.fetch()` at a validated positive interval, and checkpoints between
+polls. A checkpoint failure cancels the native query before propagating; query `fetch()`
+failures propagate unchanged, and a best-effort cancellation failure cannot mask the
+checkpoint failure. Neither helper has an eager or non-streaming fallback.
+
 ## Edge cases and invariants
 
 - Raw database URI query keys matching common credential names (`token`, `password`,
@@ -150,7 +159,8 @@ overwrite is an HTTP 409; registered data sinks keep their documented overwrite 
   `tests/test_json_read_documented.py` cover format dispatch, generated-node integration,
   declared schemas, projections, round trips, and bounded-memory policy.
 - `tests/test_polars_utils.py` and `tests/test_file_ops.py` cover bounded collect/sink
-  behaviour, Parquet metadata, allocator dispatch, and atomic publication primitives.
+  behaviour, native-query cancellation, poll validation, unchanged native `fetch()` failures,
+  Parquet metadata, allocator dispatch, and atomic publication primitives.
 - `tests/test_discovery.py` and `tests/test_path_case_audit.py` cover pipeline discovery,
   deduplication, unreadable files, retained resolver seams, and cross-platform path spelling.
 - `tests/test_input_cache_route.py` covers HTTP build/status/cancel/clear lifecycle and

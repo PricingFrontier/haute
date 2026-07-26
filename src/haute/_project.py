@@ -106,9 +106,9 @@ def _toml_configured_pipeline(root: Path) -> Path | None:
     """Return ``[project].pipeline`` from *root*/haute.toml, if set.
 
     A thin wrapper around :mod:`tomllib` that returns :data:`None` when
-    the TOML is missing, unreadable, or simply doesn't define
-    ``[project].pipeline``.  The resolver uses the return value to decide
-    whether to fall through to discovery.
+    the TOML is missing or simply doesn't define ``[project].pipeline``.
+    Malformed or unreadable project configuration fails loudly so tier 1
+    cannot disappear and bind a different pipeline.
 
     Note the return value is **unresolved** — the caller checks existence
     and raises :class:`FileNotFoundError` if the configured file is
@@ -121,12 +121,20 @@ def _toml_configured_pipeline(root: Path) -> Path | None:
     try:
         with open(toml_path, "rb") as fh:
             data = tomllib.load(fh)
-    except Exception:
-        # Malformed TOML is a user config bug; surface it elsewhere
-        # (via DeployConfig.from_toml for example).  The resolver has no
-        # opinion on TOML correctness — it just can't use it as a source.
-        return None
-    pipeline = data.get("project", {}).get("pipeline")
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        raise ConfigError(
+            "Could not read haute.toml while resolving the project pipeline",
+            path=str(toml_path),
+            error_type=type(exc).__name__,
+            reason=str(exc),
+        ) from exc
+    project = data.get("project", {})
+    if not isinstance(project, dict):
+        raise ConfigError(
+            "haute.toml [project] must be a table",
+            path=str(toml_path),
+        )
+    pipeline = project.get("pipeline")
     if not isinstance(pipeline, str) or not pipeline:
         return None
     return root / pipeline

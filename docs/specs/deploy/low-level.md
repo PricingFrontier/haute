@@ -114,7 +114,7 @@ structural + test-quote errors are combined into one `DeployError` if any exist.
 A missing/non-directory quote path and a directory containing no `*.json` files both
 produce an empty quote result rather than a validation error.
 
-**Dispatch (`__init__.py`)**
+**Dispatch (`src/haute/deploy/__init__.py`)**
 1. `deploy(config)`: `_validate_target(config.target)` (checked before resolution, so a
    bad target fails fast rather than surfacing as an unrelated "no output node" error) →
    `resolve_config()` → `validate_deploy()` → `_dispatch_resolved()`.
@@ -326,7 +326,7 @@ JSON have separate structured payloads. A body exactly at the configured limit i
 | Exception | Raised where | Propagates to |
 |---|---|---|
 | `haute.errors.DeployError` | `_config.py` (unpinned base image), `_bundler.py` (invalid or unreadable retained Data Input), `_scorer.py` (unscoreable `modelScore`), `_validators.py` (aggregated validation failure) | `deploy()` / `resolve_config()` callers; carries structured `context` kwargs (for example `node_id` and the underlying provider/schema `error`) rendered into `str()`. |
-| `ValueError` | `_pruner.py` (missing/multiple output nodes or a configured `liveSwitch` input not connected to the graph), `_config.py` (zero/ambiguous fallback source nodes, unknown TOML keys, missing `from_cli_args` required fields), `__init__.py` (unknown target), `_scorer.py` (bad `output_fields` type, negative `row_count`), `_impact.py` (non-finite predictions, zero-baseline change) | Caller of `resolve_config`/`deploy`/scoring functions; container `/quote` endpoint catches the `BoundedMemoryUnsupportedError` subclass specially (422) but a bare `ValueError` from scoring falls into the generic 500 handler. |
+| `ValueError` | `_pruner.py` (missing/multiple output nodes or a configured `liveSwitch` input not connected to the graph), `_config.py` (zero/ambiguous fallback source nodes, unknown TOML keys, missing `from_cli_args` required fields), `src/haute/deploy/__init__.py` (unknown target), `_scorer.py` (bad `output_fields` type, negative `row_count`), `_impact.py` (non-finite predictions, zero-baseline change) | Caller of `resolve_config`/`deploy`/scoring functions; container `/quote` endpoint catches the `BoundedMemoryUnsupportedError` subclass specially (422) but a bare `ValueError` from scoring falls into the generic 500 handler. |
 | `FileNotFoundError` | `_bundler.py::_check_exists` (missing artefact on disk), `_bundler.py::_download_model_artifact` (MLflow download landed but file missing) | Propagates uncaught through `resolve_config()`. |
 | `RuntimeError` | `_container.py` (Docker unavailable/build/push failure, unpinned Dockerfile dependency), `_scorer.py` (`modelScore` contract matched but no model artefact — deliberately after the contract check), `_mlflow.py` (Databricks host/token unset, unreachable, `run_id`-less registered model version) | Uncaught to caller; `_check_docker_available`'s message specifically redirects the operator to CI. |
 | `FeatureMismatchError` | `_scorer.py::_assert_runtime_contract_matches` (live schema disagrees with bundled training contract on feature set, dtype, or categorical levels) | Uncaught through scoring; surfaces in the container's generic 500 handler or the MLflow `pyfunc` boundary. |
@@ -334,7 +334,7 @@ JSON have separate structured payloads. A body exactly at the configured limit i
 | `ExecutionAdmissionError` / `ExecutionMemoryLimitExceededError` | Raised by the execution-engine's admission layer, invoked via `admit_deploy_execution` | Caught in `/quote` → HTTP 507. |
 | `ExecutionCancelledError` | Execution engine | Caught in `/quote` → HTTP 499 with `job_id`/`operation` context. |
 | Public `HauteError` (`ContractResolutionError`, `PreambleError`, and other errors with a stable `error_code`) | Execution engine or preamble compilation during scoring | Caught in `/quote` → HTTP 422 with `to_payload()`; server routes use the same stable public payload contract. |
-| `NotImplementedError` | `__init__.py::_validate_target` (planned targets: `sagemaker`, `azure-ml`), `_container.py::_update_service` (platform-container service update not yet built) | Uncaught to caller; the `_update_service` message names the built image tag (which is pushed only when a registry was configured). |
+| `NotImplementedError` | `src/haute/deploy/__init__.py::_validate_target` (planned targets: `sagemaker`, `azure-ml`), `_container.py::_update_service` (platform-container service update not yet built) | Uncaught to caller; the `_update_service` message names the built image tag (which is pushed only when a registry was configured). |
 | Any other `Exception` | Runtime scoring inside `/quote` | Caught by the container's catch-all, logged via `logger.exception("deploy_quote_failed")`, returned as HTTP 500 with `error_code: "deploy_internal_error"`. The MLflow `pyfunc` predict path has no equivalent catch-all. |
 
 `build_and_push_image` and `deploy_to_mlflow` both wrap their build-directory-writing

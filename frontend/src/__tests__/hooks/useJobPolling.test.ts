@@ -214,7 +214,7 @@ describe("useJobPolling", () => {
       expect(pollFn.mock.calls.length).toBeGreaterThan(1)
       expect(onProgress).toHaveBeenCalledTimes(1)
 
-      await advance(1000)
+      await advance(2000)
       expect(onProgress.mock.calls.length).toBeGreaterThanOrEqual(2)
       expect(onProgress.mock.calls.length).toBeLessThan(pollFn.mock.calls.length)
       expect(onProgress).toHaveBeenLastCalledWith("n1", expect.objectContaining({
@@ -241,7 +241,7 @@ describe("useJobPolling", () => {
         pollFn,
         onProgress,
         onComplete,
-        progressThrottleMs: 2000,
+        progressThrottleMs: 5000,
       })
 
       renderHook(() => useJobPolling(config))
@@ -249,11 +249,11 @@ describe("useJobPolling", () => {
       await advance(500)
       expect(onProgress).toHaveBeenCalledTimes(1)
 
-      await advance(500)
+      await advance(1000)
       expect(onProgress).toHaveBeenCalledTimes(1)
       expect(onComplete).not.toHaveBeenCalled()
 
-      await advance(500)
+      await advance(2000)
       expect(onComplete).toHaveBeenCalledTimes(1)
       expect(onComplete).toHaveBeenCalledWith("n1", expect.objectContaining({ result }))
 
@@ -274,16 +274,16 @@ describe("useJobPolling", () => {
         pollFn,
         onProgress,
         onFail,
-        progressThrottleMs: 2000,
+        progressThrottleMs: 5000,
       })
 
       renderHook(() => useJobPolling(config))
 
-      await advance(1000)
+      await advance(1500)
       expect(onProgress).toHaveBeenCalledTimes(1)
       expect(onFail).not.toHaveBeenCalled()
 
-      await advance(500)
+      await advance(2000)
       expect(onFail).toHaveBeenCalledTimes(1)
       expect(onFail).toHaveBeenCalledWith("n1", "Failed", {
         status: "error",
@@ -297,6 +297,31 @@ describe("useJobPolling", () => {
   })
 
   describe("exponential backoff", () => {
+    it("ramps healthy in-progress polling to a 5 second steady-state interval", async () => {
+      const callTimes: number[] = []
+      const pollFn = vi.fn<(jobId: string) => Promise<TestStatus>>().mockImplementation(() => {
+        callTimes.push(Date.now())
+        return Promise.resolve({
+          status: "running",
+          progress: 0.5,
+          message: "Working",
+        })
+      })
+      const config = makeConfig({
+        jobs: { n1: { jobId: "j1", nodeLabel: "Node 1" } },
+        pollFn,
+      })
+
+      const startedAt = Date.now()
+      renderHook(() => useJobPolling(config))
+      await advance(12_500)
+
+      expect(callTimes).toHaveLength(5)
+      expect(callTimes.map((time, index) => (
+        index === 0 ? time - startedAt : time - callTimes[index - 1]
+      ))).toEqual([500, 1_000, 2_000, 4_000, 5_000])
+    })
+
     it("increases delay after network errors", async () => {
       const callTimes: number[] = []
       const pollFn = vi.fn<(jobId: string) => Promise<TestStatus>>().mockImplementation(() => {

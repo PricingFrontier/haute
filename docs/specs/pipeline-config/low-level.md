@@ -5,13 +5,13 @@
 | File | Responsibility |
 |---|---|
 | `src/haute/pipeline.py` | `Node` / `NodeRegistry` / `Pipeline` / `Submodel`: the decorator API, `connect()`, the standalone `run()`/`score()` executor, `to_graph()` (live-object → React-Flow dict). |
-| `src/haute/_config_builder.py` | Per-node-type config dict construction from decorator kwargs + function body (`_build_node_config`); sidecar resolution and the parse-time `contract=` cross-check (`_resolve_node_config`). `config["inputs"]` records the function's parameter names verbatim — under input-identity convergence these ARE the per-edge input names (`edge_input_name`: frame labels for apiInput edges, sanitised source labels otherwise), the same strings `input_scenario_map` keys and instance `inputMapping` values reference. |
+| `src/haute/_config_builder.py` | Per-node-type config dict construction from decorator kwargs + function body (`_build_node_config`); sidecar resolution and the parse-time `contract=` cross-check (`_resolve_node_config`). For Live Switch nodes, `config["inputs"]` records only positional edge parameters (`edge_input_name`: frame labels for apiInput edges, sanitised source labels otherwise), the same strings `input_scenario_map` keys reference; keyword-only configuration parameters are excluded. |
 | `src/haute/_config_io.py` | Sidecar JSON path conventions (`NODE_TYPE_TO_FOLDER`), read/write helpers, `collect_node_configs` (graph → sidecar files), per-type validation/normalisation of canonical configs, and the Windows-reserved-filename guard. |
 | `src/haute/_config_validation.py` | `VALID_KEYS` registry derived from each node type's `TypedDict`, and `warn_unrecognized_config_keys`. |
-| `src/haute/_builders.py` | Cross-component dependency owned by [execution-engine](../execution-engine/low-level.md): registers each per-`NodeType` runtime builder and its column-contract callback in `NODE_REGISTRY`. Pipeline-config consumes those callbacks through `src/haute/_contracts.py`; it does not own the runtime closures. |
-| `src/haute/_node_builder.py` | Cross-component dependency owned by [execution-engine](../execution-engine/low-level.md): `NodeBuildHooks` / `wrap_builder` allow deploy scoring to intercept runtime builders. It is listed here to make the boundary explicit, not because sidecar/static graph construction calls it. |
-| `src/haute/_contracts.py` | Cross-component contract model and registry-backed `get_column_contract()` lookup used by parse-time `contract=` validation. `Contract`, `ColumnContract`, and `OPAQUE_CONTRACT` are defined here, not in `src/haute/_builders.py`. |
-| `src/haute/_registry.py` | Cross-component `NODE_REGISTRY` storage shared by execution and codegen. Pipeline-config reads its column-contract registrations indirectly through `src/haute/_contracts.py`. |
+| `src/haute/_builders.py` | Cross-component dependency owned by [execution-engine](../execution-engine/low-level.md): pipeline configuration consumes its `NODE_REGISTRY` registration contracts. |
+| `src/haute/_node_builder.py` | Cross-component dependency owned by [execution-engine](../execution-engine/low-level.md): pipeline configuration documents its builder-interception seam. |
+| `src/haute/_contracts.py` | Pipeline-config-owned `Contract`/`ColumnContract` model and registry-backed `get_column_contract()` lookup used by parse-time validation and execution. |
+| `src/haute/_registry.py` | Pipeline-config-owned `NODE_REGISTRY` storage shared with execution and codegen. |
 | `src/haute/_graph_builders.py` | AST-derived raw node dicts → `GraphNode`/`GraphEdge` Pydantic models (`_extract_decorated_nodes`, `_build_edges`, `_build_rf_nodes`). |
 | `src/haute/_graph_shape.py` | Topology-only invariants independent of any single node's config (`validate_graph_shape_contracts`, `validate_pipeline_graph_shape_contracts`), including submodel child graphs. |
 | `src/haute/_scaffold.py` | `haute init` template strings: `haute.toml`, `.env.example`, CI YAML for 3 providers × 7 deploy targets, starter pipeline/tests/utilities, pre-commit hook. |
@@ -158,6 +158,9 @@ existing file → resolved as-is, no discovery; a non-existent path → `FileNot
 configured path, so a typo never silently falls through to auto-discovery); a root-level
 `main.py`; the single root-level `.py` file containing the literal substring
 `"haute.Pipeline"`; otherwise raise, enumerating zero or multiple candidates.
+Malformed/unreadable TOML raises `ConfigError` before discovery. Deploy resolves the selected
+project through this helper immediately before binding a pipeline. The plural GUI discovery API
+shares the configured-path checks but additionally lists valid sibling pipelines.
 
 **Scaffold generation (`_scaffold.py`, driven by `cli/_init_cmd.py::handle_init`).** Every
 template function is parameterised by `target`/`ci` and looks up per-target facts through
@@ -183,15 +186,8 @@ artifact paths (from the `_CI_ARTIFACTS` map) and removes the resulting empty
 
 ## Edge cases and invariants
 
-- The live `to_graph()` path and the static `_graph_builders` path can disagree on node
-  typing. `to_graph()` infers `OUTPUT` for "the last registered node" whenever no node has an
-  explicit `_node_type` and it isn't a source; the static path only ever assigns `OUTPUT` from
-  an explicit `@pipeline.output` decorator.
-  > NOTE: for an all-`@pipeline.polars` pipeline with no explicit `@pipeline.output`, both
-  > paths happen to treat the last/only-leaf node as the output — but for different reasons —
-  > and they diverge for a graph with several leaves and no explicit output: `run()` raises
-  > naming every leaf, while `to_graph()` still assigns some type to the last-registered node
-  > without checking degree at all.
+- `Pipeline.to_graph()` materialises live registrations through `_build_rf_nodes` and
+  `_build_edges`; it does not maintain a second node-type or edge-inference implementation.
 - A static `pipeline.connect()` naming a non-root endpoint is deferred until submodel child ids
   are known. Cross-boundary child references are accepted; every remaining unknown endpoint
   raises `ParseError` from the parser's conservation gate. The live `Pipeline.connect()` rejects
@@ -215,11 +211,8 @@ artifact paths (from the `_CI_ARTIFACTS` map) and removes the resulting empty
   are matched on the stem before the first dot, casefolded, with trailing dots/spaces
   stripped — and rejected on every OS, not gated behind a platform check, so a project saved
   on Linux/macOS stays loadable on a Windows checkout.
-- `_toml_configured_pipeline` swallows every exception from `tomllib.load` (malformed TOML)
-  and returns `None` rather than surfacing a syntax error — `resolve_pipeline_file` never
-  reports a TOML parse failure itself, only a missing or non-pipeline-looking configured path.
-  A genuinely malformed `haute.toml` is instead caught elsewhere (e.g. `DeployConfig.from_toml`,
-  outside this component).
+- `_toml_configured_pipeline` raises `ConfigError` for malformed/unreadable TOML, so
+  `resolve_pipeline_file` cannot silently discard the configured tier and bind another file.
 - Ambiguous auto-discovery (2+ root `.py` files matching, no `main.py`, no configured TOML
   pipeline) raises rather than picking one alphabetically — deliberate, per the module
   docstring's "never silently picks a random file" contract.
@@ -293,7 +286,7 @@ artifact paths (from the `_CI_ARTIFACTS` map) and removes the resulting empty
 Tests live under `tests/`, predominantly as behavioural unit tests against the real decorator
 API and real JSON round-trips rather than mocks:
 
-- **`test_pipeline.py`** (80 tests) — `Node`/`Pipeline`/`Submodel` decorator registration,
+- **`test_pipeline.py`** — `Node`/`Pipeline`/`Submodel` decorator registration,
   arity validation (`TestNodeArityValidation`), edge wiring and topo-order delegation, output
   resolution (`TestOutputResolution`), duplicate-name rejection
   (`TestDuplicateNodeName`), instance-reference fail-loud behaviour
@@ -336,12 +329,7 @@ Property/round-trip style coverage (`TestRoundTripDrift` in `test_graph_shape_co
 `test_codegen_roundtrip_property.py`) asserts that parse → build → save → parse is stable for
 generated graphs.
 
-> Known gap: the live `Pipeline.to_graph()` path and the static `_graph_builders.py` path are
-> exercised by separate test files with no explicit cross-check asserting they produce
-> equivalent graphs for the same source pipeline — consistent with the type-inference
-> divergence noted above under Edge cases.
-
-## Polars backend contracts (0.6.0)
+### Live node arity and switch behaviour
 
 Remaining pipeline-configuration improvement work is tracked in the
 [pipeline authoring roadmap](../../roadmap/pipeline-authoring.md).
@@ -369,35 +357,22 @@ HTTP/background translation. The 0.6 pre-1.0 migration note documents the newly 
 mapping miss. Non-goals: implicit wiring inference, additional variadic forms, changes to
 successful mapped live-switch selection, or removal of unconfigured default-source fallback.
 
-## Approved change contract — 0.7.0 canonical data I/O node types
+### Canonical data I/O node types
 
-Remaining pipeline-configuration improvement work is tracked in the
-[pipeline authoring roadmap](../../roadmap/pipeline-authoring.md).
-
-- In `src/haute/_types.py`, delete `NodeType.DATA_SOURCE`, `NodeType.DATA_SINK`,
-  `DataSourceConfig`, and `DataSinkConfig`; extend `DataInputConfig`/`DataOutputConfig` with the
-  exact discriminated fields in the I/O low-level contract. Remove `"data_source"` and
-  `"data_sink"` from `DECORATOR_TO_NODE_TYPE`.
-- In `src/haute/pipeline.py`, remove `NodeRegistry.data_source()` and `.data_sink()`. Keep
-  `.data_input()`/`.data_output()` as ordinary registration wrappers; the live API may register
-  multiple instances. Preserve `_resolve_output_node` semantics: multiple terminal Data Outputs
+- `NodeType`, `DataInputConfig`, and `DataOutputConfig` define the 19-value canonical node set
+  and strict I/O discriminants; `DECORATOR_TO_NODE_TYPE` exposes the matching decorators.
+- `NodeRegistry.data_input()`/`.data_output()` are ordinary registration wrappers and the live
+  API may register multiple instances. `_resolve_output_node` preserves the rule that multiple
+  terminal Data Outputs
   without one explicit `NodeType.OUTPUT` remain an actionable ambiguous-leaf error.
-- In `src/haute/_config_io.py`, delete the two legacy folder mappings and retain
-  `config/data_input/` and `config/data_output/`. In `_config_validation.py`, derive strict
-  branch-aware validation from the retained TypedDict/validator rather than accepting the union
-  of every possible branch key.
+- `_config_io.py` maps tabular sidecars to `config/data_input/` and
+  `config/data_output/`; `_config_validation.py` applies strict branch-aware validation.
 - `_config_builder.py` extracts the generated `dataInput` post-read Polars body into `code` and
   validates it as part of the input config. Output body scaffolding never becomes config code.
-  `_graph_builders.py` and parser decorator recognition reject removed decorators normally.
-- `_scaffold.py`, checked-in rating/reference projects, examples, assistant assets, and every
-  pipeline fixture containing a removed decorator are reset to their standard blank-pipeline
-  representation. Do not inspect or translate their removed node configs.
-- Tests pin the exact enum/decorator/folder/key sets, branch-specific rejection, no inactive-key
-  leakage, multiple-node registration, explicit-output and ambiguous-leaf standalone execution,
-  config JSON round trips, blank scaffold/reference reset, and source search proving there is no
-  executable legacy mapping or alias.
+- Tests pin the exact enum/decorator/folder/key sets, branch-specific rejection, multiple-node
+  registration, standalone output selection, and config JSON round trips.
 
-## Retained input sidecar authority
+### Retained input sidecar authority
 
 - Generated `apiInput` decorators reference
   `config/quote_input/<name>.json`; generated `externalFile` decorators
@@ -418,7 +393,7 @@ Remaining pipeline-configuration improvement work is tracked in the
   graph config. Generated builders pass only the sidecar path and `base_dir`;
   no declarative field is interpolated into the function body.
 
-## Approved change contract — canonical-only persisted configuration
+### Canonical-only persisted configuration
 
 Under [ROAD-CANON-01](../../roadmap/engineering-quality.md#road-canon-01--prerelease-canonical-only-contract),
 config loading and saving implement only each node type's current schema. They do not classify,

@@ -188,6 +188,37 @@ def test_online_execute_trace_attaches_candidate_explanation(tmp_path):
     assert detail["baseline"]["is_baseline"] is True
 
 
+def test_online_trace_prefers_artifact_configured_quote_id_column(tmp_path):
+    from haute._trace_enrichment import enrich_optimiser_apply
+
+    artifact = _online_artifact()
+    artifact["quote_id"] = "policy_id"
+    artifact_path = _write_json(tmp_path / "custom_quote_id.json", artifact)
+    scored = _scored_online_df().rename({"quote_id": "policy_id"})
+
+    detail = enrich_optimiser_apply(
+        {
+            "sourceType": "file",
+            "artifact_path": artifact_path,
+        },
+        input_row={},
+        output_row={
+            # The legacy literal key deliberately points at a different quote.
+            "quote_id": "q1",
+            "policy_id": "q2",
+            "optimal_scenario_value": 1.1,
+        },
+        input_frames=[scored],
+        source_names=["scored"],
+        source_ids=["scored"],
+    )
+
+    assert detail["status"] == "ok"
+    assert detail["quote_id_column"] == "policy_id"
+    assert detail["quote_id_value"] == "q2"
+    assert {candidate["policy_id"] for candidate in detail["candidates"]} == {"q2"}
+
+
 def test_online_execute_trace_uses_price_contour_ratio_linearisation(tmp_path):
     artifact_path = _write_json(tmp_path / "ratio.json", _ratio_artifact())
     scored_path = tmp_path / "ratio_scored.parquet"
@@ -695,14 +726,8 @@ def test_ratebook_enrichment_surfaces_factor_reconciliation_mismatch(tmp_path):
     assert "age_band_optimised_factor" in detail["error"]
 
 
-def test_ratebook_enrichment_returns_message_when_no_factor_tables(tmp_path):
-    """A ratebook artifact with empty factor_tables must NOT raise — it should
-    return a structured detail with the runtime warning message preserved.
-
-    The runtime ``_apply_ratebook`` logs a warning and returns the input frame
-    unchanged; the trace explanation should mirror that "no ladder" outcome
-    rather than producing a misleading reconciliation error.
-    """
+def test_ratebook_enrichment_fails_when_no_factor_tables_can_be_reconciled(tmp_path):
+    """An empty ladder cannot truthfully claim a reconciled explanation."""
     from haute._trace_enrichment import enrich_optimiser_apply
 
     empty_artifact = _ratebook_artifact()
@@ -732,10 +757,10 @@ def test_ratebook_enrichment_returns_message_when_no_factor_tables(tmp_path):
         source_ids=["banded"],
     )
 
-    assert detail["status"] == "ok"
+    assert detail["status"] == "error"
     assert detail["mode"] == "ratebook"
-    assert detail["factor_ladder"] == []
-    assert "factor tables" in detail["message"].lower()
+    assert detail["error_type"] == "OptimiserApplyTraceError"
+    assert "factor tables" in detail["error"].lower()
 
 
 def test_ratebook_input_match_falls_back_to_python_on_polars_type_mismatch(

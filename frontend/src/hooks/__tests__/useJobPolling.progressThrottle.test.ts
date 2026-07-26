@@ -61,17 +61,20 @@ describe("useJobPolling progress throttling", () => {
     renderHook(() => useJobPolling(config({
       pollFn,
       onProgress,
-      progressThrottleMs: 1_000,
+      progressThrottleMs: 5_000,
     })))
 
     await advance(500)
     expect(onProgress).toHaveBeenCalledTimes(1)
     expect(onProgress).toHaveBeenLastCalledWith("n1", expect.objectContaining({ progress: 0.1 }))
 
-    await advance(500)
+    await advance(1_000)
     expect(onProgress).toHaveBeenCalledTimes(1)
 
-    await advance(500)
+    await advance(2_000)
+    expect(onProgress).toHaveBeenCalledTimes(1)
+
+    await advance(2_000)
     expect(onProgress).toHaveBeenCalledTimes(2)
     expect(onProgress).toHaveBeenLastCalledWith("n1", expect.objectContaining({ progress: 0.3 }))
   })
@@ -175,11 +178,11 @@ describe("useJobPolling progress throttling", () => {
     })))
 
     await advance(500)
-    await advance(500)
+    await advance(1_000)
     expect(onProgress).toHaveBeenCalledTimes(1)
     expect(onComplete).not.toHaveBeenCalled()
 
-    await advance(500)
+    await advance(2_000)
     expect(onComplete).toHaveBeenCalledTimes(1)
     expect(onComplete).toHaveBeenCalledWith("n1", expect.objectContaining({ status: "completed" }))
     expect(onProgress).toHaveBeenCalledTimes(1)
@@ -201,11 +204,11 @@ describe("useJobPolling progress throttling", () => {
     })))
 
     await advance(500)
-    await advance(500)
+    await advance(1_000)
     expect(onProgress).toHaveBeenCalledTimes(1)
     expect(onFail).not.toHaveBeenCalled()
 
-    await advance(500)
+    await advance(2_000)
     expect(onFail).toHaveBeenCalledTimes(1)
     expect(onFail).toHaveBeenCalledWith("n1", "Infeasible", {
       status: "error",
