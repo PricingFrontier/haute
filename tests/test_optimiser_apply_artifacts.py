@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import polars as pl
 import pytest
@@ -87,3 +88,25 @@ def test_apply_artifact_load_rejects_relative_paths() -> None:
 
     assert exc_info.value.status_code == 500
     assert "absolute paths" in str(exc_info.value.detail)
+
+
+def test_apply_artifact_read_failure_logs_underlying_cause_before_wrapping() -> None:
+    handle = _persist_apply_result_artifact(
+        SimpleNamespace(dataframe=pl.DataFrame({"quote_id": ["q1"]}))
+    )
+    assert handle is not None
+
+    try:
+        with (
+            patch("polars.read_parquet", side_effect=OSError("corrupt parquet")),
+            patch("haute.routes._optimiser_service.logger.error") as log_error,
+            pytest.raises(HTTPException) as exc_info,
+        ):
+            _load_apply_result_artifact(handle)
+        assert exc_info.value.status_code == 500
+        assert "corrupt" in str(exc_info.value.detail).lower()
+        log_error.assert_called_once()
+        assert log_error.call_args.kwargs["exc_info"] is True
+        assert log_error.call_args.kwargs["path"] == handle["path"]
+    finally:
+        _cleanup_apply_result_artifact(handle)

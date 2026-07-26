@@ -59,7 +59,9 @@ Out of scope (owned elsewhere):
 - Starting a new run for the same Explore node/source while a previous run is still in flight
   supersedes the older job; the older job's status transitions to `superseded`.
 - `POST /api/explore/cancel/{job_id}` interrupts an in-flight materialisation (not just a status
-  flip — the underlying collection is cancelled) and transitions the job to `cancelled`.
+  flip): Explore starts its statistics aggregation as a Polars streaming background query, polls
+  it at bounded intervals, and calls the native query's `cancel()` when an execution checkpoint
+  observes cancellation. The job then transitions to `cancelled` (or `superseded`).
 - The completed report contains, per column: dtype, a coarse `kind` classification (Numeric,
   Text, Temporal, Boolean, Nested, Other), null count, NaN count (float dtypes only; `None` for
   every other dtype — not applicable, mirroring `zero_count`/`negative_count`), distinct count
@@ -110,13 +112,15 @@ Out of scope (owned elsewhere):
   dataframe cache key + node id + source + report schema version) are deliberately independent.
   This lets an `overview` config change reuse the same materialised dataframe while still
   invalidating only the report if the report schema itself changes (`EXPLORE_CACHE_VERSION`).
-- **One batched `streaming_collect`.** All column stats (min/max, quartiles, null/zero/negative
-  counts, and bounded categorical value counts) are computed in a single Polars aggregation over
-  the frame rather than one query per statistic or per column, keeping materialisation cost close
-  to one pass over the data regardless of column count.
+- **One batched cancellable streaming collect.** All column stats (min/max, quartiles,
+  null/zero/negative counts, bounded categorical value counts, and display-label group counts)
+  are computed in one Polars aggregation. Explore runs it as a native streaming background query
+  so checkpoints can cancel the query itself while retaining one-pass cost.
 - **Bounded categorical value counts.** Value counts are capped at the top 50 by count
   (`_CATEGORICAL_VALUE_COUNT_LIMIT`) so a high-cardinality column cannot make the report
-  unbounded in size; `values_truncated` tells the UI whether more values exist.
+  unbounded in size. `values_truncated` follows the number of display-label groups emitted by
+  that same expression, not raw-value cardinality, and is false when no value counts ran (for
+  example, `List` columns).
 - **Lenient text formatting for Binary/Duration.** A strict `cast(pl.String)` on `Binary` raises
   on the first non-UTF-8 byte sequence, and Polars cannot `cast` `Duration` to `String` at all;
   either would abort the single batched collect and take down the whole report, not just that
@@ -132,9 +136,13 @@ Out of scope (owned elsewhere):
 - [execution-engine](../execution-engine/high-level.md): supplies `execute_lazy_graph`,
   `ExecutionContext`, `ExecutionProfile.EXPLORE_ANALYSIS`, cancellation, and memory-limit
   admission that the Explore job runs under.
+- [io-layer](../io-layer/high-level.md): owns the profiled
+  `cancellable_streaming_collect` primitive that lets Explore cancel an in-flight native Polars
+  aggregation instead of only changing the background-job status.
 - [caching](../caching/high-level.md): supplies `DataFrameExecutionCache`,
   `build_dataframe_execution_cache_request`, `dataframe_graph_input_fingerprint`, and the
-  `LRUCache` used for the in-process report cache.
+  `LRUCache` used for the in-process report cache; `src/haute/_cache.py` supplies the dataframe
+  cache invariant.
 - [background-jobs](../background-jobs/high-level.md): supplies `JobStore`, `JobLifecycle`, and
   `CancellableJobRegistry`, including the latest-wins cancellation semantics this component uses.
 - [server-api](../server-api/high-level.md): supplies shared route helpers (`find_typed_node`,
@@ -151,11 +159,12 @@ Out of scope (owned elsewhere):
 
 - An Explore node with zero or more than one upstream parent fails synchronously with HTTP 400
   before a job is created; no background work is attempted.
-- Posting a `node_id` that does not resolve to an Explore-typed node in the graph fails
-  synchronously (via `find_typed_node`) before a job is created.
+- Posting a missing `node_id` returns HTTP 404; a node that resolves but is not Explore-typed
+  returns HTTP 400. Both failures are synchronous (via `find_typed_node`) before a job is created.
 - Polling a job id the store has never seen returns HTTP 404.
 - Inside the background job, cancellation, execution-admission failures, execution memory-limit
-  breaches, and contract/schema mismatches are each caught and mapped to a distinct terminal job
+  breaches, `PUBLIC_CONTRACT_ERROR_TYPES` (mapped to `contract_error` with
+  `contract_error_job_fields`), and contract/schema mismatches are each caught and mapped to a distinct terminal job
   status (`cancelled`/other cancellation reason, `memory_limited`, `contract_error`) with a
   message payload describing the failure; none of these are retried or silently downgraded.
 - Any other exception raised while materialising or summarising is logged

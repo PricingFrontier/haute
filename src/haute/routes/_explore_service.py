@@ -32,7 +32,7 @@ from haute._execution_context import (
 from haute._hashing import content_hash_bytes
 from haute._logging import get_logger
 from haute._lru_cache import LRUCache
-from haute._polars_utils import DEFAULT_STREAMING_CHUNK_SIZE, streaming_collect
+from haute._polars_utils import DEFAULT_STREAMING_CHUNK_SIZE, cancellable_streaming_collect
 from haute._types import NodeType
 from haute.errors import BoundedMemoryUnsupportedError, ContractMismatchError, SchemaMismatchError
 from haute.routes._background_jobs import CancellableJobRegistry, JobCancellation
@@ -67,7 +67,9 @@ logger = get_logger(component="server.explore")
 # v3: NaN counts added and distinct_count now counts valid values only
 # (excludes the null and NaN buckets), so a v2 report cached for an unchanged
 # frame would serve stale distinct counts.
-EXPLORE_CACHE_VERSION = 3
+# v4: categorical truncation now follows the number of display-label groups
+# emitted to clients, rather than the raw-value cardinality.
+EXPLORE_CACHE_VERSION = 4
 EXPLORE_REPORT_CACHE_MAX_ENTRIES = 16
 
 # Dtypes whose values are not hashable in Polars and therefore cannot have
@@ -376,6 +378,10 @@ def _categorical_value_counts_alias(name: str) -> str:
     return f"categorical_values::{name}"
 
 
+def _categorical_label_group_count_alias(name: str) -> str:
+    return f"categorical_label_groups::{name}"
+
+
 def _lossy_decode_binary(value: bytes | None) -> str | None:
     """Decode raw bytes to text, mapping undecodable bytes to U+FFFD."""
 
@@ -433,6 +439,12 @@ def _categorical_value_counts_expr(name: str, dtype: pl.DataType) -> pl.Expr:
     )
 
 
+def _categorical_label_group_count_expr(name: str, dtype: pl.DataType) -> pl.Expr:
+    """Count value-count groups after conversion to their display labels."""
+
+    return _categorical_value_label_expr(name, dtype).n_unique()
+
+
 def _parse_categorical_value_counts(
     value_counts: list[dict[str, Any]] | None,
 ) -> list[ExploreDistinctValueCount]:
@@ -457,6 +469,7 @@ def _build_categorical_summary(
     schema: pl.Schema,
     columns: list[ExploreColumnStat],
     values_by_column: dict[str, list[ExploreDistinctValueCount]],
+    label_group_counts: dict[str, int],
 ) -> list[ExploreCategoricalColumnProfile]:
     profiles: list[ExploreCategoricalColumnProfile] = []
     for column in columns:
@@ -469,15 +482,10 @@ def _build_categorical_summary(
             and column.distinct_count > 0
             and _has_categorical_value_counts(dtype)
         )
-        # ``value_counts`` emits one group per distinct value *including* the
-        # null bucket, then ``.head(limit)`` clips. ``distinct_count`` now
-        # excludes the null bucket, so add it back to count the groups that
-        # were actually produced before deciding whether the head clipped any.
-        group_count = (
-            None
-            if column.distinct_count is None
-            else column.distinct_count + (1 if column.null_count > 0 else 0)
-        )
+        # Value counts group the display-label expression, which can differ
+        # from raw values (notably lossy Binary decoding). Only columns that
+        # actually collect values can be truncated.
+        group_count = label_group_counts.get(column.name)
         values_truncated = group_count is not None and group_count > _CATEGORICAL_VALUE_COUNT_LIMIT
         values = values_by_column.get(column.name, [])
         profiles.append(
@@ -497,6 +505,7 @@ def _build_overview_summary(
     schema: pl.Schema,
     columns: list[ExploreColumnStat],
     values_by_column: dict[str, list[ExploreDistinctValueCount]],
+    label_group_counts: dict[str, int],
 ) -> ExploreOverviewSummary:
     return ExploreOverviewSummary(
         data_quality=_build_data_quality_summary(row_count, columns),
@@ -504,6 +513,7 @@ def _build_overview_summary(
             schema,
             columns,
             values_by_column,
+            label_group_counts,
         ),
     )
 
@@ -556,14 +566,20 @@ def _build_frame_stats(
                     _categorical_value_counts_alias(name)
                 )
             )
+            aggregations.append(
+                _categorical_label_group_count_expr(name, dtype).alias(
+                    _categorical_label_group_count_alias(name)
+                )
+            )
 
-    aggregate_row = streaming_collect(
+    aggregate_row = cancellable_streaming_collect(
         lf.select(aggregations),
         execution_context=execution_context,
     ).row(0, named=True)
 
     stats: list[ExploreColumnStat] = []
     categorical_values_by_column: dict[str, list[ExploreDistinctValueCount]] = {}
+    categorical_label_group_counts: dict[str, int] = {}
     for name in column_names:
         dtype = schema[name]
         null_count = int(aggregate_row[f"null::{name}"])
@@ -607,6 +623,9 @@ def _build_frame_stats(
             categorical_values_by_column[name] = _parse_categorical_value_counts(
                 aggregate_row[_categorical_value_counts_alias(name)]
             )
+            categorical_label_group_counts[name] = int(
+                aggregate_row[_categorical_label_group_count_alias(name)]
+            )
 
         stats.append(
             ExploreColumnStat(
@@ -627,6 +646,7 @@ def _build_frame_stats(
             schema,
             stats,
             categorical_values_by_column,
+            categorical_label_group_counts,
         ),
     )
 
