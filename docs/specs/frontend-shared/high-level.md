@@ -46,7 +46,9 @@ In scope:
 - Canonical shared types (`types/node.ts`, `types/trace.ts`,
   `types/banding.ts`) and the generic formatting/naming utilities
   (`utils/formatBytes.ts`, `utils/formatTime.ts`, `utils/formatValue.ts`,
-  `utils/color.ts`, `utils/dtypeColors.ts`, `utils/sanitizeName.ts`).
+  `utils/color.ts`, `utils/dtypeColors.ts`, `utils/sanitizeName.ts`,
+  `utils/chartHelpers.ts`, `utils/formatTrace.ts`,
+  `utils/mlflowOptimiser.ts`).
 - The application bootstrap (`main.tsx`).
 
 Explicitly out of scope (owned elsewhere, even though the files live under
@@ -70,10 +72,9 @@ the directories this spec covers):
   `utils/nodeTypeRegistry.ts`) — these belong to graph-canvas despite the
   node-editor-adjacent naming; see
   [frontend-graph-canvas](../frontend-graph-canvas/high-level.md).
-- Trace playback (`useTracing`, `utils/formatTrace.ts`) — see
+- Trace playback (`useTracing`) — see
   [frontend-trace-ui](../frontend-trace-ui/high-level.md).
-- Modelling/optimiser-specific helpers (`utils/chartHelpers.ts`,
-  `utils/mlflowOptimiser.ts`, `utils/trainingObjective.ts`) — see
+- Modelling/optimiser-specific objective logic (`utils/trainingObjective.ts`) — see
   [frontend-modelling-optimiser-ui](../frontend-modelling-optimiser-ui/high-level.md).
 - Git-specific undo entries (`utils/vcHistory.ts`) and all git chrome
   (`BranchIndicator`, `BranchManager`, commit/push/divergence modals) — see
@@ -97,35 +98,44 @@ consistent formatting and classification contracts.
 
 ## Behaviour
 
-**API client.** Every backend call goes through `request()` in
+**API client.** Every backend call goes through the transport in
 `api/client.ts`, which returns typed data or throws `ApiError` (HTTP
 non-2xx, carrying `status`/`detail`/`body`) or `ApiTimeoutError` (the request
 was aborted by its own timeout guard, distinct from a caller-initiated
 abort). Idempotent verbs retry transient failures (network errors, 5xx) with
-exponential backoff and jitter; POST is never auto-retried. Every response
-passes through a `parse*` guard in `types/guards.ts` before reaching a
-caller, so a backend contract drift raises a descriptive `Error` at the call
-site instead of `undefined` propagating silently into a component. A 403
+exponential backoff and jitter; POST is never auto-retried. Concrete JSON
+endpoint functions pass successful responses through a runtime parser before
+returning, so backend contract drift raises a descriptive `Error` at the call
+site instead of `undefined` propagating silently into a component. The
+exported generic `request`/`post` helpers, `postRawStream`, and caller-generic
+`readJson<T>` are deliberate exceptions: their response contract is supplied
+by the split module or call site, not asserted by `types/guards.ts`. A 403
 whose detail matches the "missing/invalid session" reason fires a
 `window` `CustomEvent` (`HAUTE_SESSION_EXPIRED_EVENT`) rather than being
 handled locally — any part of the app can listen for session expiry without
 the client needing to know about auth UI. Before `App` mounts,
 `bootstrapHauteSession()` makes one same-origin, no-store POST and lets the
 browser retain the returned HttpOnly cookie; concurrent callers share the
-same promise. The token never enters JavaScript, request headers assembled by
-the client, or a WebSocket URL. `request`/`post` are exported so
-bundle-split modules (`api/dispersion.ts`) can build endpoint functions on
-the same machinery without re-implementing fetch/retry. `api/dispersion.ts`
-does own its response parsing locally rather than adding to
-`types/guards.ts` — a deliberate exception to the "every response goes
-through `types/guards.ts`" rule below, made for the same bundle-size reason
-the module is split out in the first place. `runDispersionEstimate` fronts a
-backend job that runs off the request thread: the client function itself
-polls a `.../status/{job_id}` endpoint on a fixed interval and resolves
-only once the job reaches a terminal status, so callers can still `await`
-a single promise for what is, on the wire, a start-then-poll sequence —
-distinct from `useJobPolling`/`useBackgroundJobs`, which track jobs the
-user can navigate away from and revisit.
+same promise. A forced refresh requested while a normal bootstrap is active
+is queued behind that request rather than incorrectly joining it. The token
+never enters JavaScript, request headers assembled by the client, or a
+WebSocket URL. Bundle-split modules such as `api/dispersion.ts` reuse the
+generic transport and own local response parsers so they remain outside the
+initial chunk. `runDispersionEstimate` fronts a backend job that runs off the
+request thread: it polls a `.../status/{job_id}` endpoint on a fixed interval
+and resolves only once the job reaches a terminal status, so callers can
+still `await` a single promise for what is, on the wire, a start-then-poll
+sequence — distinct from `useJobPolling`/`useBackgroundJobs`, which track
+jobs the user can navigate away from and revisit.
+
+The shared boundary also owns the versioned execution-strategy diagnostic,
+I/O capability, input-cache, and explicit output-write shapes. Strategy
+diagnostics retain known status fields and bounded unavailable/truncated
+detail; an unsupported version becomes unavailable, while a malformed
+matching version throws rather than being repaired by a feature panel.
+Capability order and unsupported legs remain intact, cache
+readiness/freshness/progress are separate typed values, and removed
+compatibility endpoints or legacy node types have no client wrappers.
 
 **Result caching.** `useNodeResultsStore` is the only place preview rows,
 optimiser solves, training runs, and explore reports are kept once computed.
@@ -134,7 +144,14 @@ Each result category (`previews`, `solveResults`, `trainResults`,
 least-recently-touched, except the currently pinned/open node's entry, which
 survives eviction pressure. A config-hash (`hashConfig`) lets panels detect
 "this result is stale relative to the current node config" without deleting
-the old result. Frontier point selection is a pure re-derivation from cached
+the old result. Despite its historical name, `hashConfig` is the exact
+deterministic canonical JSON identity: root-only transient fields are
+removed, object keys are recursively sorted, array order and normal JSON
+normalisation are retained, and genuine serialization errors remain visible.
+Cache reads compare every result-affecting dimension — canonical config,
+source, structural generation and, for previews, row limit — so distinct
+configurations cannot alias through a fixed-width digest. Frontier point
+selection is a pure re-derivation from cached
 frontier data — selecting a different point never re-fetches unless the
 caller asks the backend to solve/select explicitly.
 
@@ -161,7 +178,9 @@ recoverable panel in `App.tsx`, so one feature's crash doesn't take down the
 whole editor. `ModalShell` is the shared dialog primitive — backdrop click,
 Escape-to-close, and a full focus trap (Tab wraps inside the dialog, focus
 returns to the triggering element on close) — used by `KeyboardShortcuts`
-and by every git dialog. `Tooltip` is a zero-delay, self-clamping hover
+and by every git dialog. The focus trap is installed for the modal lifetime;
+parent re-renders update callback refs without refocusing the dialog or
+rebuilding its listener. `Tooltip` is a zero-delay, self-clamping hover
 label that repositions to avoid clipping the viewport edge. `ContextMenu` is
 the right-click node menu with roving-tabindex arrow-key navigation.
 `Toolbar` is the app's top chrome: it displays the package-derived browser
@@ -222,7 +241,7 @@ therefore fail at the caller, consistent with the application's fail-loud policy
 - **Endpoint modules split out of `api/client.ts` when their only
   consumer is lazy-loaded.** `api/dispersion.ts` exists as a separate file
   — not more exports on `client.ts` — specifically so its code isn't
-  reachable from the initial bundle graph; `scripts/check-bundle-size.mjs`
+  reachable from the initial bundle graph; `frontend/scripts/check-bundle-size.mjs`
   gates the initial-gzip budget this layout exists to respect. The
   pattern generalises — `api/assistant.ts` follows the same split for the
   assistant panel's endpoints (including its SSE stream reader and local
@@ -265,9 +284,8 @@ therefore fail at the caller, consistent with the application's fail-loud policy
 ## Failure model
 
 - A non-2xx HTTP response becomes an `ApiError` with `status`/`detail`;
-  callers branch on `status` (e.g. `loadPipeline` treats 404 as "no pipeline
-  yet" and returns an empty graph — the one deliberate soft-fallback in the
-  client, scoped to a single known-benign case).
+  `loadPipeline` follows the same fail-loud rule as other endpoints and does
+  not invent an empty graph for a 404.
 - A request that exceeds its timeout becomes `ApiTimeoutError`, distinguished
   from a caller-cancelled `AbortError` so UI can show "timed out" instead of
   silently doing nothing.
@@ -276,6 +294,11 @@ therefore fail at the caller, consistent with the application's fail-loud policy
   object, got string") — this is a contract violation between frontend and
   backend, not a user-facing condition, and is expected to surface during
   development/CI rather than in production traffic.
+- Parsers whose purpose is to discriminate an optional payload return
+  `null` only when their discriminator does not match (for example an
+  unsupported execution-diagnostic schema version or a non-divergence Git
+  response). Once the discriminator matches, malformed required fields
+  throw; parse exceptions are never converted to `null`.
 - `useNodeResultsStore.updateFrontierAfterSelect` throws if the backend's
   echoed `point_index` doesn't match what was requested — treated as a
   contract violation, never silently corrected.
@@ -288,66 +311,11 @@ therefore fail at the caller, consistent with the application's fail-loud policy
   without a result/value payload — a job that finishes without the data
   it promised is a contract violation, not treated as success. A caller
   `AbortSignal` fired mid-poll rejects with a `DOMException`
-  (`"AbortError"`); `runDispersionEstimate` additionally best-effort
-  cancels the backend job on abort (`cancelDispersion`, failure swallowed)
-  so an abandoned poll doesn't leave an orphaned job running server-side.
+  (`"AbortError"`); `runDispersionEstimate` awaits `cancelDispersion` before
+  rejecting so an abandoned poll cannot silently leave an orphaned job
+  running server-side. A cancellation failure is visible rather than
+  swallowed.
 - `ErrorBoundary` is the last line of defence for render-time exceptions:
   it logs via `console.error` and shows a "Try again" fallback scoped to
   the boundary it wraps, so one panel's crash is visible and recoverable
   without reloading the whole app.
-
-## Polars backend contracts (0.6.0)
-
-Remaining shared-frontend improvement work is tracked in the
-[frontend canvas roadmap](../../roadmap/frontend-canvas.md).
-Shared frontend infrastructure owns the typed API boundary for execution-strategy results. Its
-runtime guard accepts known status fields while retaining safe representations of unknown future
-fields, truncation and unavailable values. Feature-specific panels consume that single guarded
-contract; they must not independently parse or normalise backend strategy payloads.
-
-## Approved change contract — 0.7.0 data I/O client contracts
-
-Remaining shared-frontend improvement work is tracked in the
-[frontend canvas roadmap](../../roadmap/frontend-canvas.md).
-Shared frontend infrastructure owns the versioned guards, clients, and stores for
-`/api/io-capabilities`, input-cache jobs/status, and explicit output writes. Capability order and
-unsupported legs are preserved exactly; unknown versions or malformed discriminants become a
-visible unavailable/error state rather than guessed defaults. Cache readiness, freshness, and
-job progress are separate typed values, and all payloads are checked for the absence of secret
-fields before feature panels consume them. Removed format/sink/provider-cache endpoints and
-legacy node types have no client compatibility wrappers.
-
-## Approved change contract — exact frontend result-cache identity
-
-This contract implements AUD-C16 in the
-[frontend canvas roadmap](../../roadmap/frontend-canvas.md).
-
-- **Current limitation.** Result entries include the relevant source and structural generation,
-  preview entries include the row limit, source changes invalidate column-schema stashes, and
-  cache families are bounded; however, configuration identity is represented by a 32-bit digest.
-  Two distinct JSON configurations can therefore collide and make a stale visible result appear
-  current.
-- **Target behaviour.** Configuration identity is the exact deterministic canonical form of the
-  JSON-shaped configuration: object keys are recursively sorted, array order is retained, and
-  the existing top-level ephemeral UI-only fields are excluded. Nested fields with the same names
-  remain semantic configuration. Every cache lookup must match every dimension that can affect
-  that operation's visible result — canonical config, active
-  source, structural generation and, for previews, row limit. Column/schema stashes remain scoped
-  to their source generation. Each cache family retains deterministic least-recently-used
-  eviction at its documented bound.
-- **Non-goals.** This change does not persist frontend caches, share them between browser
-  sessions, hash source-file contents, or make transport chunk size part of semantic preview
-  identity.
-- **Failure and compatibility.** Canonicalisation first follows normal `JSON.stringify`
-  semantics: undefined object properties are omitted, non-finite numbers become `null`, arrays
-  retain JSON's null placeholders, and serialisable class/toJSON values remain accepted. Cycles,
-  BigInt values, and other genuine serialization failures still fail visibly rather than
-  receiving a fallback identity. The public store shape and cache limits remain compatible, but
-  callers may no longer assume that the `configHash` field is a short digest. Retaining the exact
-  identity is intentional: restoring the removed 32-bit digest would restore its executable
-  collision, while the result families holding identities are entry-count bounded.
-- **Acceptance.** Store and hook tests cover distinct configurations with a known legacy digest
-  collision, object-key-order equivalence, nested/array semantics, top-level-only ephemeral
-  stripping, ordinary JSON normalization, source and structural changes, preview row-limit
-  changes, source-scoped schema invalidation, cache hits, and deterministic eviction at every
-  bound.

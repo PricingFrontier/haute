@@ -126,8 +126,9 @@ describe("useBackgroundJobs — gap tests", () => {
       expect(mockSolve).toHaveBeenCalledTimes(1)
       expect(mockTrain).toHaveBeenCalledTimes(1)
 
-      // Second poll — both complete at 1000ms
-      await advance(500)
+      // Healthy polling ramps after the first response, so both complete
+      // on their second poll at 1500ms.
+      await advance(1000)
       expect(mockSolve).toHaveBeenCalledTimes(2)
       expect(mockTrain).toHaveBeenCalledTimes(2)
 
@@ -186,7 +187,7 @@ describe("useBackgroundJobs — gap tests", () => {
       expect(useNodeResultsStore.getState().solveJobs["b"]).toBeDefined()
 
       // Second poll: B completes
-      await advance(500)
+      await advance(1000)
       expect(useNodeResultsStore.getState().solveResults["b"]).toBeDefined()
     })
   })
@@ -299,8 +300,9 @@ describe("useBackgroundJobs — gap tests", () => {
       await advance(1000)
       expect(useNodeResultsStore.getState().solveJobs["n1"]?.progress?.progress).toBe(0.5)
 
-      // Third poll: completed (after 500ms base interval since error count reset)
-      await advance(500)
+      // A successful response clears the error counter but keeps the per-job
+      // ramp, so the third poll arrives after the next 2s interval.
+      await advance(2000)
       expect(useNodeResultsStore.getState().solveResults["n1"]).toBeDefined()
     })
   })

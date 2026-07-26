@@ -161,6 +161,7 @@ describe("usePipelineAPI", () => {
     useGraphStore.setState({
       nodes: [],
       edges: [],
+      submodels: {},
       preamble: "",
       lastSavedSnapshot: null,
       undoStack: [],
@@ -253,7 +254,10 @@ describe("usePipelineAPI", () => {
     })
   })
 
-  it("loads successful backend responses with nullable metadata", async () => {
+  it.each([
+    { label: "null", submodels: null },
+    { label: "omitted", submodels: undefined },
+  ])("normalizes $label HTTP submodels without retaining stale state", async ({ submodels }) => {
     mockLoad.mockResolvedValue({
       nodes: [],
       edges: [],
@@ -261,11 +265,21 @@ describe("usePipelineAPI", () => {
       pipeline_description: null,
       preamble: null,
       source_file: null,
-      submodels: null,
+      submodels,
       warning: null,
     })
 
-    const params = makeParams()
+    const staleSubmodels = {
+      stale: { nodes: [makeNode("stale-child")], edges: [] },
+    }
+    useGraphStore.getState().setSubmodelsRaw(staleSubmodels)
+    const setSubmodelsRaw = vi.fn((submodels: Record<string, unknown>) => {
+      useGraphStore.getState().setSubmodelsRaw(submodels)
+    })
+    const params = makeParams({
+      submodelsRef: { current: staleSubmodels },
+      setSubmodelsRaw,
+    })
     const { result } = renderHook(() => usePipelineAPI(params))
 
     await waitFor(() => expect(result.current.loading).toBe(false))
@@ -275,6 +289,9 @@ describe("usePipelineAPI", () => {
     expect(params.setNodesRaw).toHaveBeenCalledWith([])
     expect(params.setEdgesRaw).toHaveBeenCalledWith([])
     expect(params.setPreamble).not.toHaveBeenCalled()
+    expect(params.submodelsRef.current).toEqual({})
+    expect(setSubmodelsRaw).toHaveBeenCalledWith({})
+    expect(useGraphStore.getState().submodels).toEqual({})
   })
 
   it("shows toast on load failure", async () => {
@@ -307,6 +324,30 @@ describe("usePipelineAPI", () => {
     })
     // After save, the submitted graph snapshot is the saved baseline.
     expect(useGraphStore.getState().isDirty()).toBe(false)
+  })
+
+  it("handleSave includes the current submodel mirror in the payload", async () => {
+    mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+    mockSave.mockResolvedValue({ file: "pricing.py", pipeline_name: "pricing" })
+    const params = makeParams()
+    const submodels = {
+      pricing: {
+        nodes: [makeNode("child")],
+        edges: [],
+      },
+    }
+
+    const { result } = renderHook(() => usePipelineAPI(params))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+    params.submodelsRef.current = submodels
+
+    await act(async () => {
+      await result.current.handleSave()
+    })
+
+    expect(mockSave).toHaveBeenCalledWith(expect.objectContaining({
+      graph: expect.objectContaining({ submodels }),
+    }))
   })
 
   it("preserves authored submodel boundary ports in the save payload", async () => {

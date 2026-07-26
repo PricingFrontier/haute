@@ -109,6 +109,7 @@ import {
   parseGitRemotesResponse,
   parseGitPushResponse,
   parseGitFastForwardResponse,
+  parseGitGraphResponse,
   parseGitBranchAwayResponse,
   parseGitCommitContext,
   parseGitMoveResponse,
@@ -121,15 +122,24 @@ import {
   parseInputCacheJobStatusResponse,
   parseInputCacheSnapshotResponse,
   parseJsonCacheBuildResponse,
+  parseJsonCacheDeleteResponse,
   parseJsonCacheProgressResponse,
+  parseJsonCacheSchemaInferenceResponse,
   parseJsonCacheStatusResponse,
   parseMlflowCheckResponse,
+  parseMlflowExperiments,
   parseMlflowLogResponse,
+  parseMlflowModels,
+  parseMlflowModelVersions,
+  parseMlflowRuns,
+  parseFileListResponse,
+  parseHauteSessionResponse,
   parseOptimiserEstimateResponse,
   parseSaveOptimiserResponse,
   parseSolveOptimiserResponse,
   parseOptimiserStatusResponse,
   parseOutputDestinationResponse,
+  parseOutputAssembleDryRunResponse,
   parsePipelineResponse,
   parsePreviewNodeResponse,
   parseSavePipelineResponse,
@@ -299,7 +309,39 @@ async function throwApiError(response: Response): Promise<never> {
 }
 
 let sessionBootstrap: Promise<void> | null = null
+let activeBootstrapIsForced = false
 let sessionBootstrapped = false
+
+function performSessionBootstrap(): Promise<void> {
+  return fetch("/api/session/bootstrap", {
+    method: "POST",
+    credentials: "same-origin",
+    cache: "no-store",
+  }).then(async (response) => {
+    if (!response.ok) await throwApiError(response)
+    sessionBootstrapped = true
+  })
+}
+
+function trackSessionBootstrap(promise: Promise<void>, forced: boolean): Promise<void> {
+  sessionBootstrap = promise
+  activeBootstrapIsForced = forced
+  promise.then(
+    () => {
+      if (sessionBootstrap === promise) {
+        sessionBootstrap = null
+        activeBootstrapIsForced = false
+      }
+    },
+    () => {
+      if (sessionBootstrap === promise) {
+        sessionBootstrap = null
+        activeBootstrapIsForced = false
+      }
+    },
+  )
+  return promise
+}
 
 /**
  * Establish the local UI's HttpOnly session cookie.
@@ -310,22 +352,17 @@ let sessionBootstrapped = false
  */
 export function bootstrapHauteSession(force = false): Promise<void> {
   if (force) sessionBootstrapped = false
+  if (sessionBootstrap) {
+    if (!force || activeBootstrapIsForced) return sessionBootstrap
+    const currentBootstrap = sessionBootstrap
+    const forcedBootstrap = currentBootstrap.then(
+      performSessionBootstrap,
+      performSessionBootstrap,
+    )
+    return trackSessionBootstrap(forcedBootstrap, true)
+  }
   if (sessionBootstrapped && !force) return Promise.resolve()
-  if (sessionBootstrap) return sessionBootstrap
-
-  sessionBootstrap = fetch("/api/session/bootstrap", {
-    method: "POST",
-    credentials: "same-origin",
-    cache: "no-store",
-  })
-    .then(async (response) => {
-      if (!response.ok) await throwApiError(response)
-      sessionBootstrapped = true
-    })
-    .finally(() => {
-      sessionBootstrap = null
-    })
-  return sessionBootstrap
+  return trackSessionBootstrap(performSessionBootstrap(), force)
 }
 
 const IDEMPOTENT_METHODS = new Set(["GET", "HEAD", "PUT", "DELETE", "OPTIONS"])
@@ -537,11 +574,11 @@ function del<T>(url: string, options: ApiClientOptions = {}): Promise<T> {
 }
 
 export function checkHauteSession(options: ApiClientOptions = {}): Promise<{ ok: boolean }> {
-  return request<{ ok: boolean }>("/api/session", {
+  return request<unknown>("/api/session", {
     ...options,
     timeout: options.timeout ?? 5_000,
     retry: options.retry ?? { maxRetries: 0, baseDelayMs: 100 },
-  })
+  }).then(parseHauteSessionResponse)
 }
 
 // ---------------------------------------------------------------------------
@@ -551,12 +588,6 @@ export function checkHauteSession(options: ApiClientOptions = {}): Promise<{ ok:
 export function loadPipeline(options?: ApiClientOptions): Promise<PipelineGraph> {
   return request<unknown>("/api/pipeline", options)
     .then(parsePipelineResponse)
-    .catch((err) => {
-      if (err instanceof ApiError && err.status === 404) {
-        return { nodes: [], edges: [] } as PipelineGraph
-      }
-      throw err
-    })
 }
 
 export interface PreviewNodeArgs {
@@ -654,7 +685,7 @@ export function outputAssembleDryRun(
     signal,
     timeout = 120_000,
   } = args
-  return post<OutputAssembleDryRunResponse>(
+  return post<unknown>(
     "/api/output-assemble/dry-run",
     {
       graph,
@@ -665,7 +696,7 @@ export function outputAssembleDryRun(
       source: source ?? "live",
     },
     { signal, timeout },
-  )
+  ).then(parseOutputAssembleDryRunResponse)
 }
 
 export interface TraceCellArgs {
@@ -1148,7 +1179,7 @@ export function deleteJsonCache(
   path: string,
   options?: { signal?: AbortSignal },
 ): Promise<{ cached: boolean; data_path: string }> {
-  return del(`/api/json-cache?path=${encodeURIComponent(path)}`, options)
+  return del<unknown>(`/api/json-cache?path=${encodeURIComponent(path)}`, options).then(parseJsonCacheDeleteResponse)
 }
 
 /**
@@ -1162,11 +1193,11 @@ export function inferJsonCacheSchema(
   payload: { path: string; sample_size?: number },
   options?: { signal?: AbortSignal },
 ): Promise<{ tables: Array<Record<string, unknown>> }> {
-  return post<{ tables: Array<Record<string, unknown>> }>(
+  return post<unknown>(
     "/api/json-cache/infer",
     payload,
     options,
-  )
+  ).then(parseJsonCacheSchemaInferenceResponse)
 }
 
 // ---------------------------------------------------------------------------
@@ -1176,7 +1207,7 @@ export function inferJsonCacheSchema(
 export function getExperiments(
   options?: { signal?: AbortSignal },
 ): Promise<MlflowExperiment[]> {
-  return request("/api/mlflow/experiments", options)
+  return request<unknown>("/api/mlflow/experiments", options).then(parseMlflowExperiments)
 }
 
 export function getRuns(
@@ -1186,20 +1217,20 @@ export function getRuns(
 ): Promise<MlflowRun[]> {
   const params = new URLSearchParams({ experiment_id: experimentId })
   if (artifactFilter) params.set("artifact_filter", artifactFilter)
-  return request(`/api/mlflow/runs?${params.toString()}`, options)
+  return request<unknown>(`/api/mlflow/runs?${params.toString()}`, options).then(parseMlflowRuns)
 }
 
 export function getModels(
   options?: { signal?: AbortSignal },
 ): Promise<MlflowModel[]> {
-  return request("/api/mlflow/models", options)
+  return request<unknown>("/api/mlflow/models", options).then(parseMlflowModels)
 }
 
 export function getModelVersions(
   modelName: string,
   options?: { signal?: AbortSignal },
 ): Promise<MlflowModelVersion[]> {
-  return request(`/api/mlflow/model-versions?model_name=${encodeURIComponent(modelName)}`, options)
+  return request<unknown>(`/api/mlflow/model-versions?model_name=${encodeURIComponent(modelName)}`, options).then(parseMlflowModelVersions)
 }
 
 // ---------------------------------------------------------------------------
@@ -1261,7 +1292,7 @@ export function listFiles(
 ): Promise<{ items?: FileListItem[] }> {
   const params = new URLSearchParams({ dir })
   if (extensions) params.set("extensions", extensions)
-  return request(`/api/files?${params.toString()}`, options)
+  return request<unknown>(`/api/files?${params.toString()}`, options).then(parseFileListResponse)
 }
 
 export function readJson<T = unknown>(
@@ -1355,15 +1386,13 @@ export function getPendingSaves(
 
 /** Whole-forest topology for the graph rail: every working pair's spine plus
  *  ancestry-derived fork attachments. Chrome, not history — callers fetch it
- *  best-effort and degrade to no rail on failure, and the pure rail layout
- *  already maps malformed payloads to an empty rail, so the response is typed
- *  directly rather than parsed through a guard. */
+ *  best-effort and degrade to no rail on transport or parser failure. */
 export function getGitGraph(
   limit?: number,
   options?: { signal?: AbortSignal },
 ): Promise<GitGraphResponse> {
   const qs = limit !== undefined ? `?limit=${limit}` : ""
-  return request<GitGraphResponse>(`/api/git/graph${qs}`, options)
+  return request<unknown>(`/api/git/graph${qs}`, options).then(parseGitGraphResponse)
 }
 
 export function gitArchiveBranch(

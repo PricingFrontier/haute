@@ -10,6 +10,7 @@ import {
   cancelDispersion,
   runDispersionEstimate,
 } from "../dispersion"
+import { ApiError } from "../client"
 
 let mockFetch: ReturnType<typeof vi.fn>
 
@@ -117,9 +118,16 @@ describe("dispersion estimation endpoints", () => {
     mockFetch
       .mockReturnValueOnce(jsonResponse({ status: "started", job_id: "disp-1" }))
       .mockReturnValueOnce(jsonResponse(makeDispersionStatus({ status: "completed", value: null })))
-    await expect(
-      runDispersionEstimate({ graph: dummyGraph, node_id: "n1", param: "theta" }, { pollIntervalMs: 0 }),
-    ).rejects.toThrow("without a value")
+    const error = await runDispersionEstimate(
+      { graph: dummyGraph, node_id: "n1", param: "theta" },
+      { pollIntervalMs: 0 },
+    ).then(
+      () => null,
+      (reason: unknown) => reason,
+    )
+    expect(error).toBeInstanceOf(Error)
+    expect(error).not.toBeInstanceOf(ApiError)
+    expect((error as Error).message).toContain("without a value")
   })
 
   it("runDispersionEstimate aborts via signal and requests a cancel", async () => {
@@ -134,5 +142,37 @@ describe("dispersion estimation endpoints", () => {
         { pollIntervalMs: 0, signal: controller.signal },
       ),
     ).rejects.toThrow()
+  })
+
+  it("cancels the backend job when abort lands during an in-flight status request", async () => {
+    const controller = new AbortController()
+    mockFetch
+      .mockReturnValueOnce(jsonResponse({ status: "started", job_id: "disp-in-flight" }))
+      .mockImplementationOnce((_url: string, options: RequestInit) => (
+        new Promise((_resolve, reject) => {
+          options.signal?.addEventListener("abort", () => {
+            reject(new DOMException("Aborted", "AbortError"))
+          }, { once: true })
+        })
+      ))
+      .mockReturnValueOnce(jsonResponse(makeDispersionStatus({ status: "cancelled" })))
+
+    const run = runDispersionEstimate(
+      { graph: dummyGraph, node_id: "n1", param: "theta" },
+      { pollIntervalMs: 0, signal: controller.signal },
+    )
+    await vi.waitFor(() => {
+      expect(mockFetch).toHaveBeenCalledTimes(2)
+    })
+
+    controller.abort()
+
+    await expect(run).rejects.toMatchObject({ name: "AbortError" })
+    await vi.waitFor(() => {
+      expect(mockFetch).toHaveBeenCalledWith(
+        "/api/modelling/dispersion/cancel/disp-in-flight",
+        expect.objectContaining({ method: "POST" }),
+      )
+    })
   })
 })

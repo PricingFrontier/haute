@@ -11,6 +11,8 @@ import {
   deleteUtilityFile,
   dissolveSubmodel,
   buildJsonCache,
+  checkHauteSession,
+  deleteJsonCache,
   estimateOptimiserSolve,
   estimateTrainingRam,
   commitMilestone,
@@ -30,12 +32,19 @@ import {
   restoreBranch,
   createWorkingBranch,
   getGitPrefs,
+  getGitGraph,
+  getExperiments,
+  getModelVersions,
+  getModels,
+  getRuns,
+  inferJsonCacheSchema,
   gitArchiveBranch,
   gitDeleteBranch,
   listUtilityFiles,
   loadSubmodel,
   logOptimiserToMlflow,
   logToMlflow,
+  listFiles,
   outputAssembleDryRun,
   previewNode,
   readUtilityFile,
@@ -709,6 +718,53 @@ describe("next-wave client runtime contracts", () => {
       mockFetch.mockReturnValue(jsonResponse(testCase.response))
 
       await expect(testCase.call()).rejects.toThrow(testCase.error)
+    })
+  }
+})
+
+describe("shared client trust-boundary endpoints", () => {
+  const validGitGraph = {
+    working_branch: "main",
+    order: ["main"],
+    branches: [{
+      name: "main", is_archived: false, is_current: true, tip_sha: "a",
+      fork_point_sha: null, fork_of: null, fork_source_sha: null, fork_credit_sha: null,
+      truncated: false,
+      entries: [{ sha: "a", short_sha: "a", message: "init", timestamp: "today", version_label: null, parents: [] }],
+    }],
+  }
+
+  const cases: Array<{
+    name: string
+    body: unknown
+    call: () => Promise<unknown>
+    url: string
+    method?: string
+    malformed: unknown
+  }> = [
+    { name: "checkHauteSession", body: { ok: true }, call: () => checkHauteSession(), url: "/api/session", malformed: { ok: "yes" } },
+    { name: "outputAssembleDryRun", body: { status: "ok", document: [], row_count: 0, error: null }, call: () => outputAssembleDryRun({ graph: dummyGraph, nodeId: "out", outputMapping: [] }), url: "/api/output-assemble/dry-run", method: "POST", malformed: { status: "ok", document: [], row_count: "1" } },
+    { name: "deleteJsonCache", body: { cached: false, data_path: "cache/data" }, call: () => deleteJsonCache("/data/input.json"), url: "/api/json-cache?path=%2Fdata%2Finput.json", method: "DELETE", malformed: { cached: false } },
+    { name: "inferJsonCacheSchema", body: { tables: [{ name: "drivers" }] }, call: () => inferJsonCacheSchema({ path: "/data/input.json" }), url: "/api/json-cache/infer", method: "POST", malformed: { tables: ["bad"] } },
+    { name: "getExperiments", body: [{ experiment_id: "1", name: "pricing" }], call: () => getExperiments(), url: "/api/mlflow/experiments", malformed: [{ experiment_id: "1" }] },
+    { name: "getRuns", body: [{ run_id: "r", run_name: "baseline", metrics: { auc: 0.9 }, artifacts: [] }], call: () => getRuns("exp", "model"), url: "/api/mlflow/runs?experiment_id=exp&artifact_filter=model", malformed: [{ run_id: "r", run_name: "baseline", metrics: {}, artifacts: [1] }] },
+    { name: "getModels", body: [{ name: "pricing", latest_versions: [{ version: "1", status: "READY", run_id: "r" }] }], call: () => getModels(), url: "/api/mlflow/models", malformed: [{ name: "pricing", latest_versions: [{ version: "1", status: "READY" }] }] },
+    { name: "getModelVersions", body: [{ version: "1", run_id: "r", status: "READY", description: "baseline" }], call: () => getModelVersions("pricing model"), url: "/api/mlflow/model-versions?model_name=pricing%20model", malformed: [{ version: "1", run_id: "r", status: "READY" }] },
+    { name: "listFiles", body: { items: [{ name: "data", path: "/data", type: "directory" }] }, call: () => listFiles("/data", ".json"), url: "/api/files?dir=%2Fdata&extensions=.json", malformed: { items: [{ name: "data", path: "/data", type: "other" }] } },
+    { name: "getGitGraph", body: validGitGraph, call: () => getGitGraph(5), url: "/api/git/graph?limit=5", malformed: { ...validGitGraph, branches: [{ ...validGitGraph.branches[0], entries: [{ ...validGitGraph.branches[0].entries[0], parents: [1] }] }] } },
+  ]
+
+  for (const testCase of cases) {
+    it(`${testCase.name} requests its contract endpoint`, async () => {
+      mockFetch.mockReturnValue(jsonResponse(testCase.body))
+      await expect(testCase.call()).resolves.toBeDefined()
+      expect(mockFetch.mock.calls[0]?.[0]).toBe(testCase.url)
+      expect((mockFetch.mock.calls[0]?.[1] as RequestInit | undefined)?.method ?? "GET").toBe(testCase.method ?? "GET")
+    })
+
+    it(`${testCase.name} rejects malformed successful payloads`, async () => {
+      mockFetch.mockReturnValue(jsonResponse(testCase.malformed))
+      await expect(testCase.call()).rejects.toThrow()
     })
   }
 })

@@ -7,11 +7,11 @@
 | `frontend/src/main.tsx` | Local-session bootstrap: establishes the browser-managed HttpOnly cookie before mounting `App` inside `StrictMode` + a root `ErrorBoundary`; renders an actionable reload state if the local backend is unavailable. |
 | `frontend/src/api/client.ts` | Typed `fetch()` wrapper: same-origin cookie credentials, single-flight `bootstrapHauteSession`, retry/backoff, timeout, abort handling, session-expiry event, and one function per backend endpoint. Exports `request`/`post` so split-chunk endpoint modules can reuse the same fetch machinery, and a raw-stream helper (cookie credentials + `ApiError` mapping, no JSON parse) for split modules with non-JSON transports — the assistant SSE stream (see [frontend-assistant-ui](../frontend-assistant-ui/low-level.md)). |
 | `frontend/src/api/dispersion.ts` | GLM dispersion-estimation endpoints (NB `theta` / Tweedie `var_power`): `estimateGlmDispersion`, `getDispersionStatus`, `cancelDispersion`, and `runDispersionEstimate` (starts + polls to completion, resolving with the estimated number). Split out of `client.ts` so its code — reachable only from the lazy-loaded modelling config panel — stays out of the initial JS bundle; built on `client.ts`'s exported `request`/`post` and owns its own runtime parsers (`parseDispersionEstimateResponse`, `parseDispersionStatusResponse`) rather than routing through `types/guards.ts`. |
-| `frontend/src/api/types.ts` | Request/response TypeScript interfaces mirrored from `src/haute/schemas.py`; re-exports canonical node/trace types. |
-| `frontend/src/types/node.ts` | `HauteNodeData`/`PipelineFlowNode`/`SubmodelNodeData` shapes, `ColumnInfo`, `BackendNodeStatus`/`NodeStatus`, the `nodeData()`/`effectiveNodeType()` accessors used everywhere a React Flow `Node.data` needs typed access. |
+| `frontend/src/api/types.ts` | Request/response TypeScript interfaces mirrored from `src/haute/schemas.py`; re-exports canonical node/trace types and owns the runtime `JOB_STATUS_VALUES`, `FAILED_JOB_STATUSES`, and `TERMINAL_JOB_STATUSES` shared by guards and pollers. |
+| `frontend/src/types/node.ts` | Canonical persisted `PIPELINE_NODE_TYPES` vocabulary and `NodeTypeValue`; `HauteNodeData`/`PipelineFlowNode`/`SubmodelNodeData` shapes, `ColumnInfo`, `BackendNodeStatus`/`NodeStatus`, and the `nodeData()`/`effectiveNodeType()` accessors used everywhere a React Flow `Node.data` needs typed access. |
 | `frontend/src/types/trace.ts` | Trace playback shapes (`TraceStep`, `TraceResult`, per-node-type `TraceNodeDetail` variants) mirroring backend trace output. |
 | `frontend/src/types/banding.ts` | Banding-factor rule shapes shared between the banding node editor and its trace rendering. |
-| `frontend/src/types/guards.ts` | Runtime parsers (`parse*`) and type guards for every API response shape; the JSON/DOM trust boundary. |
+| `frontend/src/types/guards.ts` | Runtime parsers (`parse*`) and type guards for concrete JSON API response shapes; the JSON/DOM trust boundary. Generic transport helpers, the caller-generic `readJson<T>`, and split-module local parsers are explicit exceptions. |
 | `frontend/src/stores/useNodeResultsStore.ts` | Zustand store: preview/solve/train/explore result caches, column cache, derived-getter memoization, LRU eviction. |
 | `frontend/src/stores/useSettingsStore.ts` | Zustand store: row limit, streaming chunk size, section open/closed state, MLflow status cache, data sources, file-listing cache. |
 | `frontend/src/stores/useToastStore.ts` | Zustand store: toast queue with dedup, capped at 10 entries. |
@@ -36,13 +36,11 @@
 | `frontend/src/components/BreadcrumbBar.tsx` | Pipeline → submodel navigation trail; renders nothing at stack depth ≤ 1. |
 | `frontend/src/hooks/useClickOutside.ts` | Attaches/detaches a `mousedown` listener that fires `onClose` when the click lands outside `ref`, only while `active`. |
 | `frontend/src/hooks/useDragResize.ts` | Bottom-panel drag-to-resize: DOM-direct mutation while dragging, commits to React state on mouseup. |
-| `frontend/src/hooks/useJobPolling.ts` | Generic background-job poller: exponential backoff, 24h max lifetime, per-job state via refs, consecutive-failure toast. |
+| `frontend/src/hooks/useJobPolling.ts` | Generic background-job poller: healthy/error interval ramp from 500ms to a 5s steady state, 30s request timeout, 24h max lifetime, per-job state via refs, consecutive-failure toast. |
 | `frontend/src/hooks/useBackgroundJobs.ts` | Wires `useJobPolling` to the optimiser/train/explore endpoints and `useNodeResultsStore` actions; mounted once in `App.tsx`. |
 | `frontend/src/hooks/useMlflowBrowser.ts` | Lazy-loads MLflow experiments/runs/models/versions for dropdown UIs; shared by `ModelScoreEditor` and `OptimiserApplyEditor` (node-editors). |
 | `frontend/src/hooks/useSchemaFetch.ts` | Fetch-schema-on-mount-and-on-path-change pattern used by `ApiInputEditor` (node-editors). |
 | `frontend/src/hooks/useStaleConfigEstimate.ts` | Generic "estimate endpoint keyed by config hash + source + structural version, refetch when any of the three changes" pattern, built on `hashConfig`. Takes a required `context: {source, structuralVersion}` argument alongside the cached result. |
-| File | Responsibility |
-| --- | --- |
 | `frontend/src/index.css` | Global Tailwind import and dark-theme CSS-variable contract: root sizing/type, native-control and scrollbar defaults, React Flow interaction overrides, and canonical semantic surface/status/chart/git-node tokens consumed directly by the theme module and components. |
 | `frontend/src/utils/chartHelpers.ts` | Small pure chart leaf helpers: compact K/M/scientific axis labels and inclusive evenly spaced Y ticks (a degenerate range yields one tick). |
 | `frontend/src/utils/formatTrace.ts` | Cross-surface trace-value/expression/calculation/schema-summary presentation formatting: retains date-shaped strings, represents non-finite numbers explicitly, quotes ordinary strings, escapes column names before substitution, and uses longest names first to avoid partial replacement. |
@@ -106,6 +104,9 @@
   (`{status: JobStatus, progress, message, elapsed_seconds, param, value,
   llf, n_fits, error, terminal_reason}`) (`api/types.ts`): the GLM
   dispersion-estimation job shapes consumed by `api/dispersion.ts`.
+- **`JOB_STATUS_VALUES` / `JobStatus` / `FAILED_JOB_STATUSES` /
+  `TERMINAL_JOB_STATUSES`** (`api/types.ts`) — the single runtime/type
+  vocabulary for all job parsers and polling failure/terminal checks.
 - **`FrontierStatusResponse`** (`api/types.ts`): `{status: JobStatus,
   progress, message, elapsed_seconds, result: FrontierResponse | null,
   terminal_reason?, error_code?, http_status_code?, error_detail?,
@@ -153,17 +154,18 @@ and never reads a response token. The browser stores the HttpOnly cookie and
 ordinary API/raw-stream requests explicitly use same-origin credentials.
 `main.tsx` mounts `App` only after success; failure renders a local-server
 diagnostic with Reload. A forced bootstrap refresh is used by WebSocket
-reconnection after a backend restart.
+reconnection after a backend restart. If that forced refresh arrives while a
+normal bootstrap is active, it queues a second request behind the in-flight
+one; concurrent forced callers join that queued forced request.
 
-**Response parsing**: every exported client function pipes its raw
-`request<unknown>()` result through the matching `parse*` guard from
-`types/guards.ts` before returning — `previewNode`, `loadPipeline`, etc.
-never hand an unvalidated object to a caller. `loadPipeline` is the one
-function with a `.catch` that inspects `err.status`: a 404 becomes an empty
-`PipelineGraph` (first-run UX); every other error rethrows. `api/dispersion.ts`
-is the one endpoint module that parses its own responses (`parseDispersion*`)
-rather than adding to `types/guards.ts`, for the bundle-size reason it's
-split out in the first place.
+**Response parsing**: concrete JSON endpoint functions pipe
+`request<unknown>()` results through the matching runtime parser before
+returning. `loadPipeline` follows the same fail-loud HTTP and payload rules as
+the rest; a 404 is an `ApiError`, not an invented empty graph. The exported
+generic `request`/`post` helpers, `postRawStream`, and caller-generic
+`readJson<T>` cannot assert an endpoint-specific shape and are documented
+exceptions. Split modules such as `api/dispersion.ts` validate with their own
+local parsers (`parseDispersion*`) to preserve the lazy bundle boundary.
 
 **Client-embedded job polling** (`runDispersionEstimate`): a third polling
 shape alongside `useJobPolling` and `useNodeResultsStore`'s result caches —
@@ -172,7 +174,9 @@ in a hook or store action. It starts the job, polls
 `getDispersionStatus(jobId)` at the configured interval (500ms by default),
 and resolves or rejects the single outer promise. Because there is no store
 entry for this job, a caller that unmounts mid-poll relies on its own
-`AbortSignal` to stop the loop.
+`AbortSignal` to stop the loop. An abort after job creation awaits
+`cancelDispersion(jobId)` before the outer promise rejects; cancellation
+failure remains visible.
 
 **Result-cache write path** (`useNodeResultsStore`): each `complete*Job`
 action (1) removes the corresponding entry from the `*Jobs` in-flight map,
@@ -205,8 +209,10 @@ frontier-array enrichment but does not regress the displayed
 explore), each driven by the store's `*Jobs` record. `useJobPolling`
 reconciles active jobs against a ref-tracked map of running pollers on every
 render; a poller not yet in the map gets a `setTimeout`-driven loop starting
-at `BASE_INTERVAL_MS` (500ms), doubling up to `MAX_INTERVAL_MS` (5s) on
-success/no-change, capped by `POLL_TIMEOUT_MS` (30s) per request and
+at `BASE_INTERVAL_MS` (500ms). After each non-terminal response or retryable
+poll error, the next interval doubles (`500ms → 1s → 2s → 4s → 5s`) and then
+holds at `MAX_INTERVAL_MS` (5s) for the rest of that job. Each request is
+capped by `POLL_TIMEOUT_MS` (30s) and the poller by
 `MAX_LIFETIME_MS` (24h) total. `CONSECUTIVE_FAILURES_FOR_TOAST` consecutive
 poll errors trigger a toast (poll errors are tolerated silently up to that
 point — the network hiccup case is expected). A 404/410 from the poll
@@ -220,6 +226,9 @@ rather than a retryable transient error.
 and (b) on Tab, redirects focus back inside the container if it has somehow
 landed outside, otherwise wraps first↔last focusable element. On unmount,
 focus is restored to the element that was focused before the modal opened.
+The listener is installed once per mount and reads `onClose`/
+`extraCloseKeys` through current refs, so a parent re-render neither steals
+focus nor leaves stale callbacks.
 
 ## Edge cases and invariants
 
@@ -239,11 +248,12 @@ focus is restored to the element that was focused before the modal opened.
   read only happens if the caller doesn't re-invoke `getColumns` after a
   structural change.
 - **`hashConfig`** strips `_nodeId`/`_columns`/`_schemaWarnings`/
-  `_availableColumns` (transient runtime fields) before hashing, and
-  recursively sorts object keys so key-order differences in the same
-  logical config don't produce different hashes. It's a djb2 hash, not
-  cryptographic — collisions are a theoretical staleness false-negative,
-  accepted for this use case.
+  `_availableColumns` only from the root config, applies ordinary
+  `JSON.stringify`/`JSON.parse` normalisation, recursively sorts object keys,
+  preserves array order, and returns the canonical JSON string itself.
+  Nested fields with the same names remain semantic. This exact identity is
+  intentionally collision-free; cycles, `BigInt`, and other genuine
+  serialization failures throw rather than receiving a fallback identity.
 - **`trimCacheByRecency`** first prunes any recency-map entries whose key
   no longer exists in `records` (handles external deletion, e.g.
   `clearNode`), then evicts the least-recently-touched entries beyond
@@ -290,11 +300,15 @@ focus is restored to the element that was focused before the modal opened.
   layer manufactures; both extend `Error` and set `name` accordingly, so
   `instanceof` checks work standardly. All other thrown values (e.g. raw
   `TypeError` from `fetch()` on a network failure) pass through unwrapped.
-- Every `parse*` function in `types/guards.ts` throws a plain `Error` with
-  a message of the form `"<parser>: expected <shape>, got <actual>"` —
-  there is no dedicated parse-error type; callers that need to distinguish
-  "backend contract violation" from "network/HTTP error" do so by checking
-  `instanceof ApiError` first (parse errors are never `ApiError`).
+- A matching but malformed `parse*` payload throws a plain `Error` with a
+  message naming the parser and expected shape. Optional discriminators
+  return `null` only before their contract matches: unsupported
+  execution-diagnostic schema versions and non-divergence/non-fork Git
+  responses are not those payload types. Once the version/status
+  discriminator matches, required-field errors propagate and are never
+  converted to `null`. There is no dedicated parse-error type; callers
+  distinguish contract violations from HTTP failures with
+  `instanceof ApiError` (parse errors are never `ApiError`).
 - `useNodeResultsStore.updateFrontierAfterSelect` and the frontier-point
   numeric/array coercion helpers (`numericFrontierValue`, `recordValue`,
   `numericArrayValue`, etc.) throw plain `Error`s naming the offending
@@ -317,27 +331,34 @@ same Vitest config.
 
 - **API client** (`api/__tests__/client.test.ts`,
   `client.retry.test.ts`, `client.contract.test.ts`): unit tests cover
-  retry/backoff/abort semantics directly; `client.contract.test.ts` loads
-  shared fixtures from `testSupport/uiContractFixtures.ts` and asserts every
-  exported client function's request/response shape against them, so a
-  backend schema change that isn't mirrored in `api/types.ts` fails here
-  first.
+  retry/backoff/abort semantics directly; `client.contract.test.ts` covers
+  concrete endpoint families with shared fixtures from
+  `testSupport/uiContractFixtures.ts` plus explicit request/response
+  matrices for the remaining trust-boundary endpoints. Generic transport,
+  raw-stream, and caller-generic JSON helpers are tested at their transport
+  boundary rather than pretending to know a concrete response schema.
 - **`api/dispersion.ts`** (`api/__tests__/dispersion.test.ts`):
   `estimateGlmDispersion` request
   shape (including the `source` default and the 600s timeout matching
   `/train`), `runDispersionEstimate`'s poll-to-completion and
   poll-to-terminal-failure paths, abort mid-poll rejecting with
-  `DOMException("AbortError")` and firing a best-effort `cancelDispersion`,
+  `DOMException("AbortError")` after awaiting `cancelDispersion`,
   and a completed-without-value rejection.
 - **`types/guards.ts`** (`types/__tests__/guards.contract.test.ts`):
   contract tests exercising the parse functions against both valid and
   malformed payloads, asserting the exact thrown-error shape for the
   malformed cases.
-- **`useNodeResultsStore`**: covered indirectly through consumer tests
-  (`hooks/__tests__/useJobPolling.dedup.test.ts`,
-  `useJobPolling.progressThrottle.test.ts`) rather than a standalone store
-  test file — the store's eviction/derived-cache logic is exercised via the
-  polling flow that drives it in practice.
+- **`useNodeResultsStore`**:
+  `frontend/src/__tests__/stores/useNodeResultsStore.test.ts` covers cache
+  identity, including a literal collision under the removed digest, root-only
+  ephemeral stripping, JSON normalisation and object-key-order equivalence,
+  plus entry bounds, LRU/pinning, job completion, and frontier selection;
+  `frontend/src/__tests__/stores/useNodeResultsStore.renderPurity.test.tsx`
+  pins render-safe derived getters;
+  `frontend/src/__tests__/stores/previewCache.test.ts` covers preview cache
+  identity. The colocated `hooks/__tests__/useJobPolling.dedup.test.ts` and
+  `useJobPolling.progressThrottle.test.ts` cover the polling flow that writes
+  those stores.
   `hooks/__tests__/useStaleConfigEstimate.sourceKey.test.ts` additionally
   drives the store directly (not through a hook) for its second
   describe block, pinning that `completeSolveJob`/`completeTrainJob` stamp
@@ -399,11 +420,11 @@ indirect coverage via `Toolbar.test.tsx`; `theme/colors.ts` has no test (it
 is a constants file with no logic to verify beyond TypeScript's own
 type-checking).
 
-## Polars backend contracts (0.6.0)
+## Runtime response contracts
 
-Remaining shared-frontend improvement work is tracked in the
-[frontend canvas roadmap](../../roadmap/frontend-canvas.md).
-The `api/` and `types/guards.ts` boundary will define one execution-strategy type and parser.
+### Execution-strategy diagnostics
+
+The `api/` and `types/guards.ts` boundary defines one execution-strategy type and parser.
 Version 1 requires integer `schema_version=1`, `status`, `strategy`, `profile`, `boundedness`
 (`bounded|unbounded|unknown`), `reason_code`, `detail_state`
 (`available|unavailable|truncated`), and `boundaries`, `reasons`, and `provenance`. It accepts
@@ -421,8 +442,8 @@ top-level `detail_state` must equal the worst wrapper state under
 
 The parser validates, but never repairs, those invariants. An over-cap array, inconsistent
 state/count/items combination, inconsistent top-level `detail_state`, or non-canonical item
-ordering makes the full diagnostic unavailable; the browser must not perform its own truncation
-or present the malformed prefix as server-authoritative detail. Boundary ordering is
+ordering throws a contract error; the browser must not perform its own truncation or present the
+malformed prefix as server-authoritative detail. Boundary ordering is
 `(topological_rank, node_id, operator, boundary_kind)`, where ranks come from the server's
 canonical topological sort. Reason ordering is
 `(topological_rank or max, node_id or '', reason_code, operator or '')`; provenance ordering is
@@ -439,8 +460,8 @@ to `rejected`; and `not-planned` to `not_planned`. The shared UI states are ther
 diagnostic-unavailable render state.
 
 Consumers ignore unknown additive fields only within version 1. Missing or malformed required
-fields, unknown version-1 enum values, and unsupported higher versions produce diagnostic
-unavailable; they are not preserved as an unknown success status. Guard tests pin every mapping,
+fields and unknown version-1 enum values throw; unsupported higher versions produce diagnostic
+unavailable. Neither path is preserved as an unknown success status. Guard tests pin every mapping,
 all schema-version paths, all wrapper/detail states, Unicode primary-tuple ordering, every
 equal-primary permutation and duplicate retention, the 32/128 cap boundaries, over-cap rejection
 without client truncation, additive
@@ -451,42 +472,12 @@ and named fields for accessible display, including `trace_correlation_unsupporte
 error additionally retains `remediation` and nullable `estimated_peak_bytes`/
 `headroom_bytes`.
 
-## Approved change contract — 0.7.0 data I/O client contracts
+### Data I/O responses
 
-Remaining shared-frontend improvement work is tracked in the
-[frontend canvas roadmap](../../roadmap/frontend-canvas.md).
-Update `frontend/src/api/types.ts`, `client.ts`, and `types/guards.ts` with versioned capability,
-input-cache job/status, and output-write models; delete `fetchIoFormats` and legacy Databricks
-cache/sink clients. The settings/cache stores key remote work by safe identity digest and job id,
-not table spelling. Guard tests cover every union leg, order retention, unknown versions,
-readiness/freshness separation, error/redaction fields, and malformed payload rejection.
-
-## Approved change contract — exact frontend result-cache identity
-
-This contract implements AUD-C16 in the
-[frontend canvas roadmap](../../roadmap/frontend-canvas.md).
-
-- `stores/useNodeResultsStore.ts::hashConfig` retains its call signature but returns canonical
-  JSON identity rather than a fixed-width DJB2 digest. It removes `_nodeId`, `_columns`,
-  `_schemaWarnings`, and `_availableColumns` only from the root config, normalises through
-  `JSON.stringify`/`JSON.parse`, recursively sorts the resulting JSON object keys, preserves array
-  order, and serialises the canonical value. Ordinary undefined/non-finite/toJSON inputs therefore
-  keep JSON's established semantics; nested keys with reserved spellings remain semantic. A real
-  serialization failure is never mapped to an empty or guessed value.
-- The exact canonical string is the deliberate collision-free comparison value. It is retained
-  only by the bounded solve, train, and explore result families plus their active jobs; the known
-  DJB2 collision test prevents replacing it with the former digest under the existing API name.
-- Solve, train, explore, estimate, and preview freshness use the dimensions applicable to their
-  request. Preview additionally compares `rowLimit`; source and structural generation are never
-  inferred from config identity. `useSettingsStore` source changes continue to clear
-  source-dependent column/schema state.
-- Cache recency changes on a successful read and on insertion/update. Over-limit insertion evicts
-  exactly the least-recently-used entry; invalid non-positive limits still throw. Re-fetching an
-  evicted identity produces a miss rather than reviving hidden state.
-- `src/__tests__/stores/useNodeResultsStore.test.ts` owns canonical identity and all bounded-store
-  eviction cases, including root-only ephemeral stripping and JSON normalization.
-  `hooks/__tests__/usePipelineAPI.gaps.test.ts`,
-  `hooks/__tests__/previewCache.test.ts`, and
-  `hooks/__tests__/columnStashSourceIdentity.test.ts` own the source, row-limit, structural, and
-  schema-stash dimensions. A regression fixture contains two literal configs that collide under
-  the removed digest so collision resistance is executable rather than probabilistic.
+`frontend/src/api/types.ts`, `client.ts`, and `types/guards.ts` own the
+versioned capability, input-cache job/status, and output-write models.
+Removed `fetchIoFormats` and legacy Databricks cache/sink clients have no
+compatibility wrappers. Settings/cache stores key remote work by safe
+identity digest and job id, not table spelling. Guard tests cover every union
+leg, order retention, unknown versions, readiness/freshness separation,
+error/redaction fields, and malformed-payload rejection.

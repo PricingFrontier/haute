@@ -88,7 +88,12 @@ function errorResponse(status: number, body?: unknown) {
 }
 
 const dummyGraph = {
-  nodes: [{ id: "n1", type: "custom", position: { x: 0, y: 0 }, data: {} }],
+  nodes: [{
+    id: "n1",
+    type: "polars",
+    position: { x: 0, y: 0 },
+    data: { nodeType: "polars" },
+  }],
   edges: [],
 }
 
@@ -367,6 +372,28 @@ describe("request() core via loadPipeline", () => {
     expect(options.body).toBeUndefined()
   })
 
+  it("queues a forced refresh behind an in-flight normal bootstrap", async () => {
+    let resolveNormal!: (response: Response) => void
+    mockFetch
+      .mockReturnValueOnce(errorResponse(503, { detail: "reset bootstrap state" }))
+      .mockImplementationOnce(() => new Promise<Response>((resolve) => {
+        resolveNormal = resolve
+      }))
+      .mockReturnValueOnce(jsonResponse({ ok: true }))
+
+    await expect(bootstrapHauteSession(true)).rejects.toThrow(ApiError)
+    const normalBootstrap = bootstrapHauteSession()
+    const forcedRefresh = bootstrapHauteSession(true)
+
+    expect(mockFetch).toHaveBeenCalledTimes(2)
+    resolveNormal(await jsonResponse({ ok: true }) as Response)
+    await normalBootstrap
+    await forcedRefresh
+
+    expect(mockFetch).toHaveBeenCalledTimes(3)
+    expect(mockFetch.mock.calls[2][0]).toBe("/api/session/bootstrap")
+  })
+
   it("retries a normal bootstrap after a forced refresh fails", async () => {
     mockFetch
       .mockReturnValueOnce(jsonResponse({ ok: true }))
@@ -387,9 +414,39 @@ describe("request() core via loadPipeline", () => {
     expect(result).toEqual(data)
   })
 
+  it.each([
+    {
+      label: "React Flow type",
+      node: {
+        id: "legacy",
+        type: "removedNodeType",
+        position: { x: 0, y: 0 },
+        data: { label: "Legacy" },
+      },
+      field: "nodes[0].type",
+    },
+    {
+      label: "data nodeType",
+      node: {
+        id: "legacy",
+        position: { x: 0, y: 0 },
+        data: { label: "Legacy", nodeType: "removedNodeType" },
+      },
+      field: "nodes[0].data.nodeType",
+    },
+  ])("rejects pipeline nodes whose persisted $label is not supported", async ({ node, field }) => {
+    mockFetch.mockReturnValue(jsonResponse({
+      nodes: [node],
+      edges: [],
+    }))
+
+    await expect(loadPipeline()).rejects.toThrow(
+      `parsePipelineResponse: expected field \`${field}\` to be one of`,
+    )
+  })
+
   it("throws ApiError with status and detail on 4xx response", async () => {
     mockFetch.mockReturnValue(errorResponse(422, { detail: "Validation failed" }))
-    // loadPipeline catches 404 specifically, so use 422 to test the generic path
     await expect(loadPipeline()).rejects.toThrow(ApiError)
     try {
       await loadPipeline()
@@ -460,10 +517,13 @@ describe("request() core via loadPipeline", () => {
     expect(options.signal).toBeInstanceOf(AbortSignal)
   })
 
-  it("loadPipeline returns empty graph on 404", async () => {
+  it("loadPipeline surfaces 404 instead of inventing an empty graph", async () => {
     mockFetch.mockReturnValue(errorResponse(404, { detail: "Not found" }))
-    const result = await loadPipeline()
-    expect(result).toEqual({ nodes: [], edges: [] })
+    await expect(loadPipeline()).rejects.toMatchObject({
+      name: "ApiError",
+      status: 404,
+      detail: "Not found",
+    })
   })
 })
 // ═══════════════════════════════════════════════════════════════════════════

@@ -253,8 +253,9 @@ are not the user's data, and **mutations**, which always surface an error.
   rather than nulling it (nulling would flip the whole list between rail and no-rail
   layouts on a transient blip).
 - **Remote listing** (`RemotePushControl`) degrades to an explicit "No remotes configured"
-  message rather than an empty, confusing dropdown; a load failure leaves the remote list
-  empty.
+  message rather than an empty, confusing dropdown. A cold-load failure naturally leaves
+  the list empty; a later refresh failure retains the last-good remotes so transient chrome
+  failure cannot erase an active divergence-recovery modal.
 - **Milestone-save expansion** (`toggleExpand`) shows an error toast and rolls the row
   back to collapsed on failure, rather than leaving a permanent "loading" placeholder.
 - **Mutations** (create/switch/archive/delete/restore branch, commit milestone, move to
