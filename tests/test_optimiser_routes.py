@@ -5369,7 +5369,7 @@ class TestFrontierRoute:
     ):
         """Concurrent submissions create exactly one frontier worker."""
         mock_solver = MagicMock()
-        mock_solver.frontier.return_value = SimpleNamespace(
+        frontier_result = SimpleNamespace(
             points=pl.DataFrame(
                 {
                     "total_objective": [100.0],
@@ -5379,6 +5379,15 @@ class TestFrontierRoute:
                 }
             )
         )
+        worker_started = threading.Event()
+        allow_worker_return = threading.Event()
+
+        def blocking_frontier(*args, **kwargs):
+            worker_started.set()
+            assert allow_worker_return.wait(timeout=5)
+            return frontier_result
+
+        mock_solver.frontier.side_effect = blocking_frontier
         clean_job_store.jobs["atomic_frontier_parent"] = {
             "status": "completed",
             "solver": mock_solver,
@@ -5414,15 +5423,21 @@ class TestFrontierRoute:
             start_barrier.wait(timeout=2)
             return client.post("/api/optimiser/frontier", json=payload)
 
-        with (
-            patch.object(clean_job_store, "create_job", side_effect=delayed_create_job),
-            ThreadPoolExecutor(max_workers=2) as pool,
-        ):
-            responses = [
-                future.result(timeout=5) for future in (pool.submit(submit), pool.submit(submit))
-            ]
+        try:
+            with (
+                patch.object(clean_job_store, "create_job", side_effect=delayed_create_job),
+                ThreadPoolExecutor(max_workers=2) as pool,
+            ):
+                responses = [
+                    future.result(timeout=5)
+                    for future in (pool.submit(submit), pool.submit(submit))
+                ]
 
-        assert sorted(response.status_code for response in responses) == [200, 409]
+            assert worker_started.wait(timeout=2)
+            assert sorted(response.status_code for response in responses) == [200, 409]
+        finally:
+            allow_worker_return.set()
+
         started = next(response for response in responses if response.status_code == 200)
         terminal = _poll_frontier_until_done(client, started.json()["job_id"])
         assert terminal["status"] == "completed"
