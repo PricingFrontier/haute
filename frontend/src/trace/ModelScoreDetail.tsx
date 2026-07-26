@@ -22,6 +22,18 @@ export function ModelScoreDetailBlock({ detail }: {
 }) {
   const labelStyle = traceDetailLabelStyle
   const modelDetail = detail
+  const errorDetail = modelDetail as unknown as Record<string, unknown>
+  const error = errorDetail.error
+  const errorType = errorDetail.error_type
+  if (typeof error === "string") {
+    return (
+      <TraceDetailPanel title={modelScoreTitle(modelDetail)}>
+        <TraceDetailAlert>
+          {typeof errorType === "string" ? `${errorType}: ` : ""}{error}
+        </TraceDetailAlert>
+      </TraceDetailPanel>
+    )
+  }
   const prediction = modelScorePrediction(modelDetail)
   const featureColumns = modelScoreFeatureColumns(modelDetail)
   const featureValues = modelDetail.feature_values ?? {}

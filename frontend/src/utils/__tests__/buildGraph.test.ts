@@ -12,7 +12,7 @@
  */
 import { describe, it, expect } from "vitest"
 import type { Node, Edge } from "@xyflow/react"
-import { buildGraph, resolveGraphFromRefs } from "../buildGraph"
+import { buildGraph, graphForRequestIdentity, resolveGraphFromRefs } from "../buildGraph"
 import { makeSimpleNode, makeSimpleEdge } from "../../test-utils/factories"
 
 describe("buildGraph", () => {
@@ -100,6 +100,113 @@ describe("buildGraph", () => {
       output_columns: ["a", "b"],
     })
     expect(result.nodes[0].data.description).toBe("Important step")
+  })
+})
+
+describe("graphForRequestIdentity", () => {
+  const volatileNodeData = {
+    _columns: [{ name: "preview", dtype: "Int64" }],
+    _availableColumns: [{ name: "available", dtype: "Int64" }],
+    _schemaWarnings: [{ column: "value", status: "stale" }],
+    _columnsSource: "preview",
+    _status: "running",
+    _traceActive: true,
+    _traceDimmed: true,
+    _hoverDimmed: true,
+    _traceValue: { value: 1 },
+    _traceMotionDisabled: true,
+    _diffStatus: "changed",
+  }
+
+  it("removes volatile node metadata from top-level and nested submodel graphs", () => {
+    const semanticData = {
+      label: "Top",
+      description: "",
+      nodeType: "polars",
+      config: { code: "pl.col('value')" },
+    }
+    const graph = buildGraph(
+      [{
+        id: "top",
+        type: "polars",
+        data: { ...semanticData, ...volatileNodeData },
+      }],
+      [],
+      {
+        child: {
+          label: "Child",
+          graph: {
+            nodes: [{
+              id: "nested",
+              type: "polars",
+              data: {
+                ...semanticData,
+                label: "Nested",
+                ...volatileNodeData,
+              },
+              position: { x: 12, y: 34 },
+            }],
+            edges: [],
+          },
+        },
+      },
+      "import polars as pl",
+    )
+
+    const identity = graphForRequestIdentity(graph)
+    const identityNodes = identity.nodes as Array<{ data: Record<string, unknown> }>
+    const child = (identity.submodels as Record<string, Record<string, unknown>>).child
+    const childGraph = child.graph as Record<string, unknown>
+    const childNodes = childGraph.nodes as Array<{ data: Record<string, unknown> }>
+
+    expect(identityNodes[0].data).toEqual(semanticData)
+    expect(childNodes[0].data).toEqual({ ...semanticData, label: "Nested" })
+    expect(childGraph.edges).toEqual([])
+    expect(identity.preamble).toBe("import polars as pl")
+    expect(graph.nodes[0].data._columns).toEqual(volatileNodeData._columns)
+  })
+
+  it("preserves opaque legacy nodes and submodel definitions", () => {
+    const opaqueNodes = [
+      null,
+      "legacy-node",
+      [],
+      { id: "missing-data" },
+      { id: "array-data", data: [] },
+    ]
+    const opaqueSubmodels = {
+      nullDefinition: null,
+      stringDefinition: "legacy-submodel",
+      arrayDefinition: [],
+      missingGraph: { label: "Legacy" },
+      arrayGraph: { graph: [] },
+    }
+    const graph = {
+      nodes: opaqueNodes,
+      edges: [],
+      submodels: opaqueSubmodels,
+      preamble: "",
+    } as unknown as ReturnType<typeof buildGraph>
+
+    const identity = graphForRequestIdentity(graph)
+
+    expect(identity.nodes).toEqual(opaqueNodes)
+    expect(identity.submodels).toEqual(opaqueSubmodels)
+  })
+
+  it("passes through non-record submodel collections and non-array node collections", () => {
+    for (const submodels of [null, "legacy-submodels", []]) {
+      const graph = {
+        nodes: null,
+        edges: [],
+        submodels,
+      } as unknown as ReturnType<typeof buildGraph>
+
+      const identity = graphForRequestIdentity(graph)
+
+      expect(identity.nodes).toBeNull()
+      expect(identity.submodels).toBe(submodels)
+    }
   })
 })
 

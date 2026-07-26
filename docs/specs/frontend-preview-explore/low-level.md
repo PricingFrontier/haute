@@ -7,10 +7,10 @@
 | `frontend/src/panels/DataPreview.tsx` | Virtualised preview table, frame selection, search, cell callbacks and value formatting. |
 | `frontend/src/panels/PreviewPanelFrame.tsx`, `frontend/src/panels/PreviewPanelTabs.tsx` | Resizable/collapsible frame and generic ARIA tab strip. |
 | `frontend/src/panels/previewPanelLayout.ts` | Shared preview-panel dimensions and header/action layout constants. |
-| `frontend/src/components/ColumnTable.tsx`, `frontend/src/components/BreakdownDropdown.tsx` | Reusable preview-adjacent column table and sorted visual breakdown dropdown. |
-| `frontend/src/components/CacheFetchButton.tsx`, `frontend/src/components/ExecutionDiagnosticsSummary.tsx`, `frontend/src/components/ExecutionDiagnosticsIndicator.tsx` | Generic cache fetch/poll/cancel/delete control, execution-diagnostic banner, and compact preview-header diagnostic indicator. |
+| `frontend/src/components/ExecutionDiagnosticsSummary.tsx` | Modelling-owned actionable execution-diagnostic banner consumed by Explore progress and cache reports. |
+| `frontend/src/components/ExecutionDiagnosticsIndicator.tsx` | Compact preview-header execution diagnostic indicator. |
 | `frontend/src/panels/ExplorePreview.tsx` | Explore run/cancel/store lifecycle and Preview/Overview tab composition. |
-| `frontend/src/panels/UtilityPanel.tsx` | Utility-module list/read/create/delete/editor UI with debounced, flushable saves and syntax-error display. |
+| `frontend/src/panels/UtilityPanel.tsx` | Utility-module list/read/create/delete/editor UI with debounced, flushable saves and syntax-error display. `App.tsx` loads the panel through a lazy import only after the user opens Utility, keeping its editor and API path out of startup JavaScript. |
 | `frontend/src/panels/explore/cacheIdentity.ts` | Upstream-lineage/config identity for an Explore cache request. |
 | `frontend/src/panels/explore/overviewCardDefinitions.ts`, `frontend/src/panels/explore/overviewConfig.ts` | Ordered overview-card registry and defensive config reader. |
 | `frontend/src/panels/explore/ExploreOverviewPane.tsx` | Enabled-card/empty-state dispatcher. |
@@ -25,8 +25,9 @@
 - `OverviewConfig` is `Partial<Record<OverviewCardKey, boolean>>`; the fixed
   `OVERVIEW_CARD_DEFINITIONS` order is authoritative regardless of raw-object key order.
 - Explore jobs/results in `frontend/src/stores/useNodeResultsStore.ts` are accepted only when
-  their stored `configHash` and source match `frontend/src/panels/ExplorePreview.tsx`'s newly
-  calculated identity.
+  a cached result's stored `configHash` matches `frontend/src/panels/ExplorePreview.tsx`'s newly
+  calculated canonical identity. Active jobs are node-owned and remain actionable across
+  identity changes.
 
 ## Control flow
 
@@ -44,24 +45,29 @@
 
 1. `frontend/src/panels/explore/cacheIdentity.ts` finds all upstream nodes, removes Explore
    overview display settings from data-affecting config, and includes submodels/preamble.
-2. `frontend/src/panels/ExplorePreview.tsx` hashes that identity with the active source, ignores
-   stored job/result records with a different hash/source, and records immediate cache hits as a
-   completed result or background starts as a job.
+2. `frontend/src/panels/ExplorePreview.tsx` canonicalises that identity together with the active
+   source. It ignores cached results with a different identity, but keeps the node's active job
+   visible and cancellable using the source that job actually started with. It records immediate
+   cache hits as completed results and background starts as jobs.
 3. Start failures, and cancellation responses without a completed report, call the result-store
-   failure path; thrown start/cancel errors also toast. A visible report is touched to update cache
-   recency. Preview and Overview mount only for their active tab; Relationships and Charts are
-   currently tab labels with no body.
+   failure path; thrown start/cancel errors also toast. `useBackgroundJobs` in frontend-shared
+   polls background Explore jobs and moves terminal responses into the result store. A visible
+   report is touched to update cache recency. Preview and Overview are the only tabs and mount
+   only for their active tab; a remembered value from a removed pane normalises to Preview.
 4. `frontend/src/panels/explore/overviewConfig.ts` drops malformed config values. The overview
    pane renders no-enabled-cards, no-report, or the ordered enabled renderer set.
 
 ### Utility editing concurrency
 
-1. `frontend/src/panels/UtilityPanel.tsx` loads files on mount and selects the first file when
-   none is active. Switching files first awaits `flushSave()` so the previous debounce cannot
-   lose its latest draft.
-2. Edits debounce for 500ms. Unmount flushes any pending write fire-and-forget; post-await
+1. `frontend/src/App.tsx` mounts `UtilityPanel` behind a local `Suspense` boundary only while
+   `utilityOpen`; the bundle checker treats its chunk as lazy-only and rejects startup preload.
+2. `frontend/src/panels/UtilityPanel.tsx` loads files on mount and selects the first file when
+   none is active. Switching files first awaits `flushSave()`; a pending/in-flight failure or an
+   already-settled rejected draft stops the switch, and the draft plus inline error remain visible
+   until a later save succeeds.
+3. Edits debounce for 500ms. Unmount flushes any pending write fire-and-forget; post-await
    state updates verify both mounted state and the module still selected, dropping stale replies.
-3. Delete explicitly cancels a pending save for the deleted file. Create refreshes the list,
+4. Delete explicitly cancels a pending save for the deleted file. Create refreshes the list,
    loads the new module and passes the server-returned import line back to the preamble owner.
 
 ## Edge cases and invariants
@@ -78,38 +84,40 @@
   a missing utility directory.
 - The frame restores its saved height after expand-to-top and uses parent height, own bottom edge,
   then viewport height when measuring available space.
+- `PreviewPanelTabs` gives exactly one enabled tab `tabIndex=0`; Left/Right wrap across enabled
+  tabs, Home/End select the boundary tab, and disabled tabs are skipped.
 
 ## Error handling
 
 Preview `loading` and `error` statuses are ordinary render branches. Explore records a terminal
 error for a failed start or a cancellation that does not return a completed report; thrown
-start/cancel exceptions also toast. Utility syntax errors remain inline and other file-operation
-failures toast or display action-local text. Cache/report/card shape is assumed to meet the API
-contract; optional overview settings alone are parsed defensively.
+start/cancel exceptions also toast. Actionable cache-report execution metrics render in the
+shared diagnostics banner. Utility syntax errors remain inline and block a requested file switch;
+other file-operation failures toast or display action-local text. Cache/report/card shape is
+assumed to meet the API contract; optional overview settings alone are parsed defensively.
 
 ## Testing
 
 Tests live in `frontend/src/panels/__tests__/DataPreview.test.tsx`,
 `frontend/src/panels/__tests__/PreviewPanelFrame.test.tsx`,
+`frontend/src/panels/__tests__/PreviewPanelTabs.test.tsx`,
 `frontend/src/panels/__tests__/ExplorePreview.test.tsx` and
 `frontend/src/panels/__tests__/UtilityPanel.test.tsx`, plus the focused overview suites under
 `frontend/src/panels/explore/__tests__/`. They cover virtualisation, frames, search, trace click
-delegation, cache identity/result lifecycle, card ordering/config, panel accessibility, utility
-save-flush/stale-response behaviour and syntax errors. Shared layout/constants and small visual
+delegation, boundary/rejected execution diagnostics, cache identity/result/job lifecycle,
+card ordering/config, roving-tab accessibility, utility save-flush/stale-response behaviour and
+syntax errors. `frontend/src/__tests__/App.utilityPanelLazy.test.ts` and the bundle-budget tests
+guard the Utility panel's on-demand chunk boundary. Shared layout/constants and small visual
 helpers are exercised through these component tests rather than owning standalone suites.
 
 Browser preview/smoke coverage is in `frontend/e2e/core-flows.spec.ts`,
 `frontend/e2e/data-preview-scroll.benchmark.spec.ts`, and `frontend/e2e/smoke.spec.ts`.
 
-## Polars backend contracts (0.6.0)
+## Execution diagnostics
 
-Remaining preview and Explore improvement work is tracked in the
-[frontend canvas roadmap](../../roadmap/frontend-canvas.md).
 `DataPreview.tsx` and `ExplorePreview.tsx` consume only the shared guarded version-1
-strategy payload. The consumer distinguishes `projected`, `boundary`, `admitted_eager`,
-`rejected`, and `not_planned`, with a separate diagnostic-unavailable state, and uses the shared
-authoritative strategy-to-status mapping; components must not reinterpret internal strategies.
-Planning states remain available in execution metrics for support and observability, but
+strategy payload through shared diagnostic components. Planning states remain available in
+execution metrics for support and observability, but
 `DataPreview` does not render a full-width strategy banner. `projected`,
 `admitted_eager`, and `not_planned` stay silent. A `boundary` adds a warning icon immediately after
 the Preview row/column summary; `rejected` uses an error icon in the same position. Activating the
@@ -118,14 +126,10 @@ the possible I/O/memory cost, and an available remediation. Independently action
 pressure uses the warning indicator too. Raw reason codes, bounded-collection wrappers, and
 collection JSON are support data and are not user-facing copy.
 
-Missing/malformed required fields, unknown version-1 enums, and unsupported higher versions render
-diagnostic unavailable. Unknown additive fields are ignored only within version 1. A group-by
-boundary is valid only for `strategy=materialisation-boundary`; a rejected group-by surfaces its
-HTTP 422 stable code and named fields and blocks execution. No component may recast group-by as
-ordinary checked execution or `unprojected-streaming-boundary`.
+`ExplorePreview` passes progress or cache-report metrics to
+`ExecutionDiagnosticsSummary`, which renders memory pressure and rejected strategies with an
+accessible technical-detail disclosure. Missing/unsupported diagnostics stay silent; there is
+not yet a distinct diagnostic-unavailable UI state.
 
-Tests prove projected/admitted/not-planned statuses stay silent, cover boundary/rejected icon
-placement and accessible explanations, and cover diagnostic unavailable, every
-version/detail-state path, keyboard and screen-reader access,
-deterministic truncated detail, rejected execution gating, the group-by boundary/rejection
-distinction, and typed 422 error fields without fabricated values.
+Tests prove boundary and rejected indicator placement/explanations, memory-pressure detail,
+Explore cache-report metrics, and keyboard access without fabricated values.

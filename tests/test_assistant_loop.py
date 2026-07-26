@@ -335,6 +335,80 @@ class TestCancellation:
         assert session is not None and not session.lock.locked()
 
 
+class TestDisconnectHistoryIntegrity:
+    @pytest.mark.parametrize(
+        "close_at",
+        ["tool_started", "tool_finished", "graph_updated"],
+    )
+    async def test_closing_at_each_tool_yield_never_persists_an_orphan(
+        self,
+        store,
+        session_id,
+        close_at,
+    ):
+        """Every externally visible tool lifecycle yield is a generator-close
+        boundary. History committed from each boundary must remain acceptable
+        to both providers: every call id has one matching result id."""
+
+        from haute.assistant._loop import run_turn
+
+        async def execute_tool(name: str, arguments: dict) -> dict:
+            return {"ok": True, "graph_fingerprint": "fp-1"}
+
+        turn = run_turn(
+            store,
+            session_id,
+            "edit",
+            provider=ScriptedProvider(
+                [[ToolCallRequest("t1", "get_pipeline", {}), TurnStop("tool_use", _usage())]]
+            ),
+            tools=[],
+            execute_tool=execute_tool,
+            system_prompt="s",
+            turn_timeout=5.0,
+            max_tool_calls=8,
+        )
+
+        while True:
+            event = await anext(turn)
+            if event.type == close_at:
+                break
+        await turn.aclose()
+
+        session = store.lookup(session_id)
+        assert session is not None
+        assert not session.lock.locked()
+        assert len(session.history) == 1
+        call_ids = {
+            call.id for message in session.history[0].messages for call in message.tool_calls
+        }
+        result_ids = {
+            message.tool_call_id
+            for message in session.history[0].messages
+            if message.role == "tool"
+        }
+        expected_ids = set() if close_at == "tool_started" else {"t1"}
+        assert call_ids == result_ids == expected_ids
+
+    async def test_raising_history_append_still_releases_the_turn_lock(self):
+        class RaisingAppendStore(SessionStore):
+            def append(self, session_ref, turn):
+                raise RuntimeError("append failed")
+
+        store = RaisingAppendStore()
+        session = store.create("main.py")
+
+        with pytest.raises(RuntimeError, match="append failed"):
+            await _run(
+                store,
+                session.id,
+                "hi",
+                provider=ScriptedProvider([[TextDelta("done"), TurnStop("end", _usage())]]),
+            )
+
+        assert not session.lock.locked()
+
+
 # ---------------------------------------------------------------------------
 # Concurrency
 # ---------------------------------------------------------------------------
@@ -646,6 +720,21 @@ class TestNeutralRecordValidationSweep:
         assert dumped["tool_call_id"] == "t1"
         assert dumped["name"] == "get_pipeline"
         assert dumped["tool_results"][0]["is_error"] is False
+
+    def test_tool_role_message_round_trips_error_flag(self):
+        from haute.assistant._session import AssistantMessage
+
+        message = AssistantMessage.from_mapping(
+            {
+                "role": "tool",
+                "tool_call_id": "t1",
+                "name": "get_pipeline",
+                "content": {"error": {"code": "failed"}},
+                "is_error": True,
+            }
+        )
+
+        assert message.as_dict()["is_error"] is True
 
     def test_coerce_turn_mapping_requires_messages_field(self):
         store = SessionStore()

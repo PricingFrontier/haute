@@ -621,6 +621,29 @@ describe("OptimiserPreview", () => {
       expect(screen.queryByText("Rates")).not.toBeInTheDocument()
     })
 
+    it("surfaces a selected-point contract violation instead of leaving rates loading", async () => {
+      mockStoreUpdateAfterSelect.mockImplementationOnce(() => {
+        throw new Error("Selected frontier response has the wrong point index")
+      })
+      renderPreview({
+        data: makeData({
+          result: makeSolveResult({
+            mode: "ratebook",
+            factor_tables: undefined,
+          }),
+          frontier: makeFrontier(),
+          selectedPointIndex: 0,
+        }),
+      })
+
+      fireEvent.click(screen.getByText("Rates"))
+
+      expect(await screen.findByText(
+        "Rate table load failed: Selected frontier response has the wrong point index",
+      )).toBeInTheDocument()
+      expect(screen.queryByText("Materialising selected point rates...")).not.toBeInTheDocument()
+    })
+
     it("switches to Convergence tab on click", () => {
       renderPreview()
       fireEvent.click(screen.getByText("Convergence"))
@@ -1038,6 +1061,35 @@ describe("OptimiserPreview", () => {
       expect(mockSelectFrontierPointAPI).not.toHaveBeenCalled()
     })
 
+    it("clears loaded result detail when the selected frontier point changes", async () => {
+      const firstData = makeData({
+        frontier: makeFrontier(),
+        selectedPointIndex: 0,
+      })
+      const { rerender } = renderPreview({ data: firstData })
+      fireEvent.click(screen.getByText("Export"))
+      fireEvent.click(screen.getByRole("button", { name: /Load detail/i }))
+
+      expect(await screen.findByText(/1 of 1 rows loaded/)).toBeInTheDocument()
+      expect(screen.getByRole("button", { name: /Save result/i })).toBeDisabled()
+      expect(screen.getByRole("button", { name: /Log to MLflow/i })).toBeDisabled()
+
+      rerender(
+        <OptimiserPreview
+          data={{ ...firstData, selectedPointIndex: 1 }}
+          nodeId="opt_1"
+          allNodes={[]}
+          edges={[]}
+        />,
+      )
+
+      await waitFor(() => {
+        expect(screen.queryByText(/1 of 1 rows loaded/)).not.toBeInTheDocument()
+      })
+      expect(screen.getByRole("button", { name: /Save result/i })).toBeEnabled()
+      expect(screen.getByRole("button", { name: /Log to MLflow/i })).toBeEnabled()
+    })
+
     it("aborts an in-flight result detail request when the job changes", async () => {
       let firstReject: (reason?: unknown) => void = () => {}
       mockApplyOptimiser
@@ -1152,6 +1204,26 @@ describe("OptimiserPreview", () => {
       })
     })
 
+    it("prefers structured detail when save fails", async () => {
+      mockSaveOptimiser.mockRejectedValueOnce({
+        message: "HTTP 422",
+        detail: "The selected point cannot be saved.",
+      })
+      renderPreview({
+        data: makeData({
+          frontier: makeFrontier(),
+          selectedPointIndex: 0,
+        }),
+      })
+
+      fireEvent.click(screen.getByText("Save Result"))
+
+      expect(await screen.findByText(
+        "Save failed: The selected point cannot be saved.",
+      )).toBeInTheDocument()
+      expect(screen.queryByText(/\[object Object\]/)).not.toBeInTheDocument()
+    })
+
     it("shows error text when MLflow log fails", async () => {
       mockLogOptimiserToMlflow.mockRejectedValueOnce(new Error("tracking server down"))
 
@@ -1167,6 +1239,26 @@ describe("OptimiserPreview", () => {
       await waitFor(() => {
         expect(screen.getByText(/MLflow log failed/)).toBeInTheDocument()
       })
+    })
+
+    it("prefers structured detail when MLflow logging fails", async () => {
+      mockLogOptimiserToMlflow.mockRejectedValueOnce({
+        message: "HTTP 503",
+        detail: "The tracking server rejected this run.",
+      })
+      renderPreview({
+        data: makeData({
+          frontier: makeFrontier(),
+          selectedPointIndex: 0,
+        }),
+      })
+
+      fireEvent.click(screen.getByText("Log to MLflow"))
+
+      expect(await screen.findByText(
+        "MLflow log failed: The tracking server rejected this run.",
+      )).toBeInTheDocument()
+      expect(screen.queryByText(/\[object Object\]/)).not.toBeInTheDocument()
     })
   })
 

@@ -145,11 +145,10 @@ describe("CalculationHero \u2014 error-silent null branches must surface visible
   })
 
   // -------------------------------------------------------------------------
-  // Case C: backend reported a waterfall build error. The shared
-  // WaterfallErrorAlert component must render the backend-supplied error
-  // string visibly.
+  // Case C: backend reported a waterfall build error. StepCard owns the
+  // shared alert, so CalculationHero must not duplicate it.
   // -------------------------------------------------------------------------
-  it("C: backend waterfall error \u2014 renders WaterfallErrorAlert with error message visible", () => {
+  it("C: backend waterfall error \u2014 leaves alert ownership to StepCard", () => {
     const backendError = "Waterfall build failed: non-multiplicative operator encountered"
     render(
       <CalculationHero
@@ -162,15 +161,9 @@ describe("CalculationHero \u2014 error-silent null branches must surface visible
       />,
     )
 
-    // The specific error text must appear on screen — no generic fallback.
-    expect(screen.getByText(new RegExp(backendError.slice(0, 30)))).toBeInTheDocument()
-
-    // And it must be announced as an alert for a11y.
-    const alerts = screen.queryAllByRole("alert")
-    const hasMatchingAlert = alerts.some((el) =>
-      (el.textContent ?? "").includes(backendError.slice(0, 30)),
-    )
-    expect(hasMatchingAlert).toBe(true)
+    // The parent StepCard renders the alert once; the hero stays quiet.
+    expect(screen.queryByText(new RegExp(backendError.slice(0, 30)))).not.toBeInTheDocument()
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument()
   })
 })
 

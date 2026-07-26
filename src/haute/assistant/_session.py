@@ -206,6 +206,7 @@ class AssistantMessage:
     tool_results: tuple[AssistantToolResult, ...] = ()
     tool_call_id: str | None = None
     name: str | None = None
+    is_error: bool = False
 
     def __post_init__(self) -> None:
         if not isinstance(self.role, str) or self.role not in _MESSAGE_ROLES:
@@ -239,6 +240,8 @@ class AssistantMessage:
             value = getattr(self, field_name)
             if value is not None and (not isinstance(value, str) or not value):
                 raise ValueError(f"{field_name} must be a non-empty string when provided")
+        if not isinstance(self.is_error, bool):
+            raise TypeError("message is_error must be a boolean")
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any]) -> AssistantMessage:
@@ -276,13 +279,18 @@ class AssistantMessage:
             )
         except TypeError:
             raise TypeError("message tool_results must be a sequence of JSON objects") from None
+        content = value.get("content")
+        inferred_error = (
+            value["role"] == "tool" and isinstance(content, Mapping) and "error" in content
+        )
         return cls(
             role=value["role"],
-            content=value.get("content"),
+            content=content,
             tool_calls=calls,
             tool_results=results,
             tool_call_id=value.get("tool_call_id"),
             name=value.get("name"),
+            is_error=value.get("is_error", inferred_error),
         )
 
     def as_dict(self) -> dict[str, JSONValue]:
@@ -300,6 +308,8 @@ class AssistantMessage:
             result["tool_call_id"] = self.tool_call_id
         if self.name is not None:
             result["name"] = self.name
+        if self.role == "tool":
+            result["is_error"] = self.is_error
         return result
 
 
@@ -514,6 +524,10 @@ class SessionStore:
             return
         try:
             base = self._storage_dir()
+            for path in base.glob("*.json.tmp"):
+                session_id = path.name.removesuffix(".json.tmp")
+                if _SESSION_ID_PATTERN.fullmatch(session_id) is not None:
+                    path.unlink(missing_ok=True)
             others = sorted(
                 (p for p in base.glob("*.json") if p.stem != keep_id),
                 key=lambda p: p.stat().st_mtime,

@@ -18,11 +18,8 @@ This module combines two layers:
      - node-type enrichment (the dispatchers above)
      - row-lineage detection
 
-   Enrichment functions imported from ``_expression_parser`` and the
-   node-type dispatchers are resolved at call time via
-   ``sys.modules["haute.trace"]`` so ``monkeypatch.setattr`` on those
-   module attributes (e.g. ``haute.trace.parse_expression``) flows
-   through into this dispatch walk unchanged.
+   Expression helpers are imported directly from ``_expression_parser``;
+   node-type dispatchers are local functions in this module.
 """
 
 from __future__ import annotations
@@ -33,18 +30,23 @@ import dataclasses
 import json
 import math
 import re
-import sys
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
 import polars as pl
 
 from haute._banding_config import normalise_banding_factors
+from haute._expression_parser import (
+    evaluate_expression,
+    parse_expression,
+    parse_expression_chain,
+)
 from haute._graph_utils import _sanitize_func_name
 from haute._json_safe import to_json_safe
 from haute._logging import get_logger
 from haute._rating import (
     SUPPORTED_BANDING_OPERATORS,
+    _banding_rule_comparators,
     _breakpoints_to_rules,
     _normalise_combined_outputs,
     normalise_rating_key,
@@ -320,22 +322,11 @@ def _match_continuous_rule(
     except (ValueError, TypeError):
         return False
 
-    for suffix in ("1", "2"):
-        op = str(rule.get(f"op{suffix}", "") or "").strip()
-        threshold = rule.get(f"val{suffix}")
-        if not op or threshold is None or threshold == "":
-            continue
-        try:
-            threshold_num = float(threshold)
-        except (ValueError, TypeError) as exc:
-            raise ValueError(
-                f"Banding rule has non-numeric threshold {threshold!r} for val{suffix}"
-            ) from exc
-        if not math.isfinite(threshold_num):
-            raise ValueError(f"Banding rule has non-finite threshold {threshold!r} for val{suffix}")
-        fn = SUPPORTED_BANDING_OPERATORS.get(op)
-        if fn is None:
-            raise ValueError(f"Banding rule has unsupported operator '{op}' for op{suffix}")
+    comparators = _banding_rule_comparators(rule)
+    if not comparators:
+        return False
+    for op, threshold_num in comparators:
+        fn = SUPPORTED_BANDING_OPERATORS[op]
         cmp_val, cmp_threshold = _coerce_pair_through_dtype(val, threshold_num, input_dtype)
         if not fn(cmp_val, cmp_threshold):
             return False
@@ -958,16 +949,7 @@ def detect_row_lineage_type(
 # ---------------------------------------------------------------------------
 # Dispatch helpers — used by ``enrich_steps`` below
 #
-# These call into the expression parser and the node-type enrichers via
-# attribute lookup on ``haute.trace`` so that tests can
-# ``monkeypatch.setattr("haute.trace.parse_expression", ...)`` and have
-# the patched function reach this dispatcher.
 # ---------------------------------------------------------------------------
-
-
-def _trace_module() -> Any:
-    """Return the ``haute.trace`` module object (for dynamic lookup)."""
-    return sys.modules["haute.trace"]
 
 
 def _wrap_node_code(raw_code: str) -> str:
@@ -1001,10 +983,6 @@ def _build_input_sources(
     and extracts its formula + values.  If that source itself has an
     expression with referenced columns, recurses to build nested sources.
     """
-    trace_mod = _trace_module()
-    parse_expression = trace_mod.parse_expression
-    evaluate_expression = trace_mod.evaluate_expression
-
     if completed_memo is None:
         completed_memo = {}
     result: dict[str, Any] = {}
@@ -1072,7 +1050,7 @@ def _build_input_sources(
                 if nd is not None:
                     cfg = nd.data.config if isinstance(nd.data.config, dict) else {}
                     if other_step.node_type == "banding":
-                        banding_detail = trace_mod.enrich_banding(
+                        banding_detail = enrich_banding(
                             cfg,
                             other_step.input_values,
                             other_step.output_values,
@@ -1289,9 +1267,6 @@ def _build_rename_chain(
     node_map: dict[str, Any] | None = None,
 ) -> list[str]:
     """Build a chain of renames by looking backward through steps."""
-    trace_mod = _trace_module()
-    parse_expression = trace_mod.parse_expression
-
     # Start with the current rename: old_name -> new_name
     chain = [old_name, new_name]
 
@@ -1439,7 +1414,6 @@ def enrich_steps(
     selection for multi-frame sources, used to scope parent-frame
     lookups to the frame(s) a node actually consumes.
     """
-    trace_mod = _trace_module()
     completed_memo: dict[_EnrichmentMemoKey, dict[str, Any]] = {}
     frame_identity = _enrichment_frame_identity(eager_outputs)
 
@@ -1513,10 +1487,10 @@ def enrich_steps(
                                     **upstream.input_values,
                                     **upstream.output_values,
                                 }
-                                parsed = trace_mod.parse_expression(u_code, column)
+                                parsed = parse_expression(u_code, column)
                                 if parsed and parsed.expression_text:
                                     step.expression = dataclasses.asdict(parsed)
-                                ev = trace_mod.evaluate_expression(
+                                ev = evaluate_expression(
                                     u_code,
                                     column,
                                     u_combined,
@@ -1557,7 +1531,7 @@ def enrich_steps(
             if column and (_col_in_schema or _col_in_code):
                 parsed = None
                 try:
-                    parsed = trace_mod.parse_expression(code, column)
+                    parsed = parse_expression(code, column)
                     if parsed is not None:
                         step.expression = dataclasses.asdict(parsed)
                 except Exception as exc:
@@ -1607,7 +1581,7 @@ def enrich_steps(
                         skip_evaluation = True
                 if not skip_evaluation:
                     try:
-                        evaluated = trace_mod.evaluate_expression(
+                        evaluated = evaluate_expression(
                             code,
                             column,
                             eval_values,
@@ -1647,7 +1621,7 @@ def enrich_steps(
 
                 # --- Expression chain (intra-node dependencies) ---
                 try:
-                    chain = trace_mod.parse_expression_chain(raw_code, column)
+                    chain = parse_expression_chain(raw_code, column)
                     if chain and len(chain) > 1:
                         if step.calculation is None:
                             step.calculation = {}
@@ -1672,7 +1646,7 @@ def enrich_steps(
                             entry = dataclasses.asdict(p)
                             # Enrich with substituted values and result
                             try:
-                                ev = trace_mod.evaluate_expression(
+                                ev = evaluate_expression(
                                     raw_code,
                                     p.target_column,
                                     combined_values,
@@ -1801,136 +1775,133 @@ def enrich_steps(
                     )
 
             # --- Node-type enrichment ---
-            if True:
-                try:
-                    detail: dict[str, Any] | None = None
-                    if node_type == "ratingStep":
-                        factor_input_dtypes = _resolve_factor_input_dtypes(
-                            step.node_id,
-                            eager_outputs,
-                            parents_of,
-                            source_frames_of,
-                        )
-                        detail = trace_mod.enrich_rating_step(
-                            cfg,
-                            step.input_values,
-                            step.output_values,
-                            factor_input_dtypes=factor_input_dtypes,
-                        )
-                    elif node_type == "banding":
-                        # Resolve each factor's source column dtype from
-                        # the parent frames so continuous-rule re-matching
-                        # compares in the engine's own numeric domain
-                        # (Float32-faithful), not widened float64.
-                        factor_input_dtypes = _resolve_factor_input_dtypes(
-                            step.node_id,
-                            eager_outputs,
-                            parents_of,
-                            source_frames_of,
-                        )
-                        detail = trace_mod.enrich_banding(
-                            cfg,
-                            step.input_values,
-                            step.output_values,
-                            traced_column=column,
-                            factor_input_dtypes=factor_input_dtypes,
-                        )
-                    elif node_type == "modelScore":
-                        detail = trace_mod.enrich_model_score(
-                            cfg, step.input_values, step.output_values
-                        )
-                    elif node_type == "scenarioExpander":
-                        detail = trace_mod.enrich_scenario_expansion(
-                            cfg,
-                            step.input_values,
-                            step.output_values,
-                        )
-                    elif node_type == "liveSwitch":
-                        detail = trace_mod.enrich_live_switch(cfg, source)
-                    elif node_type == "optimiserApply":
-                        parent_ids = parents_of.get(step.node_id, [])
-                        input_frames = [
-                            eager_outputs[pid]
-                            for pid in parent_ids
-                            if isinstance(eager_outputs.get(pid), pl.DataFrame)
-                        ]
-                        source_names = [
-                            _sanitize_func_name(node_map[pid].data.label)
-                            for pid in parent_ids
-                            if pid in node_map
-                        ]
-                        detail = trace_mod.enrich_optimiser_apply(
-                            cfg,
-                            step.input_values,
-                            step.output_values,
-                            input_frames=input_frames,
-                            source_names=source_names,
-                            source_ids=[pid for pid in parent_ids if pid in node_map],
-                        )
-                    if detail is not None:
-                        step.node_detail = detail
-                        if node_type == "banding":
-                            _attach_banding_lineage(
-                                step,
-                                detail,
-                                column,
-                                steps,
-                                node_map,
-                                preamble_ns,
-                                eager_outputs,
-                                completed_memo=completed_memo,
-                                frame_identity=frame_identity,
-                            )
-                except Exception as exc:
-                    logger.warning(
-                        "node_enrichment_failed",
-                        node_id=step.node_id,
-                        node_type=str(node_type),
-                        error=str(exc),
-                        error_type=type(exc).__name__,
-                        exc_info=True,
+            try:
+                detail: dict[str, Any] | None = None
+                if node_type == "ratingStep":
+                    factor_input_dtypes = _resolve_factor_input_dtypes(
+                        step.node_id,
+                        eager_outputs,
+                        parents_of,
+                        source_frames_of,
                     )
-                    step.node_detail = {
-                        "error": f"node enrichment failed: {exc}",
-                        "error_type": type(exc).__name__,
-                        "node_type": str(node_type),
-                    }
-
-                # --- Row lineage type ---
-                try:
+                    detail = enrich_rating_step(
+                        cfg,
+                        step.input_values,
+                        step.output_values,
+                        factor_input_dtypes=factor_input_dtypes,
+                    )
+                elif node_type == "banding":
+                    # Resolve each factor's source column dtype from
+                    # the parent frames so continuous-rule re-matching
+                    # compares in the engine's own numeric domain
+                    # (Float32-faithful), not widened float64.
+                    factor_input_dtypes = _resolve_factor_input_dtypes(
+                        step.node_id,
+                        eager_outputs,
+                        parents_of,
+                        source_frames_of,
+                    )
+                    detail = enrich_banding(
+                        cfg,
+                        step.input_values,
+                        step.output_values,
+                        traced_column=column,
+                        factor_input_dtypes=factor_input_dtypes,
+                    )
+                elif node_type == "modelScore":
+                    detail = enrich_model_score(cfg, step.input_values, step.output_values)
+                elif node_type == "scenarioExpander":
+                    detail = enrich_scenario_expansion(
+                        cfg,
+                        step.input_values,
+                        step.output_values,
+                    )
+                elif node_type == "liveSwitch":
+                    detail = enrich_live_switch(cfg, source)
+                elif node_type == "optimiserApply":
                     parent_ids = parents_of.get(step.node_id, [])
-                    parent_row_count = 0
-                    for pid in parent_ids:
-                        parent_row_count = max(
-                            parent_row_count,
-                            _node_output_row_count(eager_outputs.get(pid)),
+                    input_frames: list[pl.DataFrame | pl.LazyFrame] = [
+                        eager_outputs[pid]
+                        for pid in parent_ids
+                        if isinstance(eager_outputs.get(pid), pl.DataFrame)
+                    ]
+                    source_names = [
+                        _sanitize_func_name(node_map[pid].data.label)
+                        for pid in parent_ids
+                        if pid in node_map
+                    ]
+                    detail = enrich_optimiser_apply(
+                        cfg,
+                        step.input_values,
+                        step.output_values,
+                        input_frames=input_frames,
+                        source_names=source_names,
+                        source_ids=[pid for pid in parent_ids if pid in node_map],
+                    )
+                if detail is not None:
+                    step.node_detail = detail
+                    if node_type == "banding":
+                        _attach_banding_lineage(
+                            step,
+                            detail,
+                            column,
+                            steps,
+                            node_map,
+                            preamble_ns,
+                            eager_outputs,
+                            completed_memo=completed_memo,
+                            frame_identity=frame_identity,
                         )
-                    # The node's own output may itself be a multi-frame
-                    # bundle (the source appearing as an intermediate
-                    # step) — same dict guard as the parent side.
-                    child_row_count = _node_output_row_count(eager_outputs.get(step.node_id))
+            except Exception as exc:
+                logger.warning(
+                    "node_enrichment_failed",
+                    node_id=step.node_id,
+                    node_type=str(node_type),
+                    error=str(exc),
+                    error_type=type(exc).__name__,
+                    exc_info=True,
+                )
+                step.node_detail = {
+                    "error": f"node enrichment failed: {exc}",
+                    "error_type": type(exc).__name__,
+                    "node_type": str(node_type),
+                }
 
-                    # Sniff operation type from code string
-                    operation_type = _sniff_operation_type(code) if code else ""
+            # --- Row lineage type ---
+            try:
+                parent_ids = parents_of.get(step.node_id, [])
+                parent_row_count = 0
+                for pid in parent_ids:
+                    parent_row_count = max(
+                        parent_row_count,
+                        _node_output_row_count(eager_outputs.get(pid)),
+                    )
+                # The node's own output may itself be a multi-frame
+                # bundle (the source appearing as an intermediate
+                # step) — same dict guard as the parent side.
+                child_row_count = _node_output_row_count(eager_outputs.get(step.node_id))
 
-                    step.row_lineage_type = trace_mod.detect_row_lineage_type(
-                        input_row_count=parent_row_count,
-                        output_row_count=child_row_count,
-                        node_type=node_type,
-                        operation_type=operation_type,
-                    )
-                except Exception as exc:
-                    logger.warning(
-                        "row_lineage_detection_failed",
-                        node_id=step.node_id,
-                        error=str(exc),
-                        error_type=type(exc).__name__,
-                        exc_info=True,
-                    )
-                    # row_lineage_type is a plain string; encode the
-                    # error visibly so UI consumers see "error: ..."
-                    # rather than a silent None.
-                    step.row_lineage_type = f"error: row lineage detection failed: {exc}"
+                # Sniff operation type from code string
+                operation_type = _sniff_operation_type(code) if code else ""
+
+                step.row_lineage_type = detect_row_lineage_type(
+                    input_row_count=parent_row_count,
+                    output_row_count=child_row_count,
+                    node_type=node_type,
+                    operation_type=operation_type,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "row_lineage_detection_failed",
+                    node_id=step.node_id,
+                    error=str(exc),
+                    error_type=type(exc).__name__,
+                    exc_info=True,
+                )
+                # row_lineage_type is a plain string; encode the
+                # error visibly so UI consumers see "error: ..."
+                # rather than a silent None.
+                step.row_lineage_type = f"error: row lineage detection failed: {exc}"
         except Exception as exc:
             # Outer catch-all for any enrichment step.  Surface the
             # failure on the step so downstream consumers can see it,

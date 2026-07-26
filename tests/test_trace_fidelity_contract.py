@@ -7,7 +7,7 @@ import types
 import polars as pl
 import pytest
 
-from haute._rating import SUPPORTED_BANDING_OPERATORS, _banding_condition
+from haute._rating import SUPPORTED_BANDING_OPERATORS, _apply_banding, _banding_condition
 from haute._trace_correlation import SchemaDiff
 from haute._trace_enrichment import (
     _match_continuous_rule,
@@ -122,6 +122,20 @@ def test_runtime_and_trace_reject_the_same_invalid_thresholds(threshold: object)
         _banding_condition(pl.col("value"), rule)
     with pytest.raises(ValueError):
         _match_continuous_rule(4, rule)
+
+
+def test_runtime_and_trace_both_reject_an_unusable_continuous_rule() -> None:
+    rule = {"op1": "!!", "val1": "", "assignment": "credited_by_old_trace"}
+
+    assert _match_continuous_rule(25, rule) is False
+    with pytest.raises(ValueError, match="no usable"):
+        _apply_banding(
+            pl.DataFrame({"value": [25]}).lazy(),
+            "value",
+            "band",
+            "continuous",
+            [rule],
+        )
 
 
 def test_model_detail_never_guesses_identifier_columns_as_features(

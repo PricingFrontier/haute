@@ -2529,16 +2529,16 @@ class TestMatchContinuousRule:
 
         assert _match_continuous_rule("abc", {"op1": "<", "val1": 10}) is False
 
-    def test_empty_rule_returns_true(self):
-        """No operators means no conditions to fail."""
+    def test_empty_rule_is_not_usable(self):
+        """A rule without a usable comparison cannot receive trace credit."""
         from haute._trace_enrichment import _match_continuous_rule
 
-        assert _match_continuous_rule(5, {}) is True
+        assert _match_continuous_rule(5, {}) is False
 
-    def test_missing_val_skips_condition(self):
+    def test_missing_value_leaves_rule_unusable(self):
         from haute._trace_enrichment import _match_continuous_rule
 
-        assert _match_continuous_rule(5, {"op1": "<", "val1": ""}) is True
+        assert _match_continuous_rule(5, {"op1": "<", "val1": ""}) is False
 
     def test_non_numeric_threshold_is_rejected(self):
         from haute._trace_enrichment import _match_continuous_rule

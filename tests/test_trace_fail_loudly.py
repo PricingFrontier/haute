@@ -205,7 +205,7 @@ class TestItem3SilentEnrichmentExcepts:
         or ``step.expression`` carries a visible failure marker.
         """
         graph = self._build_arithmetic_graph(tmp_path)
-        monkeypatch.setattr("haute.trace.parse_expression", _explodes)
+        monkeypatch.setattr("haute._trace_enrichment.parse_expression", _explodes)
 
         result, exc, captured = _run_trace_loudly(
             graph=graph,
@@ -243,7 +243,7 @@ class TestItem3SilentEnrichmentExcepts:
 
         # Keep parse_expression working so we get past the 1193 site and
         # actually reach the evaluate_expression call on line 1199.
-        monkeypatch.setattr("haute.trace.evaluate_expression", _explodes)
+        monkeypatch.setattr("haute._trace_enrichment.evaluate_expression", _explodes)
 
         result, exc, captured = _run_trace_loudly(
             graph=graph,
@@ -294,7 +294,7 @@ class TestItem3SilentEnrichmentExcepts:
                 "edges": [_edge("src", "t")],
             }
         )
-        monkeypatch.setattr("haute.trace.parse_expression_chain", _explodes)
+        monkeypatch.setattr("haute._trace_enrichment.parse_expression_chain", _explodes)
 
         result, exc, captured = _run_trace_loudly(
             graph=graph,
@@ -375,7 +375,7 @@ class TestItem3SilentEnrichmentExcepts:
                 GraphEdge(id="e2", source="batch_src", target="sw"),
             ],
         )
-        monkeypatch.setattr("haute.trace.enrich_live_switch", _explodes)
+        monkeypatch.setattr("haute._trace_enrichment.enrich_live_switch", _explodes)
 
         result, exc, captured = _run_trace_loudly(
             graph=graph,
@@ -402,7 +402,7 @@ class TestItem3SilentEnrichmentExcepts:
     ):
         """``detect_row_lineage_type`` failure must leave a visible trace."""
         graph = self._build_arithmetic_graph(tmp_path)
-        monkeypatch.setattr("haute.trace.detect_row_lineage_type", _explodes)
+        monkeypatch.setattr("haute._trace_enrichment.detect_row_lineage_type", _explodes)
 
         result, exc, captured = _run_trace_loudly(
             graph=graph,
@@ -431,10 +431,13 @@ class TestItem3SilentEnrichmentExcepts:
     @pytest.mark.parametrize(
         "target_fn_path, _site_label",
         [
-            ("haute.trace.parse_expression", "1196_parse_expression"),
-            ("haute.trace.evaluate_expression", "1216_evaluate_expression"),
-            ("haute.trace.parse_expression_chain", "1246_parse_expression_chain"),
-            ("haute.trace.detect_row_lineage_type", "1359_detect_row_lineage_type"),
+            ("haute._trace_enrichment.parse_expression", "1196_parse_expression"),
+            ("haute._trace_enrichment.evaluate_expression", "1216_evaluate_expression"),
+            ("haute._trace_enrichment.parse_expression_chain", "1246_parse_expression_chain"),
+            (
+                "haute._trace_enrichment.detect_row_lineage_type",
+                "1359_detect_row_lineage_type",
+            ),
         ],
     )
     def test_injected_enrichment_failure_is_never_silent(

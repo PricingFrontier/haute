@@ -336,14 +336,25 @@ class TestReadTools:
         assert len(entries) == 19
         assert all("usage_note" in entry for entry in entries)
 
-    def test_list_datasets_applies_the_extension_allowlist(self, project_root: Path):
+    def test_list_datasets_uses_the_installed_input_extension_registry(
+        self, project_root: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        import haute.routes.files as files_routes
         from haute.assistant._tools import list_datasets
 
         (project_root / "data" / "notes.txt").write_text("x", encoding="utf-8")
+        (project_root / "data" / "supported.feather").write_text("x", encoding="utf-8")
+        (project_root / "data" / "unsupported.xml").write_text("x", encoding="utf-8")
         (project_root / "data" / ".hidden.parquet").write_text("x", encoding="utf-8")
+        monkeypatch.setattr(
+            files_routes,
+            "_installed_input_extensions",
+            lambda: (".parquet", ".feather"),
+        )
+
         result = list_datasets("data")
         names = {item["name"] for item in result["datasets"]}
-        assert names == {"quotes.parquet"}
+        assert names == {"quotes.parquet", "supported.feather"}
 
     def test_list_datasets_names_subdirectories_for_navigation(self, project_root: Path):
         """The project root lists visible subdirectories so the model can
@@ -379,6 +390,39 @@ class TestReadTools:
 
         result = list_datasets("../..")
         assert "error" in result
+
+    def test_dataset_tools_reject_hidden_state_paths(self, project_root: Path):
+        from haute.assistant._tools import get_dataset_schema, list_datasets
+
+        state_dir = project_root / ".haute"
+        state_dir.mkdir()
+        (state_dir / "session.json").write_text('[{"secret": "value"}]', encoding="utf-8")
+
+        listed = list_datasets(".haute")
+        previewed = get_dataset_schema(".haute/session.json")
+
+        assert listed["error"]["code"] == "dataset_path_forbidden"
+        assert previewed["error"]["code"] == "dataset_path_forbidden"
+
+    def test_dataset_tools_hide_denylisted_credential_files(self, project_root: Path):
+        from haute.assistant._tools import get_dataset_schema, list_datasets
+
+        credentials = project_root / "credentials.json"
+        credentials.write_text('[{"token": "do-not-preview"}]', encoding="utf-8")
+        credential_dir = project_root / "credentials"
+        credential_dir.mkdir()
+        (credential_dir / "token.json").write_text(
+            '[{"token": "also-do-not-preview"}]', encoding="utf-8"
+        )
+
+        listed = list_datasets(None)
+        previewed = get_dataset_schema("credentials.json")
+        nested = get_dataset_schema("credentials/token.json")
+
+        assert "credentials.json" not in {item["name"] for item in listed["datasets"]}
+        assert "credentials" not in listed["directories"]
+        assert previewed["error"]["code"] == "dataset_path_forbidden"
+        assert nested["error"]["code"] == "dataset_path_forbidden"
 
     def test_get_dataset_schema_reads_real_file(self, project_root: Path):
         from haute.assistant._tools import get_dataset_schema

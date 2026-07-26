@@ -1,0 +1,23 @@
+{
+  "outputMapping": [
+    {
+      "source_port": "combined",
+      "source_column": "quote_id",
+      "output_path": "$[:].quote_id",
+      "enabled": true
+    },
+    {
+      "source_port": "combined",
+      "source_column": "vehicle_age",
+      "output_path": "$[:].vehicle_age",
+      "enabled": true
+    },
+    {
+      "source_port": "combined",
+      "source_column": "customer_tenure",
+      "output_path": "$[:].customer_tenure",
+      "enabled": true
+    }
+  ],
+  "outputFormat": "json"
+}

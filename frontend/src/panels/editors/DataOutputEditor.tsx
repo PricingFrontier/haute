@@ -12,7 +12,7 @@ import type {
 import { EditorLabel } from "../../components/form"
 import useSettingsStore from "../../stores/useSettingsStore"
 import useOutputWriteStore from "../../stores/useOutputWriteStore"
-import { buildGraph } from "../../utils/buildGraph"
+import { buildGraph, graphForRequestIdentity } from "../../utils/buildGraph"
 import { useGraph } from "../useGraph"
 import IoFormatEditor from "./_IoFormatEditor"
 import { useIoCapabilities } from "./_ioFormats"
@@ -187,7 +187,7 @@ export default function DataOutputEditor({
   const identity = useMemo(
     () =>
       JSON.stringify({
-        graph,
+        graph: graphForRequestIdentity(graph),
         nodeId,
         config,
         source: activeSource,

@@ -13,10 +13,8 @@ import polars as pl
 import pytest
 import structlog.testing
 
-import haute._trace_correlation as trace_correlation
 from haute._trace_correlation import (
     _correlate_rows_posthoc,
-    _shared_key_is_unique,
     _trace_values_match,
 )
 from haute._trace_enrichment import (
@@ -153,10 +151,7 @@ class TestPositionalFastPath:
         assert result["p"] is None
         assert any(d["code"] == "ambiguous_row_match" for d in diagnostics)
 
-    def test_nonunique_carried_key_resolves_for_order_preserving_child(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ):
+    def test_nonunique_carried_key_resolves_for_order_preserving_child(self):
         """Order-preserving transforms do not need a whole-frame uniqueness scan."""
         eager = {
             "p": pl.DataFrame({"k": [1, 1], "extra": [5, 6]}),
@@ -166,11 +161,6 @@ class TestPositionalFastPath:
             "p": _node("p", "source"),
             "c": _node("c", "polars", {"code": "df = df.with_columns(other=pl.lit(9))"}),
         }
-
-        def fail_if_called(*_args, **_kwargs):
-            raise AssertionError("order-preserving fast path should not scan for uniqueness")
-
-        monkeypatch.setattr(trace_correlation, "_shared_key_is_unique", fail_if_called)
 
         result = _correlate_rows_posthoc(eager, ["p", "c"], {"c": ["p"]}, "c", 1, node_map=node_map)
 
@@ -188,12 +178,6 @@ class TestPositionalFastPath:
         result = _correlate_rows_posthoc(eager, ["p", "c"], {"c": ["p"]}, "c", 1, node_map=node_map)
 
         assert result["p"] == {"k": 2, "extra": 6}
-
-    def test_shared_key_is_unique_helper(self):
-        df = pl.DataFrame({"k": [1, 1, 2]})
-        assert _shared_key_is_unique(df, {"k": 2}, ["k"]) is True
-        assert _shared_key_is_unique(df, {"k": 1}, ["k"]) is False
-        assert _shared_key_is_unique(df, {"k": 1}, []) is False
 
 
 # ---------------------------------------------------------------------------

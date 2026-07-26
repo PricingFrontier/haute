@@ -137,6 +137,12 @@ Out of scope (owned elsewhere, linked where relevant):
   relevant. Tracing the multi-frame node itself (rather than a node downstream
   of a specific frame) raises a `ValueError` naming the problem instead of
   crashing on a bare `dict`.
+- **Edge joins resolve multi-frame base columns before JOIN-parent matching.**
+  When an `edgeJoin` uses one named frame from a multi-frame source as its BASE
+  parent, correlation derives the left-column set only from the frame handle(s)
+  wired to that join. It never calls `.columns` on the source bundle. A missing
+  or invalid handle raises a message-bearing `ValueError` naming the join/base
+  instead of leaking `AttributeError`.
 - **Self-referential assignments substitute the pre-assignment value.** When a
   step's expression reassigns a column from itself (`premium = premium * factor`),
   showing the substitution requires the value the RHS actually read — the
@@ -161,13 +167,19 @@ Out of scope (owned elsewhere, linked where relevant):
 - **Enrichment observes; it never repairs rows.** Rating, banding, model-score,
   lineage, and schema-diff detail is derived from the complete rows selected by
   correlation and the same immutable runtime contracts the engine consumes.
+  Continuous banding enrichment uses the rating runtime's shared rule-eligibility
+  parser, so a rule with no usable operator/value pair cannot be credited.
   Enrichment never patches an individual output cell or invents model features.
   A row that cannot be selected atomically remains unresolved.
 - **Relevant correlation gaps remain first-class evidence.** A node on the
   retained path whose row cannot be correlated is represented by a typed
   omission carrying its node identity, topological rank, reason, and diagnostic
   reference. It is not represented as a `TraceStep` with fabricated empty rows.
-  Ordinary column-relevance pruning produces no omission.
+  If the assigning step is itself unresolved and therefore absent from
+  `TraceResult.steps`, omission relevance falls back conservatively to every
+  attempted unresolved ancestor; it does not use the narrow column filter
+  without origin evidence. Ordinary column-relevance pruning produces no
+  omission.
 - **Waterfall values are strictly value-derived.** When a `column` is traced, the
   waterfall walks the traced path and derives each step's contribution from
   *consecutive observed output values* — never from re-applying expression text.
@@ -195,6 +207,11 @@ Out of scope (owned elsewhere, linked where relevant):
   `execution_origin` of `fresh_execution`, `preview_cache`, or `trace_cache`.
   These fields describe how the trace snapshot was assembled; they do not claim
   that an external data source is fresh.
+  > NOTE: provider group, safe source identity, direct-versus-snapshot mode,
+  > selected cache generation, and external freshness are not currently fields
+  > in `TraceResult`. Snapshot generation participates in execution/cache key
+  > identity, but the response must not infer or display provenance it does not
+  > carry.
 
 ## Design rationale
 
@@ -212,6 +229,12 @@ Out of scope (owned elsewhere, linked where relevant):
   testable in isolation and leaves room for a future non-in-process preview
   store, at the cost of the caller (the HTTP route) being responsible for
   wiring the executor's cache in explicitly.
+  > NOTE: the current HTTP preview route publishes target-only cache entries,
+  > while a truthful trace requires full ancestor materialisation. Those shapes
+  > deliberately do not share a key, so the first trace after an ordinary HTTP
+  > preview executes cold. Reuse requires a route/execution-cache decision
+  > outside this component; the trace layer must not accept a partial snapshot
+  > to manufacture the appearance of reuse.
 - **Edge-join-aware parent projection.** A generic "keep the child's columns that
   exist in the parent" projection is provably wrong for the JOIN-role (right)
   parent of an edge-join, because Polars renames the right frame's copy of every
@@ -261,14 +284,13 @@ Out of scope (owned elsewhere, linked where relevant):
 - Depends on [execution-engine](../execution-engine/high-level.md) for
   `PipelineGraph`/`GraphNode` types, topological ordering, the eager execution
   core (`_execute_eager_core`, `_build_node_fn`), preamble compilation, and the
-  preview-cache-key construction helpers the trace mirrors so its own
-  fingerprints line up with the executor's preview cache.
+  shared preview-lineage cache-key factory the trace calls so its fingerprints
+  use the executor's canonical identity contract.
 - Depends on [expression-parsing](../expression-parsing/high-level.md) for
-  `parse_expression`, `evaluate_expression`, and `parse_expression_chain` —
-  re-exported through `haute.trace`'s module namespace specifically so tests can
-  monkeypatch them at `haute.trace.<name>` and have the enrichment dispatch
-  (which resolves them via `sys.modules["haute.trace"]`) see the patched
-  version.
+  `parse_expression`, `evaluate_expression`, and `parse_expression_chain`.
+  `_trace_enrichment` imports those dependencies directly; it does not recover
+  its own public facade from `sys.modules`, so importing the enrichment module
+  independently cannot fail on a hidden import-order cycle.
 - Depends on [rating](../rating/high-level.md) for rating-table normalisation
   (`normalise_rating_tables`, `_normalise_combined_outputs`) and the canonical
   rating-key comparison (`normalise_rating_key(value, dtype)`). The rating-step
@@ -280,8 +302,8 @@ Out of scope (owned elsewhere, linked where relevant):
   `enrich_model_score`) and on [optimiser](../optimiser/high-level.md) for
   optimiser-apply explanation (`haute._optimiser_apply_explainability`).
 - Depends on [caching](../caching/high-level.md) for `LRUCache`,
-  `graph_fingerprint()`, and `GraphFingerprintMemo`, which back the trace's own
-  execution-result cache.
+  `GraphFingerprintMemo`, and the shared `preview_lineage_cache_key(...)`
+  factory, which back the trace's own execution-result cache.
 - Depended on by [server-api](../server-api/high-level.md): `routes/pipeline.py`
   is the sole production caller of `execute_trace()`, wrapping it in a response
   timeout, request-supersession coordinator, and concurrency semaphore, and
@@ -313,6 +335,12 @@ Out of scope (owned elsewhere, linked where relevant):
   usable preview cache) fails — a bad node config, a contract mismatch — the
   original exception (including `ContractMismatchError`) propagates out of
   `execute_trace` unmodified. Nothing catches and reinterprets it.
+- **Unsupported target correlation dtypes fail as a public typed error.**
+  `TraceCorrelationUnsupportedError(ExecutionError)` carries stable
+  `node_id`, `key_columns`, `dtypes`, and `reason_code` fields with code
+  `trace_correlation_unsupported`. The HTTP contract maps it to 422 and
+  background execution records `contract_error`; upstream-parent unsupported
+  comparisons remain diagnostic-linked omissions.
 - **Row correlation failures are non-fatal but visible.** An unresolved relevant
   node is absent from `TraceResult.steps` and present in `TraceResult.omissions`,
   linked to the corresponding `correlation_diagnostics` entry by a stable
@@ -337,144 +365,3 @@ Out of scope (owned elsewhere, linked where relevant):
   precondition failure that means a waterfall simply does not apply (fewer than 3
   contributing steps, no numeric traced output value) returns `None` instead,
   which is distinct from an error.
-
-## Polars backend contracts (0.6.0)
-
-Remaining tracing improvement work is tracked in the
-[tracing and explainability roadmap](../../roadmap/tracing-explainability.md).
-Delivery is split deliberately: P9a owns correlation and request-local
-enrichment; P9b, sequenced only after the shared lineage-key work, integrates
-trace caching. P9b consumes the shared lineage preview-key factory rather than
-constructing, translating, or fingerprinting a trace-specific representation.
-
-### Required behaviour
-
-- Every target relocation, ordinary parent/child correlation, edge-join
-  projection, and multi-frame candidate comparison uses one shared,
-  tolerance-aware, vectorized Polars matching primitive. Its V1 scalar truth
-  table is exact:
-  - null matches only null, and boolean matches only the same boolean; boolean
-    is never treated as numeric;
-  - integer/integer comparison is exact; integer/float comparison is allowed
-    only when the integer has `abs(value) <= 2**53` and the float is finite,
-    using the finite-float formula below; an unsafe integer can instead match
-    only its exact canonical decimal-string representation;
-  - finite numeric values `a` and `b` match exactly when
-    `abs(a - b) <= max(1e-12, 1e-9 * max(abs(a), abs(b)))`;
-  - NaN matches only NaN or the canonical `nan` sentinel, positive infinity
-    only positive infinity or the canonical `inf` sentinel, and negative
-    infinity only negative infinity or the canonical `-inf` sentinel. No
-    non-finite value matches the opposite sign, a finite value, or null;
-  - Date matches only Date on the same day; Time matches only Time at the same
-    nanosecond-of-day; Datetime values are compared as checked integer UTC
-    nanoseconds, with aware values matching only aware values at the same
-    instant and naive values matching only naive values. Date-versus-Datetime
-    and aware-versus-naive are unsupported. Duration is exact after checked
-    conversion to signed integer nanoseconds;
-  - Decimal comparison is exact after lossless integer rescaling to the larger
-    scale. Decimal/float is unsupported, as are rescaling overflow and
-    incompatible precision;
-  - string and binary comparison is exact within its compatible family;
-    categorical/enum compares normalised string values; and same-schema
-    list/array/struct uses Polars 1.39.3 native equality against a typed one-row
-    literal. Objects and incompatible nested schemas are unsupported.
-  A Polars upgrade must re-run this matrix before matcher support is extended.
-- Correlation must not perform a Python full-frame scan over shared keys, nor
-  duplicate matching logic between target relocation and upstream correlation.
-  Python may inspect at most 16 candidate indices returned by the primitive.
-- Object values and incompatible nested dtypes return `unsupported_dtype`; they
-  never trigger a Python full-frame fallback. Target relocation converts that
-  result to a named `TraceCorrelationUnsupportedError`; upstream parent
-  resolution stays unresolved with a typed diagnostic.
-- Multiple equally valid candidates remain an ambiguity, never a first-row
-  fallback. Every typed result contains exactly
-  `candidate_count: int|null`, `candidate_indices: list[int]`, and
-  `candidate_indices_state: available|truncated|unavailable`. Supported
-  matches assign an original physical row index with `with_row_index`, count
-  all candidates exactly, sort their physical indices ascending, and expose the
-  first 16. State is `available` if and only if the exact count is at most 16
-  (including zero), and `truncated` if and only if it is greater than 16. An
-  unsupported comparison reports null count, an empty list, and `unavailable`.
-  Target relocation fails loudly; upstream correlation leaves the step
-  unresolved and records the ambiguity.
-- A relaxed match is permitted only when strict keys return no match. It must
-  emit an explicit low-confidence diagnostic identifying strict/effective keys,
-  candidate count, and the reason confidence was reduced; it is never silently
-  equivalent to a strict match. Relaxation may omit keys but may not weaken the
-  V1 per-value truth table.
-- Unsupported target relocation raises the public
-  `TraceCorrelationUnsupportedError(ExecutionError)`, exported from
-  `haute.errors`, with stable code
-  `trace_correlation_unsupported` and stable fields `node_id`, `key_columns`,
-  `dtypes`, and `reason_code`. The HTTP contract is 422 and a background caller
-  records `contract_error`. Every array in matcher results, diagnostics, and
-  this error is deterministic and capped at 16 entries; aligned
-  `key_columns`/`dtypes` retain deterministic key order when capped.
-- `trace_result_to_dict()` preserves the same JSON-safe representation used by
-  preview data for temporal, nested, non-finite, arbitrary, and JavaScript
-  precision-sensitive values. That canonical serializer is a display boundary;
-  accepting an arbitrary object for display does not make it a valid correlation
-  key or extend the V1 comparison matrix.
-- Repeated completed enrichment work is memoised only within one trace request,
-  separately from the active recursion stack. Memo identity covers node,
-  concern, column, row identity, frame/port, and every concern input. Each call
-  path pushes/pops its own active stack: cycles retain the existing structured
-  cycle/error marker, while sibling diamond branches can reuse a completed
-  result. Exceptions are not memoised and no state survives the request.
-
-### Sequencing, non-goals, and acceptance
-
-1. P9a specifies and tests the typed match result, the full V1 dtype matrix, and
-   preview JSON parity before replacing correlation call sites.
-2. P9a migrates relocation and upstream paths, then adds relaxed diagnostics and
-   the completed-result request memo plus per-call-path recursion stack.
-3. After the lineage-key slice lands, P9b wires trace to the shared key factory
-   and removes superseded duplicate key construction in the same change.
-
-This slice does not introduce row-id injection, heuristic ambiguity resolution,
-pipeline output changes, persistent enrichment caches, or new trace routes/UI.
-
-Acceptance tests cover every V1 matrix cell, including positive, no-match,
-ambiguous, and unsupported combinations; shared numeric tolerance and NaN/Inf;
-preview-JSON round trips without treating arbitrary display objects as keys;
-exact candidate counts with 0–16 available indices and explicit truncation;
-edge-join and multi-frame paths; named target errors and typed unresolved-parent
-diagnostics; cycles; sibling diamonds; exceptions; and per-request enrichment
-reuse without leakage. Structural performance tests assert vectorized Polars
-matching, no shared-key Python full-frame scan, and guard large-frame correlation
-latency and allocations.
-
-The boundary suite pins finite values just below, exactly on, and just above
-both tolerance terms; boolean-versus-0/1; integer/integer exactness;
-integer/float at `2**53` and rejection above it; canonical and non-canonical
-unsafe-integer strings; and every NaN/infinity pairing. Temporal and Decimal
-boundaries cover Date-versus-Datetime, aware-versus-naive, cross-unit Datetime
-equality, checked nanosecond overflow, signed Duration, lossless Decimal
-rescaling, precision/rescale overflow, and Decimal-versus-float rejection.
-Candidate payloads are asserted exactly at counts 0, 1, 16, and 17, including
-ascending original physical indices and the `available`, `truncated`, and
-`unavailable` states. The public unsupported error's exact code, fields,
-HTTP-422/background mappings, deterministic order, and 16-entry array caps are
-also contract tests.
-
-## Approved change contract — 0.7.0 data-input tracing
-
-Remaining tracing improvement work is tracked in the
-[tracing and explainability roadmap](../../roadmap/tracing-explainability.md).
-
-- Trace source classification recognises `dataInput` provider/cache identity and no
-  `dataSource`. Direct and cached inputs expose the same row-correlation surface after the
-  optional input Polars body has run.
-- Trace provenance records input type, format, direct versus snapshot execution, safe source
-  identity digest, and selected cache generation. It may report the cache component's external
-  freshness state verbatim but never infers freshness from a cache hit, execution origin, or
-  fetch timestamp.
-- An input config/code or cache-generation change participates in the shared trace fingerprint.
-  A refresh cannot reuse a trace from the preceding generation. Provenance and exported
-  diagnostics contain no locator credentials or raw connection URI.
-- Out-of-band re-export/source handling is rewritten around direct local-file `dataInput` and
-  `externalFile`; cached remote inputs remain attributable to their source identity rather than
-  being mislabeled as an ordinary Parquet file.
-
-Acceptance covers direct/cached correlation parity, post-input code, generation invalidation,
-freshness-unknown presentation, safe export/redaction, and absence of the removed source type.

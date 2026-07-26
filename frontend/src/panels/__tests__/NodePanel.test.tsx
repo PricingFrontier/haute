@@ -115,7 +115,7 @@ function renderPanel(overrides: RenderPanelOverrides = {}) {
   const props = {
     node: makeNode(),
     onClose: vi.fn(),
-    onUpdateNode: vi.fn(),
+    onUpdateNode: vi.fn(() => ({ ok: true as const })),
     onDeleteEdge: vi.fn(),
     onSwapEdgeJoinInputs: vi.fn(),
     onRefreshPreview: vi.fn(),
@@ -204,7 +204,7 @@ describe("NodePanel", () => {
         _schemaWarnings: [{ column: "old_output", status: "stale" }],
       },
     })
-    const onUpdateNode = vi.fn()
+    const onUpdateNode = vi.fn((_nodeId: string, _data: Record<string, unknown>) => ({ ok: true as const }))
     renderPanel({ node, onUpdateNode })
     const onUpdate = transformEditorProps.at(-1)?.onUpdate as (key: string, value: unknown) => void
 
@@ -687,6 +687,43 @@ describe("NodePanel", () => {
         "title",
         expect.stringMatching(/eligible|emitted|resolv/i),
       )
+    })
+
+    it("keeps a null-handle apiInput edge visible as explicitly unresolved", () => {
+      const target = makeNode({
+        id: "target",
+        data: { label: "Target", description: "", nodeType: "polars", config: {} },
+      })
+      const apiInput = makeNode({
+        id: "api",
+        data: {
+          label: "Quote API",
+          description: "",
+          nodeType: "apiInput",
+          config: { tables: [eligibleApiInputTable("quotes")] },
+        },
+      })
+
+      renderPanel({
+        node: target,
+        allNodes: [apiInput, target],
+        edges: [{
+          id: "edge_api",
+          source: apiInput.id,
+          target: target.id,
+          sourceHandle: null,
+        }],
+      })
+
+      expect(latestTransformInputSources()).toEqual([
+        expect.objectContaining({
+          edgeId: "edge_api",
+          name: "<unresolved>",
+          sourceLabel: "Quote API",
+          frameUnresolved: true,
+        }),
+      ])
+      expect(screen.getByLabelText(/unresolved.*frame|frame.*unresolved/i)).toBeVisible()
     })
 
     it("refreshes a named apiInput display label when only sourceHandle changes", () => {
@@ -1615,7 +1652,7 @@ describe("NodePanel", () => {
       ]
       const allNodes = [origNode, upOrig, upInst, instanceNode1]
 
-      const onUpdateNode = vi.fn()
+      const onUpdateNode = vi.fn(() => ({ ok: true as const }))
       const { rerender } = render(
         <GraphProvider allNodes={allNodes} edges={edges}>
           <NodePanel
@@ -1754,7 +1791,7 @@ describe("NodePanel", () => {
           <NodePanel
             node={transformNode}
             onClose={vi.fn()}
-            onUpdateNode={vi.fn()}
+            onUpdateNode={vi.fn(() => ({ ok: true as const }))}
             onDeleteEdge={vi.fn()}
             onRefreshPreview={vi.fn()}
           />
@@ -1768,7 +1805,7 @@ describe("NodePanel", () => {
           <NodePanel
             node={{ ...transformNode }}
             onClose={vi.fn()}
-            onUpdateNode={vi.fn()}
+            onUpdateNode={vi.fn(() => ({ ok: true as const }))}
             onDeleteEdge={vi.fn()}
             onRefreshPreview={vi.fn()}
           />
@@ -1805,7 +1842,7 @@ describe("NodePanel", () => {
           <NodePanel
             node={transformNode}
             onClose={vi.fn()}
-            onUpdateNode={vi.fn()}
+            onUpdateNode={vi.fn(() => ({ ok: true as const }))}
             onDeleteEdge={vi.fn()}
             onRefreshPreview={vi.fn()}
           />
@@ -1819,7 +1856,7 @@ describe("NodePanel", () => {
           <NodePanel
             node={updatedTransformNode}
             onClose={vi.fn()}
-            onUpdateNode={vi.fn()}
+            onUpdateNode={vi.fn(() => ({ ok: true as const }))}
             onDeleteEdge={vi.fn()}
             onRefreshPreview={vi.fn()}
           />
@@ -1865,7 +1902,7 @@ describe("NodePanel", () => {
           <NodePanel
             node={transformNode}
             onClose={vi.fn()}
-            onUpdateNode={vi.fn()}
+            onUpdateNode={vi.fn(() => ({ ok: true as const }))}
             onDeleteEdge={vi.fn()}
             onRefreshPreview={vi.fn()}
           />
@@ -1879,7 +1916,7 @@ describe("NodePanel", () => {
           <NodePanel
             node={transformNode}
             onClose={vi.fn()}
-            onUpdateNode={vi.fn()}
+            onUpdateNode={vi.fn(() => ({ ok: true as const }))}
             onDeleteEdge={vi.fn()}
             onRefreshPreview={vi.fn()}
           />

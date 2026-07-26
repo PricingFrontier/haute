@@ -34,7 +34,6 @@ import Toolbar from "./components/Toolbar"
 import SubmodelDialog from "./components/SubmodelDialog"
 import RenameDialog from "./components/RenameDialog"
 import BackgroundJobPolling from "./components/BackgroundJobPolling"
-import UtilityPanel from "./panels/UtilityPanel"
 import ImportsPanel from "./panels/ImportsPanel"
 import type { ComparisonInspect } from "./components/ComparisonView"
 import EdgeJoinInsertionFeedback from "./components/EdgeJoinInsertionFeedback"
@@ -63,6 +62,7 @@ import { swapEdgeJoinInputs, type EdgeJoinSwapInputsFailureReason } from "./util
 import { validatePipelineConnection, type ConnectionValidationResult } from "./utils/connectionValidation"
 import {
   applyApiInputConfigChange,
+  edgeInputName,
   incomingEdgeInputNames,
   resolveSubmodelBoundaryNode,
   submodelGraphFromMetadata,
@@ -83,6 +83,7 @@ const MilestoneCommitModal = lazy(() => import("./components/MilestoneCommitModa
 const MoveConfirmModal = lazy(() => import("./components/MoveConfirmModal"))
 const WorkingBranchModal = lazy(() => import("./components/WorkingBranchModal"))
 const GitPanel = lazy(() => import("./panels/GitPanel"))
+const UtilityPanel = lazy(() => import("./panels/UtilityPanel"))
 const AssistantPanel = lazy(() => import("./panels/assistant/AssistantPanel"))
 const ComparisonView = lazy(() => import("./components/ComparisonView"))
 const ComparisonInspector = lazy(() => import("./components/ComparisonInspector"))
@@ -571,6 +572,24 @@ function FlowEditor() {
         tentativeEdges = result.edges
         rebound = result.rebound
         removed = result.removed
+      } else if (prevNode.data.label !== data.label) {
+        const nextNode = { ...prevNode, data }
+        rebound = currentGraph.edges
+          .filter((edge) => edge.source === id)
+          .map((edge) => ({
+            edge,
+            from: edgeInputName(
+              edge as unknown as SimpleEdge,
+              prevNode as unknown as SimpleNode,
+              submodelsRef.current,
+            ),
+            to: edgeInputName(
+              edge as unknown as SimpleEdge,
+              nextNode as unknown as SimpleNode,
+              submodelsRef.current,
+            ),
+          }))
+          .filter((change) => change.from !== change.to)
       }
 
       let tentativeNodes = currentGraph.nodes.map((node) =>
@@ -1146,18 +1165,20 @@ function FlowEditor() {
                 <GitPanel onClose={() => setGitOpen(false)} onSave={handleSave} />
               </Suspense>
             ) : utilityOpen ? (
-              <UtilityPanel
-                onClose={() => setUtilityOpen(false)}
-                onImportAdded={(importLine) => {
-                  const current = preambleRef.current
-                  if (!current.includes(importLine)) {
-                    const updated = current ? `${current}\n${importLine}` : importLine
-                    setPreamble(updated)
-                    preambleRef.current = updated
-                    // Dirty is derived from the new preamble at next render.
-                  }
-                }}
-              />
+              <Suspense fallback={null}>
+                <UtilityPanel
+                  onClose={() => setUtilityOpen(false)}
+                  onImportAdded={(importLine) => {
+                    const current = preambleRef.current
+                    if (!current.includes(importLine)) {
+                      const updated = current ? `${current}\n${importLine}` : importLine
+                      setPreamble(updated)
+                      preambleRef.current = updated
+                      // Dirty is derived from the new preamble at next render.
+                    }
+                  }}
+                />
+              </Suspense>
             ) : importsOpen ? (
               <ImportsPanel
                 preamble={preamble}

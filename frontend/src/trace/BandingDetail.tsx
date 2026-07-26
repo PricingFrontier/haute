@@ -1,6 +1,7 @@
 import type { BandingNodeDetail } from "../types/trace"
 import { formatTraceValue } from "./traceFormatting"
 import {
+  TraceDetailAlert,
   TraceDetailChip,
   TraceDetailPanel,
   TraceDetailTable,
@@ -24,6 +25,18 @@ export function BandingDetailBlock({
   showBandingSummary?: boolean
 }) {
   const banding = detail
+  const errorDetail = banding as unknown as Record<string, unknown>
+  const error = errorDetail.error
+  const errorType = errorDetail.error_type
+  if (typeof error === "string") {
+    return (
+      <TraceDetailPanel title="Banding">
+        <TraceDetailAlert>
+          {typeof errorType === "string" ? `${errorType}: ` : ""}{error}
+        </TraceDetailAlert>
+      </TraceDetailPanel>
+    )
+  }
   const rows = bandingRowsForDisplay(banding, tracedColumn)
   const singleRow = rows.length === 1 ? rows[0] : null
   const rangeSummary = singleRow ? formatBandingRange(singleRow) : null

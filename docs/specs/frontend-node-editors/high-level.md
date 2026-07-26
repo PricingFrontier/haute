@@ -36,7 +36,7 @@ backend API modules own validation and persistence.
   context. Rating supports one- and two-way factor tables, value-level matching, statistics,
   paste/copy and downloadable table data.
 - IO editors obtain supported formats and their arguments from the server. API/data input,
-  output, source, sink, external-file, transform, explore, live-switch, scenario, submodel,
+  output, external-file, transform, explore, live-switch, scenario, submodel,
   model-score and optimiser-apply editors render only their own configuration contract.
 - The Edge Join editor presents the canvas-bound dominant/base and joining roles as fixed
   connections with one atomic swap action. Swapping updates the incoming role handles and
@@ -44,6 +44,14 @@ backend API modules own validation and persistence.
   `right`, `full`, `semi`, `anti`, and `cross`. A cross join has no key controls or persisted
   keys; every other mode requires either one-or-more same-name `on` keys or equal-length,
   non-empty `leftOn`/`rightOn` pairs, and the two key forms cannot coexist.
+- Renaming an ordinary source or an API-input frame atomically migrates downstream
+  `input_scenario_map` and instance `inputMapping` references. A duplicate post-rename input
+  name rejects the entire edit and is shown inline; no graph or mapping change is partially
+  applied.
+- Data Input and Data Output obtain a fresh capability payload when an editor mounts; mounts
+  sharing the same pending request coalesce it. Provider changes replace the discriminated
+  config in one undoable update, and output overwrite confirmation is tied to semantic graph
+  and execution settings rather than preview/trace metadata.
 
 ## Design rationale
 
@@ -84,18 +92,18 @@ editor error; the component does not silently replace it with invented configura
 `sourceHandle` (an edge bound to a frame that no longer exists) is displayed **verbatim** as the
 edge's frame identity with an explicit unresolved warning state wherever the connection is
 presented (input chips, live-switch mapping rows, output frame blocks) — never silently renamed
-to the parent node and never a normal-looking entry. Null-handle API-input edges cannot be
-created (the zero-frame handle is non-connectable) and are pruned by reconciliation when read
-from a hand-edited file, so the verbatim-plus-warning rule is the complete unresolved story.
+to the parent node and never a normal-looking entry. WebSocket-synchronised graphs can retain a
+null-handle API-input edge so the user can repair the source file without silently losing
+topology. Such an edge is displayed with the explicit `<unresolved>` marker and warning state;
+it never crashes the panel or aliases the API input's sole emitted table.
 An Edge Join with missing/ambiguous role edges, conflicting stored roles, an unknown join mode,
 or invalid key shape remains visibly invalid and blocks save; the editor never infers a role or
 silently substitutes join keys.
 
-## Approved change contract — 0.7.0 unified data I/O editors
+## Data I/O editors
 
-Remaining node-editor improvement work is tracked in the
-[frontend canvas roadmap](../../roadmap/frontend-canvas.md)
-and the approved [I/O behaviour](../io-layer/high-level.md#approved-change-contract-070-data-io-convergence).
+The retained Data Input and Data Output behaviour follows
+[I/O behaviour](../io-layer/high-level.md).
 
 - The palette and editor registry expose one **Data Input** and one **Data Output** node type.
   Data Source and Data Sink entries/editors are deleted with no legacy rendering path. Multiple
@@ -124,78 +132,56 @@ and the approved [I/O behaviour](../io-layer/high-level.md#approved-change-contr
 - A format with a missing optional engine remains visible with an actionable dependency warning;
   a format with no capability for that direction is not presented as working. The UI never
   hard-codes format membership or silently substitutes a default when capability loading fails.
+- A file Data Input whose backend capability requires a bounded schema shows schema-fetch
+  progress, a preview, and any safe route diagnostic inline. **Use detected schema** merges the
+  detected ordered dtype map into `arguments.schema` without discarding delimiter or other
+  arguments. A visible warning remains until a schema mapping is present.
+- API Input also renders the shared schema-fetch error instead of discarding it. Starting another
+  fetch clears the old error, so recovery is visible. Its retained JSON-family picker exposes
+  `.json`, `.jsonl`, and `.ndjson`; cancelling or closing the picker does not mutate config.
+- Data Output renders its resolved destination before writing and warns when an explicit file
+  extension disagrees with the selected capability. While an HTTP write is pending it renders an
+  indeterminate progress status and disables another write for that node.
+- Output write state is stored per node outside the editor component. Switching panels cannot
+  forget a pending request, enable a duplicate request, or lose the last success/failure.
+  Completion for an obsolete config identity is not presented as the current config's result.
+- A 409 collision renders an explicit **Replace existing file** action. Only that action retries
+  with `overwrite=true`; ordinary Write sends false. Success uses structured `row_count` and
+  `path`, and API failures prefer the safe server `detail` over a generic HTTP status string.
 
 Acceptance includes component tests for every group/config transition, capability-driven option
 sets, mandatory/optional/no-cache states, progress/freshness/error states, Polars-editor
-placement, inactive-key removal and undo, output Write gating/status, and unavailable engines.
+placement, inactive-key removal and undo, output Write gating/status, unavailable engines,
+schema merge/preservation, destination preview/mismatch, remount during a pending write,
+structured success/failure, and the overwrite-confirmation retry.
 Browser coverage creates, configures, saves, reloads, executes, snapshots, and writes the
 retained node types and asserts that no Data Source/Data Sink palette/editor affordance exists.
 
-## Approved change contract — Banding-to-Rating canvas assurance
+## Banding-to-Rating assurance
 
-This contract implements ROAD-UI-01, ROAD-UI-02, ROAD-UI-03 and the node-editor portion of
-ROAD-UI-04 in the [frontend canvas roadmap](../../roadmap/frontend-canvas.md).
-
-- **Current limitation.** Continuous, categorical, and breakpoint Banding shapes have focused
-  helper tests, but there is no owned cross-shape assurance matrix or deterministic browser
-  journey into a persisted Rating table. A configured Banding output with no valid levels can
-  silently disappear from downstream Rating choices.
-- **Target behaviour.** One explicit matrix assigns continuous, categorical, breakpoint, mixed,
+- One explicit matrix assigns continuous, categorical, breakpoint, mixed,
   zero-level, malformed/partial, and persisted-table shapes to named fixtures, test owners, and
   tiers. Rating discovery accepts all healthy configured Banding outputs, rebuilding three named
   factors creates their complete Cartesian table, an edited relativity survives save/reload, and
   malformed inputs never crash the panel. Once a recognised factor has a non-blank output name,
   zero valid levels produce one accessible aggregated warning naming the affected outputs while
   healthy choices remain usable.
-- **Warning boundary.** No warning is shown merely because the graph has no Banding node, a
+- No warning is shown merely because the graph has no Banding node, a
   Banding node is still an unnamed draft, a factor output is blank, or every configured output is
   healthy. A loaded factor with a recognised mode and non-blank output is configured even when
   its rules are empty or malformed, so that state warns instead of silently reusing stale raw or
   saved levels for that output.
-- **Non-goals and compatibility.** The change does not alter Banding execution semantics,
+- The assurance does not alter Banding execution semantics,
   relativity mathematics, table JSON shape, or existing raw/saved-level fallback for columns that
   are not claimed by configured Banding factors. Existing one-factor and two-factor Rating tables
   remain editable.
-- **Acceptance.** Unit/component tests pin every matrix row and warning boundary. The
+- Unit/component tests pin every matrix row and warning boundary. The
   deterministic browser journey proves three named factors, all Cartesian entries, a keyboard
   rebuild/edit/save path, and the edited value after reload. Stable screenshots cover the mixed
   Banding editor and rebuilt Rating state at desktop and the supported narrow viewport.
 
-## I/O authoring feedback and output lifecycle
+## Canonical editor formats
 
-The retained editors implement the editor portion of
-[IO-IO01, IO-IO06, IO-IO08, and IO-IO09](../../roadmap/io-layer.md).
-
-- A file Data Input whose backend capability requires a bounded schema shows
-  schema-fetch progress, a preview, and any safe route diagnostic inline.
-  **Use detected schema** merges the detected ordered dtype map into
-  `arguments.schema` without discarding delimiter or other arguments. A
-  visible warning remains until a schema mapping is present.
-- API Input also renders the shared schema-fetch error instead of discarding
-  it. Starting another fetch clears the old error, so recovery is visible.
-  Its retained JSON-family picker exposes `.json`, `.jsonl`, and `.ndjson`;
-  cancelling/closing the picker does not mutate config.
-- Data Output renders its resolved destination before writing and warns when
-  an explicit file extension disagrees with the selected capability.
-  While an HTTP write is pending it renders an indeterminate progress status
-  and disables another write for that node.
-- Output write state is stored per node outside the editor component. Switching
-  panels cannot forget a pending request, enable a duplicate request, or lose
-  the last success/failure. Completion for an obsolete config identity is not
-  presented as the current config's result.
-- A 409 collision renders an explicit **Replace existing file** action. Only
-  that action retries with `overwrite=true`; ordinary Write sends false.
-  Success uses structured `row_count` and `path`, and API failures prefer the
-  safe server `detail` over a generic HTTP status string.
-
-Component tests cover schema merge/preservation, loading/error/recovery,
-destination preview/mismatch, remount during a pending write, structured
-success/failure, and the overwrite confirmation retry.
-
-## Approved change contract — prerelease canonical editor formats
-
-This contract implements the editor portion of
-[ROAD-CANON-01](../../roadmap/engineering-quality.md#road-canon-01--prerelease-canonical-only-contract).
 Rating renders and persists only canonical `tables[].entries` row arrays and
 `combinedOutputs`; it never synthesises a combined output from singular fields or mirrors
 canonical edits back into them. Output renders only `outputMapping`; the v1 `fields` working-copy

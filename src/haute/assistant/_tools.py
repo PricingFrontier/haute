@@ -43,7 +43,16 @@ from haute.routes._save_pipeline import SavePipelineService
 logger = get_logger(component="assistant.tools")
 
 _INTERNAL_ERROR_DETAIL = "The assistant tool failed unexpectedly."
-_DATASET_EXTENSIONS = frozenset({".parquet", ".csv", ".json", ".xml"})
+_DENIED_DATASET_NAMES = frozenset(
+    {
+        "application_default_credentials.json",
+        "credentials.json",
+        "secrets.json",
+        "service-account.json",
+        "service_account.json",
+    }
+)
+_DENIED_DATASET_DIRECTORIES = frozenset({"credentials", "secrets"})
 _BOUNDARY_NODE_TYPES = frozenset({NodeType.SUBMODEL, NodeType.SUBMODEL_PORT})
 
 
@@ -253,19 +262,50 @@ def _dataset_item(path: Path, base: Path) -> dict[str, object]:
     }
 
 
+def _dataset_path_forbidden(path: Path, base: Path) -> bool:
+    relative = path.relative_to(base)
+    parts = tuple(part.casefold() for part in relative.parts)
+    if any(part.startswith(".") for part in parts):
+        return True
+    if any(part in _DENIED_DATASET_DIRECTORIES for part in parts):
+        return True
+    return bool(parts and parts[-1] in _DENIED_DATASET_NAMES)
+
+
+def _dataset_extensions() -> tuple[str, ...]:
+    from haute.routes.files import _installed_input_extensions
+
+    return _installed_input_extensions()
+
+
+def _has_dataset_extension(path: Path, extensions: tuple[str, ...]) -> bool:
+    name = path.name.casefold()
+    return any(name.endswith(extension) for extension in extensions)
+
+
 def list_datasets(project_root: str | None = None) -> dict[str, object]:
-    """List visible project data files using the files-route allowlist."""
+    """List safe project data files using the installed input registry."""
 
     try:
         base = Path.cwd().resolve()
         target = validate_safe_path(base, project_root or ".")
+        if _dataset_path_forbidden(target, base):
+            return _error(
+                "dataset_path_forbidden",
+                "Hidden, state, and credential paths are unavailable to assistant dataset tools.",
+            )
         if not target.is_dir():
             return _error("directory_not_found", f"Directory not found: {project_root or '.'}.")
-        entries = [entry for entry in sorted(target.iterdir()) if not entry.name.startswith(".")]
+        entries = [
+            entry
+            for entry in sorted(target.iterdir(), key=lambda candidate: candidate.name.casefold())
+            if not entry.is_symlink() and not _dataset_path_forbidden(entry, base)
+        ]
+        extensions = _dataset_extensions()
         datasets = [
             _dataset_item(entry, base)
             for entry in entries
-            if entry.is_file() and entry.suffix.lower() in _DATASET_EXTENSIONS
+            if entry.is_file() and _has_dataset_extension(entry, extensions)
         ]
         directories = [entry.relative_to(base).as_posix() for entry in entries if entry.is_dir()]
         return {"datasets": datasets, "directories": directories}
@@ -279,8 +319,18 @@ def get_dataset_schema(path: str) -> dict[str, object]:
     try:
         base = Path.cwd().resolve()
         target = validate_safe_path(base, path)
+        if _dataset_path_forbidden(target, base):
+            return _error(
+                "dataset_path_forbidden",
+                "Hidden, state, and credential paths are unavailable to assistant dataset tools.",
+            )
         if not target.is_file():
             return _error("dataset_not_found", f"File not found: {path}.")
+        if not _has_dataset_extension(target, _dataset_extensions()):
+            return _error(
+                "dataset_format_unsupported",
+                "The dataset format is not available in this Haute installation.",
+            )
         from haute.routes.files import _read_schema_blocking
 
         response = _read_schema_blocking(path, target)

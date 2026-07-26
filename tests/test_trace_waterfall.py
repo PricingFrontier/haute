@@ -38,11 +38,58 @@ import structlog.testing
 
 from haute._trace_waterfall import (
     WaterfallReconciliationError,
+    _step_targets_column,
     build_waterfall,
     build_waterfall_from_steps,
 )
 from haute.trace import SchemaDiff, TraceStep, execute_trace
 from tests.conftest import make_edge, make_graph, make_node, make_source_node, make_transform_node
+
+
+@pytest.mark.parametrize(
+    ("code", "expected"),
+    [
+        ("# premium = pl.col('factor')", False),
+        ("premium == 100", False),
+        ("df.filter(pl.col('premium') == 100)", False),
+        ("df.with_columns((pl.col('premium') * 1.2).alias('premium'))", True),
+        ("df.with_columns(premium=pl.col('premium') * 1.2)", True),
+        (".with_columns(premium=pl.col('premium') * 1.2)", True),
+        (
+            "df.with_columns([pl.col('base').alias('base_copy'), "
+            "(pl.col('base') * pl.col('adj')).alias('premium')])",
+            True,
+        ),
+        ("df.with_columns([(pl.col('premium') > 100).alias('flag')])", False),
+        (
+            "df.with_columns(((pl.col('base') * pl.col('adj')).alias('premium'),))",
+            True,
+        ),
+        ("df.with_columns(((pl.col('premium') > 100).alias('flag'),))", False),
+    ],
+)
+def test_step_target_membership_uses_python_syntax(
+    code: str,
+    expected: bool,
+) -> None:
+    step = TraceStep(
+        node_id="step",
+        node_name="Step",
+        node_type="polars",
+        schema_diff=SchemaDiff(
+            columns_added=[],
+            columns_removed=[],
+            columns_modified=[],
+            columns_passed=[],
+        ),
+        input_values={},
+        output_values={},
+        topological_rank=0,
+    )
+    node_map = {"step": make_transform_node("step", code)}
+
+    assert _step_targets_column(step, "premium", node_map) is expected
+
 
 pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
 

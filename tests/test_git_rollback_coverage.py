@@ -132,6 +132,30 @@ class TestRollbackFork:
         assert _git(repo, "branch", "--list", "moved-save") == ""
         assert read_working_branch(repo) == WORKING
 
+    def test_move_mode_unexpected_exception_rolls_back(
+        self, repo: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from haute._git_state import read_working_branch
+
+        _fork_setup(repo)
+        ledger_tip_before = _git(repo, "rev-parse", LEDGER)
+        working_before = _git(repo, "rev-parse", WORKING)
+        _fail_run_git_on(
+            monkeypatch,
+            lambda a: a[:2] == ("branch", "-f") and len(a) > 2 and a[2] == LEDGER,
+            RuntimeError("injected unexpected failure"),
+        )
+
+        with pytest.raises(RuntimeError, match="injected unexpected failure"):
+            create_working_branch("moved-runtime", repo, move=True, cwd=repo)
+
+        assert _git(repo, "rev-parse", LEDGER) == ledger_tip_before
+        assert _git(repo, "rev-parse", WORKING) == working_before
+        assert _git(repo, "symbolic-ref", "--short", "HEAD") == LEDGER
+        assert _git(repo, "branch", "--list", "moved-runtime") == ""
+        assert _git(repo, "branch", "--list", "moved-runtime-save") == ""
+        assert read_working_branch(repo) == WORKING
+
     def test_parallel_fork_lone_ref_cleanup(
         self, repo: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -305,10 +329,10 @@ class TestPushAndFastForwardRaises:
 
         git_mod._fetch_cooldowns.clear()
 
-        # The leg-state read (which classifies the working branch as "behind")
-        # resolves the remote-tracking ref first; only the SUBSEQUENT resolution
-        # inside the working-ref CAS block is broken, so the leg is still seen as
-        # behind, the CAS branch is entered, and the resolve-failure raise fires.
+        # Catch-up first verifies the freshly fetched remote leg exists, then the
+        # leg-state read resolves it again to classify the working branch as
+        # "behind". Break only the THIRD resolution inside the working-ref CAS
+        # block, so the CAS branch is entered and its resolve-failure raise fires.
         real_rev = git_mod._rev_parse
         tracking = f"refs/remotes/origin/{WORKING}"
         seen = {"n": 0}
@@ -316,7 +340,7 @@ class TestPushAndFastForwardRaises:
         def fake_rev(ref: str, cwd: Path | None = None) -> str | None:
             if ref == tracking:
                 seen["n"] += 1
-                if seen["n"] >= 2:
+                if seen["n"] >= 3:
                     return None
             return real_rev(ref, cwd=cwd)
 

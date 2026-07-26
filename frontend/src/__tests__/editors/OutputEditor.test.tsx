@@ -368,6 +368,22 @@ describe("OutputEditor — frame blocks", () => {
     )
   })
 
+  it("renders a null-handle apiInput frame as unresolved without borrowing a table", () => {
+    render(<OutputEditor {...DEFAULT_PROPS} />, {
+      allNodes: SINGLE_FRAME_API_NODES,
+      edges: [{
+        id: "e-api-null",
+        source: "api",
+        target: "output_1",
+        sourceHandle: null,
+      }],
+    })
+
+    const block = screen.getByTestId("output-frame-0")
+    expect(within(block).getByText("<unresolved>")).toBeInTheDocument()
+    expect(within(block).getByLabelText(/unresolved.*frame|frame.*unresolved/i)).toBeVisible()
+  })
+
   it("surfaces the per-frame column set from the apiInput table matching the handle", () => {
     const config = {
       outputMapping: [

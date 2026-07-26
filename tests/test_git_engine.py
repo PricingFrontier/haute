@@ -6,12 +6,14 @@ return values.
 """
 
 import subprocess
+import threading
 from pathlib import Path
 
 import pytest
 
 from haute._git import (
     GitDomainError,
+    GitError,
     GitGuardrailError,
     GitMilestoneForkError,
     GitPushRejectedError,
@@ -262,10 +264,54 @@ class TestMilestoneMerge:
     def test_version_label_becomes_annotated_tag(self, repo: Path) -> None:
         _write_and_save(repo, WORKING, {"rating.py": "# v2\n"})
         milestone = merge_to_working(WORKING, "Tagged version", tag_label="2.0", cwd=repo)
+        assert _git(repo, "cat-file", "-t", "refs/tags/version/2.0") == "tag"
         assert _git(repo, "rev-parse", "version/2.0^{commit}") == milestone
-        with pytest.raises(GitDomainError):
-            _write_and_save(repo, WORKING, {"rating.py": "# v3\n"})
+        _write_and_save(repo, WORKING, {"rating.py": "# v3\n"})
+        working_tip = _git(repo, "rev-parse", WORKING)
+        with pytest.raises(GitDomainError, match="already exists"):
             merge_to_working(WORKING, "Dup label", tag_label="2.0", cwd=repo)
+        # A rejected label cannot advance the milestone branch and strand an
+        # unlabelled version.
+        assert _git(repo, "rev-parse", WORKING) == working_tip
+        assert _git(repo, "rev-parse", "version/2.0^{commit}") == milestone
+
+    @pytest.mark.parametrize(
+        "label",
+        ["release candidate", "release..candidate", "release.lock", "release@{candidate"],
+    )
+    def test_invalid_version_label_refuses_before_branch_mutation(
+        self, repo: Path, label: str
+    ) -> None:
+        _write_and_save(repo, WORKING, {"rating.py": "# v2\n"})
+        working_tip = _git(repo, "rev-parse", WORKING)
+
+        with pytest.raises(GitDomainError, match="not a valid Git tag name"):
+            merge_to_working(WORKING, "Tagged version", tag_label=label, cwd=repo)
+
+        assert _git(repo, "rev-parse", WORKING) == working_tip
+        assert _git(repo, "tag", "--list", "version/*") == ""
+
+    def test_label_transaction_failure_leaves_branch_and_tag_unchanged(
+        self, repo: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import haute._git as git_mod
+
+        _write_and_save(repo, WORKING, {"rating.py": "# v2\n"})
+        working_tip = _git(repo, "rev-parse", WORKING)
+        real_run = git_mod._run_git
+
+        def fail_ref_transaction(*args: str, **kwargs: object) -> str:
+            if args[:2] == ("update-ref", "--stdin"):
+                raise GitError("injected ref transaction failure")
+            return real_run(*args, **kwargs)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(git_mod, "_run_git", fail_ref_transaction)
+
+        with pytest.raises(GitError, match="injected ref transaction failure"):
+            merge_to_working(WORKING, "Tagged version", tag_label="2.0", cwd=repo)
+
+        assert _git(repo, "rev-parse", WORKING) == working_tip
+        assert _git(repo, "tag", "--list", "version/2.0") == ""
 
     def test_invariant_holds_after_merge_and_after_next_save(self, repo: Path) -> None:
         """The grill regression: the naive ancestor check fails exactly here."""
@@ -961,10 +1007,8 @@ class TestSetWorkingBranchUnbornNonDefault:
         ``git checkout -b initial-branch`` clashed with the freshly-born branch,
         aborting outside the rollback block and leaving a malformed repo.
         """
-        import haute._git as git_mod
         from haute._git_state import read_working_branch
 
-        git_mod._get_default_branch_cached.cache_clear()
         root = unborn_non_default_repo
         (root / "main.py").write_text("x = 1\n")
 
@@ -993,10 +1037,8 @@ class TestSetWorkingBranchUnbornNonDefault:
 
     def test_regression_clean_unborn_main_unchanged(self, unborn_repo: Path) -> None:
         """Regression: happy-path (HEAD on unborn main) is unchanged by the fix."""
-        import haute._git as git_mod
         from haute._git_state import read_working_branch
 
-        git_mod._get_default_branch_cached.cache_clear()
         (unborn_repo / "main.py").write_text("x = 1\n")
 
         result = set_working_branch("wb", unborn_repo, create=True, cwd=unborn_repo)
@@ -1009,10 +1051,8 @@ class TestSetWorkingBranchUnbornNonDefault:
 
     def test_unborn_master_default_not_renamed_to_main(self, tmp_path: Path) -> None:
         """HEAD on unborn master (protected): seed lands on master; no new main branch."""
-        import haute._git as git_mod
         from haute._git_state import read_working_branch
 
-        git_mod._get_default_branch_cached.cache_clear()
         root = tmp_path / "master_repo"
         root.mkdir()
         _git(root, "init", "-b", "master")
@@ -1039,7 +1079,6 @@ class TestSetWorkingBranchUnbornNonDefault:
         import haute._git as git_mod
         from haute._git_state import read_working_branch
 
-        git_mod._get_default_branch_cached.cache_clear()
         root = unborn_non_default_repo
         (root / "main.py").write_text("x = 1\n")
 
@@ -1067,9 +1106,6 @@ class TestSetWorkingBranchUnbornNonDefault:
         """Rename-to-main happens before the seed commit: if the commit fails
         (identity unset) on an unborn non-default branch, the repo is left on an
         unborn *main* (rename persisted, no commit) with a clear GitDomainError."""
-        import haute._git as git_mod
-
-        git_mod._get_default_branch_cached.cache_clear()
         root = tmp_path / "rename_then_fail"
         root.mkdir()
         _git(root, "init", "-b", "main")
@@ -1107,9 +1143,6 @@ class TestSetWorkingBranchUnbornNonDefault:
         """If a born 'main' coexists with an unborn non-protected HEAD (only
         reachable via `git checkout --orphan` outside haute), the rename would
         collide — surface a clear GitDomainError and mutate nothing."""
-        import haute._git as git_mod
-
-        git_mod._get_default_branch_cached.cache_clear()
         root = tmp_path / "orphan_head"
         root.mkdir()
         _git(root, "init", "-b", "main")
@@ -1377,6 +1410,36 @@ class TestCommitContext:
         # Distance counts from the milestone's fold-point, not the merge commit.
         assert ctx.distance == int(_git(repo, "rev-list", "--count", f"{m1}^2..{save}"))
         assert ctx.distance >= 1
+
+    def test_save_older_than_default_window_keeps_its_milestone_anchor(self, repo: Path) -> None:
+        set_working_branch(WORKING, repo, cwd=repo)
+        _write_and_save(repo, WORKING, {"rating.py": "# milestone 1\n"}, message="save 1")
+        oldest = merge_to_working(WORKING, "M1", cwd=repo)
+        old_save = _write_and_save(
+            repo,
+            WORKING,
+            {"rating.py": "# save after milestone 1\n"},
+            message="old save",
+        )
+        assert old_save is not None
+        for index in range(2, 22):
+            _write_and_save(
+                repo,
+                WORKING,
+                {"rating.py": f"# milestone {index}\n"},
+                message=f"save {index}",
+            )
+            merge_to_working(WORKING, f"M{index}", cwd=repo)
+        # The public history page stays limited to 20, but commit-context
+        # classification must inspect the complete milestone spine. The old
+        # save was folded by M2, so its nearest prior milestone remains M1.
+        assert oldest not in {entry.sha for entry in working_milestones(repo, cwd=repo).entries}
+
+        ctx = commit_context(repo, old_save, cwd=repo)
+
+        assert ctx.is_milestone is False
+        assert ctx.distance >= 1
+        assert ctx.nearest_milestone.sha == oldest
 
     def test_delta_from_base_counts_commits_between_two_versions(self, repo: Path) -> None:
         # The historic↔current span for the compare UI: rev-list --count base..sha,
@@ -2106,16 +2169,29 @@ class TestCanonicalRemote:
     def test_default_branch_resolved_via_non_origin_remote(
         self, repo: Path, tmp_path: Path
     ) -> None:
-        import haute._git as git_mod
         from haute._git import _get_default_branch
 
-        git_mod._get_default_branch_cached.cache_clear()
         bare = tmp_path / "upstream.git"
         _git(repo, "init", "--bare", str(bare))
         _git(repo, "remote", "add", "upstream", str(bare))
         _git(repo, "push", "upstream", "main")
         _git(repo, "remote", "set-head", "upstream", "main")
         assert _get_default_branch(cwd=repo) == "main"
+
+    def test_default_branch_ref_is_read_live(self, repo: Path, tmp_path: Path) -> None:
+        from haute._git import _get_default_branch
+
+        bare = tmp_path / "origin.git"
+        _git(repo, "init", "--bare", str(bare))
+        _git(repo, "branch", "trunk", "main")
+        _git(repo, "remote", "add", "origin", str(bare))
+        _git(repo, "push", "origin", "main", "trunk")
+        _git(repo, "remote", "set-head", "origin", "main")
+        assert _get_default_branch(cwd=repo) == "main"
+
+        _git(repo, "remote", "set-head", "origin", "trunk")
+
+        assert _get_default_branch(cwd=repo) == "trunk"
 
 
 class TestCreateWorkingBranch:
@@ -2365,6 +2441,54 @@ class TestRemotesAndPush:
         remote_refs = _git(repo, "ls-remote", "origin")
         assert f"refs/heads/{WORKING}" in remote_refs
         assert f"refs/heads/{LEDGER}" in remote_refs
+
+    @pytest.mark.parametrize(
+        ("failure", "message"),
+        [
+            (subprocess.TimeoutExpired(["git", "push"], 1), "git push timed out"),
+            (OSError("injected launch failure"), "git push failed"),
+        ],
+    )
+    def test_push_transport_is_bounded_and_errors_release_the_repository(
+        self,
+        repo: Path,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        failure: Exception,
+        message: str,
+    ) -> None:
+        import haute._git as git_mod
+        from haute._git_lock import repository_mutation
+
+        self._setup_pair(repo)
+        self._add_bare_remote(repo, tmp_path)
+        real_run = git_mod.subprocess.run
+        captured_timeout: list[object] = []
+
+        def fail_push(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+            if cmd[:2] == ["git", "push"]:
+                captured_timeout.append(kwargs.get("timeout"))
+                raise failure
+            return real_run(cmd, **kwargs)  # type: ignore[return-value]
+
+        monkeypatch.setattr(git_mod.subprocess, "run", fail_push)
+
+        with pytest.raises(GitError, match=message):
+            push_working_pair("origin", repo, cwd=repo)
+
+        assert captured_timeout == [git_mod._PUSH_TIMEOUT_SECONDS]
+        # The decorator's finally path must release the repository lock for
+        # another request thread, not merely permit a same-thread RLock re-entry.
+        reacquired = threading.Event()
+
+        def acquire_after_failure() -> None:
+            with repository_mutation(repo):
+                reacquired.set()
+
+        thread = threading.Thread(target=acquire_after_failure, daemon=True)
+        thread.start()
+        assert reacquired.wait(timeout=2)
+        thread.join(timeout=2)
 
     def test_first_use_unborn_repo_publishes_default_working_and_ledger(
         self, unborn_repo: Path, tmp_path: Path
@@ -3384,6 +3508,54 @@ class TestFastForwardPair:
         )
         assert check_invariants(WORKING, cwd=repo) == []  # healthy after the catch-up
 
+    def test_required_fetch_failure_refuses_before_any_ref_mutation(
+        self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import haute._git as git_mod
+
+        self._setup_pair(repo)
+        self._add_bare_remote(repo, tmp_path)
+        working_tip = _git(repo, "rev-parse", WORKING)
+        ledger_tip = _git(repo, "rev-parse", LEDGER)
+        monkeypatch.setattr(git_mod, "_fetch_refs", lambda *_args, **_kwargs: False)
+
+        with pytest.raises(GitDomainError, match="Could not refresh 'origin'"):
+            fast_forward_pair("origin", repo, cwd=repo)
+
+        assert _git(repo, "rev-parse", WORKING) == working_tip
+        assert _git(repo, "rev-parse", LEDGER) == ledger_tip
+        assert _git(repo, "symbolic-ref", "--short", "HEAD") == LEDGER
+
+    @pytest.mark.parametrize(
+        ("deleted_branch", "kind"),
+        [(WORKING, "working branch"), (LEDGER, "save ledger")],
+    )
+    def test_deleted_remote_leg_has_a_distinct_refusal_after_prune(
+        self, repo: Path, tmp_path: Path, deleted_branch: str, kind: str
+    ) -> None:
+        self._setup_pair(repo)
+        bare = self._add_bare_remote(repo, tmp_path)
+        push_working_pair("origin", repo, cwd=repo)
+        _git(repo, "fetch", "origin")
+        working_tip = _git(repo, "rev-parse", WORKING)
+        ledger_tip = _git(repo, "rev-parse", LEDGER)
+        tracking = f"origin/{deleted_branch}"
+        assert _git(repo, "branch", "--remotes", "--list", tracking) != ""
+
+        # Delete directly in the bare remote so this clone's tracking ref stays
+        # stale until Catch up performs its required authoritative refresh.
+        _git(bare, "update-ref", "-d", f"refs/heads/{deleted_branch}")
+
+        with pytest.raises(
+            GitDomainError,
+            match=rf"{kind} '{deleted_branch}' is missing",
+        ):
+            fast_forward_pair("origin", repo, cwd=repo)
+
+        assert _git(repo, "branch", "--remotes", "--list", tracking) == ""
+        assert _git(repo, "rev-parse", WORKING) == working_tip
+        assert _git(repo, "rev-parse", LEDGER) == ledger_tip
+
     def test_d2_fast_forwards_ledger_only(self, repo: Path, tmp_path: Path) -> None:
         self._setup_pair(repo)
         bare = self._add_bare_remote(repo, tmp_path)
@@ -3483,6 +3655,26 @@ class TestBranchAway:
         assert _git(repo, "symbolic-ref", "--short", "HEAD") == LEDGER
         assert read_working_branch(repo) == WORKING
         assert check_invariants(WORKING, cwd=repo) == []  # adopted state is healthy
+
+    def test_required_fetch_failure_refuses_before_setting_pair_aside(
+        self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import haute._git as git_mod
+        from haute._git_state import read_working_branch
+
+        self._setup_pair(repo)
+        self._add_bare_remote(repo, tmp_path)
+        working_tip = _git(repo, "rev-parse", WORKING)
+        ledger_tip = _git(repo, "rev-parse", LEDGER)
+        monkeypatch.setattr(git_mod, "_fetch_refs", lambda *_args, **_kwargs: False)
+
+        with pytest.raises(GitDomainError, match="Could not refresh 'origin'"):
+            branch_away("origin", repo, cwd=repo)
+
+        assert _git(repo, "rev-parse", WORKING) == working_tip
+        assert _git(repo, "rev-parse", LEDGER) == ledger_tip
+        assert _git(repo, "branch", "--list", f"{WORKING}-local-*") == ""
+        assert read_working_branch(repo) == WORKING
 
     def test_x2_respawns_ledger_when_remote_ledger_absent(self, repo: Path, tmp_path: Path) -> None:
         self._setup_pair(repo)
@@ -3665,3 +3857,24 @@ class TestGitSubprocessEncoding:
             "Text-mode git subprocess decoding must pin encoding='utf-8' so branch "
             f"names and stderr round-trip consistently across platforms. Offenders: {offenders}"
         )
+
+    def test_byte_stdin_path_replacement_decodes_git_output(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import haute._git as git_mod
+
+        results = iter(
+            [
+                subprocess.CompletedProcess(
+                    ["git", "hash-object"], 0, stdout=b"\xffobject\n", stderr=b""
+                ),
+                subprocess.CompletedProcess(
+                    ["git", "update-ref"], 1, stdout=b"", stderr=b"\xffdiagnostic\n"
+                ),
+            ]
+        )
+        monkeypatch.setattr(git_mod.subprocess, "run", lambda *_args, **_kwargs: next(results))
+
+        assert git_mod._run_git("hash-object", "--stdin", input_text="payload\n") == "�object"
+        with pytest.raises(GitError, match="�diagnostic"):
+            git_mod._run_git("update-ref", "--stdin", input_text="create refs/test x\n")

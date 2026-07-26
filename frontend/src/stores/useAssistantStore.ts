@@ -56,6 +56,20 @@ type SetAssistantState = (
 
 let activeController: AbortController | null = null
 
+export function assistantSendDisabledReason(
+  status: AssistantStatus | "unknown" | "error",
+  isInsideSubmodel: boolean,
+  dirty: boolean,
+): string | null {
+  if (status === "unknown") return "Assistant status is unavailable. Refresh its status before sending."
+  if (status === "error") return "Assistant status could not be loaded. Try again."
+  if (!status.configured) return status.reason ?? "Assistant is not configured."
+  if (!status.mutations_enabled) return status.mutations_reason ?? "Assistant mutations are disabled."
+  if (isInsideSubmodel) return "Assistant edits are available from the top-level pipeline only."
+  if (dirty) return "Save or discard the current canvas changes before using Assistant."
+  return null
+}
+
 /**
  * Remembered session ids, keyed per pipeline source, so a reload or server
  * restart resumes the conversation the backend persisted in `.haute/`.
@@ -134,6 +148,13 @@ function closeAssistant(entries: TranscriptEntry[]): TranscriptEntry[] {
   )
 }
 
+function removeStreamingAssistant(entries: TranscriptEntry[]): TranscriptEntry[] {
+  const assistantIndex = lastIndexMatching(entries,
+    (entry) => entry.kind === "assistant" && entry.streaming,
+  )
+  return assistantIndex < 0 ? entries : entries.filter((_, index) => index !== assistantIndex)
+}
+
 function appendMarker(
   entries: TranscriptEntry[],
   outcome: "completed" | "failed" | "stopped" | "interrupted",
@@ -193,7 +214,6 @@ function rejectTurn(set: SetAssistantState, error: unknown): void {
   if (isAbortError(error)) {
     set((state) => ({
       entries: appendMarker(state.entries, "stopped"),
-      turnStatus: "idle",
     }))
     return
   }
@@ -203,8 +223,7 @@ function rejectTurn(set: SetAssistantState, error: unknown): void {
     // verbatim) and readiness is re-fetched so the composer gate shows the
     // current reason rather than a stale one.
     set((state) => ({
-      entries: closeAssistant(state.entries),
-      turnStatus: "idle",
+      entries: appendMarker(removeStreamingAssistant(state.entries), "failed", error.detail),
       notice: error.detail ?? "Assistant is not configured.",
     }))
     void useAssistantStore.getState().refreshStatus()
@@ -213,8 +232,7 @@ function rejectTurn(set: SetAssistantState, error: unknown): void {
 
   if (error instanceof ApiError && error.status === 404) {
     set((state) => ({
-      entries: closeAssistant(state.entries),
-      turnStatus: "idle",
+      entries: appendMarker(removeStreamingAssistant(state.entries), "failed", error.detail),
       notice: "The assistant session expired after a server restart. Start a new chat.",
     }))
     return
@@ -222,8 +240,7 @@ function rejectTurn(set: SetAssistantState, error: unknown): void {
 
   if (error instanceof ApiError && error.status === 409) {
     set((state) => ({
-      entries: closeAssistant(state.entries),
-      turnStatus: "idle",
+      entries: appendMarker(removeStreamingAssistant(state.entries), "failed", error.detail),
       notice: "The assistant is still finishing its last edit; try again in a moment.",
     }))
     return
@@ -231,9 +248,19 @@ function rejectTurn(set: SetAssistantState, error: unknown): void {
 
   set((state) => ({
     entries: appendMarker(state.entries, "interrupted"),
-    turnStatus: "idle",
   }))
   useToastStore.getState().addToast("error", "The assistant turn was interrupted.")
+}
+
+function rejectSessionCreation(set: SetAssistantState, error: unknown): void {
+  if (isAbortError(error)) return
+  if (error instanceof ApiError && error.status === 400) {
+    set({ notice: error.detail ?? "Assistant is not configured." })
+    void useAssistantStore.getState().refreshStatus()
+    return
+  }
+  const detail = error instanceof ApiError ? error.detail : null
+  set({ notice: detail ?? "The assistant session could not be started." })
 }
 
 const useAssistantStore = create<AssistantStoreState>()((set, get) => ({
@@ -257,24 +284,13 @@ const useAssistantStore = create<AssistantStoreState>()((set, get) => ({
     const current = get()
     if (current.turnStatus !== "idle") return
 
-    if (current.status === "unknown") {
-      set({ notice: "Assistant status is unavailable. Refresh its status before sending." })
-      return
-    }
-    if (current.status === "error") {
-      set({ notice: "Assistant status could not be loaded. Try again." })
-      return
-    }
-    if (!current.status.configured) {
-      set({ notice: current.status.reason ?? "Assistant is not configured." })
-      return
-    }
-    if (!current.status.mutations_enabled) {
-      set({ notice: current.status.mutations_reason ?? "Assistant mutations are disabled." })
-      return
-    }
-    if (options.isInsideSubmodel) {
-      set({ notice: "Assistant edits are available from the top-level pipeline only." })
+    const disabledReason = assistantSendDisabledReason(
+      current.status,
+      options.isInsideSubmodel,
+      useGraphStore.getState().dirty,
+    )
+    if (disabledReason !== null) {
+      set({ notice: disabledReason })
       return
     }
     if (!text.trim()) return
@@ -286,17 +302,16 @@ const useAssistantStore = create<AssistantStoreState>()((set, get) => ({
       set({ sessionId: null, pipelineSource: null, entries: [] })
     }
 
-    if (useGraphStore.getState().dirty) {
-      set({ notice: "Save or discard the current canvas changes before using Assistant." })
-      return
-    }
-
+    const controller = new AbortController()
+    activeController = controller
+    set({ turnStatus: "streaming", notice: null })
     let sessionId = get().sessionId
     try {
       if (sessionId === null) {
         const result = await createAssistantSession(
           null,
           rememberedSession(options.currentSourceFile),
+          controller.signal,
         )
         sessionId = result.sessionId
         rememberSession(options.currentSourceFile, sessionId)
@@ -309,12 +324,14 @@ const useAssistantStore = create<AssistantStoreState>()((set, get) => ({
         }))
       }
     } catch (error) {
-      rejectTurn(set, error)
+      rejectSessionCreation(set, error)
+      if (activeController === controller) {
+        activeController = null
+        set({ turnStatus: "idle" })
+      }
       return
     }
 
-    const controller = new AbortController()
-    activeController = controller
     set((state) => ({
       entries: [
         ...state.entries,
@@ -325,12 +342,17 @@ const useAssistantStore = create<AssistantStoreState>()((set, get) => ({
       notice: null,
     }))
 
-    let terminalSeen = false
+    type TerminalEvent = Extract<AssistantStreamEvent, {
+      type: "completed" | "failed" | "cancelled"
+    }>
+    const terminal = { current: null as TerminalEvent | null }
     try {
       await streamAssistantMessage(sessionId, text, {
         signal: controller.signal,
         onEvent: (event) => {
-          if (terminalSeen) return
+          if (terminal.current !== null) {
+            throw new Error("Assistant stream contract violation: received an event after a terminal event.")
+          }
 
           switch (event.type) {
             case "text_delta":
@@ -357,42 +379,36 @@ const useAssistantStore = create<AssistantStoreState>()((set, get) => ({
               }))
               break
             case "completed":
-              terminalSeen = true
-              set((state) => ({
-                entries: appendMarker(state.entries, "completed"),
-                turnStatus: "idle",
-              }))
+              terminal.current = event
               break
             case "failed":
-              terminalSeen = true
-              set((state) => ({
-                entries: appendMarker(state.entries, "failed", event.message),
-                turnStatus: "idle",
-              }))
-              useToastStore.getState().addToast("error", event.message)
+              terminal.current = event
               break
             case "cancelled":
-              terminalSeen = true
-              set((state) => ({
-                entries: appendMarker(state.entries, "stopped"),
-                turnStatus: "idle",
-              }))
+              terminal.current = event
               break
           }
         },
       })
 
-      if (!terminalSeen) {
-        set((state) => ({
-          entries: appendMarker(state.entries, "interrupted"),
-          turnStatus: "idle",
-        }))
+      const terminalEvent = terminal.current
+      if (terminalEvent === null) {
+        set((state) => ({ entries: appendMarker(state.entries, "interrupted") }))
+      } else if (terminalEvent.type === "completed") {
+        set((state) => ({ entries: appendMarker(state.entries, "completed") }))
+      } else if (terminalEvent.type === "failed") {
+        set((state) => ({ entries: appendMarker(state.entries, "failed", terminalEvent.message) }))
+        useToastStore.getState().addToast("error", terminalEvent.message)
+      } else {
+        set((state) => ({ entries: appendMarker(state.entries, "stopped") }))
       }
     } catch (error) {
-      if (!terminalSeen) rejectTurn(set, error)
+      rejectTurn(set, error)
     } finally {
-      if (activeController === controller) activeController = null
-      set({ turnStatus: "idle" })
+      if (activeController === controller) {
+        activeController = null
+        set({ turnStatus: "idle" })
+      }
     }
   },
 

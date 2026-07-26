@@ -167,10 +167,22 @@ def _append_round(
     tool_calls: list[ToolCallRequest],
     tool_results: list[dict[str, Any]],
 ) -> None:
-    assistant = _assistant_message(text_parts, tool_calls)
+    call_ids = {call.id for call in tool_calls}
+    result_ids = {
+        result.get("tool_call_id")
+        for result in tool_results
+        if isinstance(result.get("tool_call_id"), str)
+    }
+    complete_ids = call_ids & result_ids
+    complete_calls = [call for call in tool_calls if call.id in complete_ids]
+    complete_results = [
+        result for result in tool_results if result.get("tool_call_id") in complete_ids
+    ]
+
+    assistant = _assistant_message(text_parts, complete_calls)
     if assistant is not None:
         turn_messages.append(assistant)
-    turn_messages.extend(tool_results)
+    turn_messages.extend(complete_results)
 
 
 async def _aclose_quietly(stream: object) -> None:
@@ -337,6 +349,7 @@ async def run_turn(
                         )
                         payload, interrupt = await _execute_shielded(execute_tool, event)
                         is_error = "error" in payload
+                        round_results.append(_tool_result_message(event, payload, is_error))
                         if interrupt is None:
                             yield AssistantToolFinishedEvent(
                                 id=event.id,
@@ -349,7 +362,6 @@ async def run_turn(
                             if not isinstance(fingerprint, str):
                                 raise RuntimeError("graph_fingerprint must be a string")
                             yield AssistantGraphUpdatedEvent(fingerprint=fingerprint)
-                        round_results.append(_tool_result_message(event, payload, is_error))
                         if interrupt is not None:
                             # Re-raise the original interrupt (CancelledError
                             # or GeneratorExit) now that the completed tool
@@ -411,11 +423,15 @@ async def run_turn(
         # Abnormal-exit guard: the happy path already closed each round's
         # stream; a limit, error, cancel, or generator close lands here with
         # the current round's stream still open.
-        await _aclose_quietly(active_stream)
-        if not round_committed:
-            _append_round(turn_messages, round_text, round_calls, round_results)
-        store.append(session, turn_messages)
-        reservation.release()
+        try:
+            await _aclose_quietly(active_stream)
+        finally:
+            try:
+                if not round_committed:
+                    _append_round(turn_messages, round_text, round_calls, round_results)
+                store.append(session, turn_messages)
+            finally:
+                reservation.release()
 
 
 __all__ = [

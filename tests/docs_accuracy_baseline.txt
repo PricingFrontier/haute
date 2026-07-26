@@ -53,7 +53,6 @@ docs/specs/execution-engine/low-level.md	missing-module-map-symbol	RLIMIT_AS
 docs/specs/execution-engine/low-level.md	missing-module-map-symbol	projection.prepare_graph
 docs/specs/expression-parsing/low-level.md	missing-module-map-symbol	with_columns()
 docs/specs/frontend-assistant-ui/low-level.md	missing-module-map-symbol	ApiError
-docs/specs/frontend-assistant-ui/low-level.md	missing-module-map-symbol	PanelHeader
 docs/specs/frontend-assistant-ui/low-level.md	missing-module-map-symbol	React.lazy
 docs/specs/frontend-assistant-ui/low-level.md	missing-module-map-symbol	ReadableStream
 docs/specs/frontend-assistant-ui/low-level.md	non-root-relative-test-reference	__tests__/App.assistantLazy.test.ts
@@ -138,15 +137,7 @@ docs/specs/frontend-graph-canvas/low-level.md	non-root-relative-test-reference	u
 docs/specs/frontend-graph-canvas/low-level.md	non-root-relative-test-reference	useWebSocketSync.panelState.test.ts
 docs/specs/frontend-graph-canvas/low-level.md	non-root-relative-test-reference	useWebSocketSync.undoHistory.test.ts
 docs/specs/frontend-graph-canvas/low-level.md	non-root-relative-test-reference	validateConfigRefs.test.ts
-docs/specs/frontend-modelling-optimiser-ui/high-level.md	legacy-contract-section	Polars backend contracts (0.6.0)
-docs/specs/frontend-modelling-optimiser-ui/low-level.md	legacy-contract-section	Polars backend contracts (0.6.0)
-docs/specs/frontend-node-editors/high-level.md	broken-link-anchor	../io-layer/high-level.md#approved-change-contract-070-data-io-convergence
-docs/specs/frontend-node-editors/low-level.md	missing-repo-reference	frontend/src/panels/editors/DataSourceEditor.tsx
-docs/specs/frontend-node-editors/low-level.md	missing-repo-reference	frontend/src/panels/editors/SinkEditor.tsx
-docs/specs/frontend-preview-explore/high-level.md	legacy-contract-section	Polars backend contracts (0.6.0)
-docs/specs/frontend-preview-explore/low-level.md	legacy-contract-section	Polars backend contracts (0.6.0)
 docs/specs/frontend-shared/low-level.md	ambiguous-repo-reference	formatValue.test.ts -> frontend/src/__tests__/utils/formatValue.test.ts, frontend/src/utils/__tests__/formatValue.test.ts
-docs/specs/frontend-shared/low-level.md	missing-module-map-symbol	ApiInputEditor
 docs/specs/frontend-shared/low-level.md	missing-test-reference	.gaps.test.ts
 docs/specs/frontend-shared/low-level.md	missing-test-reference	.gaps.test.tsx
 docs/specs/frontend-shared/low-level.md	missing-test-reference	components/__tests__/ErrorBoundary.test.tsx
@@ -218,9 +209,6 @@ docs/specs/pipeline-config/low-level.md	missing-module-map-symbol	_scaffold.haut
 docs/specs/pipeline-config/low-level.md	missing-module-map-symbol	edge_input_name
 docs/specs/pipeline-config/low-level.md	missing-module-map-symbol	input_scenario_map
 docs/specs/pipeline-config/low-level.md	missing-repo-reference	rating/data/
-docs/specs/rating/high-level.md	empty-roadmap-pointer	../../roadmap/rating.md
-docs/specs/rating/low-level.md	empty-roadmap-pointer	../../roadmap/rating.md
-docs/specs/rating/low-level.md	legacy-contract-section	Polars backend contracts (0.6.0)
 docs/specs/reference-pipeline/high-level.md	missing-repo-reference	rating/config/expander/premium.json
 docs/specs/reference-pipeline/high-level.md	missing-repo-reference	rating/data/quotes/nest_example.json
 docs/specs/reference-pipeline/low-level.md	ambiguous-repo-reference	config/quote_input/quotes.json -> rating/config/quote_input/quotes.json, tests/fixtures/config/quote_input/quotes.json
@@ -231,8 +219,6 @@ docs/specs/reference-pipeline/low-level.md	missing-repo-reference	rating/data/qu
 docs/specs/sandbox-security/low-level.md	missing-module-map-symbol	exec()
 docs/specs/server-api/low-level.md	missing-module-map-symbol	contract_error
 docs/specs/submodels/low-level.md	missing-module-map-symbol	SUBMODEL
-docs/specs/tracing/high-level.md	legacy-contract-section	Polars backend contracts (0.6.0)
-docs/specs/tracing/low-level.md	legacy-contract-section	Polars backend contracts (0.6.0)
 tests/performance/test_polars_scale_scenario.py	unreferenced-test	not named in any low-level Testing section
 tests/performance/test_training_scoring_wide_perf.py	unreferenced-test	not named in any low-level Testing section
 tests/test_apiinput_flat_nested_relative_path.py	unreferenced-test	not named in any low-level Testing section
@@ -264,7 +250,6 @@ tests/test_frontend_backend_contract.py	unreferenced-test	not named in any low-l
 tests/test_gpu_fit_cancel.py	unreferenced-test	not named in any low-level Testing section
 tests/test_graph_input_identity.py	unreferenced-test	not named in any low-level Testing section
 tests/test_host_binding.py	unreferenced-test	not named in any low-level Testing section
-tests/test_lineage_preview_cache.py	unreferenced-test	not named in any low-level Testing section
 tests/test_mem_helpers.py	unreferenced-test	not named in any low-level Testing section
 tests/test_mlflow_log.py	unreferenced-test	not named in any low-level Testing section
 tests/test_mlflow_log_button_roundtrip.py	unreferenced-test	not named in any low-level Testing section
@@ -298,6 +283,4 @@ tests/test_starter_pipeline_e2e.py	unreferenced-test	not named in any low-level 
 tests/test_state_transitions.py	unreferenced-test	not named in any low-level Testing section
 tests/test_streaming_collect_contract.py	unreferenced-test	not named in any low-level Testing section
 tests/test_test_debt.py	unreferenced-test	not named in any low-level Testing section
-tests/test_trace_correlation_remediation.py	unreferenced-test	not named in any low-level Testing section
-tests/test_trace_evidence_contract.py	unreferenced-test	not named in any low-level Testing section
 tests/test_training_worker_protocol.py	unreferenced-test	not named in any low-level Testing section

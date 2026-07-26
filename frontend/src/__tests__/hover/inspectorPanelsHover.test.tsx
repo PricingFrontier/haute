@@ -361,7 +361,7 @@ function renderNodePanel(
       <NodePanel
         node={makeNode()}
         onClose={vi.fn()}
-        onUpdateNode={vi.fn()}
+        onUpdateNode={vi.fn(() => ({ ok: true as const }))}
         onDeleteEdge={vi.fn()}
         onRefreshPreview={vi.fn()}
         {...panelOverrides}
@@ -469,7 +469,7 @@ describe("NodePanel standalone hover/focus sites", () => {
   it("typing in the label input still propagates to onUpdateNode (non-styling side-effect preserved)", () => {
     // Sanity: the migration must not strip the onChange handler — only
     // the inline style mutations should be gone.
-    const onUpdateNode = vi.fn()
+    const onUpdateNode = vi.fn(() => ({ ok: true as const }))
     renderNodePanel({ onUpdateNode })
     const labelInput = screen.getByDisplayValue("My Node") as HTMLInputElement
     fireEvent.change(labelInput, { target: { value: "Renamed" } })

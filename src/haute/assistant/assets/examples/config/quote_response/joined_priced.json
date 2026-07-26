@@ -1,0 +1,17 @@
+{
+  "outputMapping": [
+    {
+      "source_port": "quote_with_region",
+      "source_column": "region",
+      "output_path": "$[:].region",
+      "enabled": true
+    },
+    {
+      "source_port": "quote_with_region",
+      "source_column": "factor",
+      "output_path": "$[:].factor",
+      "enabled": true
+    }
+  ],
+  "outputFormat": "json"
+}

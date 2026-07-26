@@ -61,6 +61,15 @@ describe("MilestoneCommitModal", () => {
     expect(screen.getByTestId("milestone-confirm")).not.toBeDisabled()
   })
 
+  it("explains the 500-character message limit", () => {
+    render(<MilestoneCommitModal onConfirmed={vi.fn()} onClose={vi.fn()} />)
+    fireEvent.change(screen.getByTestId("milestone-message"), {
+      target: { value: "x".repeat(501) },
+    })
+    expect(screen.getByRole("alert")).toHaveTextContent("500 characters or fewer")
+    expect(screen.getByTestId("milestone-confirm")).toBeDisabled()
+  })
+
   it("commits with message and optional version label", async () => {
     const onConfirmed = vi.fn()
     render(<MilestoneCommitModal onConfirmed={onConfirmed} onClose={vi.fn()} />)

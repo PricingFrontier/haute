@@ -1,0 +1,38 @@
+{
+  "path": "data/quote.json",
+  "contract": "opaque",
+  "tables": [
+    {
+      "path": "$[:]",
+      "label": "quote",
+      "emit": true,
+      "row_id_column": "quote_id",
+      "columns": [
+        {
+          "name": "quote_id",
+          "path": "$[:].quote_id",
+          "type": "str",
+          "status": "Confirmed",
+          "selected": true,
+          "levels": null
+        },
+        {
+          "name": "vehicle_year",
+          "path": "$[:].vehicle_year",
+          "type": "int",
+          "status": "Confirmed",
+          "selected": true,
+          "levels": null
+        },
+        {
+          "name": "years_with_insurer",
+          "path": "$[:].years_with_insurer",
+          "type": "int",
+          "status": "Confirmed",
+          "selected": true,
+          "levels": null
+        }
+      ]
+    }
+  ]
+}

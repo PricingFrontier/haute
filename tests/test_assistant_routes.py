@@ -512,6 +512,40 @@ class TestTurnReservation:
 
 
 class TestReservationNeverLeaks:
+    async def test_response_close_failure_still_releases_the_reservation(self):
+        import haute.routes.assistant as assistant_routes
+        from haute.assistant._loop import reserve_turn
+
+        store = SessionStore()
+        session = store.create("main.py")
+        reservation = await reserve_turn(store, session.id)
+
+        class RaisingBody:
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                raise StopAsyncIteration
+
+            async def aclose(self):
+                raise RuntimeError("body close failed")
+
+        response = assistant_routes._ReservedStreamingResponse(
+            RaisingBody(),
+            reservation=reservation,
+        )
+
+        async def receive():
+            return {"type": "http.disconnect"}
+
+        async def send(message):
+            return None
+
+        with pytest.raises(RuntimeError, match="body close failed"):
+            await response({"type": "http"}, receive, send)
+
+        assert not session.lock.locked()
+
     async def test_disconnect_before_body_iteration_releases_the_lock(
         self, configured: Path, monkeypatch: pytest.MonkeyPatch
     ):

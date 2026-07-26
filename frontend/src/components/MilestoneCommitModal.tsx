@@ -130,7 +130,13 @@ export default function MilestoneCommitModal({ onConfirmed, onClose }: Milestone
               caretColor: "var(--accent)",
             }}
             aria-invalid={!canSubmit && trimmed !== ""}
+            aria-describedby={trimmed.length > MAX_MESSAGE_LENGTH ? "milestone-message-limit" : undefined}
           />
+          {trimmed.length > MAX_MESSAGE_LENGTH && (
+            <p id="milestone-message-limit" role="alert" className="text-[11px] mt-1" style={{ color: "var(--danger)" }}>
+              Milestone messages must be 500 characters or fewer.
+            </p>
+          )}
         </div>
 
         <div>

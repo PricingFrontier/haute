@@ -38,6 +38,7 @@ const DEFAULT_MAX_INITIAL_JS_GZIP_KIB = 247
 // reintroduced an eager import path even if the initial gzip budget still fits.
 export const LAZY_ONLY_MODULEPRELOAD_CHUNK_PREFIXES = [
   "CodeMirrorEditor",
+  "UtilityPanel",
   "vendor-codemirror",
   "vendor-layout",
   "TransformEditor",

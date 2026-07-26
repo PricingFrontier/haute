@@ -47,7 +47,7 @@ editors, so the chat feature costs the initial bundle nothing.
 backend's assistant status. An unconfigured assistant renders the composer disabled with the
 backend-supplied reason (no `[assistant]` config, missing API key, unknown provider, extra
 not installed) — never a send that bounces. Mutations-disabled (working branch not ready —
-unset, divergent, or invalid) renders the same way, with the backend's per-state reason: authoring is this panel's whole
+no repository, unset, detached, divergent, or invalid) renders the same way, with the backend's per-state reason: authoring is this panel's whole
 purpose, so a assistant that could talk but not edit would only mislead. The status is
 re-checked on every panel open, not polled.
 
@@ -79,7 +79,8 @@ an undo, but it also does not spell that consequence out.
 first send. The current source-file string scopes the browser's remembered-session key and
 causes a source change to clear the in-memory transcript/session; it is not passed as the
 `pipeline` value in the session-create request (the current client sends `null`). While a turn
-is in flight the composer is locked (stop is the only action); the backend's 409 on concurrent
+is in flight the composer is locked from before session creation until the response body has
+ended (stop is the only action); the backend's 409 on concurrent
 sends therefore has exactly one
 normal-operation window — a send in the moments after a stop, while the backend finishes an
 in-flight edit — rendered with its own "still finishing" notice rather than a generic
@@ -97,7 +98,10 @@ starts blank; a 404 on *send* still renders the explicit session-expired notice.
 renders the typed error message inline in the transcript at the point of failure (plus an
 error toast), and re-enables the composer. A transport drop mid-stream is rendered as an
 interrupted turn, distinct from a completed one — never silently truncated prose that reads
-as if the model finished.
+as if the model finished. Parser, callback, and transport failures explicitly cancel the
+response reader so the backend sees the disconnect and stops mutating. An event after a
+terminal frame is a contract violation: it cancels the response and renders the turn
+interrupted rather than silently preserving a false completed state.
 
 ## Design rationale
 

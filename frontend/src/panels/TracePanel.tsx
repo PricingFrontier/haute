@@ -33,15 +33,6 @@ function evidenceRank(value: CollapsedEntry | TraceOmission): number {
   return value.topological_rank
 }
 
-function downloadText(filename: string, content: string, type: string): void {
-  const url = URL.createObjectURL(new Blob([content], { type }))
-  const link = document.createElement("a")
-  link.href = url
-  link.download = filename
-  link.click()
-  URL.revokeObjectURL(url)
-}
-
 function loadTraceExport() {
   return import("../trace/traceExport")
 }
@@ -162,13 +153,17 @@ export default function TracePanel({ trace, onClose }: TracePanelProps) {
 
   const downloadTrace = async (extension: "md" | "csv") => {
     try {
-      const exporter = await loadTraceExport()
+      const [exporter, { downloadTextFile }] = await Promise.all([
+        loadTraceExport(),
+        import("./editors/shared/tableClipboard"),
+      ])
       const markdown = extension === "md"
-      downloadText(
-        exporter.traceExportFilename(trace, extension),
+      const downloaded = downloadTextFile(
         markdown ? exporter.traceToMarkdown(trace) : exporter.traceToCsv(trace),
+        exporter.traceExportFilename(trace, extension),
         markdown ? "text/markdown;charset=utf-8" : "text/csv;charset=utf-8",
       )
+      if (!downloaded) setExportStatus("error")
     } catch {
       setExportStatus("error")
     }

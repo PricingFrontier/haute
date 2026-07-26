@@ -1,7 +1,12 @@
 import { describe, it, expect, vi, afterEach } from "vitest"
-import { render, screen, fireEvent, cleanup, within } from "@testing-library/react"
+import { render, screen, fireEvent, cleanup, within, waitFor } from "@testing-library/react"
 import TracePanel from "../TracePanel"
 import type { TraceResult, TraceStep } from "../../types/trace"
+import { downloadTextFile } from "../editors/shared/tableClipboard"
+
+vi.mock("../editors/shared/tableClipboard", () => ({
+  downloadTextFile: vi.fn(() => true),
+}))
 
 function makeStep(overrides: Partial<TraceStep> = {}): TraceStep {
   return {
@@ -55,6 +60,8 @@ describe("TracePanel", () => {
   afterEach(() => {
     cleanup()
     vi.restoreAllMocks()
+    vi.mocked(downloadTextFile).mockReset()
+    vi.mocked(downloadTextFile).mockReturnValue(true)
   })
 
   it("renders the Trace header with column name", () => {
@@ -65,6 +72,53 @@ describe("TracePanel", () => {
   it("renders the output value", () => {
     render(<TracePanel trace={makeTrace()} onClose={vi.fn()} />)
     expect(screen.getByTestId("trace-target-summary")).toHaveTextContent("42.5")
+  })
+
+  it("uses the shared download helper and surfaces its guarded failure", async () => {
+    vi.mocked(downloadTextFile).mockReturnValue(false)
+    render(<TracePanel trace={makeTrace()} onClose={vi.fn()} />)
+
+    fireEvent.click(screen.getByRole("button", { name: "Download trace as Markdown" }))
+
+    await waitFor(() => expect(downloadTextFile).toHaveBeenCalledTimes(1))
+    expect(screen.getByRole("alert")).toHaveTextContent("The trace could not be exported")
+  })
+
+  it("surfaces a model-score enrichment failure instead of calculation output", () => {
+    const modelStep = makeStep({
+      node_id: "model",
+      node_name: "Model",
+      node_type: "modelScore",
+      node_detail: {
+        detail_type: "model_score",
+        error: "Model enrichment failed",
+      } as unknown as TraceStep["node_detail"],
+      expression: {
+        expression_text: "prediction",
+        expression_type: "arithmetic",
+        referenced_columns: ["prediction"],
+      },
+      calculation: {
+        substituted_text: "prediction = 0.9",
+        result_value: 0.9,
+        input_values: { prediction: 0.9 },
+      },
+    })
+    render(
+      <TracePanel
+        trace={makeTrace({
+          target_node_id: "model",
+          column: "prediction",
+          output_value: 0.9,
+          steps: [modelStep],
+        })}
+        onClose={vi.fn()}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole("button", { name: /Model.*SCORING/ }))
+    expect(screen.getByRole("alert")).toHaveTextContent("Model enrichment failed")
+    expect(screen.queryByText("prediction = 0.9")).not.toBeInTheDocument()
   })
 
   it("hides execution time from hero (developer telemetry moved)", () => {
@@ -1391,7 +1445,7 @@ describe("TracePanel", () => {
     expect(screen.getByTestId("trace-step-card-n2")).toHaveAttribute("data-target-step", "true")
   })
 
-  it("uses the backend taken branch index for conditional target-step display", () => {
+  it("does not associate backend conditional selection with locally parsed target-step rows", () => {
     const { container } = render(
       <TracePanel
         trace={makeTrace({
@@ -1447,11 +1501,9 @@ describe("TracePanel", () => {
       ),
     )
     expect(branches).toHaveLength(3)
-    expect(branches.map((branch) => branch.dataset.matched)).toEqual([
-      "false",
-      "true",
-      "false",
-    ])
+    expect(branches.every((branch) => branch.dataset.matched === undefined)).toBe(true)
+    expect(branches.every((branch) => !branch.classList.contains("inactive"))).toBe(true)
+    expect(screen.getByTestId("conditional-backend-selection")).toHaveTextContent("Selected branch: 1 (then)")
   })
 
   it("keeps per-step timing out of the story", () => {

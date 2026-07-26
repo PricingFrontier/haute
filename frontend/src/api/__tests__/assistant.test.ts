@@ -129,6 +129,27 @@ describe("createAssistantSession", () => {
     const [, opts] = mockFetch.mock.calls[0]
     expect(JSON.parse(opts.body as string)).toEqual({ pipeline: null, session_id: "abc123" })
   })
+
+  it("propagates an optional abort signal to the in-flight request", async () => {
+    const controller = new AbortController()
+    let requestSignal: AbortSignal | undefined
+    mockFetch.mockImplementationOnce((_url, options) => {
+      requestSignal = options?.signal as AbortSignal
+      return new Promise((_resolve, reject) => {
+        requestSignal?.addEventListener(
+          "abort",
+          () => reject(new DOMException("Aborted", "AbortError")),
+          { once: true },
+        )
+      })
+    })
+
+    const request = createAssistantSession(null, null, controller.signal)
+    controller.abort()
+
+    await expect(request).rejects.toMatchObject({ name: "AbortError" })
+    expect(requestSignal?.aborted).toBe(true)
+  })
 })
 
 describe("streamAssistantMessage", () => {
@@ -193,6 +214,40 @@ describe("streamAssistantMessage", () => {
         onEvent: () => {},
       }),
     ).rejects.toThrow(/mystery_event/)
+  })
+
+  it("cancels the reader when parsing fails", async () => {
+    const cancel = vi.fn()
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('data: {"type":"mystery_event"}\n\n'))
+      },
+      cancel,
+    })
+    mockFetch.mockReturnValueOnce(Promise.resolve({ ok: true, body }))
+
+    await expect(streamAssistantMessage("session-1", "hi", {
+      signal: new AbortController().signal,
+      onEvent: () => {},
+    })).rejects.toThrow(/mystery_event/)
+    expect(cancel).toHaveBeenCalledTimes(1)
+  })
+
+  it("cancels the reader when the event callback fails", async () => {
+    const cancel = vi.fn()
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('data: {"type":"cancelled"}\n\n'))
+      },
+      cancel,
+    })
+    mockFetch.mockReturnValueOnce(Promise.resolve({ ok: true, body }))
+
+    await expect(streamAssistantMessage("session-1", "hi", {
+      signal: new AbortController().signal,
+      onEvent: () => { throw new Error("callback failure") },
+    })).rejects.toThrow("callback failure")
+    expect(cancel).toHaveBeenCalledTimes(1)
   })
 
   it("maps a non-OK response to ApiError before any streaming", async () => {

@@ -1,0 +1,17 @@
+{
+  "outputMapping": [
+    {
+      "source_port": "enriched",
+      "source_column": "vehicle_age",
+      "output_path": "$[:].vehicle_age",
+      "enabled": true
+    },
+    {
+      "source_port": "enriched",
+      "source_column": "driver_band",
+      "output_path": "$[:].driver_band",
+      "enabled": true
+    }
+  ],
+  "outputFormat": "json"
+}

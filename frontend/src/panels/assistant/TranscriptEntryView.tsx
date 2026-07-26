@@ -1,3 +1,4 @@
+import { memo } from "react"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import { AlertCircle, CheckCircle2, Circle, Loader2 } from "lucide-react"
@@ -127,7 +128,7 @@ function MarkerEntry({ entry }: { entry: Extract<TranscriptEntry, { kind: "marke
   )
 }
 
-export default function TranscriptEntryView({ entry }: TranscriptEntryViewProps) {
+function TranscriptEntryView({ entry }: TranscriptEntryViewProps) {
   switch (entry.kind) {
     case "user":
       return (
@@ -151,3 +152,5 @@ export default function TranscriptEntryView({ entry }: TranscriptEntryViewProps)
       return <MarkerEntry entry={entry} />
   }
 }
+
+export default memo(TranscriptEntryView)

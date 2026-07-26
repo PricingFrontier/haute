@@ -51,7 +51,16 @@ _MODULE_MAP_ROW = re.compile(r"^\s*\|\s*(.*?)\s*\|", flags=re.MULTILINE)
 _FRONTEND_SOURCE_SUFFIXES = frozenset({".css", ".ts", ".tsx"})
 _FRONTEND_TEST_ONLY_DIRS = frozenset({"__tests__", "test-utils", "testSupport"})
 _BACKEND_BEHAVIOUR_ASSETS = frozenset(
-    {"_polars_io_arguments.json", "assistant/assets/authoring_guide.md"}
+    {
+        "_polars_io_arguments.json",
+        "assistant/assets/authoring_guide.md",
+        "assistant/assets/examples/config/data_input/quotes.json",
+        "assistant/assets/examples/config/data_input/regions.json",
+        "assistant/assets/examples/config/quote_input/quote.json",
+        "assistant/assets/examples/config/quote_response/joined_priced.json",
+        "assistant/assets/examples/config/quote_response/linear_priced.json",
+        "assistant/assets/examples/config/quote_response/response.json",
+    }
 )
 # These files are deliberately outside behavioral component coverage: ``py.typed``
 # is a distribution marker owned by the build/distribution spec, while ``static``

@@ -9,6 +9,7 @@ import pytest
 
 from haute._rating import (
     _apply_banding,
+    _apply_rating_step_outputs,
     _apply_rating_table,
     _banding_condition,
     _combine_rating_columns,
@@ -1953,3 +1954,101 @@ class TestApplyRatingStepCanonicalConfig:
         result = apply_rating_step_from_config(lf, config).collect()
 
         assert result["vehicle_factor"].to_list() == [0.91, 0.96, 1.08, 1.0]
+
+
+class TestWs11RatingHardening:
+    @pytest.mark.parametrize(
+        "banding_type,rules",
+        [
+            ("continuous", [{"op1": "!!", "val1": "", "assignment": "bad"}]),
+            ("continuous", [{"op1": ">=", "val1": 0, "assignment": ""}]),
+            ("categorical", [{"value": "", "assignment": "bad"}]),
+        ],
+    )
+    def test_nonempty_rules_with_no_usable_rule_raise(
+        self,
+        banding_type: str,
+        rules: list[dict[str, object]],
+    ) -> None:
+        lf = pl.DataFrame({"x": [1]}).lazy()
+
+        with pytest.raises(ValueError, match="no usable"):
+            _apply_banding(lf, "x", "band", banding_type, rules)
+
+    def test_empty_entries_do_not_hide_a_missing_input_factor(self) -> None:
+        lf = pl.DataFrame({"region": ["north"]}).lazy()
+        table = {
+            "factors": ["regoin"],
+            "outputColumn": "factor",
+            "entries": [],
+        }
+
+        with pytest.raises(RatingFactorMissingError, match="regoin"):
+            _apply_rating_table(lf, table)
+
+    def test_runtime_rejects_duplicate_table_outputs_before_combining(self) -> None:
+        tables = [
+            {
+                "factors": ["band"],
+                "outputColumn": "duplicate_factor",
+                "entries": [{"band": "A", "value": 2.0}],
+            },
+            {
+                "factors": ["region"],
+                "outputColumn": "duplicate_factor",
+                "entries": [{"region": "north", "value": 5.0}],
+            },
+        ]
+
+        with pytest.raises(
+            ValueError,
+            match=r"tables\[1\].*duplicate_factor.*tables\[0\]",
+        ):
+            _apply_rating_step_outputs(
+                pl.DataFrame({"band": ["A"], "region": ["north"]}).lazy(),
+                tables,
+                [
+                    {
+                        "outputColumn": "premium",
+                        "operation": "multiply",
+                        "baseValue": 1.0,
+                    }
+                ],
+            )
+
+    def test_combine_boundary_rejects_duplicate_participants(self) -> None:
+        lf = pl.DataFrame({"factor": [2.0]}).lazy()
+
+        with pytest.raises(ValueError, match=r"duplicate participant.*factor"):
+            _combine_rating_columns(
+                lf,
+                ["factor", "factor"],
+                "multiply",
+                "premium",
+            )
+
+    def test_combine_boundary_rejects_overwriting_a_participant(self) -> None:
+        lf = pl.DataFrame({"factor": [2.0], "loading": [1.1]}).lazy()
+
+        with pytest.raises(ValueError, match=r"output column 'factor'.*participant"):
+            _combine_rating_columns(
+                lf,
+                ["factor", "loading"],
+                "multiply",
+                "factor",
+            )
+
+    def test_miss_guard_survives_projection_pushdown(self) -> None:
+        lf = pl.DataFrame({"region": ["north", "missing"]}).lazy()
+        table = {
+            "factors": ["region"],
+            "outputColumn": "factor",
+            "entries": [{"region": "north", "value": 2.0}],
+        }
+
+        projected = _apply_rating_table(lf, table).select("region")
+
+        from haute._rating import RatingTableMissError
+
+        with pytest.raises(RatingTableMissError):
+            projected.collect()

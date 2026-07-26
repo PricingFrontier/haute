@@ -25,7 +25,10 @@ from haute._banding_config import (
     normalise_banding_rules,
 )
 from haute._logging import get_logger
-from haute._rating_step_config import normalise_rating_tables
+from haute._rating_step_config import (
+    normalise_rating_tables,
+    validate_unique_rating_table_outputs,
+)
 from haute._types import _Frame
 from haute.errors import RatingExtremaUndefinedError, RatingFactorMissingError
 
@@ -47,9 +50,9 @@ SUPPORTED_BANDING_OPERATORS = MappingProxyType(
 )
 
 
-def _banding_condition(col: pl.Expr, rule: dict[str, Any]) -> pl.Expr | None:
-    """Build a Polars boolean expression from a continuous banding rule."""
-    parts: list[pl.Expr] = []
+def _banding_rule_comparators(rule: dict[str, Any]) -> list[tuple[str, float]]:
+    """Return the validated operator/threshold pairs usable by one rule."""
+    comparators: list[tuple[str, float]] = []
     for suffix in ("1", "2"):
         op = str(rule.get(f"op{suffix}", "") or "").strip()
         val = rule.get(f"val{suffix}")
@@ -61,10 +64,19 @@ def _banding_condition(col: pl.Expr, rule: dict[str, Any]) -> pl.Expr | None:
         try:
             num = float(val)
         except (ValueError, TypeError):
-            raise ValueError(f"Banding rule has non-numeric value '{val}' for op{suffix}")
+            raise ValueError(f"Banding rule has non-numeric threshold '{val}' for op{suffix}")
         if not math.isfinite(num):
-            raise ValueError(f"Banding rule has non-finite value '{val}' for op{suffix}")
-        parts.append(evaluator(col, num))
+            raise ValueError(f"Banding rule has non-finite threshold '{val}' for op{suffix}")
+        comparators.append((op, num))
+    return comparators
+
+
+def _banding_condition(col: pl.Expr, rule: dict[str, Any]) -> pl.Expr | None:
+    """Build a Polars boolean expression from a continuous banding rule."""
+    parts: list[pl.Expr] = [
+        SUPPORTED_BANDING_OPERATORS[op](col, threshold)
+        for op, threshold in _banding_rule_comparators(rule)
+    ]
     if not parts:
         return None
     result = parts[0]
@@ -93,6 +105,7 @@ def _apply_banding(
         {"value": "Semi-detached House", "assignment": "House"}
     """
     rules = normalise_banding_rules(banding_type, rules)
+    has_configured_rules = bool(rules)
     col = pl.col(column)
     default_lit = pl.lit(default) if default is not None else pl.lit(None, dtype=pl.Utf8)
 
@@ -105,6 +118,8 @@ def _apply_banding(
             if (val is not None and val != "") and (assignment is not None and assignment != ""):
                 remap[str(val)] = str(assignment)
         if not remap:
+            if has_configured_rules:
+                raise ValueError(f"Banding output {output_column!r} has no usable categorical rule")
             return lf
         cat_expr = col.cast(pl.Utf8).replace_strict(remap, default=default_lit).alias(output_column)
         return lf.with_columns(cat_expr)
@@ -140,6 +155,8 @@ def _apply_banding(
         chain = branch if chain is None else chain.when(cond).then(pl.lit(assignment))
 
     if chain is None:
+        if has_configured_rules:
+            raise ValueError(f"Banding output {output_column!r} has no usable continuous rule")
         return lf
     final_expr = chain.otherwise(default_lit).alias(output_column)
     return lf.with_columns(final_expr)
@@ -711,7 +728,8 @@ def _normalise_on_missing(value: object) -> str:
     return normalised
 
 
-def _rating_miss_guard_expr(
+def _apply_rating_miss_guard(
+    lf: _Frame,
     factors: list[str],
     *,
     key_columns: list[str] | None = None,
@@ -720,29 +738,24 @@ def _rating_miss_guard_expr(
     output_col: str,
     on_missing: str,
     default_note: str = "",
-) -> pl.Expr:
-    """Validate lookup misses inside the lazy plan, batch by batch.
+) -> _Frame:
+    """Validate lookup misses at a projection-safe lazy-plan barrier.
 
-    Runs as a ``map_batches`` over a struct of the canonical (Utf8)
-    factor columns plus the joined value, so it stays lazy- and
-    streaming-compatible, never re-executes the upstream plan, and fires
-    exactly when the plan materialises.  ``on_missing == "error"`` raises
-    :class:`RatingTableMissError`; ``"neutral"`` logs a WARNING with the
-    table name, miss count and missing keys.  Under the streaming engine
-    rows arrive in batches, so counts are per batch.
+    Projection, predicate, and slice pushdown stop at this barrier so a caller
+    cannot accidentally prune the validation by selecting a different output
+    column. The callback returns each batch unchanged and remains streamable.
     """
 
     resolved_key_columns = key_columns if key_columns is not None else factors
     if len(resolved_key_columns) != len(factors):
         raise ValueError("rating miss-guard key columns must align with public factors")
 
-    def _check(batch: pl.Series) -> pl.Series:
-        frame = batch.struct.unnest()
+    def _check(frame: pl.DataFrame) -> pl.DataFrame:
         values = frame[lookup_value_column]
         miss_mask = values.is_null()
         miss_count = int(miss_mask.sum())
         if not miss_count:
-            return values
+            return frame
         missed = (
             frame.filter(miss_mask)
             .select(resolved_key_columns)
@@ -760,7 +773,7 @@ def _rating_miss_guard_expr(
                 distinct_missing_keys=missed.height,
                 missing_keys=shown,
             )
-            return values
+            return frame
         shown_text = ", ".join(str(key) for key in shown)
         raise RatingTableMissError(
             f"Rating table {table_label!r} (output column {output_col!r}): "
@@ -772,10 +785,14 @@ def _rating_miss_guard_expr(
             "neutral pricing for misses."
         )
 
-    return (
-        pl.struct([*resolved_key_columns, lookup_value_column])
-        .map_batches(_check, return_dtype=pl.Float64, is_elementwise=True)
-        .alias(lookup_value_column)
+    if isinstance(lf, pl.DataFrame):
+        return _check(lf)
+    return lf.map_batches(
+        _check,
+        predicate_pushdown=False,
+        projection_pushdown=False,
+        slice_pushdown=False,
+        streamable=True,
     )
 
 
@@ -830,12 +847,12 @@ def _apply_rating_table(
     default_raw = table.get("defaultValue")
     on_missing = _normalise_on_missing(table.get("onMissing"))
 
-    if not factors or not entries or not output_col:
+    if not factors or not output_col:
         return lf
 
-    # Validate the declared input contract before inspecting/canonicalising the
-    # lookup side.  An incomplete lookup may still be a documented passthrough,
-    # but it must never hide a factor that is absent from the input frame.
+    # Validate the declared input contract before every incomplete-table guard.
+    # An entry-less lookup is still a no-op, but it must never hide a typo in a
+    # required factor name.
     frame_schema = input_schema if input_schema is not None else _frame_schema(lf)
     existing_cols = set(_schema_names(frame_schema))
     table_label = output_col
@@ -847,6 +864,9 @@ def _apply_rating_table(
                 table=table_label,
                 factor=factor,
             )
+
+    if not entries:
+        return lf
 
     # These are cheap structural passthrough checks.  They intentionally
     # precede lookup construction: a malformed lookup entry remains a
@@ -976,16 +996,15 @@ def _apply_rating_table(
     # defaultValue fills every miss below, so nothing can be silent.
     # Diagnostics relabel temporary keys with the public factor names.
     if default_val is None:
-        lf = lf.with_columns(
-            _rating_miss_guard_expr(
-                factors,
-                key_columns=key_columns,
-                lookup_value_column=lookup_value_column,
-                table_label=table_label,
-                output_col=output_col,
-                on_missing=on_missing,
-                default_note=default_note,
-            )
+        lf = _apply_rating_miss_guard(
+            lf,
+            factors,
+            key_columns=key_columns,
+            lookup_value_column=lookup_value_column,
+            table_label=table_label,
+            output_col=output_col,
+            on_missing=on_missing,
+            default_note=default_note,
         )
 
     # Rename value → outputColumn, apply default
@@ -1019,6 +1038,21 @@ def _combine_rating_columns(
     misses are otherwise rejected loudly there.
     """
     operation = _normalise_combine_operation(operation)
+    seen_columns: set[str] = set()
+    duplicate_columns: list[str] = []
+    for column in columns:
+        if column in seen_columns and column not in duplicate_columns:
+            duplicate_columns.append(column)
+        seen_columns.add(column)
+    if duplicate_columns:
+        raise ValueError(
+            f"Rating output {output_col!r} cannot combine duplicate participant "
+            f"column(s) {duplicate_columns!r}"
+        )
+    if output_col in seen_columns:
+        raise ValueError(
+            f"Rating output column {output_col!r} cannot overwrite a participant column"
+        )
     if not columns:
         return lf
     if len(columns) == 1:
@@ -1227,6 +1261,10 @@ def _apply_rating_step_outputs(
     """Apply rating tables and combined outputs to a frame."""
     if isinstance(lf, pl.DataFrame):
         lf = lf.lazy()
+
+    # Keep this assertion at the execution boundary as well as the config
+    # codec: internal callers can pass already-expanded table lists directly.
+    validate_unique_rating_table_outputs(tables)
 
     # Resolve the frame schema once and thread it through every table so each
     # _apply_rating_table avoids re-running collect_schema() on a growing lazy

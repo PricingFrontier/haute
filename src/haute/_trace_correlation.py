@@ -866,34 +866,6 @@ def _child_transform_may_reorder(child_node: GraphNode | None) -> bool:
     return any(token in low for token in _ROW_REORDERING_TOKENS)
 
 
-def _shared_key_is_unique(
-    df: pl.DataFrame,
-    match_row: dict[str, Any],
-    shared_cols: list[str],
-) -> bool:
-    """Whether *shared_cols* values identify exactly one row in *df*.
-
-    Used to gate the positional fast path: a positionally-aligned parent
-    row may only be trusted when the carried shared columns pin down a
-    single parent row.  A non-unique key means a row-reordering transform
-    could have placed a *different* equally-matching row at that position,
-    so the caller must fall through to the value-matching path (which
-    records the ambiguity / marks the step unresolved) rather than guess.
-
-    The comparison mirrors the positional check exactly — jsonify each
-    parent row and compare via :func:`_trace_values_match` — so the
-    uniqueness notion agrees with the acceptance notion and it is robust
-    to exotic column dtypes (List/Struct) that would not cast into a
-    Polars predicate.  It short-circuits as soon as a second match is
-    seen.
-    """
-    if not shared_cols:
-        return False
-    return (
-        _match_rows_vectorized(df, match_row, shared_cols).status is _RowMatchStatus.UNIQUE_STRICT
-    )
-
-
 def _allows_relaxed_parent_match(
     parent_id: str,
     child_node: GraphNode | None,
@@ -981,12 +953,45 @@ def _edge_join_right_match_row(
     return match_row
 
 
+def _edge_join_base_columns(
+    *,
+    child_node: GraphNode,
+    base_id: str,
+    eager_outputs: Mapping[str, Any],
+    source_frames_of: Mapping[tuple[str, str], Sequence[str | None]] | None,
+) -> set[str]:
+    """Resolve the columns emitted by an edge-join's base input."""
+    base_output = eager_outputs.get(base_id)
+    if isinstance(base_output, pl.DataFrame):
+        return set(base_output.columns)
+    if isinstance(base_output, dict):
+        handles = tuple((source_frames_of or {}).get((base_id, child_node.id), ()))
+        selected_frames = [
+            base_output[handle]
+            for handle in handles
+            if isinstance(handle, str) and isinstance(base_output.get(handle), pl.DataFrame)
+        ]
+        if selected_frames:
+            return {column for frame in selected_frames for column in frame.columns}
+        named_handles = [handle for handle in handles if handle is not None]
+        raise ValueError(
+            f"edge-join node {child_node.id!r} cannot correlate join parent because "
+            f"multi-frame base parent {base_id!r} has no usable sourceHandle; "
+            f"configured handles={named_handles!r}, available frames={sorted(base_output)!r}"
+        )
+    raise ValueError(
+        f"edge-join node {child_node.id!r} has no materialized DataFrame output "
+        f"for its base parent {base_id!r}; cannot correlate the join parent"
+    )
+
+
 def _build_parent_match_row(
     child_row: dict[str, Any],
     parent_id: str,
     parent_cols: set[str],
     child_node: GraphNode | None,
-    eager_outputs: dict[str, pl.DataFrame],
+    eager_outputs: Mapping[str, Any],
+    source_frames_of: Mapping[tuple[str, str], Sequence[str | None]] | None = None,
 ) -> dict[str, Any]:
     """Project *child_row* onto *parent_id*'s columns for value matching.
 
@@ -1003,16 +1008,21 @@ def _build_parent_match_row(
         base_id = config.get("baseInput")
         join_id = config.get("joinInput")
         if parent_id == join_id:
-            base_df = eager_outputs.get(base_id) if isinstance(base_id, str) else None
-            if base_df is None:
+            if not isinstance(base_id, str):
                 raise ValueError(
-                    f"edge-join node '{child_node.id}' has no materialized output for "
-                    f"its base parent '{base_id}' — cannot correlate the join parent"
+                    f"edge-join node {child_node.id!r} has invalid baseInput "
+                    f"{base_id!r}; cannot correlate the join parent"
                 )
+            base_columns = _edge_join_base_columns(
+                child_node=child_node,
+                base_id=base_id,
+                eager_outputs=eager_outputs,
+                source_frames_of=source_frames_of,
+            )
             return _edge_join_right_match_row(
                 child_row,
                 parent_cols,
-                set(base_df.columns),
+                base_columns,
                 config,
             )
         if parent_id != base_id:
@@ -1033,7 +1043,8 @@ def _match_parent_row(
     child_len: int,
     child_id: str,
     node_map: Mapping[str, GraphNode],
-    eager_outputs: dict[str, pl.DataFrame],
+    eager_outputs: Mapping[str, Any],
+    source_frames_of: Mapping[tuple[str, str], Sequence[str | None]] | None,
     diagnostics: list[dict[str, Any]] | None,
 ) -> tuple[dict[str, Any] | None, int, int]:
     """Correlate one parent FRAME against the resolved child row.
@@ -1052,18 +1063,20 @@ def _match_parent_row(
         parent_cols,
         child_node,
         eager_outputs,
+        source_frames_of,
     )
 
     # Fast path: same row count → likely 1:1 (with_columns, rename, select).
     # Trust the positionally-aligned parent row only when it can be
-    # verified.  With shared columns, they must match AND uniquely
-    # identify the row (a non-unique key means a reorder could have
-    # swapped in a different matching row).  With NO shared columns to
-    # verify against, position is trustworthy only when the child
-    # transform provably preserves row order (rename/with_columns/
-    # select) or there is a single candidate row; a reordering
-    # transform (sort/join/gather/…) falls through and the step is
-    # left unresolved rather than attached to the wrong parent row.
+    # verified. With shared columns, an order-preserving transform only
+    # needs the positional row to match; a transform that may reorder
+    # additionally requires a unique full-parent match at that physical
+    # index. With NO shared columns to verify against, position is
+    # trustworthy only when the child transform provably preserves row
+    # order (rename/with_columns/select) or there is a single candidate
+    # row; a reordering transform (sort/join/gather/…) falls through
+    # and the step is left unresolved rather than attached to the wrong
+    # parent row.
     if len(parent_df) == child_len and child_row_idx < len(parent_df):
         shared = [column for column in match_row if column in parent_df.columns]
         child_may_reorder = _child_transform_may_reorder(child_node)
@@ -1116,7 +1129,8 @@ def _resolve_multi_frame_parent(
     child_row_idx: int,
     child_len: int,
     node_map: Mapping[str, GraphNode],
-    eager_outputs: dict[str, pl.DataFrame],
+    eager_outputs: Mapping[str, Any],
+    source_frames_of: Mapping[tuple[str, str], Sequence[str | None]] | None,
     diagnostics: list[dict[str, Any]] | None,
 ) -> tuple[dict[str, Any] | None, int]:
     """Correlate a multi-frame parent (``dict[label, DataFrame]``) row.
@@ -1175,6 +1189,7 @@ def _resolve_multi_frame_parent(
             child_id=child_id,
             node_map=node_map,
             eager_outputs=eager_outputs,
+            source_frames_of=source_frames_of,
             diagnostics=diagnostics,
         )
         return row_dict, idx
@@ -1193,6 +1208,7 @@ def _resolve_multi_frame_parent(
             child_id=child_id,
             node_map=node_map,
             eager_outputs=eager_outputs,
+            source_frames_of=source_frames_of,
             diagnostics=None,
         )
         if row_dict is not None:
@@ -1298,7 +1314,7 @@ def _ensure_unresolved_diagnostic(
 
 
 def _correlate_rows_posthoc(
-    eager_outputs: dict[str, pl.DataFrame],
+    eager_outputs: dict[str, Any],
     order: list[str],
     parents_of: dict[str, list[str]],
     target_node_id: str,
@@ -1403,6 +1419,7 @@ def _correlate_rows_posthoc(
                 child_len=child_len,
                 node_map=node_map,
                 eager_outputs=eager_outputs,
+                source_frames_of=source_frames_of,
                 diagnostics=diagnostics,
             )
             result[nid] = row_dict  # may be None if no frame resolved
@@ -1441,6 +1458,7 @@ def _correlate_rows_posthoc(
             child_id=resolved_child_id,
             node_map=node_map,
             eager_outputs=eager_outputs,
+            source_frames_of=source_frames_of,
             diagnostics=diagnostics,
         )
         result[nid] = row_dict  # may be None if no match found

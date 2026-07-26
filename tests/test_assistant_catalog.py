@@ -98,10 +98,6 @@ class TestEntryShapes:
         for node_type in shapeless:
             assert NODE_CATALOG[node_type].config_shapes == ()
 
-    def test_sidecar_properties_mirror_config_folder(self):
-        for entry in NODE_CATALOG.values():
-            assert entry.has_sidecar == (entry.sidecar_folder is not None)
-
     def test_validate_catalog_complete_raises_on_unexpected_entry(
         self, monkeypatch: pytest.MonkeyPatch
     ):

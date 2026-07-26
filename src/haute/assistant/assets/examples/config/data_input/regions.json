@@ -1,0 +1,8 @@
+{
+  "inputType": "file",
+  "format": "parquet",
+  "mode": "scan",
+  "cacheMode": "direct",
+  "path": "data/regions.parquet",
+  "arguments": {}
+}

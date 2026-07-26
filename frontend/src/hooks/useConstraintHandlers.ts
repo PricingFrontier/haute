@@ -12,6 +12,7 @@ export function useConstraintHandlers(
   objective: string,
   dataInputColumns: { name: string; dtype: string }[],
   onUpdate: OnUpdateConfig,
+  frontierRanges: Record<string, { min?: number; max?: number }> = {},
 ) {
   const handleAddConstraint = useCallback(() => {
     const usedCols = new Set(Object.keys(constraints))
@@ -24,8 +25,17 @@ export function useConstraintHandlers(
   const handleRemoveConstraint = useCallback((name: string) => {
     const newConstraints = { ...constraints }
     delete newConstraints[name]
+    if (Object.hasOwn(frontierRanges, name)) {
+      const newRanges = { ...frontierRanges }
+      delete newRanges[name]
+      onUpdate({
+        constraints: newConstraints,
+        frontier_ranges: newRanges,
+      })
+      return
+    }
     onUpdate("constraints", newConstraints)
-  }, [constraints, onUpdate])
+  }, [constraints, frontierRanges, onUpdate])
 
   const handleConstraintColumnChange = useCallback((oldName: string, newName: string) => {
     if (oldName === newName) return
@@ -33,8 +43,19 @@ export function useConstraintHandlers(
     for (const [k, v] of Object.entries(constraints)) {
       newConstraints[k === oldName ? newName : k] = v
     }
+    if (Object.hasOwn(frontierRanges, oldName)) {
+      const newRanges: Record<string, { min?: number; max?: number }> = {}
+      for (const [key, range] of Object.entries(frontierRanges)) {
+        newRanges[key === oldName ? newName : key] = range
+      }
+      onUpdate({
+        constraints: newConstraints,
+        frontier_ranges: newRanges,
+      })
+      return
+    }
     onUpdate("constraints", newConstraints)
-  }, [constraints, onUpdate])
+  }, [constraints, frontierRanges, onUpdate])
 
   const handleConstraintValueChange = useCallback((name: string, type: string, value: number) => {
     onUpdate("constraints", { ...constraints, [name]: { [type]: value } })

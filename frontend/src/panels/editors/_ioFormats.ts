@@ -10,36 +10,35 @@ import { useEffect, useState } from "react"
 import { fetchIoCapabilities } from "../../api/client"
 import type { IoCapabilitiesResponse } from "../../api/types"
 
-// Module-level cache: the payload is static per backend process, so one
-// fetch serves every editor mount for the session.
-let cachedCapabilities: IoCapabilitiesResponse | null = null
+// Coalesce consumers that mount while the same request is still pending. A
+// later mount starts a fresh request so backend capability changes are visible
+// without requiring a frontend reload.
 let inflight: Promise<IoCapabilitiesResponse> | null = null
 
 function loadIoCapabilities(): Promise<IoCapabilitiesResponse> {
-  if (cachedCapabilities) return Promise.resolve(cachedCapabilities)
   if (!inflight) {
-    inflight = fetchIoCapabilities()
-      .then((res) => {
-        cachedCapabilities = res
-        return res
-      })
-      .catch((err: unknown) => {
-        inflight = null // allow a retry on the next editor mount
-        throw err
-      })
+    const request = fetchIoCapabilities()
+    inflight = request
+    request.then(
+      () => {
+        if (inflight === request) inflight = null
+      },
+      () => {
+        if (inflight === request) inflight = null
+      },
+    )
   }
   return inflight
 }
 
-/** Test hook: clear the module-level capability cache between tests. */
+/** Test hook: clear the module-level in-flight request between tests. */
 export function resetIoCapabilitiesCacheForTests(): void {
-  cachedCapabilities = null
   inflight = null
 }
 
-/** Fetch (once per session) the format capability payload. */
+/** Fetch the format capability payload for this mount. */
 export function useIoCapabilities(): { capabilities: IoCapabilitiesResponse | null; error: string | null } {
-  const [capabilities, setCapabilities] = useState<IoCapabilitiesResponse | null>(cachedCapabilities)
+  const [capabilities, setCapabilities] = useState<IoCapabilitiesResponse | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {

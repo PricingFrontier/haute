@@ -286,9 +286,10 @@ class TestSubprocessCounts:
         assert second.model_dump() == first.model_dump()
         # Unchanged repo: every spine, windowed log, ancestry probe and parent
         # read is served from the SHA-keyed caches; what remains is the fixed
-        # per-request work (repo check, current branch, user slug, one
-        # for-each-ref, and one tag read).
-        assert second_count <= 7  # measured: 6 (first call: 14)
+        # per-request work (repo check, current/default branch, user slug, one
+        # for-each-ref, and one tag read). Default-branch resolution is
+        # deliberately live because its remote HEAD ref may move.
+        assert second_count <= 9  # measured: 8 (first call: 14)
         assert second_count <= first_count - 6  # the content reads all went away
 
     def test_working_branches_second_call_is_cheap(
@@ -312,8 +313,9 @@ class TestSubprocessCounts:
         # Second call: zero per-branch subprocesses (tips come from the single
         # for-each-ref; every unmerged-saves merge-base is cache-served) — the
         # count is the fixed request overhead, i.e. O(1) amortized per branch.
-        assert second_count <= first_count - len(second.branches)
-        assert second_count <= 6  # measured: 5 (first call: 9)
+        # The two live default-branch probes are intentionally not cached.
+        assert second_count <= first_count - len(second.branches) + 2
+        assert second_count <= 8  # measured: 8 (first call: 10)
 
 
 class TestTreeOfCache:

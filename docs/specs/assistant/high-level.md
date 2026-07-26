@@ -90,7 +90,9 @@ live sessions are LRU-capped — evicting an idle session drops only its in-memo
 its persisted file revives it on the next lookup, so eviction is invisible to the client.
 A session with a running turn is never evicted. Persisted files have their own cap:
 beyond it the oldest files by session-file modification time are pruned at session creation, and a pruned or
-never-persisted id 404s on message send (and starts fresh on session create).
+never-persisted id 404s on message send (and starts fresh on session create). Session
+creation also removes abandoned atomic-write `<id>.json.tmp` files, so a process crash
+during persistence cannot grow the session directory outside that bound.
 
 **Authoring knowledge.** Every turn's system prompt carries — alongside the node-type
 catalog — the authoring guide (Haute idioms: canonical pipeline shapes, naming
@@ -99,7 +101,10 @@ packaged exemplar pipelines (name plus one-line summary each). The full exemplar
 fetched by the model through `get_example` only when relevant, so the always-paid prompt
 stays small while deep worked examples remain one tool call away. Both assets are
 versioned files in the repository: improving the assistant's taste is a reviewable
-documentation edit, not a code change.
+documentation edit, not a code change. The guide refers to the mechanically-derived node
+catalogue supplied beside it instead of hand-copying the node vocabulary, and every
+exemplar uses the canonical specialised source/output decorators and sidecar-loading
+pattern rather than hiding file reads in generic `polars` nodes.
 
 **Turns.** Posting a user message starts a turn, streamed back as typed server-sent events:
 assistant text deltas, tool-call started/finished activity (name plus a compact argument and
@@ -111,7 +116,11 @@ on its own, when a per-turn tool-call cap or wall-clock timeout is hit (both sur
 named terminal event, never a silent truncation), or when the client disconnects — on
 disconnect the provider stream is aborted and the loop stops *between* tool executions; a
 mutation already executing completes its save (a save is never killed mid-transaction), and
-everything already applied stays applied.
+everything already applied stays applied. Turn history is committed only with matched
+tool-call/result pairs: a disconnect before execution drops the unmatched call, while a
+completed tool result is recorded before any result/update event is emitted. Cleanup
+always releases the session reservation even if history persistence or response teardown
+raises, so a failed cleanup cannot turn into a permanent 409 for that session.
 
 **The tool surface** (complete in v1):
 
@@ -124,7 +133,10 @@ everything already applied stays applied.
   file's column names, dtypes, and a small sample, so the agent configures nodes against
   real columns instead of guessing. Listing is per-directory and names visible
   subdirectories, so the agent navigates into nested folders (`data/`, …) instead of
-  guessing paths.
+  guessing paths. Both operations use the installed input-format registry; unavailable
+  optional engines and unsupported extensions are not advertised. Hidden path components
+  and explicitly denylisted credential/state names are rejected for both listing and
+  preview, even when the caller supplies the path directly.
 - `get_node_schema` — the column names and dtypes at any node's *output*, resolved by the
   same execution engine that runs the pipeline: the lazy plan is built up to that node —
   with exactly the graph preparation a real run performs (submodels flattened, preamble in
@@ -329,8 +341,9 @@ Loud, typed, and never averaged away:
   with a named terminal event stating which limit was hit. Edits already applied remain (each
   was a complete valid save); nothing is auto-reverted.
 - **Client disconnect** aborts the provider stream and stops the loop between tool
-  executions; an executing save always completes. No orphaned provider streams outlive the
-  request.
+  executions; an executing save always completes. No orphaned provider streams or
+  unmatched persisted tool calls outlive the request, and cleanup failure cannot retain
+  the session lock.
 - **Working branch not ready** — mutation tools refuse with a named per-state reason
   (read tools still work), and the status endpoint reports mutations disabled with the same
   reason; a rare post-save capture failure degrades to a visible warning in the chat, never
@@ -340,23 +353,3 @@ Loud, typed, and never averaged away:
 - **Broadcast failures are isolated** — the event bus already isolates subscriber
   exceptions, so a misbehaving WebSocket consumer can never fail a save that has already
   committed.
-
-## Approved change contract — 0.7.0 data I/O authoring
-
-Remaining assistant improvement work is tracked in the
-[assistant roadmap](../../roadmap/assistant.md).
-
-- The node catalogue, authoring guide, examples, mutation schema, and readiness checks expose
-  only `dataInput` and `dataOutput` for tabular I/O. Removed node names/decorators are not
-  accepted as aliases or suggestions.
-- Data-input creation/configuration follows the backend capability registry: provider group,
-  format/mode, safe fields, cache mode, and optional Polars body. Data-output configuration is
-  direction-filtered and never invents a Databricks writer or output Polars body.
-- Cache build/refresh and output Write are important explicit actions and are never triggered by
-  an ordinary graph mutation. Assistant tools may configure the nodes but may invoke those
-  actions only through their dedicated mutation/action contracts and normal user approval mode.
-- Assistant responses and tool results expose redacted cache identity/status and publication
-  results, never resolved credentials.
-
-Catalogue completeness and mutation tests pin the retained enum, capability-valid configs,
-explicit-action separation, redaction, and rejection of every removed node token.
