@@ -123,17 +123,22 @@ timeout, and log unexpected errors before a generic 500.
 
 ## Testing
 
-- `tests/test_cache.py`, `tests/test_cache_contracts.py`, and lineage/fingerprint suites cover
-  canonical encoding, field completeness, versioning, live switches, and utility files.
-- `tests/test_lru_cache.py` and `tests/test_lru_cache_thread_safety.py` cover entry/byte/TTL
-  eviction, pins, oversized retention, and concurrency.
+- `tests/test_cache_identity_contract.py`, `tests/test_cache_fingerprint_injectivity.py`,
+  `tests/test_caching_correctness.py`, `tests/test_cache_unification.py`,
+  `tests/test_graph_fingerprint_cached.py`, and `tests/test_hashing.py` cover canonical
+  encoding, injectivity, field completeness, versioning, live switches, utility files,
+  memoisation, and shared primitive behaviour.
+- `tests/test_lru_cache.py` covers entry/byte/TTL eviction, pins, oversized retention, and
+  concurrency.
 - `tests/test_stat_gated_cache.py` covers hit/reload, LRU bounds, single flight, moving
   gates, exceptions, clear, and load-gate reclamation.
 - `tests/test_dataframe_execution_cache.py` covers identity, artifact lifecycle,
   corruption, first consume, oversized replacement retention, pinning, and concurrency.
 - `tests/test_cache_materialize_guard.py` guards `_execute_lazy._lazy_frame_for_cache()`,
   the input boundary feeding materialization.
-- JSON route, integrity, and v2 shred suites cover schema precedence, progress, build/status,
-  promotion, corruption, and deletion.
+- `tests/test_json_cache_routes.py`, `tests/test_json_cache_integrity.py`,
+  `tests/test_json_cache_corrupt_and_errors.py`, and `tests/test_json_cache_mut_witnesses.py`
+  cover schema precedence, progress, build/status, promotion, corruption, path errors, and
+  deletion.
 - `tests/performance/test_cache_identity_perf.py` records bounded LRU/stat-gate and lineage
   key performance evidence.

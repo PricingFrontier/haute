@@ -146,7 +146,12 @@ overwrite is an HTTP 409; registered data sinks keep their documented overwrite 
 - `tests/test_polars_io_registry.py`, `tests/test_polars_io_interface_contracts.py`, and
   `tests/test_bounded_sink_contract.py` cover registry/schema drift, validation, engine
   gates, and partitioned sink publication.
-- `tests/test_io.py`, `tests/test_io_bounded_profile.py`, and related I/O suites cover
-  format dispatch, declared schemas, projections, and bounded-memory policy.
+- `tests/test_io.py`, `tests/test_data_io_nodes.py`, `tests/test_data_io_roundtrips.py`, and
+  `tests/test_json_read_documented.py` cover format dispatch, generated-node integration,
+  declared schemas, projections, round trips, and bounded-memory policy.
+- `tests/test_polars_utils.py` and `tests/test_file_ops.py` cover bounded collect/sink
+  behaviour, Parquet metadata, allocator dispatch, and atomic publication primitives.
+- `tests/test_discovery.py` and `tests/test_path_case_audit.py` cover pipeline discovery,
+  deduplication, unreadable files, retained resolver seams, and cross-platform path spelling.
 - `tests/test_input_cache_route.py` covers HTTP build/status/cancel/clear lifecycle and
   conflict/admission behaviour.
