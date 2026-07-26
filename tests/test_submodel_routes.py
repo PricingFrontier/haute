@@ -366,6 +366,31 @@ def source() -> pl.LazyFrame:
         node = data["graph"]["nodes"][0]
         assert node["data"]["config"]["path"] == "rating-data.parquet"
 
+    def test_get_uses_path_recorded_by_active_pipeline(
+        self, client: TestClient, tmp_path: Path
+    ) -> None:
+        rating_root = _write_nested_project(tmp_path)
+        library = rating_root / "lib"
+        library.mkdir()
+        (library / "pricing.py").write_text(
+            'import polars as pl\nimport haute\nsubmodel = haute.Submodel("pricing")\n'
+            "@submodel.polars\ndef rate(df: pl.LazyFrame) -> pl.LazyFrame:\n    return df\n",
+            encoding="utf-8",
+        )
+        (rating_root / "main.py").write_text(
+            'import haute\npipeline = haute.Pipeline("main")\n'
+            'pipeline.submodel("lib/pricing.py")\n',
+            encoding="utf-8",
+        )
+        response = client.get("/api/submodel/pricing")
+        assert response.status_code == 200
+        source_file = response.json()["graph"]["source_file"].replace("\\", "/")
+        assert source_file.endswith("lib/pricing.py")
+
+    def test_encoded_backslash_traversal_is_bad_request(self, client: TestClient) -> None:
+        response = client.get("/api/submodel/%5C..%5Coutside")
+        assert response.status_code == 400
+
 
 # ---------------------------------------------------------------------------
 # POST /api/submodel/dissolve
@@ -407,7 +432,7 @@ class TestDissolveSubmodel:
 
         flat_graph = PipelineGraph(pipeline_name="main")
 
-        with patch("haute._flatten.flatten_graph", return_value=flat_graph):
+        with patch("haute.graph_utils.flatten_graph", return_value=flat_graph):
             with patch("haute.codegen.graph_to_code", return_value="# code\n"):
                 body = {
                     "submodel_name": "pricing",
@@ -421,6 +446,66 @@ class TestDissolveSubmodel:
         data = resp.json()
         assert data["status"] == "ok"
 
+    def test_dissolve_reparses_disk_submodel_before_flattening(
+        self, client: TestClient, tmp_path: Path
+    ) -> None:
+        """The request graph is stale; the recorded module on disk is authoritative."""
+        modules_dir = tmp_path / "modules"
+        modules_dir.mkdir()
+        (modules_dir / "pricing.py").write_text("# valid disk module\n", encoding="utf-8")
+        (tmp_path / "pipeline.py").write_text("# parent\n", encoding="utf-8")
+        disk_graph = PipelineGraph(
+            pipeline_name="pricing",
+            preamble="DISK_HELPER = 1",
+            preserved_blocks=["DISK_KEPT = 2"],
+            nodes=[
+                {
+                    "id": "disk_child",
+                    "data": {
+                        "label": "disk_child",
+                        "nodeType": "polars",
+                        "config": {"code": "return df"},
+                    },
+                },
+                {
+                    "id": "disk_internal",
+                    "data": {
+                        "label": "disk_internal",
+                        "nodeType": "polars",
+                        "config": {"code": "return df"},
+                    },
+                },
+            ],
+            edges=[{"id": "disk_edge", "source": "disk_child", "target": "disk_internal"}],
+        )
+        flat_graph = PipelineGraph(
+            pipeline_name="main", nodes=disk_graph.nodes, edges=disk_graph.edges
+        )
+        with (
+            patch("haute.parser.parse_submodel_file", return_value=disk_graph) as parse_disk,
+            patch("haute.graph_utils.flatten_graph", return_value=flat_graph) as flatten,
+            patch("haute.codegen.graph_to_code", return_value="# regenerated\n"),
+        ):
+            response = client.post(
+                "/api/submodel/dissolve",
+                json={
+                    "submodel_name": "pricing",
+                    "graph": _graph_with_submodel(),
+                    "source_file": "pipeline.py",
+                    "pipeline_name": "main",
+                },
+            )
+        assert response.status_code == 200
+        parse_disk.assert_called_once()
+        flattened_graph = flatten.call_args.args[0]
+        disk_meta = flattened_graph.submodels["pricing"]["graph"]
+        assert {node["id"] for node in disk_meta["nodes"]} == {"disk_child", "disk_internal"}
+        assert [
+            {key: edge[key] for key in ("id", "source", "target")} for edge in disk_meta["edges"]
+        ] == [{"id": "disk_edge", "source": "disk_child", "target": "disk_internal"}]
+        assert disk_meta["preamble"] == "DISK_HELPER = 1"
+        assert disk_meta["preserved_blocks"] == ["DISK_KEPT = 2"]
+
     def test_dissolve_passes_pipeline_description(self, client: TestClient, tmp_path: Path) -> None:
         """pipeline_description should be forwarded to graph_to_code."""
         modules_dir = tmp_path / "modules"
@@ -433,7 +518,7 @@ class TestDissolveSubmodel:
 
         flat_graph = PipelineGraph(pipeline_name="main")
 
-        with patch("haute._flatten.flatten_graph", return_value=flat_graph):
+        with patch("haute.graph_utils.flatten_graph", return_value=flat_graph):
             with patch("haute.codegen.graph_to_code", return_value="# code\n") as mock_codegen:
                 body = {
                     "submodel_name": "pricing",
@@ -461,7 +546,7 @@ class TestDissolveSubmodel:
 
         flat_graph = PipelineGraph(pipeline_name="main")
 
-        with patch("haute._flatten.flatten_graph", return_value=flat_graph):
+        with patch("haute.graph_utils.flatten_graph", return_value=flat_graph):
             with patch("haute.codegen.graph_to_code", return_value="# code\n"):
                 body = {
                     "submodel_name": "pricing",
@@ -489,7 +574,7 @@ class TestDissolveSubmodel:
 
         flat_graph = PipelineGraph(pipeline_name="main")
 
-        with patch("haute._flatten.flatten_graph", return_value=flat_graph):
+        with patch("haute.graph_utils.flatten_graph", return_value=flat_graph):
             with patch("haute.codegen.graph_to_code", return_value="# code\n"):
                 body = {
                     "submodel_name": "pricing",
@@ -521,7 +606,7 @@ class TestDissolveSubmodel:
         flat_graph = PipelineGraph(pipeline_name="main")
 
         with (
-            patch("haute._flatten.flatten_graph", return_value=flat_graph),
+            patch("haute.graph_utils.flatten_graph", return_value=flat_graph),
             patch("haute.codegen.graph_to_code", return_value="# regenerated main\n"),
             patch("haute.routes._save_pipeline.save_sidecar", side_effect=OSError("disk full")),
         ):
@@ -564,7 +649,7 @@ class TestDissolveSubmodel:
             original_unlink(self, *args, **kwargs)
 
         with (
-            patch("haute._flatten.flatten_graph", return_value=flat_graph),
+            patch("haute.graph_utils.flatten_graph", return_value=flat_graph),
             patch("haute.codegen.graph_to_code", return_value="# regenerated main\n"),
             patch.object(path_type, "unlink", unlink_maybe_locked),
         ):

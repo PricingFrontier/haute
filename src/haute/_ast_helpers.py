@@ -480,14 +480,54 @@ def _extract_submodel_meta(tree: ast.Module) -> tuple[str, str]:
 
 _RE_POLARS_IMPORT = re.compile(r"import\s+polars(?:\s+as\s+\w+)?\s*$")
 _RE_HAUTE_IMPORT = re.compile(r"import\s+haute(?:\s+as\s+(\w+))?\s*$")
-_RE_HAUTE_PIPELINE_IMPORT = re.compile(r"from\s+haute\s+import\s+Pipeline(?:\s+as\s+(\w+))?\s*$")
+_PRESERVE_START = "# haute:preserve-start"
+_PRESERVE_END = "# haute:preserve-end"
 
 
-def _extract_preamble_from_ast(source: str, tree: ast.Module) -> str:
+def _module_preserve_spans(lines: list[str]) -> list[tuple[int, int]]:
+    """Return completed, column-zero preserve spans as inclusive line indexes."""
+    spans: list[tuple[int, int]] = []
+    index = 0
+    while index < len(lines):
+        if lines[index].rstrip() != _PRESERVE_START:
+            index += 1
+            continue
+        end = index + 1
+        while end < len(lines) and lines[end].rstrip() != _PRESERVE_END:
+            end += 1
+        if end < len(lines):
+            spans.append((index, end))
+            index = end + 1
+        else:
+            index += 1
+    return spans
+
+
+def _slice_without_module_preserve_spans(
+    lines: list[str],
+    start: int,
+    stop: int,
+) -> list[str]:
+    """Slice source lines while excluding completed module preserve blocks."""
+    excluded = {
+        line_index
+        for span_start, span_end in _module_preserve_spans(lines)
+        for line_index in range(span_start, span_end + 1)
+    }
+    return [lines[index] for index in range(start, stop) if index not in excluded]
+
+
+def _extract_preamble_from_ast(
+    source: str,
+    tree: ast.Module,
+    *,
+    receiver: str,
+    constructor_name: str,
+) -> str:
     """Extract a valid module's preamble from AST source boundaries."""
     lines = source.splitlines()
     haute_module_aliases: set[str] = {"haute"}
-    pipeline_constructor_aliases: set[str] = set()
+    constructor_aliases: set[str] = set()
     last_standard_line = 0
 
     for statement in tree.body:
@@ -504,9 +544,9 @@ def _extract_preamble_from_ast(source: str, tree: ast.Module) -> str:
         elif isinstance(statement, ast.ImportFrom) and statement.module == "haute":
             imported_names = {alias.name for alias in statement.names}
             for alias in statement.names:
-                if alias.name == "Pipeline":
-                    pipeline_constructor_aliases.add(alias.asname or alias.name)
-            if imported_names and imported_names <= {"Pipeline"}:
+                if alias.name == constructor_name:
+                    constructor_aliases.add(alias.asname or alias.name)
+            if imported_names and imported_names <= {constructor_name}:
                 last_standard_line = max(
                     last_standard_line,
                     statement.end_lineno or statement.lineno,
@@ -515,50 +555,57 @@ def _extract_preamble_from_ast(source: str, tree: ast.Module) -> str:
     if last_standard_line == 0:
         return ""
 
-    def is_pipeline_constructor(expr: ast.expr) -> bool:
+    def is_constructor(expr: ast.expr) -> bool:
         if not isinstance(expr, ast.Call):
             return False
         func = expr.func
         if isinstance(func, ast.Name):
-            return func.id in pipeline_constructor_aliases
+            return func.id in constructor_aliases
         return (
             isinstance(func, ast.Attribute)
-            and func.attr == "Pipeline"
+            and func.attr == constructor_name
             and isinstance(func.value, ast.Name)
             and func.value.id in haute_module_aliases
         )
 
-    pipeline_start_line = len(lines) + 1
+    generated_start_line = len(lines) + 1
+    is_node_decorator = (
+        _is_pipeline_node_decorator if receiver == "pipeline" else _is_submodel_node_decorator
+    )
     for statement in tree.body:
         value: ast.expr | None = None
-        target_is_pipeline = False
+        target_is_receiver = False
         if isinstance(statement, ast.Assign):
-            target_is_pipeline = any(
-                isinstance(target, ast.Name) and target.id == "pipeline"
+            target_is_receiver = any(
+                isinstance(target, ast.Name) and target.id == receiver
                 for target in statement.targets
             )
             value = statement.value
         elif isinstance(statement, ast.AnnAssign):
-            target_is_pipeline = (
-                isinstance(statement.target, ast.Name) and statement.target.id == "pipeline"
+            target_is_receiver = (
+                isinstance(statement.target, ast.Name) and statement.target.id == receiver
             )
             value = statement.value
 
-        if target_is_pipeline and value is not None and is_pipeline_constructor(value):
-            pipeline_start_line = min(pipeline_start_line, statement.lineno)
+        if target_is_receiver and value is not None and is_constructor(value):
+            generated_start_line = min(generated_start_line, statement.lineno)
             continue
 
         if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)) and any(
-            _is_pipeline_node_decorator(decorator) for decorator in statement.decorator_list
+            is_node_decorator(decorator) for decorator in statement.decorator_list
         ):
             decorator_lines = [
                 decorator.lineno
                 for decorator in statement.decorator_list
-                if _is_pipeline_node_decorator(decorator)
+                if is_node_decorator(decorator)
             ]
-            pipeline_start_line = min(pipeline_start_line, *decorator_lines)
+            generated_start_line = min(generated_start_line, *decorator_lines)
 
-    preamble_lines = lines[last_standard_line : pipeline_start_line - 1]
+    preamble_lines = _slice_without_module_preserve_spans(
+        lines,
+        last_standard_line,
+        generated_start_line - 1,
+    )
     while preamble_lines and not preamble_lines[0].strip():
         preamble_lines.pop(0)
     while preamble_lines and not preamble_lines[-1].strip():
@@ -566,21 +613,43 @@ def _extract_preamble_from_ast(source: str, tree: ast.Module) -> str:
     return "\n".join(preamble_lines)
 
 
-def _extract_preamble(source: str, *, tree: ast.Module | None = None) -> str:
+def _extract_preamble(
+    source: str,
+    *,
+    tree: ast.Module | None = None,
+    receiver: str = "pipeline",
+    constructor_name: str = "Pipeline",
+) -> str:
     """Extract user preamble with AST boundaries when the module is valid.
 
     The regex fallback calls this on an invalid whole file, so a conservative
     textual implementation remains available for that path.
     """
+    if receiver not in {"pipeline", "submodel"}:
+        raise ValueError(f"Unsupported generated-code receiver: {receiver!r}")
     if tree is None:
         try:
             tree = ast.parse(source)
         except SyntaxError:
-            return _extract_preamble_textual(source)
-    return _extract_preamble_from_ast(source, tree)
+            return _extract_preamble_textual(
+                source,
+                receiver=receiver,
+                constructor_name=constructor_name,
+            )
+    return _extract_preamble_from_ast(
+        source,
+        tree,
+        receiver=receiver,
+        constructor_name=constructor_name,
+    )
 
 
-def _extract_preamble_textual(source: str) -> str:
+def _extract_preamble_textual(
+    source: str,
+    *,
+    receiver: str,
+    constructor_name: str,
+) -> str:
     """Extract user-defined preamble between standard imports and pipeline code.
 
     The preamble is any code that appears after the standard imports
@@ -597,18 +666,22 @@ def _extract_preamble_textual(source: str) -> str:
     # Find the end of standard imports region, capturing either supported
     # spelling of the Pipeline constructor.
     last_standard_idx = -1
-    pipeline_constructor = "haute.Pipeline"
+    constructor = f"haute.{constructor_name}"
     for i, line in enumerate(lines):
         stripped = line.strip()
         haute_match = _RE_HAUTE_IMPORT.match(stripped)
         if haute_match is not None:
             haute_alias = haute_match.group(1) or "haute"
-            pipeline_constructor = f"{haute_alias}.Pipeline"
+            constructor = f"{haute_alias}.{constructor_name}"
             last_standard_idx = i
             continue
-        pipeline_import_match = _RE_HAUTE_PIPELINE_IMPORT.match(stripped)
-        if pipeline_import_match is not None:
-            pipeline_constructor = pipeline_import_match.group(1) or "Pipeline"
+        constructor_import_match = re.fullmatch(
+            rf"from\s+haute\s+import\s+{re.escape(constructor_name)}"
+            r"(?:\s+as\s+(\w+))?\s*",
+            stripped,
+        )
+        if constructor_import_match is not None:
+            constructor = constructor_import_match.group(1) or constructor_name
             last_standard_idx = i
             continue
         if _RE_POLARS_IMPORT.match(stripped):
@@ -618,24 +691,31 @@ def _extract_preamble_textual(source: str) -> str:
         return ""
 
     # Find the start of pipeline code (pipeline = ... or @pipeline.<type>)
-    pipeline_start_idx = len(lines)
+    generated_start_idx = len(lines)
     for i in range(last_standard_idx + 1, len(lines)):
         stripped = lines[i].strip()
-        starts_pipeline = stripped.startswith("pipeline =") or stripped.startswith("pipeline=")
-        is_pipeline_def = starts_pipeline and pipeline_constructor in stripped
-        if is_pipeline_def:
-            pipeline_start_idx = i
+        starts_receiver = stripped.startswith(f"{receiver} =") or stripped.startswith(
+            f"{receiver}="
+        )
+        is_constructor = starts_receiver and constructor in stripped
+        if is_constructor:
+            generated_start_idx = i
             break
-        if stripped.startswith("@pipeline."):
-            # Check if the decorator name after @pipeline. is a known type
-            dot_rest = stripped[len("@pipeline.") :]
+        decorator_prefix = f"@{receiver}."
+        if stripped.startswith(decorator_prefix):
+            # Check if the decorator name after the receiver is a known type
+            dot_rest = stripped[len(decorator_prefix) :]
             dec_name = dot_rest.split("(")[0].split()[0] if dot_rest else ""
             if dec_name in DECORATOR_TO_NODE_TYPE:
-                pipeline_start_idx = i
+                generated_start_idx = i
                 break
 
     # Extract lines between standard imports and pipeline code
-    preamble_lines = lines[last_standard_idx + 1 : pipeline_start_idx]
+    preamble_lines = _slice_without_module_preserve_spans(
+        lines,
+        last_standard_idx + 1,
+        generated_start_idx,
+    )
 
     # Strip leading/trailing blank lines
     while preamble_lines and not preamble_lines[0].strip():
@@ -651,26 +731,24 @@ def _extract_preamble_textual(source: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-_PRESERVE_START = "# haute:preserve-start"
-_PRESERVE_END = "# haute:preserve-end"
-
-
 def _extract_preserved_blocks(source: str) -> list[str]:
     """Extract code between ``# haute:preserve-start`` / ``# haute:preserve-end`` markers.
 
-    Returns a list of strings, one per matched block, with the marker
-    lines themselves stripped.  Blocks are returned in source order.
-    Unmatched start markers (no corresponding end) are silently ignored.
+    Only column-zero marker pairs are module-owned preserved blocks. Indented
+    markers remain part of the decorated function or other owning construct,
+    preventing codegen from relocating them to column zero. Returns one
+    marker-free string per completed module block, in source order. Unmatched
+    starts are ignored.
     """
     blocks: list[str] = []
     lines = source.splitlines()
     i = 0
     while i < len(lines):
-        if lines[i].strip() == _PRESERVE_START:
+        if lines[i].rstrip() == _PRESERVE_START:
             # Collect lines until the matching end marker
             block_lines: list[str] = []
             i += 1
-            while i < len(lines) and lines[i].strip() != _PRESERVE_END:
+            while i < len(lines) and lines[i].rstrip() != _PRESERVE_END:
                 block_lines.append(lines[i])
                 i += 1
             if i < len(lines):

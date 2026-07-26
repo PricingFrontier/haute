@@ -5,7 +5,7 @@
 | File | Responsibility |
 |---|---|
 | `src/haute/codegen.py` | Public orchestration API (`graph_to_code`, `graph_to_code_multi`); single-node dispatch (`_node_to_code`, `_generate_node_code`); instance-node handling; contract kwarg formatting/injection (`_format_contract_kwarg`, `_format_contract_source`, `_inject_contract_kwarg`, `_matching_close_paren`); pipeline/submodel file assembly (`_generate_pipeline_lines`); the final parse gate (`_assert_emitted_files_parse`). |
-| `src/haute/_codegen_builders.py` | One `_gen_*` builder per `NodeType`, registered into `haute._registry.NODE_REGISTRY` via `@_register_codegen`. String-safety helpers (`_safe_str`, `_safe_path`, `_portable_path_expr`), shared field extraction (`_common_node_fields`, `_build_params` — parameters are the per-edge input names supplied by the orchestrator via `edge_input_name`, with a loud duplicate-name guard replacing the former `_dedup_param_names` suffixing), docstring sanitization (`_sanitize_description`), and per-type template strings (`_MODEL_SCORE`, `_BANDING_SINGLE`, `_SINK_PARQUET`, etc.). |
+| `src/haute/_codegen_builders.py` | One `_gen_*` builder per `NodeType`, registered into `haute._registry.NODE_REGISTRY` via `@_register_codegen`. String-safety helpers (`_safe_str`, `_safe_path`), shared field extraction (`_common_node_fields`, `_build_params` — parameters are the per-edge input names supplied by the orchestrator via `edge_input_name`, with a loud duplicate-name guard replacing the former `_dedup_param_names` suffixing), docstring sanitization (`_sanitize_description`), and per-type templates such as `_MODEL_SCORE`, `_BANDING_SINGLE`, and `_RETAINED_EXTERNAL`. |
 | `src/haute/_code_extraction.py` | Reverse direction of `_codegen_builders`' body wrapping: strips generated boilerplate back out of a persisted function body so the user-facing code editor shows only what the user actually typed. Consolidated engine (`extract_user_code`) dispatches through `BOILERPLATE_MATCHERS`/`_FINALISERS` registries keyed by node "kind." |
 | `src/haute/_ast_helpers.py` | Stateless AST/source utilities with no node/graph knowledge: literal evaluation (`_eval_ast_literal`), decorator introspection (`_get_decorator_kwargs`, `_is_pipeline_node_decorator`, `_get_decorator_node_type`), docstring/whitespace handling (`_strip_docstring`, `_dedent`), and whole-file extraction helpers (`_extract_function_bodies`, `_extract_connect_calls`, `_extract_meta`, `_extract_preamble`, `_extract_preserved_blocks`) shared with the parser. |
 
@@ -23,13 +23,16 @@
 
 ### `graph_to_code_multi` (the real entry point; `graph_to_code` wraps it)
 
-1. Fall back to `graph.pipeline_description` when no explicit description is
-   passed; default `submodels = graph.submodels or {}`.
+1. Fall back to `graph.pipeline_description` and `graph.preamble` when the
+   corresponding explicit value is empty; default
+   `submodels = graph.submodels or {}`.
 2. `validate_pipeline_graph_shape_contracts` — structural preflight (owned by
    `haute._graph_shape`), run before any source is generated.
-3. `_error_on_name_collisions` over every label in the root graph AND every
-   submodel's node list — eager, so collisions are reported even when the
-   no-submodel fast path would otherwise short-circuit.
+3. `_error_on_name_collisions` over every emitted logical node in the root
+   graph and every submodel — eager, so collisions are reported even when the
+   no-submodel fast path would otherwise short-circuit. Parent-list transport
+   copies whose id appears in a submodel's `childNodeIds` are counted only
+   through the authoritative embedded child graph.
 4. **No-submodel path:** order edges (`_order_edge_join_incoming_edges` puts
    each edge-join's two incoming edges in base-then-join order), topo-sort
    nodes (`_topo_sort` via `haute._topo.topo_sort_ids`), build
@@ -49,16 +52,19 @@
    (raising `ParseError` on a malformed or unknown handle), validate
    `out__<child_id>` edges leaving the placeholder the same way, build that
    submodel's `connect_pairs`, and emit its file via
-   `_generate_pipeline_lines(kind="submodel", obj_name="submodel", ...)`.
+   `_generate_pipeline_lines(kind="submodel", obj_name="submodel", ...)`,
+   passing the child graph's description, preamble, and preserved blocks.
    Then assemble the main file: root nodes are those not inside any
    submodel's `childNodeIds` and not a `submodel__<name>` placeholder;
    `_resolve_submodel_endpoint` maps a placeholder-boundary edge to the
    actual child node id on either side; `root_connect_pairs` forwards
-   `source_port`/`target_port` only for non-boundary edges (a submodel's
-   internal `out__<id>` handle is not a user-facing frame name — gated on
-   the *source node being a placeholder*, not on the string prefix, so a
-   legitimately-named `apiInput` table called `"out__claims"` isn't
-   mistaken for a boundary marker); submodel import lines
+   ordinary `sourceHandle`/`targetHandle` values on non-boundary edges and
+   restores the authored `sourcePort`/`targetPort` values hidden behind a
+   submodel boundary. Synthetic `out__<id>` / `in__<id>` handles are never
+   emitted as user-facing ports. Boundary detection gates on the endpoint
+   node being a placeholder, not on the string prefix, so a legitimately
+   named `apiInput` table called `"out__claims"` is not mistaken for a
+   boundary marker; submodel import lines
    (`pipeline.submodel(<path>)`) are appended; the main file is emitted with
    `dedup_connects=True` (root-level connect pairs can be reached both via a
    direct edge and via boundary resolution, so duplicates are collapsed by
@@ -69,7 +75,7 @@
 
 Builds the file as a list of lines: docstring header (name run through
 `_sanitize_description` since it lands between the module docstring's triple
-quotes) → standard imports → optional preamble (pipeline files only) →
+quotes) → standard imports → optional per-file preamble →
 `Pipeline(...)`/`Submodel(...)` construction → any preserved blocks
 (`_emit_preserved_blocks`, wrapped in `# haute:preserve-start/-end` markers)
 → original nodes (via `node_to_code_fn`) → instance nodes (via
@@ -79,11 +85,14 @@ submodel files) → submodel import lines → `pipeline.connect(...)`/
 labels containing quotes/backslashes/non-ASCII survive; deduped when
 `dedup_connects=True`).
 
-Preserved-block extraction is intentionally structural rather than byte-for-byte: the shared
-`haute._ast_helpers._extract_preserved_blocks` line scan removes marker lines and leading/trailing
-blank lines inside each matched block, ignores an unmatched start marker, and returns blocks in
-source order. `_generate_pipeline_lines` then relocates them after object construction and before
-node functions, restoring fresh markers around each block.
+Preserved-block extraction is intentionally structural rather than byte-for-byte. The shared
+`haute._ast_helpers._extract_preserved_blocks` scan claims only completed column-zero marker
+pairs, removes marker lines and leading/trailing blank lines inside each block, ignores an
+unmatched start, and returns blocks in source order. `_extract_preamble` excludes those completed
+module spans, so the two stores are disjoint. Indented marker text remains in its enclosing
+function or construct and is not separately extracted. `_generate_pipeline_lines` emits each
+pipeline or submodel block once after object construction and before node functions, restoring
+fresh markers.
 
 ### `_node_to_code` (per-node dispatch)
 
@@ -96,14 +105,37 @@ node functions, restoring fresh markers around each block.
    is missing.
 3. If `has_config_folder(node_type)` (from `haute._config_io`), locate the
    first `\ndef ` in the generated code and replace everything before it
-   with `@pipeline.<decorator>(config=<path>)`, logging (not raising) if no
-   `def` was found — a defensive branch that should be unreachable given
-   every builder emits a `def`.
+   with `@pipeline.<decorator>(config=<path>)`. The decorator lookup uses the
+   complete `NODE_TYPE_TO_DECORATOR` mapping; a missing mapping or missing
+   generated `def` raises `HauteError` with node context rather than silently
+   defaulting or skipping the rewrite.
 4. `_format_contract_kwarg` computes the `contract=...` kwarg text (or
    `None` for instance nodes whose contract comes from the referenced
    original node); if present, `_inject_contract_kwarg` splices it into the
    decorator, with any `HauteError` enriched with `node_id`/`node_label`/
    `node_type` before re-raising.
+
+### Canonical data I/O and retained sidecar builders
+
+- `_gen_data_input` emits the one retained tabular-input scaffold. It calls
+  `resolve_data_input_from_config` using the generated sidecar path and file
+  directory, assigns the returned lazy frame to `df`, appends optional user
+  code, and returns `df`. The `data_input` extraction matcher removes only
+  that generated load scaffold on the reverse parse.
+- `_gen_data_output` emits a config-sidecar decorator and an ordinary
+  pass-through body. It never writes during import or ordinary pipeline
+  execution; explicit publication belongs to the output-write runtime path.
+- `_gen_api_input` and `_gen_external_file` obtain their sidecar paths from
+  `config_path_for_node` and delegate to
+  `resolve_api_input_from_config` / `load_external_object_from_config` with
+  `Path(__file__).resolve().parent`. Their source contains no baked copy of
+  the sidecar's current data path, schema, file type, or model class.
+  External-file user code follows the generated object load.
+- Removed `dataSource`/`dataSink` enum values, decorators, templates, and
+  extractor aliases have no compatibility path. Round trips preserve the
+  retained I/O provider branch, format/mode, arguments, cache mode,
+  destination fields, connections, and user code without inventing inactive
+  fields.
 
 ### `_inject_contract_kwarg` / `_matching_close_paren`
 
@@ -196,14 +228,18 @@ text between the parens is non-whitespace).
 - **Windows-style paths in generated `path=` literals** — `_safe_path`
   normalizes backslashes to forward slashes before escaping, so a pipeline
   saved on Windows and read on Linux (or vice versa) still parses
-  correctly; `_portable_path_expr` additionally resolves relative paths
-  against `Path(__file__).parent` so a saved pipeline directory is
-  relocatable.
+  correctly. Runtime helpers receive the generated file's resolved parent as
+  their base-directory candidate for relative sidecar paths.
 - **External-file user imports directly after the generated load** —
   `_match_external` is position-aware: imports BEFORE the generated
   `load_external_object_from_config(...)` call are stripped as
   boilerplate, imports AFTER it (or all imports, if there was no load at
   all) are preserved as user code.
+- **One current generated scaffold per node type.** Extraction recognises
+  the current scaffold plus ordinary user code; it does not carry aliases for
+  retired generated chains or variable names. Rating-step codegen emits only
+  canonical table fields and `combined_outputs`, never retired table labels
+  or singular combined-output arguments.
 - **Model-score / rating-step boilerplate call detection** —
   `_outer_boilerplate_call_end_line` locates `score_from_config(...)` /
   `apply_rating_step_from_config(...)` via an AST walk over a
@@ -221,11 +257,12 @@ text between the parens is non-whitespace).
 | Condition | Exception | Raised from |
 |---|---|---|
 | No codegen builder registered for a `NodeType` | `KeyError` | `codegen._generate_node_code` |
+| Config-backed node has no decorator mapping or its builder emitted no function definition | `HauteError` with node id/label/type | `codegen._node_to_code` |
 | Decorator arg list untokenizable / no matching close paren / no decorator found | `HauteError` (context enriched with node id/label/type) | `codegen._matching_close_paren`, `codegen._inject_contract_kwarg`, re-raised in `codegen._node_to_code` |
 | Contract computation hits `ConfigError` | `ConfigError` (propagated) | `codegen._format_contract_kwarg` |
 | Contract computation hits a non-infra exception (`TypeError`, `KeyError`, `HauteError` incl. `ContractMismatchError`) | propagated unchanged | `codegen._format_contract_kwarg` |
 | `inputs_by_parent` ambiguous key collision | `ParseError` | `codegen._format_contract_source` |
-| Duplicate sanitized function names across root graph + submodels | `ParseError` (all colliding buckets listed) | `codegen._error_on_name_collisions` |
+| Duplicate sanitized function names across root graph + submodels, including exact duplicate labels | `ParseError` (all colliding buckets listed) | `codegen._error_on_name_collisions` |
 | Duplicate derived input names among one node's incoming edges | `ParseError` (target node + colliding input name) | `codegen.graph_to_code_multi` (per-edge input-name assembly) |
 | An `apiInput` edge carrying no `source_port`/`sourceHandle` (only reachable via a hand-edited file — the editor cannot create one) | `ParseError` naming the edge and source node | `codegen.graph_to_code_multi` (per-edge input-name assembly) |
 | `edgeJoin` codegen source names/ids desynced | `ParseError` | `codegen._role_order_node_sources` |
@@ -252,7 +289,7 @@ than one file per module:
 
 - **`test_codegen.py`** — the largest suite; broad coverage of
   `graph_to_code`/`graph_to_code_multi` across every node type, param
-  building, portable-path resolution, live-switch/selected-columns/
+  building, path-literal safety, live-switch/selected-columns/
   passthrough-vs-behavioural codegen, instance-node mapping (including
   ambiguous/missing-target error cases), submodel pipeline replacement,
   special-character labels, connect-call deduplication, contract-source
@@ -267,7 +304,7 @@ than one file per module:
   parameters.
 - **`test_codegen_builders.py`** — per-builder unit tests (`_gen_api_input`,
   `_gen_banding`, `_gen_scenario_expander`, `_gen_optimiser`, `_gen_explore`,
-  `_gen_data_sink`) plus `TestCodegenExecValidation`, which executes
+  `_gen_data_input`, `_gen_data_output`) plus `TestCodegenExecValidation`, which executes
   generated code to check that it is runnable, not just syntactically valid.
 - **`test_codegen_injection.py`** — the triple-quote / brace / paren-inside-
   string decorator-injection bug class specifically: sanitize-description
@@ -343,55 +380,3 @@ writing a failing test before the fix.
 > the live `Pipeline.run()` API. That API only records `pipeline.submodel(...)` paths, so runtime
 > equivalence is intentionally established after static parse/flatten, not through live module
 > registration.
-
-## Approved change contract — 0.7.0 data I/O code generation
-
-Remaining code-generation improvement work is tracked in the
-[pipeline authoring roadmap](../../roadmap/pipeline-authoring.md).
-
-- Delete `_gen_data_source`, `_gen_data_sink`, `_SINK_CSV`, `_SINK_PARQUET`, legacy source/sink
-  decorator templates, and their registrations from `src/haute/_codegen_builders.py`.
-- Extend `_gen_data_input` so generated code loads the sidecar through the unified
-  graph/provider helper, assigns its `LazyFrame` to `df`, inserts the sanitised user `code`, and
-  returns `df`. Extend `_code_extraction.py` with one canonical `data_input` scaffold matcher;
-  remove the legacy data-source alias after all retained call sites use it.
-- Keep `_gen_data_output` a config-sidecar pass-through function. Explicit write execution uses
-  the executor/registry rather than embedding a write in the generated body, preventing imports
-  and `Pipeline.run()` from causing persistence.
-- `NODE_REGISTRY` validation checks one exec/codegen pair for every retained `NodeType`; removed
-  enum values cannot be dispatched. `collect_node_configs` writes only retained I/O folders.
-- Builder, extraction, injection, split-module, executable-equivalence, property-round-trip, and
-  parser fixtures are rewritten around the retained nodes. Add tests for cache-mode fields,
-  branch-specific configs, code-before-return placement, path anchoring, multiple I/O nodes, and
-  an exact search assertion that generated source never contains removed decorators.
-
-## Retained input sidecar execution parity
-
-- `_retained_api_input_template` takes a sidecar path and emits a call to
-  `resolve_api_input_from_config(config_path, base_dir=Path(__file__).parent)`.
-  It no longer emits `orjson` config loading, a portable baked data path, or a
-  baked flat-file config literal.
-- The retained-input resolver combines that concrete pipeline directory with
-  the execution-scoped project root. Both generated and canvas execution use
-  the same candidate order and enforce containment against that root, including
-  when the selected pipeline is outside the process working directory.
-- The source-code extractor recognises
-  `resolve_data_input_from_config(...)` as generated load boilerplate, so a
-  parse/save/reload cycle does not copy that call into the user's `code` field.
-- `_gen_external_file` obtains its config path with `config_path_for_node` and
-  emits `load_external_object_from_config`; `_RETAINED_EXTERNAL` does not
-  interpolate `path`, `fileType`, or `modelClass` into the body.
-- The `graph_utils` facade exports both helpers. Builder tests assert the
-  absence of baked data paths and execute generated functions after
-  sidecar-only edits.
-
-## Approved change contract — one generated source form
-
-Under [ROAD-CANON-01](../../roadmap/engineering-quality.md#road-canon-01--prerelease-canonical-only-contract),
-code generation emits one current scaffold per node type and code extraction recognises that
-scaffold plus ordinary user code only. Historical generated chains, aliases, variable names, and
-multi-step loading scaffolds are not parsed or rewritten. Tests for those old generated forms are
-deleted rather than converted into special failures.
-
-Rating-step code generation emits only canonical table fields and `combined_outputs`; it neither
-reads nor writes retired table labels or singular combined-output arguments.

@@ -64,14 +64,17 @@ Out of scope (owned elsewhere, linked where relevant):
   parent file is rewritten to reference it, through the same save transaction
   as a manual pipeline save.
 - **Drill-down** (`GET /api/submodel/{name}`): returns the named submodel's
-  internal graph, parsed fresh from its `.py` file, with any sidecar node
-  positions applied. This is how the GUI renders the inside of a placeholder
-  when the user opens it.
+  internal graph, parsed fresh from the path recorded by the active pipeline,
+  with any sidecar node positions applied. The `modules/<name>.py` convention
+  is used only when no discovered pipeline records the requested submodel.
+  This is how the GUI renders the inside of a placeholder when the user opens
+  it, including hand-authored references such as `lib/pricing.py`.
 - **Dissolution** (`POST /api/submodel/dissolve`): the inverse of creation —
-  the named submodel's placeholder is replaced by its child nodes and internal
-  edges (via `flatten_graph`, scoped to just that one
-  submodel), the parent file is rewritten, and the `modules/<name>.py` file is
-  deleted.
+  the recorded submodel file is parsed again under the write lock, its
+  authoritative graph replaces the client's possibly stale metadata, and
+  only then is the placeholder replaced by child nodes/internal edges via
+  targeted `flatten_graph`. The parent file is rewritten and the recorded
+  child file is deleted through one save transaction.
 - **Minimum size.** A submodel must contain at least 2 nodes after any
   nonexistent or duplicate ids in the request are resolved against the actual
   graph; fewer is rejected.
@@ -86,23 +89,27 @@ Out of scope (owned elsewhere, linked where relevant):
   though it is not a first-class GUI workflow.
 - **Windows-reserved names are rejected up front.** A submodel name that would
   produce a module filename matching a Windows reserved device name (`CON`,
-  `NUL`, `COM1`–`COM9`, `LPT1`–`LPT9`, any casing, any extension) is rejected
+  `PRN`, `AUX`, `NUL`, `COM1`–`COM9`, `LPT1`–`LPT9`, any casing, any extension) is rejected
   before any graph transformation runs, on every platform — so a pipeline
   authored on Linux/macOS stays loadable on a Windows checkout.
 - **Boundary handles are the single source of truth for "which side of the
   boundary this edge attaches to."** `in__<child>` / `out__<child>` is the
   spelling produced when a submodel is created (or reconstructed by the parser) and validated by
-  codegen. On well-formed graphs, flattening strips that prefix, restores the child endpoint,
-  clears the synthetic handle, and is the inverse of creation. A
+  both codegen and flattening. Flattening requires the correct prefix and a
+  child id present in the authoritative child graph; malformed boundaries
+  raise `ParseError` before any edge or file is removed. On valid graphs it
+  strips the prefix, restores the child endpoint and any authored port,
+  regenerates an id from all visible and still-hidden port metadata, and is
+  the inverse of creation. A
   regular (non-submodel) edge whose handle *happens* to look like
   `out__<something>` is never treated as a boundary handle by the consuming
   side — only an edge whose source or target actually is a submodel
   placeholder node is.
-  > NOTE: `flatten_graph` itself checks only that the relevant handle is non-empty; it uses
-  > `removeprefix`, so a malformed non-empty handle such as `wrong_child` is consumed as the child
-  > id verbatim. A missing handle leaves the placeholder endpoint unchanged and the edge is then
-  > silently dropped. Codegen validates prefixes and child membership before save, but the
-  > standalone flattener is more permissive than the producer contract.
+- **Per-file module code survives both representations.** Parsed submodel
+  descriptions, preambles, and column-zero preserved blocks stay in the
+  child metadata and are re-emitted in that child file. When a submodel is
+  flattened for execution or dissolve, its preamble and preserved blocks are
+  merged into the parent graph so the inlined nodes retain their support code.
 - **Writes are serialised.** Both create and dissolve acquire the same shared
   write lock used by the manual pipeline save endpoint, so a submodel
   operation can never interleave with a concurrent save or with another
@@ -131,11 +138,11 @@ Out of scope (owned elsewhere, linked where relevant):
   bespoke writer for submodel operations would be a second place those
   invariants could drift out of sync.
 - **Submodel path resolution deliberately mirrors the parser's own module
-  lookup**, rather than inventing a second convention: `modules/<name>.py` is
-  resolved relative to the active pipeline's directory. If drill-down
-  (`GET /api/submodel/{name}`) resolved a different
-  file than the parser would load for the same reference, the GUI and the
-  actually-executed pipeline would show different things.
+  lookup**, rather than inventing a second convention: drill-down parses the
+  active pipeline and resolves the exact project-relative path stored in its
+  submodel metadata. `modules/<name>.py` remains a compatibility fallback
+  only when no discovered pipeline records the name. The GUI and the
+  actually executed pipeline therefore open the same file.
 - **Nesting is disallowed by construction, not by convention.** Rejecting any
   selection that includes a submodel placeholder keeps the placeholder model,
   the `in__`/`out__` handle scheme, and the flatten pass single-level;
@@ -147,12 +154,10 @@ Out of scope (owned elsewhere, linked where relevant):
 - **Name-collision detection lives at save time, not in `haute lint`.**
   Extending `haute lint` to warn about (and block on) node-name collisions
   across submodels was proposed and never built — the CLI's lint command has
-  no submodel-specific rules today. Collision checking is instead
-  `SavePipelineService._validate_unique_sanitized_names`, run against the
-  pre-transform graph on create and against the post-inline graph on dissolve
-  (see the `create_submodel`/`dissolve_submodel` control flow in
-  [Low-level](low-level.md) for both call sites), not a `haute lint` check a
-  user can run independently of a submodel-mutating request.
+  no submodel-specific rules today. Collision checking is instead part of
+  `SavePipelineService.save`, after create or dissolve has produced the graph
+  that will actually be persisted. The routes do not duplicate that private
+  validation step, and there is no independent `haute lint` check for it.
 
 ## Interactions
 
@@ -200,23 +205,17 @@ Out of scope (owned elsewhere, linked where relevant):
   metadata returns `404`.
 - Drilling into a submodel whose `.py` file does not exist on disk returns
   `404`.
+- A malformed route name or recorded reference (empty, NUL-containing, or a
+  `{name}` containing `/` or `\`) returns `400`; a reference resolving
+  outside the project returns `403`. These typed path failures are mapped
+  before filesystem access rather than escaping as an uncaught `ValueError`.
+- A missing, wrong-prefixed, or stale-child boundary handle raises
+  `ParseError` from `flatten_graph`. Dissolve stops before persisting the
+  parent or deleting the authoritative child file.
 - Any failure partway through the underlying save transaction (config write,
-  sidecar write, or the submodel file's own deletion on dissolve) rolls back
-  every file already touched in that request and surfaces as `500` — no
-  partial multi-file write is ever left on disk. See
+  sidecar write, or the submodel file's own deletion on dissolve) triggers a
+  best-effort rollback of every touched file and surfaces the original
+  failure as `500`. A compensating filesystem operation can itself fail; that
+  rollback failure is logged and may leave partial state. See
   [server-api](../server-api/high-level.md) for the transaction's full
   contract.
-- `flatten_graph` has no dedicated malformed-boundary exception. Non-empty handles with the wrong
-  prefix are consumed as ids, while boundary edges with no handle are dropped after they still
-  reference a removed placeholder. This is silent standalone behaviour; codegen's stricter
-  validation normally prevents such graphs from being persisted.
-- > NOTE: `GET /api/submodel/{name}` contains a defensive
-  > `sm_path.is_relative_to(project_root)` check that raises `403` if it
-  > fails, but the path it checks was already produced by
-  > `resolve_submodel_by_name`, which validates the same condition (and
-  > raises `ValueError` instead) before ever returning a path. Because the
-  > route's `{name}` parameter is a single path segment and cannot itself
-  > contain `/`, the resulting `modules/{name}.py` reference cannot escape
-  > the project root through this endpoint, so the `403` branch is
-  > unreachable in practice — defensive redundancy rather than live
-  > behaviour.

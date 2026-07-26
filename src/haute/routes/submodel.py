@@ -8,9 +8,16 @@ from fastapi import APIRouter, HTTPException
 from fastapi.concurrency import run_in_threadpool
 
 from haute._logging import get_logger
-from haute._submodel_paths import resolve_submodel_by_name
+from haute._submodel_paths import (
+    MalformedSubmodelPathError,
+    SubmodelPathOutsideProjectError,
+    resolve_submodel_by_name,
+    resolve_submodel_reference,
+    validate_submodel_name,
+)
 from haute.routes._helpers import (
     _INTERNAL_ERROR_DETAIL,
+    discover_pipelines,
     load_sidecar_positions,
     pipeline_dir,
 )
@@ -46,8 +53,6 @@ async def create_submodel(body: CreateSubmodelRequest) -> CreateSubmodelResponse
     from haute.routes._submodel_ops import create_submodel_graph
 
     def _run() -> CreateSubmodelResponse:
-        SavePipelineService._validate_unique_sanitized_names(body.graph)
-
         # Reject reserved device names at creation, before the graph is
         # transformed: a submodel named ``NUL`` would mint ``modules/NUL.py``,
         # which names a device, not a file, on Windows (any casing, any
@@ -123,17 +128,38 @@ async def get_submodel(name: str) -> SubmodelGraphResponse:
 
 
 def _get_submodel_blocking(name: str) -> SubmodelGraphResponse:
-    from haute.parser import parse_submodel_file
+    from haute.parser import parse_pipeline_file, parse_submodel_file
 
     project_root = Path.cwd()
-    active_pipeline_dir = pipeline_dir()
-    sm_path, config_base = resolve_submodel_by_name(
-        name,
-        pipeline_dir=active_pipeline_dir,
-        project_root=project_root,
-    )
-    project_root = project_root.resolve()
-    if not sm_path.is_relative_to(project_root):
+    try:
+        validate_submodel_name(name)
+        resolved: tuple[Path, Path] | None = None
+        for pipeline_path in discover_pipelines():
+            parent_graph = parse_pipeline_file(pipeline_path)
+            sm_meta = (parent_graph.submodels or {}).get(name)
+            if sm_meta is None:
+                continue
+            recorded_path = sm_meta.get("file")
+            if not isinstance(recorded_path, str) or not recorded_path:
+                raise MalformedSubmodelPathError(
+                    "Active pipeline has no valid path for the requested submodel.",
+                )
+            resolved = resolve_submodel_reference(
+                recorded_path,
+                pipeline_dir=pipeline_path.resolve().parent,
+                project_root=project_root,
+            )
+            break
+        if resolved is None:
+            resolved = resolve_submodel_by_name(
+                name,
+                pipeline_dir=pipeline_dir(),
+                project_root=project_root,
+            )
+        sm_path, config_base = resolved
+    except MalformedSubmodelPathError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    except SubmodelPathOutsideProjectError:
         raise HTTPException(status_code=403, detail="Cannot access paths outside the project root")
     if not sm_path.is_file():
         raise HTTPException(status_code=404, detail=f"Submodel '{name}' not found")
@@ -174,6 +200,8 @@ async def dissolve_submodel(body: DissolveSubmodelRequest) -> DissolveSubmodelRe
     from haute.routes._helpers import save_lock
 
     def _run() -> DissolveSubmodelResponse:
+        from haute.parser import parse_submodel_file
+
         graph = body.graph
         sm_name = body.submodel_name
         submodels = graph.submodels or {}
@@ -183,32 +211,60 @@ async def dissolve_submodel(body: DissolveSubmodelRequest) -> DissolveSubmodelRe
                 status_code=404,
                 detail=f"Submodel '{sm_name}' not found in graph",
             )
-
-        # Flatten just the target submodel
-        sm_meta = submodels[sm_name]
-        sm_file = sm_meta.get("file", "")
-
-        # Remove the submodel from the graph metadata and flatten
-        flat = flatten_graph(graph, target_name=sm_name)
-
-        # Validate name uniqueness on the flattened graph (post-inline)
-        from haute.routes._save_pipeline import SavePipelineService
-
-        SavePipelineService._validate_unique_sanitized_names(flat)
-
-        cwd = Path.cwd()
         if not body.source_file:
             raise HTTPException(
                 status_code=400,
                 detail="source_file is required — the frontend must track"
                 " and send the original pipeline file path",
             )
+
+        # Resolve and parse the recorded file before trusting client metadata.
+        sm_meta = dict(submodels[sm_name])
+        sm_file = sm_meta.get("file", "")
+        if not isinstance(sm_file, str) or not sm_file:
+            raise HTTPException(
+                status_code=400,
+                detail="Submodel metadata has no valid source file path",
+            )
+
+        cwd = Path.cwd()
+        try:
+            sm_path, config_base = resolve_submodel_reference(
+                sm_file,
+                pipeline_dir=pipeline_dir(),
+                project_root=cwd,
+            )
+        except MalformedSubmodelPathError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from None
+        except SubmodelPathOutsideProjectError:
+            raise HTTPException(
+                status_code=403,
+                detail="Cannot access paths outside the project root",
+            ) from None
+        if not sm_path.is_file():
+            raise HTTPException(status_code=404, detail=f"Submodel '{sm_name}' not found")
+
+        disk_graph = parse_submodel_file(sm_path, _base_dir=config_base)
+        sm_meta["graph"] = disk_graph.model_dump()
+        authoritative_submodels = dict(submodels)
+        authoritative_submodels[sm_name] = sm_meta
+        authoritative_graph = graph.model_copy(
+            update={
+                "submodels": authoritative_submodels,
+                "preamble": body.preamble,
+            }
+        )
+
+        # Flatten just the target submodel from its authoritative disk graph.
+        flat = flatten_graph(authoritative_graph, target_name=sm_name)
+        from haute.routes._save_pipeline import SavePipelineService
+
         svc = SavePipelineService(project_root=cwd, pipeline_root=pipeline_dir())
         svc.save_graph_transactionally(
             graph=flat,
             name=body.pipeline_name,
             description=body.pipeline_description or "",
-            preamble=body.preamble,
+            preamble=flat.preamble,
             source_file=body.source_file,
             delete_module_files=[sm_file] if sm_file else (),
         )

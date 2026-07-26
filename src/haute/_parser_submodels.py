@@ -17,6 +17,8 @@ from typing import Any
 from haute._ast_helpers import (
     _extract_connect_calls,
     _extract_function_bodies,
+    _extract_preamble,
+    _extract_preserved_blocks,
     _extract_submodel_meta,
     _is_submodel_node_decorator,
 )
@@ -233,6 +235,13 @@ def parse_submodel_source(
         edges=edges,
         pipeline_name=submodel_name,
         pipeline_description=submodel_desc,
+        preamble=_extract_preamble(
+            source,
+            tree=tree,
+            receiver="submodel",
+            constructor_name="Submodel",
+        ),
+        preserved_blocks=_extract_preserved_blocks(source),
         source_file=source_file,
     )
     graph._parser_parameter_names = {

@@ -394,11 +394,24 @@ def _node_to_code(
         func_name = _sanitize_func_name(node.data.label)
         cfg_path = config_path_for_node(node_type, func_name).as_posix()
         try:
-            dec_name = NODE_TYPE_TO_DECORATOR.get(node_type, "polars")
+            dec_name = NODE_TYPE_TO_DECORATOR[node_type]
+        except KeyError as exc:
+            raise HauteError(
+                "config-backed node has no registered decorator; this is a codegen bug",
+                node_id=node.id,
+                node_label=node.data.label,
+                node_type=str(node_type),
+            ) from exc
+        try:
             def_idx = code.index("\ndef ")
-            code = f"@pipeline.{dec_name}(config={_safe_path(cfg_path)})" + code[def_idx:]
-        except ValueError:
-            logger.warning("no_def_in_generated_code", node=node.data.label)
+        except ValueError as exc:
+            raise HauteError(
+                "config-backed node code has no function definition; this is a codegen bug",
+                node_id=node.id,
+                node_label=node.data.label,
+                node_type=str(node_type),
+            ) from exc
+        code = f"@pipeline.{dec_name}(config={_safe_path(cfg_path)})" + code[def_idx:]
 
     contract_kwarg = _format_contract_kwarg(
         node,
@@ -568,13 +581,12 @@ def _error_on_name_collisions(labels: list[str]) -> None:
         sanitized = _sanitize_func_name(label)
         buckets.setdefault(sanitized, []).append(label)
 
-    # Only flag *distinct* source labels colliding — two graph nodes
-    # with the exact same label are a different (legal) case that the
-    # executor handles elsewhere.
+    # Every emitted function name must be unique, including exact label
+    # duplicates: either form would shadow one node in generated Python.
     collisions = {
-        sanitized: sorted(set(originals))
+        sanitized: sorted(originals)
         for sanitized, originals in buckets.items()
-        if len(set(originals)) > 1
+        if len(originals) > 1
     }
     if not collisions:
         return
@@ -743,9 +755,13 @@ def _generate_pipeline_lines(
             "",
             "import polars as pl",
             "import haute",
+        ]
+        if preamble.strip():
+            lines.append("")
+            lines.append(preamble.rstrip())
+        lines += [
             "",
-            "",
-            f"{obj_name} = haute.Submodel({_safe_str(name)})",
+            f"{obj_name} = haute.Submodel({_safe_str(name)}, description={description!r})",
             "",
             "",
         ]
@@ -961,13 +977,24 @@ def graph_to_code_multi(
     # Fall back to graph-level description when caller doesn't supply one
     if not description and graph.pipeline_description:
         description = graph.pipeline_description
+    if not preamble and graph.preamble:
+        preamble = graph.preamble
     submodels = graph.submodels or {}
     validate_pipeline_graph_shape_contracts(graph, graph_label=pipeline_name)
 
     # Detect colliding labels across the whole graph once, eagerly, so
     # duplicate-function-name collisions are reported even when the
     # file-generation path short-circuits.
-    collision_labels: list[str] = [n.data.label for n in graph.nodes]
+    # Hierarchical payloads may retain a transport copy of each child in
+    # ``graph.nodes`` as well as the authoritative copy in the embedded
+    # submodel graph. Codegen assigns every ``childNodeIds`` entry to the
+    # child module, so do not count that same logical node twice here.
+    represented_child_ids = {
+        child_id for sm_meta in submodels.values() for child_id in sm_meta.get("childNodeIds", [])
+    }
+    collision_labels: list[str] = [
+        node.data.label for node in graph.nodes if node.id not in represented_child_ids
+    ]
     for sm_meta in submodels.values():
         for raw in sm_meta.get("graph", {}).get("nodes", []):
             if isinstance(raw, dict):
@@ -1193,14 +1220,17 @@ def graph_to_code_multi(
         sm_lines = _generate_pipeline_lines(
             kind="submodel",
             name=sm_name,
-            description="",
-            preamble="",
+            description=sm_graph.get("pipeline_description")
+            or sm_graph.get("submodel_description")
+            or "",
+            preamble=sm_graph.get("preamble") or "",
             sorted_nodes=sorted_sm_nodes,
             id_to_func=sm_id_to_func,
             node_sources=sm_node_sources,
             connect_pairs=sm_connect_pairs,
             node_source_func_names=sm_node_source_func_names,
             node_source_ids=sm_node_source_ids,
+            preserved_blocks=sm_graph.get("preserved_blocks") or None,
             node_to_code_fn=_submodel_node_to_code,
             obj_name="submodel",
         )
