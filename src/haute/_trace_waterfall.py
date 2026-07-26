@@ -392,7 +392,11 @@ def _step_targets_column(
             node.value if isinstance(node, ast.Constant) and isinstance(node.value, str) else None
         )
 
-    def _positional_output_name(expression: ast.AST) -> str | None:
+    def _positional_output_names(expression: ast.AST) -> set[str]:
+        if isinstance(expression, (ast.List, ast.Tuple)):
+            return {
+                name for element in expression.elts for name in _positional_output_names(element)
+            }
         if (
             isinstance(expression, ast.Call)
             and isinstance(expression.func, ast.Attribute)
@@ -401,7 +405,7 @@ def _step_targets_column(
         ):
             alias = _literal_string(expression.args[0])
             if alias is not None:
-                return alias
+                return {alias}
         for candidate in ast.walk(expression):
             if (
                 isinstance(candidate, ast.Call)
@@ -411,8 +415,8 @@ def _step_targets_column(
             ):
                 name = _literal_string(candidate.args[0])
                 if name is not None:
-                    return name
-        return None
+                    return {name}
+        return set()
 
     for candidate in ast.walk(tree):
         if (
@@ -423,7 +427,7 @@ def _step_targets_column(
             continue
         if any(keyword.arg == column for keyword in candidate.keywords):
             return True
-        if any(_positional_output_name(argument) == column for argument in candidate.args):
+        if any(column in _positional_output_names(argument) for argument in candidate.args):
             return True
     return False
 

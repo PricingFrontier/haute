@@ -55,6 +55,17 @@ from tests.conftest import make_edge, make_graph, make_node, make_source_node, m
         ("df.with_columns((pl.col('premium') * 1.2).alias('premium'))", True),
         ("df.with_columns(premium=pl.col('premium') * 1.2)", True),
         (".with_columns(premium=pl.col('premium') * 1.2)", True),
+        (
+            "df.with_columns([pl.col('base').alias('base_copy'), "
+            "(pl.col('base') * pl.col('adj')).alias('premium')])",
+            True,
+        ),
+        ("df.with_columns([(pl.col('premium') > 100).alias('flag')])", False),
+        (
+            "df.with_columns(((pl.col('base') * pl.col('adj')).alias('premium'),))",
+            True,
+        ),
+        ("df.with_columns(((pl.col('premium') > 100).alias('flag'),))", False),
     ],
 )
 def test_step_target_membership_uses_python_syntax(
