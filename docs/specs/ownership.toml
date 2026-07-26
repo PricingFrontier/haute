@@ -73,9 +73,9 @@ reason = "Package metadata also configures quality tools and declares the assist
 
 [[shared_file]]
 path = "src/haute/_builders.py"
-primary = "pipeline-config"
-consumers = ["execution-engine"]
-reason = "Pipeline configuration owns node builder registration; execution consumes the registered runtime closures."
+primary = "execution-engine"
+consumers = ["pipeline-config"]
+reason = "Execution owns runtime builders; pipeline configuration consumes their registry contracts."
 
 [[shared_file]]
 path = "src/haute/_contracts.py"
@@ -97,9 +97,9 @@ reason = "Local security policy protects the server's file-facing routes."
 
 [[shared_file]]
 path = "src/haute/_node_builder.py"
-primary = "pipeline-config"
-consumers = ["execution-engine"]
-reason = "Pipeline configuration owns builder interception hooks used by deploy execution."
+primary = "execution-engine"
+consumers = ["pipeline-config"]
+reason = "Execution owns runtime builder interception; pipeline configuration documents the shared seam."
 
 [[shared_file]]
 path = "src/haute/_path_resolution.py"

@@ -305,6 +305,56 @@ def test_byte_budgeted_chunk_plan_accounts_for_scenario_row_expansion(
     assert plan.source_chunk_size < plan.chunk_size
 
 
+def test_byte_budgeted_chunk_plan_rejects_one_source_row_expanding_past_budget(
+    tmp_path: Path,
+) -> None:
+    source_path = _write_projected_source(tmp_path)
+    graph = make_graph(
+        {
+            "nodes": [
+                _node("source", "dataInput", {"path": str(source_path)}),
+                _node(
+                    "scenario",
+                    "scenarioExpander",
+                    {
+                        "column_name": "scenario_value",
+                        "min_value": 0.9,
+                        "max_value": 1.1,
+                        "steps": 100,
+                        "step_column": "scenario_index",
+                    },
+                ),
+                _node(
+                    "out",
+                    "output",
+                    make_output_config(["quote_id", "premium", "scenario_index", "scenario_value"]),
+                ),
+            ],
+            "edges": [
+                make_edge("source", "scenario").model_dump(),
+                make_edge("scenario", "out").model_dump(),
+            ],
+        }
+    )
+
+    with pytest.raises(ChunkMemoryRiskError) as exc_info:
+        chunk_plan(
+            ChunkPlanRequest(
+                graph=graph,
+                target_node_id="out",
+                target_chunk_bytes=1_024,
+                required_columns_by_node={
+                    "out": {"quote_id", "premium", "scenario_index", "scenario_value"}
+                },
+            )
+        )
+
+    assert exc_info.value.estimated_target_row_bytes <= 1_024
+    assert exc_info.value.estimated_minimum_chunk_bytes > 1_024
+    assert exc_info.value.row_expansion_factor == 100
+    assert exc_info.value.reason_code == "minimum_source_row_expansion_exceeds_budget"
+
+
 def test_byte_budgeted_chunk_plan_costs_downstream_created_wide_column(
     tmp_path: Path,
 ) -> None:

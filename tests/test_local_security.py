@@ -6,11 +6,15 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from starlette.applications import Starlette
+from starlette.responses import PlainTextResponse
+from starlette.routing import Route
 from starlette.testclient import WebSocketDenialResponse
 from starlette.websockets import WebSocketDisconnect
 
 from haute._local_security import (
     SESSION_TOKEN_COOKIE,
+    LocalTrustedHostMiddleware,
     local_session_token,
 )
 from haute.server import _serve_index_html, app
@@ -32,6 +36,21 @@ def _bootstrap(client: TestClient):
 
 def _ws_rejection_errors() -> tuple[type[Exception], ...]:
     return (WebSocketDisconnect, WebSocketDenialResponse)
+
+
+def test_trusted_host_allowlist_is_enforced() -> None:
+    async def ok(_request):
+        return PlainTextResponse("ok")
+
+    restricted = Starlette(routes=[Route("/", ok)])
+    restricted.add_middleware(
+        LocalTrustedHostMiddleware,
+        allowed_hosts=["127.0.0.1"],
+    )
+
+    with TestClient(restricted, base_url="http://localhost") as client:
+        assert client.get("/").status_code == 400
+        assert client.get("/", headers={"host": "127.0.0.1:8123"}).status_code == 200
 
 
 def test_bootstrap_requires_explicit_matching_origin_and_sets_http_only_cookie(

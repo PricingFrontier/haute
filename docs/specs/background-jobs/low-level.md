@@ -38,7 +38,7 @@
   that pins when stripping becomes due; once set it is not recomputed on subsequent
   updates (`_prepare_heavy_object_policy_locked` returns early if the key already
   exists).
-- **`_KNOWN_PREFIXES: frozenset[str] = {"training", "optimiser", "explore"}`** — the
+- **`_KNOWN_PREFIXES: frozenset[str] = {"training", "optimiser", "explore", "input_cache"}`** — the
   closed allow-list behind `get_job_store`, a `functools.cache`d factory returning one
   `JobStore` singleton per prefix for the life of the process.
 
@@ -46,9 +46,9 @@
 
 - **`TerminalReason`** — `Literal["completed", "superseded", "timed_out",
   "cancelled", "memory_limited", "contract_error", "error"]`.
-- **`TERMINAL_REASON_TO_STATUS`** — maps each reason to its stored `status` string
-  (currently identity-mapped 1:1, i.e. reason and status share the same literal
-  spelling).
+- **`TERMINAL_REASONS`** — the closed terminal-status set. A terminal reason is
+  stored directly as `status`; there is no parallel identity map or alias constant
+  layer.
 - **`_TERMINAL_REASON_PRECEDENCE`** — `error=10 < contract_error=20 <
   memory_limited=30 < cancelled=40 < timed_out=50 < superseded=60`. Higher wins a
   race between two *already-terminal* reasons; `completed` is not in this map because
@@ -65,7 +65,7 @@
 - **`require_job_status(job)`** — returns the job's `status` cast to `JobStatus` after
   validating it is a string present in `JOB_STATUSES`; raises `ValueError` otherwise.
   Note this validates against the *lifecycle's* closed status set
-  (`{"running", *TERMINAL_STATUSES}`), which matches `haute.schemas.JobStatus`
+  (`{"running", *TERMINAL_REASONS}`), which matches `haute.schemas.JobStatus`
   exactly — but `JobStore` itself does not enforce this set on arbitrary
   `create_job`/`update_job` calls (e.g. tests freely use `"pending"`); only code paths
   that go through `require_job_status` (the metrics publisher) are constrained.
@@ -91,32 +91,63 @@
   `active_kind` for the caller to build a specific conflict message/response.
 - **`SingleFlightCoordinator`** — `_active_by_key: dict[Hashable, SingleFlightHandle]`
   guarded by one `RLock`.
-- **`IsolatedJobSupervisor`** — wraps one `JobLifecycle`. Stateless beyond that
-  reference; `launch()` starts a new daemon `threading.Thread` per call.
-- **`BackgroundJobStoppedError(RuntimeError)`** — carries `job_id`, `terminal_reason`,
-  and a `status` attribute that duplicates `terminal_reason` (kept for call sites that
-  read either name).
+- **`IsolatedJobSupervisor`** — wraps one `JobLifecycle`. `launch_protocol()` is the
+  production entry point for the bounded version-1 worker transport; `launch()` keeps
+  the legacy single-result isolation primitive available and tested. Both return a
+  started daemon `IsolatedSupervisorThread`.
+- **`BackgroundJobStoppedError(RuntimeError)`** — carries `job_id` and the canonical
+  `terminal_reason`; it does not duplicate that value under a second status attribute.
 
 ### `_timeouts.py`
 
 - **`BlockingWorkTimeoutError(TimeoutError)`** — carries `background_task:
-  asyncio.Future[Any]`, the still-running task, so a caller could in principle inspect
-  or await it later (current call sites only use the exception for its message).
+  asyncio.Future[Any]`, the still-running task. Supersession and route handlers use
+  this handle to defer admission/permit release until the underlying thread really
+  finishes, even though the HTTP response has already timed out.
+
+### `_worker_protocol.py`
+
+- **`WorkerRequest`** — immutable version-1 request with non-empty bounded
+  `request_id`/`kind` and one recursively bounded plain-data payload.
+- **`WorkerProgressEvent` / `WorkerProgressEnd`** — monotonic delivered sequence,
+  finite progress, bounded fields/message, and explicit counts for updates dropped by
+  the non-blocking bounded progress queue.
+- **`WorkerArtifactManifest` / `WorkerResultManifest`** — relative normalized
+  artifact paths with kind/lifetime, size, SHA-256, and bounded plain result metadata.
+  No absolute path, open object, dataframe, callback, store, or cancellation token may
+  cross the spawn boundary.
+- **`WorkerFailurePayload`** — a versioned known terminal reason plus bounded
+  error-type/message/traceback and plain fields.
+  Version-1 bounds are: queue capacity 64; at most 10,000 delivered events;
+  64 KiB per event; 4 MiB result metadata; 64 artifacts; 512-character identifiers
+  and messages; 4,096-character relative paths; nesting depth 64.
+
+### `_artifact_housekeeping.py`
+
+- **Ownership marker** — `.haute-artifact.json` with `schema_version=1`, non-empty
+  owner, and finite non-negative creation time.
+- **`create_owned_artifact_directory` / `reap_stale_artifact_directories`** —
+  create marked direct children and reap only stale, valid, expected-owner children
+  under an explicit root. Results report bounded counts and reclaimed bytes.
 
 ## Control flow
 
 ### `JobLifecycle.transition(job_id, *, to, message, fields, expected_status="running", elapsed_seconds, now)`
 
-1. Compute `update` dict: merges `fields`, sets `status` (from
-   `TERMINAL_REASON_TO_STATUS[to]`), `terminal_reason=to`, `ended_at=now`; sets
+1. Compute `update` dict: merges `fields`, sets `status=to`,
+   `terminal_reason=to`, `ended_at=now`; sets
    `completed_at` (via `setdefault`, so only stamped once) when `to == "completed"`;
    optionally sets `message`/`elapsed_seconds`.
 2. Acquire `store._write_lock` and read the current stored job (`old =
    store.jobs[job_id]`; raises `KeyError` if the id doesn't exist — no guard, by
    design, since every caller already holds a job id it created).
-3. **Fast path** — if `old["status"] == expected_status` (default `"running"`): merge
-   and store via `store._store_merged_job_locked`, return the merged dict.
-4. **Race path** — if the status has already moved past `expected_status` (another
+3. Validate the optimistic-lock state: `expected_status` may be only `"running"` or
+   `"completed"`; the latter is valid only with `to="error"`. Any other value or
+   destination raises `ValueError`.
+4. **Fast path** — if `old["status"] == expected_status` (default `"running"`): merge
+   and store via `store._store_merged_job_locked`, return the merged dict. This is how
+   the sole completed-to-error publication correction succeeds.
+5. **Race path** — if the status has already moved past `expected_status` (another
    transition won first):
    - If the old status has no valid `terminal_reason` recorded, return `None`
      (nothing to compare against — treated as "can't safely proceed").
@@ -129,7 +160,7 @@
      greater, return `None` (a lower-or-equal-precedence reason loses silently — the
      caller gets `None` back to detect the race, not an exception). Otherwise merge
      and store, same as the fast path.
-5. After releasing the lock, call `store._schedule_heavy_object_cleanup_if_needed`
+6. After releasing the lock, call `store._schedule_heavy_object_cleanup_if_needed`
    with the `schedule_cleanup`/`expires_at` values returned by the merge step (see
    `JobStore` control flow below) — heavy-object timer scheduling always happens
    outside the write lock.
@@ -141,7 +172,8 @@ it re-reads the job, calls `require_job_status`, and if the job is still `"runni
 writes `execution_metrics` via `store.atomic_update(..., expected_status="running")`
 — itself a guarded write, so a job that terminated between the pressure event firing
 and the write landing is left alone (the `atomic_update` call returns `None`, which
-this function ignores).
+this function ignores). A missing job or store failure from `require_job` propagates;
+the publisher does not silently suppress corrupted lifecycle state.
 
 ### `JobStore` mutation paths
 
@@ -183,23 +215,29 @@ the timer object is simply never started (never added to `_jobs` bookkeeping) �
 deliberate check-after-build pattern so a fast-moving sequence of updates between
 "decide to schedule" and "actually schedule" can't leave a stale timer active.
 
-**TTL eviction** (`_evict_stale`, invoked at the top of `create_job` and `get_job`,
-and inside `touch_heavy_objects` / `has_job_with_status` / `has_job_matching`):
+**TTL eviction** (`_evict_stale_locked`, invoked by public paths inside
+`_write_locked_with_artifact_cleanup`):
 
 1. `_clear_expired_heavy_objects_locked(now)` — for every completed job with expired
-   heavy objects, strips them in place (see below).
+   heavy objects, calls `_clear_heavy_objects_locked` to build and atomically swap a
+   replacement dict without the heavy keys, remove the expiry stamp, and add
+   `heavy_objects_cleared_at=now` plus
+   `heavy_objects_retention_seconds=heavy_object_ttl_seconds`.
 2. Computes `cutoff = now - ttl_seconds` and evicts every job whose
    `_job_eviction_timestamp_locked` is older than cutoff.
    `_job_eviction_timestamp_locked` returns `_running_activity_at.get(job_id,
    created_at)` for a still-`"running"` job (so an actively-updated long-running job
    is not evicted mid-flight even past `created_at + ttl_seconds`), or plain
    `created_at` for anything else.
-3. `_remove_job_locked` pops the job, drops its `_running_activity_at` entry, runs
-   `_cleanup_artifact_handles` (calls the registered `ArtifactCleaner` for each
-   `artifact_handles` entry whose `kind` has one; logs a warning and skips entries
-   with no registered cleaner or malformed/non-dict handles; logs and swallows any
-   exception the cleaner itself raises, always with `exc_info=True`), and cancels any
-   pending heavy-object timer.
+3. `_remove_job_locked` pops the job, drops its `_running_activity_at` entry, cancels
+   the pending heavy-object timer, and appends detached `(job_id, handles)` work to
+   the collector supplied by the enclosing context manager. `_evict_stale_locked`
+   appends each stale job's work to that same collector.
+4. `_write_locked_with_artifact_cleanup` releases `_write_lock`, then drains the
+   shared collector through `_run_artifact_cleanups` from its `finally` block. Cleanup
+   therefore runs on success and on exceptional public write paths, while recursive
+   filesystem deletion never holds the global store lock. Missing cleaner
+   registrations and cleaner exceptions are logged and isolated to their handle.
 
 `touch_heavy_objects(job_id, required_keys=...)` lets a consumer that just
 successfully read a completed job's heavy state extend its retention window: it
@@ -257,33 +295,59 @@ raise their own typed HTTP 409 directly from that check — `acquire`'s own
 with a concurrent acquire for the same key from a different job id, which the
 caller-side check does not fully cover once the caller's lock is released.
 
-### `IsolatedJobSupervisor.launch(job_id, function, *args, config=None,
-completed_message="Completed", **kwargs)`
+The input-cache route uses a second coordinator keyed by the versioned safe
+source-identity digest. Under its start lock it checks `active`, verifies the
+referenced job is still running, and joins it; stale coordinator ownership is
+released/repaired before create/register/acquire, so two builders cannot start for
+one identity. Its `finally` releases registry/coordinator ownership without deleting
+the published generation.
 
-1. Records `start_time = time.monotonic()`.
-2. Starts a daemon `threading.Thread` running an inner `run()`:
-   - Calls `run_isolated_worker(function, *args, config=config, **kwargs)`.
-   - On success: `self._lifecycle.transition(job_id, to="completed",
-     message=completed_message, fields={"result": result}, elapsed_seconds=...)`.
-   - On `IsolatedWorkerError`: `_transition_failure` maps the exception's own
-     `terminal_reason` string through `_coerce_worker_terminal_reason` (falls back to
-     `"error"` for any value not in the known `TerminalReason` set) and builds
-     diagnostic `fields` via `_isolated_worker_failure_fields` — always `error` and
-     `worker_error_class`; adds `worker_error_type` / `worker_remote_traceback` for
-     `IsolatedWorkerRemoteError`; adds `worker_exitcode` for
-     `IsolatedWorkerCrashedError`; adds `error_code="memory_limit"` when
-     `terminal_reason == "memory_limited"`. Then calls `transition(...)` with that
-     reason and fields.
-3. Returns the started `Thread` object (callers in the test suite `.join()` it; route
-   code treats it as fire-and-forget).
+### `IsolatedJobSupervisor.launch(...)` / `launch_protocol(...)`
 
-> NOTE: the `run()` closure's `try/except IsolatedWorkerError` is the *only* error
-> boundary. Any exception of a different type escaping `run_isolated_worker` is
-> unhandled inside the thread; Python's default behaviour for an unhandled exception
-> in a `threading.Thread` target is to print it to stderr via the thread excepthook
-> and let the thread exit — the job record is never touched, so it stays `"running"`
-> indefinitely (until 24h metadata TTL eviction removes it, without ever going
-> terminal).
+`launch_protocol()` is the production path: it runs a versioned `WorkerRequest`
+through `run_worker_protocol`, drains bounded progress events, validates the result
+and artifact manifests, and maps the validated result through the caller's
+`completed_fields`. `launch()` retains the smaller `run_isolated_worker` single-result
+primitive for supported direct callers and its focused tests. Both delegate to
+`_launch_callable` and return an `IsolatedSupervisorThread`.
+
+The thread executes one total outcome pipeline:
+
+1. `_produce_outcome` maps success or a typed `IsolatedWorkerError` to a
+   `_SupervisorOutcome`. Any other `BaseException` becomes an `error` outcome with a
+   bounded generic message plus `worker_error_class`/`supervisor_error_class`; the
+   original exception is retained as `exception_to_report`.
+2. `_finish_outcome` runs the parent completion/cleanup callback. A cleanup failure
+   is retained as `cleanup_error`/`cleanup_error_class` without changing the worker
+   outcome, and is logged with its job ID and traceback for operator diagnosis. In
+   particular, cleanup after a committed completed publication cannot discard its
+   result or turn success into `error`.
+3. `_persist_terminal_outcome` attempts the lifecycle transition once and verifies
+   that a precedence-rejected write still left the job terminal.
+4. A missing/unverifiable job or failed terminal write is recorded on
+   `IsolatedSupervisorThread.infrastructure_failure` as
+   `SupervisorInfrastructureError`; `join_and_raise()` is the caller-visible raising
+   join. If persistence succeeds, an unexpected parent exception is re-raised from
+   the thread only after the job is safely terminal, preserving diagnostic visibility
+   without stranding it as running.
+
+**Version-1 worker protocol.** The child serializes each progress update once and
+attempts a non-blocking write to the capacity-64 queue; a full queue or exhausted
+10,000-event delivery budget accumulates a drop count for the next event/end marker.
+The parent drains events and the result while the child is alive, validates exact
+delivered ordering and bounded plain data, then validates every artifact as a
+non-symlink regular file contained under the resolved root with matching size/digest.
+Unknown versions/kinds, malformed ordering/data, traversal, symlink escape, tampering,
+and partial manifests become `contract_error`. Cancellation/timeout terminates and
+joins the child before cleanup.
+
+**Artifact restart housekeeping.** `create_owned_artifact_directory` validates a
+single-component prefix and writes the ownership marker before returning the child.
+`reap_stale_artifact_directories` enumerates direct children only and removes a child
+only after non-following metadata, marker schema/owner/age, and inclusive stale-cutoff
+checks pass. Per-child access/cleanup failures are counted and logged without widening
+the sweep; symlinks, reparse points, unmarked/malformed/wrong-owner/fresh children and
+the root itself are never removed.
 
 ### `run_blocking_with_response_timeout(func, *args, timeout, operation, **kwargs)`
 
@@ -302,17 +366,21 @@ completed_message="Completed", **kwargs)`
    own traceback noise.
 4. **On `asyncio.CancelledError`** (the calling coroutine itself was cancelled, e.g.
    client disconnect): loops `await asyncio.shield(blocking_task)`, re-catching and
-   ignoring `CancelledError` on each iteration, until the shielded task is actually
-   done — i.e. cancellation of the *caller* does not propagate until the background
-   thread work has actually finished, because it cannot be forcibly stopped. Then
-   drains the result (same helper as the timeout path) and re-raises the
-   `CancelledError` to the caller.
+   ignoring `CancelledError` on each iteration and breaking after any worker
+   `BaseException`, until the shielded task is actually done — i.e. cancellation of
+   the *caller* does not propagate until the background thread work has actually
+   finished, because it cannot be forcibly stopped. Then
+   `_drain_cancelled_future_result` consumes/logs every worker `BaseException` and
+   re-raises the original `CancelledError` to the caller.
 5. `_drain_background_future_result(future)` calls `future.result()` inside a
    `try/except Exception` — returns silently for success and therefore does not retain the
    value; logs `error` type/message and re-raises nothing for ordinary exceptions
    (`exc_info=True` on the log). A `BaseException` (e.g.
    `SystemExit`, `KeyboardInterrupt`) is *not* caught by the `except Exception` clause
    and propagates out of the callback/point of use instead of being logged.
+6. `_drain_cancelled_future_result` is the cancellation-only drain: it catches/logs
+   `BaseException`, ensuring a worker `SystemExit`, `KeyboardInterrupt`, or ordinary
+   error cannot replace the request's `CancelledError`.
 
 ## Edge cases and invariants
 
@@ -338,9 +406,8 @@ completed_message="Completed", **kwargs)`
   timer bookkeeping compare by value (`==`), not by interned identity, and tests
   explicitly cover a `"".join(["com", "pleted"])`-constructed string to pin this.
 - **A status change *away* from `"completed"`** (e.g. a later correction to
-  `"error"`) cancels any pending heavy-object cleanup timer for that job, even though
-  no code path in this component currently transitions a job away from completed
-  after the fact other than direct test manipulation of `atomic_update`.
+  `"error"`) through the explicit publication-correction transition cancels any
+  pending heavy-object cleanup timer for that job.
 - **Concurrent `atomic_update_if_heavy_present` vs. the heavy-object eviction timer**
   is explicitly exercised under real threads (`test_job_store.py::
   TestJobStoreConcurrency::test_atomic_update_if_heavy_present_serialises_against_ttl_eviction`):
@@ -373,14 +440,14 @@ completed_message="Completed", **kwargs)`
 | `SingleFlightConflictError(RuntimeError)` | `SingleFlightCoordinator.acquire` | Not caught inside this component; optimiser route code (`_optimiser_service.py`) converts the equivalent caller-side conflict into `HTTPException(409)`. |
 | `BackgroundJobStoppedError(RuntimeError)` | Not raised by this component itself — it is the typed exception in-process worker code is expected to raise after observing `CancellableJobRegistry.cancellation_reason(job_id)` is non-`None`. | Caught by remaining in-process consumers such as `_optimiser_service.py`; migrated process workers use the protocol stop callback and typed failure payloads. |
 | `IsolatedWorkerError` and subtypes | Raised inside `run_isolated_worker` or `run_worker_protocol` (owned by worker isolation/transport) | Converted by `IsolatedJobSupervisor` into a typed lifecycle outcome. Unexpected parent exceptions become `error`; terminal-persistence failure is exposed through `IsolatedSupervisorThread.join_and_raise()`. |
-| `BlockingWorkTimeoutError(TimeoutError)` | `run_blocking_with_response_timeout` | Raised to the awaiting route handler on response timeout; route code (`pipeline.py`, `output_assemble.py`) catches it to build a 504 response. |
+| `BlockingWorkTimeoutError(TimeoutError)` | `run_blocking_with_response_timeout` | Raised to the awaiting route handler on response timeout; route code (`pipeline.py`, `json_cache.py`, `output_assemble.py`) catches it to build a 504 response. |
 | `asyncio.CancelledError` | Re-raised by `run_blocking_with_response_timeout` after draining the background task | Propagates to the ASGI layer as normal task cancellation. |
 
 ## Testing
 
 - `tests/test_job_store.py` — the largest suite; unit-tests CRUD, TTL eviction
   (including exact-boundary and missing-`created_at` cases), artifact-handle cleanup
-  on eviction (success, missing cleaner, cleaner failure, malformed handles),
+  on eviction (success, missing cleaner registration, cleaner failure),
   `require_job` / `require_completed_job` status-code mapping, `atomic_update`
   semantics (merge, new-dict-per-write, optimistic-lock races under real threads),
   `clear_result_data`, and the full heavy-object lifecycle policy (default retention
@@ -392,12 +459,15 @@ completed_message="Completed", **kwargs)`
   concurrent updates to the same/different jobs, the heavy-object-eviction-vs-update
   race, the optimistic-lock race).
 - `tests/test_job_lifecycle.py` — transition metadata correctness; `completed`'s
-  immutability against every other terminal reason; exhaustive pairwise
+  stickiness against precedence races and the sole completed-to-error publication
+  correction; exhaustive pairwise
   precedence races across all six non-completed reasons
   (`itertools.combinations`), in both orderings; the running-execution-metrics
   publisher (fires on pressure events while running, ignored once terminal); and one
   `CancellableJobRegistry` case (`register_latest` derives `"superseded"` as the
-  stop reason for the previous job).
+  stop reason for the previous job). Direct `SingleFlightCoordinator` tests cover
+  same-owner idempotence, concurrent conflicting acquire with exactly one winner,
+  and stale-release protection.
 - `tests/test_execution_context.py` (background-jobs-relevant subset) — confirms
   `CancellableJobRegistry.register_latest` actually cancels the *previous* job's
   `ExecutionContext` checkpoint (raises `ExecutionCancelledError`) and that a
@@ -406,191 +476,24 @@ completed_message="Completed", **kwargs)`
   result recording, typed remote/stopped/crashed outcomes, totalisation of unexpected
   parent errors, cleanup behavior, coherent terminal precedence, and observable
   terminal-persistence infrastructure failure.
+- `tests/test_worker_protocol.py` — the bounded version-1 transport: spawn-safe
+  request/result payloads, progress ordering and drops, validation limits,
+  cancellation/timeout/crash cleanup, and artifact containment/integrity.
+- `tests/test_artifact_housekeeping.py` — ownership markers, direct-child and
+  symlink/reparse containment, stale-cutoff semantics, malformed markers, and
+  isolated cleanup failures.
+- `tests/test_input_cache_route.py` — input-cache job namespace, same-identity join,
+  different-identity concurrency, cancellation checkpoints, and release of the
+  route's `SingleFlightCoordinator` ownership.
 - `tests/test_timeout_helper_contracts.py` — `run_blocking_with_response_timeout`
   returning a worker result, re-raising a worker exception unchanged, logging +
   raising `BlockingWorkTimeoutError` on timeout, and — using real
   `threading.Event`-synchronised threads — that cancelling the awaiting task waits
   for the started blocking work to actually finish before the `CancelledError`
-  propagates. Also covers `_drain_background_future_result` logging an ordinary
-  exception and *not* swallowing a `BaseException` (`SystemExit`).
+  propagates even if the worker itself raises. Also covers the distinct drain
+  policies: `_drain_background_future_result` logs ordinary timeout-path exceptions,
+  while `_drain_cancelled_future_result` consumes every worker `BaseException` without
+  masking request cancellation.
 - Indirect coverage: `tests/test_optimiser_routes.py` exercises
   `BackgroundJobStoppedError` with the registry/lifecycle combination; modelling
   process-worker behavior is covered through the protocol-specific suites.
-- **Known gaps**: no test directly exercises `SingleFlightCoordinator` in isolation
-  (it is only exercised indirectly through `_optimiser_service.py`'s route-level
-  409 tests).
-
-## Approved change contract — 0.7.0 input-cache jobs
-
-Remaining background-job improvement work is tracked in the
-[background jobs and API roadmap](../../roadmap/background-jobs-api.md).
-
-- Add `"input_cache"` to `_job_store._KNOWN_PREFIXES`; `get_job_store("input_cache")` owns
-  metadata for shared source-cache builds. Do not put snapshot files in `JobStore` artifact
-  cleanup or heavy-object fields.
-- `routes/input_cache.py` owns a `CancellableJobRegistry` and
-  `SingleFlightCoordinator` keyed by the versioned safe source-identity digest. Under one start
-  lock it checks `active(key)`, verifies the referenced job is still running, returns that job id
-  when so, or creates/registers/acquires a new job. Stale coordinator ownership is released and
-  repaired explicitly; it never causes a second builder for the same identity.
-- The worker updates immutable replacement dicts with rows, batches, bytes, phase, boundedness,
-  and elapsed time, and publishes terminal state only through `JobLifecycle`. Its `finally`
-  releases registry/coordinator ownership without deleting the cache generation.
-- Extend focused background-job tests for the new prefix and direct
-  `SingleFlightCoordinator` coverage. Input-cache route tests own join/start/cancel races,
-  redaction, global concurrency, builder checkpoints, and job-TTL/snapshot independence.
-
-## Approved change contract — 0.8.0 supervised process jobs
-
-### Module and type contract
-
-- Add `src/haute/_worker_protocol.py` as the owner of the version-1 transport DTOs,
-  validation, artifact-root containment/integrity checks, and the spawn parent/child loop.
-  `_worker_isolation.py` continues to own process caps, termination, and the legacy one-result
-  primitive; routes use the protocol runner for migrated work.
-- `WorkerRequest` contains exactly `schema_version=1`, a non-empty `request_id`, a non-empty
-  `kind`, and bounded plain-data `payload`. Construction serializes the payload once into its
-  immutable transport representation; the parent validates that representation without
-  serializing the payload again before spawn.
-- `WorkerProgressEvent` contains `schema_version=1`, a zero-based `sequence`, a finite
-  `progress` in `[0, 1]`, a bounded message, a non-empty event kind, and bounded plain-data
-  fields, plus a non-negative `dropped_events` count for updates omitted since the preceding
-  delivered event. The child runtime assigns the sequence; callers cannot supply it.
-- `WorkerProgressEnd` contains `schema_version=1`, the next delivered sequence, and the number of
-  trailing dropped updates. Closing the child runtime publishes this marker exactly once and
-  prevents later emitters from writing behind it.
-- `WorkerArtifactManifest` contains `schema_version=1`, a declared `kind`, a normalized relative
-  path, non-negative `size_bytes`, a lowercase SHA-256 hex digest, and lifetime
-  `staged|job|durable`. The manifest never contains an absolute path.
-- `WorkerResultManifest` contains `schema_version=1`, bounded plain-data metadata, and a bounded
-  tuple of artifact manifests. `WorkerFailurePayload` contains the same schema version plus a
-  known terminal reason, bounded error type/message/traceback, and bounded named fields.
-- `WorkerRuntime` is created inside the child entrypoint. It exposes progress emission and safe
-  staged-path allocation below the already-created artifact root. Route callbacks, stores, and
-  cancellation objects are not members.
-
-### Bounds and validation
-
-The version-1 constants are part of the contract: event queue capacity 64, at most 10,000
-delivered events, 64 KiB per serialized event, 4 MiB result metadata, 64 artifacts,
-512-character identifiers and human messages, 4,096-character relative paths, and a maximum
-plain-data nesting depth of 64. Plain data is recursively limited to `None`, booleans, finite
-numbers, strings, lists/tuples, and string-keyed mappings; frames, models, arbitrary class
-instances, excessive nesting, and non-finite floats are contract errors.
-
-The child serializes each progress item once, checks the byte bound, and attempts a non-blocking
-queue write. A full queue or exhausted delivered-event budget increments the pending drop count
-and returns to the workload; it never raises merely because progress capacity was consumed. The
-next delivered event reports the pending count, while the end marker reports any trailing drops.
-Only malformed event data or an oversized individual event is a `contract_error`.
-
-The parent drains a bounded batch of events plus any available result envelope while the child is
-alive, so it never joins a process whose queue feeder is blocked on a pipe-sized result and it
-returns to cancellation/timeout checks between batches. Event validation accepts delivered
-sequence `0` first and then exactly `previous + 1`; gaps, duplicates, reordering, malformed drop
-counts, and an inconsistent end marker terminate the run as `contract_error`. Serialized event
-bytes are length-checked before decoding and each decoded payload is validated again in the
-parent even though the child runtime constructs it.
-
-For each artifact, the parent rejects absolute or non-normalized paths, `.`/`..`, symlink
-escapes, unknown kinds, missing/non-regular files, size mismatches, digest mismatches, and
-files exceeding the caller's declared maximum. Validation uses the resolved parent root and
-requires every resolved artifact to remain relative to it. Publication happens only after the
-complete result manifest validates.
-
-### Supervisor contract
-
-`IsolatedJobSupervisor.launch` returns an `IsolatedSupervisorThread`, a `threading.Thread`
-subclass with `infrastructure_failure` and `join_and_raise(timeout=None)`. Its target has one
-outer `BaseException` boundary:
-
-1. Produce a success outcome or a typed/derived terminal failure.
-2. Attempt one lifecycle transition carrying elapsed time and all available worker fields.
-3. If precedence rejects the transition, verify the current record is already terminal.
-4. If the write raises, the job disappeared, or it remains running, store
-   `SupervisorInfrastructureError` on the thread and log it with the original outcome.
-
-An unexpected parent-side exception is recorded as `error` with the generic message
-`Unexpected isolated worker supervisor failure.` and `supervisor_error_class`. The original exception is re-raised only after terminal persistence
-succeeds, so the thread exception hook retains diagnostic visibility without leaking internal
-details into the job response or misclassifying the exception as a persistence failure. Typed
-worker failures retain their existing `worker_error_class`, remote type/traceback, exit code, and
-memory-limit code. Cleanup failure is never allowed to erase an earlier typed failure: it is
-retained as a diagnostic note/field, while terminal reason precedence still selects the observable
-status.
-
-### Consumer flow
-
-Training creates `start_time` and `timeout` together with the running job. Parent preparation
-retains its admitted `ExecutionContext`. Fit/dispersion child requests contain only plain config,
-the prepared Parquet path, output staging information, and response metadata. Parent event
-handlers perform compare-and-swap running updates; iteration events append to the bounded loss
-history. Parent completion validates and atomically publishes staged model/contract files,
-builds the existing response DTO, records child metrics, then transitions to completed. A
-parent `finally` releases registry/admission ownership and removes prepared/staged temporary
-data on all outcomes. Once both validated files have been replaced into their final paths,
-publication is committed: failure to unlink an obsolete backup is logged, and failure to remove
-the now-empty staging root is logged before parent cleanup retries it. Neither replaces the
-successful worker outcome. Artifact-root cleanup failure before publication remains an ordinary
-cleanup failure.
-
-`JobLifecycle.transition(..., expected_status="completed", to="error")` is the sole explicit
-publication-correction path. Default transitions still treat completed as sticky. Optimiser
-elapsed reporting uses a locked snapshot/helper or a worker-local start time; it never reads
-`store.jobs[job_id]`.
-
-### Verification
-
-`tests/test_worker_protocol.py` pins spawn pickling, event ordering/bounds, non-blocking drops and
-loss accounting, budget exhaustion, malformed versions, plain-data rejection, cancellation with
-progress in flight, crash/timeout cleanup, artifact containment, symlink/traversal rejection,
-partial/tampered manifests, unknown kinds, and digest validation. `tests/test_worker_isolation.py`
-pins total supervisor terminalisation, precedence, cleanup plus primary failure, and raising join
-behavior. Focused modelling tests pin progress, bounded loss history, completion publication,
-post-commit cleanup failure, cancellation, timeout, crash, invalid manifest, and cleanup.
-Lifecycle/route tests pin create-time timeout and coherent publication correction; optimiser
-tests assert that no production source path subscripts `JobStore.jobs`.
-
-## Approved execution-housekeeping contract
-
-- `src/haute/_artifact_housekeeping.py` owns marker creation and restart reaping. The marker file
-  is `.haute-artifact.json` with integer `schema_version=1`, non-empty `owner`, and finite,
-  non-negative `created_at` epoch seconds.
-  `create_owned_artifact_directory(root, prefix, owner)` creates a
-  direct child under a non-link, non-reparse root from a single-component prefix and writes the
-  marker before returning; validation or marker-write failure removes any new child and
-  propagates.
-- `reap_stale_artifact_directories(root, owner, stale_after_seconds, now=None)` inspects direct
-  children only. It skips the root itself, symlinks, Windows reparse points (including junctions),
-  non-direct paths, unmarked children, invalid JSON/schema/time values, owner mismatches, and
-  entries newer than the inclusive stale cutoff. Direct-child classification uses non-following
-  entry metadata plus the resolved parent; it does not resolve the child target itself, because
-  Windows can deny that handle for an otherwise ordinary direct child. It returns bounded counts
-  and reclaimed bytes; its age inputs must be finite, non-negative numeric values. Metadata and
-  cleanup failures are isolated to the affected root or child, counted, and logged as concise
-  structured warnings without exception tracebacks or a broader unmarked sweep.
-- `_optimiser_service.py` creates apply-result and ratebook-factor artifact directories through
-  this helper. Marker-aware artifacts live below the
-  `<tempdir>/haute/artifacts/v1/` hierarchy. `reap_stale_optimiser_artifacts(stale_after_seconds)`
-  requires the validated interval and targets only
-  `_apply_artifact_root()` and `_ratebook_factors_artifact_root()`. `server._lifespan` validates
-  `HAUTE_ARTIFACT_STALE_SECONDS` synchronously, then schedules one tracked
-  `asyncio.to_thread` reaper without awaiting it before readiness. The variable is parsed strictly
-  as a non-negative integer and defaults to 86,400 seconds. Shutdown observes the task, and an
-  unexpected reaper failure is logged.
-- `IsolatedJobSupervisor.launch` catches an unexpected exception escaping the parent-side
-  isolation helper, transitions the job to `error` with the bounded generic message plus
-  `worker_error_class` and `supervisor_error_class`, then re-raises only after the terminal write
-  succeeds so the thread exception hook retains diagnostic visibility. The outer `BaseException`
-  boundary applies the same terminal-first ordering to non-ordinary exceptions without
-  misclassifying a successfully persisted exception as an infrastructure failure.
-- `JobLifecycle` exposes the execution fault-point seam immediately before the locked terminal
-  write and immediately before heavy-object cleanup scheduling. The seam is constructor-injected
-  and absent in production by default.
-
-Tests create marked, unmarked, malformed, wrong-owner, symlink, fresh, and stale directories and
-prove only a stale valid direct child is removed. Symlink targets sit outside the registered root;
-POSIX uses a real directory symlink while Windows deterministically exercises the same
-`Path.is_symlink()` classification without a privilege-dependent conditional skip. Optimiser
-tests prove new artifact directories are marked and live handle cleanup remains valid. Supervisor
-tests prove an unexpected parent-side exception cannot strand a running job.

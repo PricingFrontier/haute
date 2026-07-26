@@ -28,8 +28,7 @@ import ast
 import builtins
 import os
 import pickle
-import re
-import threading
+import string
 from pathlib import Path
 from typing import Any
 
@@ -116,6 +115,10 @@ _BLOCKED_BUILTINS = frozenset(
         "dir",
         "type",
         "hasattr",
+        "exit",
+        "quit",
+        "help",
+        "super",
     }
 )
 
@@ -247,11 +250,31 @@ _BLOCKED_CALLS = frozenset(
 )
 
 
-# Matches a ``str.format`` replacement field that traverses an attribute
-# (``.``) or item (``[``) into a dunder name — e.g. ``{0.__globals__}`` or
-# ``{0[__class__]}``.  A field like ``{__name__}`` (a bare named field, no
-# traversal) does not match, nor does ordinary text outside ``{...}``.
-_FORMAT_DUNDER_FIELD = re.compile(r"\{[^{}]*[.\[][^{}]*__[^{}]*\}")
+# Parse ``str.format`` replacement fields, including fields nested inside
+# format specs. Bare dunder-named fields remain harmless; traversal through an
+# attribute or item into one is rejected.
+_FORMATTER = string.Formatter()
+
+
+def _format_template_has_dunder_traversal(template: str) -> bool:
+    """Return whether *template* traverses into a dunder format field.
+
+    ``Formatter.parse`` understands nested replacement fields in format specs,
+    unlike the former regular expression. Format specs are parsed recursively
+    because they may contain their own field traversal.
+    """
+    pending = [template]
+    while pending:
+        current = pending.pop()
+        for _literal, field_name, format_spec, _conversion in _FORMATTER.parse(current):
+            if field_name is not None:
+                traverses = "." in field_name or "[" in field_name
+                if traverses and "__" in field_name:
+                    return True
+            if format_spec:
+                pending.append(format_spec)
+    return False
+
 
 # ``str`` methods that consume a *template string* and parse replacement fields
 # (``{0.__globals__}``) out of it at runtime.  These are guarded at the call
@@ -346,7 +369,13 @@ class _ASTValidator(ast.NodeVisitor):
         ):
             return
         if isinstance(receiver, ast.Constant) and isinstance(receiver.value, str):
-            if _FORMAT_DUNDER_FIELD.search(receiver.value):
+            try:
+                has_dunder_traversal = _format_template_has_dunder_traversal(receiver.value)
+            except ValueError as exc:
+                raise UnsafeCodeError(
+                    f"Format-string template could not be statically parsed: {exc}"
+                ) from exc
+            if has_dunder_traversal:
                 raise UnsafeCodeError(
                     "Format-string templates that traverse dunder attributes "
                     f"(e.g. '{{0.__globals__}}') are blocked in pipeline code — "
@@ -663,16 +692,12 @@ def safe_unpickle(path: str | Path) -> Any:
         return _RestrictedUnpickler(f).load()
 
 
-_joblib_lock = threading.Lock()
-
-
 def safe_joblib_load(path: str | Path) -> Any:
     """Deserialize a joblib file using a restricted unpickler.
 
-    ``joblib.load()`` uses pickle internally but provides no class
-    restriction hook.  This function patches joblib's ``NumpyUnpickler``
-    with the same ``find_class`` allowlist used by ``safe_unpickle``,
-    then restores the original after loading.
+    ``joblib.load()`` uses pickle internally but provides no public class
+    restriction hook. This function instantiates a private restricted subclass
+    of joblib's ``NumpyUnpickler`` so no process-wide class is ever patched.
 
     The allowlist narrows the import surface for expected project artifacts;
     joblib payloads should still be treated as trusted inputs.  Also validates
@@ -681,29 +706,50 @@ def safe_joblib_load(path: str | Path) -> Any:
     validated = validate_project_path(path)
 
     try:
-        from joblib.numpy_pickle import NumpyUnpickler
-    except ImportError:
-        # joblib not installed — fall back to restricted pickle
+        import joblib
+    except ModuleNotFoundError as exc:
+        if exc.name != "joblib":
+            raise
+        # joblib not installed — fall back to restricted pickle.
         logger.warning("joblib_missing", msg="falling back to safe_unpickle")
         return safe_unpickle(validated)
 
-    with _joblib_lock:
-        # Capture the genuine ``find_class`` *inside* the lock: capturing it
-        # outside races a concurrent loader that may have already installed its
-        # restricted shim, which would then be restored as the "original" and
-        # leak permanently.  Under the lock no other thread can have patched it.
-        original_find_class = NumpyUnpickler.find_class
+    try:
+        if not hasattr(joblib.numpy_pickle, "NumpyUnpickler"):
+            raise AttributeError("NumpyUnpickler")
+        validate_fileobject_and_memmap = joblib.numpy_pickle._validate_fileobject_and_memmap
+    except AttributeError as exc:
+        raise RuntimeError(
+            "Installed joblib is incompatible with Haute's restricted loader: "
+            "required numpy_pickle APIs are unavailable"
+        ) from exc
 
-        def _restricted_joblib_find_class(self: Any, module: str, name: str) -> Any:
-            """find_class with the shared allowlist, delegating to the original."""
+    class RestrictedNumpyUnpickler(joblib.numpy_pickle.NumpyUnpickler):
+        def find_class(self, module: str, name: str) -> Any:
             return _resolve_allowed_global(
-                lambda m, n: original_find_class(self, m, n), module, name
+                lambda m, n: super(RestrictedNumpyUnpickler, self).find_class(m, n),
+                module,
+                name,
             )
 
-        NumpyUnpickler.find_class = _restricted_joblib_find_class
-        try:
-            import joblib
-
-            return joblib.load(validated)
-        finally:
-            NumpyUnpickler.find_class = original_find_class
+    filename = str(validated)
+    with open(validated, "rb") as raw_file:
+        with validate_fileobject_and_memmap(raw_file, filename, None) as (
+            file_object,
+            mmap_mode,
+        ):
+            if isinstance(file_object, str):
+                raise ValueError("legacy joblib persistence formats are not supported")
+            try:
+                unpickler = RestrictedNumpyUnpickler(
+                    filename,
+                    file_object,
+                    ensure_native_byte_order=True,
+                    mmap_mode=mmap_mode,
+                )
+            except TypeError as exc:
+                raise RuntimeError(
+                    "Installed joblib is incompatible with Haute's restricted loader: "
+                    "the numpy_pickle unpickler constructor is unsupported"
+                ) from exc
+            return unpickler.load()

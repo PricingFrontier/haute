@@ -8,8 +8,8 @@ malformed value crashed module import instead of the request.
 
 The fix (mirroring PR #64's ``HAUTE_MEM_LOG`` treatment) resolves each knob per
 call via ``haute._env``. Every test below sets the env var AFTER the module is
-imported and proves the new value takes effect; the malformed-value tests prove
-a bad value degrades to the default instead of raising.
+imported and proves the new value takes effect. Explicitly invalid configuration
+fails loudly so it cannot silently disable a safety limit.
 """
 
 from __future__ import annotations
@@ -30,9 +30,18 @@ class TestEnvHelpers:
         monkeypatch.setenv("HAUTE_TEST_KNOB", "3.5")
         assert _env.float_env("HAUTE_TEST_KNOB", 12.5) == 3.5
 
-    def test_float_env_malformed_degrades_to_default(self, monkeypatch):
+    def test_float_env_malformed_fails_loudly(self, monkeypatch):
         monkeypatch.setenv("HAUTE_TEST_KNOB", "not-a-float")
-        assert _env.float_env("HAUTE_TEST_KNOB", 12.5) == 12.5
+        with pytest.raises(RuntimeError, match="HAUTE_TEST_KNOB must be a finite number"):
+            _env.float_env("HAUTE_TEST_KNOB", 12.5)
+
+    @pytest.mark.parametrize("raw", ["nan", "inf", "-inf", "0", "-0.1"])
+    def test_float_env_rejects_non_finite_or_non_positive_values(self, monkeypatch, raw):
+        monkeypatch.setenv("HAUTE_TEST_KNOB", raw)
+        with pytest.raises(
+            RuntimeError, match="HAUTE_TEST_KNOB must be a finite number greater than 0"
+        ):
+            _env.float_env("HAUTE_TEST_KNOB", 12.5)
 
     def test_int_env_unset_returns_default(self, monkeypatch):
         monkeypatch.delenv("HAUTE_TEST_KNOB", raising=False)
@@ -42,26 +51,35 @@ class TestEnvHelpers:
         monkeypatch.setenv("HAUTE_TEST_KNOB", "7")
         assert _env.int_env("HAUTE_TEST_KNOB", 42) == 7
 
-    def test_int_env_malformed_degrades_to_default(self, monkeypatch):
-        # A float string is not a valid int and must not crash.
+    def test_int_env_malformed_fails_loudly(self, monkeypatch):
         monkeypatch.setenv("HAUTE_TEST_KNOB", "3.5")
-        assert _env.int_env("HAUTE_TEST_KNOB", 42) == 42
+        with pytest.raises(RuntimeError, match="HAUTE_TEST_KNOB must be a positive integer"):
+            _env.int_env("HAUTE_TEST_KNOB", 42)
+
+    @pytest.mark.parametrize("raw", ["0", "-1"])
+    def test_int_env_rejects_non_positive_values(self, monkeypatch, raw):
+        monkeypatch.setenv("HAUTE_TEST_KNOB", raw)
+        with pytest.raises(RuntimeError, match="HAUTE_TEST_KNOB must be a positive integer"):
+            _env.int_env("HAUTE_TEST_KNOB", 42)
 
     def test_optional_int_env_unset_returns_none(self, monkeypatch):
         monkeypatch.delenv("HAUTE_TEST_KNOB", raising=False)
         assert _env.optional_int_env("HAUTE_TEST_KNOB") is None
 
-    def test_optional_int_env_empty_returns_none(self, monkeypatch):
+    def test_optional_int_env_empty_fails_loudly(self, monkeypatch):
         monkeypatch.setenv("HAUTE_TEST_KNOB", "")
-        assert _env.optional_int_env("HAUTE_TEST_KNOB") is None
+        with pytest.raises(RuntimeError, match="HAUTE_TEST_KNOB must be a positive integer"):
+            _env.optional_int_env("HAUTE_TEST_KNOB")
 
     def test_optional_int_env_reads_value(self, monkeypatch):
         monkeypatch.setenv("HAUTE_TEST_KNOB", "99")
         assert _env.optional_int_env("HAUTE_TEST_KNOB") == 99
 
-    def test_optional_int_env_malformed_degrades_to_none(self, monkeypatch):
-        monkeypatch.setenv("HAUTE_TEST_KNOB", "not-an-int")
-        assert _env.optional_int_env("HAUTE_TEST_KNOB") is None
+    @pytest.mark.parametrize("raw", ["not-an-int", "0", "-1"])
+    def test_optional_int_env_invalid_value_fails_loudly(self, monkeypatch, raw):
+        monkeypatch.setenv("HAUTE_TEST_KNOB", raw)
+        with pytest.raises(RuntimeError, match="HAUTE_TEST_KNOB must be a positive integer"):
+            _env.optional_int_env("HAUTE_TEST_KNOB")
 
 
 # (accessor, env var, override string, expected parsed value, default) for every
@@ -152,13 +170,14 @@ def test_accessor_override_takes_effect_after_import(
     _ACCESSOR_CASES,
     ids=[f"{m.rsplit('.', 1)[-1]}.{a}" for m, a, *_ in _ACCESSOR_CASES],
 )
-def test_accessor_malformed_value_degrades_to_default(
+def test_accessor_malformed_value_fails_loudly(
     module_name, accessor, env_var, override, expected, default, monkeypatch
 ):
-    """A malformed env value degrades to the default instead of crashing."""
+    """A malformed explicit override is a configuration error."""
     fn = _resolve(module_name, accessor)
     monkeypatch.setenv(env_var, "not-a-number")
-    assert fn() == default
+    with pytest.raises(RuntimeError, match=env_var):
+        fn()
 
 
 def test_solver_timeout_optional_semantics(monkeypatch):
@@ -169,9 +188,40 @@ def test_solver_timeout_optional_semantics(monkeypatch):
     assert opt._default_solver_timeout() is None
     monkeypatch.setenv("HAUTE_SOLVER_TIMEOUT", "42")
     assert opt._default_solver_timeout() == 42
-    # Malformed degrades to None, not a crash.
+    # Malformed must not silently remove the timeout.
     monkeypatch.setenv("HAUTE_SOLVER_TIMEOUT", "not-an-int")
-    assert opt._default_solver_timeout() is None
+    with pytest.raises(RuntimeError, match="HAUTE_SOLVER_TIMEOUT"):
+        opt._default_solver_timeout()
+
+
+@pytest.mark.parametrize(
+    ("module_name", "accessor", "env_var"),
+    [
+        ("haute.routes.json_cache", "_build_timeout", "HAUTE_BUILD_TIMEOUT"),
+        ("haute.routes.input_cache", "_build_timeout", "HAUTE_BUILD_TIMEOUT"),
+    ],
+)
+@pytest.mark.parametrize("raw", ["0", "-1", "nan", "inf"])
+def test_build_timeout_has_one_positive_finite_policy(
+    module_name, accessor, env_var, raw, monkeypatch
+):
+    fn = _resolve(module_name, accessor)
+    monkeypatch.setenv(env_var, raw)
+    with pytest.raises(RuntimeError, match=env_var):
+        fn()
+
+
+@pytest.mark.parametrize(
+    ("module_name", "accessor"),
+    [
+        ("haute.routes.json_cache", "_build_timeout"),
+        ("haute.routes.input_cache", "_build_timeout"),
+    ],
+)
+def test_build_timeout_accepts_positive_values_below_old_clamp(module_name, accessor, monkeypatch):
+    fn = _resolve(module_name, accessor)
+    monkeypatch.setenv("HAUTE_BUILD_TIMEOUT", "0.0005")
+    assert fn() == 0.0005
 
 
 def test_auto_range_context_default_reflects_env(monkeypatch):

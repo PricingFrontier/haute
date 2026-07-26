@@ -8,8 +8,8 @@
 | `src/haute/_config_builder.py` | Per-node-type config dict construction from decorator kwargs + function body (`_build_node_config`); sidecar resolution and the parse-time `contract=` cross-check (`_resolve_node_config`). For Live Switch nodes, `config["inputs"]` records only positional edge parameters (`edge_input_name`: frame labels for apiInput edges, sanitised source labels otherwise), the same strings `input_scenario_map` keys reference; keyword-only configuration parameters are excluded. |
 | `src/haute/_config_io.py` | Sidecar JSON path conventions (`NODE_TYPE_TO_FOLDER`), read/write helpers, `collect_node_configs` (graph → sidecar files), per-type validation/normalisation of canonical configs, and the Windows-reserved-filename guard. |
 | `src/haute/_config_validation.py` | `VALID_KEYS` registry derived from each node type's `TypedDict`, and `warn_unrecognized_config_keys`. |
-| `src/haute/_builders.py` | Pipeline-config-owned per-`NodeType` runtime builder and column-contract registrations in `NODE_REGISTRY`; execution-engine consumes the registered closures. |
-| `src/haute/_node_builder.py` | Pipeline-config-owned `NodeBuildHooks` / `wrap_builder` interception contract consumed by deploy scoring. |
+| `src/haute/_builders.py` | Cross-component dependency owned by [execution-engine](../execution-engine/low-level.md): pipeline configuration consumes its `NODE_REGISTRY` registration contracts. |
+| `src/haute/_node_builder.py` | Cross-component dependency owned by [execution-engine](../execution-engine/low-level.md): pipeline configuration documents its builder-interception seam. |
 | `src/haute/_contracts.py` | Pipeline-config-owned `Contract`/`ColumnContract` model and registry-backed `get_column_contract()` lookup used by parse-time validation and execution. |
 | `src/haute/_registry.py` | Pipeline-config-owned `NODE_REGISTRY` storage shared with execution and codegen. |
 | `src/haute/_graph_builders.py` | AST-derived raw node dicts → `GraphNode`/`GraphEdge` Pydantic models (`_extract_decorated_nodes`, `_build_edges`, `_build_rf_nodes`). |

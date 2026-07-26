@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import gc
+import hashlib
 import re
 import time
 from collections.abc import Callable, Iterable, Mapping
@@ -17,6 +18,7 @@ import polars as pl
 import haute.execution as execution_facade
 import haute.projection as projection_planner
 from haute._builders import _passthrough_fn
+from haute._config_io import is_windows_reserved_filename
 from haute._contracts import Contract, get_column_contract
 from haute._edge_join import (
     build_edge_join_kwargs,
@@ -56,6 +58,23 @@ from haute.errors import (
 )
 
 logger = get_logger(component="execute")
+
+_CHECKPOINT_SAFE_NODE_ID = re.compile(r"\A[a-z0-9_][a-z0-9_.-]{0,199}\Z")
+
+
+def _checkpoint_filename(node_id: str) -> str:
+    """Return a single safe filename component for a graph node checkpoint.
+
+    Existing ordinary node ids retain readable checkpoint names. Any id with
+    path syntax, a platform-reserved name, or excessive length is represented
+    by a deterministic digest instead of being interpolated into a path.
+    """
+    if _CHECKPOINT_SAFE_NODE_ID.fullmatch(node_id) and not is_windows_reserved_filename(node_id):
+        return f"{node_id}.parquet"
+    digest = hashlib.sha256(node_id.encode("utf-8")).hexdigest()
+    # ``=`` is deliberately outside _CHECKPOINT_SAFE_NODE_ID, so an authored
+    # safe id cannot collide with the digest namespace.
+    return f"node={digest}.parquet"
 
 
 def _lazy_frame_for_cache(lf: Any, node_id: str) -> pl.LazyFrame:
@@ -1339,7 +1358,7 @@ def _execute_lazy(
             and checkpoint_dir is not None
             and action == _CheckpointAction.PARQUET
         ):
-            tmp = checkpoint_dir / f"{nid}.parquet"
+            tmp = checkpoint_dir / _checkpoint_filename(nid)
 
             # Project to only the columns needed downstream before
             # writing the checkpoint.  This avoids writing (and later
