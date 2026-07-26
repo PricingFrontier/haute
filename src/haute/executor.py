@@ -1317,11 +1317,18 @@ def execute_graph(
                 for (fc_nid, port_label), schema in frame_cols.items()
                 if fc_nid == nid
             }
-            is_multi_frame_output = isinstance(df, dict)
-            if is_multi_frame_output:
-                # Only a labelled target frame has a flat preview. Ancestor
-                # multi-frame schemas remain available through frame_columns.
-                if nid == target_node_id and port_label is not None:
+            is_frame_bundle = isinstance(df, dict)
+            is_multi_frame_output = is_frame_bundle and len(df) > 1
+            if is_frame_bundle:
+                if len(df) == 1:
+                    # A singleton bundle has exactly one canonical flat frame.
+                    # Preserve the ordinary preview for both the source target
+                    # and an already-materialised source ancestor.
+                    df = next(iter(df.values()))
+                # Only a labelled target frame has a flat preview when there
+                # are multiple frames. Ancestor schemas remain available
+                # through frame_columns without choosing a representative.
+                elif is_multi_frame_output and nid == target_node_id and port_label is not None:
                     df = df[port_label]
                 else:
                     df = None
