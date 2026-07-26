@@ -240,9 +240,10 @@ Out of scope (owned elsewhere, linked where relevant):
   `_git.py`'s unborn-repo commit seed for `ensure_gitignore_guards`.
 - Supplies numeric parsing helpers to `executor.py`, `trace.py`,
   `_execution_admission.py`, `assistant/_loop.py`, and the route callers
-  `pipeline.py`, `json_cache.py`, `output_assemble.py`, `input_cache.py`,
-  `_optimiser_service.py`, and `_train_service.py`. This component owns the parsing
-  helpers, not the knobs' meanings, which belong to their respective components.
+  `routes/pipeline.py`, `routes/json_cache.py`, `routes/output_assemble.py`,
+  `routes/input_cache.py`, `routes/_optimiser_service.py`, and
+  `routes/_train_service.py`. This component owns the parsing helpers, not the
+  knobs' meanings, which belong to their respective components.
 
 ## Failure model
 

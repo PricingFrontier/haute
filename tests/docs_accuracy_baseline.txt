@@ -68,19 +68,10 @@ docs/specs/deploy/low-level.md	ambiguous-repo-reference	_config.py::resolve_conf
 docs/specs/deploy/low-level.md	ambiguous-repo-reference	_impact.py -> src/haute/cli/_impact.py, src/haute/deploy/_impact.py
 docs/specs/deploy/low-level.md	ambiguous-repo-reference	_impact.py::build_report -> src/haute/cli/_impact.py, src/haute/deploy/_impact.py
 docs/specs/deploy/low-level.md	legacy-contract-section	Polars backend contracts (0.6.0)
-docs/specs/execution-engine/high-level.md	broken-link-anchor	../background-jobs/high-level.md#approved-change-contract-080-supervised-process-jobs
-docs/specs/execution-engine/high-level.md	broken-link-anchor	../io-layer/high-level.md#approved-change-contract-070-data-io-convergence
-docs/specs/execution-engine/high-level.md	empty-roadmap-pointer	../../roadmap/execution-engine.md
-docs/specs/execution-engine/high-level.md	legacy-contract-section	Polars backend contracts (0.6.0)
-docs/specs/execution-engine/low-level.md	empty-roadmap-pointer	../../roadmap/execution-engine.md
-docs/specs/execution-engine/low-level.md	legacy-contract-section	Polars backend contracts (0.6.0)
 docs/specs/execution-engine/low-level.md	missing-module-map-symbol	OUTPUT
 docs/specs/execution-engine/low-level.md	missing-module-map-symbol	PreparedGraph
 docs/specs/execution-engine/low-level.md	missing-module-map-symbol	RLIMIT_AS
-docs/specs/execution-engine/low-level.md	missing-module-map-symbol	execute_sink()
-docs/specs/execution-engine/low-level.md	missing-module-map-symbol	graph_utils
 docs/specs/execution-engine/low-level.md	missing-module-map-symbol	projection.prepare_graph
-docs/specs/execution-engine/low-level.md	missing-repo-reference	tests/test_chunking*.py
 docs/specs/expression-parsing/low-level.md	missing-module-map-symbol	with_columns()
 docs/specs/frontend-assistant-ui/low-level.md	missing-module-map-symbol	ApiError
 docs/specs/frontend-assistant-ui/low-level.md	missing-module-map-symbol	PanelHeader
@@ -276,8 +267,6 @@ docs/specs/reference-pipeline/low-level.md	missing-module-map-symbol	model_stuff
 docs/specs/reference-pipeline/low-level.md	missing-module-map-symbol	my_pipeline
 docs/specs/reference-pipeline/low-level.md	missing-repo-reference	rating/config/expander/premium.json
 docs/specs/reference-pipeline/low-level.md	missing-repo-reference	rating/data/quotes/nest_example.json
-docs/specs/sandbox-security/high-level.md	empty-roadmap-pointer	../../roadmap/security-supply-chain.md
-docs/specs/sandbox-security/low-level.md	empty-roadmap-pointer	../../roadmap/security-supply-chain.md
 docs/specs/sandbox-security/low-level.md	missing-module-map-symbol	exec()
 docs/specs/server-api/high-level.md	legacy-contract-section	Polars backend contracts (0.6.0)
 docs/specs/server-api/low-level.md	legacy-contract-section	Polars backend contracts (0.6.0)
@@ -290,7 +279,6 @@ tests/performance/test_polars_scale_scenario.py	unreferenced-test	not named in a
 tests/performance/test_training_scoring_wide_perf.py	unreferenced-test	not named in any low-level Testing section
 tests/test_apiinput_flat_nested_relative_path.py	unreferenced-test	not named in any low-level Testing section
 tests/test_apiinput_flat_output_dry_run.py	unreferenced-test	not named in any low-level Testing section
-tests/test_artifact_housekeeping.py	unreferenced-test	not named in any low-level Testing section
 tests/test_ave.py	unreferenced-test	not named in any low-level Testing section
 tests/test_bounded_collect_contracts.py	unreferenced-test	not named in any low-level Testing section
 tests/test_bounded_sink_contract.py	unreferenced-test	not named in any low-level Testing section
@@ -337,8 +325,6 @@ tests/test_parser_internals.py	unreferenced-test	not named in any low-level Test
 tests/test_parser_project_layout.py	unreferenced-test	not named in any low-level Testing section
 tests/test_parser_sanitize_contracts.py	unreferenced-test	not named in any low-level Testing section
 tests/test_partial_failure.py	unreferenced-test	not named in any low-level Testing section
-tests/test_path_traversal_advanced.py	unreferenced-test	not named in any low-level Testing section
-tests/test_path_traversal_fixes.py	unreferenced-test	not named in any low-level Testing section
 tests/test_performance_docs.py	unreferenced-test	not named in any low-level Testing section
 tests/test_pipeline_index_cache.py	unreferenced-test	not named in any low-level Testing section
 tests/test_pipeline_read_json_route.py	unreferenced-test	not named in any low-level Testing section
@@ -367,6 +353,3 @@ tests/test_test_debt.py	unreferenced-test	not named in any low-level Testing sec
 tests/test_trace_correlation_remediation.py	unreferenced-test	not named in any low-level Testing section
 tests/test_trace_evidence_contract.py	unreferenced-test	not named in any low-level Testing section
 tests/test_training_worker_protocol.py	unreferenced-test	not named in any low-level Testing section
-tests/test_worker_protocol.py	unreferenced-test	not named in any low-level Testing section
-tests/test_write_sandbox_guard.py	unreferenced-test	not named in any low-level Testing section
-tests/test_write_sandbox_lint.py	unreferenced-test	not named in any low-level Testing section
