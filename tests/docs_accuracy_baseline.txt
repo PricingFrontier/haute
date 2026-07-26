@@ -42,13 +42,10 @@ docs/specs/cli/low-level.md	missing-module-map-symbol	click.Group
 docs/specs/codegen/low-level.md	missing-module-map-symbol	_codegen_builders
 docs/specs/codegen/low-level.md	missing-module-map-symbol	_dedup_param_names
 docs/specs/codegen/low-level.md	missing-module-map-symbol	edge_input_name
-docs/specs/deploy/high-level.md	ambiguous-repo-reference	__init__.py::_dispatch_resolved -> rating/utility/__init__.py, src/haute/__init__.py, src/haute/assistant/__init__.py, src/haute/cli/__init__.py, src/haute/deploy/__init__.py, src/haute/modelling/__init__.py, src/haute/routes/__init__.py, tests/__init__.py
 docs/specs/deploy/high-level.md	ambiguous-repo-reference	_config.py::_validate_base_image_pinning -> src/haute/assistant/_config.py, src/haute/deploy/_config.py
 docs/specs/deploy/high-level.md	ambiguous-repo-reference	_impact.py -> src/haute/cli/_impact.py, src/haute/deploy/_impact.py
 docs/specs/deploy/high-level.md	ambiguous-repo-reference	_impact.py::_raise_for_non_finite_predictions -> src/haute/cli/_impact.py, src/haute/deploy/_impact.py
 docs/specs/deploy/high-level.md	legacy-contract-section	Polars backend contracts (0.6.0)
-docs/specs/deploy/low-level.md	ambiguous-repo-reference	__init__.py -> rating/utility/__init__.py, src/haute/__init__.py, src/haute/assistant/__init__.py, src/haute/cli/__init__.py, src/haute/deploy/__init__.py, src/haute/modelling/__init__.py, src/haute/routes/__init__.py, tests/__init__.py
-docs/specs/deploy/low-level.md	ambiguous-repo-reference	__init__.py::_validate_target -> rating/utility/__init__.py, src/haute/__init__.py, src/haute/assistant/__init__.py, src/haute/cli/__init__.py, src/haute/deploy/__init__.py, src/haute/modelling/__init__.py, src/haute/routes/__init__.py, tests/__init__.py
 docs/specs/deploy/low-level.md	ambiguous-repo-reference	_config.py -> src/haute/assistant/_config.py, src/haute/deploy/_config.py
 docs/specs/deploy/low-level.md	ambiguous-repo-reference	_config.py::resolve_config -> src/haute/assistant/_config.py, src/haute/deploy/_config.py
 docs/specs/deploy/low-level.md	ambiguous-repo-reference	_impact.py -> src/haute/cli/_impact.py, src/haute/deploy/_impact.py
@@ -221,9 +218,7 @@ docs/specs/optimiser/high-level.md	legacy-contract-section	Polars backend contra
 docs/specs/optimiser/low-level.md	broken-link-anchor	#with_explainer_columns-contract
 docs/specs/optimiser/low-level.md	legacy-contract-section	Polars backend contracts (0.6.0)
 docs/specs/optimiser/low-level.md	missing-module-map-symbol	OPTIMISER_APPLY
-docs/specs/pipeline-config/high-level.md	legacy-contract-section	Polars backend contracts (0.6.0)
 docs/specs/pipeline-config/low-level.md	ambiguous-repo-reference	pipeline.py -> src/haute/pipeline.py, src/haute/routes/pipeline.py, tests/fixtures/pipeline.py
-docs/specs/pipeline-config/low-level.md	legacy-contract-section	Polars backend contracts (0.6.0)
 docs/specs/pipeline-config/low-level.md	missing-module-map-symbol	TypedDict
 docs/specs/pipeline-config/low-level.md	missing-module-map-symbol	_project._toml_configured_pipeline
 docs/specs/pipeline-config/low-level.md	missing-module-map-symbol	_scaffold.haute_toml()
@@ -233,7 +228,6 @@ docs/specs/pipeline-config/low-level.md	missing-repo-reference	rating/data/
 docs/specs/rating/high-level.md	empty-roadmap-pointer	../../roadmap/rating.md
 docs/specs/rating/low-level.md	empty-roadmap-pointer	../../roadmap/rating.md
 docs/specs/rating/low-level.md	legacy-contract-section	Polars backend contracts (0.6.0)
-docs/specs/reference-pipeline/high-level.md	ambiguous-repo-reference	config/quote_input/quotes.json -> rating/config/quote_input/quotes.json, tests/fixtures/config/quote_input/quotes.json
 docs/specs/reference-pipeline/high-level.md	missing-repo-reference	rating/config/expander/premium.json
 docs/specs/reference-pipeline/high-level.md	missing-repo-reference	rating/data/quotes/nest_example.json
 docs/specs/reference-pipeline/low-level.md	ambiguous-repo-reference	config/quote_input/quotes.json -> rating/config/quote_input/quotes.json, tests/fixtures/config/quote_input/quotes.json
@@ -288,9 +282,6 @@ tests/test_optimiser_contracts.py	unreferenced-test	not named in any low-level T
 tests/test_optional_dependency_extras.py	unreferenced-test	not named in any low-level Testing section
 tests/test_optional_dependency_matrix.py	unreferenced-test	not named in any low-level Testing section
 tests/test_output_nested_roundtrip.py	unreferenced-test	not named in any low-level Testing section
-tests/test_parser_internals.py	unreferenced-test	not named in any low-level Testing section
-tests/test_parser_project_layout.py	unreferenced-test	not named in any low-level Testing section
-tests/test_parser_sanitize_contracts.py	unreferenced-test	not named in any low-level Testing section
 tests/test_partial_failure.py	unreferenced-test	not named in any low-level Testing section
 tests/test_performance_docs.py	unreferenced-test	not named in any low-level Testing section
 tests/test_pipeline_index_cache.py	unreferenced-test	not named in any low-level Testing section

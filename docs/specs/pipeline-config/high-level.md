@@ -38,9 +38,9 @@ save/load/discovery to the GUI are [server-api](../server-api/high-level.md).
 ## Behaviour
 
 **Decorator API.** `Pipeline`/`Submodel` (both `NodeRegistry` subclasses) expose one
-decorator per node type — `data_source`, `api_input`, `polars`, `banding`, `rating_step`,
+decorator per authorable node type — `api_input`, `polars`, `banding`, `rating_step`,
 `model_score`, `output`, `edge_join`, `live_switch`, `optimiser`, `optimiser_apply`,
-`scenario_expander`, `modelling`, `constant`, `data_input`, `data_output`, `data_sink`,
+`scenario_expander`, `modelling`, `constant`, `data_input`, `data_output`,
 `explore`, `external_file`, `instance` — each a thin wrapper that tags the function with its
 `NodeType` and delegates to a shared registration path. A function with zero parameters is
 treated as a source node; duplicate function names are rejected the moment a second decorator
@@ -76,10 +76,10 @@ complete edge and handle identity; it is never omitted from an otherwise healthy
 The live `Pipeline.connect()` API continues to require both endpoints to be registered
 immediately.
 
-The parameter-name rule belongs to static source parsing. A live `Pipeline` object records only
-edges added through `connect()`; its `run()`, `score()`, and `to_graph()` methods do not infer
-wiring from function signatures. With no registered edges, execution visits nodes in registration
-order but still rejects any non-source node when it has no inbound edge.
+The parameter-name rule belongs to graph construction. Live `run()`/`score()` execute only
+edges added through `connect()`, while `Pipeline.to_graph()` delegates to the same static
+builders as source parsing and therefore reports positional parameter-name edges consistently.
+Keyword-only parameters are configuration and never become graph edges.
 
 **Standalone execution.** `Pipeline.run()` and `Pipeline.score(df)` are a self-contained
 executor over the live decorator graph (distinct from the full graph executor used for
@@ -110,10 +110,17 @@ codegen may resolve an instance into a concrete generated function; the live reg
 silently treat an unresolved instance as an ordinary Polars node.
 
 **Project & discovery.** A Haute project is a directory containing `haute.toml` that also
-sits inside a git repository. Every CLI command resolves "which pipeline file" through the
-same four-tier chain: the `[project].pipeline` path from `haute.toml`, then a root-level
-`main.py`, then a single unambiguous auto-discovered `.py` file, and finally a hard failure
-enumerating what was tried. `haute init` scaffolds a new project: `haute.toml`,
+sits inside a git repository. Every surface that binds one pipeline, including `run`, `lint`,
+and deploy execution, uses `resolve_pipeline_file()` and its four-tier chain: the
+`[project].pipeline` path from `haute.toml`, then a root-level `main.py`, then a single
+unambiguous auto-discovered `.py` file, and finally a hard failure enumerating what was tried.
+Malformed TOML and a broken configured path fail before any lower tier is considered.
+
+> NOTE: `discover_pipelines()` is the GUI's plural listing API, so after applying the same
+> strict configured-path checks it also returns additional valid root-level pipelines. It does
+> not choose among them; default binding still goes through `resolve_pipeline_file()`.
+
+`haute init` scaffolds a new project: `haute.toml`,
 `.env.example`, CI workflow YAML for one of several CI providers, a runnable starter pipeline
 and starter test suite, and deploy-target-specific credentials and TOML sections for one of
 several supported deploy targets.
@@ -227,10 +234,7 @@ is unrecognised config keys, which are logged at WARNING and dropped or ignored 
 failing the surrounding operation — called out above as the deliberate exception to this
 component's fail-loud default.
 
-## Polars backend contracts (0.6.0)
-
-Remaining pipeline-configuration improvement work is tracked in the
-[pipeline authoring roadmap](../../roadmap/pipeline-authoring.md).
+### Live node arity and switch behaviour
 
 - A configured live-switch mapping is exhaustive for the active scenario set. When a mapping
   exists and the active scenario is absent, execution raises
@@ -252,41 +256,27 @@ formerly silent configured-mapping fallback and the new stable error code and fi
 Non-goals: implicit-edge changes, static source-graph inference changes, and changes to
 successful mapped live-switch selection or unconfigured fallback.
 
-## Approved change contract — 0.7.0 canonical data I/O node types
+### Canonical data I/O node types
 
-Remaining pipeline-configuration improvement work is tracked in the
-[pipeline authoring roadmap](../../roadmap/pipeline-authoring.md).
-
-- `Pipeline` and `Submodel` expose `data_input` and `data_output` as the only tabular I/O
-  decorators. `data_source` and `data_sink` and their `NodeType` values are deleted. This changes
-  the node-type set from 21 to 19; it does not restrict how many input or output nodes a graph may
-  contain.
-- `dataInput` remains a zero-parameter source function and now carries the strict provider union
-  and optional Polars body defined by the I/O spec. `dataOutput` remains a connected terminal
-  pass-through during ordinary execution and carries the strict destination union.
+- `Pipeline` and `Submodel` expose `data_input` and `data_output` for tabular I/O; the canonical
+  node-type set contains 19 values and permits multiple input or output nodes.
+- `dataInput` is a zero-parameter source with the strict provider union and optional Polars body
+  defined by the I/O spec. `dataOutput` is a connected terminal pass-through with the strict
+  destination union.
 - Multiple Data Outputs do not change standalone return selection: `Pipeline.run()`/`score()`
   still return the single explicit `output` node, otherwise the single terminal leaf, and raise
   on ambiguous leaves. Explicit persistence always names one `dataOutput` id, so graph
   cardinality is not resolved by guessing a “primary” writer.
 - Only `config/data_input/<name>.json` and `config/data_output/<name>.json` are valid tabular-I/O
-  sidecars. The removed folders are neither read nor cleaned up as compatibility inputs.
-  Repository-owned pipelines which contain removed decorators are intentionally reset to blank
-  pipelines; no parser conversion, alias, migration command, or config salvage is provided.
+  sidecars.
 - Config validation enforces active-branch keys, group/format agreement, safe connection
   references, cache-mode constraints, and the absence of `code` on outputs. Unknown
   decorators/configs fail through the ordinary unknown-node/config error surface.
 - The node registry, decorator map, config-folder map, valid-key map, standalone pipeline API,
-  scaffold, assistant-facing graph schema, and parse/build round trip contain no removed node
-  token after the cutover.
+  scaffold, assistant-facing graph schema, and parse/build round trip use the same canonical
+  types.
 
-Acceptance includes registry completeness over exactly the retained node enum, valid/invalid
-cases for every input/output discriminant, multiple data inputs and outputs in one graph,
-sidecar save/load, standalone registration and explicit-output/ambiguous-leaf behaviour,
-scaffold parsing, and repository-wide assertions that `dataSource`, `dataSink`, `data_source`,
-and `data_sink` are absent outside the 0.7 plan, release note, and historical current-state spec
-text.
-
-## Retained input sidecar authority
+### Retained input sidecar authority
 
 Retained input configuration implements [IO-IO02](../../roadmap/io-layer.md)
 by making each sidecar the sole declarative runtime source.

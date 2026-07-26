@@ -2028,6 +2028,26 @@ class TestHasControlFlowFunction:
         expr = parse_expression(code, "target")
         assert expr.expression_type == "opaque"
 
+    def test_select_inside_if_is_opaque(self):
+        code = (
+            "if flag:\n"
+            '    df = df.select(pl.col("a").alias("target"))\n'
+            "else:\n"
+            '    df = df.select(pl.lit(0).alias("target"))\n'
+        )
+        expr = parse_expression(code, "target")
+        assert expr.expression_type == "opaque"
+
+    def test_select_inside_except_star_is_opaque(self):
+        code = (
+            "try:\n"
+            "    raise ExceptionGroup('group', [ValueError('bad')])\n"
+            "except* ValueError:\n"
+            '    df = df.select(pl.col("a").alias("target"))\n'
+        )
+        expr = parse_expression(code, "target")
+        assert expr.expression_type == "opaque"
+
 
 class TestControlFlowKeyword:
     """Cover keyword arg check inside control flow (lines 889–890)."""

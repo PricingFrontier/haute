@@ -120,7 +120,10 @@ def _write_nested_project(tmp_path: Path) -> Path:
     )
     rating_root = tmp_path / "rating"
     rating_root.mkdir()
-    (rating_root / "main.py").write_text("# main pipeline\n", encoding="utf-8")
+    (rating_root / "main.py").write_text(
+        'import haute\n\npipeline = haute.Pipeline("main")\n',
+        encoding="utf-8",
+    )
     return rating_root
 
 

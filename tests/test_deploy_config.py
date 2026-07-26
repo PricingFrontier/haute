@@ -64,6 +64,10 @@ endpoint_suffix = "-stg"
 """
     p = tmp_path / "haute.toml"
     p.write_text(content)
+    (tmp_path / "main.py").write_text(
+        "import haute\npipeline = haute.Pipeline('main')\n",
+        encoding="utf-8",
+    )
     return p
 
 
@@ -93,9 +97,31 @@ model_name = "simple"
 """
         p = tmp_path / "haute.toml"
         p.write_text(content)
+        (tmp_path / "main.py").write_text(
+            "import haute\npipeline = haute.Pipeline('main')\n",
+            encoding="utf-8",
+        )
         config = DeployConfig.from_toml(p)
         assert config.safety.min_approvers == 2
         assert config.ci.provider == "github"
+
+    def test_pipeline_path_is_retained_until_deploy_binding(self, tmp_path: Path) -> None:
+        (tmp_path / "haute.toml").write_text(
+            '[project]\nname = "x"\npipeline = "configured.py"\n',
+            encoding="utf-8",
+        )
+        configured = tmp_path / "configured.py"
+        configured.write_text(
+            "import haute\npipeline = haute.Pipeline('configured')\n",
+            encoding="utf-8",
+        )
+        (tmp_path / "main.py").write_text(
+            "import haute\npipeline = haute.Pipeline('decoy')\n",
+            encoding="utf-8",
+        )
+
+        config = DeployConfig.from_toml(tmp_path / "haute.toml")
+        assert config.pipeline_file == Path("configured.py")
 
 
 class TestEffectiveEndpointName:
