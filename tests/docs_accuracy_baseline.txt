@@ -39,7 +39,6 @@ docs/specs/cli/high-level.md	ambiguous-repo-reference	_impact.py -> src/haute/cl
 docs/specs/cli/low-level.md	ambiguous-repo-reference	_helpers.py -> src/haute/cli/_helpers.py, src/haute/routes/_helpers.py
 docs/specs/cli/low-level.md	ambiguous-repo-reference	_impact.py -> src/haute/cli/_impact.py, src/haute/deploy/_impact.py
 docs/specs/cli/low-level.md	missing-module-map-symbol	click.Group
-docs/specs/codegen/low-level.md	missing-module-map-symbol	_SINK_PARQUET
 docs/specs/codegen/low-level.md	missing-module-map-symbol	_codegen_builders
 docs/specs/codegen/low-level.md	missing-module-map-symbol	_dedup_param_names
 docs/specs/codegen/low-level.md	missing-module-map-symbol	edge_input_name
@@ -280,7 +279,6 @@ tests/test_error_response_shape.py	unreferenced-test	not named in any low-level 
 tests/test_external_file_nested_relative_path.py	unreferenced-test	not named in any low-level Testing section
 tests/test_extract_column_refs.py	unreferenced-test	not named in any low-level Testing section
 tests/test_feature_validation_cache.py	unreferenced-test	not named in any low-level Testing section
-tests/test_flattening_dedup.py	unreferenced-test	not named in any low-level Testing section
 tests/test_frontend_backend_contract.py	unreferenced-test	not named in any low-level Testing section
 tests/test_gpu_fit_cancel.py	unreferenced-test	not named in any low-level Testing section
 tests/test_graph_input_identity.py	unreferenced-test	not named in any low-level Testing section
