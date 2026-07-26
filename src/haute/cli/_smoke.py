@@ -118,10 +118,32 @@ def _smoke_databricks(endpoint_name: str, json_files: list[Path]) -> bool:
 
     try:
         from databricks.sdk import WorkspaceClient
+    except ModuleNotFoundError as exc:
+        if not (exc.name or "").startswith("databricks"):
+            click.echo(
+                "Error: installed databricks-sdk is incomplete or incompatible. "
+                "Upgrade with: uv add --upgrade databricks-sdk",
+                err=True,
+            )
+            raise SystemExit(1)
+        click.echo(
+            "Error: databricks-sdk not installed. Install with: uv add haute[databricks]",
+            err=True,
+        )
+        raise SystemExit(1)
+    except ImportError:
+        click.echo(
+            "Error: installed databricks-sdk is incomplete or incompatible. "
+            "Upgrade with: uv add --upgrade databricks-sdk",
+            err=True,
+        )
+        raise SystemExit(1)
+    try:
         from databricks.sdk.errors import NotFound
     except ImportError:
         click.echo(
-            "Error: databricks-sdk not installed. Install with: uv add haute[databricks]",
+            "Error: installed databricks-sdk is too old for endpoint readiness checks. "
+            "Upgrade with: uv add --upgrade databricks-sdk",
             err=True,
         )
         raise SystemExit(1)

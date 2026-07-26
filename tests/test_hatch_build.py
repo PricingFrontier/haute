@@ -181,3 +181,13 @@ def test_node_and_npm_toolchain_is_exactly_pinned_across_workflows() -> None:
         )
     assert workflow_versions
     assert set(workflow_versions) == {"22.14.0"}
+
+
+def test_vite_defines_app_version_from_package_metadata_without_fallback() -> None:
+    root = Path(__file__).resolve().parents[1]
+    source = (root / "frontend" / "vite.config.ts").read_text(encoding="utf-8")
+
+    assert "../pyproject.toml" in source
+    assert re.search(r"__APP_VERSION__\s*:\s*JSON\.stringify\(appVersion\)", source)
+    assert "throw new Error" in source
+    assert 'appVersion = versionMatch ? versionMatch[1] : "0.1.0"' not in source

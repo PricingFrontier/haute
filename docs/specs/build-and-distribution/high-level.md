@@ -53,8 +53,10 @@ Out of scope:
   values select validation only. Invalid values fail before any editable-build
   or missing-frontend early return.
 - The frontend build type-checks first, then Vite writes a fresh static bundle
-  to `src/haute/static/`; it uses stable vendor chunks. The browser does not
-  receive a separate build-time package-version constant.
+  to `src/haute/static/`; it uses stable vendor chunks. Vite reads the package
+  version from `pyproject.toml` and defines `__APP_VERSION__` for browser
+  surfaces that render it. A missing package version fails the build instead
+  of substituting a stale or synthetic value.
 - The source distribution intentionally excludes frontend source, documentation,
   tests and local/project artefacts, while the wheel includes the package and
   Hatch build artifacts. The generated static files are an explicit Hatch

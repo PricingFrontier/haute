@@ -70,7 +70,10 @@ the pruned path references, and dry-runs the graph once to infer input and outpu
 schemas. The result is a `ResolvedDeploy` — the single handoff object every backend
 target consumes. Snapshot-backed Data Inputs hold a cache-generation lease from
 resolution through backend shipment; the result owns that lifetime and records the
-selected generation's signed provenance in the deploy manifest.
+selected generation's signed provenance in the deploy manifest. The source-cache lease
+registry is currently process-local: it protects refresh/clear activity in the same
+process, but a second process is not coordinated and remains a known source-cache
+limitation.
 
 **Validation.** Before anything ships, `validate_deploy()` checks structural invariants
 (output/input nodes present in the pruned graph, input nodes are true sources, artefacts
@@ -114,7 +117,8 @@ output's ancestry are pruned.
   object or an array, enforces a byte limit before materialisation, and either returns a
   stable JSON envelope capped at 1,000 returned rows or streams all rows as ordered NDJSON
   when requested through `Accept`. NDJSON is collected into a bounded-memory spooled
-  temporary file before response headers are sent, so a scoring failure produces the
+  temporary file in Starlette's worker threadpool before response headers are sent, so
+  the event loop remains responsive during scoring and a scoring failure produces the
   same logged HTTP 500 contract as ordinary JSON instead of a misleading 200 with a
   truncated body.
   Generated images select the fixed application admission policy

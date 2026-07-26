@@ -4037,6 +4037,21 @@ class TestBuildSignature:
         type_map = self._input_type_map(sig)
         assert type_map["ts"] == DataType.datetime, "Parameterized Datetime must map to datetime"
 
+    @pytest.mark.parametrize("dtype", ["Categorical", "Enum(categories=['a', 'b'])"])
+    def test_categorical_types_map_to_string(self, dtype):
+        from mlflow.types import DataType
+
+        from haute.deploy._mlflow import _build_signature
+
+        resolved = _make_resolved(
+            input_schema={"category": dtype},
+            output_schema={"val": "Float64"},
+        )
+
+        sig = _build_signature(resolved)
+
+        assert self._input_type_map(sig)["category"] == DataType.string
+
     @pytest.mark.parametrize("dtype", ["Decimal(12, 2)", "List(Int64)", "Struct({'x': Int64})"])
     def test_unknown_dtype_fails_loudly(self, dtype):
         """Unsupported Polars dtypes must not be misdeclared as strings."""

@@ -235,6 +235,8 @@ def _build_signature(resolved: ResolvedDeploy) -> object:
         "Float64": DataType.double,
         "String": DataType.string,
         "Utf8": DataType.string,
+        "Categorical": DataType.string,
+        "Enum": DataType.string,
         "Boolean": DataType.boolean,
         "Date": DataType.datetime,
         "Datetime": DataType.datetime,

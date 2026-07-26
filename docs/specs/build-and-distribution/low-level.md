@@ -21,7 +21,7 @@
 | `frontend/index.html` | Vite HTML entry document for the browser bundle. |
 | `frontend/public/favicon.svg` | Public favicon copied through the Vite build. |
 | `frontend/public/vite.svg` | Checked-in Vite public asset copied through the Vite build. |
-| `frontend/vite.config.ts` | Configures React/Tailwind plugins, a strict `127.0.0.1:5173` development listener, API/WebSocket proxies, chunking, and output to `src/haute/static/`. |
+| `frontend/vite.config.ts` | Reads the package version from `pyproject.toml`, defines `__APP_VERSION__`, and configures React/Tailwind plugins, a strict `127.0.0.1:5173` development listener, API/WebSocket proxies, chunking, and output to `src/haute/static/`. |
 | `docs/overrides/home.html` | Supplies the public documentation landing-page override and is a documentation-build input. |
 | `docs/stylesheets/extra.css` | Supplies public documentation styling and is a documentation-build input. |
 | `docs/CI_MIRROR.md`, `docs/COMMIT_STANDARDS.md`, `docs/PERFORMANCE_CHECKS.md`, `docs/opus-5-*.md` | Internal engineering procedures and review corpus: retained as workflow inputs in the repository but excluded from public-site output. |
@@ -54,6 +54,9 @@ package input validated by `hatch_build.py`, not hand-edited source.
 - **Frontend TypeScript projects** are strict, no-emit build projects: the app
   project targets browser ES2022/React JSX and the node project targets ES2023
   for Vite configuration. The root TypeScript config references both.
+- **Browser package version** is the required `project.version` value read from
+  root `pyproject.toml` by Vite and exposed as the compile-time
+  `__APP_VERSION__` string.
 - **MkDocs site inputs** are public Markdown, `docs/overrides/home.html`,
   `docs/stylesheets/extra.css`, and `mkdocs.yml`; `exclude_docs` prevents internal
   specs, roadmaps, the three engineering procedure documents, the complete Opus
@@ -74,7 +77,7 @@ package input validated by `hatch_build.py`, not hand-edited source.
    runs `npm ci --prefer-offline`, then skips the production build if the
    artifact set is current or invokes `npm run build` when it is stale.
 4. `frontend/package.json` runs `tsc -b` before Vite. `frontend/vite.config.ts`
-   supplies React/Tailwind and development proxies, clears
+   reads the package version, supplies React/Tailwind and development proxies, clears
    `src/haute/static/`, then emits the HTML/public assets and JavaScript/CSS
    chunks there.
 5. Hatch packages `src/haute` into the wheel and includes static artifacts;
@@ -115,6 +118,8 @@ package input validated by `hatch_build.py`, not hand-edited source.
 - TypeScript/Vite failures return non-zero through the npm command and therefore
   surface as the hook's `RuntimeError`; they are not converted into a partial
   static bundle.
+- A missing root `pyproject.toml` package-version declaration raises from the
+  Vite configuration before bundling; no fallback version is embedded.
 - MkDocs strict-mode errors make the docs workflow's build job fail. The deploy
   job is gated by `needs: build`, so it is not attempted after such an error.
 

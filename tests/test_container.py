@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import ast
+import asyncio
 import importlib.util
 import json
 import subprocess
 import sys
+import threading
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from types import SimpleNamespace
@@ -804,6 +806,57 @@ class TestGenerateAppSource:
         assert "late stream failure" in response.json()["error"]
         assert cleanup_calls == [True]
         log_failure.assert_called_once_with("deploy_quote_failed")
+
+    def test_ndjson_materialization_runs_off_event_loop(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        module = _load_generated_app(
+            tmp_path,
+            monkeypatch,
+            pl.DataFrame({"premium": [999.0]}),
+        )
+        cleanup_calls: list[bool] = []
+
+        def fake_score_graph_lazy(**kwargs):
+            return SimpleNamespace(
+                lazy_frame=pl.DataFrame({"premium": [1.5]}).lazy(),
+                execution_context=kwargs["execution_context"],
+                cleanup=lambda *, preserve_primary_error: cleanup_calls.append(
+                    preserve_primary_error
+                ),
+            )
+
+        materialize_thread_ids: list[int] = []
+        materialize = module._materialize_quote_ndjson
+
+        def tracked_materialize(plan):
+            materialize_thread_ids.append(threading.get_ident())
+            return materialize(plan)
+
+        monkeypatch.setattr(module, "score_graph_lazy", fake_score_graph_lazy)
+        monkeypatch.setattr(module, "_materialize_quote_ndjson", tracked_materialize)
+
+        async def exercise_quote() -> tuple[int, bytes]:
+            event_loop_thread_id = threading.get_ident()
+            response = await module.quote(
+                _FakeRequest(
+                    headers={"accept": "application/x-ndjson"},
+                    chunks=[b'[{"age": 30}]'],
+                )
+            )
+            body = b""
+            async for chunk in response.body_iterator:
+                body += chunk if isinstance(chunk, bytes) else chunk.encode("utf-8")
+            return event_loop_thread_id, body
+
+        event_loop_thread_id, body = asyncio.run(exercise_quote())
+
+        assert materialize_thread_ids
+        assert materialize_thread_ids[0] != event_loop_thread_id
+        assert json.loads(body) == {"premium": 1.5}
+        assert cleanup_calls == [False]
 
 
 # ---------------------------------------------------------------------------

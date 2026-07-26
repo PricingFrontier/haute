@@ -157,16 +157,20 @@ registry is configured.
    result.
 4. An `Accept` header containing `application/x-ndjson` or `application/ndjson` selects
    `score_graph_lazy()` and ordered, bounded collection in 50,000-row chunks. Rows are
-   encoded into a `SpooledTemporaryFile` before response headers are committed; the
-   spool spills to disk above its memory threshold and is then streamed to the client.
-   A late scoring error is therefore logged and returned as HTTP 500, never HTTP 200
-   with a truncated NDJSON body. Plan and spool cleanup run on every path.
+   encoded into a `SpooledTemporaryFile` from Starlette's worker threadpool before
+   response headers are committed; the spool spills to disk above its memory threshold
+   and is then streamed to the client. A late scoring error is therefore logged and
+   returned as HTTP 500, never HTTP 200 with a truncated NDJSON body, while `/health`
+   and other requests can continue to use the event loop. Plan and spool cleanup run on
+   every path.
 
 **Databricks deploy (`_mlflow.py::deploy_to_mlflow`)** — checks Databricks connectivity
 (HTTP GET with a short timeout, distinguishing 403 from unreachable), sets MLflow tracking
 + registry URI to Databricks/Unity-Catalog, builds the manifest, writes it under
 `<pipeline_dir>/.haute_build/`, builds an MLflow `ModelSignature` from the resolved
-schemas, sets/creates the experiment (suffix-isolated for staging), and inside one
+schemas (`Categorical` and parameterised `Enum` map to MLflow string; genuinely
+unrepresentable Polars types fail loudly), sets/creates the experiment
+(suffix-isolated for staging), and inside one
 `mlflow.start_run()` logs `HauteModel` as a `pyfunc` model-from-code with the manifest +
 every bundled artefact attached, a `conda_env` with Python 3.11.11 and Haute exactly
 pinned but `polars>=1.39.2` and optional `catboost>=1.2.8` as lower bounds, and
@@ -306,6 +310,11 @@ JSON have separate structured payloads. A body exactly at the configured limit i
 - **Deploy scoring never performs persistence writes.** `dataOutput` is a
   pass-through in the served graph, its configured writer is never invoked, and
   persistence-only branches outside the output ancestry are removed by pruning.
+- **Snapshot leases are process-local.** `ResolvedDeploy` holds the selected generation's
+  `SourceCacheStore.lease()` through shipment, which prevents same-process refresh,
+  clear, and eviction from deleting it. The source-cache layer does not yet coordinate
+  leases or retirement across OS processes, so a refresh from another process remains a
+  known limitation rather than a guarantee made by deploy.
 
 > NOTE: `_pruner.py::find_deploy_input_nodes` only returns `apiInput` nodes even though
 > `find_source_nodes` also recognises `dataInput` and `constant` node types as sources;

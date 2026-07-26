@@ -251,6 +251,7 @@ from pathlib import Path
 import polars as pl
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
+from starlette.concurrency import run_in_threadpool
 
 from haute._execution_admission import (
     ExecutionAdmissionError,
@@ -429,7 +430,7 @@ async def quote(request: Request) -> JSONResponse:
                 output_fields=_output_fields,
                 execution_context=execution_context,
             )
-            spool = _materialize_quote_ndjson(plan)
+            spool = await run_in_threadpool(_materialize_quote_ndjson, plan)
             return StreamingResponse(
                 _quote_ndjson_chunks(spool),
                 media_type="application/x-ndjson",

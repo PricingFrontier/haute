@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import sys
+import types
 from pathlib import Path
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
@@ -281,7 +283,10 @@ class TestSmokeDatabricksEdgeCases:
 
             def mock_import(name, *args, **kwargs):
                 if name == "databricks.sdk":
-                    raise ImportError("No module named 'databricks.sdk'")
+                    raise ModuleNotFoundError(
+                        "No module named 'databricks.sdk'",
+                        name="databricks.sdk",
+                    )
                 return real_import(name, *args, **kwargs)
 
             monkeypatch.setattr(builtins, "__import__", mock_import)
@@ -289,6 +294,32 @@ class TestSmokeDatabricksEdgeCases:
 
         assert result.exit_code == 1
         assert "databricks-sdk" in result.output.lower() or "databricks" in result.output.lower()
+
+    def test_old_databricks_sdk_has_upgrade_guidance(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _setup_smoke_project(tmp_path, monkeypatch)
+
+        databricks_module = types.ModuleType("databricks")
+        databricks_module.__path__ = []
+        sdk_module = types.ModuleType("databricks.sdk")
+        sdk_module.__path__ = []
+        sdk_module.WorkspaceClient = MagicMock
+        errors_module = types.ModuleType("databricks.sdk.errors")
+        databricks_module.sdk = sdk_module
+        sdk_module.errors = errors_module
+        monkeypatch.setitem(sys.modules, "databricks", databricks_module)
+        monkeypatch.setitem(sys.modules, "databricks.sdk", sdk_module)
+        monkeypatch.setitem(sys.modules, "databricks.sdk.errors", errors_module)
+
+        result = runner.invoke(cli, ["smoke"])
+
+        assert result.exit_code == 1
+        assert "upgrade" in result.output.lower()
+        assert "not installed" not in result.output.lower()
 
     def test_databricks_endpoint_timeout(
         self,
