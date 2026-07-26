@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import threading
+import uuid
 from collections import Counter
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -34,6 +35,7 @@ logger = get_logger(component="mlflow_io")
 
 _MODEL_CACHE_MAX_SIZE = 16
 _DISK_CACHE_MAX_DIRS = 50
+_DISK_CACHE_EVICTION_PREFIX = ".evicting-"
 
 
 class _ArtifactNotFoundError(FileNotFoundError):
@@ -233,7 +235,16 @@ _disk_cache_active_runs_guard = threading.Lock()
 
 
 def _validate_disk_cache_run_id(run_id: str) -> None:
-    if not run_id or os.sep in run_id or "/" in run_id or ".." in run_id:
+    if (
+        not run_id
+        or run_id in {".", ".."}
+        or "\x00" in run_id
+        or os.sep in run_id
+        or (os.altsep is not None and os.altsep in run_id)
+        or "/" in run_id
+        or "\\" in run_id
+        or ".." in run_id
+    ):
         raise ValueError(f"Invalid run_id: {run_id!r}")
 
 
@@ -647,8 +658,17 @@ def _evict_disk_cache(cache_root: Path) -> None:
     if not cache_root.is_dir():
         return
 
+    cache_dirs = [d for d in cache_root.iterdir() if d.is_dir()]
+    tombstones = [d for d in cache_dirs if d.name.startswith(_DISK_CACHE_EVICTION_PREFIX)]
+    for tombstone in tombstones:
+        shutil.rmtree(tombstone, ignore_errors=True)
+
     active_runs = _active_disk_cache_runs()
-    run_dirs = [d for d in cache_root.iterdir() if d.is_dir() and d.name not in active_runs]
+    run_dirs = [
+        d
+        for d in cache_dirs
+        if not d.name.startswith(_DISK_CACHE_EVICTION_PREFIX) and d.name not in active_runs
+    ]
     if len(run_dirs) <= _DISK_CACHE_MAX_DIRS:
         return
 
@@ -659,8 +679,20 @@ def _evict_disk_cache(cache_root: Path) -> None:
         with _disk_cache_active_runs_guard:
             if d.name in _disk_cache_active_runs:
                 continue
-            logger.info("mlflow_disk_cache_evict", path=str(d))
-            shutil.rmtree(d, ignore_errors=True)
+            tombstone = d.with_name(f"{_DISK_CACHE_EVICTION_PREFIX}{d.name}-{uuid.uuid4().hex}")
+            try:
+                d.replace(tombstone)
+            except FileNotFoundError:
+                continue
+        # The active check and same-filesystem rename are atomic with respect
+        # to run users. Slow recursive deletion happens after releasing the
+        # global guard, while new users cleanly miss the original run path.
+        logger.info(
+            "mlflow_disk_cache_evict",
+            path=str(d),
+            tombstone=str(tombstone),
+        )
+        shutil.rmtree(tombstone, ignore_errors=True)
 
 
 def _resolve_artifact_local(
@@ -858,12 +890,9 @@ def _load_with_bounded_retry(
 
     last_err: BaseException | None = None
     for attempt in range(1, _LOAD_MAX_ATTEMPTS + 1):
-        local_path = _resolve_artifact_local(
-            mlflow_mod,
-            run_id,
-            artifact,
-        )
+        local_path: str | None = None
         try:
+            local_path = _resolve_artifact_local(mlflow_mod, run_id, artifact)
             if flavor == "catboost":
                 raw = _load_catboost_model(local_path, task)
                 return _wrap_catboost(raw)
@@ -887,8 +916,8 @@ def _load_with_bounded_retry(
             )
             # Delete suspected-corrupt cache so the next attempt
             # re-downloads from scratch.
-            cached_file = Path(local_path)
-            if cached_file.is_file():
+            cached_file = Path(local_path) if local_path is not None else None
+            if cached_file is not None and cached_file.is_file():
                 cached_file.unlink()
             if attempt >= _LOAD_MAX_ATTEMPTS:
                 break
@@ -971,7 +1000,7 @@ def load_mlflow_model(
             fast_key = _model_cache_key(
                 source_type=source_type,
                 run_id=run_id,
-                version="",
+                version=version,
                 artifact_path=artifact_path,
                 task=task,
                 artifact_fingerprint="",
@@ -995,7 +1024,7 @@ def load_mlflow_model(
                     fast_key = _model_cache_key(
                         source_type=source_type,
                         run_id=run_id,
-                        version="",
+                        version=version,
                         artifact_path=artifact_path,
                         task=task,
                         artifact_fingerprint=_local_artifact_fingerprint(

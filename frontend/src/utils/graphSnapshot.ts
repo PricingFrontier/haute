@@ -7,7 +7,7 @@
  * the workspace dirty every time a node was selected.
  *
  * These helpers are **pure** — they operate on the raw inputs supplied
- * by the caller (nodes/edges/preamble or just the lastSaved string) and
+ * by the caller (nodes/edges/preamble/submodels or just the lastSaved string) and
  * do not read from any store.  Consumers compose them with whatever
  * source of graph state they already hold.
  */
@@ -135,11 +135,10 @@ export function canonicalize(value: unknown): unknown {
 /**
  * Canonical serialization of a graph snapshot used for dirty-derivation.
  *
- * Scope: `{nodes, edges, preamble}` — the user-editable surface of a
- * pipeline.  Extra fields carried by the backend (preserved_blocks,
- * submodels, etc.) are out of scope because they round-trip verbatim
- * and are not user-editable via the GUI; changing them should NOT flag
- * the graph as dirty.
+ * Scope: `{nodes, edges, preamble, submodels}` — the complete persisted,
+ * user-editable graph surface. Preserved blocks remain out of scope because
+ * they round-trip outside the graph store, while submodels are editable in
+ * the GUI and must participate in dirty detection.
  *
  * Determinism: equal inputs produce equal strings even if the caller
  * constructed the object with keys in a different order.
@@ -148,12 +147,14 @@ export function serializeSnapshot(input: {
   nodes: readonly Node[]
   edges: readonly PipelineEdge[]
   preamble: string
+  submodels: Record<string, unknown>
 }): string {
   return JSON.stringify(
     canonicalize({
       nodes: input.nodes.map(stripNodeUiFields),
       edges: input.edges.map(stripEdgeUiFields),
       preamble: input.preamble,
+      submodels: stripGraphMetadataTransientFields(input.submodels),
     }),
   )
 }
@@ -187,7 +188,12 @@ export function cloneGraphSnapshot(input: {
 }
 
 /** Pre-computed empty-workspace sentinel (fast path for fresh sessions). */
-export const EMPTY_SNAPSHOT = serializeSnapshot({ nodes: [], edges: [], preamble: "" })
+export const EMPTY_SNAPSHOT = serializeSnapshot({
+  nodes: [],
+  edges: [],
+  preamble: "",
+  submodels: {},
+})
 
 /**
  * Pure selector: is the current graph different from the last saved snapshot?

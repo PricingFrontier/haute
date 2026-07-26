@@ -120,6 +120,14 @@ class TestSaveAndLoad:
         loaded = load_node_config("config/data_input/src.json", base_dir=tmp_path)
         assert loaded == config
 
+    def test_api_input_projection_fields_round_trip(self, tmp_path):
+        config = {
+            "selected_columns": ["policy_id", "premium"],
+            "column_renames": {"written_premium": "premium"},
+        }
+        rel = _write_node_config_sidecar(NodeType.API_INPUT, "quotes", config, tmp_path)
+        assert load_node_config(rel, base_dir=tmp_path) == config
+
     def test_code_key_excluded_from_json(self, tmp_path):
         config = {"path": "model.pkl", "fileType": "pickle", "code": "df = obj.predict(df)"}
         _write_node_config_sidecar(NodeType.EXTERNAL_FILE, "ext", config, tmp_path)

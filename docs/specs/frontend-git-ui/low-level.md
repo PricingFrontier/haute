@@ -224,6 +224,12 @@ remote divergence in either case. The frontend neither infers emptiness nor hard
 `main`; strict inspection, related-history validation, refspec choice, atomicity, and remote-
 host default-branch configuration are backend/out-of-scope concerns. Any refusal follows
 the existing push error path and never emits a success toast or retries automatically.
+For a structured non-fast-forward 409, only `parseGitPushRejection` is inside the parser
+`try`/`catch`. Once parsed, the rejection modal state is committed before a best-effort
+remote-list reload; that reload owns and swallows its listing failure while retaining the
+last-good remotes (a cold failure starts from the existing empty list), so a badge-refresh
+hiccup cannot hide recovery UI or be mislabeled as either a malformed divergence response
+or a failed push.
 
 ## Edge cases and invariants
 
@@ -307,9 +313,9 @@ the existing push error path and never emits a success toast or retries automati
   fallback `"Git operation failed"`. A detail string that decodes to a structured JSON
   value is not human-readable here and therefore falls through to `Error.message`.
 - `parseGitMilestoneFork` / `parseGitPushRejection` (`frontend/src/types/guards.ts`) return
-  `null` on an unparseable body rather than throwing; both call sites treat a `null` parse
-  as "not this structured case" and fall back to the generic toast path, so a server-shape
-  drift degrades to a plain error message instead of crashing the modal.
+  `null` only before their status discriminator matches. Once a body declares
+  `would_fork` / `rejected_diverged`, malformed required fields throw and each call site
+  converts that parser failure into a plain error toast instead of crashing the modal.
 - `parseGitPushResponse` treats `default_branch` and `bootstrapped_default` as required and
   type-checks both. A malformed success body rejects through the normal request promise and
   reaches `RemotePushControl`'s error toast; the UI must not infer a bootstrap from
@@ -436,9 +442,10 @@ Library component/unit tests (no e2e for this surface).
 - **`components/__tests__/RemotePushControl.gaps.test.tsx`** — error-message fidelity for
   catch-up and branch-away failures (`Error` vs. non-`Error` rejection), unparseable-409
   fallback to a plain toast (raw structured JSON is not rendered, while a human-readable
-  detail is retained), remote-list failure distinct from an empty configuration while
-  preserving a pending rejection, and the full behind/ahead/diverged×working/ledger
-  catch-up-eligibility matrix.
+  detail is retained), remote-list failure distinct from an empty configuration, and
+  last-good remotes plus parsed-rejection UI surviving a failed best-effort refresh without
+  a false push/parser toast. It also covers the full
+  behind/ahead/diverged×working/ledger catch-up-eligibility matrix.
 - **`api/__tests__/client.test.ts` and `types/__tests__/guards.contract.test.ts`** — the push
   client/guard contract requires `default_branch` and `bootstrapped_default`, preserves
   submitted `pushed_refs`, accepts both boolean values, and rejects missing or wrongly typed

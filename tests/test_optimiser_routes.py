@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import inspect
 import threading
 import time
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
@@ -37,6 +39,8 @@ from haute.routes._optimiser_service import (
 )
 from haute.routes.optimiser import _build_artifact_payload
 from tests.conftest import make_edge, make_graph
+from tests.optimiser_fixtures import frontier_result as _frontier_result
+from tests.optimiser_fixtures import poll_frontier_until_done as _poll_frontier_until_done
 
 if TYPE_CHECKING:
     from fastapi.testclient import TestClient
@@ -394,36 +398,6 @@ def _in_solver_worker_context():
 
     with solver_worker_context():
         yield
-
-
-def _poll_frontier_until_done(client: TestClient, job_id: str, timeout: float = 30) -> dict:
-    """Poll /frontier/status/{job_id} until a terminal status."""
-    poll_interval = 0.02
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        resp = client.get(f"/api/optimiser/frontier/status/{job_id}")
-        assert resp.status_code == 200
-        data = resp.json()
-        if data["status"] in _TERMINAL_JOB_STATUSES:
-            return data
-        time.sleep(poll_interval)
-    raise TimeoutError(f"Frontier job {job_id} did not finish within {timeout}s")
-
-
-def _frontier_result(client: TestClient, payload: dict, timeout: float = 30) -> dict:
-    """Start a frontier sweep, poll it to completion, and return the payload.
-
-    Mirrors what the inline ``POST /frontier`` used to return before the
-    sweep moved onto the background-job machinery.
-    """
-    resp = client.post("/api/optimiser/frontier", json=payload)
-    assert resp.status_code == 200, resp.text
-    body = resp.json()
-    assert body["status"] == "started"
-    assert body["job_id"]
-    status = _poll_frontier_until_done(client, body["job_id"], timeout=timeout)
-    assert status["status"] == "completed", status.get("message", "")
-    return status["result"]
 
 
 def _frontier_point_summary(
@@ -5382,6 +5356,319 @@ class TestSolverWorkerContextGuard:
 
 
 class TestFrontierRoute:
+    def test_frontier_status_handler_is_synchronous(self):
+        """A threading lock must never be awaited on FastAPI's event-loop thread."""
+        from haute.routes.optimiser import frontier_status
+
+        assert inspect.iscoroutinefunction(frontier_status) is False
+
+    def test_frontier_admission_is_atomic_per_parent_job(
+        self,
+        client,
+        clean_job_store,
+    ):
+        """Concurrent submissions create exactly one frontier worker."""
+        mock_solver = MagicMock()
+        frontier_result = SimpleNamespace(
+            points=pl.DataFrame(
+                {
+                    "total_objective": [100.0],
+                    "volume": [0.9],
+                    "lambda_volume": [0.25],
+                    "converged": [True],
+                }
+            )
+        )
+        worker_started = threading.Event()
+        allow_worker_return = threading.Event()
+
+        def blocking_frontier(*args, **kwargs):
+            worker_started.set()
+            assert allow_worker_return.wait(timeout=5)
+            return frontier_result
+
+        mock_solver.frontier.side_effect = blocking_frontier
+        clean_job_store.jobs["atomic_frontier_parent"] = {
+            "status": "completed",
+            "solver": mock_solver,
+            "quote_grid": MagicMock(),
+            "config": {"mode": "online", "constraints": {"volume": {"min": 0.9}}},
+            "result": {
+                "mode": "online",
+                "total_objective": 90.0,
+                "baseline_objective": 80.0,
+                "constraints": {"volume": 0.85},
+                "baseline_constraints": {"volume": 0.8},
+                "lambdas": {"volume": 0.1},
+                "converged": True,
+            },
+            "artifact_handles": {},
+            "created_at": time.time(),
+            "completed_at": time.time(),
+        }
+        payload = {
+            "job_id": "atomic_frontier_parent",
+            "threshold_ranges": {"volume": [0.85, 0.95]},
+            "n_points_per_dim": 2,
+        }
+        start_barrier = threading.Barrier(2)
+        original_create_job = clean_job_store.create_job
+
+        def delayed_create_job(initial_status):
+            if initial_status.get("job_type") == "frontier_recompute":
+                time.sleep(0.05)
+            return original_create_job(initial_status)
+
+        def submit():
+            start_barrier.wait(timeout=2)
+            return client.post("/api/optimiser/frontier", json=payload)
+
+        try:
+            with (
+                patch.object(clean_job_store, "create_job", side_effect=delayed_create_job),
+                ThreadPoolExecutor(max_workers=2) as pool,
+            ):
+                responses = [
+                    future.result(timeout=5)
+                    for future in (pool.submit(submit), pool.submit(submit))
+                ]
+
+            assert worker_started.wait(timeout=2)
+            assert sorted(response.status_code for response in responses) == [200, 409]
+        finally:
+            allow_worker_return.set()
+
+        started = next(response for response in responses if response.status_code == 200)
+        terminal = _poll_frontier_until_done(client, started.json()["job_id"])
+        assert terminal["status"] == "completed"
+        frontier_jobs = [
+            job
+            for job in clean_job_store.jobs.values()
+            if job.get("job_type") == "frontier_recompute"
+            and job.get("parent_job_id") == "atomic_frontier_parent"
+        ]
+        assert len(frontier_jobs) == 1
+        assert clean_job_store.require_job("atomic_frontier_parent")["frontier_generation"] == 1
+
+    def test_frontier_worker_start_failure_marks_job_error_and_releases_registry(
+        self,
+        clean_job_store,
+    ):
+        """A failed frontier launch must leave no running job or cancellation token."""
+        import haute.routes.optimiser as optimiser_routes
+        from haute.schemas import OptimiserFrontierRequest
+
+        clean_job_store.jobs["frontier_thread_start_parent"] = {
+            "status": "completed",
+            "solver": MagicMock(),
+            "quote_grid": MagicMock(),
+            "config": {"mode": "online", "constraints": {"volume": {"min": 0.9}}},
+            "result": {
+                "mode": "online",
+                "total_objective": 90.0,
+                "baseline_objective": 80.0,
+                "constraints": {"volume": 0.85},
+                "baseline_constraints": {"volume": 0.8},
+                "lambdas": {"volume": 0.1},
+                "converged": True,
+            },
+            "artifact_handles": {},
+            "created_at": time.time(),
+            "completed_at": time.time(),
+        }
+
+        body = OptimiserFrontierRequest(
+            job_id="frontier_thread_start_parent",
+            threshold_ranges={"volume": [0.85, 0.95]},
+            n_points_per_dim=2,
+        )
+        failed_thread = MagicMock()
+        failed_thread.start.side_effect = RuntimeError("thread boom")
+        frontier_threading = MagicMock()
+        frontier_threading.Thread.return_value = failed_thread
+        with (
+            patch.object(optimiser_routes, "threading", frontier_threading),
+            pytest.raises(HTTPException) as exc_info,
+        ):
+            optimiser_routes.run_frontier(body)
+
+        assert exc_info.value.status_code == 500
+        assert exc_info.value.detail == (
+            "Frontier worker failed to start. Check the server logs for details."
+        )
+        frontier_jobs = [
+            (job_id, job)
+            for job_id, job in clean_job_store.jobs.items()
+            if job.get("job_type") == "frontier_recompute"
+            and job.get("parent_job_id") == "frontier_thread_start_parent"
+        ]
+        assert len(frontier_jobs) == 1
+        frontier_job_id, frontier_job = frontier_jobs[0]
+        assert frontier_job["status"] == "error"
+        assert frontier_job["terminal_reason"] == "error"
+        assert frontier_job["message"] == "Failed to start frontier worker: thread boom"
+        assert optimiser_routes._frontier_jobs.cancel(frontier_job_id) is False
+
+    def test_frontier_cancel_stops_late_parent_publication(
+        self,
+        client,
+        clean_job_store,
+    ):
+        import haute.routes.optimiser as optimiser_routes
+
+        solver_started = threading.Event()
+        allow_solver_return = threading.Event()
+
+        class BlockingSolver:
+            def frontier(self, *args, **kwargs):
+                solver_started.set()
+                assert allow_solver_return.wait(timeout=3)
+                return SimpleNamespace(
+                    points=pl.DataFrame(
+                        {
+                            "total_objective": [999.0],
+                            "volume": [0.99],
+                            "lambda_volume": [9.0],
+                            "converged": [True],
+                        }
+                    )
+                )
+
+        original_frontier = {"status": "ok", "points": [{"sentinel": True}], "n_points": 1}
+        base_result = {
+            "mode": "online",
+            "total_objective": 90.0,
+            "baseline_objective": 80.0,
+            "constraints": {"volume": 0.85},
+            "baseline_constraints": {"volume": 0.8},
+            "lambdas": {"volume": 0.1},
+            "converged": True,
+            "frontier": original_frontier,
+        }
+        clean_job_store.jobs["cancel_frontier_parent"] = {
+            "status": "completed",
+            "solver": BlockingSolver(),
+            "quote_grid": MagicMock(),
+            "config": {"mode": "online", "constraints": {"volume": {"min": 0.9}}},
+            "result": dict(base_result),
+            "base_result": dict(base_result),
+            "frontier_data": original_frontier,
+            "artifact_handles": {},
+            "created_at": time.time(),
+            "completed_at": time.time(),
+        }
+
+        started = client.post(
+            "/api/optimiser/frontier",
+            json={
+                "job_id": "cancel_frontier_parent",
+                "threshold_ranges": {"volume": [0.85, 0.95]},
+                "n_points_per_dim": 2,
+            },
+        )
+        frontier_job_id = started.json()["job_id"]
+        assert solver_started.wait(timeout=2)
+
+        cancelled = client.post(f"/api/optimiser/frontier/cancel/{frontier_job_id}")
+        allow_solver_return.set()
+        assert cancelled.status_code == 200
+        assert cancelled.json()["status"] == "cancelled"
+
+        deadline = time.monotonic() + 3
+        while (
+            optimiser_routes._frontier_jobs.cancellation_reason(frontier_job_id) is not None
+            and time.monotonic() < deadline
+        ):
+            time.sleep(0.01)
+        assert optimiser_routes._frontier_jobs.cancellation_reason(frontier_job_id) is None
+        parent = clean_job_store.require_job("cancel_frontier_parent")
+        assert parent["frontier_data"] == original_frontier
+        assert parent["result"] == base_result
+        assert clean_job_store.require_job(frontier_job_id)["status"] == "cancelled"
+
+    def test_frontier_timeout_stops_late_parent_publication(
+        self,
+        client,
+        clean_job_store,
+    ):
+        import haute.routes.optimiser as optimiser_routes
+
+        solver_started = threading.Event()
+        allow_solver_return = threading.Event()
+
+        class BlockingSolver:
+            def frontier(self, *args, **kwargs):
+                solver_started.set()
+                assert allow_solver_return.wait(timeout=3)
+                return SimpleNamespace(
+                    points=pl.DataFrame(
+                        {
+                            "total_objective": [999.0],
+                            "volume": [0.99],
+                            "lambda_volume": [9.0],
+                            "converged": [True],
+                        }
+                    )
+                )
+
+        base_result = {
+            "mode": "online",
+            "total_objective": 90.0,
+            "baseline_objective": 80.0,
+            "constraints": {"volume": 0.85},
+            "baseline_constraints": {"volume": 0.8},
+            "lambdas": {"volume": 0.1},
+            "converged": True,
+        }
+        clean_job_store.jobs["timeout_frontier_parent"] = {
+            "status": "completed",
+            "solver": BlockingSolver(),
+            "quote_grid": MagicMock(),
+            "config": {
+                "mode": "online",
+                "constraints": {"volume": {"min": 0.9}},
+                "timeout": 60,
+            },
+            "result": dict(base_result),
+            "base_result": dict(base_result),
+            "artifact_handles": {},
+            "created_at": time.time(),
+            "completed_at": time.time(),
+        }
+
+        started = client.post(
+            "/api/optimiser/frontier",
+            json={
+                "job_id": "timeout_frontier_parent",
+                "threshold_ranges": {"volume": [0.85, 0.95]},
+                "n_points_per_dim": 2,
+            },
+        )
+        frontier_job_id = started.json()["job_id"]
+        assert solver_started.wait(timeout=2)
+        clean_job_store.update_job(
+            frontier_job_id,
+            start_time=time.monotonic() - 10,
+            timeout=0.01,
+        )
+
+        timed_out = client.get(f"/api/optimiser/frontier/status/{frontier_job_id}")
+        allow_solver_return.set()
+        assert timed_out.status_code == 200
+        assert timed_out.json()["status"] == "timed_out"
+
+        deadline = time.monotonic() + 3
+        while (
+            optimiser_routes._frontier_jobs.cancellation_reason(frontier_job_id) is not None
+            and time.monotonic() < deadline
+        ):
+            time.sleep(0.01)
+        assert optimiser_routes._frontier_jobs.cancellation_reason(frontier_job_id) is None
+        parent = clean_job_store.require_job("timeout_frontier_parent")
+        assert parent.get("frontier_data") is None
+        assert parent["result"] == base_result
+        assert clean_job_store.require_job(frontier_job_id)["status"] == "timed_out"
+
     @pytest.mark.usefixtures("_widen_sandbox_root")
     def test_frontier_returns_job_handle_promptly(self, client, scored_data):
         """The sweep must run off the request thread: POST /frontier returns a
@@ -8281,6 +8568,42 @@ class TestFinalizeSolveResult:
         )
         mock_solver.frontier.assert_not_called()
 
+    def test_inline_frontier_enforces_compute_budget_before_solver(self):
+        from haute.routes._job_store import JobStore
+        from haute.routes._optimiser_service import _finalize_solve_result
+
+        constraints = {f"c{index}": {"min": 0.0} for index in range(6)}
+        store = JobStore()
+        job_id = store.create_job(
+            {
+                "status": "running",
+                "config": {
+                    "constraints": constraints,
+                    "frontier_enabled": True,
+                    "frontier_ranges": {name: {"min": 0.0, "max": 1.0} for name in constraints},
+                    "frontier_steps": 100,
+                },
+            }
+        )
+        solve_result = self._make_solve_result()
+        mock_solver = MagicMock()
+
+        _finalize_solve_result(
+            solve_result,
+            mode="online",
+            solver=mock_solver,
+            quote_grid=MagicMock(),
+            store=store,
+            job_id=job_id,
+            elapsed=1.0,
+        )
+
+        job = store.require_job(job_id)
+        assert job["status"] == "completed"
+        assert job["frontier_data"] is None
+        assert "frontier compute budget" in job["result"]["frontier_error"].lower()
+        mock_solver.frontier.assert_not_called()
+
     def test_frontier_computed_for_online_mode(self):
         from haute.routes._job_store import JobStore
         from haute.routes._optimiser_service import _finalize_solve_result
@@ -11035,7 +11358,7 @@ class TestSolveOnlineUnit:
     def test_solve_online_initializes_solver_and_records_history(self):
         """_solve_online creates OnlineOptimiser and passes record_history."""
         from haute.routes._job_store import JobStore
-        from haute.routes._optimiser_service import _solve_online
+        from haute.routes._optimiser_service import SolveContext, _solve_online
 
         store = JobStore()
         job_id = store.create_job(
@@ -11078,7 +11401,17 @@ class TestSolveOnlineUnit:
             # Also mock frontier to return None (to avoid error)
             mock_solver.return_value.frontier.side_effect = Exception("skip")
 
-            _solve_online(mock_grid, config, store, job_id, time.monotonic())
+            _solve_online(
+                SolveContext(
+                    job_id=job_id,
+                    node_id="test",
+                    mode="online",
+                    store=store,
+                    start_time=time.monotonic(),
+                ),
+                quote_grid=mock_grid,
+                config=config,
+            )
 
         mock_solver.assert_called_once_with(
             objective="expected_income",
@@ -11095,7 +11428,7 @@ class TestSolveOnlineUnit:
     def test_solve_online_no_history(self):
         """When record_history is False, history is None in result."""
         from haute.routes._job_store import JobStore
-        from haute.routes._optimiser_service import _solve_online
+        from haute.routes._optimiser_service import SolveContext, _solve_online
 
         store = JobStore()
         job_id = store.create_job(
@@ -11129,10 +11462,44 @@ class TestSolveOnlineUnit:
 
         with patch("price_contour.OnlineOptimiser") as mock_solver:
             mock_solver.return_value.solve.return_value = mock_result
-            _solve_online(mock_grid, config, store, job_id, time.monotonic())
+            _solve_online(
+                SolveContext(
+                    job_id=job_id,
+                    node_id="test",
+                    mode="online",
+                    store=store,
+                    start_time=time.monotonic(),
+                ),
+                quote_grid=mock_grid,
+                config=config,
+            )
 
         job = store.require_job(job_id)
         assert job["result"]["history"] is None
+
+    def test_solve_online_requires_worker_start_time(self):
+        from haute.routes._job_store import JobStore
+        from haute.routes._optimiser_service import SolveContext, _solve_online
+
+        store = JobStore()
+        job_id = store.create_job({"status": "running", "config": {}})
+
+        with (
+            patch("price_contour.OnlineOptimiser") as mock_solver,
+            pytest.raises(RuntimeError, match="SolveContext.start_time"),
+        ):
+            _solve_online(
+                SolveContext(
+                    job_id=job_id,
+                    node_id="opt",
+                    mode="online",
+                    store=store,
+                ),
+                quote_grid=MagicMock(),
+                config={"objective": "income", "constraints": {}},
+            )
+
+        mock_solver.assert_not_called()
 
 
 @pytest.mark.usefixtures("_in_solver_worker_context")
@@ -11160,6 +11527,26 @@ class TestSolveRatebookUnit:
                     start_time=time.monotonic(),
                 ),
                 quote_grid=mock_grid,
+                config={},
+                ratebook_factors_handle=None,
+            )
+
+    def test_solve_ratebook_requires_worker_start_time(self):
+        from haute.routes._job_store import JobStore
+        from haute.routes._optimiser_service import _solve_ratebook
+
+        store = JobStore()
+        job_id = store.create_job({"status": "running", "config": {}})
+
+        with pytest.raises(RuntimeError, match="SolveContext.start_time"):
+            _solve_ratebook(
+                SolveContext(
+                    job_id=job_id,
+                    node_id="opt",
+                    mode="ratebook",
+                    store=store,
+                ),
+                quote_grid=MagicMock(),
                 config={},
                 ratebook_factors_handle=None,
             )
@@ -13019,6 +13406,30 @@ class TestResolveDataInputFrame:
 class TestLaunchBackground:
     """Tests for _launch_background error categorization."""
 
+    def test_service_uses_one_cancellation_registry(self, clean_job_store):
+        from haute.routes._background_jobs import CancellableJobRegistry
+        from haute.routes._optimiser_service import OptimiserSolveService
+
+        service = OptimiserSolveService(clean_job_store)
+
+        registries = [
+            value for value in vars(service).values() if isinstance(value, CancellableJobRegistry)
+        ]
+        assert len(registries) == 1
+
+    @pytest.mark.parametrize("raw_value", ["not-an-int", "0", "-1"])
+    def test_configured_solver_timeout_env_fails_loudly(
+        self,
+        monkeypatch,
+        raw_value,
+    ):
+        from haute.routes._optimiser_service import _default_solver_timeout
+
+        monkeypatch.setenv("HAUTE_SOLVER_TIMEOUT", raw_value)
+
+        with pytest.raises(RuntimeError, match="HAUTE_SOLVER_TIMEOUT.*positive integer"):
+            _default_solver_timeout()
+
     def test_background_sets_start_time_and_timeout(self, clean_job_store):
         """_launch_background sets start_time and timeout on the job."""
         from haute.routes._optimiser_service import OptimiserSolveService
@@ -13379,6 +13790,92 @@ class TestSaveArtifactGate:
     failed write leaves the previous artifact intact, and a failed save
     leaves the solve result in the job store for retry.
     """
+
+    @pytest.mark.parametrize(
+        ("payload", "expected_detail"),
+        [
+            ({"total_objective": 1.0}, "lambda mapping"),
+            ({"lambdas": {}}, "total objective"),
+            (
+                {
+                    "lambdas": {},
+                    "total_objective": 1.0,
+                    "mode": "ratebook",
+                    "factor_tables": {"region": []},
+                },
+                "factor dtype metadata",
+            ),
+            (
+                {
+                    "lambdas": {},
+                    "total_objective": 1.0,
+                    "mode": "ratebook",
+                    "factor_tables": {"region": []},
+                    "factor_dtypes": {"other": [{"column": "region", "dtype": {"kind": "String"}}]},
+                },
+                "do not match",
+            ),
+            (
+                {
+                    "lambdas": {},
+                    "total_objective": 1.0,
+                    "mode": "ratebook",
+                    "factor_tables": {"region": []},
+                    "factor_dtypes": {"region": []},
+                },
+                "non-empty ordered list",
+            ),
+            (
+                {
+                    "lambdas": {},
+                    "total_objective": 1.0,
+                    "mode": "ratebook",
+                    "factor_tables": {"region": []},
+                    "factor_dtypes": {"region": ["not a mapping"]},
+                },
+                "malformed record at index 0",
+            ),
+            (
+                {
+                    "lambdas": {},
+                    "total_objective": 1.0,
+                    "mode": "ratebook",
+                    "factor_tables": {"region": []},
+                    "factor_dtypes": {"region": [{"column": "region"}]},
+                },
+                "malformed record at index 0",
+            ),
+            (
+                {
+                    "lambdas": {f"constraint_{index}": float("nan") for index in range(6)},
+                    "total_objective": 1.0,
+                },
+                "6 in total",
+            ),
+        ],
+        ids=[
+            "lambdas",
+            "total-objective",
+            "ratebook-factor-dtypes",
+            "ratebook-table-mismatch",
+            "ratebook-empty-dtypes",
+            "ratebook-malformed-dtype-record",
+            "ratebook-incomplete-dtype-record",
+            "many-non-finite-values",
+        ],
+    )
+    def test_artifact_gate_rejects_invalid_required_sections(
+        self,
+        payload,
+        expected_detail,
+    ):
+        from haute.routes.optimiser import _validate_artifact_payload
+
+        with pytest.raises(HTTPException) as exc_info:
+            _validate_artifact_payload(payload)
+
+        assert exc_info.value.status_code == 400
+        assert expected_detail in exc_info.value.detail
 
     @staticmethod
     def _completed_job(

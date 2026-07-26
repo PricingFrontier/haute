@@ -70,8 +70,10 @@ def create_submodel_graph(
     sm_graph = {
         "nodes": [n.model_dump() for n in child_nodes],
         "edges": [e.model_dump() for e in internal_edges],
-        "submodel_name": sm_name,
-        "submodel_description": "",
+        "pipeline_name": sm_name,
+        "pipeline_description": "",
+        "preamble": "",
+        "preserved_blocks": [],
         "source_file": sm_file,
     }
 

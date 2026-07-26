@@ -264,7 +264,8 @@ are not the user's data, and **mutations**, which always surface an error.
   layouts on a transient blip).
 - **Remote listing** (`RemotePushControl`) degrades to an explicit "No remotes configured"
   message after a successful empty response rather than an empty, confusing dropdown. A
-  load failure is shown separately and retains the last good remote list, if one exists.
+  cold-load failure is shown separately; a later refresh failure retains the last-good
+  remotes so transient chrome failure cannot erase an active divergence-recovery modal.
 - **Milestone-save expansion** (`toggleExpand`) shows an error toast and rolls the row
   back to collapsed on failure, rather than leaving a permanent "loading" placeholder.
 - **Mutations** (create/switch/archive/delete/restore branch, commit milestone, move to

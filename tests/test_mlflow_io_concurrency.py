@@ -693,12 +693,12 @@ class TestArtifactDiskIdentity:
 
         assert race_path.is_file(), "eviction deleted a run that became active"
 
-    def test_eviction_blocks_new_run_users_during_directory_delete(
+    def test_eviction_tombstones_before_delete_without_blocking_new_run_users(
         self,
         tmp_path,
         monkeypatch,
     ):
-        """The final active check and rmtree must be one critical section."""
+        """Rename is atomic with the active check; slow deletion is lock-free."""
         from haute import _mlflow_io
 
         monkeypatch.chdir(tmp_path)
@@ -714,19 +714,24 @@ class TestArtifactDiskIdentity:
         os.utime(cache_root / "run-race", (old, old))
         os.utime(cache_root / "run-keep", (fresh, fresh))
         entered = threading.Event()
+        observed_paths: list[Path] = []
         real_rmtree = shutil.rmtree
 
         def user_enters_run() -> None:
             with _mlflow_io._disk_cache_run_in_use("run-race"):
+                assert not (cache_root / "run-race").exists()
                 entered.set()
 
         def observing_rmtree(path: Path, ignore_errors: bool = False) -> None:
+            tombstone = Path(path)
+            observed_paths.append(tombstone)
+            assert tombstone.name.startswith(".evicting-run-race-")
             thread = threading.Thread(target=user_enters_run, daemon=True)
             thread.start()
-            assert not entered.wait(WAIT_MUST_NOT_HAPPEN_S), (
-                "a loader entered the run between eviction's active check and rmtree"
+            assert entered.wait(WAIT_MUST_HAPPEN_S), (
+                "slow tombstone deletion still held the global active-runs guard"
             )
-            real_rmtree(path, ignore_errors=ignore_errors)
+            real_rmtree(tombstone, ignore_errors=ignore_errors)
             thread.join(WAIT_MUST_HAPPEN_S)
 
         with (
@@ -735,7 +740,9 @@ class TestArtifactDiskIdentity:
         ):
             _evict_disk_cache(cache_root)
 
-        assert entered.wait(WAIT_MUST_HAPPEN_S), "loader stayed blocked after eviction"
+        assert entered.is_set()
+        assert len(observed_paths) == 1
+        assert not observed_paths[0].exists()
 
     def test_fast_disk_cache_path_marks_run_active_before_probe(
         self,

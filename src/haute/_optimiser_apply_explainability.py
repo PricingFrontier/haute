@@ -178,7 +178,7 @@ def _explain_online(
     )
     explained = applier.with_explainer_columns(df)
 
-    quote_id_value = output_row.get("quote_id", output_row.get(qid_col))
+    quote_id_value = output_row.get(qid_col)
     if quote_id_value is None:
         raise OptimiserApplyTraceError(
             "optimiserApply online trace could not resolve quote id from output row"
@@ -429,12 +429,16 @@ def _explain_ratebook(
             }
         )
 
-    if factor_ladder and output_col not in output_row:
+    if not factor_ladder:
+        raise OptimiserApplyTraceError(
+            "optimiserApply ratebook trace has no usable factor tables to reconcile"
+        )
+    if output_col not in output_row:
         raise OptimiserApplyTraceError(
             f"clicked optimiserApply output row is missing output column {output_col!r}"
         )
     final_value = output_row.get(output_col)
-    if factor_ladder and not _values_match(final_value, running_product):
+    if not _values_match(final_value, running_product):
         raise OptimiserApplyTraceError(
             "optimiserApply ratebook trace factors do not reconcile with output "
             f"{output_col}: factors={running_product!r}, output={final_value!r}"
@@ -456,8 +460,6 @@ def _explain_ratebook(
         "constraints": dict(artifact.get("constraints") or {}),
         "input_row": _json_safe(matched_input),
     }
-    if not factor_ladder:
-        detail["message"] = "No ratebook factor tables were available in the optimiser artifact."
     return detail
 
 
