@@ -60,8 +60,9 @@
 ### Utility editing concurrency
 
 1. `frontend/src/panels/UtilityPanel.tsx` loads files on mount and selects the first file when
-   none is active. Switching files first awaits `flushSave()`; if persistence fails, switching
-   stops and the dirty draft plus inline error remain visible.
+   none is active. Switching files first awaits `flushSave()`; a pending/in-flight failure or an
+   already-settled rejected draft stops the switch, and the draft plus inline error remain visible
+   until a later save succeeds.
 2. Edits debounce for 500ms. Unmount flushes any pending write fire-and-forget; post-await
    state updates verify both mounted state and the module still selected, dropping stale replies.
 3. Delete explicitly cancels a pending save for the deleted file. Create refreshes the list,

@@ -259,10 +259,10 @@ Remaining node-editor improvement work is tracked in the
 - `DataOutputEditor` asks `/api/pipeline/output-destination` for the display destination and
   extension mismatch; it does not reimplement backend path or default-extension rules. Stale
   destination responses cannot replace a newer request's state.
-- The write identity covers the semantic flattened graph, output node, active source, and
-  streaming chunk size. Runtime preview/status/trace fields are projected out of the identity but
-  remain in the graph sent to the API. Overwrite confirmation remains visible and actionable only
-  while the semantic request is unchanged.
+- `frontend/src/utils/buildGraph.ts` projects the write identity from the semantic flattened
+  graph, output node, active source, and streaming chunk size. Runtime preview/status/trace fields
+  are excluded from the identity but remain in the graph sent to the API. Overwrite confirmation
+  remains visible and actionable only while the semantic request is unchanged.
 - A node-level write remains mutually exclusive across config edits. While an older identity is
   still writing, the editor continues to show that pending state instead of presenting a disabled
   button with no explanation. Obsolete terminal entries are cleared when the editor observes a

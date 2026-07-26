@@ -78,6 +78,12 @@ consumers = ["frontend-node-editors"]
 reason = "Modelling owns optimiser factor classification; Rating consumes the same Banding contract."
 
 [[shared_file]]
+path = "frontend/src/utils/buildGraph.ts"
+primary = "frontend-graph-canvas"
+consumers = ["frontend-node-editors"]
+reason = "Graph canvas owns backend graph payload construction; Data Output consumes its semantic request-identity projection."
+
+[[shared_file]]
 path = "frontend/src/utils/configField.ts"
 primary = "frontend-modelling-optimiser-ui"
 consumers = ["frontend-node-editors"]

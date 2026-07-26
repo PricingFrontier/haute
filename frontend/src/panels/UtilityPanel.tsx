@@ -58,6 +58,10 @@ export default function UtilityPanel({ onClose, onImportAdded }: UtilityPanelPro
   // can FLUSH it (persist immediately) instead of discarding the last edit.
   const pendingSaveRef = useRef<{ module: string; value: string } | null>(null)
   const inflightSaveRef = useRef<Promise<boolean> | null>(null)
+  // A rejected draft remains dirty after its request settles. Keep that
+  // failure separate from the in-flight queue so a later file switch cannot
+  // overwrite the only local copy of the draft.
+  const failedSaveModuleRef = useRef<string | null>(null)
   const activeModuleRef = useRef(activeModule)
   const mountedRef = useRef(true)
   useEffect(() => { activeModuleRef.current = activeModule }, [activeModule])
@@ -72,6 +76,9 @@ export default function UtilityPanel({ onClose, onImportAdded }: UtilityPanelPro
   const persistSave = useCallback(async (module: string, value: string): Promise<boolean> => {
     try {
       await updateUtilityFile(module, value)
+      if (failedSaveModuleRef.current === module) {
+        failedSaveModuleRef.current = null
+      }
       if (mountedRef.current && activeModuleRef.current === module) {
         setErrorLine(null)
         setErrorMsg(null)
@@ -79,6 +86,7 @@ export default function UtilityPanel({ onClose, onImportAdded }: UtilityPanelPro
       return true
     } catch (err) {
       if (mountedRef.current && activeModuleRef.current === module) {
+        failedSaveModuleRef.current = module
         const syntaxErr = parseSyntaxError(err)
         if (syntaxErr) {
           setErrorLine(syntaxErr.error_line)
@@ -116,10 +124,14 @@ export default function UtilityPanel({ onClose, onImportAdded }: UtilityPanelPro
   // callers can await it before switching file). No-op when nothing is pending.
   const flushSave = useCallback(async (): Promise<boolean> => {
     const pending = pendingSaveRef.current
-    if (!pending) return inflightSaveRef.current ?? true
-    clearTimeout(saveTimer.current)
-    pendingSaveRef.current = null
-    return queueSave(pending.module, pending.value)
+    if (pending) {
+      clearTimeout(saveTimer.current)
+      pendingSaveRef.current = null
+      return queueSave(pending.module, pending.value)
+    }
+    if (inflightSaveRef.current) return inflightSaveRef.current
+    return failedSaveModuleRef.current === null
+      || failedSaveModuleRef.current !== activeModuleRef.current
   }, [queueSave])
 
   // On unmount, flush any pending edit (fire-and-forget — cleanup can't await;
@@ -207,6 +219,9 @@ export default function UtilityPanel({ onClose, onImportAdded }: UtilityPanelPro
     pendingSaveRef.current = null
     try {
       await deleteUtilityFile(activeModule)
+      if (failedSaveModuleRef.current === activeModule) {
+        failedSaveModuleRef.current = null
+      }
       setActiveModule(null)
       setContent("")
       await loadFiles()

@@ -89,8 +89,8 @@ function frameIsUnresolved(edge: SimpleEdge, sourceNode: SimpleNode | undefined)
  * For an apiInput source with a v2 `tables` config, the frame's columns come
  * STRAIGHT from the config (no preview/run needed) — so Infer and the source
  * dropdown work the moment a table is inferred:
- *   - multi-frame: the emitted table whose `label === edge.sourceHandle`;
- *   - single-frame (null sourceHandle): the sole emit-true table.
+ *   - a resolved handle uses the table whose `label === edge.sourceHandle`;
+ *   - a null/undefined handle is unresolved and exposes no table columns.
  * Only `selected` columns are returned, matching what the frame actually emits
  * at runtime (an unselected column is not in the frame, so mapping it would
  * fail the upstream-column contract). For a NON-apiInput source (transform,

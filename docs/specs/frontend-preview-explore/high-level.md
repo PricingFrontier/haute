@@ -24,8 +24,9 @@ Modelling and optimiser result presentation belongs to
 - Overview cards have a fixed order and are individually enabled from config. They display
   dataset, quality, numeric, categorical and schema information with accessible empty states.
 - Utility manages reusable utility Python modules, including parsed syntax failure locations.
-  A failed flush preserves the dirty draft and blocks file switching. Shared preview chrome
-  supports resizing, collapse and keyboard-accessible roving tabs.
+  A failed autosave or flush preserves the dirty draft and blocks file switching until a later
+  save succeeds. Shared preview chrome supports resizing, collapse and keyboard-accessible
+  roving tabs.
 - Preview and Explore reports surface actionable execution-memory or rejected-strategy
   diagnostics without replacing the primary data/status content.
 
