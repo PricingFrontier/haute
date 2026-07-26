@@ -6,6 +6,7 @@ import useGraphStore from "../../stores/useGraphStore"
 import useNodeResultsStore, { hashConfig, resetNodeResultsDerivedCaches } from "../../stores/useNodeResultsStore"
 import useSettingsStore from "../../stores/useSettingsStore"
 import useUIStore from "../../stores/useUIStore"
+import { makeExecutionMetricsFixture } from "../../testSupport/executionMetricsFixture"
 import type { PreviewData } from "../DataPreview"
 import type { SimpleEdge, SimpleNode } from "../editors"
 import ExplorePreview from "../ExplorePreview"
@@ -276,26 +277,34 @@ describe("ExplorePreview", () => {
     expect(screen.getByText(/Showing 2 of 3 rows/)).toBeInTheDocument()
   })
 
-  it("switches lower Explore panes without rendering preview rows outside Preview", () => {
+  it("offers only implemented Explore panes and hides preview rows on Overview", () => {
     renderExplore(makePreview())
 
     const preview = screen.getByRole("tab", { name: "Preview" })
     const overview = screen.getByRole("tab", { name: "Overview" })
-    const relationships = screen.getByRole("tab", { name: "Relationships" })
-    const charts = screen.getByRole("tab", { name: "Charts" })
 
     expect(preview).toHaveAttribute("aria-selected", "true")
     expect(overview).toHaveAttribute("aria-selected", "false")
-    expect(relationships).toHaveAttribute("aria-selected", "false")
-    expect(charts).toHaveAttribute("aria-selected", "false")
+    expect(screen.queryByRole("tab", { name: "Relationships" })).not.toBeInTheDocument()
+    expect(screen.queryByRole("tab", { name: "Charts" })).not.toBeInTheDocument()
 
-    fireEvent.click(charts)
+    fireEvent.click(overview)
 
     expect(preview).toHaveAttribute("aria-selected", "false")
-    expect(charts).toHaveAttribute("aria-selected", "true")
+    expect(overview).toHaveAttribute("aria-selected", "true")
     expect(screen.queryByTestId("data-preview-embedded")).not.toBeInTheDocument()
-    expect(screen.getByTestId("explore-preview-charts-pane")).toBeEmptyDOMElement()
-    expect(useUIStore.getState().explorePreviewPanes.explore_1).toBe("charts")
+    expect(screen.getByTestId("explore-preview-overview-pane")).toBeInTheDocument()
+    expect(useUIStore.getState().explorePreviewPanes.explore_1).toBe("overview")
+  })
+
+  it("falls back to Preview when a removed pane was remembered", () => {
+    useUIStore.setState({ explorePreviewPanes: { explore_1: "charts" } })
+
+    renderExplore(makePreview())
+
+    expect(screen.getByRole("tab", { name: "Preview" })).toHaveAttribute("aria-selected", "true")
+    expect(screen.getByTestId("explore-preview-preview-pane")).toBeInTheDocument()
+    expect(screen.getByTestId("data-preview-embedded")).toBeInTheDocument()
   })
 
   it("registers a started Explore job for background polling", async () => {
@@ -518,6 +527,72 @@ describe("ExplorePreview", () => {
     expect(screen.getByText(/pricing\s*\|\s*caching/i)).toBeInTheDocument()
     expect(screen.getByRole("button", { name: /cancel/i })).toBeInTheDocument()
     expect(screen.queryByRole("button", { name: /process & cache full data/i })).not.toBeInTheDocument()
+  })
+
+  it("keeps an active Explore job visible and cancellable after its request identity changes", async () => {
+    const previousNode = exploreNodeWithConfig({ code: "df = df.select(pl.all())" })
+    const changedNode = exploreNodeWithConfig({ code: "df = df.filter(pl.col('premium') > 0)" })
+    useNodeResultsStore.setState({
+      exploreJobs: {
+        explore_1: {
+          jobId: "explore-job-running",
+          nodeId: "explore_1",
+          nodeLabel: "Explore Claims",
+          progress: {
+            status: "running",
+            progress: 0.42,
+            message: "Caching",
+            result: null,
+          },
+          error: null,
+          configHash: makeExploreDataCacheHash({
+            node: previousNode,
+            allNodes: [sourceNode, previousNode],
+          }),
+          source: "pricing",
+          structuralVersion: 0,
+        },
+      },
+    })
+    useSettingsStore.setState({ activeSource: "renewal" })
+    mockCancelExplore.mockResolvedValueOnce({
+      status: "cancelled",
+      progress: 1,
+      message: "Cancelled",
+      result: null,
+    })
+
+    render(
+      <ExplorePreview
+        node={changedNode}
+        allNodes={[sourceNode, changedNode]}
+        edges={edges}
+        submodels={{}}
+        preamble="import polars as pl"
+        previewData={null}
+      />,
+    )
+
+    expect(screen.getByText(/pricing\s*\|\s*caching/i)).toBeInTheDocument()
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /cancel/i }))
+    })
+
+    expect(mockCancelExplore).toHaveBeenCalledWith("explore-job-running")
+    expect(useNodeResultsStore.getState().exploreJobs.explore_1).toBeUndefined()
+  })
+
+  it("renders execution diagnostics returned with a cached Explore report", () => {
+    seedCachedExplore({
+      report: makeReport({
+        execution_metrics: makeExecutionMetricsFixture({ profile: "preview_eager" }),
+      }),
+    })
+
+    renderExplore()
+
+    expect(screen.getByText("Memory pressure reached 75% of the preview budget.")).toBeInTheDocument()
+    expect(screen.getByText("Technical details")).toBeInTheDocument()
   })
 
   it("hides cached report and status when Explore code changes", () => {

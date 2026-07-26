@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest"
 import { render, screen, fireEvent, cleanup, waitFor, within } from "@testing-library/react"
-import { useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import OptimiserConfig from "../OptimiserConfig"
 import { GraphProvider } from "../GraphContext"
 import useNodeResultsStore, { hashConfig } from "../../stores/useNodeResultsStore"
@@ -143,13 +143,18 @@ function renderStatefulConfig(
 ) {
   function StatefulConfig() {
     const [config, setConfig] = useState(made.componentProps.config)
+    const configRef = useRef(config)
+    useEffect(() => {
+      configRef.current = config
+    }, [config])
     const handleUpdate = (keyOrUpdates: string | Record<string, unknown>, value?: unknown) => {
+      const currentConfig = configRef.current
       if (typeof keyOrUpdates === "string") {
         onUpdateSpy(keyOrUpdates, value)
-        setConfig(prev => ({ ...prev, [keyOrUpdates]: value }))
+        setConfig({ ...currentConfig, [keyOrUpdates]: value })
       } else {
         onUpdateSpy(keyOrUpdates)
-        setConfig(prev => ({ ...prev, ...keyOrUpdates }))
+        setConfig({ ...currentConfig, ...keyOrUpdates })
       }
       return { ok: true as const }
     }
@@ -496,6 +501,55 @@ describe("OptimiserConfig", () => {
         expect(screen.getByRole("button", { name: /Optimise/ })).not.toBeDisabled()
       })
       expect(screen.getByText("Rating Factors (3 selected)")).toBeInTheDocument()
+    })
+
+    it("changes banding source and derived factor columns in one atomic update", async () => {
+      vi.mocked(classifyBandingNode).mockImplementation((node) => {
+        const levels: Record<string, string[]> = node?.id === "banding_2"
+          ? { new_factor: ["A", "B"] }
+          : { old_factor: ["X", "Y"] }
+        return {
+          levels,
+          configuredOutputs: node?.id === "banding_2" ? ["new_factor"] : ["old_factor"],
+          zeroLevelOutputs: [],
+          zeroLevelIssues: [],
+        }
+      })
+      const onUpdate = vi.fn()
+
+      renderStatefulConfig(makeProps({
+        config: {
+          _nodeId: "opt_1",
+          mode: "ratebook",
+          objective: "premium",
+          constraints: {},
+          banding_source: "banding_1",
+          factor_columns: [["old_factor"]],
+        },
+        allNodes: [
+          { id: "input_1", data: { label: "Data Input", description: "", nodeType: "dataInput", config: {} } },
+          { id: "banding_1", data: { label: "Old Banding", description: "", nodeType: "banding", config: {} } },
+          { id: "banding_2", data: { label: "New Banding", description: "", nodeType: "banding", config: {} } },
+        ],
+        edges: [
+          { id: "e1", source: "input_1", target: "opt_1" },
+          { id: "e2", source: "banding_1", target: "opt_1" },
+          { id: "e3", source: "banding_2", target: "opt_1" },
+        ],
+      }), onUpdate)
+
+      fireEvent.change(screen.getByRole("combobox", { name: "Rating Factor Source" }), {
+        target: { value: "banding_2" },
+      })
+
+      await waitFor(() => {
+        expect(screen.getByText("new_factor")).toBeInTheDocument()
+      })
+      expect(onUpdate).toHaveBeenCalledTimes(1)
+      expect(onUpdate).toHaveBeenCalledWith({
+        banding_source: "banding_2",
+        factor_columns: [["new_factor"]],
+      })
     })
 
     it("leaves an explicitly empty factor_columns list disabled", () => {
@@ -1605,6 +1659,55 @@ describe("OptimiserConfig", () => {
       expect(props.componentProps.onUpdate).toHaveBeenCalledWith({
         frontier_ranges: { loss_ratio: { min: 11, max: 39 } },
       })
+    })
+
+    it("lets a running auto-range job be restarted and supersedes the old request", async () => {
+      let firstStatusSignal: AbortSignal | undefined
+      mockCancelOptimiserFrontierAutoRange.mockResolvedValue(undefined)
+      mockStartOptimiserFrontierAutoRange
+        .mockResolvedValueOnce({ status: "started", job_id: "range-job-1", error: null })
+        .mockResolvedValueOnce({ status: "started", job_id: "range-job-2", error: null })
+      mockGetOptimiserFrontierAutoRangeStatus
+        .mockImplementationOnce((_jobId, options: { signal?: AbortSignal }) => {
+          firstStatusSignal = options.signal
+          return new Promise(() => {})
+        })
+        .mockResolvedValueOnce({
+          status: "completed",
+          progress: 1,
+          message: "Completed",
+          elapsed_seconds: 0.5,
+          result: {
+            status: "ok",
+            ranges: { loss_ratio: { min: 10, max: 40 } },
+            method: "scenario_envelope",
+            warning: null,
+          },
+        })
+      const props = makeProps({
+        config: {
+          _nodeId: "opt_1",
+          mode: "online",
+          objective: "premium",
+          constraints: { loss_ratio: { max: 35 } },
+          frontier_enabled: true,
+        },
+      })
+      renderConfig(props)
+
+      fireEvent.click(screen.getByRole("button", { name: "Auto range" }))
+      const restart = await screen.findByRole("button", { name: "Restart auto range" })
+      expect(restart).toBeEnabled()
+      fireEvent.click(restart)
+
+      await waitFor(() => {
+        expect(mockStartOptimiserFrontierAutoRange).toHaveBeenCalledTimes(2)
+        expect(mockCancelOptimiserFrontierAutoRange).toHaveBeenCalledWith("range-job-1")
+        expect(props.componentProps.onUpdate).toHaveBeenCalledWith({
+          frontier_ranges: { loss_ratio: { min: 10, max: 40 } },
+        })
+      })
+      expect(firstStatusSignal?.aborted).toBe(true)
     })
 
     it("auto range surfaces contract-error status messages", async () => {

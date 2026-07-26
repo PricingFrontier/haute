@@ -57,6 +57,7 @@ export default function UtilityPanel({ onClose, onImportAdded }: UtilityPanelPro
   // The value awaiting the debounce window. Tracked so a file switch / unmount
   // can FLUSH it (persist immediately) instead of discarding the last edit.
   const pendingSaveRef = useRef<{ module: string; value: string } | null>(null)
+  const inflightSaveRef = useRef<Promise<boolean> | null>(null)
   const activeModuleRef = useRef(activeModule)
   const mountedRef = useRef(true)
   useEffect(() => { activeModuleRef.current = activeModule }, [activeModule])
@@ -68,44 +69,58 @@ export default function UtilityPanel({ onClose, onImportAdded }: UtilityPanelPro
   // Persist one edit and reconcile the error banner. Post-await state updates
   // are guarded so a stale (switched-away or unmounted) response can't clobber
   // the current file's error UI.
-  const persistSave = useCallback(async (module: string, value: string) => {
+  const persistSave = useCallback(async (module: string, value: string): Promise<boolean> => {
     try {
       await updateUtilityFile(module, value)
-      if (!mountedRef.current || activeModuleRef.current !== module) return
-      setErrorLine(null)
-      setErrorMsg(null)
-    } catch (err) {
-      if (!mountedRef.current || activeModuleRef.current !== module) return
-      const syntaxErr = parseSyntaxError(err)
-      if (syntaxErr) {
-        setErrorLine(syntaxErr.error_line)
-        setErrorMsg(syntaxErr.error)
-      } else {
-        const detail = err instanceof Error ? err.message : "unknown error"
-        addToast("error", `Failed to save utility file "${module}": ${detail}`)
-        setErrorMsg("Failed to save")
+      if (mountedRef.current && activeModuleRef.current === module) {
+        setErrorLine(null)
+        setErrorMsg(null)
       }
+      return true
+    } catch (err) {
+      if (mountedRef.current && activeModuleRef.current === module) {
+        const syntaxErr = parseSyntaxError(err)
+        if (syntaxErr) {
+          setErrorLine(syntaxErr.error_line)
+          setErrorMsg(syntaxErr.error)
+        } else {
+          const detail = err instanceof Error ? err.message : "unknown error"
+          addToast("error", `Failed to save utility file "${module}": ${detail}`)
+          setErrorMsg("Failed to save")
+        }
+      }
+      return false
     }
   }, [addToast])
+
+  const queueSave = useCallback((module: string, value: string): Promise<boolean> => {
+    const prior = inflightSaveRef.current ?? Promise.resolve(true)
+    const queued = prior.then(() => persistSave(module, value))
+    inflightSaveRef.current = queued
+    void queued.then(() => {
+      if (inflightSaveRef.current === queued) inflightSaveRef.current = null
+    })
+    return queued
+  }, [persistSave])
 
   const autoSave = useCallback((module: string, value: string) => {
     clearTimeout(saveTimer.current)
     pendingSaveRef.current = { module, value }
     saveTimer.current = setTimeout(() => {
       pendingSaveRef.current = null
-      void persistSave(module, value)
+      void queueSave(module, value)
     }, 500)
-  }, [persistSave])
+  }, [queueSave])
 
   // Flush a pending debounced save synchronously (returns the persist promise so
   // callers can await it before switching file). No-op when nothing is pending.
-  const flushSave = useCallback(async () => {
+  const flushSave = useCallback(async (): Promise<boolean> => {
     const pending = pendingSaveRef.current
-    if (!pending) return
+    if (!pending) return inflightSaveRef.current ?? true
     clearTimeout(saveTimer.current)
     pendingSaveRef.current = null
-    await persistSave(pending.module, pending.value)
-  }, [persistSave])
+    return queueSave(pending.module, pending.value)
+  }, [queueSave])
 
   // On unmount, flush any pending edit (fire-and-forget — cleanup can't await;
   // persistSave's post-await guards skip state updates once unmounted).
@@ -114,9 +129,9 @@ export default function UtilityPanel({ onClose, onImportAdded }: UtilityPanelPro
     clearTimeout(saveTimer.current)
     if (pending) {
       pendingSaveRef.current = null
-      void persistSave(pending.module, pending.value)
+      void queueSave(pending.module, pending.value)
     }
-  }, [persistSave])
+  }, [queueSave])
 
   // Load file list.  The backend returns `{files: []}` for a missing
   // utility/ dir, so anything reaching this catch is a real failure
@@ -139,7 +154,7 @@ export default function UtilityPanel({ onClose, onImportAdded }: UtilityPanelPro
   const loadFile = useCallback(async (module: string) => {
     // Flush (persist) any pending save for the previous file before switching —
     // a bare clearTimeout here would silently discard the last edit.
-    await flushSave()
+    if (!await flushSave()) return
     try {
       const res = await readUtilityFile(module)
       setContent(res.content)

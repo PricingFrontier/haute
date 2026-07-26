@@ -60,9 +60,11 @@ the directories this spec covers):
   all live in `hooks/` but belong conceptually to graph-canvas; this spec
   only covers `KeyboardShortcuts.tsx` as a chrome widget (the *modal*, not
   the App-level key bindings hook).
-- Node-editor-specific config plumbing (`useConstraintHandlers`,
-  `useDataInputColumns`, `utils/configField.ts`, `utils/edgeJoin*.ts`,
-  `utils/banding.ts`) — see
+- Optimiser config plumbing (`useConstraintHandlers`, `useDataInputColumns`) and the primary
+  contracts for `utils/configField.ts` and `utils/banding.ts` — see
+  [frontend-modelling-optimiser-ui](../frontend-modelling-optimiser-ui/high-level.md).
+  Node editors are direct consumers of `frontend/src/utils/configField.ts` and
+  `frontend/src/utils/banding.ts`; `utils/edgeJoin*.ts` remains owned by
   [frontend-node-editors](../frontend-node-editors/high-level.md).
 - Node-type/connection plumbing (`utils/connectionValidation.ts`,
   `utils/apiInputPorts.ts`, `utils/flowElements.ts`,

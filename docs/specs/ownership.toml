@@ -24,6 +24,12 @@ consumers = ["optimiser"]
 reason = "Shared UI owns the canonical API contracts extended by optimiser responses."
 
 [[shared_file]]
+path = "frontend/src/components/ExecutionDiagnosticsSummary.tsx"
+primary = "frontend-modelling-optimiser-ui"
+consumers = ["frontend-preview-explore"]
+reason = "Modelling owns the actionable execution banner; Explore consumes it for cache metrics."
+
+[[shared_file]]
 path = "frontend/src/components/Toolbar.tsx"
 primary = "frontend-shared"
 consumers = ["frontend-assistant-ui"]
@@ -64,6 +70,18 @@ path = "frontend/src/types/node.ts"
 primary = "frontend-shared"
 consumers = ["frontend-graph-canvas"]
 reason = "Shared UI owns canonical node-data types consumed at the canvas boundary."
+
+[[shared_file]]
+path = "frontend/src/utils/banding.ts"
+primary = "frontend-modelling-optimiser-ui"
+consumers = ["frontend-node-editors"]
+reason = "Modelling owns optimiser factor classification; Rating consumes the same Banding contract."
+
+[[shared_file]]
+path = "frontend/src/utils/configField.ts"
+primary = "frontend-modelling-optimiser-ui"
+consumers = ["frontend-node-editors"]
+reason = "Modelling owns typed config reads; node editors consume the shared helpers."
 
 [[shared_file]]
 path = "pyproject.toml"

@@ -63,6 +63,7 @@ import { swapEdgeJoinInputs, type EdgeJoinSwapInputsFailureReason } from "./util
 import { validatePipelineConnection, type ConnectionValidationResult } from "./utils/connectionValidation"
 import {
   applyApiInputConfigChange,
+  edgeInputName,
   incomingEdgeInputNames,
   resolveSubmodelBoundaryNode,
   submodelGraphFromMetadata,
@@ -571,6 +572,24 @@ function FlowEditor() {
         tentativeEdges = result.edges
         rebound = result.rebound
         removed = result.removed
+      } else if (prevNode.data.label !== data.label) {
+        const nextNode = { ...prevNode, data }
+        rebound = currentGraph.edges
+          .filter((edge) => edge.source === id)
+          .map((edge) => ({
+            edge,
+            from: edgeInputName(
+              edge as unknown as SimpleEdge,
+              prevNode as unknown as SimpleNode,
+              submodelsRef.current,
+            ),
+            to: edgeInputName(
+              edge as unknown as SimpleEdge,
+              nextNode as unknown as SimpleNode,
+              submodelsRef.current,
+            ),
+          }))
+          .filter((change) => change.from !== change.to)
       }
 
       let tentativeNodes = currentGraph.nodes.map((node) =>

@@ -205,6 +205,8 @@ function submodelChildNode(
  * sanitizer. A flattened submodel output resolves its `out__` child before
  * sanitizing, matching code generation's boundary resolution.
  */
+export const UNRESOLVED_INPUT_NAME = "<unresolved>"
+
 export function edgeInputName(
   edge: SimpleEdge,
   sourceNode: SimpleNode,
@@ -212,7 +214,7 @@ export function edgeInputName(
 ): string {
   if (sourceNode.data.nodeType === NODE_TYPES.API_INPUT) {
     if (edge.sourceHandle === null || edge.sourceHandle === undefined) {
-      throw new Error(`apiInput edge ${edge.id} has no sourceHandle/frame label`)
+      return UNRESOLVED_INPUT_NAME
     }
     return edge.sourceHandle
   }

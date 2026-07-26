@@ -10,6 +10,7 @@ import useToastStore from "../stores/useToastStore"
 import useUIStore, { type ExplorePreviewPane } from "../stores/useUIStore"
 import { NODE_GROUP_COLORS } from "../theme/colors"
 import { buildGraph } from "../utils/buildGraph"
+import ExecutionDiagnosticsSummary from "../components/ExecutionDiagnosticsSummary"
 import DataPreview, { type PreviewData } from "./DataPreview"
 import type { SimpleEdge, SimpleNode } from "./editors"
 import { buildExploreCacheIdentity } from "./explore/cacheIdentity"
@@ -32,8 +33,6 @@ type ExplorePreviewProps = {
 const EXPLORE_PREVIEW_PANES = [
   { key: "preview", label: "Preview" },
   { key: "overview", label: "Overview" },
-  { key: "relationships", label: "Relationships" },
-  { key: "charts", label: "Charts" },
 ] as const satisfies readonly { key: ExplorePreviewPane; label: string }[]
 
 function statusMessage(status: ExploreStatusResponse | null, submitting: boolean): string {
@@ -84,20 +83,18 @@ export default function ExplorePreview({
     () => hashConfig({ graph: cacheIdentity, source: activeSource }),
     [activeSource, cacheIdentity],
   )
-  const currentExploreJob =
-    exploreJob && exploreJob.configHash === configHash && exploreJob.source === activeSource
-      ? exploreJob
-      : null
+  const currentExploreJob = exploreJob ?? null
   const currentCachedResult =
-    cachedResult && cachedResult.configHash === configHash && cachedResult.source === activeSource
+    cachedResult && cachedResult.configHash === configHash
       ? cachedResult
       : null
   const report = currentCachedResult?.result ?? null
   const status = currentExploreJob?.progress ?? currentCachedResult?.terminalStatus ?? null
   const isBusy = submitting || !!currentExploreJob
   const progress = status?.status === "completed" ? 1 : (status?.progress ?? (submitting ? 0.03 : 0))
-  const activePane = rememberedPane ?? "preview"
+  const activePane = rememberedPane === "overview" ? "overview" : "preview"
   const activePaneMeta = EXPLORE_PREVIEW_PANES.find((pane) => pane.key === activePane) ?? EXPLORE_PREVIEW_PANES[0]
+  const statusSource = currentExploreJob?.source ?? activeSource
 
   useEffect(() => {
     if (report) touchExplorePreview(nodeId)
@@ -212,7 +209,7 @@ export default function ExplorePreview({
     <PreviewPanelFrame
       nodeLabel={nodeLabel}
       nodeType={nodeType}
-      subtitle={`${activeSource} | ${statusMessage(status, submitting)}`}
+      subtitle={`${statusSource} | ${statusMessage(status, submitting)}`}
       actions={actions}
       data-testid="explore-preview-frame"
     >
@@ -224,6 +221,12 @@ export default function ExplorePreview({
           />
         </div>
       )}
+
+      <ExecutionDiagnosticsSummary
+        metrics={status?.execution_metrics ?? report?.execution_metrics}
+        status={status?.status}
+        terminalReason={status?.terminal_reason}
+      />
 
       <PreviewPanelTabs
         tabs={EXPLORE_PREVIEW_PANES}
@@ -250,9 +253,9 @@ export default function ExplorePreview({
               tracedCell={tracedCell}
               embedded
             />
-          ) : activePane === "overview" ? (
+          ) : (
             <ExploreOverviewPane node={node} report={report} />
-          ) : null}
+          )}
         </div>
       </div>
     </PreviewPanelFrame>

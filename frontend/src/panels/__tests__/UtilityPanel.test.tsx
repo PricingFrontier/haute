@@ -256,6 +256,71 @@ describe("UtilityPanel auto-save", () => {
     await waitFor(() => expect(mockReadFile).toHaveBeenCalledWith("helpers"))
   })
 
+  it("does not switch files when flushing a dirty draft fails", async () => {
+    mockListFiles.mockResolvedValue({
+      files: [
+        { name: "features.py", module: "features" },
+        { name: "helpers.py", module: "helpers" },
+      ],
+    })
+    mockReadFile.mockImplementation((module: string) =>
+      Promise.resolve({ name: `${module}.py`, module, content: `# ${module}\n` }),
+    )
+    mockUpdateFile.mockRejectedValue(
+      new MockApiError("HTTP 400", 400, "Syntax error on line 1: invalid draft"),
+    )
+
+    render(<UtilityPanel {...defaultProps} />)
+    await waitFor(() => expect(screen.getByTestId("code-editor")).toHaveValue("# features\n"))
+
+    fireEvent.change(screen.getByTestId("code-editor"), { target: { value: "broken draft\n" } })
+    fireEvent.click(screen.getByText("features"))
+    await waitFor(() => expect(screen.getByText("helpers")).toBeInTheDocument())
+    fireEvent.click(screen.getByText("helpers"))
+
+    await waitFor(() => expect(mockUpdateFile).toHaveBeenCalledWith("features", "broken draft\n"))
+    expect(mockReadFile).not.toHaveBeenCalledWith("helpers")
+    expect(screen.getByTestId("code-editor")).toHaveValue("broken draft\n")
+    expect(screen.getByText("Syntax error on line 1: invalid draft")).toBeInTheDocument()
+    expect(screen.getByText("features")).toBeInTheDocument()
+  })
+
+  it("waits for an in-flight autosave and blocks switching when it fails", async () => {
+    mockListFiles.mockResolvedValue({
+      files: [
+        { name: "features.py", module: "features" },
+        { name: "helpers.py", module: "helpers" },
+      ],
+    })
+    mockReadFile.mockImplementation((module: string) =>
+      Promise.resolve({ name: `${module}.py`, module, content: `# ${module}\n` }),
+    )
+    let rejectSave!: (reason: unknown) => void
+    mockUpdateFile.mockReturnValue(new Promise((_resolve, reject) => {
+      rejectSave = reject
+    }))
+
+    render(<UtilityPanel {...defaultProps} />)
+    await waitFor(() => expect(screen.getByTestId("code-editor")).toHaveValue("# features\n"))
+
+    fireEvent.change(screen.getByTestId("code-editor"), { target: { value: "broken draft\n" } })
+    await act(async () => { vi.advanceTimersByTime(600) })
+    expect(mockUpdateFile).toHaveBeenCalledWith("features", "broken draft\n")
+
+    fireEvent.click(screen.getByText("features"))
+    await waitFor(() => expect(screen.getByText("helpers")).toBeInTheDocument())
+    fireEvent.click(screen.getByText("helpers"))
+    expect(mockReadFile).not.toHaveBeenCalledWith("helpers")
+
+    await act(async () => {
+      rejectSave(new MockApiError("HTTP 400", 400, "Syntax error on line 1: invalid draft"))
+    })
+
+    expect(mockReadFile).not.toHaveBeenCalledWith("helpers")
+    expect(screen.getByTestId("code-editor")).toHaveValue("broken draft\n")
+    expect(await screen.findByText("Syntax error on line 1: invalid draft")).toBeInTheDocument()
+  })
+
   it("shows syntax error from auto-save", async () => {
     // Item #76: backend emits a flat string detail "Syntax error on line N: <msg>".
     mockUpdateFile.mockRejectedValue(

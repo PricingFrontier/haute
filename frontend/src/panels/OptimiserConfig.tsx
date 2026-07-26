@@ -316,7 +316,13 @@ export default function OptimiserConfig({
     handleRemoveConstraint,
     handleConstraintColumnChange,
     handleConstraintValueChange,
-  } = useConstraintHandlers(constraints, objective, dataInputColumns, onUpdate)
+  } = useConstraintHandlers(
+    constraints,
+    objective,
+    dataInputColumns,
+    onUpdate,
+    frontierRanges,
+  )
 
   // --- Factor toggle helpers (ratebook) ---
 
@@ -370,13 +376,6 @@ export default function OptimiserConfig({
   const missingExplicitBandingSource = !!bandingSource && !selectedBandingNode
   const effectiveBandingSource = selectedBandingNode?.id || (!bandingSource && bandingNodes.length === 1 ? bandingNodes[0].id : "")
 
-  // Auto-persist the effective banding source so the backend can read it
-  useEffect(() => {
-    if (mode === "ratebook" && !bandingSource && effectiveBandingSource) {
-      onUpdate("banding_source", effectiveBandingSource)
-    }
-  }, [mode, bandingSource, effectiveBandingSource, onUpdate])
-
   const bandingClassification = useMemo(
     () => classifyBandingNode(allNodes.find(node => node.id === effectiveBandingSource), { includeDefault: true }),
     [allNodes, effectiveBandingSource],
@@ -388,9 +387,37 @@ export default function OptimiserConfig({
     [bandingLevels],
   )
 
+  // Auto-persist implicit ratebook defaults. When both the source and its
+  // derived factors are missing they must be one config transaction because
+  // NodePanel intentionally spreads each update over its last committed ref.
+  useEffect(() => {
+    if (mode !== "ratebook" || bandingSource || !effectiveBandingSource) return
+    if (
+      !hasConfiguredFactorColumns
+      && factorColumns.length === 0
+      && inferredFactorColumns.length > 0
+    ) {
+      onUpdate({
+        banding_source: effectiveBandingSource,
+        factor_columns: inferredFactorColumns,
+      })
+      return
+    }
+    onUpdate("banding_source", effectiveBandingSource)
+  }, [
+    mode,
+    bandingSource,
+    effectiveBandingSource,
+    hasConfiguredFactorColumns,
+    factorColumns.length,
+    inferredFactorColumns,
+    onUpdate,
+  ])
+
   useEffect(() => {
     if (
       mode === "ratebook" &&
+      !!bandingSource &&
       effectiveBandingSource &&
       !hasConfiguredFactorColumns &&
       factorColumns.length === 0 &&
@@ -400,6 +427,7 @@ export default function OptimiserConfig({
     }
   }, [
     mode,
+    bandingSource,
     effectiveBandingSource,
     hasConfiguredFactorColumns,
     factorColumns.length,
@@ -409,12 +437,14 @@ export default function OptimiserConfig({
 
   // When banding source changes, auto-select all its factors
   const handleBandingSourceChange = useCallback((bandingNodeId: string) => {
-    onUpdate("banding_source", bandingNodeId)
     const levels = classifyBandingNode(
       allNodes.find(node => node.id === bandingNodeId),
       { includeDefault: true },
     ).levels
-    onUpdate("factor_columns", singleFactorColumnsFromLevels(levels))
+    onUpdate({
+      banding_source: bandingNodeId,
+      factor_columns: singleFactorColumnsFromLevels(levels),
+    })
   }, [allNodes, onUpdate])
 
   const canSolve = !!objective &&
@@ -669,6 +699,7 @@ export default function OptimiserConfig({
             </label>
             {bandingNodes.length > 0 ? (
               <select
+                aria-label="Rating Factor Source"
                 value={effectiveBandingSource}
                 onChange={(e) => handleBandingSourceChange(e.target.value)}
                 className="w-full mt-1 px-2.5 py-1.5 rounded-lg text-xs"
@@ -848,12 +879,12 @@ export default function OptimiserConfig({
                       <button
                         type="button"
                         onClick={handleAutoRange}
-                        disabled={autoRangeLoading || constraintCount === 0 || !canSolve}
+                        disabled={constraintCount === 0 || !canSolve}
                         className="flex items-center gap-1 px-2 py-1 rounded text-[10px] font-medium disabled:opacity-50"
                         style={{ background: withAlpha(accentColor, 0.12), color: accentColor }}
                       >
                         {autoRangeLoading ? <Loader2 size={10} className="animate-spin" /> : <RefreshCw size={10} />}
-                        Auto range
+                        {autoRangeLoading ? "Restart auto range" : "Auto range"}
                       </button>
                     </div>
                     <div className="space-y-1.5">

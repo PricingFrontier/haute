@@ -234,6 +234,12 @@ describe("edgeInputName", () => {
     ).toBe("quotes")
   })
 
+  it("returns an explicit unresolved marker for a null-handle apiInput edge", () => {
+    expect(
+      edgeInputName(sourceEdge(null), sourceNode("apiInput"), {}),
+    ).toBe("<unresolved>")
+  })
+
   it("sanitises an ordinary source label and ignores its source handle", () => {
     const ordinarySource: SimpleNode = {
       ...sourceNode("polars"),

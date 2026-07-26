@@ -11,11 +11,12 @@
 | `frontend/src/components/ReadOnlyNodeConfig.tsx`, `frontend/src/components/FramesTable.tsx`, `frontend/src/components/KeyPickerModal.tsx` | Inert configuration, API-frame rows and reusable API-input key picker. |
 | `frontend/src/panels/editors/index.ts` | Public editor exports. |
 | `frontend/src/panels/editors/_shared.tsx` | Shared editor types, styles, file browser, schema preview and the input-source bar (chips keyed by edge id, showing each edge's input name — the code argument — with the source node named in the tooltip). |
+| `frontend/src/components/ColumnTable.tsx`, `frontend/src/components/CacheFetchButton.tsx` | Reusable column-selection table and API-input cache action/status control. |
 | `frontend/src/panels/editors/CodeEditor.tsx`, `frontend/src/panels/editors/CodeMirrorEditor.tsx`, `frontend/src/panels/editors/shared/PolarsCodePanel.tsx` | Code-editor wrappers and Polars-specific panel. |
 | `frontend/src/panels/editors/ConstantEditor.tsx`, `frontend/src/panels/editors/TransformEditor.tsx`, `frontend/src/panels/editors/EdgeJoinEditor.tsx`, `frontend/src/panels/editors/LiveSwitchEditor.tsx`, `frontend/src/panels/editors/ScenarioExpanderEditor.tsx` | Editors for scalar, transform, join, conditional-switch and scenario nodes. `EdgeJoinEditor` exposes fixed canvas-derived base/join roles, atomic swap, the seven supported join modes, mutually exclusive same-name/asymmetric key forms, and advanced Polars options. |
 | `frontend/src/panels/editors/ExternalFileEditor.tsx`, `frontend/src/panels/editors/DataInputEditor.tsx`, `frontend/src/panels/editors/DataOutputEditor.tsx` | External-object, grouped tabular input, and grouped tabular output configuration. |
 | `frontend/src/stores/useOutputWriteStore.ts` | Per-node output-write request identity, pending/terminal lifecycle, and overwrite-confirmation state retained across editor remounts. |
-| `frontend/src/panels/editors/_IoFormatEditor.tsx`, `frontend/src/panels/editors/_ioFormats.ts`, `frontend/src/panels/editors/_DatabricksSelector.tsx`, `frontend/src/panels/editors/_InputCacheControls.tsx` | Registry-driven IO arguments, cached capabilities, dedicated Databricks browsing, and shared input-cache lifecycle controls. |
+| `frontend/src/panels/editors/_IoFormatEditor.tsx`, `frontend/src/panels/editors/_ioFormats.ts`, `frontend/src/panels/editors/_DatabricksSelector.tsx`, `frontend/src/panels/editors/_InputCacheControls.tsx` | Registry-driven IO arguments, mount-refetched capabilities with concurrent-request coalescing, dedicated Databricks browsing, and shared input-cache lifecycle controls. |
 | `frontend/src/panels/editors/ApiInputEditor.tsx`, `frontend/src/panels/editors/apiInputSchema.ts`, `frontend/src/panels/editors/apiInputInherit.ts`, `frontend/src/panels/editors/FrameTableActions.tsx` | API-input frame/schema editing, persisted/inferred schema conversion, reconciliation and row actions. |
 | `frontend/src/panels/editors/OutputEditor.tsx`, `frontend/src/panels/editors/outputMappingSchema.ts`, `frontend/src/panels/editors/outputPathTools.ts`, `frontend/src/panels/editors/jsonpath.ts`, `frontend/src/panels/editors/JsonPreview.tsx` | Output mappings, JSON-path validation/rewrites and preview. |
 | `frontend/src/panels/editors/ColumnsTab.tsx` | Generic column selection and rename configuration. |
@@ -29,11 +30,12 @@
 | `frontend/src/panels/editors/rating/index.ts`, `frontend/src/panels/editors/rating/ratingTableUtils.ts`, `frontend/src/panels/editors/rating/cellStyles.ts` | Rating barrel, normalisation/levels/statistics/colours and cell styles. |
 | `frontend/src/panels/editors/rating/OneWayEditor.tsx`, `frontend/src/panels/editors/rating/TwoWayGrid.tsx`, `frontend/src/panels/editors/rating/ControlledNumberCell.tsx`, `frontend/src/panels/editors/rating/StatsFooter.tsx` | One-/two-way editing, commit-on-blur number input and table statistics. |
 | `frontend/src/panels/editors/shared/tableClipboard.ts` | Clipboard parsing/writing and TSV/CSV download helpers shared by editable grids. |
+| `frontend/src/utils/configField.ts`, `frontend/src/utils/banding.ts` | Modelling-owned typed config readers and Banding classification consumed by node editors. |
 | `frontend/src/components/form/index.ts`, `frontend/src/components/form/CommittedTextField.tsx`, `frontend/src/components/form/ConfigCheckbox.tsx`, `frontend/src/components/form/EditorLabel.tsx` | Form barrel, committed text/area drafts, config checkboxes and accessible editor labels. |
 
 ## Key types and data structures
 
-- `OnUpdateConfig`, `SimpleNode`, `SimpleEdge`, `SchemaInfo` and `InputSource` in
+- `OnUpdateConfig`, `OnReplaceConfig`, `SimpleNode`, `SimpleEdge`, `SchemaInfo` and `InputSource` in
   `frontend/src/panels/editors/_shared.tsx` define the editor-to-panel contract.
   `OnUpdateConfig` returns a commit result — `{ ok: true } | { ok: false; error: string }` —
   from `App.onUpdateNode`'s preflight: editors whose edits can trigger a frame rename (the
@@ -52,6 +54,8 @@
   whose frame could not be resolved, rendering the chip in its warning state. `name` is
   required, so every fixture constructing an `InputSource` fails to compile until it declares
   one — the former `varName`/`displayLabel` pair no longer exists.
+  `OnReplaceConfig` accepts a complete next config and returns the same commit result; provider
+  switches use it to remove inactive branch keys in one undoable mutation.
 - API schemas have separate persisted read/write and inferred/reconciled representations in
   `frontend/src/panels/editors/apiInputSchema.ts` and `frontend/src/panels/editors/apiInputInherit.ts`.
   Output mappings use the equivalent conversion boundary in
@@ -70,10 +74,9 @@
    For each upstream edge it builds an `InputSource`: `name` via
    `edgeInputName(edge, sourceNode, submodels)` (from frontend-graph-canvas's
    `frontend/src/utils/apiInputPorts.ts`, mirroring the backend's `edge_input_name`). An
-   API-input edge whose non-null `sourceHandle` names no currently-eligible frame — the only
-   unresolved case the editor can transiently observe, since null-handle API edges are always
-   pruned by reconciliation — keeps that handle **verbatim** as `name` and sets
-   `frameUnresolved: true`, so the chip shows the stale frame identity with its warning state
+   API-input edge whose `sourceHandle` is null/undefined uses the explicit `<unresolved>` marker.
+   A non-null handle naming no currently eligible frame keeps that handle **verbatim** as `name`.
+   Both cases set `frameUnresolved: true`, so the chip shows the unresolved identity with its warning state
    instead of impersonating a resolved input or renaming it to the parent. The memo's
    staleness signature covers edge id, source id, source label, `sourceHandle`, the derived
    name, and the resolution state — so a frame rename (which rebinds the edge's
@@ -90,8 +93,9 @@
    panel callback. Rating factor changes filter `factorDtypes` atomically with `factors` and
    `entries`; removing a factor removes its descriptor, while new descriptors are never invented.
    Clipboard/drag/dialog operations remain local until that callback.
-5. Format, file, catalog and MLflow controls issue their own API calls. Their request state is
-   local to the editor; the editor never assumes an out-of-order response still describes a
+5. Format, file, catalog and MLflow controls issue their own API calls. I/O capabilities are
+   fetched for each later editor mount, while consumers mounting during one pending fetch share
+   that request. Request state is local to the editor; the editor never assumes an out-of-order response still describes a
    changed node unless its own effect/request guards accept it.
 6. `EdgeJoinEditor` derives its two role displays from canonical `base`/`join` incoming handles
    and the matching `baseInput`/`joinInput` config. The swap callback is owned by the graph canvas
@@ -129,6 +133,9 @@
   input already on that target), and a collision rejects the entire rename with an inline
   error naming the target and the colliding name — no config, edge, or mapping mutation
   occurs. Name-referencing config can never half-apply or overwrite an existing key.
+- An ordinary source-label rename derives the old and new `edgeInputName` for every outgoing
+  edge and uses the same duplicate preflight and atomic mapping migration as an API-frame rename.
+  Sanitisation-only no-ops do not rewrite mappings.
 - `edgeInputName` treats only API-input sources' handles as frame names; a submodel
   `out__`-prefixed source handle resolves to the referenced child node's sanitised label (via
   the graph context's `submodels`) — the same name the flattened code binds — and every other
@@ -137,13 +144,10 @@
   identifier, or a Python hard keyword) at commit time with the same inline validation used
   for blank/duplicate labels (`apiInputLabelIssue` — the exact ASCII mirror) — the label is
   the downstream argument name, so an invalid label never reaches the config.
-- Null-handle API-input edges never survive reconciliation (the zero-frame default handle is
-  non-connectable and `validSourceHandleKeys` for an apiInput never contains the empty key),
-  so the only unresolved state the panel can observe is transient: an edge whose non-null
-  `sourceHandle` names a frame that no longer resolves. Its chip keeps the handle text
-  verbatim with the `frameUnresolved` warning; at run time the executor's `KeyError` is the
-  loud backstop, and at save time codegen's port-less-edge `ParseError` covers hand-edited
-  files.
+- WebSocket graph updates retain rejected edges for repair, so a null-handle API-input edge can
+  reach the panel even though the canvas cannot author one. Its chip and output block use the
+  `<unresolved>` marker with `frameUnresolved`; a named stale handle is retained verbatim. Neither
+  state aliases the source's sole emitted table.
 - `frontend/src/panels/editors/OutputEditor.tsx`'s per-frame block label is the edge's input
   name via the same shared helper, and the persisted `source_port` key (`framePortId`) now
   *equals* that name by construction — the frame label for API-input edges, the sanitised
@@ -211,31 +215,30 @@ Browser coverage for authoring flows is in `frontend/e2e/data-io-nodes.spec.ts`,
 `frontend/e2e/persistence/api-input-frame-alignment.spec.ts` (downstream frame-naming chips
 alongside its canvas geometry assertions).
 
-## Approved change contract — 0.7.0 unified data I/O editors
+## Data I/O editor implementation
 
 Remaining node-editor improvement work is tracked in the
 [frontend canvas roadmap](../../roadmap/frontend-canvas.md).
 
-- Delete `frontend/src/panels/editors/DataSourceEditor.tsx` and
-  `frontend/src/panels/editors/SinkEditor.tsx`, their lazy-registry entries, palette definitions,
-  tests, fixtures, icons, and type guards. `DataInputEditor.tsx` becomes the provider/group
-  orchestrator; `DataOutputEditor.tsx` receives `nodeId`/graph context and owns the explicit
-  write action formerly isolated in `SinkEditor`.
-- Replace the format-only payload helper with a guarded, cached
+- `DataSourceEditor.tsx` and `SinkEditor.tsx` have no registry, palette, guard, fixture, or
+  compatibility path. `DataInputEditor.tsx` is the provider/group orchestrator;
+  `DataOutputEditor.tsx` receives `nodeId`/graph context and owns the explicit write action.
+- The format-only payload helper is replaced by a guarded
   `/api/io-capabilities` client. Types represent ordered groups, provider fields, per-direction
   formats/modes/arguments/engines, direct-batching, snapshot-build boundedness, native
   sink/eager-writer class, and publication modes. Rendering derives every option from that
-  payload. `_IoFormatEditor.tsx` remains a shared registry-backed body but accepts one selected
+  payload. Each editor mount fetches current capabilities; only simultaneously pending requests
+  are coalesced. `_IoFormatEditor.tsx` remains a shared registry-backed body but accepts one selected
   group and direction rather than flattening all formats.
-- Add focused provider sections for file path browsing, database connection/query, lakehouse
-  locator/options, Databricks selectors, and inline records. Add one shared source-snapshot
-  component backed by the guarded input-cache API. Databricks reuses that component and retains
+- Focused provider sections cover file path browsing, database connection/query, lakehouse
+  locator/options, Databricks selectors, and inline records. One shared source-snapshot
+  component uses the guarded input-cache API. Databricks reuses that component and retains
   `_DatabricksSelector.tsx` only for browsing.
-- Add an atomic `replaceConfig(nextConfig)` editor callback alongside field updates. Input-type
+- `OnReplaceConfig(nextConfig)` is the atomic editor callback alongside field updates. Input-type
   changes construct a fresh valid branch with only safe common presentation fields retained;
   they commit once and therefore produce one undo item. Capability/group/format inconsistency is
   rendered as an error, not repaired in an effect.
-- `DataInputEditor` always mounts the shared Polars code panel beneath provider/cache controls.
+- `DataInputEditor` mounts `CodeEditor` directly beneath provider/cache controls.
   `DataOutputEditor` never mounts it. The output Write action sends the unsaved current graph,
   node id, active execution source, and streaming settings through the existing explicit sink
   request, and surfaces cancellation/admission/publication diagnostics.
@@ -243,19 +246,46 @@ Remaining node-editor improvement work is tracked in the
   or visible read-only representation; an invalid/inactive key is shown as a configuration
   error. The old generic “unrecognised keys, saved anyway” behaviour does not legitimise keys
   from another input branch.
+- `DataInputEditor` calls `useSchemaFetch` with the configured file path only when
+  `format.input.needs_schema_when_bounded` is true. It imports `SchemaPreview`, renders the
+  hook's loading/error states, and merges
+  `Object.fromEntries(schema.columns.map(({name, dtype}) => ...))` into the current arguments on
+  confirmation.
+- `useSchemaFetch` recognises `ApiError` and stores `detail ?? message`. `ApiInputEditor`
+  consumes and renders its `error` return.
+- A small Zustand output-write store owns entries keyed by node id. Each entry carries request
+  id, full request identity, phase (`writing | success | error | confirm_overwrite`), and
+  structured result or message. Terminal actions update only the matching request id.
+- `DataOutputEditor` asks `/api/pipeline/output-destination` for the display destination and
+  extension mismatch; it does not reimplement backend path or default-extension rules. Stale
+  destination responses cannot replace a newer request's state.
+- The write identity covers the semantic flattened graph, output node, active source, and
+  streaming chunk size. Runtime preview/status/trace fields are projected out of the identity but
+  remain in the graph sent to the API. Overwrite confirmation remains visible and actionable only
+  while the semantic request is unchanged.
+- A node-level write remains mutually exclusive across config edits. While an older identity is
+  still writing, the editor continues to show that pending state instead of presenting a disabled
+  button with no explanation. Obsolete terminal entries are cleared when the editor observes a
+  different request identity, and terminal state is removed when its editor unmounts so a deleted
+  and recreated node id cannot inherit an earlier overwrite grant.
+- The editor starts the API promise after recording store state; the promise updates the store
+  even if the component unmounts. It sends `overwrite=false`, handles
+  `ApiError.status === 409` as `confirm_overwrite`, and retries true only from the confirmation
+  action.
+- `WriteOutputArgs` adds `overwrite?: boolean` and serialises an explicit boolean. Tests reset the
+  write store between cases and exercise unmount/remount while a deferred request is unresolved.
 
 Unit/component suites cover API guard rejection, ordered grouping, each field kind, dependency
 messages, direct/snapshot constraints, all cache states, type-switch atomicity/undo, Polars code
-round-trip, output direction filtering, write gating/status, and no output code panel.
-`frontend/e2e/data-io-nodes.spec.ts` is rewritten for the hard-cutover graph and expanded with
+round-trip, output direction filtering, write gating/status, no output code panel, schema
+merge/preservation, destination preview/mismatch, remount during a pending write, structured
+success/failure, and the overwrite-confirmation retry.
+`frontend/e2e/data-io-nodes.spec.ts` covers the hard-cutover graph with
 provider grouping, snapshot refresh, cached offline execution, multiple format legs, atomic file
-write, and removed-node absence. The legacy node-continuity migration suite is deleted rather
-than adapted.
+write, and removed-node absence. The separate API-input v1-to-v2 migration suite remains because
+it covers API-frame schema continuity, not the removed Data Source/Data Sink types.
 
-## Approved change contract — Banding-to-Rating canvas assurance
-
-This contract implements ROAD-UI-01 through ROAD-UI-04 in the
-[frontend canvas roadmap](../../roadmap/frontend-canvas.md).
+## Banding-to-Rating assurance
 
 The owned configuration-shape matrix is:
 
@@ -287,45 +317,7 @@ The owned configuration-shape matrix is:
   assurance contract. Semantic locators, focus assertions, Enter/Space activation, and the save
   shortcut form the accessibility boundary; this package makes no whole-page WCAG claim.
 
-## I/O authoring feedback and output lifecycle
-
-- `DataInputEditor` calls `useSchemaFetch` with the configured file path only
-  when `format.input.needs_schema_when_bounded` is true. It imports
-  `SchemaPreview`, renders the hook's loading/error states, and merges
-  `Object.fromEntries(schema.columns.map(({name, dtype}) => ...))` into the
-  current arguments on confirmation.
-- `useSchemaFetch` recognises `ApiError` and stores `detail ?? message`.
-  `ApiInputEditor` consumes and renders its `error` return.
-- A small Zustand output-write store owns entries keyed by node id. Each entry
-  carries request id, full request identity, phase
-  (`writing | success | error | confirm_overwrite`), and structured result or
-  message. Terminal actions update only the matching request id.
-- `DataOutputEditor` asks `/api/pipeline/output-destination` for the display
-  destination and extension mismatch; it does not reimplement backend path or
-  default-extension rules. Stale destination responses cannot replace a newer
-  request's state.
-- The write identity covers the complete flattened graph, output node, active
-  source, and streaming chunk size. Overwrite confirmation remains visible and
-  actionable only while that whole request is unchanged. A graph or setting
-  edit invalidates the grant before an `overwrite=true` retry.
-- A node-level write remains mutually exclusive across config edits. While an
-  older identity is still writing, the editor continues to show that pending
-  state instead of presenting a disabled button with no explanation. Obsolete
-  terminal entries are cleared when the editor observes a different request
-  identity, and terminal state is removed when its editor unmounts so a deleted
-  and recreated node id cannot inherit an earlier overwrite grant.
-- The editor starts the API promise after recording store state; the promise
-  updates the store even if the component unmounts. It sends `overwrite=false`,
-  handles `ApiError.status === 409` as `confirm_overwrite`, and retries true
-  only from the confirmation action.
-- `WriteOutputArgs` adds `overwrite?: boolean` and serialises an explicit
-  boolean. Tests reset the write store between cases and exercise unmount/
-  remount while a deferred request is unresolved.
-
-## Approved change contract — prerelease canonical editor formats
-
-The target is defined in
-[the frontend node-editor high-level contract](high-level.md#approved-change-contract--prerelease-canonical-editor-formats).
+## Canonical editor formats
 
 - `RatingStepEditor.tsx` removes `isLegacy`, reads only `combinedOutputs`, and sends only that key.
 - `OutputEditor.tsx` and `outputMappingSchema.ts` remove v1 classification/conversion and the

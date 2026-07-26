@@ -661,6 +661,7 @@ export default function NodePanel({
   const { allNodes, edges, submodels } = useGraph()
   const config = useMemo(() => (node?.data.config || {}) as Record<string, unknown>, [node?.data.config])
   const [activeTab, setActiveTab] = useState<"config" | "columns">("config")
+  const [labelUpdateError, setLabelUpdateError] = useState<string | null>(null)
   const rememberedExplorePane = useUIStore((s) => node?.id ? s.explorePanes[node.id] : undefined)
   const setExplorePane = useUIStore((s) => s.setExplorePane)
 
@@ -669,6 +670,7 @@ export default function NodePanel({
   const nodeRef = useRef(node)
   useEffect(() => { configRef.current = config }, [config])
   useEffect(() => { nodeRef.current = node }, [node])
+  useEffect(() => { setLabelUpdateError(null) }, [node?.id, node?.data.label])
 
   // Bundle 3b — dismissal state for the stale-columns banner.
   // Stored as the warning-signature the user dismissed, so the banner
@@ -956,35 +958,47 @@ export default function NodePanel({
 
   return (
     <PanelShell testId="node-panel" style={{ opacity: dimmed ? 0.6 : 1, transition: 'opacity 150ms' }}>
-      <div className="px-3 py-2.5 flex items-center gap-2 shrink-0" style={{ borderBottom: '1px solid var(--border)' }}>
-        <CommittedTextField
-          data-testid="node-panel-label-input"
-          type="text"
-          value={node.data.label}
-          onCommit={(v) => {
-            if (onUpdateNode) {
-              onUpdateNode(node.id, { ...node.data, label: v })
-            }
-          }}
-          className="node-label-input flex-1 min-w-0 px-2 py-1 text-[13px] font-semibold border border-transparent rounded-md focus:outline-none bg-transparent"
-          style={{ color: 'var(--text-primary)', borderColor: 'transparent' }}
-        />
-        {showRefreshPreview && (
-          <button
-            onClick={onRefreshPreview}
-            className="px-2 py-1 rounded shrink-0 transition-opacity flex items-center gap-1 text-[11px] font-medium hover:opacity-[0.85]"
-            style={{ background: 'var(--accent)', color: 'var(--text-on-accent)' }}
-            title={refreshTitle}
+      <div className="px-3 py-2.5 shrink-0" style={{ borderBottom: '1px solid var(--border)' }}>
+        <div className="flex items-center gap-2">
+          <CommittedTextField
+            data-testid="node-panel-label-input"
+            type="text"
+            value={node.data.label}
+            onCommit={(v) => {
+              if (!onUpdateNode) return
+              const result = onUpdateNode(node.id, { ...node.data, label: v })
+              setLabelUpdateError(result.ok ? null : result.error)
+            }}
+            className="node-label-input flex-1 min-w-0 px-2 py-1 text-[13px] font-semibold border border-transparent rounded-md focus:outline-none bg-transparent"
+            style={{ color: 'var(--text-primary)', borderColor: 'transparent' }}
+          />
+          {showRefreshPreview && (
+            <button
+              onClick={onRefreshPreview}
+              className="px-2 py-1 rounded shrink-0 transition-opacity flex items-center gap-1 text-[11px] font-medium hover:opacity-[0.85]"
+              style={{ background: 'var(--accent)', color: 'var(--text-on-accent)' }}
+              title={refreshTitle}
+            >
+              <RefreshCw size={11} />
+              Refresh
+            </button>
+          )}
+          <button data-testid="node-panel-close" onClick={onClose} className="node-close-btn p-1 rounded shrink-0 transition-colors" style={{ color: 'var(--text-on-accent)' }}
+            title="Close"
           >
-            <RefreshCw size={11} />
-            Refresh
+            <X size={14} strokeWidth={2.5} />
           </button>
+        </div>
+        {labelUpdateError && (
+          <p
+            role="alert"
+            data-testid="node-panel-label-error"
+            className="mt-1 px-2 text-[11px]"
+            style={{ color: 'var(--danger)' }}
+          >
+            {labelUpdateError}
+          </p>
         )}
-        <button data-testid="node-panel-close" onClick={onClose} className="node-close-btn p-1 rounded shrink-0 transition-colors" style={{ color: 'var(--text-on-accent)' }}
-          title="Close"
-        >
-          <X size={14} strokeWidth={2.5} />
-        </button>
       </div>
 
       {/* Tab bar — only show when Columns tab is available.  Hover

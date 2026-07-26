@@ -30,6 +30,7 @@
 | `frontend/src/components/ContextMenu.tsx` | Node right-click menu: rename/duplicate/create-instance/dissolve-submodel/delete, arrow-key roving focus. |
 | `frontend/src/components/KeyboardShortcuts.tsx` | `?`-triggered modal listing keyboard shortcuts, built on `ModalShell`. |
 | `frontend/src/components/Toolbar.tsx` | App top chrome: package-derived browser version, source selector, row-limit/chunk-size inputs, undo/redo, timing/memory breakdowns, utility/imports buttons, zoom, centre/layout, save split-button. Composes `BreakdownDropdown` and `BranchIndicator` (git-ui). |
+| `frontend/src/components/BreakdownDropdown.tsx` | Sorted, accessible timing/memory breakdown disclosure used by the shared toolbar. |
 | `frontend/src/panels/ImportsPanel.tsx` | Active pipeline-imports right panel: `PanelShell` plus `CodeEditor`, explanatory always-included imports, and callback-only preamble mutation/close handling. `App.tsx` supplies the graph-store-backed preamble and selects it through `importsOpen`. |
 | `frontend/src/components/BackgroundJobPolling.tsx` | Zero-render mount point (`memo`) that only invokes `useBackgroundJobs()`. |
 | `frontend/src/components/NodeSearch.tsx` | Ctrl+K command palette: dynamically imported by `App.tsx` only while open, filters/windows the current React Flow node list, supports arrow-key navigation, and jumps the canvas viewport to the selected node. |
@@ -39,7 +40,7 @@
 | `frontend/src/hooks/useJobPolling.ts` | Generic background-job poller: exponential backoff, 24h max lifetime, per-job state via refs, consecutive-failure toast. |
 | `frontend/src/hooks/useBackgroundJobs.ts` | Wires `useJobPolling` to the optimiser/train/explore endpoints and `useNodeResultsStore` actions; mounted once in `App.tsx`. |
 | `frontend/src/hooks/useMlflowBrowser.ts` | Lazy-loads MLflow experiments/runs/models/versions for dropdown UIs; shared by `ModelScoreEditor` and `OptimiserApplyEditor` (node-editors). |
-| `frontend/src/hooks/useSchemaFetch.ts` | Fetch-schema-on-mount-and-on-path-change pattern used by `ApiInputEditor` (node-editors). |
+| `frontend/src/hooks/useSchemaFetch.ts` | Fetch-schema-on-mount-and-on-path-change pattern used by `frontend/src/panels/editors/ApiInputEditor.tsx` and `frontend/src/panels/editors/DataInputEditor.tsx` (node-editors). |
 | `frontend/src/hooks/useStaleConfigEstimate.ts` | Generic "estimate endpoint keyed by config hash + source + structural version, refetch when any of the three changes" pattern, built on `hashConfig`. Takes a required `context: {source, structuralVersion}` argument alongside the cached result. |
 | File | Responsibility |
 | --- | --- |
@@ -238,12 +239,12 @@ focus is restored to the element that was focused before the modal opened.
   direct cross-store read at call time, not a subscription, so a stale
   read only happens if the caller doesn't re-invoke `getColumns` after a
   structural change.
-- **`hashConfig`** strips `_nodeId`/`_columns`/`_schemaWarnings`/
-  `_availableColumns` (transient runtime fields) before hashing, and
-  recursively sorts object keys so key-order differences in the same
-  logical config don't produce different hashes. It's a djb2 hash, not
-  cryptographic — collisions are a theoretical staleness false-negative,
-  accepted for this use case.
+- **`hashConfig`** follows `JSON.stringify`/`JSON.parse` normalisation, strips
+  `_nodeId`/`_columns`/`_schemaWarnings`/`_availableColumns` only from the
+  root config, recursively sorts object keys, preserves array order, and
+  returns the exact canonical JSON string. The deliberately collision-free
+  comparison value is not a fixed-width digest; genuine serialization
+  failures remain visible.
 - **`trimCacheByRecency`** first prunes any recency-map entries whose key
   no longer exists in `records` (handles external deletion, e.g.
   `clearNode`), then evicts the least-recently-touched entries beyond

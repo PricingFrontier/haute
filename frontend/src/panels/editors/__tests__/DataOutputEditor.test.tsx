@@ -209,16 +209,16 @@ beforeEach(() => {
   vi.clearAllMocks()
   resetOutputWriteStoreForTests()
   resetIoCapabilitiesCacheForTests()
-  vi.mocked(fetchIoCapabilities).mockResolvedValue({
+  vi.mocked(fetchIoCapabilities).mockReset().mockResolvedValue({
     schema_version: 1,
     groups,
   })
-  vi.mocked(resolveOutputDestination).mockResolvedValue({
+  vi.mocked(resolveOutputDestination).mockReset().mockResolvedValue({
     path: "outputs/out.csv",
     format: "csv",
     suffix_mismatch: false,
   })
-  vi.mocked(writeOutput).mockResolvedValue({
+  vi.mocked(writeOutput).mockReset().mockResolvedValue({
     status: "ok",
     message: "Wrote output.",
     row_count: 2,
@@ -407,7 +407,9 @@ describe("DataOutputEditor", () => {
 
     const { ApiError } = await import("../../../api/client")
     vi.mocked(writeOutput).mockRejectedValueOnce(new ApiError("HTTP 409", 409, "out.csv exists"))
-    fireEvent.click(screen.getByRole("button", { name: "Write" }))
+    const changedWrite = screen.getByRole("button", { name: "Write" })
+    await waitFor(() => expect(changedWrite).toBeEnabled())
+    fireEvent.click(changedWrite)
     expect(await screen.findByRole("button", { name: "Replace existing file" })).toBeInTheDocument()
     vi.mocked(writeOutput).mockResolvedValueOnce({ status: "ok", message: "Replaced." })
     fireEvent.click(screen.getByRole("button", { name: "Replace existing file" }))
@@ -463,6 +465,69 @@ describe("DataOutputEditor", () => {
     expect(
       screen.queryByRole("button", { name: "Replace existing file" }),
     ).not.toBeInTheDocument()
+    expect(writeOutput).toHaveBeenCalledTimes(1)
+  })
+
+  it("preserves overwrite confirmation across preview-only node metadata changes", async () => {
+    const config = {
+      outputType: "file",
+      format: "csv",
+      mode: "sink",
+      path: "out.csv",
+      arguments: {},
+    }
+    const nodes = (previewVersion: number): SimpleNode[] => [
+      {
+        id: "upstream",
+        data: {
+          label: "upstream",
+          description: "",
+          nodeType: "constant",
+          config: { values: [{ name: "value", value: 1 }] },
+          _columns: [{ name: `preview_${previewVersion}`, dtype: "Int64" }],
+          _availableColumns: [{ name: `available_${previewVersion}`, dtype: "Int64" }],
+          _schemaWarnings: [{ column: "value", status: `warning_${previewVersion}` }],
+          _columnsSource: `source_${previewVersion}`,
+          _status: previewVersion === 1 ? "ok" : "running",
+          _traceActive: previewVersion === 2,
+          _traceDimmed: previewVersion === 2,
+          _hoverDimmed: previewVersion === 2,
+          _traceValue: { previewVersion },
+          _traceMotionDisabled: previewVersion === 2,
+          _diffStatus: previewVersion === 1 ? "added" : "changed",
+        },
+      },
+      {
+        id: "output-node",
+        data: {
+          label: "output",
+          description: "",
+          nodeType: "dataOutput",
+          config,
+        },
+      },
+    ]
+    const { rerender, renderElement } = renderEditor(
+      config,
+      vi.fn(),
+      vi.fn(),
+      nodes(1),
+    )
+    const { ApiError } = await import("../../../api/client")
+    vi.mocked(writeOutput).mockRejectedValueOnce(
+      new ApiError("HTTP 409", 409, "out.csv exists"),
+    )
+
+    fireEvent.click(await screen.findByRole("button", { name: "Write" }))
+    expect(
+      await screen.findByRole("button", { name: "Replace existing file" }),
+    ).toBeInTheDocument()
+
+    rerender(renderElement(config, nodes(2)))
+
+    expect(
+      screen.getByRole("button", { name: "Replace existing file" }),
+    ).toBeInTheDocument()
     expect(writeOutput).toHaveBeenCalledTimes(1)
   })
 
