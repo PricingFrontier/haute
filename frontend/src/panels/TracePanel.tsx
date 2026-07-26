@@ -15,7 +15,6 @@ import {
   collapsePassthroughs,
   type CollapsedEntry,
 } from "./trace/traceGrouping"
-import { downloadTextFile } from "./editors/shared/tableClipboard"
 
 interface TracePanelProps {
   trace: TraceResult
@@ -154,7 +153,10 @@ export default function TracePanel({ trace, onClose }: TracePanelProps) {
 
   const downloadTrace = async (extension: "md" | "csv") => {
     try {
-      const exporter = await loadTraceExport()
+      const [exporter, { downloadTextFile }] = await Promise.all([
+        loadTraceExport(),
+        import("./editors/shared/tableClipboard"),
+      ])
       const markdown = extension === "md"
       const downloaded = downloadTextFile(
         markdown ? exporter.traceToMarkdown(trace) : exporter.traceToCsv(trace),
