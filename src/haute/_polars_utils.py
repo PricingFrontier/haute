@@ -12,6 +12,7 @@ import polars as pl
 
 from haute._execution_context import (
     ExecutionContext,
+    ExecutionProfile,
     current_execution_context,
 )
 from haute._logging import get_logger
@@ -20,6 +21,27 @@ logger = get_logger(component="polars_utils")
 _STREAMING_CHUNK_SIZE_LOCK = threading.RLock()
 
 DEFAULT_STREAMING_CHUNK_SIZE: int = 500_000
+BOUNDED_MEMORY_EXEMPT_PROFILES = frozenset(
+    {
+        ExecutionProfile.PREVIEW_EAGER,
+        ExecutionProfile.DEPLOY_LIVE,
+    }
+)
+
+
+def normalise_execution_profile(
+    profile: ExecutionProfile | str | None,
+) -> ExecutionProfile | None:
+    """Return the canonical profile enum used by every Polars I/O gate."""
+    if profile is None or isinstance(profile, ExecutionProfile):
+        return profile
+    return ExecutionProfile(profile)
+
+
+def is_bounded_execution_profile(profile: ExecutionProfile | str | None) -> bool:
+    """Whether *profile* requires the bounded-memory I/O policy."""
+    normalised = normalise_execution_profile(profile)
+    return normalised is not None and normalised not in BOUNDED_MEMORY_EXEMPT_PROFILES
 
 
 def streaming_collect(

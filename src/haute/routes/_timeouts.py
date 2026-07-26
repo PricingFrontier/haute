@@ -54,7 +54,9 @@ async def run_blocking_with_response_timeout(
                 await asyncio.shield(blocking_task)
             except asyncio.CancelledError:
                 continue
-        _drain_background_future_result(blocking_task)
+            except BaseException:
+                break
+        _drain_cancelled_future_result(blocking_task)
         raise
 
 
@@ -62,6 +64,19 @@ def _drain_background_future_result(future: asyncio.Future[Any]) -> None:
     try:
         future.result()
     except Exception as exc:
+        logger.error(
+            "route_work_background_failed",
+            error=str(exc),
+            error_type=type(exc).__name__,
+            exc_info=True,
+        )
+
+
+def _drain_cancelled_future_result(future: asyncio.Future[Any]) -> None:
+    """Observe every worker failure without replacing request cancellation."""
+    try:
+        future.result()
+    except BaseException as exc:
         logger.error(
             "route_work_background_failed",
             error=str(exc),

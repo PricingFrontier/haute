@@ -1,4 +1,4 @@
-"""Contracts for the mutation-suite sharding + parallel-exec primitives.
+"""Contracts for mutation-suite sharding and serial shard execution.
 
 These exercise the SQLite session plumbing that lets a single ``cosmic-ray init``
 session be split into disjoint mutant shards, executed independently, and
@@ -12,8 +12,11 @@ end-to-end equivalence on a real target is proven separately by running
 
 from __future__ import annotations
 
+import re
 import sqlite3
 from pathlib import Path
+
+import yaml
 
 from scripts.run_mutation_suite import (
     REPO_ROOT,
@@ -146,22 +149,23 @@ def test_slice_keeps_only_requested_job_ids(tmp_path: Path) -> None:
     assert _all_job_ids(src) == sorted(job_ids)
 
 
-def test_slice_rebase_root_rewrites_module_path(tmp_path: Path) -> None:
-    src = tmp_path / "full.sqlite"
-    _create_session(src, ["job-0", "job-1"])
-    worker_root = tmp_path / "worker-0"
-    dst = tmp_path / "slice.sqlite"
-    _slice_session(src, dst, ["job-0"], rebase_root=worker_root)
+def test_mutation_gate_runs_and_fails_when_plan_fails() -> None:
+    workflow = yaml.safe_load(
+        (REPO_ROOT / ".github" / "workflows" / "mutation.yml").read_text(encoding="utf-8")
+    )
+    gate = workflow["jobs"]["mutation"]
 
-    conn = sqlite3.connect(str(dst))
-    try:
-        paths = {
-            row[0] for row in conn.execute("SELECT module_path FROM mutation_specs").fetchall()
-        }
-    finally:
-        conn.close()
-    rel = Path(MODULE_PATH).relative_to(REPO_ROOT)
-    assert paths == {str(worker_root / rel)}
+    assert set(gate["needs"]) == {"plan", "shard"}
+    condition = re.sub(r"\s+", "", gate["if"])
+    assert "!cancelled()" in condition
+    assert "success()" not in condition
+    assert "needs." not in condition
+
+    steps_by_name = {step.get("name"): step for step in gate["steps"] if "name" in step}
+    plan_guard = steps_by_name["Require a successful mutation plan"]
+    guard_condition = re.sub(r"\s+", "", plan_guard["if"])
+    assert "needs.plan.result!='success'" in guard_condition
+    assert any(line.strip() == "exit 1" for line in plan_guard["run"].splitlines())
 
 
 # --- union / round-trip equivalence ---------------------------------------

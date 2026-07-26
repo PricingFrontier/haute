@@ -9,7 +9,7 @@
 | `src/haute/_local_security.py` | Local-session protection for the FastAPI/WebSocket server: session-token generation/comparison, exact authority parsing, loopback/forwarded-header middleware, HttpOnly-cookie bootstrap policy, HTTP middleware, and WebSocket pre-accept rejection helper. |
 | `src/haute/_path_resolution.py` | Cross-platform runtime path normalization, project/pipeline candidate resolution, symlink-aware containment, and the context-local execution root shared by eager/lazy builders. |
 | `src/haute/_gitignore_guard.py` | The shared `.gitignore` guard-entry tuple and the idempotent append-if-missing writer (`ensure_gitignore_guards`) used by both `haute init` and the unborn-repo commit seed. |
-| `src/haute/_env.py` | Lazy, fail-soft environment-variable parsing helpers (`float_env`, `int_env`, `optional_int_env`) used by selected request-timeout, optimiser chunk/partition, solver-timeout, training-history, and assistant-loop accessors. Other numeric environment settings use component-owned parsers. |
+| `src/haute/_env.py` | Lazy, fail-fast positive numeric environment-variable parsing helpers (`float_env`, `int_env`, `optional_int_env`) used by selected request-timeout, optimiser chunk/partition, solver-timeout, training-history, assistant-loop, execution-admission, and preview/trace cache-budget accessors. Other numeric environment settings use component-owned parsers. |
 
 ## Key types and data structures
 
@@ -28,15 +28,17 @@
 - **Blocklist frozensets** (`_sandbox.py`, module-level constants):
   `_BLOCKED_BUILTINS` (removed from the runtime `exec()` namespace),
   `_BLOCKED_ATTRS` (dunder attribute names rejected by `visit_Attribute`),
-  `_BLOCKED_FRAME_ATTRS` (non-dunder frame/traceback/generator attribute names,
-  e.g. `tb_frame`, `f_globals`, `gi_frame`), `_BLOCKED_CALLS` (bare-name calls
+  `_BLOCKED_FRAME_ATTRS` (frame/traceback/generator attribute names, including
+  `__traceback__`, `tb_frame`, `f_globals`, and `gi_frame`), `_BLOCKED_CALLS` (bare-name calls
   rejected by `visit_Call`). These four lists are independent — a name can appear
   in one without appearing in another, and each is exercised by its own test class
   in `tests/test_sandbox.py`.
-- **`_FORMAT_DUNDER_FIELD`** (compiled regex) and **`_FORMAT_METHOD_NAMES`**
-  (`{"format", "format_map", "vformat", "get_field", "format_field"}`) — drive
-  `_ASTValidator._check_format_call`, the guard against dunder traversal via
-  `str.format`-family calls.
+- **`_FORMATTER: string.Formatter`**,
+  **`_format_template_has_dunder_traversal()`**, and **`_FORMAT_METHOD_NAMES`**
+  (`{"format", "format_map", "vformat", "get_field", "format_field"}`) — parse
+  replacement fields recursively, including fields nested inside format specs, and
+  drive `_ASTValidator._check_format_call`. Malformed templates raise
+  `UnsafeCodeError`; no regular-expression approximation is used.
 - **`_ALLOWED_PICKLE_GLOBALS: frozenset[tuple[str, str]]`** — exact
   `(module, qualname)` pairs for scaffolding *functions* (NumPy 2 `_core`
   reconstruction helpers, `copyreg` helpers, `_codecs.encode`, pandas block/index
@@ -105,6 +107,13 @@ allowed. `cli/_train.py` also validates with `allow_imports=True`, then executes
 file through `importlib`'s ordinary `exec_module()` path rather than `safe_globals`.
 In both cases, imported module source is outside the recursive scope of
 `validate_user_code`; a `utility` module executes with normal module builtins.
+After preamble execution, the executor exports only names absent from the base
+namespace and rejects direct bindings for dangerous module roots via
+`_is_dangerous_preamble_binding`. Module objects, functions, and classes originating
+from `os`, `sys`, `subprocess`, `shutil`, `signal`, `ctypes`, or `importlib` are
+filtered before node-code namespace assembly. The check is deliberately shallow: it
+does not recursively inspect containers/closures and does not constrain what the
+preamble itself may execute.
 
 **AST validation (`_sandbox.validate_user_code` → `_validate_user_code_cached`)**
 1. Look up `(code, allow_imports)` in `_validation_cache`; return immediately on a
@@ -130,9 +139,9 @@ from `visit_Call` whenever `node.func` is an `ast.Attribute` whose `.attr` is on
 of `_FORMAT_METHOD_NAMES`. Receiver shapes:
 - `ast.Name` equal to `"pl"` and not `polars_alias_shadowed` → allowed
   unconditionally (trusted as the polars module's `pl.format(...)` builder).
-- `ast.Constant` holding a `str` → allowed unless `_FORMAT_DUNDER_FIELD` matches
-  (a `{...}` field containing `.` or `[` followed by a `__`-bracketed dunder name)
-  anywhere in the literal.
+- `ast.Constant` holding a `str` → parsed by `string.Formatter`; allowed only when
+  neither a top-level nor nested-format-spec replacement field traverses into a
+  dunder. A malformed template raises `UnsafeCodeError`.
 - Anything else (`BinOp` concatenation, a name-bound template variable, a call
   result, an f-string, …) → always rejected — the validator cannot statically
   vet what the template will be at runtime.
@@ -156,17 +165,18 @@ of `_FORMAT_METHOD_NAMES`. Receiver shapes:
    and return it only if `isinstance(obj, type)`; otherwise raise
    `_blocked_pickle_error(...)` with an "expected an allowlisted class" reason.
    Else raise `_blocked_pickle_error(..., "not in the allowlist")`.
-5. `safe_joblib_load`: acquires `_joblib_lock` (module-level `threading.Lock`),
-   captures `NumpyUnpickler.find_class` as `original_find_class` **inside** the
-   lock (see Edge cases below), monkey-patches `NumpyUnpickler.find_class` with a
-   closure that routes through `_resolve_allowed_global(lambda m, n:
-   original_find_class(self, m, n), module, name)`, calls `joblib.load(validated)`,
-   and restores `original_find_class` in a `finally` — all while holding the lock,
-   so the patch-call-restore sequence is atomic with respect to other
-   `safe_joblib_load` callers. If `joblib.numpy_pickle.NumpyUnpickler` cannot be
-   imported at all, logs a warning and falls back to `safe_unpickle(validated)`
-   (still project-root-validated, still going through the same
-   `_resolve_allowed_global` gate).
+5. `safe_joblib_load` defines a private `NumpyUnpickler` subclass whose
+   `find_class` routes through `_resolve_allowed_global`, then uses joblib's
+   file-object validation/decompression context and instantiates that subclass
+   directly. It never mutates `NumpyUnpickler.find_class` process-wide. Haute
+   declares `joblib>=1.5,<2` directly because this restricted path requires the
+   private file-object validator and native-byte-order constructor contract
+   introduced in joblib 1.5. A missing `joblib` package logs a warning and falls
+   back to `safe_unpickle(validated)`; an installed joblib missing those private
+   APIs, or exposing an incompatible unpickler constructor, raises `RuntimeError`.
+   If joblib's file-object validator reports a legacy string-backed persistence
+   format, the loader raises `ValueError` rather than bypassing the restricted
+   subclass.
 
 **Local session enforcement (per-request, `server.py` + `_local_security.py`)**
 1. `LocalTrustedHostMiddleware` runs first (outermost of the two added
@@ -175,7 +185,9 @@ of `_FORMAT_METHOD_NAMES`. Receiver shapes:
    `LocalSessionMiddleware`, so it wraps/executes before it). Non-HTTP/WebSocket
    scopes pass through. HTTP/WebSocket requests carrying `Forwarded` or any
    `X-Forwarded-*` authority/address header return `400`; a malformed or
-   non-loopback Host does the same. There is no wildcard/remote allow mode.
+   Host not present in the validated loopback `allowed_hosts` configuration does
+   the same. Entries without a port allow any port on that exact host; entries
+   with a port require it exactly. There is no wildcard/remote allow mode.
 2. `LocalSessionMiddleware.dispatch`: short-circuits if auth is explicitly disabled
    or the path is not `/api/*`. `POST /api/session/bootstrap` and `OPTIONS` require
    `_origin_state(...) == "trusted"`; bootstrap then reaches the route that writes
@@ -210,6 +222,13 @@ of `_FORMAT_METHOD_NAMES`. Receiver shapes:
    the containment check against that context-local root at the final read seam.
    Database/Databricks/named-provider identifiers are not local path fields and
    retain their provider-owned external-resource semantics.
+4. `_builders._build_data_input` invokes `_exec_user_code` exactly once for non-empty
+   code after provider resolution. `DataOutputConfig` rejects `code`. Source-cache
+   paths are derived only from validated digest/generation identifiers under the
+   cache root; output execution validates both final and unique staging paths and
+   rechecks containment before replace. Resolved secrets and live provider/cache
+   objects are excluded from the user namespace, persisted metadata, and surfaced
+   errors.
 
 **`.gitignore` guard writer (`ensure_gitignore_guards`)**
 1. If `project_dir/.gitignore` doesn't exist, write all `GITIGNORE_GUARD_ENTRIES`
@@ -228,15 +247,9 @@ of `_FORMAT_METHOD_NAMES`. Receiver shapes:
   NTFS/APFS) cannot slip past a case-sensitive string-prefix check while still
   resolving to the same real file on disk. On case-sensitive POSIX filesystems
   `normcase` is the identity, so behavior is unchanged there.
-- **`joblib` monkey-patch capture must happen inside the lock, not before it.**
-  An earlier version captured `original_find_class` before acquiring
-  `_joblib_lock`; under concurrent calls, a thread could capture a *different*
-  thread's already-installed restricted shim as "the original" and later restore
-  that shim permanently instead of the true original, silently disabling the
-  restriction for every subsequent `joblib.load()` in the process. The fix moved
-  the capture inside the lock (`tests/test_sandbox.py::TestJoblibMonkeyPatchThreadSafety`
-  pins this with a 4-thread barrier test and a sentinel-`find_class`
-  determinism test).
+- **Restricted joblib loading is instance-scoped.** The restricted subclass
+  preserves concurrent safety without a lock and without exposing a temporary
+  process-wide shim to unrelated joblib callers.
 - **A `pl.format(...)` carve-out that stops applying the moment `pl` is
   reassigned anywhere in the module** — not just before the call site
   lexically. This is intentionally conservative (a false rejection is preferred
@@ -272,8 +285,9 @@ of `_FORMAT_METHOD_NAMES`. Receiver shapes:
   copies *that* into the returned `ns` — so mutating one exec call's builtins
   (e.g. code that somehow rebinds a name in `__builtins__`) cannot leak into a
   subsequent `safe_globals()` call's namespace.
-- **`safe_joblib_load`'s `ImportError` fallback still enforces the allowlist** —
-  it degrades to `safe_unpickle`, not to unrestricted `joblib.load`.
+- **`safe_joblib_load` falls back only when the top-level `joblib` package is
+  absent.** That path degrades to `safe_unpickle`, not unrestricted loading.
+  An installed joblib with missing/incompatible private APIs fails loudly.
 - **`_bound_names` treats `import polars as pl` as not-shadowing** (it is the
   trusted binding the carve-out exists for) but treats every *other* way of
   binding the name `pl` — assignment, function parameter, `except ... as pl`,
@@ -306,15 +320,20 @@ of `_FORMAT_METHOD_NAMES`. Receiver shapes:
   this component; propagates to the caller (`_io.load_external_object` and its
   callers).
 - `ValueError` — raised by `validate_project_path` for any path resolving outside
-  the project root (including the `commonpath` mixed-root case). Not caught
-  inside this component.
+  the project root (including the `commonpath` mixed-root case), and by
+  `safe_joblib_load` when joblib exposes a legacy string-backed persistence format
+  that cannot use the restricted unpickler. Not caught inside this component.
+- `RuntimeError` — raised when installed joblib lacks the private
+  `NumpyUnpickler`/file-object validation APIs required to enforce the allowlist,
+  or when its private unpickler constructor is incompatible with the supported
+  joblib 1.x contract.
 - Local-session/host failures never raise into application code — they are
   short-circuited as HTTP `400`/`403` `JSONResponse`s (or a plain-text `400` for
   the trusted-host check) or a WebSocket close before `accept()`; there is no
   exception type associated with a rejection at this layer.
-- `_env.py`'s parsers never raise — a malformed value is caught internally
-  (`ValueError` from `float()`/`int()`) and converted into a logged warning plus
-  the default return value.
+- `_env.py` returns a default only for an unset variable. Explicit malformed,
+  non-finite, zero, or negative values raise `RuntimeError`; an optional integer
+  returns `None` only when the variable is absent.
 - `ensure_gitignore_guards` does not raise on non-UTF-8 existing `.gitignore`
   content (`errors="replace"` on read); ordinary filesystem errors (permission
   denied, disk full) propagate uncaught.
@@ -339,10 +358,11 @@ of `_FORMAT_METHOD_NAMES`. Receiver shapes:
   post-remediation, kept side by side deliberately as living documentation of
   what changed and why.
 - `tests/test_sandbox_coverage_gaps.py` — targets the *accept* arms of
-  `_RestrictedUnpickler.find_class`/the joblib shim specifically (the exhaustive
+  `_RestrictedUnpickler.find_class`/the restricted joblib subclass specifically (the exhaustive
   suite above concentrates on the *reject* arms): exact 2-tuple accepts for both
-  the `_ALLOWED_PICKLE_GLOBALS` and `_ALLOWED_PICKLE_CLASSES` tiers, the joblib
-  `ImportError`→`safe_unpickle` fallback, and `match`/`case`-bound `pl` alias
+  the `_ALLOWED_PICKLE_GLOBALS` and `_ALLOWED_PICKLE_CLASSES` tiers, the top-level
+  joblib-package-absent → `safe_unpickle` fallback, installed-private-API failure,
+  and `match`/`case`-bound `pl` alias
   shadowing (`MatchStar`, `MatchMapping.rest`) not covered by the main suite's
   simpler shadowing tests.
 
@@ -362,8 +382,8 @@ of `_FORMAT_METHOD_NAMES`. Receiver shapes:
 - `tests/test_env_lazy_accessors.py` — unit tests for the three `_env.py` parse
   helpers directly, plus a parametrized sweep (`_ACCESSOR_CASES`) over every
   known call site across the codebase that wraps a knob in a lazy accessor
-  function, asserting each honours a post-import env override and degrades to
-  its default on a malformed value. This is the regression suite for the
+  function, asserting each honours a post-import env override and rejects a
+  malformed explicit value. This is the regression suite for the
   "frozen at import" defect class described in the file's docstring.
 - `tests/test_gitignore_guard.py` — pins the guard-entry list's required
   contents (including the explicit "stable-layer JSON must NOT be ignored"
@@ -376,7 +396,7 @@ of `_FORMAT_METHOD_NAMES`. Receiver shapes:
   relative sink path *inside* the project root is allowed through once
   authenticated (proving the guards aren't over-broad). Also covers the
   project-root path-escape rejection at the executor level
-  (`execute_sink`/`ValueError` match) as a companion to the HTTP-level checks.
+  (`write_data_output`/`ValueError` match) as a companion to the HTTP-level checks.
 - `tests/test_local_security.py` is the dedicated local-browser boundary suite:
   exact bootstrap Origin/Host matching, HttpOnly/no-store cookie creation,
   absent/mismatched/forwarded rejection, cookie-authenticated API/WebSocket
@@ -388,32 +408,27 @@ of `_FORMAT_METHOD_NAMES`. Receiver shapes:
   modelling, and optimiser route families, submodel flatten-before-validation,
   mixed separators, absolute/traversal/symlink escapes, and the explicitly
   selected direct-execution external-pipeline root exception.
+- `tests/test_path_traversal_advanced.py` — adversarial config/model path resolution:
+  symlink escapes, Windows mixed separators, null bytes, overlong paths,
+  `config_path_for_node`, function-name lookup, and project-path edge cases.
+- `tests/test_path_traversal_fixes.py` — route/config traversal regressions for
+  optimiser save, submodel lookup/create/dissolve, dissolve-sidecar files, and the
+  shared `validate_safe_path` boundary.
+- `tests/test_write_sandbox_guard.py` and `tests/test_write_sandbox_lint.py` — prove
+  restricted tests cannot write outside their per-test roots and statically enforce
+  guarded filesystem APIs. `tests/_write_sandbox.py::STRICT_FILES` is the maintained
+  converted-module index, and the CI `platform-smoke` lane exercises this guard on
+  supported operating systems.
+- Caller-level I/O/cache/executor regressions cover input/output traversal, symlink
+  swaps, malformed cache digest/generation identifiers, staging-path containment,
+  exactly-once input-code execution, output-code rejection, and secret-free
+  namespaces/failures.
 
 > NOTE: `test_env_lazy_accessors.py`'s `_ACCESSOR_CASES` table is a manually
 > maintained parallel list of migrated lazy-knob call sites; a new knob added
 > elsewhere in the codebase that forgets to use `haute._env`'s helpers (or
 > forgets a corresponding entry here) would not be caught by this test file
 > itself — the regression protection is only as complete as the table's upkeep.
-
-## Approved change contract — 0.7.0 unified data-I/O security
-
-Remaining sandbox and security improvement work is tracked in the
-[security and supply-chain roadmap](../../roadmap/security-supply-chain.md).
-
-- `_builders._build_data_input` invokes `_user_exec._exec_user_code` exactly once for non-empty
-  input code, after provider dispatch and before returning the frame. No provider-specific
-  `exec()` or expanded `safe_globals` path is added. Config validation rejects a `code` key on
-  `DataOutputConfig`.
-- File/lakehouse provider adapters validate direct locators against the project root before
-  open. Credential-free raw SQLite input/output URIs resolve relative to the pipeline and are
-  subject to the same project-root containment; named connection values stay provider-owned.
-  `SourceCacheStore` derives paths only beneath its validated project cache root from a checked
-  digest/generation id. Unified output execution validates the final destination and unique
-  sibling staging path before writer invocation and rechecks containment before replace.
-- Add caller-level tests in the I/O/cache/executor suites for project escape, symlink swaps,
-  malformed digest/generation ids, staging-path containment, and secret-free user namespaces.
-  Extend sandbox tests only for the retained input-code entry point; the underlying AST/global
-  allow-list contract does not fork by provider.
 
 ## Approved change contract — canonical sandbox payload
 

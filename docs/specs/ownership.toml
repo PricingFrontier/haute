@@ -1,6 +1,7 @@
-# Files intentionally named by more than one component Module map.  The
-# primary component owns the file's specification; consumers document only
-# their direct interaction with it.
+# Files intentionally shared across component specifications. The primary
+# component owns the file's behaviour; consumers document only a direct
+# interaction. A record is mandatory when multiple Module maps name the file
+# or when prose makes an explicit cross-component ownership claim.
 
 version = 1
 
@@ -71,6 +72,12 @@ consumers = ["assistant", "engineering-quality"]
 reason = "Package metadata also configures quality tools and declares the assistant dependency."
 
 [[shared_file]]
+path = "src/haute/_builders.py"
+primary = "execution-engine"
+consumers = ["pipeline-config"]
+reason = "Execution owns runtime builders; pipeline configuration consumes their registry contracts."
+
+[[shared_file]]
 path = "src/haute/_gitignore_guard.py"
 primary = "sandbox-security"
 consumers = ["git-integration"]
@@ -83,10 +90,22 @@ consumers = ["server-api"]
 reason = "Local security policy protects the server's file-facing routes."
 
 [[shared_file]]
+path = "src/haute/_node_builder.py"
+primary = "execution-engine"
+consumers = ["pipeline-config"]
+reason = "Execution owns runtime builder interception; pipeline configuration documents the shared seam."
+
+[[shared_file]]
 path = "src/haute/_path_resolution.py"
 primary = "sandbox-security"
 consumers = ["execution-engine", "io-layer"]
 reason = "Security owns runtime containment; execution and I/O consume the shared resolver."
+
+[[shared_file]]
+path = "src/haute/_source_cache.py"
+primary = "io-layer"
+consumers = ["caching"]
+reason = "I/O owns source snapshot publication and leases; caching consumes the checked identity and immutable generation contract."
 
 [[shared_file]]
 path = "src/haute/routes/_save_pipeline.py"

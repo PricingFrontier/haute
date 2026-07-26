@@ -121,6 +121,15 @@ class SupersessionCoordinator:
                             cancel_active,
                         )
 
+                if worker_error is not None:
+                    # A timeout that leaves blocking work running carries the
+                    # background future which owns the route's deferred
+                    # execution-context cleanup. Never replace that exception
+                    # with a 409: the route must see it to keep cache leases and
+                    # admission held until the worker really exits.
+                    if deferred_limiter_release is not None:
+                        raise worker_error
+
                 async with state.condition:
                     if generation != state.latest_generation:
                         raise SupersededRequestError(message)
