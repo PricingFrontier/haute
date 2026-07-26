@@ -307,8 +307,8 @@ Out of scope (owned elsewhere):
   inaccessible does not fail the whole `/model-versions` response — its
   run-derived params are reported as empty and the failure is logged,
   since the version record itself is still valid.
-- Invalid disk-cache identity — a `run_id` containing a path separator or
-  `..`, or an `artifact_path` that would resolve outside the cache root —
+- Invalid disk-cache identity — an empty `run_id`, `.`, `..`, a null byte,
+  a path separator, or an `artifact_path` that would resolve outside the cache root —
   raises `ValueError` before any filesystem I/O is attempted.
 
 > NOTE: pyfunc models never populate the on-disk artifact cache under

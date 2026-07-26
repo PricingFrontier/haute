@@ -61,14 +61,22 @@ def _catboost_pool_for_row(scoring_model: Any, input_row: dict[str, Any]) -> Any
         flavor="catboost",
     )
 
-    if cat_cols:
-        cat_indices = [features.index(column) for column in cat_cols]
-        return Pool(
-            x_data,
-            cat_features=cat_indices,
-            feature_names=features,
-        )
-    return Pool(x_data, feature_names=features)
+    offset_column = getattr(scoring_model, "offset_column", None)
+    if offset_column:
+        if offset_column not in input_row:
+            raise ModelExplanationError(
+                "Missing offset column required for CatBoost SHAP explanation: " + offset_column
+            )
+        baseline = pl.Series([input_row[offset_column]]).cast(pl.Float64).to_numpy()
+    else:
+        baseline = None
+    cat_indices = [features.index(column) for column in cat_cols]
+    return Pool(
+        x_data,
+        cat_features=cat_indices if cat_indices else None,
+        feature_names=features,
+        baseline=baseline,
+    )
 
 
 def _normalise_shap_values(shap_values: Any, feature_count: int) -> np.ndarray:

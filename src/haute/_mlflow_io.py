@@ -233,7 +233,16 @@ _disk_cache_active_runs_guard = threading.Lock()
 
 
 def _validate_disk_cache_run_id(run_id: str) -> None:
-    if not run_id or os.sep in run_id or "/" in run_id or ".." in run_id:
+    if (
+        not run_id
+        or run_id in {".", ".."}
+        or "\x00" in run_id
+        or os.sep in run_id
+        or (os.altsep is not None and os.altsep in run_id)
+        or "/" in run_id
+        or "\\" in run_id
+        or ".." in run_id
+    ):
         raise ValueError(f"Invalid run_id: {run_id!r}")
 
 
@@ -659,8 +668,10 @@ def _evict_disk_cache(cache_root: Path) -> None:
         with _disk_cache_active_runs_guard:
             if d.name in _disk_cache_active_runs:
                 continue
-            logger.info("mlflow_disk_cache_evict", path=str(d))
-            shutil.rmtree(d, ignore_errors=True)
+        # Filesystem deletion may block; unrelated model loads must still be
+        # able to mark their run directories as active while it proceeds.
+        logger.info("mlflow_disk_cache_evict", path=str(d))
+        shutil.rmtree(d, ignore_errors=True)
 
 
 def _resolve_artifact_local(
@@ -858,12 +869,9 @@ def _load_with_bounded_retry(
 
     last_err: BaseException | None = None
     for attempt in range(1, _LOAD_MAX_ATTEMPTS + 1):
-        local_path = _resolve_artifact_local(
-            mlflow_mod,
-            run_id,
-            artifact,
-        )
+        local_path: str | None = None
         try:
+            local_path = _resolve_artifact_local(mlflow_mod, run_id, artifact)
             if flavor == "catboost":
                 raw = _load_catboost_model(local_path, task)
                 return _wrap_catboost(raw)
@@ -887,8 +895,8 @@ def _load_with_bounded_retry(
             )
             # Delete suspected-corrupt cache so the next attempt
             # re-downloads from scratch.
-            cached_file = Path(local_path)
-            if cached_file.is_file():
+            cached_file = Path(local_path) if local_path is not None else None
+            if cached_file is not None and cached_file.is_file():
                 cached_file.unlink()
             if attempt >= _LOAD_MAX_ATTEMPTS:
                 break
@@ -971,7 +979,7 @@ def load_mlflow_model(
             fast_key = _model_cache_key(
                 source_type=source_type,
                 run_id=run_id,
-                version="",
+                version=version,
                 artifact_path=artifact_path,
                 task=task,
                 artifact_fingerprint="",
@@ -995,7 +1003,7 @@ def load_mlflow_model(
                     fast_key = _model_cache_key(
                         source_type=source_type,
                         run_id=run_id,
-                        version="",
+                        version=version,
                         artifact_path=artifact_path,
                         task=task,
                         artifact_fingerprint=_local_artifact_fingerprint(

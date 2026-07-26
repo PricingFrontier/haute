@@ -1564,6 +1564,7 @@ def _sink_to_temp(
 
 def _declared_empty_score_dtypes(
     *,
+    scoring_model: Any,
     flavor: _ModelFlavor,
     task: str,
     include_proba: bool,
@@ -1577,7 +1578,14 @@ def _declared_empty_score_dtypes(
     """Return task/flavor output dtypes when the scoring contract fixes them."""
     if flavor != "catboost":
         return None
-    prediction_dtype = pl.Int64 if task == "classification" else pl.Float64
+    if task == "classification":
+        raw_model = getattr(scoring_model, "raw_model", scoring_model)
+        classes = getattr(raw_model, "classes_", None)
+        if classes is None or len(classes) == 0:
+            raise ValueError("CatBoost classification model has no classes_ for empty-score schema")
+        prediction_dtype = pl.Series("prediction", classes).dtype
+    else:
+        prediction_dtype = pl.Float64
     proba_dtype = pl.Float64 if include_proba else None
     return prediction_dtype, proba_dtype
 
@@ -1699,6 +1707,7 @@ def _batch_score_to_parquet(
             # learned rather than guessed.
             input_schema = pl.read_parquet_schema(input_path)
             declared_dtypes = _declared_empty_score_dtypes(
+                scoring_model=scoring_model,
                 flavor=scoring_model.flavor,
                 task=task,
                 include_proba=can_predict_proba,

@@ -229,10 +229,10 @@ categorical domains, prepares the predict frame (offset column riding
 along for pyfunc/rustystats, or supplied as a CatBoost Pool baseline),
 predicts, appends the proba column if applicable, applies the write
 projection, writes to a `ParquetWriter` opened lazily from the first
-chunk's Arrow schema. If the input has zero rows, no chunk loop runs; a
-one-row synthetic probe (built from the input's stored parquet schema) is
-scored instead purely to derive the correct output dtypes (including a
-non-Float64 CatBoost classifier hard-label dtype), and an empty table
+chunk's Arrow schema. If the input has zero rows, no chunk loop runs; CatBoost
+derives its hard-label dtype from `raw_model.classes_` (and uses `Float64` for
+probabilities), while other flavors use a schema-shaped probe. A CatBoost
+classifier whose label domain is unavailable raises rather than guessing, and an empty table
 with those dtypes is written. Any failure before the writer closes
 cleans up the (incomplete) output file in a `finally`.
 
@@ -332,10 +332,11 @@ endpoint.
   features appear in the schema in the same relative order they were
   declared in training (`_validate_features_uncached`'s
   `actual_order_by_position` check).
-- **The batch scorer's zero-row output dtype is derived, never
-  hardcoded**, from a one-row synthetic probe scored through the same
-  code path as real rows — including re-deriving the classification proba
-  dtype — so an empty score of a model produces a parquet schema
+- **The batch scorer's zero-row output dtype is derived from model metadata
+  where available, never assumed from the task alone.** CatBoost classification
+  uses `classes_` for hard labels and raises if that metadata is absent; other
+  flavors use a one-row synthetic probe through the real scoring path. This
+  keeps an empty score's parquet schema
   byte-for-byte type-compatible with a non-empty score of the same model.
   A probe `predict()` failure here is allowed to propagate rather than
   falling back to a guessed dtype.
@@ -521,7 +522,6 @@ in this component's own test files at the time of writing.
 Remaining model-registry improvement work is tracked in the
 [modelling roadmap](../../roadmap/modelling.md).
 
-- Replace `_batch_score_to_parquet`'s all-null synthetic-row dtype probe with a typed empty-output construction when the selected model flavor and its metadata fully determine prediction and probability dtypes. Never call `predict()` for a valid zero-row batch merely to infer a schema. If the required metadata is absent or ambiguous, raise a contextual error.
 - In deploy-live/eager scoring, derive the categorical-validation input from the union of categorical feature columns, model-required features, offset handling, and write-projection necessities. Validate against that projected frame rather than the complete input frame.
 - Do not add an array-contiguity conversion until its dedicated benchmark exceeds the agreed threshold and its regression tests demonstrate identical feature order, values, null treatment, and output dtypes.
 

@@ -55,6 +55,10 @@ def _make_mock_model(
     """Create a mock model with predict / predict_proba / feature_names_."""
     model = MagicMock()
     model.feature_names_ = feature_names or ["a", "b"]
+    # Native CatBoost classifiers expose their training-label domain.  Keep
+    # the test double faithful so empty-batch schema derivation exercises the
+    # real contract rather than a fabricated fallback.
+    model.classes_ = np.array([0, 1])
     if predictions is not None:
         model.predict.return_value = np.array(predictions)
     else:
@@ -1562,6 +1566,8 @@ class TestBatchScoreToParquetEmptyDtype:
         expected_columns: dict[str, pl.DataType],
     ) -> None:
         class NullRejectingModel:
+            classes_ = np.array([0, 1])
+
             def predict(self, _frame):
                 raise AssertionError("empty input must not score a synthetic null row")
 
