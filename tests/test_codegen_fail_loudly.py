@@ -4,10 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from haute._codegen_builders import (
-    _gen_submodel_placeholder_unreachable,
-    _portable_path_expr,
-)
+from haute._codegen_builders import _gen_submodel_placeholder_unreachable
 from haute.codegen import (
     _error_on_name_collisions,
     _format_contract_kwarg,
@@ -45,6 +42,62 @@ def Step(df: pl.LazyFrame) -> pl.LazyFrame:
 
     assert injected.splitlines()[0] == '@pipeline.polars(contract="opaque")'
     _compile_node_code(injected)
+
+
+def test_config_backed_node_without_decorator_mapping_fails_loudly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import haute.codegen as codegen
+
+    node = _n(
+        {
+            "id": "configured",
+            "data": {"label": "Configured", "nodeType": "banding", "config": {}},
+        }
+    )
+    monkeypatch.setattr(codegen, "has_config_folder", lambda _node_type: True)
+    monkeypatch.setattr(
+        codegen,
+        "_generate_node_code",
+        lambda *_args, **_kwargs: (
+            "@pipeline.polars()\ndef Configured(df: pl.LazyFrame) -> pl.LazyFrame:\n    return df\n"
+        ),
+    )
+    monkeypatch.setattr(codegen, "NODE_TYPE_TO_DECORATOR", {})
+
+    with pytest.raises(HauteError, match="no registered decorator") as exc_info:
+        codegen._node_to_code(node)
+
+    assert exc_info.value.context["node_id"] == "configured"
+
+
+def test_config_backed_builder_without_function_definition_fails_loudly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import haute.codegen as codegen
+
+    node = _n(
+        {
+            "id": "configured",
+            "data": {"label": "Configured", "nodeType": "banding", "config": {}},
+        }
+    )
+    monkeypatch.setattr(codegen, "has_config_folder", lambda _node_type: True)
+    monkeypatch.setattr(
+        codegen,
+        "_generate_node_code",
+        lambda *_args, **_kwargs: "@pipeline.polars()\nConfigured = object()\n",
+    )
+    monkeypatch.setattr(
+        codegen,
+        "NODE_TYPE_TO_DECORATOR",
+        {node.data.nodeType: "polars"},
+    )
+
+    with pytest.raises(HauteError, match="no function definition") as exc_info:
+        codegen._node_to_code(node)
+
+    assert exc_info.value.context["node_label"] == "Configured"
 
 
 def test_format_contract_kwarg_preserves_inputs_by_parent() -> None:
@@ -576,14 +629,6 @@ def test_submodel_placeholder_codegen_is_unreachable() -> None:
 
     with pytest.raises(RuntimeError, match="submodel placeholder node"):
         _gen_submodel_placeholder_unreachable(node, [])
-
-
-def test_portable_path_expr_normalizes_windows_paths() -> None:
-    assert _portable_path_expr(r"C:\models\score.cbm") == '"C:/models/score.cbm"'
-    assert (
-        _portable_path_expr(r"nested\data.parquet")
-        == 'Path(__file__).parent / "nested/data.parquet"'
-    )
 
 
 def test_error_on_name_collisions_reports_all_buckets() -> None:

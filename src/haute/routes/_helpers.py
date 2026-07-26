@@ -558,11 +558,11 @@ async def broadcast(data: dict[str, Any]) -> None:
 # Lightweight index: pipeline_name → file_path.
 #
 # Lifecycle:
-#   1. Populated at server startup by ``haute.server._lifespan``.
-#   2. Rebuilt on file-watcher events by ``haute.server._file_watcher``, which
-#      is the *only* production caller of ``invalidate_pipeline_index``.
-# No other production code path is allowed to clear or rebuild the index —
-# doing so reintroduces the "two sources of truth" race the review flagged.
+#   1. Primed at server startup by ``haute.server._lifespan``.
+#   2. Invalidated by the file watcher for direct pipeline-source add/modify/delete.
+#   3. Invalidated after ``SavePipelineService`` commits a successful save.
+# Other production code paths must treat the cache as read-only; adding an
+# uncoordinated writer would reintroduce the race the review flagged.
 #
 # The lock below serialises the rebuild path so two concurrent readers that
 # both observe a cold cache cannot scan the filesystem twice.  The swap at
@@ -571,21 +571,22 @@ async def broadcast(data: dict[str, Any]) -> None:
 # the previous dict or the new dict, never a half-populated one.
 _pipeline_index: dict[str, Path] | None = None
 _pipeline_index_lock = threading.Lock()
+_pipeline_index_generation = 0
 
 
 def invalidate_pipeline_index() -> None:
     """Clear the cached pipeline name→path index.
 
-    Intended to be called **only** from the file-watcher in
-    ``haute.server._file_watcher``.  All other production code paths must
-    treat the cache as read-only — startup + watcher are the two — and only
-    two — legitimate writers.  Test suites are free to poke this directly
-    to set up fresh state between tests.
+    Production callers are the file watcher (for direct source additions,
+    modifications, and deletions) and ``SavePipelineService`` after a successful
+    commit. All other production code paths must treat the cache as read-only.
+    Test suites may call this directly to establish fresh state.
     """
-    global _pipeline_index, _module_deps
+    global _pipeline_index, _pipeline_index_generation, _module_deps
     with _pipeline_index_lock:
         _pipeline_index = None
         _module_deps = None
+        _pipeline_index_generation += 1
 
 
 def _ensure_pipeline_index() -> dict[str, Path]:
@@ -653,6 +654,7 @@ def discover_pipelines() -> list[Path]:
 # Module dependency map: module_stem → set of pipeline Paths that import it
 # ---------------------------------------------------------------------------
 _module_deps: dict[str, set[Path]] | None = None
+_module_deps_lock = threading.Lock()
 
 
 def _module_dep_key(module_stem: str) -> str:
@@ -673,30 +675,50 @@ def _ensure_module_deps() -> dict[str, set[Path]]:
 
     Scans each pipeline source for ``pipeline.submodel("...")`` calls and
     maps the module file stem to the set of pipeline files that reference it.
+    A dedicated build lock coalesces concurrent scans without blocking pipeline
+    index invalidation. The builder snapshots the index generation and publishes
+    only if it is unchanged; otherwise it rescans before returning.
     """
     global _module_deps
-    if _module_deps is not None:
-        return _module_deps
+    cached = _module_deps
+    if cached is not None:
+        return cached
 
     import ast
 
-    deps: dict[str, set[Path]] = {}
-    for f in discover_pipelines():
-        try:
-            source = read_user_text(f)
-            tree = ast.parse(source)
-        except Exception as exc:
-            logger.warning("module_deps_parse_failed", file=f.name, error=str(exc))
-            continue
+    with _module_deps_lock:
+        while True:
+            with _pipeline_index_lock:
+                cached = _module_deps
+                if cached is not None:
+                    return cached
+                build_generation = _pipeline_index_generation
 
-        from haute._parser_submodels import extract_submodel_calls
+            deps: dict[str, set[Path]] = {}
+            for f in discover_pipelines():
+                try:
+                    source = read_user_text(f)
+                    tree = ast.parse(source)
+                except Exception as exc:
+                    logger.warning("module_deps_parse_failed", file=f.name, error=str(exc))
+                    continue
 
-        for rel_path in extract_submodel_calls(tree):
-            module_stem = Path(rel_path).stem
-            deps.setdefault(_module_dep_key(module_stem), set()).add(f)
+                from haute._parser_submodels import extract_submodel_calls
 
-    _module_deps = deps
-    return _module_deps
+                for rel_path in extract_submodel_calls(tree):
+                    module_stem = Path(rel_path).stem
+                    deps.setdefault(_module_dep_key(module_stem), set()).add(f)
+
+            with _pipeline_index_lock:
+                if build_generation != _pipeline_index_generation:
+                    logger.debug(
+                        "module_deps_rebuild_restarted",
+                        build_generation=build_generation,
+                        current_generation=_pipeline_index_generation,
+                    )
+                    continue
+                _module_deps = deps
+                return deps
 
 
 def pipelines_importing_module(module_stem: str) -> list[Path]:

@@ -926,3 +926,25 @@ def test_shred_scalar_array_table_distributes_ancestor_column() -> None:
         {"value": "comprehensive", "policy_id": 1},
         {"value": "TPO", "policy_id": 2},
     ]
+
+
+def test_shred_object_table_ignores_ancestor_scalar_value_column() -> None:
+    cfg = {
+        "path": "x.json",
+        "contract": "opaque",
+        "tables": [
+            {
+                "path": "$[:].items[:]",
+                "label": "items",
+                "emit": True,
+                "columns": [
+                    {"name": "name", "path": "$[:].items[:].name", "type": "str", "selected": True},
+                    {"name": "root_value", "path": "$[:].$value", "type": "str", "selected": True},
+                ],
+            },
+        ],
+    }
+
+    assert shred_to_buffers([{"items": [{"name": "kept"}]}], cfg) == {
+        "items": [{"name": "kept", "root_value": None}],
+    }

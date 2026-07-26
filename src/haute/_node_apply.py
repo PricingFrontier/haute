@@ -356,6 +356,7 @@ def assemble_output_from_config(
     from haute._output_assembler import (
         OutputMappingSchemaError,
         assemble_output_from_mapping,
+        is_active_mapping_entry,
     )
 
     if mapping is None:
@@ -368,7 +369,7 @@ def assemble_output_from_config(
     names = list(source_names) if source_names is not None else []
     frames: dict[str, _Frame] = dict(zip(names, positional, strict=False))
     frames.update(named)
-    referenced_ports = {e["source_port"] for e in mapping if e["enabled"]}
+    referenced_ports = {e["source_port"] for e in mapping if is_active_mapping_entry(e)}
     incoming = positional + list(named.values())
     if len(incoming) == 1 and referenced_ports:
         frames = {port: incoming[0] for port in referenced_ports}
