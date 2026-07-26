@@ -20,6 +20,7 @@ from haute._execute_lazy import (
     EagerResult,
     _apply_selected_columns,
     _build_funcs,
+    _checkpoint_filename,
     _execute_eager_core,
     _execute_lazy,
     _extract_error_line,
@@ -716,6 +717,61 @@ def _join_build_fn(node: GraphNode, source_names=None, **kwargs):
 class TestCheckpointing:
     """Tests for checkpoint_dir parameter on _execute_lazy."""
 
+    @pytest.mark.parametrize(
+        "node_id",
+        [
+            "/absolute",
+            r"C:\absolute",
+            "",
+            ".",
+            "..",
+            "CON",
+            "CON.version",
+            "lpt1.checkpoint",
+            "name:alternate-stream",
+            "x" * 300,
+            "unicode/\N{SNOWMAN}",
+        ],
+    )
+    def test_unsafe_checkpoint_node_ids_map_to_opaque_single_components(self, node_id):
+        filename = _checkpoint_filename(node_id)
+
+        assert "/" not in filename
+        assert "\\" not in filename
+        assert filename.startswith("node=")
+        assert filename.endswith(".parquet")
+        assert filename == _checkpoint_filename(node_id)
+
+    def test_unsafe_checkpoint_namespace_cannot_collide_with_readable_node_id(self):
+        unsafe_filename = _checkpoint_filename("../escaped")
+        authored_stem = unsafe_filename.removesuffix(".parquet")
+
+        assert _checkpoint_filename(authored_stem) != unsafe_filename
+
+    def test_case_distinct_node_ids_get_distinct_checkpoints_on_windows(self, tmp_path):
+        """Case-insensitive filesystems must not alias separate graph nodes."""
+        g = PipelineGraph(
+            nodes=[
+                _source_node("s1"),
+                _source_node("s2"),
+                _transform_node("join"),
+                _transform_node("JOIN"),
+            ],
+            edges=[
+                _e("s1", "join"),
+                _e("s2", "join"),
+                _e("s1", "JOIN"),
+                _e("s2", "JOIN"),
+            ],
+        )
+
+        outputs, *_ = _execute_lazy(g, _join_build_fn, checkpoint_dir=tmp_path)
+
+        assert len(list(tmp_path.glob("*.parquet"))) == 2
+        assert _checkpoint_filename("join").casefold() != _checkpoint_filename("JOIN").casefold()
+        assert len(outputs["join"].collect()) == 2
+        assert len(outputs["JOIN"].collect()) == 2
+
     def test_checkpoint_creates_file_for_multi_input(self, tmp_path):
         """Multi-input (join) nodes produce checkpoint parquet files."""
         g = PipelineGraph(
@@ -894,6 +950,42 @@ class TestCheckpointing:
         df = outputs["j2"].collect()
         assert set(df.columns) >= {"key", "a", "b", "c"}
         assert len(df) == 2
+
+    @pytest.mark.parametrize(
+        "malicious_node_id",
+        [
+            "../escaped",
+            r"..\escaped",
+            "nested/escaped",
+            r"nested\escaped",
+        ],
+    )
+    def test_checkpoint_filename_cannot_be_controlled_by_node_id(
+        self,
+        tmp_path,
+        malicious_node_id,
+    ):
+        """Checkpoint storage treats graph node ids as data, never as path syntax."""
+        checkpoint_dir = tmp_path / "checkpoints"
+        checkpoint_dir.mkdir()
+        g = PipelineGraph(
+            nodes=[
+                _source_node("s1"),
+                _source_node("s2"),
+                _transform_node(malicious_node_id),
+            ],
+            edges=[
+                _e("s1", malicious_node_id),
+                _e("s2", malicious_node_id),
+            ],
+        )
+
+        outputs, *_ = _execute_lazy(g, _join_build_fn, checkpoint_dir=checkpoint_dir)
+
+        assert len(list(checkpoint_dir.glob("*.parquet"))) == 1
+        assert not (tmp_path / "escaped.parquet").exists()
+        assert not (checkpoint_dir / "nested").exists()
+        assert len(outputs[malicious_node_id].collect()) == 2
 
     def test_checkpoint_with_selected_columns(self, tmp_path):
         """selected_columns filtering should apply before checkpointing."""

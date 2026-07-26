@@ -342,6 +342,138 @@ def test_explicit_global_memory_cap_remains_hard_for_all_profiles(
         assert budget.config_key == "HAUTE_EXECUTION_MEMORY_LIMIT_MB"
 
 
+@pytest.mark.parametrize(
+    ("env_name", "resolver", "expected"),
+    [
+        (
+            "HAUTE_PREVIEW_MEMORY_LIMIT_BYTES",
+            lambda module: module._resolve_required_budget(ExecutionProfile.PREVIEW_EAGER),
+            7,
+        ),
+        (
+            "HAUTE_EXECUTION_OS_RESERVE_BYTES",
+            lambda module: module._resolve_os_reserve_bytes(),
+            7,
+        ),
+        (
+            "HAUTE_PREVIEW_PROCESS_RSS_LIMIT_BYTES",
+            lambda module: module._resolve_optional_rss_limit(ExecutionProfile.PREVIEW_EAGER),
+            (7, "HAUTE_PREVIEW_PROCESS_RSS_LIMIT_BYTES"),
+        ),
+    ],
+)
+def test_admission_numeric_env_is_read_once(
+    monkeypatch: pytest.MonkeyPatch,
+    env_name: str,
+    resolver,
+    expected,
+) -> None:
+    """A concurrent env mutation cannot race a presence check and second read."""
+    from haute import _execution_admission as admission_mod
+
+    _clear_execution_memory_env(monkeypatch)
+
+    class SingleReadEnvironment(dict):
+        def __init__(self) -> None:
+            super().__init__(admission_mod.os.environ)
+            self[env_name] = "7"
+            self.reads = 0
+
+        def get(self, key, default=None):
+            if key == env_name:
+                self.reads += 1
+            return super().get(key, default)
+
+        def __getitem__(self, key):
+            if key == env_name and self.reads:
+                raise AssertionError(f"{env_name} was read more than once")
+            return super().__getitem__(key)
+
+    environment = SingleReadEnvironment()
+    monkeypatch.setattr(admission_mod.os, "environ", environment)
+
+    resolved = resolver(admission_mod)
+
+    if hasattr(resolved, "memory_limit_bytes"):
+        resolved = resolved.memory_limit_bytes
+    assert resolved == expected
+    assert environment.reads == 1
+
+
+@pytest.mark.parametrize(
+    ("invalid_key", "lower_precedence_key", "resolver"),
+    [
+        (
+            "HAUTE_PREVIEW_MEMORY_LIMIT_BYTES",
+            "HAUTE_PREVIEW_MEMORY_LIMIT_MB",
+            lambda module: module._resolve_required_budget(ExecutionProfile.PREVIEW_EAGER),
+        ),
+        (
+            "HAUTE_EXECUTION_OS_RESERVE_BYTES",
+            "HAUTE_EXECUTION_OS_RESERVE_MB",
+            lambda module: module._resolve_os_reserve_bytes(),
+        ),
+        (
+            "HAUTE_PREVIEW_PROCESS_RSS_LIMIT_BYTES",
+            "HAUTE_PREVIEW_PROCESS_RSS_LIMIT_MB",
+            lambda module: module._resolve_optional_rss_limit(ExecutionProfile.PREVIEW_EAGER),
+        ),
+    ],
+)
+@pytest.mark.parametrize("invalid_value", ["", "0"])
+def test_invalid_highest_precedence_admission_env_does_not_fall_through(
+    monkeypatch: pytest.MonkeyPatch,
+    invalid_key: str,
+    lower_precedence_key: str,
+    resolver,
+    invalid_value: str,
+) -> None:
+    from haute import _execution_admission as admission_mod
+
+    _clear_execution_memory_env(monkeypatch)
+    monkeypatch.setenv(invalid_key, invalid_value)
+    monkeypatch.setenv(lower_precedence_key, "3")
+
+    with pytest.raises(RuntimeError, match=invalid_key):
+        resolver(admission_mod)
+
+
+@pytest.mark.parametrize(
+    ("env_name", "resolver", "expected"),
+    [
+        (
+            "HAUTE_PREVIEW_MEMORY_LIMIT_MB",
+            lambda module: (
+                module._resolve_required_budget(ExecutionProfile.PREVIEW_EAGER).memory_limit_bytes
+            ),
+            3 * 1024 * 1024,
+        ),
+        (
+            "HAUTE_EXECUTION_OS_RESERVE_MB",
+            lambda module: module._resolve_os_reserve_bytes(),
+            3 * 1024 * 1024,
+        ),
+        (
+            "HAUTE_PREVIEW_PROCESS_RSS_LIMIT_MB",
+            lambda module: module._resolve_optional_rss_limit(ExecutionProfile.PREVIEW_EAGER)[0],
+            3 * 1024 * 1024,
+        ),
+    ],
+)
+def test_admission_mb_env_applies_unit_after_shared_parse(
+    monkeypatch: pytest.MonkeyPatch,
+    env_name: str,
+    resolver,
+    expected: int,
+) -> None:
+    from haute import _execution_admission as admission_mod
+
+    _clear_execution_memory_env(monkeypatch)
+    monkeypatch.setenv(env_name, "3")
+
+    assert resolver(admission_mod) == expected
+
+
 def test_default_execution_budget_is_adaptive_across_local_engine_profiles(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -683,6 +815,70 @@ def test_execution_context_checkpoint_raises_when_cancelled() -> None:
 
     assert exc_info.value.operation == "preview"
     assert exc_info.value.job_id == "job-1"
+
+
+def test_memory_budget_fails_loudly_when_sampler_disappears_mid_run() -> None:
+    samples = iter([100, None])
+    sample_count = 0
+
+    def sample_memory() -> int | None:
+        nonlocal sample_count
+        sample_count += 1
+        return next(samples)
+
+    context = ExecutionContext(
+        operation="training",
+        profile=ExecutionProfile.TRAINING_PREP,
+        job_id="job-1",
+        memory_limit_bytes=1_000,
+        memory_baseline_bytes=0,
+        memory_sampler=sample_memory,
+    )
+
+    context.checkpoint(label="sample-available")
+    with pytest.raises(ExecutionMemoryLimitExceededError) as exc_info:
+        context.checkpoint(label="sample-unavailable")
+
+    assert exc_info.value.reason == "memory_sampler_unavailable"
+    assert exc_info.value.rss_bytes is None
+    assert sample_count == 2
+
+
+def test_memory_limit_error_rejects_missing_rss_for_other_reasons() -> None:
+    with pytest.raises(ValueError, match="rss_bytes may be None only"):
+        ExecutionMemoryLimitExceededError(
+            "training",
+            rss_bytes=None,
+            limit_bytes=1_000,
+        )
+
+
+def test_checkpoint_enforces_rss_limit_without_memory_growth_budget() -> None:
+    samples = iter([999, 1_001])
+    sample_count = 0
+
+    def sample_memory() -> int:
+        nonlocal sample_count
+        sample_count += 1
+        return next(samples)
+
+    context = ExecutionContext(
+        operation="preview",
+        profile=ExecutionProfile.PREVIEW_EAGER,
+        rss_limit_bytes=1_000,
+        memory_sampler=sample_memory,
+    )
+
+    context.checkpoint(label="under-rss-cap")
+    assert sample_count == 1
+
+    with pytest.raises(ExecutionMemoryLimitExceededError) as exc_info:
+        context.checkpoint(label="over-rss-cap")
+
+    assert sample_count == 2
+    assert exc_info.value.rss_bytes == 1_001
+    assert exc_info.value.rss_limit_bytes == 1_000
+    assert exc_info.value.reason == "rss_exceeds_memory_limit"
 
 
 @pytest.mark.parametrize("profile", list(ExecutionProfile))

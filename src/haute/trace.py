@@ -47,6 +47,7 @@ import polars as pl
 
 import haute.execution as execution_facade
 from haute._cache import GraphFingerprintMemo
+from haute._env import int_env
 from haute._execution_admission import create_admitted_execution_context
 from haute._execution_context import ExecutionContext, ExecutionProfile
 from haute._expression_parser import (
@@ -83,7 +84,6 @@ from haute.executor import (
     _compile_preamble,
     _estimate_preview_cache_entry_bytes,
     _pipeline_dir,
-    _positive_int_from_env,
 )
 from haute.graph_utils import (
     NodeType,
@@ -244,7 +244,7 @@ class TraceResult:
 # ---------------------------------------------------------------------------
 
 
-TRACE_CACHE_MAX_BYTES = _positive_int_from_env(
+TRACE_CACHE_MAX_BYTES = int_env(
     "HAUTE_TRACE_CACHE_MAX_BYTES",
     PREVIEW_CACHE_MAX_BYTES,
 )

@@ -16,9 +16,9 @@ still raise — the accept arm must not weaken the deny arm.
 
 from __future__ import annotations
 
+import builtins
 import io
 import pickle
-import sys
 from pathlib import Path
 
 import pytest
@@ -204,27 +204,27 @@ class TestJoblibAcceptArm:
 
 
 class TestJoblibMissingImportFallback:
-    """Exercise the ImportError -> safe_unpickle fallback (lines 428-431)."""
+    """Only actual top-level joblib absence uses the pickle fallback."""
 
     def test_falls_back_to_safe_unpickle_when_joblib_absent(
         self,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ):
-        """If joblib.numpy_pickle is unimportable, load via safe_unpickle.
-
-        We simulate joblib being unavailable by blocking the import of
-        ``joblib.numpy_pickle`` so the ``from ... import NumpyUnpickler``
-        raises ImportError, driving the warning + safe_unpickle fallback.
-        The file itself is a plain pickle so safe_unpickle can read it.
-        """
+        """If top-level joblib is absent, load a plain pickle safely."""
         set_project_root(tmp_path)
         f = tmp_path / "plain.pkl"
         obj = {"fallback": [1, 2, 3]}
         f.write_bytes(pickle.dumps(obj))
 
-        # Force the `from joblib.numpy_pickle import NumpyUnpickler` to fail.
-        monkeypatch.setitem(sys.modules, "joblib.numpy_pickle", None)
+        real_import = builtins.__import__
+
+        def without_joblib(name, *args, **kwargs):
+            if name == "joblib" or name.startswith("joblib."):
+                raise ModuleNotFoundError("No module named 'joblib'", name="joblib")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", without_joblib)
 
         result = safe_joblib_load(str(f))
         assert result == obj
@@ -244,7 +244,34 @@ class TestJoblibMissingImportFallback:
         )
         f.write_bytes(payload)
 
-        monkeypatch.setitem(sys.modules, "joblib.numpy_pickle", None)
+        real_import = builtins.__import__
+
+        def without_joblib(name, *args, **kwargs):
+            if name == "joblib" or name.startswith("joblib."):
+                raise ModuleNotFoundError("No module named 'joblib'", name="joblib")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", without_joblib)
 
         with pytest.raises(pickle.UnpicklingError, match="not in.*allowlist"):
             safe_joblib_load(str(f))
+
+    @pytest.mark.parametrize(
+        "private_api",
+        ["NumpyUnpickler", "_validate_fileobject_and_memmap"],
+    )
+    def test_installed_joblib_missing_private_api_fails_loudly(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        private_api: str,
+    ):
+        import joblib.numpy_pickle as numpy_pickle
+
+        set_project_root(tmp_path)
+        artifact = tmp_path / "plain.pkl"
+        artifact.write_bytes(pickle.dumps({"must": "not fall back"}))
+        monkeypatch.delattr(numpy_pickle, private_api)
+
+        with pytest.raises(RuntimeError, match="[Ii]nstalled joblib is incompatible"):
+            safe_joblib_load(artifact)

@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from itertools import count
 
 from haute import _ram_estimate
+from haute._env import optional_int_env
 from haute._execution_context import (
     ExecutionAdmission,
     ExecutionCancellationToken,
@@ -300,11 +301,11 @@ def execution_budget_for_profile(profile: ExecutionProfile) -> ExecutionBudget:
 
 def _resolve_required_budget(profile: ExecutionProfile) -> _ResolvedMemoryLimit:
     for key, multiplier in _memory_env_candidates(profile):
-        raw = os.environ.get(key)
-        if raw is None:
+        value = optional_int_env(key)
+        if value is None:
             continue
         return _ResolvedMemoryLimit(
-            memory_limit_bytes=_positive_int_from_env(key, multiplier=multiplier),
+            memory_limit_bytes=value * multiplier,
             config_key=key,
             budget_policy="explicit_env",
         )
@@ -373,19 +374,21 @@ def _adaptive_default_memory_limit_bytes(profile: ExecutionProfile) -> tuple[int
 
 def _resolve_os_reserve_bytes() -> int:
     bytes_key, mb_key = _OS_RESERVE_ENV
-    if os.environ.get(bytes_key) is not None:
-        return _positive_int_from_env(bytes_key, multiplier=1)
-    if os.environ.get(mb_key) is not None:
-        return _positive_int_from_env(mb_key, multiplier=_MIB)
+    bytes_value = optional_int_env(bytes_key)
+    if bytes_value is not None:
+        return bytes_value
+    mb_value = optional_int_env(mb_key)
+    if mb_value is not None:
+        return mb_value * _MIB
     return _DEFAULT_OS_RESERVE_BYTES
 
 
 def _resolve_optional_rss_limit(profile: ExecutionProfile) -> tuple[int | None, str | None]:
     for key, multiplier in _process_rss_env_candidates(profile):
-        raw = os.environ.get(key)
-        if raw is None:
+        value = optional_int_env(key)
+        if value is None:
             continue
-        return _positive_int_from_env(key, multiplier=multiplier), key
+        return value * multiplier, key
     return None, None
 
 
@@ -555,14 +558,3 @@ def _process_rss_env_candidates(profile: ExecutionProfile) -> tuple[tuple[str, i
         (global_bytes, 1),
         (global_mb, _MIB),
     )
-
-
-def _positive_int_from_env(name: str, *, multiplier: int) -> int:
-    raw = os.environ[name]
-    try:
-        value = int(raw)
-    except ValueError as exc:
-        raise RuntimeError(f"{name} must be a positive integer") from exc
-    if value < 1:
-        raise RuntimeError(f"{name} must be a positive integer")
-    return value * multiplier

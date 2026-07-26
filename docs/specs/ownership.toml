@@ -72,6 +72,12 @@ consumers = ["assistant", "engineering-quality"]
 reason = "Package metadata also configures quality tools and declares the assistant dependency."
 
 [[shared_file]]
+path = "src/haute/_builders.py"
+primary = "execution-engine"
+consumers = ["pipeline-config"]
+reason = "Execution owns runtime builders; pipeline configuration consumes their registry contracts."
+
+[[shared_file]]
 path = "src/haute/_gitignore_guard.py"
 primary = "sandbox-security"
 consumers = ["git-integration"]
@@ -82,6 +88,12 @@ path = "src/haute/_local_security.py"
 primary = "sandbox-security"
 consumers = ["server-api"]
 reason = "Local security policy protects the server's file-facing routes."
+
+[[shared_file]]
+path = "src/haute/_node_builder.py"
+primary = "execution-engine"
+consumers = ["pipeline-config"]
+reason = "Execution owns runtime builder interception; pipeline configuration documents the shared seam."
 
 [[shared_file]]
 path = "src/haute/_path_resolution.py"

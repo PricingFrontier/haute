@@ -8,11 +8,11 @@ from threading import Event
 import polars as pl
 import pytest
 
+from haute._env import int_env
 from haute._lru_cache import LRUCache
 from haute.executor import (
     PREVIEW_CACHE_MAX_BYTES,
     _estimate_preview_cache_entry_bytes,
-    _positive_int_from_env,
     _preview_cache,
 )
 from haute.trace import _cache as _trace_cache
@@ -193,13 +193,13 @@ class TestPreviewCacheSizing:
     def test_preview_cache_byte_budget_env_parser_fails_loudly(self, monkeypatch) -> None:
         monkeypatch.setenv("HAUTE_TEST_PREVIEW_CACHE_BYTES", "0")
         with pytest.raises(RuntimeError, match="must be a positive integer"):
-            _positive_int_from_env("HAUTE_TEST_PREVIEW_CACHE_BYTES", 100)
+            int_env("HAUTE_TEST_PREVIEW_CACHE_BYTES", 100)
 
         monkeypatch.setenv("HAUTE_TEST_PREVIEW_CACHE_BYTES", "not-an-int")
         with pytest.raises(RuntimeError, match="must be a positive integer"):
-            _positive_int_from_env("HAUTE_TEST_PREVIEW_CACHE_BYTES", 100)
+            int_env("HAUTE_TEST_PREVIEW_CACHE_BYTES", 100)
 
     def test_preview_cache_byte_budget_env_parser_uses_default(self, monkeypatch) -> None:
         monkeypatch.delenv("HAUTE_TEST_PREVIEW_CACHE_BYTES", raising=False)
 
-        assert _positive_int_from_env("HAUTE_TEST_PREVIEW_CACHE_BYTES", 123) == 123
+        assert int_env("HAUTE_TEST_PREVIEW_CACHE_BYTES", 123) == 123
