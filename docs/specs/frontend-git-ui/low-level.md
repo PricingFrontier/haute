@@ -413,6 +413,9 @@ Library component/unit tests (no e2e for this surface).
   `onConfirm(true)`/`onConfirm(false)` respectively with the warning message shown, Cancel
   calling `onClose` without confirming, busy Escape/backdrop dismissal refusal, and
   rendering nothing when `moveTarget` is `null`.
+- **`__tests__/App.integration.test.tsx`** — the parent-owned move transaction rejects a
+  failed `moveToVersion` request with an error toast and clears `moveTarget`, proving the
+  busy-locked `MoveConfirmModal` cannot remain stranded after its promise settles.
 - **`components/__tests__/MilestoneCommitModal.test.tsx`** — submit gating on message
   presence, visible validation above the 500-character maximum, successful commit
   with/without a version label, the 409 fork-warning → commit-anyway override flow, and

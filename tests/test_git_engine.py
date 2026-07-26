@@ -275,6 +275,22 @@ class TestMilestoneMerge:
         assert _git(repo, "rev-parse", WORKING) == working_tip
         assert _git(repo, "rev-parse", "version/2.0^{commit}") == milestone
 
+    @pytest.mark.parametrize(
+        "label",
+        ["release candidate", "release..candidate", "release.lock", "release@{candidate"],
+    )
+    def test_invalid_version_label_refuses_before_branch_mutation(
+        self, repo: Path, label: str
+    ) -> None:
+        _write_and_save(repo, WORKING, {"rating.py": "# v2\n"})
+        working_tip = _git(repo, "rev-parse", WORKING)
+
+        with pytest.raises(GitDomainError, match="not a valid Git tag name"):
+            merge_to_working(WORKING, "Tagged version", tag_label=label, cwd=repo)
+
+        assert _git(repo, "rev-parse", WORKING) == working_tip
+        assert _git(repo, "tag", "--list", "version/*") == ""
+
     def test_label_transaction_failure_leaves_branch_and_tag_unchanged(
         self, repo: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -3510,6 +3526,36 @@ class TestFastForwardPair:
         assert _git(repo, "rev-parse", LEDGER) == ledger_tip
         assert _git(repo, "symbolic-ref", "--short", "HEAD") == LEDGER
 
+    @pytest.mark.parametrize(
+        ("deleted_branch", "kind"),
+        [(WORKING, "working branch"), (LEDGER, "save ledger")],
+    )
+    def test_deleted_remote_leg_has_a_distinct_refusal_after_prune(
+        self, repo: Path, tmp_path: Path, deleted_branch: str, kind: str
+    ) -> None:
+        self._setup_pair(repo)
+        bare = self._add_bare_remote(repo, tmp_path)
+        push_working_pair("origin", repo, cwd=repo)
+        _git(repo, "fetch", "origin")
+        working_tip = _git(repo, "rev-parse", WORKING)
+        ledger_tip = _git(repo, "rev-parse", LEDGER)
+        tracking = f"origin/{deleted_branch}"
+        assert _git(repo, "branch", "--remotes", "--list", tracking) != ""
+
+        # Delete directly in the bare remote so this clone's tracking ref stays
+        # stale until Catch up performs its required authoritative refresh.
+        _git(bare, "update-ref", "-d", f"refs/heads/{deleted_branch}")
+
+        with pytest.raises(
+            GitDomainError,
+            match=rf"{kind} '{deleted_branch}' is missing",
+        ):
+            fast_forward_pair("origin", repo, cwd=repo)
+
+        assert _git(repo, "branch", "--remotes", "--list", tracking) == ""
+        assert _git(repo, "rev-parse", WORKING) == working_tip
+        assert _git(repo, "rev-parse", LEDGER) == ledger_tip
+
     def test_d2_fast_forwards_ledger_only(self, repo: Path, tmp_path: Path) -> None:
         self._setup_pair(repo)
         bare = self._add_bare_remote(repo, tmp_path)
@@ -3811,3 +3857,24 @@ class TestGitSubprocessEncoding:
             "Text-mode git subprocess decoding must pin encoding='utf-8' so branch "
             f"names and stderr round-trip consistently across platforms. Offenders: {offenders}"
         )
+
+    def test_byte_stdin_path_replacement_decodes_git_output(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import haute._git as git_mod
+
+        results = iter(
+            [
+                subprocess.CompletedProcess(
+                    ["git", "hash-object"], 0, stdout=b"\xffobject\n", stderr=b""
+                ),
+                subprocess.CompletedProcess(
+                    ["git", "update-ref"], 1, stdout=b"", stderr=b"\xffdiagnostic\n"
+                ),
+            ]
+        )
+        monkeypatch.setattr(git_mod.subprocess, "run", lambda *_args, **_kwargs: next(results))
+
+        assert git_mod._run_git("hash-object", "--stdin", input_text="payload\n") == "�object"
+        with pytest.raises(GitError, match="�diagnostic"):
+            git_mod._run_git("update-ref", "--stdin", input_text="create refs/test x\n")

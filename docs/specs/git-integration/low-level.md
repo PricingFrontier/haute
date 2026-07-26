@@ -140,8 +140,10 @@ tracked project files"`; untracked paths are deliberately excluded → `merge_to
 validates the message (non-empty, no C0 control characters — a stray record-separator would
 corrupt the ledger-save parser's delimiter), runs `check_invariants` (see below) and raises
 `GitDomainError` on any violation, computes `merge_base(working_tip, ledger_tip)` and raises
-if it already equals the ledger tip ("no new saves"), then rejects any duplicate
-`refs/tags/version/<label>` before mutation and builds the merge purely via
+if it already equals the ledger tip ("no new saves"), then requires
+`refs/tags/version/<label>` to satisfy Git's complete full-ref format (invalid labels are a
+user-facing `GitDomainError` rather than a raw plumbing failure), rejects any duplicate tag
+before mutation, and builds the merge purely via
 `commit-tree <ledger's tree> -p <working_tip> -p <ledger_tip> -m <message>`. Without a
 label, a CAS `update-ref` advances the working branch. With a label, `hash-object
 --literally -t tag` writes the fully Haute-constructed annotated-tag payload without
@@ -338,15 +340,17 @@ Repeating a successful push is idempotent and reports `bootstrapped_default=fals
 remote advertises refs.
 
 **Fast-forward (`fast_forward_pair`).** Requires HEAD to currently be on the ledger (refuses
-mid-move/detached states) and a clean tracked tree. Force-fetches and aborts with
-`GitDomainError` if that required refresh times out, cannot launch, or exits non-zero; no
-cache wipe, merge, or ref update may run on stale tracking refs. It then requires EVERY leg
-to be `"behind"` or already synced — any `"ahead"`/`"diverged"` leg refuses outright (the
-user must reconcile via `branch_away` instead; this function never merges). The ledger
-(checked out) advances via `git merge --ff-only`; the working ref (not checked out)
-advances via a CAS `update-ref`. If the checked-out ledger advances but the working-ref CAS
-fails, the ledger and working tree reset to their captured tip. A failed reset is reported
-as `GitTransactionError`, never as a clean refusal or success.
+mid-move/detached states) and a clean tracked tree. Fetches and prunes the configured remote
+namespace, then aborts with `GitDomainError` if that required refresh times out, cannot
+launch, exits non-zero, or shows that either managed remote leg is missing; transport
+failure and a deleted working/ledger branch have distinct user-facing refusals. No cache
+wipe, merge, or ref update may run on stale or incomplete tracking refs. It then requires
+EVERY leg to be `"behind"` or already synced — any `"ahead"`/`"diverged"` leg refuses
+outright (the user must reconcile via `branch_away` instead; this function never merges).
+The ledger (checked out) advances via `git merge --ff-only`; the working ref (not checked
+out) advances via a CAS `update-ref`. If the checked-out ledger advances but the working-ref
+CAS fails, the ledger and working tree reset to their captured tip. A failed reset is
+reported as `GitTransactionError`, never as a clean refusal or success.
 
 **Branch away (`branch_away`).** The reconciliation path when a remote fork is detected.
 It first fetches and prunes the configured remote namespace, aborting with `GitDomainError`
@@ -455,6 +459,9 @@ without replacing a successfully parsed response with a cleanup error.
 `_run_git` is the single subprocess chokepoint for anything expected to succeed; all text
 Git processes receive `LC_ALL=C`, `LANG=C`, and `LANGUAGE=C` in addition to UTF-8 decoding,
 so recognition of the small documented set of Git failure phrases is locale-independent.
+When `_run_git` supplies byte-mode stdin for an LF-delimited plumbing protocol, it
+replacement-decodes stdout/stderr as UTF-8 so malformed diagnostic bytes still reach the
+normal sanitized `GitError` path instead of escaping as `UnicodeDecodeError`.
 On a non-zero exit it logs `git_command_failed` (full stderr) and raises plain `GitError`
 (sanitize-by-default). `_run_git_ok` (returns `(bool, str)`) and `_run_git_rc` (returns
 `(int, str)`) do not raise merely for a non-zero git exit — used wherever that exit is an expected, meaningful

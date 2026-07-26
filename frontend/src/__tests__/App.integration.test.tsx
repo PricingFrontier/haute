@@ -34,7 +34,7 @@
  * Target runtime is <5s for the whole file.
  */
 import { describe, it, expect, vi, beforeAll, afterAll, beforeEach, afterEach } from "vitest"
-import { render, screen, cleanup, fireEvent, waitFor, within } from "@testing-library/react"
+import { render, screen, cleanup, fireEvent, waitFor, within, act } from "@testing-library/react"
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Mock the network layer — `../api/client`.  Every exported function is
@@ -141,6 +141,14 @@ vi.mock("../api/client", async () => {
       }),
     ),
     getMilestones: vi.fn(() => Promise.resolve({ working_branch: "dev", entries: [] })),
+    moveToVersion: vi.fn(() =>
+      Promise.resolve({
+        sha: "abc1234def",
+        short_sha: "abc1234",
+        prior_branch: "dev-save",
+        is_detached: true,
+      }),
+    ),
     gitArchiveBranch: vi.fn(() => Promise.resolve({ archived_as: "" })),
     gitDeleteBranch: vi.fn(() => Promise.resolve({ status: "ok", branch: "" })),
     getGitRemotes: vi.fn(() => Promise.resolve({ remotes: [], working_branch: "dev" })),
@@ -232,7 +240,13 @@ function resetAllStores(): void {
     nodeSearchOpen: false,
   })
   useToastStore.setState({ toasts: [], _toastCounter: 0 })
-  useGitStore.setState({ status: null, loading: false, modal: null, pendingAction: null })
+  useGitStore.setState({
+    status: null,
+    loading: false,
+    modal: null,
+    pendingAction: null,
+    moveTarget: null,
+  })
   useNodeResultsStore.setState({
     previews: {},
     pinnedPreviewNodeId: null,
@@ -417,7 +431,8 @@ beforeEach(() => {
   vi.mocked(api.setGitIdentity).mockReset().mockResolvedValue({ user_name: "", user_email: "", scope: "local" })
   vi.mocked(api.commitMilestone).mockReset().mockResolvedValue({ sha: "deadbeef0000", short_sha: "deadbee", working_branch: "dev", version_label: null })
   vi.mocked(api.getMilestones).mockReset().mockResolvedValue({ working_branch: "dev", entries: [] })
-  useGitStore.setState({ status: null, loading: false, modal: null, pendingAction: null })
+  vi.mocked(api.moveToVersion).mockReset().mockResolvedValue({ sha: "abc1234def", short_sha: "abc1234", prior_branch: "dev-save", is_detached: true })
+  useGitStore.setState({ status: null, loading: false, modal: null, pendingAction: null, moveTarget: null })
 })
 
 afterEach(() => {
@@ -493,6 +508,31 @@ describe("App integration — mounts and renders main chrome", () => {
       value: originalLocation,
       configurable: true,
     })
+  })
+})
+
+describe("App integration — move failure recovery", () => {
+  it("closes the busy move modal when the checkout request rejects", async () => {
+    vi.mocked(api.moveToVersion).mockRejectedValueOnce(new Error("checkout failed"))
+    render(<App />)
+    await waitForAppReady()
+
+    act(() => {
+      useGitStore.getState().requestMove({ sha: "target-sha", label: "v2.0" })
+    })
+    fireEvent.click(await screen.findByTestId("move-confirm"))
+
+    await waitFor(() => {
+      expect(vi.mocked(api.moveToVersion)).toHaveBeenCalledWith("target-sha")
+      expect(useGitStore.getState().moveTarget).toBeNull()
+    })
+    expect(screen.queryByTestId("move-confirm-modal")).not.toBeInTheDocument()
+    expect(useToastStore.getState().toasts).toContainEqual(
+      expect.objectContaining({
+        type: "error",
+        text: "Could not move to this version: checkout failed",
+      }),
+    )
   })
 })
 

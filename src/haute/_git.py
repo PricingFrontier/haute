@@ -272,8 +272,8 @@ def _run_git(
             input=input_text.encode("utf-8"),
         )
         returncode = byte_result.returncode
-        stdout = byte_result.stdout.decode("utf-8")
-        stderr = byte_result.stderr.decode("utf-8")
+        stdout = byte_result.stdout.decode("utf-8", errors="replace")
+        stderr = byte_result.stderr.decode("utf-8", errors="replace")
     if check and returncode != 0:
         stderr = stderr.strip()
         logger.warning("git_command_failed", cmd=cmd, stderr=stderr)
@@ -1038,6 +1038,8 @@ def merge_to_working(
     if tag_label is not None:
         _validate_ref_name(tag_label)
         tag_ref = f"version/{tag_label}"
+        if not _is_valid_full_ref_name(f"refs/tags/{tag_ref}"):
+            raise GitDomainError(f"Version label {tag_label!r} is not a valid Git tag name.")
         ok, _ = _run_git_ok("rev-parse", "--verify", "--quiet", f"refs/tags/{tag_ref}", cwd=cwd)
         if ok:
             raise GitDomainError(f"Version label '{tag_label}' already exists.")
@@ -3271,14 +3273,21 @@ def fast_forward_pair(
     if ok_status and status.strip():
         raise GitDomainError("You have unsaved changes. Save or discard them before catching up.")
 
-    # Re-fetch so the catch-up decision is on fresh tips (authoritative, not a
-    # poll), then read both legs.
+    # Fetch + prune the configured namespace so the catch-up decision is on an
+    # authoritative snapshot. A missing remote leg is a distinct domain state,
+    # not a transport failure, and a deleted tracking ref cannot remain stale.
     with _fetch_exec_lock:
-        refreshed = _fetch_refs(remote, working, ledger, cwd=cwd)
+        refreshed = _fetch_refs(remote, cwd=cwd)
     if not refreshed:
         raise GitDomainError(
             f"Could not refresh '{remote}'. Check your connection or credentials and try again."
         )
+    for branch, kind in ((working, "working branch"), (ledger, "save ledger")):
+        tracking = f"refs/remotes/{remote}/{branch}"
+        if _rev_parse(tracking, cwd=cwd) is None:
+            raise GitDomainError(
+                f"Can't catch up from '{remote}': {kind} '{branch}' is missing on the remote."
+            )
     w_leg = _leg_state(working, remote, cwd=cwd)
     l_leg = _leg_state(ledger, remote, cwd=cwd)
 
