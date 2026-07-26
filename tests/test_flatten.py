@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import pytest
+
 from haute._flatten import flatten_graph
 from haute._types import GraphEdge, GraphNode, NodeData, PipelineGraph
+from haute.errors import ParseError
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -319,8 +322,8 @@ class TestEdgeRewiring:
         rewired = [e for e in result.edges if e.source == "upstream" and e.target == "inner"]
         assert rewired[0].targetHandle is None
 
-    def test_edges_still_referencing_submodel_dropped(self) -> None:
-        """Edges that still reference a submodel node after rewiring are dropped."""
+    def test_boundary_edge_without_handle_raises(self) -> None:
+        """A boundary edge cannot be silently discarded when its handle is absent."""
         graph = PipelineGraph(
             nodes=[
                 _node("a"),
@@ -340,9 +343,30 @@ class TestEdgeRewiring:
                 }
             },
         )
-        result = flatten_graph(graph)
-        # Edge from submodel__sm to b without handles cannot be rewired
-        assert len(result.edges) == 0
+        with pytest.raises(ParseError, match="handle"):
+            flatten_graph(graph)
+
+    @pytest.mark.parametrize("handle", ["wrong__inner", "out__missing"])
+    def test_invalid_boundary_handle_raises(self, handle: str) -> None:
+        graph = PipelineGraph(
+            nodes=[_node("submodel__sm"), _node("downstream")],
+            edges=[_edge("submodel__sm", "downstream", source_handle=handle)],
+            submodels={
+                "sm": {
+                    "graph": {
+                        "nodes": [
+                            {
+                                "id": "inner",
+                                "data": {"label": "inner", "nodeType": "polars", "config": {}},
+                            }
+                        ],
+                        "edges": [],
+                    }
+                }
+            },
+        )
+        with pytest.raises(ParseError):
+            flatten_graph(graph)
 
     def test_internal_submodel_edges_preserved(self) -> None:
         """Internal edges within a submodel graph are added to the flat graph."""
@@ -423,6 +447,46 @@ class TestEdgeDeduplication:
         ]
         assert len(matching) == 1
 
+    def test_targeted_flatten_keeps_distinct_port_metadata_and_ids(self) -> None:
+        graph = PipelineGraph(
+            nodes=[_node("source"), _node("submodel__sm")],
+            edges=[
+                GraphEdge(
+                    id="left",
+                    source="source",
+                    target="submodel__sm",
+                    targetHandle="in__inner",
+                    sourcePort="left",
+                ),
+                GraphEdge(
+                    id="right",
+                    source="source",
+                    target="submodel__sm",
+                    targetHandle="in__inner",
+                    sourcePort="right",
+                ),
+            ],
+            submodels={
+                "sm": {
+                    "graph": {
+                        "nodes": [
+                            {
+                                "id": "inner",
+                                "data": {"label": "inner", "nodeType": "polars", "config": {}},
+                            }
+                        ],
+                        "edges": [],
+                    }
+                }
+            },
+        )
+        result = flatten_graph(graph, target_name="sm")
+        edges = [
+            edge for edge in result.edges if edge.source == "source" and edge.target == "inner"
+        ]
+        assert {edge.sourcePort for edge in edges} == {"left", "right"}
+        assert len({edge.id for edge in edges}) == 2
+
 
 # ---------------------------------------------------------------------------
 # Submodel with empty graph
@@ -493,6 +557,27 @@ class TestMetadataPreserved:
         assert result.preamble == "preamble_code"
         assert result.sources == ["live", "test"]
         assert result.active_source == "test"
+
+    def test_targeted_flatten_merges_submodel_preamble_and_preserved_blocks(self) -> None:
+        graph = PipelineGraph(
+            nodes=[_node("submodel__sm")],
+            edges=[],
+            preamble="ROOT = 1",
+            preserved_blocks=["ROOT_KEPT = 1"],
+            submodels={
+                "sm": {
+                    "graph": {
+                        "nodes": [],
+                        "edges": [],
+                        "preamble": "CHILD = 2",
+                        "preserved_blocks": ["CHILD_KEPT = 2"],
+                    }
+                }
+            },
+        )
+        result = flatten_graph(graph, target_name="sm")
+        assert result.preamble == "ROOT = 1\n\nCHILD = 2"
+        assert result.preserved_blocks == ["ROOT_KEPT = 1", "CHILD_KEPT = 2"]
 
 
 # ---------------------------------------------------------------------------
