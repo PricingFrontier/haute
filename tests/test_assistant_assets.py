@@ -10,6 +10,8 @@ matches the live-graph shape ``get_pipeline`` serves.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from haute.assistant import _assets
@@ -46,6 +48,11 @@ class TestAuthoringGuide:
         finally:
             authoring_guide.cache_clear()
 
+    def test_guide_relies_on_the_packaged_catalog_not_repo_only_docs(self):
+        guide = authoring_guide()
+        assert "docs/specs/README.md" not in guide
+        assert "node catalog" in guide.lower()
+
 
 class TestExemplars:
     def test_index_is_non_empty_with_docstring_summaries(self):
@@ -64,6 +71,23 @@ class TestExemplars:
             graph = result["graph"]
             assert graph["nodes"], f"exemplar {name!r} must contain nodes"
             assert isinstance(result["narrative"], str) and result["narrative"].strip()
+
+    def test_exemplars_use_specialised_sources_instead_of_direct_file_scans(self):
+        for name, resource in _assets._example_resources():
+            source = resource.read_text(encoding="utf-8")
+            assert "scan_parquet" not in source, name
+
+            graph = load_example(name)["graph"]
+            node_types = {node["type"] for node in graph["nodes"]}
+            assert node_types & {"apiInput", "dataInput"}, name
+            assert "output" in node_types, name
+            output_nodes = [node for node in graph["nodes"] if node["type"] == "output"]
+            assert all("outputMapping" in node["config"]["keys"] for node in output_nodes), name
+
+        output_sidecars = _assets._examples_root().joinpath("config", "quote_response")
+        for resource in output_sidecars.iterdir():
+            config = json.loads(resource.read_text(encoding="utf-8"))
+            assert config["outputMapping"], resource.name
 
     def test_rendering_matches_the_live_graph_shape(self):
         """Few-shot format == the format the model reads the live graph in."""

@@ -29,18 +29,6 @@ class NodeCatalogEntry:
     usage_note: str
 
     @property
-    def sidecar_folder(self) -> str | None:
-        """The config sidecar folder, named as the assistant spec describes it."""
-
-        return self.config_folder
-
-    @property
-    def has_sidecar(self) -> bool:
-        """Whether this node type owns a config sidecar folder."""
-
-        return self.config_folder is not None
-
-    @property
     def config_shapes(self) -> tuple[tuple[str, str], ...]:
         """Return the TypedDict field shapes behind the config allowlist."""
 
@@ -262,21 +250,6 @@ def render_catalog() -> str:
     return "\n".join(lines).rstrip()
 
 
-def render_system_prompt() -> str:
-    """Return the deterministic static system prompt for catalog-aware turns."""
-
-    return "\n\n".join(
-        (
-            "You are Haute's pricing-pipeline assistant. Author and edit graphs "
-            "using the canonical node vocabulary below. Respect singleton limits, "
-            "sidecar conventions, and the listed config keys. If a requested "
-            "operation is not represented here, explain the limitation instead "
-            "of inventing a node type or config key.",
-            render_catalog(),
-        )
-    )
-
-
 # Fail during import if a new node type is not represented here.  This is
 # intentionally eager: an incomplete catalog must not reach a configured model.
 validate_catalog_complete()
@@ -286,6 +259,5 @@ __all__ = [
     "NODE_CATALOG",
     "NodeCatalogEntry",
     "render_catalog",
-    "render_system_prompt",
     "validate_catalog_complete",
 ]

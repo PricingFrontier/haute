@@ -2,25 +2,11 @@ import { useState } from "react"
 import { Send, Square } from "lucide-react"
 
 import useGraphStore from "../../stores/useGraphStore"
-import useAssistantStore from "../../stores/useAssistantStore"
+import useAssistantStore, { assistantSendDisabledReason } from "../../stores/useAssistantStore"
 
 interface ComposerProps {
   isInsideSubmodel: boolean
   currentSourceFile: string | null
-}
-
-function disabledReason(
-  status: ReturnType<typeof useAssistantStore.getState>["status"],
-  isInsideSubmodel: boolean,
-  dirty: boolean,
-): string | null {
-  if (status === "unknown") return "Checking Assistant status…"
-  if (status === "error") return "Assistant status is unavailable. Retry the status check."
-  if (status.reason) return status.reason
-  if (!status.mutations_enabled && status.mutations_reason) return status.mutations_reason
-  if (isInsideSubmodel) return "Assistant edits are available from the top-level pipeline only."
-  if (dirty) return "Save or discard the current canvas changes before using Assistant."
-  return null
 }
 
 export default function Composer({ isInsideSubmodel, currentSourceFile }: ComposerProps) {
@@ -28,7 +14,7 @@ export default function Composer({ isInsideSubmodel, currentSourceFile }: Compos
   const turnStatus = useAssistantStore((state) => state.turnStatus)
   const status = useAssistantStore((state) => state.status)
   const dirty = useGraphStore((state) => state.dirty)
-  const reason = disabledReason(status, isInsideSubmodel, dirty)
+  const reason = assistantSendDisabledReason(status, isInsideSubmodel, dirty)
   const streaming = turnStatus === "streaming"
   const disabled = streaming || reason !== null
 

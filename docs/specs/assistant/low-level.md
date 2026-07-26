@@ -6,15 +6,16 @@
 |---|---|
 | `src/haute/assistant/__init__.py` | Public package seam; re-exports only `assistant_readiness`. The FastAPI router remains in `haute.routes.assistant` and is not re-exported here. |
 | `src/haute/assistant/_config.py` | Resolves assistant configuration: the `[assistant]` table from `haute.toml` (tomllib, same parsing discipline as `routes/_helpers.pipeline_dir()` — malformed TOML raises `ConfigError`, an absent table is a legitimate not-configured state), API keys from `os.getenv` (the server process must inherit them; `haute serve` does not load project `.env`), and an SDK-import probe. Produces `AssistantConfig` (ready) or `AssistantReadiness` with a reason (not ready). Mirrors `_databricks_io._get_credentials`'s fail-loud credential pattern. |
-| `src/haute/assistant/_catalog.py` | The node-type catalog the model reads: mechanical facts derived from `haute._types` (`NodeType`, `NODE_TYPE_TO_DECORATOR`), `haute._config_validation` (`VALID_KEYS`, config `TypedDict` shapes), `haute._config_io` (sidecar folders), and the save service (singleton policy), plus hand-authored per-type usage notes. `validate_catalog_complete()` runs at import time and raises if any canonical fact or node entry drifts. |
-| `src/haute/assistant/_assets.py` | Loader for the assistant's packaged knowledge assets (read via `importlib.resources`): resource enumeration, `authoring_guide()`, and `example_index()` are cached; `load_example(name)` reparses and renders the exemplar on demand through `routes/_helpers.parse_pipeline_to_graph` and the same formatter `get_pipeline` uses. The guide fails loudly if missing/empty, index summaries come from the first module-docstring line, and an unknown name is a structured tool error listing the valid names. |
+| `src/haute/assistant/_catalog.py` | The node-type catalog the model reads: mechanical facts derived from `haute._types` (`NodeType`, `NODE_TYPE_TO_DECORATOR`), `haute._config_validation` (`VALID_KEYS`, config `TypedDict` shapes), `haute._config_io` (sidecar folders), and the save service (singleton policy), plus hand-authored per-type usage notes. `validate_catalog_complete()` runs at import time and raises if any canonical fact or node entry drifts; `render_catalog()` is the sole static prompt renderer. |
+| `src/haute/assistant/_assets.py` | Loader for the assistant's packaged knowledge assets (read via `importlib.resources`): resource enumeration, `authoring_guide()`, and `example_index()` are cached; `load_example(name)` materialises the complete example tree (source plus parser-relative sidecars), then reparses and renders the exemplar on demand through `routes/_helpers.parse_pipeline_to_graph` and the same formatter `get_pipeline` uses. The guide fails loudly if missing/empty, index summaries come from the first module-docstring line, and an unknown name is a structured tool error listing the valid names. |
 | `src/haute/assistant/assets/authoring_guide.md` | Packaged, hand-authored Haute idiom: canonical pipeline shapes, naming and stage-chaining conventions, and do/don't guidance injected into every system prompt. |
 | `src/haute/assistant/assets/examples/branched_features.py` | Packaged exemplar with parallel feature branches joined before the output stage; its module docstring supplies narrative notes and the index summary. |
 | `src/haute/assistant/assets/examples/joined_reference.py` | Packaged exemplar showing a reference-data join; parsed as data by `_assets.py`, never imported as a module. |
 | `src/haute/assistant/assets/examples/linear_pricing.py` | Packaged minimal linear-pricing exemplar; parsed through the real pipeline parser and rendered in the same compact graph shape as `get_pipeline`. |
+| `src/haute/assistant/assets/examples/config/**` | Packaged parser-relative data/API-input and response-output sidecars used by the exemplars. Source decorators load them through the same generated-code helpers as user pipelines, and every output sidecar carries a concrete non-empty `outputMapping`. |
 | `src/haute/assistant/_ops.py` | The graph-edit operation model and its pure application engine: op types (`add_node`, `update_node`, `rename_node`, `delete_node`, `add_edge`, `delete_edge`, `update_preamble`), validation (unknown targets, unknown config keys, submodel-internal targets, ambiguous edge matches), ordered application over a `PipelineGraph` copy, and deterministic position assignment for new nodes. No I/O — unit-testable graph→graph functions. |
-| `src/haute/assistant/_tools.py` | The tool registry: JSON-schema definitions and dispatch for every read and mutation tool. Dataset schema wraps the files-route reader; dataset listing directly uses the shared safe-path validator and its own extension allowlist. Other read tools wrap saved-graph parsing, `_assets.load_example`, and production lazy execution for `get_node_schema`. `apply_graph_edits` itself owns mutation readiness, parse → ordered ops → transactional save under `save_lock` → re-parse → `graph.update` publish. Every tool returns a structured result-or-error payload instead of raising into the loop. |
-| `src/haute/assistant/_session.py` | Session store: `AssistantSession` records (id, bound pipeline `source_file`, provider-neutral message history, per-session `asyncio.Lock`, timestamps), create/lookup, the provider-request history window, and the bounded-retention rules — an LRU cap on live sessions and a per-session stored-history cap (constants below). Memory is the runtime authority; when a `storage_dir` factory is supplied (the route wires `.haute/assistant/sessions/` under the project cwd), sessions write through to one JSON file per session (atomic tmp+`os.replace`) on create and on every committed turn, and `lookup` revives an unknown id from its file (fresh lock; history revalidated through the same JSON-boundary validators). Unreadable/corrupt/invalid files: warn (`assistant_session_unreadable`) and treat as absent, mirroring `_git_state`'s posture for `.haute/` files. Persist failures: warn (`assistant_session_persist_failed`) without failing the committed turn — the in-memory session stays intact and the reply was already delivered. |
+| `src/haute/assistant/_tools.py` | The tool registry: JSON-schema definitions and dispatch for every read and mutation tool. Dataset listing and schema preview share the files route's installed-input-extension registry and reject hidden components plus denylisted state/credential names before any directory enumeration or read. Other read tools wrap saved-graph parsing, `_assets.load_example`, and production lazy execution for `get_node_schema`. `apply_graph_edits` itself owns mutation readiness, parse → ordered ops → transactional save under `save_lock` → re-parse → `graph.update` publish. Every tool returns a structured result-or-error payload instead of raising into the loop. |
+| `src/haute/assistant/_session.py` | Session store: `AssistantSession` records (id, bound pipeline `source_file`, provider-neutral message history including tool-result `is_error`, per-session `asyncio.Lock`, timestamps), create/lookup, the provider-request history window, and the bounded-retention rules — an LRU cap on live sessions and a per-session stored-history cap (constants below). Memory is the runtime authority; when a `storage_dir` factory is supplied (the route wires `.haute/assistant/sessions/` under the project cwd), sessions write through to one JSON file per session (atomic tmp+`os.replace`) on create and on every committed turn, and `lookup` revives an unknown id from its file (fresh lock; history revalidated through the same JSON-boundary validators). Unreadable/corrupt/invalid files: warn (`assistant_session_unreadable`) and treat as absent, mirroring `_git_state`'s posture for `.haute/` files. Persist failures: warn (`assistant_session_persist_failed`) without failing the committed turn — the in-memory session stays intact and the reply was already delivered. Creation prunes abandoned UUID-shaped `.json.tmp` artifacts before applying the persisted-session cap. |
 | `src/haute/assistant/_providers.py` | The `AssistantProvider` protocol and its two adapters: `AnthropicProvider` (`anthropic` SDK, Messages streaming API) and `OpenAIProvider` (`openai` SDK, Chat Completions streaming — the OpenAI-compatible protocol Databricks serving endpoints implement — honouring `base_url`). SDKs are core dependencies but imported lazily inside the adapters (importing Haute never triggers provider-side behaviour; a broken install surfaces as a readiness reason); each adapter normalises its SDK's stream into the internal `ProviderEvent`s (see Control flow § Provider adapters for the exact call and event mappings) and maps SDK failures to `AssistantProviderError`. |
 | `src/haute/assistant/_loop.py` | Provider-neutral agent loop as an async generator of typed stream events: assembles prompt/history/tool inputs, forwards text deltas, invokes the injected tool executor, feeds structured results into later provider rounds, shields an in-flight tool from cancellation, enforces tool/time limits, commits turn history, and closes every provider stream. It does not implement graph edits itself. |
 | `src/haute/routes/assistant.py` | The FastAPI router: `GET /api/assistant/status`, `POST /api/assistant/session`, `POST /api/assistant/message` (an SSE `StreamingResponse` wrapping `_loop`'s generator). Route-level exception translation follows the product conventions (typed `HauteError`s surfaced, everything else sanitized). Swept by the existing `tests/test_routes_hygiene.py` contracts like every `routes/` module. |
@@ -36,7 +37,8 @@ messages by evicting whole oldest turns; live-session LRU cap 32 (least-recently
 *idle* session evicted on create beyond the cap — dropping only the in-memory record, the
 persisted file revives it on next lookup; a session with a running turn is never
 evicted); persisted session files cap at 100 (`MAX_PERSISTED_SESSIONS`), pruning the
-oldest by session-file modification time at session creation. Pruning always cuts at turn boundaries — an
+oldest by session-file modification time at session creation after removing abandoned
+atomic-write temp files. Pruning always cuts at turn boundaries — an
 assistant tool call and its result are never separated (both provider APIs reject
 orphaned halves).
 
@@ -136,10 +138,13 @@ returns a fresh session with empty `history`; resume is an offer, never an error
    model fetches it via tools, so it is never stale mid-turn. Full exemplar bodies are
    likewise prompt-excluded: the model pulls them through `get_example` only when relevant.
 4. Stream provider events. `TextDelta` → emit `text_delta`. `ToolCallRequest` → emit
-   `tool_started`; execute; emit `tool_finished` (+`graph_updated` for successful
-   mutations); append the result to the pending provider messages; on `TurnStop("tool_use")`
+   `tool_started`; execute; append the result to the pending provider messages before
+   emitting `tool_finished` (+`graph_updated` for successful mutations); on `TurnStop("tool_use")`
    re-invoke the provider with the accumulated results; on `TurnStop("end")` emit
-   `completed` with usage and finish.
+   `completed` with usage and finish. If the response closes while suspended at
+   `tool_started`, the round commit filters the unmatched call; closing at either later
+   event retains the already-recorded result. Thus every persisted call id has exactly one
+   matching result id on every generator-close boundary.
 5. Tool execution: read tools run via `asyncio.to_thread`. `get_node_schema` parses the
    saved pipeline, then proceeds in this order:
    1. **Validate the target id against the original hierarchical graph** — a submodel
@@ -297,6 +302,12 @@ returns a fresh session with empty `history`; resume is an offer, never an error
   conversation). Live sessions are LRU-capped at 32 with least-recently-used *idle*
   eviction — a session holding a running turn is never evicted, and eviction drops only
   the in-memory record: the persisted file revives the id transparently on next lookup.
+- **Dataset discovery and preview share one safety contract**: installed readable path
+  extensions come from `routes.files._installed_input_extensions()` and are matched by
+  case-folded filename suffix (including compound extensions). The resolved project-relative
+  path must contain no hidden component; exact state/credential names in the assistant
+  denylist are rejected before listing or reading. Direct calls cannot bypass the filter
+  that navigation applies.
 - **`get_node_schema` collects nothing** — the invariant is testable: the tool's plan
   construction plus `collect_schema()` must never invoke `LazyFrame.collect` (asserted by
   poisoning `collect` in tests). The two honest cost exceptions are inherited, not assistant
@@ -313,7 +324,10 @@ returns a fresh session with empty `history`; resume is an offer, never an error
   never auto-created; one turn per session via the per-session lock; committed turns
   persist to `.haute/assistant/sessions/` and survive restarts, while a truly lost id
   (pruned, corrupt file, cleaned `.haute/`) still 404s and the frontend renders that
-  explicitly by starting a fresh session.
+  explicitly by starting a fresh session. Tool-role messages retain `is_error` through
+  validation, JSON persistence, revival, history-window rendering, and both provider
+  adapters. Turn and response cleanup release their idempotent reservation in nested
+  `finally` blocks even if history append or iterator close raises.
 - **No `print`, structlog only** — the assistant package and router are swept by the existing
   decoupling and routes-hygiene contract tests.
 
@@ -336,7 +350,9 @@ returns a fresh session with empty `history`; resume is an offer, never an error
 
 The stream invariant: every response the client can still read ends with exactly one
 terminal event (`completed`, `failed`, or `cancelled`); a save/publish pair is never
-abandoned half-done (cancellation-shielded); the session lock is always released. The
+abandoned half-done (cancellation-shielded); persisted tool calls are always paired with
+results; the session lock is always released even when history append or response close
+raises. The
 release is owned by an idempotent turn reservation with two independent paths — the
 loop's `finally` and the streaming response's own lifecycle — so even a client that
 disconnects before the body iterator ever starts cannot leave the session locked
@@ -361,7 +377,9 @@ fixture for route tests). The implemented coverage is:
   (`LazyFrame.collect` must not run). Contract tests assert that the saved `active_source`
   is passed to the engine; crafted/mocked execution results cover submodel-boundary
   rejection, multi-frame per-port shaping, unknown-node errors, and propagation of an
-  unfetched-Databricks `CacheNotFoundError` message as a structured tool error.
+  unfetched-Databricks `CacheNotFoundError` message as a structured tool error. Dataset
+  coverage pins installed-registry extension parity and rejects direct hidden,
+  state-directory, and credential-file listing/preview.
 - **`tests/test_assistant_assets.py`** — the authoring guide loads non-empty via
   `importlib.resources` (missing/empty asset raises loudly); every packaged exemplar parses
   cleanly through `parse_pipeline_to_graph` (the drift guard — a stale exemplar fails CI);
@@ -384,7 +402,9 @@ fixture for route tests). The implemented coverage is:
 - **`tests/test_assistant_loop.py`** — against a scripted fake provider: text-only turn;
   tool round-trip; tool error fed back; cap and timeout terminal events; completed/failed
   exactly-one-terminal checks; cancellation drains an in-flight tool, closes the provider
-  stream, and releases the session lock; turn-atomic history windowing, including a
+  stream, and releases the session lock; closing at each tool lifecycle yield never
+  persists an unmatched call; a raising history append still releases the lock;
+  turn-atomic history windowing, including a
   tool-heavy turn crossing both caps without splitting a call/result group.
 - **`tests/test_assistant_routes.py`** — status/session/message endpoints: SSE framing,
   400/404/409 mapping, sanitized unexpected-error paths, readiness reasons on status,
@@ -392,7 +412,8 @@ fixture for route tests). The implemented coverage is:
   lock release on pre-stream failure, disconnect, and mid-stream send failure.
 - **`tests/test_assistant_session_persistence.py`** — atomic write-through persistence,
   restart revival, invisible LRU eviction, corrupt/invalid-file logged misses, session-id
-  path hardening, oldest-first persisted-file pruning, and non-fatal persist failures.
+  path hardening, oldest-first persisted-file pruning, abandoned temp-file cleanup,
+  tool-error round-trip, and non-fatal persist failures.
 - **`tests/test_assistant_integration.py`** — fake-provider end-to-end on a tmp project:
   instruction → ops → real transactional save (files on disk assert codegen/sidecars) →
   `graph.update` published with the post-save fingerprint (asserted via a test subscriber)
@@ -411,18 +432,3 @@ No test calls a live Anthropic, OpenAI, or Databricks-compatible endpoint; provi
 behaviour is exercised with scripted SDK streams. The package is covered by the repository's
 global branch gate, while exemplar `.py` assets are omitted from coverage because they are
 parsed package data rather than importable modules (they remain parser- and lint-checked).
-
-## Approved change contract — 0.7.0 data I/O authoring
-
-Remaining assistant improvement work is tracked in the
-[assistant roadmap](../../roadmap/assistant.md).
-
-- Remove legacy entries from `src/haute/assistant/_catalog.py` and
-  `src/haute/assistant/assets/authoring_guide.md`; update `_tools.py` configuration validation to
-  the retained discriminated configs and capability registry.
-- Node-catalog validation remains exhaustive over `NodeType`, now 19 entries. Action tools for
-  cache build/refresh/clear and output write remain distinct from graph-edit tools and honour the
-  plugin's approval policy.
-- Reset exemplar pipelines containing removed nodes to blank assets. Tests cover retained
-  catalogue shape, valid/invalid provider configs, explicit action dispatch, no-secret payloads,
-  and rejection/absence of legacy tool inputs.

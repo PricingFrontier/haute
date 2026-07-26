@@ -177,7 +177,7 @@ describe("sendMessage transcript flow", () => {
     expect(useToastStore.getState().toasts).toEqual([])
   })
 
-  it("ignores events arriving after the terminal event", async () => {
+  it("marks post-terminal events as interrupted and shows an error toast", async () => {
     scriptStream([
       completed(),
       { type: "text_delta", text: "late" },
@@ -185,9 +185,9 @@ describe("sendMessage transcript flow", () => {
     ])
     await useAssistantStore.getState().sendMessage("hi", SEND_OPTS)
     const { entries } = useAssistantStore.getState()
-    expect(entries[entries.length - 1]).toMatchObject({ kind: "marker", outcome: "completed" })
+    expect(entries[entries.length - 1]).toMatchObject({ kind: "marker", outcome: "interrupted" })
     expect(entries.filter((entry) => entry.kind === "marker")).toHaveLength(1)
-    expect(useToastStore.getState().toasts).toEqual([])
+    expect(useToastStore.getState().toasts.some((toast) => toast.type === "error")).toBe(true)
   })
 
   it("leaves the transcript unchanged for a tool_finished with no matching row", async () => {
@@ -308,7 +308,7 @@ describe("session persistence across reloads and restarts", () => {
 
     await useAssistantStore.getState().sendMessage("hi", SEND_OPTS)
 
-    expect(createAssistantSession).toHaveBeenCalledWith(null, "old-session")
+    expect(createAssistantSession).toHaveBeenCalledWith(null, "old-session", expect.any(AbortSignal))
     const { entries, sessionId } = useAssistantStore.getState()
     expect(sessionId).toBe("old-session")
     expect(entries[0]).toEqual({ kind: "user", text: "add nb_batch" })
@@ -338,7 +338,7 @@ describe("session persistence across reloads and restarts", () => {
 
     await useAssistantStore.getState().sendMessage("hi", SEND_OPTS)
 
-    expect(createAssistantSession).toHaveBeenCalledWith(null, null)
+    expect(createAssistantSession).toHaveBeenCalledWith(null, null, expect.any(AbortSignal))
     expect(localStorage.getItem("haute.assistant.session:main.py")).toBe("fresh-9")
   })
 
@@ -372,6 +372,19 @@ describe("send failures", () => {
     expect(notice ?? "").not.toBe("")
   })
 
+  it("refreshes readiness after a session-create 400", async () => {
+    vi.mocked(createAssistantSession).mockRejectedValue(
+      new ApiError("HTTP 400", 400, "Missing API key"),
+    )
+
+    await useAssistantStore.getState().sendMessage("hi", SEND_OPTS)
+
+    expect(streamAssistantMessage).not.toHaveBeenCalled()
+    expect(getAssistantStatus).toHaveBeenCalledTimes(1)
+    expect(useAssistantStore.getState().entries).toEqual([])
+    expect(useAssistantStore.getState().notice).toBe("Missing API key")
+  })
+
   it("renders a stale-session notice on 404", async () => {
     useAssistantStore.setState({ sessionId: "session-1", pipelineSource: "main.py" })
     vi.mocked(streamAssistantMessage).mockRejectedValue(
@@ -381,6 +394,24 @@ describe("send failures", () => {
     const { notice, turnStatus } = useAssistantStore.getState()
     expect(turnStatus).toBe("idle")
     expect(notice ?? "").toMatch(/session|expired|restart/i)
+  })
+
+  it.each([
+    [400, "Missing API key"],
+    [404, "Unknown assistant session"],
+    [409, "An assistant turn is already running"],
+  ])("keeps the user entry and records one failed marker for send-time %i", async (status, detail) => {
+    useAssistantStore.setState({ sessionId: "session-1", pipelineSource: "main.py" })
+    vi.mocked(streamAssistantMessage).mockRejectedValue(new ApiError(`HTTP ${status}`, status, detail))
+
+    await useAssistantStore.getState().sendMessage("hi", SEND_OPTS)
+
+    const { entries } = useAssistantStore.getState()
+    expect(entries).toContainEqual({ kind: "user", text: "hi" })
+    expect(entries.some((entry) => entry.kind === "assistant" && entry.text === "")).toBe(false)
+    expect(entries.filter((entry) => entry.kind === "marker")).toEqual([
+      expect.objectContaining({ outcome: "failed" }),
+    ])
   })
 
   it("renders the still-finishing notice on 409 without auto-retry", async () => {
@@ -399,6 +430,41 @@ describe("send failures", () => {
 })
 
 describe("stop and new chat", () => {
+  it("locks same-tick sends while session creation is pending", async () => {
+    let resolveSession: ((result: { sessionId: string; history: [] }) => void) | undefined
+    vi.mocked(createAssistantSession).mockImplementation(() => new Promise((resolve) => {
+      resolveSession = resolve
+    }))
+    scriptStream([completed()])
+
+    const first = useAssistantStore.getState().sendMessage("first", SEND_OPTS)
+    const second = useAssistantStore.getState().sendMessage("second", SEND_OPTS)
+    expect(createAssistantSession).toHaveBeenCalledTimes(1)
+    expect(useAssistantStore.getState().turnStatus).toBe("streaming")
+
+    resolveSession?.({ sessionId: "session-1", history: [] })
+    await Promise.all([first, second])
+    expect(useAssistantStore.getState().entries).toContainEqual({ kind: "user", text: "first" })
+    expect(useAssistantStore.getState().entries).not.toContainEqual({ kind: "user", text: "second" })
+  })
+
+  it("stop aborts pending session creation without speculative transcript entries", async () => {
+    vi.mocked(createAssistantSession).mockImplementation((_pipeline, _sessionId, signal) =>
+      new Promise((_resolve, reject) => {
+        signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")))
+      }),
+    )
+
+    const sending = useAssistantStore.getState().sendMessage("hi", SEND_OPTS)
+    expect(useAssistantStore.getState().turnStatus).toBe("streaming")
+    useAssistantStore.getState().stopTurn()
+    await sending
+
+    expect(useAssistantStore.getState().turnStatus).toBe("idle")
+    expect(useAssistantStore.getState().entries).toEqual([])
+    expect(useToastStore.getState().toasts).toEqual([])
+  })
+
   it("stop aborts the in-flight turn and marks it stopped without a toast", async () => {
     vi.mocked(streamAssistantMessage).mockImplementation(
       (_id, _text, opts) =>

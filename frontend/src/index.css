@@ -714,3 +714,77 @@ html, body, #root {
   background: var(--accent-soft);
   border-color: var(--accent);
 }
+
+/* Assistant transcript Markdown, scoped so panel typography cannot affect
+   Markdown rendered elsewhere in the application. */
+.assistant-markdown p {
+  margin: 0.5rem 0;
+}
+.assistant-markdown h1,
+.assistant-markdown h2,
+.assistant-markdown h3,
+.assistant-markdown h4,
+.assistant-markdown h5,
+.assistant-markdown h6 {
+  margin: 0.75rem 0 0.35rem;
+  color: var(--text-primary);
+  font-weight: 600;
+}
+.assistant-markdown h1 {
+  font-size: 1.35em;
+}
+.assistant-markdown h2 {
+  font-size: 1.2em;
+}
+.assistant-markdown h3 {
+  font-size: 1.1em;
+}
+.assistant-markdown ul,
+.assistant-markdown ol {
+  margin: 0.5rem 0;
+  padding-left: 1.25rem;
+}
+.assistant-markdown ul {
+  list-style: disc;
+}
+.assistant-markdown ol {
+  list-style: decimal;
+}
+.assistant-markdown li {
+  margin: 0.2rem 0;
+}
+.assistant-markdown a {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.assistant-markdown :not(pre) > code {
+  padding: 0.1rem 0.25rem;
+  border-radius: 0.2rem;
+  background: var(--bg-input);
+}
+.assistant-markdown blockquote {
+  margin: 0.5rem 0;
+  padding-left: 0.75rem;
+  border-left: 2px solid var(--border);
+  color: var(--text-secondary);
+}
+.assistant-markdown hr {
+  margin: 0.75rem 0;
+  border: 0;
+  border-top: 1px solid var(--border);
+}
+.assistant-markdown table {
+  width: 100%;
+  margin: 0.5rem 0;
+  border-collapse: collapse;
+}
+.assistant-markdown th,
+.assistant-markdown td {
+  padding: 0.35rem 0.5rem;
+  border: 1px solid var(--border);
+  text-align: left;
+}
+.assistant-markdown th {
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+}

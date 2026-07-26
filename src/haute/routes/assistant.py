@@ -172,7 +172,7 @@ def _transcript_entries(session: AssistantSession) -> list[AssistantTranscriptEn
                     )
             if message.role == "tool":
                 content = message.content if isinstance(message.content, dict) else {}
-                is_error = "error" in content
+                is_error = message.is_error
                 entries.append(
                     AssistantTranscriptEntry(
                         kind="tool",
@@ -278,9 +278,11 @@ class _ReservedStreamingResponse(StreamingResponse):
             # closed, in-flight shielded tool drained, history appended —
             # so the next turn can never interleave with a zombie turn.
             close = getattr(self.body_iterator, "aclose", None)
-            if close is not None:
-                await close()
-            self._reservation.release()
+            try:
+                if close is not None:
+                    await close()
+            finally:
+                self._reservation.release()
 
 
 @router.post("/message", response_class=StreamingResponse)

@@ -4,11 +4,11 @@
 
 | File | Responsibility |
 |---|---|
-| `frontend/src/panels/assistant/AssistantPanel.tsx` | The panel body (default export, loaded via `React.lazy`): `PanelShell` + `PanelHeader` chrome, the transcript list (auto-scrolled while streaming), and the composer mount. Renders entirely from `useAssistantStore` selectors. |
-| `frontend/src/panels/assistant/TranscriptEntryView.tsx` | Renders one transcript entry by `kind`: user bubble, assistant markdown segment (streamed text), tool-activity row (running/ok/error states), or turn marker (completed/failed/stopped/interrupted). Owns the markdown rendering (see Control flow). |
-| `frontend/src/panels/assistant/Composer.tsx` | Message input, send/stop split behaviour, and the disabled-state messaging (streaming lock, unconfigured/mutations-disabled reasons from status, dirty-canvas notice, drilled-into-submodel notice). Receives `isInsideSubmodel` from the panel and forwards it into `sendMessage`. |
+| `frontend/src/panels/assistant/AssistantPanel.tsx` | The panel body (default export, loaded via `React.lazy`): `PanelShell` chrome, the transcript list (auto-scrolled while streaming), and the composer mount. Receives `isInsideSubmodel` and `currentSourceFile` from the app shell, reads transcript/turn/status actions from `useAssistantStore`, and uses `useUIStore.setAssistantOpen` for close. |
+| `frontend/src/panels/assistant/TranscriptEntryView.tsx` | Memoised renderer for one transcript entry by `kind`: user bubble, assistant markdown segment (streamed text), tool-activity row (running/ok/error states), or turn marker (completed/failed/stopped/interrupted). Owns the markdown rendering (see Control flow); scoped `.assistant-markdown` rules live in `frontend/src/index.css`. |
+| `frontend/src/panels/assistant/Composer.tsx` | Message input, send/stop split behaviour, and disabled-state messaging. Receives `isInsideSubmodel` and `currentSourceFile` from the panel and uses the store-exported send-gate reason helper, so the rendered gate and imperative `sendMessage` guard share one implementation and one set of messages. |
 | `frontend/src/stores/useAssistantStore.ts` | Zustand store owning session id + source binding, transcript entries, turn status, notice, and the `sendMessage`/`stopTurn`/`newChat`/`refreshStatus` actions. A module-scope `activeController` owns the in-flight abort handle, and the SSE consumption loop runs inside `sendMessage`, so a turn survives panel unmounting. |
-| `frontend/src/api/assistant.ts` | Assistant-owned bundle-split endpoint module: `getAssistantStatus`, `createAssistantSession`, and `streamAssistantMessage` — a `fetch` + `ReadableStream` SSE reader built on the authenticated raw-stream helper `client.ts` exports for split modules (auth headers + `ApiError` mapping without the JSON parse), with local event parsing that throws on an unrecognised event type. |
+| `frontend/src/api/assistant.ts` | Assistant-owned bundle-split endpoint module: `getAssistantStatus`, abortable `createAssistantSession`, and `streamAssistantMessage` — a `fetch` + `ReadableStream` SSE reader built on the authenticated raw-stream helper `frontend/src/api/client.ts` exports for split modules (auth headers + `ApiError` mapping without the JSON parse), with local event parsing that throws on an unrecognised event type and cancels the reader before propagating any parser/callback/transport failure. |
 | `frontend/src/App.tsx` *(modified)* | New branch in the right-panel if/else cascade: `assistantOpen` renders the lazy `AssistantPanel` inside `<ErrorBoundary name="AssistantPanel">` + `Suspense`; sits ahead of the `NodePanel` default alongside the git/utility/imports branches. Passes `isInsideSubmodel` (derived from its submodel-navigation view stack, which is hook-local state a module-scope store cannot read) into the panel as a prop. |
 | `frontend/src/stores/useUIStore.ts` *(modified)* | New `assistantOpen` flag + `setAssistantOpen`, mutually exclusive by construction with `gitOpen`/`utilityOpen`/`importsOpen` (each setter clears the others, matching the existing pattern). |
 | `frontend/src/components/Toolbar.tsx` *(modified)* | Assistant toggle button next to the existing utility/imports buttons, calling `setAssistantOpen`. |
@@ -19,7 +19,7 @@
   `{ configured: boolean; reason: string | null; provider: string | null; model: string |
   null; mutations_enabled: boolean; mutations_reason: string | null }`.
   `reason` (unconfigured) and `mutations_reason` (working branch not ready — the backend's
-  per-state message for unset/divergent/invalid) are the backend's human-readable
+  per-state message for no-repository/unset/detached/divergent/invalid) are the backend's human-readable
   explanations; the composer renders whichever applies verbatim.
 - **`AssistantStreamEvent`** (`api/assistant.ts`, mirrored from the backend SSE contract in
   `schemas.py`) — discriminated union on `type`:
@@ -57,23 +57,26 @@ rendered as the loading state; never polled).
    resets session + transcript first); `useGraphStore.getState().dirty === false`. A failed
    guard renders as composer messaging, not a thrown error; whitespace-only input is a
    no-op.
-2. Ensure a session: `createAssistantSession(null, rememberedSessionId)` on first
+2. Create the turn's `AbortController`, make it the module-scope owner, and set
+   `turnStatus = "streaming"` synchronously before the first await. This is the lock
+   acquisition: a second same-tick send cannot pass while session creation is pending.
+3. Ensure a session: `createAssistantSession(null, rememberedSessionId, signal)` on first
    send — the current client deliberately sends `pipeline: null`; the remembered id comes from `localStorage`
    (`haute.assistant.session:<sourceFile>`); the response's `session_id` is stored to both
    state and `localStorage`, and a non-empty `history` (the backend's transcript mapping
    of a resumed session) hydrates `entries` before the new turn's entries append.
-3. Append the user entry, open a streaming assistant entry, set `turnStatus = "streaming"`,
-   stash a fresh `AbortController`.
-4. `streamAssistantMessage(sessionId, text, signal)` — POST via the exported authenticated
+4. Append the user entry and open a streaming assistant entry.
+5. `streamAssistantMessage(sessionId, text, signal)` — POST via the exported authenticated
    raw-stream helper, then read the response body: chunks are buffered and split on the
    SSE frame delimiter (frames may span chunk boundaries; one chunk may carry several
    frames), each frame's `data:` payload is `JSON.parse`d into a `AssistantStreamEvent`, and
    each event is applied to the store: `text_delta` appends to the open assistant entry;
    `tool_started`/`tool_finished` append/settle an activity row; `graph_updated` appends an
    activity row noting the canvas was updated (the canvas itself refreshes via `/ws/sync`,
-   not here); a terminal event closes the assistant entry, appends the matching marker, and
-   sets `turnStatus = "idle"`.
-5. The loop runs in the store action, not a component effect — closing the panel (or another
+   not here). A terminal event is retained locally and committed as the single marker only
+   after the response ends; any later event throws instead. The owning action alone clears
+   its controller and returns `turnStatus` to idle in `finally`.
+6. The loop runs in the store action, not a component effect — closing the panel (or another
    panel's setter forcing `assistantOpen` false) does not stop a running turn; reopening shows
    the live state.
 
@@ -93,7 +96,10 @@ self-resolving retry.
 imported inside the lazy panel chunk so it never reaches the initial bundle; fenced code
 renders as styled `<pre>` blocks using the shared theme tokens — no syntax highlighter in
 v1 (a per-message CodeMirror instance is deliberately avoided; see high-level rationale on
-bundle/perf).
+bundle/perf). Scoped typography styles distinguish paragraphs, headings, lists,
+blockquotes, links, rules, and GFM tables. `TranscriptEntryView` is memoised: a token update
+re-renders and re-parses only the open assistant entry whose object changed, not every
+settled transcript row.
 
 ## Edge cases and invariants
 
@@ -102,7 +108,11 @@ bundle/perf).
 - **Stream ends without a terminal event** (network drop, server crash): marker
   `interrupted` — never rendered as a completed turn.
 - **Unrecognised event type throws** in the parser → turn marked `interrupted` + error
-  toast. Contract drift is loud.
+  toast. Contract drift is loud. The API reader is cancelled before the error propagates,
+  so the server sees a disconnect.
+- **Event after a terminal event throws** from the store callback, cancels the reader, and
+  replaces the provisional terminal outcome with one `interrupted` marker plus an error
+  toast. It is never discarded.
 - **Canvas dirtied mid-turn** (the analyst edits while the agent works): the send-time gate
   can't prevent it. Incoming `graph.update` frames then hit the canvas's existing
   dirty-guard banner (reload/discard) rather than applying — the transcript still records
@@ -116,21 +126,24 @@ bundle/perf).
   backend finishes a shielded mutation and releases the session lock. That case renders the
   specific still-finishing notice (see Stop); any other 409 renders inline like any
   turn-start failure.
-- **`turnStatus` is the single lock**: send, new-chat, and session reset all check it; no
-  boolean flags are duplicated elsewhere.
+- **`turnStatus` is the single lock**: send, new-chat, and session reset all check it; it is
+  acquired before session creation and released only by the owning controller after the
+  response ends. Controller identity guards both cleanup fields, so stale cleanup can
+  never unlock a newer turn.
 - **Store survives panel unmount by design** — the invariant is that `turnStatus`
-  transitions only via `sendMessage`'s terminal handling or `stopTurn`, never by unmount.
+  transitions only when the owning `sendMessage` action acquires or releases the turn,
+  never from a component lifecycle or a stale action's cleanup.
 
 ## Error handling
 
 | Failure | Surfaced as |
 |---|---|
 | `refreshStatus` fetch failure | `status = "error"` → panel body renders an error state with a retry button; composer never enabled on unknown readiness. |
-| Send-time `ApiError` 400 (unconfigured) | Inline notice with the backend detail; `refreshStatus()` re-run so the composer gate shows the current reason. |
-| Send-time `ApiError` 404 (stale session) | Inline "session expired (server restarted)" notice offering New chat; no silent re-create. |
-| Send-time `ApiError` 409 | The still-finishing inline notice; composer stays enabled; no auto-retry. The client does not distinguish a post-stop 409 from another 409. |
+| Send-time `ApiError` 400 (unconfigured) | Empty speculative assistant bubble removed; user entry followed by one `failed` marker; inline notice with the backend detail; `refreshStatus()` re-run so the composer gate shows the current reason. |
+| Send-time `ApiError` 404 (stale session) | Empty speculative assistant bubble removed; user entry followed by one `failed` marker; inline "session expired (server restarted)" notice offering New chat; no silent re-create. |
+| Send-time `ApiError` 409 | Empty speculative assistant bubble removed; user entry followed by one `failed` marker; the still-finishing inline notice; composer stays enabled; no auto-retry. The client does not distinguish a post-stop 409 from another 409. |
 | Terminal `failed` event | Marker `failed` with the backend-provided message inline + error toast (`useToastStore`). |
-| Parser throw / transport drop mid-stream | Marker `interrupted` + error toast; composer re-enabled. |
+| Parser throw / callback throw / transport drop mid-stream | Response reader cancelled, marker `interrupted` + error toast; composer re-enabled. |
 | Caller-initiated `AbortError` (stop) | Marker `stopped`; not an error, no toast. |
 | Render crash anywhere in the panel | Contained by `<ErrorBoundary name="AssistantPanel">`; canvas/toolbar/inspector unaffected. |
 
