@@ -15,18 +15,32 @@ pipeline = haute.Pipeline(
 )
 
 
-@pipeline.polars
+@pipeline.data_input(config="config/data_input/quotes.json")
 def quotes() -> pl.LazyFrame:
     """Read the quote rows."""
 
-    return pl.scan_parquet("data/quotes.parquet")
+    from pathlib import Path
+
+    from haute.graph_utils import resolve_data_input_from_config
+
+    return resolve_data_input_from_config(
+        "config/data_input/quotes.json",
+        base_dir=Path(__file__).parent,
+    )
 
 
-@pipeline.polars
+@pipeline.data_input(config="config/data_input/regions.json")
 def regions() -> pl.LazyFrame:
     """Read one factor row per rating region."""
 
-    return pl.scan_parquet("data/regions.parquet")
+    from pathlib import Path
+
+    from haute.graph_utils import resolve_data_input_from_config
+
+    return resolve_data_input_from_config(
+        "config/data_input/regions.json",
+        base_dir=Path(__file__).parent,
+    )
 
 
 @pipeline.edge_join(
@@ -42,7 +56,7 @@ def quote_with_region(quotes: pl.LazyFrame, regions: pl.LazyFrame) -> pl.LazyFra
     return quotes.join(regions, on="region", how="left")
 
 
-@pipeline.polars
+@pipeline.output(config="config/quote_response/joined_priced.json")
 def priced(quote_with_region: pl.LazyFrame) -> pl.LazyFrame:
     """Expose the enriched quote rows."""
 

@@ -55,7 +55,6 @@ docs/specs/execution-engine/low-level.md	missing-module-map-symbol	RLIMIT_AS
 docs/specs/execution-engine/low-level.md	missing-module-map-symbol	projection.prepare_graph
 docs/specs/expression-parsing/low-level.md	missing-module-map-symbol	with_columns()
 docs/specs/frontend-assistant-ui/low-level.md	missing-module-map-symbol	ApiError
-docs/specs/frontend-assistant-ui/low-level.md	missing-module-map-symbol	PanelHeader
 docs/specs/frontend-assistant-ui/low-level.md	missing-module-map-symbol	React.lazy
 docs/specs/frontend-assistant-ui/low-level.md	missing-module-map-symbol	ReadableStream
 docs/specs/frontend-assistant-ui/low-level.md	non-root-relative-test-reference	__tests__/App.assistantLazy.test.ts

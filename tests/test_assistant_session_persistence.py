@@ -184,6 +184,51 @@ class TestBounds:
         remaining = {p.stem for p in base.glob("*.json")}
         assert remaining == {session.id for session in existing} | {newest.id}
 
+    def test_creation_prunes_abandoned_atomic_write_temp_files(self, tmp_path: Path):
+        sessions = tmp_path / "sessions"
+        sessions.mkdir()
+        abandoned = sessions / f"{'0' * 32}.json.tmp"
+        unrelated = sessions / "notes.json.tmp"
+        abandoned.write_text("partial", encoding="utf-8")
+        unrelated.write_text("leave me", encoding="utf-8")
+
+        _store(tmp_path).create("main.py")
+
+        assert not abandoned.exists()
+        assert unrelated.exists()
+
+    def test_tool_error_flag_survives_persistence_and_revival(self, tmp_path: Path):
+        first = _store(tmp_path)
+        session = first.create("main.py")
+        first.append(
+            session,
+            {
+                "messages": [
+                    {"role": "user", "content": "inspect"},
+                    {
+                        "role": "assistant",
+                        "tool_calls": [{"id": "t1", "name": "get_pipeline", "arguments": {}}],
+                    },
+                    {
+                        "role": "tool",
+                        "tool_call_id": "t1",
+                        "name": "get_pipeline",
+                        "content": {"error": {"code": "failed"}},
+                        "is_error": True,
+                    },
+                ]
+            },
+        )
+
+        restarted = _store(tmp_path)
+        revived = restarted.lookup(session.id)
+
+        assert revived is not None
+        tool_message = next(
+            message for message in restarted.history_window(revived) if message["role"] == "tool"
+        )
+        assert tool_message["is_error"] is True
+
 
 class TestDegradation:
     def test_persist_failure_warns_and_keeps_the_session_live(self, tmp_path: Path):

@@ -15,6 +15,7 @@ from functools import cache
 from importlib import resources
 from importlib.resources.abc import Traversable
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 _ASSET_PACKAGE = "haute.assistant"
 _ASSET_DIR = "assets"
@@ -58,6 +59,18 @@ def _read_resource(resource: Traversable) -> str:
     """Read a UTF-8 package resource as text."""
 
     return resource.read_text(encoding="utf-8")
+
+
+def _materialize_resource_tree(resource: Traversable, destination: Path) -> None:
+    """Copy a Traversable tree so parser-relative sidecars stay available."""
+
+    destination.mkdir(parents=True, exist_ok=True)
+    for child in resource.iterdir():
+        target = destination / child.name
+        if child.is_dir():
+            _materialize_resource_tree(child, target)
+        elif child.is_file():
+            target.write_bytes(child.read_bytes())
 
 
 def _module_notes(source: str, *, resource_name: str) -> str:
@@ -131,9 +144,9 @@ def _unknown_example_error(name: str) -> dict[str, object]:
 def load_example(name: str) -> dict[str, object]:
     """Return an exemplar's notes and parser-produced graph rendering.
 
-    Exemplars are parsed as source files and never imported.  ``as_file`` also
-    makes the parser work when package resources are supplied by a zip-backed
-    importer rather than a normal filesystem installation.
+    Exemplars are parsed as source files and never imported. The complete
+    example resource tree is materialised together so parser-relative config
+    sidecars work for both filesystem and zip-backed package importers.
     """
 
     resource = _resource_for_name(name)
@@ -145,8 +158,10 @@ def load_example(name: str) -> dict[str, object]:
 
     from haute.routes._helpers import parse_pipeline_to_graph
 
-    with resources.as_file(resource) as example_path:
-        graph = parse_pipeline_to_graph(Path(example_path))
+    with TemporaryDirectory(prefix="haute-assistant-example-") as temp_dir:
+        examples_path = Path(temp_dir) / _EXAMPLES_DIR
+        _materialize_resource_tree(_examples_root(), examples_path)
+        graph = parse_pipeline_to_graph(examples_path / resource.name)
 
     # Import lazily because _tools owns the shared graph rendering function
     # and imports this module for the example dispatcher.

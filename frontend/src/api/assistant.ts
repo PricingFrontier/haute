@@ -79,10 +79,12 @@ export interface AssistantSessionResult {
 export function createAssistantSession(
   pipeline: string | null,
   sessionId: string | null = null,
+  signal?: AbortSignal,
 ): Promise<AssistantSessionResult> {
   return post<{ session_id: string; history: AssistantHistoryEntry[] }>(
     "/api/assistant/session",
     { pipeline, session_id: sessionId },
+    { signal },
   ).then(({ session_id, history }) => ({ sessionId: session_id, history }))
 }
 
@@ -130,8 +132,14 @@ export async function streamAssistantMessage(
       const event = parseFrame(buffer)
       if (event !== null) options.onEvent(event)
     }
+  } catch (error) {
+    try {
+      await reader.cancel()
+    } catch {
+      // Cancelling is best-effort; preserve the parser, callback, or read error.
+    }
+    throw error
   } finally {
     reader.releaseLock()
   }
 }
-

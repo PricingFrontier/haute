@@ -5,13 +5,10 @@ pipeline source is a Python module, but the decorators and the graph wiring are
 the durable interface: node functions should have clear names, typed frame
 parameters, and a single responsibility.
 
-The vocabulary below follows the node-type lookup table in
-`docs/specs/README.md`: `apiInput`, `dataInput`, `dataOutput`,
-`polars`, `edgeJoin`, `modelScore`, `banding`, `ratingStep`, `output`,
-`explore`, `externalFile`, `liveSwitch`, `modelling`, `optimiser`,
-`scenarioExpander`, `optimiserApply`, `constant`, `submodel`, and
-`submodelPort`.  Use the specialised type whose name describes the operation;
-do not substitute a generic `polars` node when a domain node is required.
+The node catalog supplied alongside this guide in every assistant prompt is the
+complete, mechanically-derived vocabulary. Use the specialised type whose name
+describes the operation; do not substitute a generic `polars` node when a
+domain node is required.
 
 ## The canonical shape
 
