@@ -155,8 +155,9 @@ def _transcript_entries(session: AssistantSession) -> list[AssistantTranscriptEn
     """Map a session's stored neutral history to rehydratable transcript entries.
 
     Tool entries reuse the same compact result summary the live stream shows;
-    a structured tool error is recognised by its `{"error": ...}` content
-    shape — the shape `_tools` produces and `_result_summary` renders.
+    the persisted message's ``is_error`` flag is authoritative. Legacy records
+    without that field infer it from the ``{"error": ...}` content shape while
+    decoding in ``_session``.
     """
 
     entries: list[AssistantTranscriptEntry] = []

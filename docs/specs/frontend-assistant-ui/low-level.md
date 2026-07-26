@@ -139,7 +139,8 @@ settled transcript row.
 | Failure | Surfaced as |
 |---|---|
 | `refreshStatus` fetch failure | `status = "error"` → panel body renders an error state with a retry button; composer never enabled on unknown readiness. |
-| Send-time `ApiError` 400 (unconfigured) | Empty speculative assistant bubble removed; user entry followed by one `failed` marker; inline notice with the backend detail; `refreshStatus()` re-run so the composer gate shows the current reason. |
+| Session-create `ApiError` 400 (unconfigured) | No transcript entries have been appended yet, so the transcript stays unchanged; inline notice with the backend detail; `refreshStatus()` re-run so the composer gate shows the current reason. |
+| Message-send `ApiError` 400 (unconfigured) | Empty speculative assistant bubble removed; user entry followed by one `failed` marker; inline notice with the backend detail; `refreshStatus()` re-run so the composer gate shows the current reason. |
 | Send-time `ApiError` 404 (stale session) | Empty speculative assistant bubble removed; user entry followed by one `failed` marker; inline "session expired (server restarted)" notice offering New chat; no silent re-create. |
 | Send-time `ApiError` 409 | Empty speculative assistant bubble removed; user entry followed by one `failed` marker; the still-finishing inline notice; composer stays enabled; no auto-retry. The client does not distinguish a post-stop 409 from another 409. |
 | Terminal `failed` event | Marker `failed` with the backend-provided message inline + error toast (`useToastStore`). |
