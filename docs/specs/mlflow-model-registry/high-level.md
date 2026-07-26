@@ -95,9 +95,13 @@ Out of scope (owned elsewhere):
   A disk cache under `.cache/models/<run_id>/...`
   holds the downloaded bytes for CatBoost and RustyStats artifacts (not
   pyfunc, which relies on MLflow's own local artifact cache). Oldest-first
-  eviction targets at most 50 inactive run directories; directories in active use are
-  protected, so the physical total can temporarily exceed 50 until a later download triggers
-  another eviction pass. Both caches persist
+  eviction targets at most 50 inactive run directories. Under the active-runs
+  guard, an eviction candidate is atomically renamed to a hidden tombstone;
+  recursive deletion of that tombstone happens after the guard is released.
+  Existing users therefore block eviction, while a new user racing the rename
+  cleanly misses and re-downloads without waiting for slow filesystem deletion.
+  Active directories can make the physical total temporarily exceed 50 until a
+  later download triggers another eviction pass. Both caches persist
   across calls within a process; the disk cache also survives process
   restarts.
 - When the caller already knows the exact run + artifact (the common

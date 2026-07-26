@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import threading
+import uuid
 from collections import Counter
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -34,6 +35,7 @@ logger = get_logger(component="mlflow_io")
 
 _MODEL_CACHE_MAX_SIZE = 16
 _DISK_CACHE_MAX_DIRS = 50
+_DISK_CACHE_EVICTION_PREFIX = ".evicting-"
 
 
 class _ArtifactNotFoundError(FileNotFoundError):
@@ -656,8 +658,17 @@ def _evict_disk_cache(cache_root: Path) -> None:
     if not cache_root.is_dir():
         return
 
+    cache_dirs = [d for d in cache_root.iterdir() if d.is_dir()]
+    tombstones = [d for d in cache_dirs if d.name.startswith(_DISK_CACHE_EVICTION_PREFIX)]
+    for tombstone in tombstones:
+        shutil.rmtree(tombstone, ignore_errors=True)
+
     active_runs = _active_disk_cache_runs()
-    run_dirs = [d for d in cache_root.iterdir() if d.is_dir() and d.name not in active_runs]
+    run_dirs = [
+        d
+        for d in cache_dirs
+        if not d.name.startswith(_DISK_CACHE_EVICTION_PREFIX) and d.name not in active_runs
+    ]
     if len(run_dirs) <= _DISK_CACHE_MAX_DIRS:
         return
 
@@ -668,10 +679,20 @@ def _evict_disk_cache(cache_root: Path) -> None:
         with _disk_cache_active_runs_guard:
             if d.name in _disk_cache_active_runs:
                 continue
-        # Filesystem deletion may block; unrelated model loads must still be
-        # able to mark their run directories as active while it proceeds.
-        logger.info("mlflow_disk_cache_evict", path=str(d))
-        shutil.rmtree(d, ignore_errors=True)
+            tombstone = d.with_name(f"{_DISK_CACHE_EVICTION_PREFIX}{d.name}-{uuid.uuid4().hex}")
+            try:
+                d.replace(tombstone)
+            except FileNotFoundError:
+                continue
+        # The active check and same-filesystem rename are atomic with respect
+        # to run users. Slow recursive deletion happens after releasing the
+        # global guard, while new users cleanly miss the original run path.
+        logger.info(
+            "mlflow_disk_cache_evict",
+            path=str(d),
+            tombstone=str(tombstone),
+        )
+        shutil.rmtree(tombstone, ignore_errors=True)
 
 
 def _resolve_artifact_local(

@@ -309,6 +309,14 @@ def _training_required_metadata_columns(config: Mapping[str, Any]) -> set[str]:
     return columns
 
 
+def _training_projection_keep_columns(config: Mapping[str, Any]) -> list[str]:
+    """Return every configured column that exclusion projection must retain."""
+    return sorted(
+        _training_required_metadata_columns(config)
+        | set(_string_list_config(config, "feature_columns"))
+    )
+
+
 def _training_metadata_reasons(config: Mapping[str, Any]) -> dict[str, str]:
     """Return configured non-feature columns in deterministic role precedence."""
     reasons: dict[str, str] = {}
@@ -1232,8 +1240,7 @@ class TrainService:
             # Build the list of columns that must survive projection
             # (target, weight, offset — even if they're in the exclude list).
             excluded = config.get("exclude", [])
-            keep_cols = list(_training_required_metadata_columns(config))
-            keep_cols.extend(str(column) for column in config.get("feature_columns", []) if column)
+            keep_cols = _training_projection_keep_columns(config)
 
             required_columns_by_node = _training_required_columns_by_node(
                 body.node_id,
@@ -1441,7 +1448,7 @@ class TrainService:
             row_limit = min(row_limit or _DISPERSION_ESTIMATE_ROW_CAP, _DISPERSION_ESTIMATE_ROW_CAP)
 
             excluded = config.get("exclude", [])
-            keep_cols = list(_training_required_metadata_columns(config))
+            keep_cols = _training_projection_keep_columns(config)
             required_columns_by_node = _training_required_columns_by_node(
                 body.node_id,
                 config,
@@ -1547,8 +1554,9 @@ class TrainService:
                 status_code=400,
                 detail="Dispersion estimation applies to GLM modelling nodes only.",
             )
-        family = str(config.get("family", "") or "")
-        link = str(config.get("link", "") or "")
+        train_params = build_train_params(config)
+        family = str(train_params.get("family", "") or "")
+        link = str(train_params.get("link", "") or "")
         _validate_glm_family_link(family, link)
         if family != expected_family:
             raise HTTPException(
@@ -1841,9 +1849,9 @@ class TrainService:
         # loss-vs-task. _validate_glm_family_link also raises on an empty
         # family, and an absent loss is caught by the completeness gate below.
         if algorithm == "glm":
-            params = config.get("params", {})
-            family = params.get("family") or config.get("family", "")
-            link = params.get("link") or config.get("link", "")
+            train_params = build_train_params(config)
+            family = str(train_params.get("family", "") or "")
+            link = str(train_params.get("link", "") or "")
             _validate_glm_family_link(family, link)
         else:
             loss_function = config.get("loss_function")
@@ -2444,6 +2452,7 @@ class TrainService:
                         "execution_metrics": execution_metrics,
                         "progress": 1.0,
                     },
+                    elapsed_seconds=time.monotonic() - start_time,
                 )
                 if committed is None:
                     raise RuntimeError("Training publication lost its lifecycle claim")

@@ -1578,6 +1578,7 @@ def _declared_empty_score_dtypes(
     """Return task/flavor output dtypes when the scoring contract fixes them."""
     if flavor != "catboost":
         return None
+    prediction_dtype: pl.DataType | type[pl.DataType]
     if task == "classification":
         raw_model = getattr(scoring_model, "raw_model", scoring_model)
         classes = getattr(raw_model, "classes_", None)

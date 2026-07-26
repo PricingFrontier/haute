@@ -67,7 +67,16 @@ def _catboost_pool_for_row(scoring_model: Any, input_row: dict[str, Any]) -> Any
             raise ModelExplanationError(
                 "Missing offset column required for CatBoost SHAP explanation: " + offset_column
             )
-        baseline = pl.Series([input_row[offset_column]]).cast(pl.Float64).to_numpy()
+        baseline_value = _as_float(
+            input_row[offset_column],
+            field_name=f"offset column {offset_column!r}",
+            strict=True,
+        )
+        if baseline_value is None:
+            raise ModelExplanationError(
+                f"offset column {offset_column!r} must be finite; got None."
+            )
+        baseline = np.asarray([baseline_value], dtype=float)
     else:
         baseline = None
     cat_indices = [features.index(column) for column in cat_cols]

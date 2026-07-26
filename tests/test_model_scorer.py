@@ -1647,6 +1647,60 @@ class TestBatchScoreToParquetEmptyDtype:
         assert not sm_e._model.predict.called
         assert not sm_e._model.predict_proba.called
 
+    @pytest.mark.parametrize(
+        ("labels", "expected_dtype"),
+        [
+            ([0, 1, 0, 1, 0, 1], pl.Int64),
+            (["no", "yes", "no", "yes", "no", "yes"], pl.String),
+        ],
+    )
+    def test_real_catboost_empty_dtype_matches_nonempty_prediction(
+        self,
+        tmp_path: Path,
+        labels: list[int] | list[str],
+        expected_dtype: pl.DataType,
+    ) -> None:
+        pytest.importorskip("catboost", reason="catboost optional dependency not installed")
+        from catboost import CatBoostClassifier
+
+        model = CatBoostClassifier(
+            iterations=4,
+            depth=2,
+            random_seed=7,
+            verbose=0,
+            allow_writing_files=False,
+        )
+        model.fit([[0.0], [1.0], [2.0], [3.0], [4.0], [5.0]], labels)
+        scoring_model = ScoringModel(model, ["x"], flavor="catboost")
+        nonempty_path = str(tmp_path / "real-nonempty.parquet")
+        empty_path = str(tmp_path / "real-empty.parquet")
+        pl.DataFrame({"x": [1.5]}).write_parquet(nonempty_path)
+        pl.DataFrame({"x": pl.Series([], dtype=pl.Float64)}).write_parquet(empty_path)
+
+        nonempty_output = _batch_score_to_parquet(
+            scoring_model,
+            nonempty_path,
+            ["x"],
+            "pred",
+            "classification",
+        )
+        empty_output = _batch_score_to_parquet(
+            scoring_model,
+            empty_path,
+            ["x"],
+            "pred",
+            "classification",
+        )
+        try:
+            nonempty_dtype = pl.read_parquet_schema(nonempty_output)["pred"]
+            empty_dtype = pl.read_parquet_schema(empty_output)["pred"]
+        finally:
+            os.unlink(nonempty_output)
+            os.unlink(empty_output)
+
+        assert nonempty_dtype == expected_dtype
+        assert empty_dtype == nonempty_dtype
+
 
 class TestFeatureMismatchTypeOverflow:
     def test_type_mismatch_block_has_count_and_overflow_indicator(self):

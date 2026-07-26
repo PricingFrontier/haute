@@ -153,10 +153,16 @@
    during download/move deletes a partially-written cache file before
    re-raising; the temp directory is always cleaned up in a `finally`.
 5. After a successful download, run `_evict_disk_cache`. It excludes run
-   directories currently marked active by *any* in-flight caller, then removes
-   the oldest inactive directories beyond `_DISK_CACHE_MAX_DIRS` = 50. Active
-   directories can therefore make the physical total temporarily exceed 50;
-   the next successful download triggers another eviction pass.
+   directories currently marked active by *any* in-flight caller. For each
+   oldest inactive directory beyond `_DISK_CACHE_MAX_DIRS` = 50, it re-checks
+   activity and atomically renames the directory to a unique `.evicting-*`
+   tombstone under `_disk_cache_active_runs_guard`, then recursively deletes
+   the tombstone outside the guard. New users either protect the original
+   directory before the rename or cleanly miss it afterwards; unrelated loads
+   never wait for recursive deletion. Active directories can therefore make
+   the physical total temporarily exceed 50; the next successful download
+   triggers another eviction pass. Stale tombstones from an interrupted process
+   are cleaned on a later eviction pass.
 
 ### Bounded retry — `_load_with_bounded_retry` (`_mlflow_io.py`)
 
@@ -316,13 +322,16 @@ endpoint.
 - **Disk-cache eviction excludes any run currently "in use"** —
   `_disk_cache_active_runs` is a reference count, not a boolean, so
   nested/concurrent callers touching the same run correctly keep it
-  protected until the *last* one finishes, not the first.
+  protected until the *last* one finishes, not the first. The final active
+  check and tombstone rename share the guard; `rmtree` deliberately does not.
 - **Offset-column handling is flavor-specific by design, not
   uniform.** RustyStats and pyfunc models receive the offset column as
   part of the predict frame itself (`_OFFSET_PASSTHROUGH_FLAVORS`);
   CatBoost never receives it as a feature column — it is supplied as a
   numeric `Pool` baseline, because CatBoost only applies a baseline
-  passed inside a `Pool`, never through a bare matrix `predict()`.
+  passed inside a `Pool`, never through a bare matrix `predict()`. A missing,
+  null, non-numeric, or non-finite explanation offset raises
+  `ModelExplanationError` before CatBoost is called.
 - **Pyfunc feature discovery uses the supported MLflow signature API.**
   `_extract_pyfunc_features` reads `signature.inputs.input_names()`; Haute's
   MLflow dependency floor is 3.11 and no older list-shaped signature adapter
@@ -424,8 +433,8 @@ to a live MLflow tracking server.
   disk-cache-eviction races with an in-flight load of the run being
   considered for eviction (several scenarios: eviction skips an
   active run, eviction re-checks activity before deleting, eviction
-  blocks new users of a run mid-delete, the fast disk-cache path marks a
-  run active before probing), and waiters on both the fast-path and
+  atomically tombstones before lock-free deletion, the fast disk-cache path
+  marks a run active before probing), and waiters on both the fast-path and
   full-resolve-path reusing a model that finished loading while they
   waited.
 - **`tests/test_mlflow_model_cache_key_contract.py`** (new) — pins cache-key

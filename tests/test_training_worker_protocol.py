@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import pickle
+import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -404,6 +405,147 @@ def test_train_service_publishes_validated_pair_and_cleans_parent_state(
     assert not prepared.exists()
     assert released == [True]
     assert not list(output_dir.glob(".haute-training-*"))
+
+
+def test_train_service_cancel_wins_before_publication_preserves_durable_pair(
+    tmp_path: Path,
+) -> None:
+    output_dir = tmp_path / "outputs"
+    output_dir.mkdir()
+    final_model = output_dir / "quoted.cbm"
+    final_contract = output_dir / model_contract_filename("quoted")
+    final_model.write_bytes(b"old-model")
+    final_contract.write_bytes(b"old-contract")
+    store = JobStore()
+    service: TrainService
+
+    def cancelling_runner(function, request, **kwargs):
+        result = _inline_protocol_runner(function, request, **kwargs)
+        assert service.cancel(request.request_id)["status"] == "cancelled"
+        return result
+
+    service = TrainService(store, protocol_runner=cancelling_runner)
+    prepared = tmp_path / "prepared.parquet"
+    prepared.write_bytes(b"prepared")
+    context = ExecutionContext(
+        operation="training_pipeline",
+        profile=ExecutionProfile.TRAINING_PREP,
+    )
+    job_id = store.create_job(
+        {
+            "status": "running",
+            "job_type": "training",
+            "start_time": time.monotonic(),
+            "timeout": 60,
+        }
+    )
+
+    with patch("haute.modelling.TrainingJob", _SuccessfulTrainingJob):
+        thread = service._launch_background(
+            job_id,
+            "quoted",
+            {
+                "name": "quoted",
+                "target": "y",
+                "algorithm": "catboost",
+                "loss_function": "RMSE",
+                "output_dir": str(output_dir),
+            },
+            {"iterations": 2},
+            str(prepared),
+            None,
+            10,
+            execution_context=context,
+        )
+        assert thread is not None
+        thread.join_and_raise(timeout=10)
+
+    assert store.require_job(job_id)["status"] == "cancelled"
+    assert final_model.read_bytes() == b"old-model"
+    assert final_contract.read_bytes() == b"old-contract"
+    assert not prepared.exists()
+    assert not list(output_dir.glob(".haute-training-*"))
+
+
+def test_train_service_publication_wins_late_cancel_and_records_elapsed(
+    tmp_path: Path,
+) -> None:
+    class SilentSuccessfulTrainingJob(_SuccessfulTrainingJob):
+        def run(self, _progress, _on_iteration, **kwargs):
+            return super().run(
+                lambda _message, _fraction: None,
+                lambda _iteration, _total, _metrics: None,
+                **kwargs,
+            )
+
+    store = JobStore()
+    service = TrainService(store, protocol_runner=_inline_protocol_runner)
+    output_dir = tmp_path / "outputs"
+    prepared = tmp_path / "prepared.parquet"
+    prepared.write_bytes(b"prepared")
+    context = ExecutionContext(
+        operation="training_pipeline",
+        profile=ExecutionProfile.TRAINING_PREP,
+    )
+    job_id = store.create_job(
+        {
+            "status": "running",
+            "job_type": "training",
+            "start_time": time.monotonic() - 2.0,
+            "timeout": 60,
+        }
+    )
+    cancel_started = threading.Event()
+    cancel_result: dict[str, object] = {}
+    cancel_thread: threading.Thread | None = None
+    real_publish = _publish_training_artifacts
+
+    def publish_while_cancel_waits(*args, **kwargs):
+        nonlocal cancel_thread
+
+        def cancel() -> None:
+            cancel_started.set()
+            cancel_result.update(service.cancel(job_id))
+
+        cancel_thread = threading.Thread(target=cancel, daemon=True)
+        cancel_thread.start()
+        assert cancel_started.wait(timeout=10)
+        return real_publish(*args, **kwargs)
+
+    with (
+        patch("haute.modelling.TrainingJob", SilentSuccessfulTrainingJob),
+        patch(
+            "haute.routes._train_service._publish_training_artifacts",
+            side_effect=publish_while_cancel_waits,
+        ),
+    ):
+        thread = service._launch_background(
+            job_id,
+            "quoted",
+            {
+                "name": "quoted",
+                "target": "y",
+                "algorithm": "catboost",
+                "loss_function": "RMSE",
+                "output_dir": str(output_dir),
+            },
+            {"iterations": 2},
+            str(prepared),
+            None,
+            10,
+            execution_context=context,
+        )
+        assert thread is not None
+        thread.join_and_raise(timeout=10)
+
+    assert cancel_thread is not None
+    cancel_thread.join(timeout=10)
+    assert not cancel_thread.is_alive()
+    job = store.require_job(job_id)
+    assert job["status"] == "completed"
+    assert cancel_result["status"] == "completed"
+    assert job["elapsed_seconds"] >= 2.0
+    assert (output_dir / "quoted.cbm").read_bytes() == b"model"
 
 
 def test_train_service_rejects_mismatched_artifact_pair_without_overwrite(
