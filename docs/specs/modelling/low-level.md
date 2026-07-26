@@ -140,7 +140,8 @@
    lazily, derives and records the version-1 feature-selection diagnostic from the
    materialised schema, rejects HTTP 422/`contract_error` if target/metadata/exclusion
    rules leave no feature columns, validates the required columns actually arrived,
-   projects away excluded columns, and streams the result to a temp parquet with
+   projects away excluded columns while retaining explicit `feature_columns` even
+   when a stale `exclude` entry also names them, and streams the result to a temp parquet with
    `bounded_sink`;
    `_launch_background` builds the `TrainingJob` via `build_training_job_kwargs`
    (`params` overridden by the GPU-adjusted `train_params`), creates a same-filesystem
@@ -150,7 +151,11 @@
    plus per-model feature contract. It returns progress events and a validated result
    manifest containing a bounded `TrainResponse` payload. In the parent, the supervisor
    validates the staged pair, publishes it with rollback, rewrites `model_path` to the
-   durable destination, and transitions the job to `"completed"`. Typed child,
+   durable destination, and transitions the job to `"completed"` with final
+   `elapsed_seconds`. Publication and the transition share the job-store critical
+   section: cancellation that wins first prevents publication, while publication
+   that wins first prevents a late cancellation from relabelling the durable model.
+   Typed child,
    protocol, crash, cancellation, timeout, cleanup, and unexpected supervisor failures
    map through `JobLifecycle`; parent cleanup always releases the cancellation registry
    and RAM admission and removes the prepared/staged temporary data.
@@ -231,7 +236,8 @@ decides whether `variance_power` needs to be rendered (CatBoost `Tweedie` loss, 
    record (`job_type="dispersion_estimate"`).
 4. `_estimate_ram` and `_execute_and_sink` reuse the exact same helpers `start()` uses
    to materialise the node's training frame — same pipeline execution, projection, and
-   seeded row sampling — so the profiled data matches what a real training run would
+   seeded row sampling, including preservation of explicit features that also appear
+   in `exclude` — so the profiled data matches what a real training run would
    see. The row limit is additionally clamped to `_DISPERSION_ESTIMATE_ROW_CAP`
    (200,000): the profile search runs ~10-30 IRLS fits, so it samples rather than
    paying full-data cost per candidate — 200k rows pins a single dispersion scalar far

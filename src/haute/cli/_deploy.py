@@ -122,6 +122,12 @@ def handle_deploy(config: DeployCliConfig) -> None:
     if config.endpoint_suffix:
         overrides["endpoint_suffix"] = config.endpoint_suffix
     deploy_config = deploy_config.override(**overrides)
+    pipeline_candidate = (
+        Path(config.pipeline_file)
+        if config.pipeline_file
+        else deploy_config.project_dir or Path.cwd()
+    )
+    deploy_config.pipeline_file = resolve_pipeline_file(pipeline_candidate)
 
     click.echo(f"\nDeploying pipeline: {deploy_config.model_name}")
     click.echo(f"  Pipeline: {deploy_config.pipeline_file}")

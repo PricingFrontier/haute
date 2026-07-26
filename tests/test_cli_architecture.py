@@ -101,7 +101,10 @@ def _write_toml(
 def _touch_pipeline(tmp_path: Path, name: str = "main.py") -> Path:
     """Write a stub pipeline Python file and return its path."""
     path = tmp_path / name
-    path.write_text("# placeholder pipeline\n", encoding="utf-8")
+    path.write_text(
+        "import haute\npipeline = haute.Pipeline('test')\n",
+        encoding="utf-8",
+    )
     return path
 
 
@@ -235,6 +238,33 @@ class TestDeployModelNameOptional:
         assert "toml_model" not in result.output.splitlines()[-1], (
             "CLI override must replace the TOML value in the 'Deploying pipeline' line"
         )
+
+    def test_deploy_binds_configured_pipeline_before_resolution(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Deploy resolves the configured pipeline, not a decoy ``main.py``."""
+        monkeypatch.chdir(tmp_path)
+        configured = _touch_pipeline(tmp_path, "configured.py")
+        _touch_pipeline(tmp_path, "main.py")
+        _write_toml(tmp_path, pipeline="configured.py")
+
+        resolved = _mock_resolved()
+        with (
+            patch(
+                "haute.deploy._config.resolve_config",
+                return_value=resolved,
+            ) as resolve_mock,
+            patch("haute.deploy._validators.validate_deploy", return_value=[]),
+            patch("haute.deploy._validators.score_test_quotes", return_value=[]),
+        ):
+            result = runner.invoke(cli, ["deploy", "--dry-run"])
+
+        assert result.exit_code == 0, result.output
+        deploy_config = resolve_mock.call_args.args[0]
+        assert deploy_config.pipeline_file == configured.resolve()
 
     def test_deploy_without_toml_or_flag_errors_with_hint(
         self,
@@ -743,6 +773,24 @@ class TestProjectResolvePipelineFileAutoDiscovery:
         msg = str(excinfo.value)
         assert "helpers.py" in msg
         assert "haute.Pipeline" in msg
+
+    def test_malformed_toml_fails_instead_of_falling_through(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from haute._project import resolve_pipeline_file
+        from haute.errors import ConfigError
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "haute.toml").write_text("[project\n", encoding="utf-8")
+        (tmp_path / "main.py").write_text(
+            "import haute\npipeline = haute.Pipeline('decoy')\n",
+            encoding="utf-8",
+        )
+
+        with pytest.raises(ConfigError, match="haute.toml"):
+            resolve_pipeline_file(None)
 
 
 class TestCliNoAdHocPipelineResolution:

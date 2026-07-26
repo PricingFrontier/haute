@@ -1566,6 +1566,19 @@ class TestValidateConfig:
             }
         )
 
+    def test_glm_validation_uses_canonical_top_level_family_and_link(self):
+        """Nested params are CatBoost config and cannot override GLM fields."""
+        TrainService._validate_config(
+            {
+                "target": "y",
+                "algorithm": "glm",
+                "family": "poisson",
+                "link": "log",
+                "all_factors": True,
+                "params": {"family": "binomial", "link": "identity"},
+            }
+        )
+
     def test_catboost_missing_loss_raises_400(self):
         """Unset loss must not silently train under CatBoost's RMSE default."""
         with pytest.raises(HTTPException) as exc_info:
@@ -1955,6 +1968,47 @@ class TestDispersionErrorPaths:
         assert job["status"] == "contract_error"
         assert "missing column" in job["message"]
 
+    def test_start_preserves_explicit_feature_that_is_also_excluded(
+        self,
+        nb_training_data,
+    ):
+        from haute._execution_context import ExecutionContext, ExecutionProfile
+        from haute.schemas import DispersionEstimateRequest
+
+        graph = _make_negbinomial_graph(
+            nb_training_data,
+            feature_columns=["x1"],
+            exclude=["x1"],
+        )
+        store, service = self._service()
+        body = DispersionEstimateRequest.model_validate(
+            {"graph": graph, "node_id": "train", "param": "theta"}
+        )
+        captured: dict[str, object] = {}
+
+        def capture_sink(*_args, keep_columns, **_kwargs):
+            captured["keep_columns"] = keep_columns
+            return "prepared.parquet"
+
+        context = ExecutionContext(
+            operation="dispersion_estimate",
+            profile=ExecutionProfile.TRAINING_PREP,
+        )
+        with (
+            patch.object(service, "_compile_preamble", return_value=None),
+            patch.object(service, "_estimate_ram", return_value=(None, None, 100, 3)),
+            patch(
+                "haute.routes._train_service.create_admitted_execution_context",
+                return_value=context,
+            ),
+            patch.object(service, "_execute_and_sink", side_effect=capture_sink),
+            patch.object(service, "_launch_dispersion_background", return_value=object()),
+        ):
+            response = service.start_dispersion_estimate(body)
+
+        assert response.status == "started"
+        assert "x1" in captured["keep_columns"]
+
     def test_start_maps_unexpected_exception_to_error(self, nb_training_data):
         from haute.schemas import DispersionEstimateRequest
 
@@ -2030,6 +2084,16 @@ class TestDispersionErrorPaths:
             service._validate_dispersion_config(config, "theta")
         assert exc_info.value.status_code == 400
         assert "target column" in exc_info.value.detail
+
+    def test_validate_uses_canonical_top_level_glm_fields(self):
+        _, service = self._service()
+        service._validate_dispersion_config(
+            {
+                **_NB_ESTIMATION_CONFIG,
+                "params": {"family": "poisson", "link": "identity"},
+            },
+            "theta",
+        )
 
     def test_worker_missing_term_columns_is_contract_error(self, tmp_path: Path):
         """Terms referencing absent columns must fail actionably, not reach

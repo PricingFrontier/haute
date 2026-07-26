@@ -153,10 +153,16 @@
    during download/move deletes a partially-written cache file before
    re-raising; the temp directory is always cleaned up in a `finally`.
 5. After a successful download, run `_evict_disk_cache`. It excludes run
-   directories currently marked active by *any* in-flight caller, then removes
-   the oldest inactive directories beyond `_DISK_CACHE_MAX_DIRS` = 50. Active
-   directories can therefore make the physical total temporarily exceed 50;
-   the next successful download triggers another eviction pass.
+   directories currently marked active by *any* in-flight caller. For each
+   oldest inactive directory beyond `_DISK_CACHE_MAX_DIRS` = 50, it re-checks
+   activity and atomically renames the directory to a unique `.evicting-*`
+   tombstone under `_disk_cache_active_runs_guard`, then recursively deletes
+   the tombstone outside the guard. New users either protect the original
+   directory before the rename or cleanly miss it afterwards; unrelated loads
+   never wait for recursive deletion. Active directories can therefore make
+   the physical total temporarily exceed 50; the next successful download
+   triggers another eviction pass. Stale tombstones from an interrupted process
+   are cleaned on a later eviction pass.
 
 ### Bounded retry — `_load_with_bounded_retry` (`_mlflow_io.py`)
 
@@ -229,10 +235,10 @@ categorical domains, prepares the predict frame (offset column riding
 along for pyfunc/rustystats, or supplied as a CatBoost Pool baseline),
 predicts, appends the proba column if applicable, applies the write
 projection, writes to a `ParquetWriter` opened lazily from the first
-chunk's Arrow schema. If the input has zero rows, no chunk loop runs; a
-one-row synthetic probe (built from the input's stored parquet schema) is
-scored instead purely to derive the correct output dtypes (including a
-non-Float64 CatBoost classifier hard-label dtype), and an empty table
+chunk's Arrow schema. If the input has zero rows, no chunk loop runs; CatBoost
+derives its hard-label dtype from `raw_model.classes_` (and uses `Float64` for
+probabilities), while other flavors use a schema-shaped probe. A CatBoost
+classifier whose label domain is unavailable raises rather than guessing, and an empty table
 with those dtypes is written. Any failure before the writer closes
 cleans up the (incomplete) output file in a `finally`.
 
@@ -316,13 +322,16 @@ endpoint.
 - **Disk-cache eviction excludes any run currently "in use"** —
   `_disk_cache_active_runs` is a reference count, not a boolean, so
   nested/concurrent callers touching the same run correctly keep it
-  protected until the *last* one finishes, not the first.
+  protected until the *last* one finishes, not the first. The final active
+  check and tombstone rename share the guard; `rmtree` deliberately does not.
 - **Offset-column handling is flavor-specific by design, not
   uniform.** RustyStats and pyfunc models receive the offset column as
   part of the predict frame itself (`_OFFSET_PASSTHROUGH_FLAVORS`);
   CatBoost never receives it as a feature column — it is supplied as a
   numeric `Pool` baseline, because CatBoost only applies a baseline
-  passed inside a `Pool`, never through a bare matrix `predict()`.
+  passed inside a `Pool`, never through a bare matrix `predict()`. A missing,
+  null, non-numeric, or non-finite explanation offset raises
+  `ModelExplanationError` before CatBoost is called.
 - **Pyfunc feature discovery uses the supported MLflow signature API.**
   `_extract_pyfunc_features` reads `signature.inputs.input_names()`; Haute's
   MLflow dependency floor is 3.11 and no older list-shaped signature adapter
@@ -332,10 +341,11 @@ endpoint.
   features appear in the schema in the same relative order they were
   declared in training (`_validate_features_uncached`'s
   `actual_order_by_position` check).
-- **The batch scorer's zero-row output dtype is derived, never
-  hardcoded**, from a one-row synthetic probe scored through the same
-  code path as real rows — including re-deriving the classification proba
-  dtype — so an empty score of a model produces a parquet schema
+- **The batch scorer's zero-row output dtype is derived from model metadata
+  where available, never assumed from the task alone.** CatBoost classification
+  uses `classes_` for hard labels and raises if that metadata is absent; other
+  flavors use a one-row synthetic probe through the real scoring path. This
+  keeps an empty score's parquet schema
   byte-for-byte type-compatible with a non-empty score of the same model.
   A probe `predict()` failure here is allowed to propagate rather than
   falling back to a guessed dtype.
@@ -423,8 +433,8 @@ to a live MLflow tracking server.
   disk-cache-eviction races with an in-flight load of the run being
   considered for eviction (several scenarios: eviction skips an
   active run, eviction re-checks activity before deleting, eviction
-  blocks new users of a run mid-delete, the fast disk-cache path marks a
-  run active before probing), and waiters on both the fast-path and
+  atomically tombstones before lock-free deletion, the fast disk-cache path
+  marks a run active before probing), and waiters on both the fast-path and
   full-resolve-path reusing a model that finished loading while they
   waited.
 - **`tests/test_mlflow_model_cache_key_contract.py`** (new) — pins cache-key
@@ -521,7 +531,6 @@ in this component's own test files at the time of writing.
 Remaining model-registry improvement work is tracked in the
 [modelling roadmap](../../roadmap/modelling.md).
 
-- Replace `_batch_score_to_parquet`'s all-null synthetic-row dtype probe with a typed empty-output construction when the selected model flavor and its metadata fully determine prediction and probability dtypes. Never call `predict()` for a valid zero-row batch merely to infer a schema. If the required metadata is absent or ambiguous, raise a contextual error.
 - In deploy-live/eager scoring, derive the categorical-validation input from the union of categorical feature columns, model-required features, offset handling, and write-projection necessities. Validate against that projected frame rather than the complete input frame.
 - Do not add an array-contiguity conversion until its dedicated benchmark exceeds the agreed threshold and its regression tests demonstrate identical feature order, values, null treatment, and output dtypes.
 

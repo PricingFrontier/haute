@@ -87,7 +87,9 @@ Out of scope, owned elsewhere:
   live training.
 - `POST /api/modelling/mlflow/log` logs an already-completed job's results to MLflow
   after the fact (the "Log to MLflow" button), reusing the persisted feature contract
-  so the logged model's signature matches what was actually trained.
+  so the logged model's signature matches what was actually trained. Databricks
+  registry publication uses the logged `runs:/…/model` URI and is best-effort:
+  a registry error is logged without discarding the successful run.
 - `POST /api/modelling/train/cancel/{job_id}` marks an in-flight run cancelled and asks
   its supervisor to terminate and join the child process.
 - `POST /api/modelling/dispersion/estimate` estimates a GLM node's Negative Binomial

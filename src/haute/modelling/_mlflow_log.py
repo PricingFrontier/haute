@@ -385,10 +385,10 @@ def log_experiment(
         # Register model (Databricks UC only)
         if model_name and model_path and backend == "databricks":
             _check_cancelled()
-            mlflow.register_model(
-                f"runs:/{run.info.run_id}/{Path(model_path).name}",
-                model_name,
-            )
+            try:
+                mlflow.register_model(f"runs:/{run.info.run_id}/model", model_name)
+            except Exception:
+                logger.warning("mlflow_model_registration_failed", exc_info=True)
 
         run_id = run.info.run_id
         _check_cancelled()

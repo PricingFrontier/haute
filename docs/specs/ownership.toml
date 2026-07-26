@@ -84,6 +84,12 @@ consumers = ["explore-eda"]
 reason = "Caching owns dataframe cache-key invariants; Explore consumes the overview-field exclusion that keeps dataframe and report caching independent."
 
 [[shared_file]]
+path = "src/haute/_contracts.py"
+primary = "pipeline-config"
+consumers = ["execution-engine"]
+reason = "Pipeline configuration owns the column-contract model and lookup consumed at runtime."
+
+[[shared_file]]
 path = "src/haute/_gitignore_guard.py"
 primary = "sandbox-security"
 consumers = ["git-integration"]
@@ -112,6 +118,12 @@ path = "src/haute/_polars_utils.py"
 primary = "io-layer"
 consumers = ["explore-eda"]
 reason = "The I/O layer owns profiled Polars materialisation primitives; Explore consumes native cancellable streaming collection for background analysis."
+
+[[shared_file]]
+path = "src/haute/_registry.py"
+primary = "pipeline-config"
+consumers = ["codegen", "execution-engine"]
+reason = "Pipeline configuration owns the node registry shared with graph generation and execution."
 
 [[shared_file]]
 path = "src/haute/_source_cache.py"

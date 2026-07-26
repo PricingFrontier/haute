@@ -924,7 +924,7 @@ class TestPipelineEdgeCases:
         assert len(g["edges"]) == 0
         assert g["nodes"][0]["id"] == "only"
 
-    def test_to_graph_underscored_names_title_cased(self):
+    def test_to_graph_uses_static_builder_label(self):
         p = Pipeline("title")
 
         @p.data_input
@@ -932,7 +932,7 @@ class TestPipelineEdgeCases:
             return pl.DataFrame()
 
         g = p.to_graph()
-        assert g["nodes"][0]["data"]["label"] == "My Data Source"
+        assert g["nodes"][0]["data"]["label"] == "my_data_source"
 
     def test_to_graph_underscore_config_keys_filtered(self):
         p = Pipeline("filter")
@@ -1303,6 +1303,18 @@ class TestInstanceReferencesFailLoud:
             return df
 
         p.connect("src", "inst")
+
+        with pytest.raises(ExecutionError, match="instance"):
+            p.run()
+        with pytest.raises(ExecutionError, match="instance"):
+            p.score(pl.DataFrame({"x": [2]}))
+
+    def test_zero_parameter_instance_raises_in_run_and_score(self):
+        p = Pipeline("zero_parameter_instance")
+
+        @p.instance
+        def inst() -> pl.DataFrame:
+            return pl.DataFrame({"stub": [1]})
 
         with pytest.raises(ExecutionError, match="instance"):
             p.run()

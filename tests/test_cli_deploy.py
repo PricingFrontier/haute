@@ -22,6 +22,10 @@ def _make_toml(tmp_path: Path) -> None:
         '[deploy]\nmodel_name = "test-model"\nendpoint_name = "test-ep"\n'
         '[test_quotes]\ndir = "tests/quotes"\n',
     )
+    (tmp_path / "main.py").write_text(
+        'import haute\n\npipeline = haute.Pipeline("test")\n',
+        encoding="utf-8",
+    )
 
 
 def _mock_resolved() -> MagicMock:
