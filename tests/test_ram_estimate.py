@@ -172,6 +172,42 @@ def test_source_metadata_propagates_programming_errors_but_marks_os_errors_unava
         assert _detailed_source_metadata_for_node(node) is None
 
 
+@pytest.mark.parametrize("suffix", [None, ".json", ".parquet"])
+def test_api_input_detailed_metadata_reports_unavailable_sources(
+    tmp_path,
+    suffix: str | None,
+) -> None:
+    path = "" if suffix is None else str(tmp_path / f"missing{suffix}")
+    node = _make_source_node(node_type="apiInput", config={"path": path})
+
+    assert _detailed_source_metadata_for_node(node) is None
+
+
+def test_api_input_detailed_metadata_reads_existing_parquet(tmp_path) -> None:
+    path = tmp_path / "quotes.parquet"
+    pl.DataFrame({"quote_id": [1, 2], "premium": [100.0, 125.0]}).write_parquet(path)
+    node = _make_source_node(node_type="apiInput", config={"path": str(path)})
+
+    metadata = _detailed_source_metadata_for_node(node)
+
+    assert metadata is not None
+    assert metadata.row_count == 2
+    assert metadata.column_count == 2
+    assert metadata.column_width_keys == {
+        "quote_id": f"{node.id}\0quote_id",
+        "premium": f"{node.id}\0premium",
+    }
+
+
+def test_non_source_node_has_no_detailed_metadata() -> None:
+    node = _make_source_node(
+        node_type="polars",
+        config={"path": "/unused/source.parquet"},
+    )
+
+    assert _detailed_source_metadata_for_node(node) is None
+
+
 def test_low_cardinality_wide_strings_use_expanded_probe_width(tmp_path) -> None:
     path = tmp_path / "wide_dictionary.parquet"
     wide_value = "x" * 2048
