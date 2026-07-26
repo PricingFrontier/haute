@@ -45,6 +45,7 @@ from haute.routes._optimiser_limits import (
 from haute.routes._optimiser_service import (
     _APPLY_RESULT_HANDLE_KEY,
     _ESTIMATE_JOB_TYPE,
+    _FRONTIER_GENERATION_KEY,
     _FRONTIER_RECOMPUTE_JOB_TYPE,
     _JOB_TYPE_KEY,
     _NULL_QUOTE_ID_DETAIL_PREFIX,
@@ -404,6 +405,17 @@ def _frontier_ranges_for_request(
 
 def _frontier_apply_handle_key(point_index: int) -> str:
     return f"{_FRONTIER_APPLY_HANDLE_PREFIX}{point_index}"
+
+
+def _frontier_generation_or_raise(job: dict[str, Any]) -> int:
+    """Return the store-stable generation for the parent's current frontier."""
+    generation = job.get(_FRONTIER_GENERATION_KEY, 0)
+    if isinstance(generation, bool) or not isinstance(generation, int) or generation < 0:
+        raise HTTPException(
+            status_code=500,
+            detail="Job frontier generation is invalid",
+        )
+    return int(generation)
 
 
 def _with_bounded_frontier_apply_handle(
@@ -1079,7 +1091,7 @@ def _materialise_frontier_point_apply(
             {**job, "base_result": base_result},
             point_index,
         )
-        frontier_generation = job.get("frontier_data")
+        frontier_generation = _frontier_generation_or_raise(job)
         artifact_handles = _artifact_handles_or_raise(job)
         handle_key = _frontier_apply_handle_key(point_index)
         existing_handle = artifact_handles.get(handle_key)
@@ -1121,7 +1133,7 @@ def _materialise_frontier_point_apply(
             )
         with _frontier_state_lock:
             job = _store.require_completed_job(job_id)
-            if job.get("frontier_data") is not frontier_generation:
+            if _frontier_generation_or_raise(job) != frontier_generation:
                 raise HTTPException(
                     status_code=409,
                     detail=(
@@ -1151,7 +1163,7 @@ def _materialise_frontier_point_apply(
         if new_handle is None:
             with _frontier_state_lock:
                 latest_job = _store.require_completed_job(job_id)
-                if latest_job.get("frontier_data") is not frontier_generation:
+                if _frontier_generation_or_raise(latest_job) != frontier_generation:
                     raise HTTPException(
                         status_code=409,
                         detail=(
@@ -1183,7 +1195,7 @@ def _materialise_frontier_point_apply(
         evicted_handles: list[dict[str, Any]] = []
         with _frontier_state_lock:
             latest_job = _store.require_completed_job(job_id)
-            if latest_job.get("frontier_data") is not frontier_generation:
+            if _frontier_generation_or_raise(latest_job) != frontier_generation:
                 raise HTTPException(
                     status_code=409,
                     detail=(
@@ -1592,6 +1604,7 @@ def _run_frontier_sweep(
         with _frontier_state_lock:
             _raise_if_frontier_stopped(frontier_job_id)
             latest_job = _store.require_completed_job(parent_job_id)
+            next_frontier_generation = _frontier_generation_or_raise(latest_job) + 1
             retained_handles, invalidated_handles = _invalidate_frontier_apply_artifact_handles(
                 latest_job
             )
@@ -1601,6 +1614,7 @@ def _run_frontier_sweep(
                     "result": result_dict,
                     "base_result": dict(result_dict),
                     "frontier_data": frontier_dict,
+                    _FRONTIER_GENERATION_KEY: next_frontier_generation,
                     "selected_frontier_point": None,
                     "artifact_handles": retained_handles,
                 },
@@ -1787,7 +1801,7 @@ def run_frontier(body: OptimiserFrontierRequest) -> OptimiserFrontierResponse:
 
 
 @router.get("/frontier/status/{job_id}", response_model=OptimiserFrontierStatusResponse)
-async def frontier_status(job_id: str) -> OptimiserFrontierStatusResponse:
+def frontier_status(job_id: str) -> OptimiserFrontierStatusResponse:
     """Return status for a background frontier sweep job."""
     with _frontier_state_lock:
         job = _store.require_job(job_id)

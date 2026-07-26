@@ -320,6 +320,44 @@ def test_concurrent_frontier_point_materialisations_preserve_both_handles(
         assert Path(handle["path"]).is_file()
 
 
+def test_frontier_point_materialisation_survives_store_copy_of_frontier_payload(
+    client,
+    clean_job_store,
+):
+    """A store may copy nested payloads without representing a recompute."""
+    job_id = "apply_point_after_store_copy"
+    clean_job_store.jobs[job_id] = _online_frontier_job(
+        quote_grid=MagicMock(),
+        frontier_generation=7,
+    )
+
+    def apply_from_grid(_grid, *, lambdas, constraints):
+        del lambdas, constraints
+        current = clean_job_store.require_job(job_id)
+        clean_job_store.atomic_update(
+            job_id,
+            {"frontier_data": dict(current["frontier_data"])},
+            expected_status="completed",
+        )
+        return SimpleNamespace(
+            dataframe=pl.DataFrame(
+                {
+                    "quote_id": ["q-store-copy"],
+                    "optimal_scenario_value": [1.0],
+                }
+            )
+        )
+
+    with patch("price_contour.apply_from_grid", side_effect=apply_from_grid):
+        response = client.post(
+            "/api/optimiser/apply",
+            json={"job_id": job_id, "point_index": 0},
+        )
+
+    assert response.status_code == 200, response.text
+    assert clean_job_store.require_job(job_id)["frontier_generation"] == 7
+
+
 def test_frontier_point_artifact_handles_are_capped_oldest_first():
     from haute.routes.optimiser import (
         _MAX_FRONTIER_APPLY_ARTIFACTS,

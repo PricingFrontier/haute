@@ -158,10 +158,13 @@ selection, and point-artifact retention form a cohesive domain separate from ini
 
 **Plan:** Move pure range/point helpers first, then introduce an `OptimiserFrontierService` that
 owns explicit sweep admission, cancellation, parent publication, and point-artifact retention.
-Keep FastAPI response assembly in `src/haute/routes/optimiser.py`.
+Replace the current process-global `_frontier_state_lock` with per-parent-job locking, or pin
+artifact handles while reads occur so slow parquet reads/deletions can safely move outside the
+state lock. Keep FastAPI response assembly in `src/haute/routes/optimiser.py`.
 
 **Acceptance:** Timeout/cancel, single-flight, compute-budget, point-selection, ratebook
-materialisation, and artifact-cap regressions remain green at each extraction step.
+materialisation, artifact-cap, and unrelated-parent concurrency regressions remain green at each
+extraction step.
 
 **Dependencies:** OPT-P01, OPT-P05, OPT-P06.
 

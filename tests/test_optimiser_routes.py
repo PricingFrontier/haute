@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import threading
 import time
 from collections.abc import Iterator
@@ -5355,6 +5356,12 @@ class TestSolverWorkerContextGuard:
 
 
 class TestFrontierRoute:
+    def test_frontier_status_handler_is_synchronous(self):
+        """A threading lock must never be awaited on FastAPI's event-loop thread."""
+        from haute.routes.optimiser import frontier_status
+
+        assert inspect.iscoroutinefunction(frontier_status) is False
+
     def test_frontier_admission_is_atomic_per_parent_job(
         self,
         client,
@@ -5426,6 +5433,7 @@ class TestFrontierRoute:
             and job.get("parent_job_id") == "atomic_frontier_parent"
         ]
         assert len(frontier_jobs) == 1
+        assert clean_job_store.require_job("atomic_frontier_parent")["frontier_generation"] == 1
 
     def test_frontier_cancel_stops_late_parent_publication(
         self,
@@ -11395,6 +11403,30 @@ class TestSolveOnlineUnit:
         job = store.require_job(job_id)
         assert job["result"]["history"] is None
 
+    def test_solve_online_requires_worker_start_time(self):
+        from haute.routes._job_store import JobStore
+        from haute.routes._optimiser_service import SolveContext, _solve_online
+
+        store = JobStore()
+        job_id = store.create_job({"status": "running", "config": {}})
+
+        with (
+            patch("price_contour.OnlineOptimiser") as mock_solver,
+            pytest.raises(RuntimeError, match="SolveContext.start_time"),
+        ):
+            _solve_online(
+                SolveContext(
+                    job_id=job_id,
+                    node_id="opt",
+                    mode="online",
+                    store=store,
+                ),
+                quote_grid=MagicMock(),
+                config={"objective": "income", "constraints": {}},
+            )
+
+        mock_solver.assert_not_called()
+
 
 @pytest.mark.usefixtures("_in_solver_worker_context")
 class TestSolveRatebookUnit:
@@ -11421,6 +11453,26 @@ class TestSolveRatebookUnit:
                     start_time=time.monotonic(),
                 ),
                 quote_grid=mock_grid,
+                config={},
+                ratebook_factors_handle=None,
+            )
+
+    def test_solve_ratebook_requires_worker_start_time(self):
+        from haute.routes._job_store import JobStore
+        from haute.routes._optimiser_service import _solve_ratebook
+
+        store = JobStore()
+        job_id = store.create_job({"status": "running", "config": {}})
+
+        with pytest.raises(RuntimeError, match="SolveContext.start_time"):
+            _solve_ratebook(
+                SolveContext(
+                    job_id=job_id,
+                    node_id="opt",
+                    mode="ratebook",
+                    store=store,
+                ),
+                quote_grid=MagicMock(),
                 config={},
                 ratebook_factors_handle=None,
             )

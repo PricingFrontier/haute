@@ -200,6 +200,7 @@ _SOLVE_JOB_TYPE = "solve"
 _ESTIMATE_JOB_TYPE = "estimate"
 _FRONTIER_AUTO_RANGE_JOB_TYPE = "frontier_auto_range"
 _FRONTIER_RECOMPUTE_JOB_TYPE = "frontier_recompute"
+_FRONTIER_GENERATION_KEY = "frontier_generation"
 _GRAPH_NODE_SETUP_COORDINATION_TYPE = "optimiser_graph_node_setup"
 _NULL_QUOTE_ID_DETAIL_PREFIX = "Null quote_id values found in optimiser input"
 _NON_FINITE_DETAIL_PREFIX = "Non-finite values found in optimiser input"
@@ -2467,6 +2468,7 @@ def _finalize_solve_result(
         "frontier_data": frontier_data,
         "artifact_handles": artifact_handles,
         **(extra_job_fields or {}),
+        _FRONTIER_GENERATION_KEY: 0,
     }
     if ratebook_factor_contexts is not None:
         completion_fields["ratebook_factor_contexts"] = ratebook_factor_contexts
@@ -2538,7 +2540,9 @@ def _solve_online(
     store = ctx.store
     job_id = ctx.job_id
     check_cancelled = ctx.check_cancelled
-    start_time = ctx.start_time if ctx.start_time is not None else time.monotonic()
+    if ctx.start_time is None:
+        raise RuntimeError("_solve_online requires SolveContext.start_time to be set.")
+    start_time = ctx.start_time
 
     if check_cancelled is not None:
         check_cancelled()
@@ -2613,7 +2617,9 @@ def _solve_ratebook(
     job_id = ctx.job_id
     streaming_chunk_size = ctx.streaming_chunk_size
     check_cancelled = ctx.check_cancelled
-    start_time = ctx.start_time if ctx.start_time is not None else time.monotonic()
+    if ctx.start_time is None:
+        raise RuntimeError("_solve_ratebook requires SolveContext.start_time to be set.")
+    start_time = ctx.start_time
 
     if ratebook_factors_handle is None:
         raise RuntimeError(

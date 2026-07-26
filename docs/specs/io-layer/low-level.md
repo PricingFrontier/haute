@@ -409,8 +409,8 @@ Tests live across several files, split roughly by module:
 - `tests/test_polars_utils.py` — `streaming_collect`/
   `cancellable_streaming_collect`/`bounded_collect_batches` streaming-engine
   usage, metrics/context integration, native-query cancellation, poll-interval
-  validation, and unchanged native error propagation; `bounded_sink` behaviour
-  for CSV and Parquet; `atomic_write` and `read_parquet_metadata`; the
+  validation, and unchanged native `fetch()` error propagation; `bounded_sink`
+  behaviour for CSV and Parquet; `atomic_write` and `read_parquet_metadata`; the
   process-global `temporary_streaming_chunk_size` lock; `_malloc_trim`
   dispatch across simulated platforms.
 

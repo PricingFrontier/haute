@@ -283,6 +283,7 @@ def make_online_frontier_job(
         "config": cfg,
         "node_label": "frontier_opt",
         "frontier_data": fd,
+        "frontier_generation": 0,
         "result": result,
         "artifact_handles": {},
         "created_at": now,

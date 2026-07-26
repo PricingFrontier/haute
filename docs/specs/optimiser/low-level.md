@@ -38,8 +38,11 @@ in `optimiser.py`). Instance state:
 ### `SolveContext` (`src/haute/routes/_optimiser_service.py`, frozen dataclass)
 
 Per-solve context threaded through `_solve_online`/`_solve_ratebook`: job id, node id, mode,
-store, execution context, streaming chunk size, single-flight key, and a `check_cancelled`
-callable — the single object both solver code paths use to check for cooperative cancellation.
+store, execution context, streaming chunk size, single-flight key, required worker `start_time`,
+and a `check_cancelled` callable — the single object both solver code paths use to check for
+cooperative cancellation. The orchestration context may omit `start_time` before
+`_launch_background` resolves it, but both solver entry points fail loudly if they receive a
+context without the resolved value rather than silently resetting elapsed-time accounting.
 
 ### Other dataclasses
 
@@ -74,9 +77,11 @@ A job is a plain dict living in the shared `JobStore`. Fields this component rea
 `node_label`, `start_time`, `timeout`, `result`, `base_result` (the pre-frontier-point-overlay
 summary, used to reconstruct any frontier point without re-solving), `frontier_data` (the raw,
 unlimited frontier points — distinct from `result["frontier"]`, which is the size-limited
-frontend payload), `selected_frontier_point`, `artifact_handles` (dict of named artifact
-handles, see below), and, only while heavy state is retained, `solver`, `quote_grid`,
-`solve_result`, `factor_level_counts`, `factor_level_order`, `setup_chunking`.
+frontend payload), `frontier_generation` (a non-negative integer initialised to `0` at solve
+completion and incremented by every explicit recompute), `selected_frontier_point`,
+`artifact_handles` (dict of named artifact handles, see below), and, only while heavy state is
+retained, `solver`, `quote_grid`, `solve_result`, `factor_level_counts`, `factor_level_order`,
+`setup_chunking`.
 
 ### Artifact handle shape
 
@@ -252,6 +257,9 @@ phase and a background sweep phase, mirroring the solve submission pattern:
    on the *parent solve job* (via `_store.atomic_update(parent_job_id, ..., expected_status=
    "completed")` — 409-shaped as a `contract_error` on the frontier job if the solve job's state
    changed concurrently, since the atomic update itself cannot raise past the background thread).
+   The same atomic update increments the parent's integer `frontier_generation`; point
+   materialisation uses that value as its recompute fence, so correctness does not depend on a
+   job store preserving nested Python object identity.
    Any previously materialised frontier-point apply artifacts are invalidated (their handles
    removed from `artifact_handles` and their files cleaned up) since a recomputed frontier makes
    old point indices meaningless. The stop check, parent update, and frontier-job completion
@@ -265,10 +273,12 @@ phase and a background sweep phase, mirroring the solve submission pattern:
    than propagating; nothing about a post-validation frontier failure is visible to the caller
    except through polling.
 
-`GET /frontier/status/{job_id}` (`haute.routes.optimiser.frontier_status`) polls the frontier job:
-404s if the job type isn't `frontier_recompute`, lazily enforces the job's timeout on poll (the
-same "no dedicated timeout-watcher thread" pattern as frontier auto-range — see below), requests
-cooperative cancellation before the `timed_out` transition, and
+`GET /frontier/status/{job_id}` (`haute.routes.optimiser.frontier_status`) is a synchronous
+FastAPI handler so acquisition of the thread-backed frontier lock runs in the server threadpool
+rather than blocking the event loop. It 404s if the job type isn't `frontier_recompute`, lazily
+enforces the job's timeout on poll (the same "no dedicated timeout-watcher thread" pattern as
+frontier auto-range — see below), requests cooperative cancellation before the `timed_out`
+transition, and
 returns `OptimiserFrontierStatusResponse` (`status`, `progress`, `message`, `elapsed_seconds`,
 `result: OptimiserFrontierResponse | None`, `terminal_reason`, `error_code`, `http_status_code`,
 `error_detail`, `execution_metrics`) — the same status-envelope shape used elsewhere in the
@@ -298,6 +308,9 @@ handle lookup thereafter) or the base solve result — from the still-live in-me
 response is capped via `haute.routes._optimiser_limits.limited_apply_preview_payload` (first
 `APPLY_PREVIEW_ROW_LIMIT` rows plus explicit `row_count`/`preview_truncated` metadata).
 Handle insertion re-reads and merges the latest mapping while holding `_frontier_state_lock`.
+Materialisation captures `frontier_generation` before external solver/artifact work and compares
+the integer again before publishing, returning 409 only when a recompute actually advanced it;
+copying or serialising the unchanged `frontier_data` payload does not invalidate the request.
 At most eight `frontier_apply_result:*` handles are retained; the oldest excess handle is
 removed from the job before its owned parquet is deleted.
 
@@ -635,7 +648,8 @@ returns the nested result. The helpers are used across `test_optimiser_routes.py
   surfaces as the frontier job's terminal `error` status, not a synchronous 5xx); and
   `TestSolverWorkerContextGuard` (`_compute_frontier`/`_solve_online`/`_solve_ratebook` each raise
   `RuntimeError` when called outside `solver_worker_context()`, succeed inside it, and the guard's
-  contextvar resets after the context exits).
+  contextvar resets after the context exits). The frontier status route is pinned as a synchronous
+  handler, and both solver entry points are pinned to reject a missing worker `start_time`.
 - **`tests/test_optimiser_routes_critical_edges.py`** — targeted edge cases not covered by the
   main route test file: rejecting non-mapping/invalid artifact handles, missing/incomplete
   artifact summaries, runtime state disappearing mid-request after a `touch_heavy_objects` call,
@@ -682,7 +696,8 @@ returns the nested result. The helpers are used across `test_optimiser_routes.py
   in isolation: cached-summary reuse without touching the solver, malformed/partial frontier-
   point rejection, explicit-point save/mlflow-log without a live solve result, stale-solve-result
   avoidance, ratebook-point contract error on `/apply`, artifact-vs-response-preview agreement,
-  distinct data per point index, and config-name-vs-column-name normalisation.
+  distinct data per point index, store-copy-stable generation fencing, and
+  config-name-vs-column-name normalisation.
 - **`tests/test_optimiser_ratebook_apply_agreement.py`** — cross-checks that the saved-artifact
   ratebook path (`TestMirrorAgreesWithEngine`) and a real end-to-end solver run
   (`TestRealSolverEndToEnd`) produce identical priced factors, plus float-emitted-level

@@ -220,6 +220,43 @@ def test_cancellable_streaming_collect_cancels_native_query_on_checkpoint_failur
     assert context.checkpoint_calls == 2
 
 
+def test_cancellable_streaming_collect_preserves_native_fetch_failure() -> None:
+    failure = RuntimeError("native background query failed")
+
+    class Query:
+        cancelled = False
+
+        def fetch(self) -> None:
+            raise failure
+
+        def cancel(self) -> None:
+            self.cancelled = True
+
+    class Lazy:
+        def __init__(self, query: Query) -> None:
+            self.query = query
+
+        def collect(self, **kwargs) -> Query:
+            assert kwargs == {"engine": "streaming", "background": True}
+            return self.query
+
+    context = ExecutionContext(
+        operation="explore",
+        profile=ExecutionProfile.EXPLORE_ANALYSIS,
+    )
+    query = Query()
+
+    with pytest.raises(RuntimeError) as exc_info:
+        cancellable_streaming_collect(
+            Lazy(query),  # type: ignore[arg-type]
+            execution_context=context,
+        )
+
+    assert exc_info.value is failure
+    assert query.cancelled is False
+    assert context.metrics_payload()["n_collects"] == 1
+
+
 @pytest.mark.parametrize("poll_seconds", [0, -0.01, float("nan"), float("inf"), True])
 def test_cancellable_streaming_collect_rejects_invalid_poll_interval(
     poll_seconds: float,
