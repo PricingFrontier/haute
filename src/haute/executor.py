@@ -41,6 +41,7 @@ from haute._cache import (
     preamble_execution_fingerprint,
     preamble_imports_utility,
 )
+from haute._env import int_env
 from haute._execution_admission import create_admitted_execution_context
 from haute._execution_context import ExecutionContext, ExecutionProfile
 from haute._logging import get_logger
@@ -85,25 +86,14 @@ ensure_registry_ready()
 _MAX_PREVIEW_ROWS = 10_000  # safety cap for execute_graph JSON payload
 
 
-def _positive_int_from_env(name: str, default: int) -> int:
-    raw = os.environ.get(name, str(default))
-    try:
-        value = int(raw)
-    except ValueError as exc:
-        raise RuntimeError(f"{name} must be a positive integer") from exc
-    if value < 1:
-        raise RuntimeError(f"{name} must be a positive integer")
-    return value
-
-
-PREVIEW_CACHE_MAX_BYTES = _positive_int_from_env(
+PREVIEW_CACHE_MAX_BYTES = int_env(
     "HAUTE_PREVIEW_CACHE_MAX_BYTES",
     64 * 1024 * 1024,
 )
 """Maximum retained bytes for materialized preview DataFrames."""
-PREVIEW_MAX_CELLS = _positive_int_from_env("HAUTE_PREVIEW_MAX_CELLS", 50_000)
+PREVIEW_MAX_CELLS = int_env("HAUTE_PREVIEW_MAX_CELLS", 50_000)
 """Maximum cells converted to JSON rows for a single node preview."""
-PREVIEW_INITIAL_COLUMN_LIMIT = _positive_int_from_env(
+PREVIEW_INITIAL_COLUMN_LIMIT = int_env(
     "HAUTE_PREVIEW_INITIAL_COLUMN_LIMIT",
     200,
 )

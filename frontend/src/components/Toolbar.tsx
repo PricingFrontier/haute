@@ -8,6 +8,8 @@ import useSettingsStore, { MAX_STREAMING_CHUNK_SIZE, MIN_STREAMING_CHUNK_SIZE } 
 import useUIStore from "../stores/useUIStore"
 import useClickOutside from "../hooks/useClickOutside"
 
+declare const __APP_VERSION__: string
+
 function formatTiming(ms: number): string {
   return ms < 1000 ? `${ms.toFixed(1)}ms` : `${(ms / 1000).toFixed(2)}s`
 }
@@ -96,7 +98,7 @@ export default function Toolbar({
     <header role="toolbar" aria-label="Pipeline toolbar" className="h-11 flex items-center px-4 shrink-0" style={{ background: 'var(--chrome)', borderBottom: '1px solid var(--chrome-border)' }}>
       <div className="flex items-center gap-2.5">
         <h1 className="text-sm font-bold tracking-tight" style={{ color: 'var(--text-primary)' }}>Haute</h1>
-        <span className="text-[11px] font-mono" style={{ color: 'var(--text-muted)' }}>v0.1.0</span>
+        <span className="text-[11px] font-mono" style={{ color: 'var(--text-muted)' }}>v{__APP_VERSION__}</span>
         {dirty && <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse-dot" title="Unsaved changes" />}
         <span
           className={`w-2 h-2 rounded-full shrink-0${wsStatus === "reconnecting" ? " animate-pulse-dot" : ""}`}

@@ -102,7 +102,6 @@ def source_cache_identity(
             "http_path": str(validated["http_path"]),
             "table": _canonical_table(str(validated["table"])),
             "query": str(query).strip() if query else None,
-            "arguments": dict(validated.get("arguments") or {}),
             "host_ref": "DATABRICKS_HOST",
             "token_ref": "DATABRICKS_TOKEN",
         }
@@ -255,7 +254,10 @@ def resolve_data_input(
                 release_lease()
                 raise
         else:
-            weakref.finalize(frame, release_lease)
+            frame = frame.map_batches(
+                _SnapshotLeasePlan(release_lease),
+                streamable=True,
+            )
         return frame
 
     provider = validated["inputType"]
@@ -281,3 +283,21 @@ def resolve_data_input_from_config(
     base = _base_path(base_dir)
     config = load_node_config(config_path, base_dir=base)
     return resolve_data_input(config, base_dir=base, profile=profile)
+
+
+class _SnapshotLeasePlan:
+    """Identity plan callback whose lifetime owns the fallback snapshot lease.
+
+    This fallback is used only outside an ``ExecutionContext``. LazyFrames do
+    not cross the worker protocol, so the module-level callable need not be
+    serialised; lease release remains intentionally tied to local plan GC.
+    """
+
+    __slots__ = ("_finalizer", "__weakref__")
+
+    def __init__(self, release: Callable[[], None]) -> None:
+        self._finalizer = weakref.finalize(self, release)
+
+    def __call__(self, batch: pl.DataFrame) -> pl.DataFrame:
+        """Preserve the batch while keeping this lease owner in the plan."""
+        return batch

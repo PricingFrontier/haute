@@ -137,13 +137,15 @@ class ChunkPlanUnsupportedError(BoundedMemoryUnsupportedError):
 
 
 class ChunkMemoryRiskError(BoundedMemoryUnsupportedError):
-    """Raised when even one estimated target row exceeds a chunk byte budget."""
+    """Raised when the minimum executable chunk exceeds its byte budget."""
 
     error_code = "chunk_memory_risk"
     public_fields = (
         "target_node_id",
         "reason_code",
         "estimated_target_row_bytes",
+        "estimated_minimum_chunk_bytes",
+        "row_expansion_factor",
         "target_chunk_bytes",
     )
 
@@ -154,16 +156,27 @@ class ChunkMemoryRiskError(BoundedMemoryUnsupportedError):
         target_node_id: str,
         estimated_target_row_bytes: int,
         target_chunk_bytes: int,
+        reason_code: str = "single_row_exceeds_budget",
+        estimated_minimum_chunk_bytes: int | None = None,
+        row_expansion_factor: int = 1,
     ) -> None:
         self.target_node_id = target_node_id
-        self.reason_code = "single_row_exceeds_budget"
+        self.reason_code = reason_code
         self.estimated_target_row_bytes = estimated_target_row_bytes
+        self.estimated_minimum_chunk_bytes = (
+            estimated_target_row_bytes
+            if estimated_minimum_chunk_bytes is None
+            else estimated_minimum_chunk_bytes
+        )
+        self.row_expansion_factor = row_expansion_factor
         self.target_chunk_bytes = target_chunk_bytes
         super().__init__(
             message,
             target_node_id=target_node_id,
             reason_code=self.reason_code,
             estimated_target_row_bytes=estimated_target_row_bytes,
+            estimated_minimum_chunk_bytes=self.estimated_minimum_chunk_bytes,
+            row_expansion_factor=row_expansion_factor,
             target_chunk_bytes=target_chunk_bytes,
         )
 

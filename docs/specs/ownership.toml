@@ -1,6 +1,7 @@
-# Files intentionally named by more than one component Module map.  The
-# primary component owns the file's specification; consumers document only
-# their direct interaction with it.
+# Files intentionally shared across component specifications. The primary
+# component owns the file's behaviour; consumers document only a direct
+# interaction. A record is mandatory when multiple Module maps name the file
+# or when prose makes an explicit cross-component ownership claim.
 
 version = 1
 
@@ -74,7 +75,7 @@ reason = "Package metadata also configures quality tools and declares the assist
 path = "src/haute/_builders.py"
 primary = "execution-engine"
 consumers = ["optimiser", "pipeline-config"]
-reason = "Execution owns the runtime builder registry; optimiser owns the saved-artifact contracts consumed by its OPTIMISER_APPLY closures."
+reason = "Execution owns runtime builders; optimiser consumes OPTIMISER_APPLY artifact contracts and pipeline configuration consumes registry contracts."
 
 [[shared_file]]
 path = "src/haute/_cache.py"
@@ -95,6 +96,12 @@ consumers = ["server-api"]
 reason = "Local security policy protects the server's file-facing routes."
 
 [[shared_file]]
+path = "src/haute/_node_builder.py"
+primary = "execution-engine"
+consumers = ["pipeline-config"]
+reason = "Execution owns runtime builder interception; pipeline configuration documents the shared seam."
+
+[[shared_file]]
 path = "src/haute/_path_resolution.py"
 primary = "sandbox-security"
 consumers = ["execution-engine", "io-layer"]
@@ -105,6 +112,12 @@ path = "src/haute/_polars_utils.py"
 primary = "io-layer"
 consumers = ["explore-eda"]
 reason = "The I/O layer owns profiled Polars materialisation primitives; Explore consumes native cancellable streaming collection for background analysis."
+
+[[shared_file]]
+path = "src/haute/_source_cache.py"
+primary = "io-layer"
+consumers = ["caching"]
+reason = "I/O owns source snapshot publication and leases; caching consumes the checked identity and immutable generation contract."
 
 [[shared_file]]
 path = "src/haute/routes/_save_pipeline.py"

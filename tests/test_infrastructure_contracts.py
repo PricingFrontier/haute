@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import re
+import tomllib
+from importlib import metadata
 from pathlib import Path
 from typing import Any, get_args, get_origin
 
@@ -98,6 +100,30 @@ class TestGraphFingerprintCanonicalisation:
 
 
 class TestApiRouteContracts:
+    def test_openapi_and_installed_package_versions_match_pyproject(self) -> None:
+        from haute import __version__
+        from haute.server import app
+
+        pyproject_path = Path(__file__).resolve().parents[1] / "pyproject.toml"
+        with pyproject_path.open("rb") as pyproject_file:
+            product_version = tomllib.load(pyproject_file)["project"]["version"]
+
+        try:
+            installed_version = metadata.version("haute")
+        except metadata.PackageNotFoundError:
+            pytest.fail(
+                "The test environment has no installed Haute distribution metadata; "
+                "run `uv sync --group dev` before checking version alignment.",
+                pytrace=False,
+            )
+
+        assert installed_version == product_version, (
+            "Installed Haute distribution metadata is stale relative to pyproject.toml; "
+            "run `uv sync --group dev`."
+        )
+        assert __version__ == installed_version
+        assert app.version == installed_version
+
     def test_all_api_routes_declare_pydantic_response_models(self) -> None:
         from haute.server import app
 

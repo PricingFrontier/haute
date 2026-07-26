@@ -184,6 +184,16 @@ class IsolatedWorkerCleanupError(IsolatedWorkerError):
         self.errors = tuple(errors)
 
 
+class IsolatedWorkerTerminationError(IsolatedWorkerError):
+    """Raised when a child remains alive after terminate and kill attempts."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "Isolated worker remained alive after terminate and kill attempts",
+            terminal_reason="error",
+        )
+
+
 def process_memory_caps_supported() -> bool:
     """Return whether this platform can enforce child address-space limits.
 
@@ -237,23 +247,30 @@ def run_isolated_worker(
         name=worker_config.process_name,
         args=(result_queue, function, args, kwargs, worker_config.memory_limit_bytes),
     )
-    primary_error: IsolatedWorkerError | None = None
+    primary_error: BaseException | None = None
     result: T | None = None
     has_result = False
+    queued_payload: tuple[str, Any] | None = None
+    process_started = False
     try:
         try:
             process.start()
+            process_started = True
         except Exception as exc:  # pragma: no cover - depends on multiprocessing internals
             raise IsolatedWorkerStartError(
                 f"Failed to start isolated worker: {exc}",
             ) from exc
 
-        _wait_for_worker(process, worker_config)
+        queued_payload = _wait_for_worker(process, worker_config, result_queue)
 
-        status, payload = _read_worker_payload(
-            result_queue,
-            exitcode=process.exitcode,
-            memory_limit_bytes=worker_config.memory_limit_bytes,
+        status, payload = (
+            queued_payload
+            if queued_payload is not None
+            else _read_worker_payload(
+                result_queue,
+                exitcode=process.exitcode,
+                memory_limit_bytes=worker_config.memory_limit_bytes,
+            )
         )
         if status == "ok":
             result = cast(T, payload)
@@ -273,14 +290,42 @@ def run_isolated_worker(
                 exitcode=process.exitcode,
                 memory_limit_bytes=worker_config.memory_limit_bytes,
             )
-    except IsolatedWorkerError as exc:
+    except BaseException as exc:
         primary_error = exc
     finally:
+
+        def record_finalization_error(exc: BaseException, *, step: str) -> None:
+            nonlocal primary_error
+            if primary_error is None:
+                primary_error = exc
+            else:
+                primary_error.add_note(f"{step} failed: {exc}")
+
+        process_alive = False
+        if process_started:
+            try:
+                process_alive = process.is_alive()
+            except BaseException as exc:
+                record_finalization_error(exc, step="process liveness check")
+                process_alive = True
+        if process_alive:
+            try:
+                _terminate_process(process)
+            except BaseException as exc:
+                record_finalization_error(exc, step="process termination")
+        if process_started:
+            try:
+                process.join(timeout=2.0)
+            except BaseException as exc:
+                record_finalization_error(exc, step="process join")
         try:
             result_queue.close()
+        except BaseException as exc:
+            record_finalization_error(exc, step="result queue close")
+        try:
             result_queue.join_thread()
-        except Exception:
-            pass
+        except BaseException as exc:
+            record_finalization_error(exc, step="result queue feeder join")
 
     cleanup_error = _run_cleanup_callbacks(worker_config.cleanup_callbacks)
     if primary_error is not None:
@@ -362,11 +407,23 @@ def _terminate_process(process: BaseProcess) -> None:
         if callable(kill):
             kill()
             process.join(timeout=2.0)
+    if process.is_alive():
+        raise IsolatedWorkerTerminationError()
 
 
-def _wait_for_worker(process: BaseProcess, config: IsolatedWorkerConfig) -> None:
+def _wait_for_worker(
+    process: BaseProcess,
+    config: IsolatedWorkerConfig,
+    result_queue: mp.Queue[tuple[str, Any]],
+) -> tuple[str, Any] | None:
     deadline = None if config.timeout_seconds is None else time.monotonic() + config.timeout_seconds
+    queued_payload: tuple[str, Any] | None = None
     while process.is_alive():
+        if queued_payload is None:
+            try:
+                queued_payload = result_queue.get_nowait()
+            except queue.Empty:
+                pass
         if config.stop_reason is not None:
             reason = config.stop_reason()
             if reason is not None:
@@ -382,6 +439,7 @@ def _wait_for_worker(process: BaseProcess, config: IsolatedWorkerConfig) -> None
                 )
             wait_seconds = min(wait_seconds, remaining)
         process.join(timeout=wait_seconds)
+    return queued_payload
 
 
 def _run_cleanup_callbacks(

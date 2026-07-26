@@ -658,6 +658,17 @@ def _plan_chunk_sizes(
         )
     chunk_size = max(1, request.target_chunk_bytes // target_row_bytes)
     source_chunk_size = max(1, chunk_size // expansion)
+    minimum_expanded_chunk_bytes = source_chunk_size * expansion * target_row_bytes
+    if minimum_expanded_chunk_bytes > request.target_chunk_bytes:
+        raise ChunkMemoryRiskError(
+            "One source row expands beyond the configured chunk byte budget.",
+            target_node_id=request.target_node_id,
+            estimated_target_row_bytes=target_row_bytes,
+            target_chunk_bytes=request.target_chunk_bytes,
+            reason_code="minimum_source_row_expansion_exceeds_budget",
+            estimated_minimum_chunk_bytes=minimum_expanded_chunk_bytes,
+            row_expansion_factor=expansion,
+        )
     return chunk_size, source_chunk_size, source_row_bytes, target_row_bytes
 
 
