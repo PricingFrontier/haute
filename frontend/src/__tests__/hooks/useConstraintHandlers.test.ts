@@ -108,6 +108,28 @@ describe("useConstraintHandlers", () => {
 
       expect(onUpdate).toHaveBeenCalledWith("constraints", {})
     })
+
+    it("removes the matching frontier range in the same update", () => {
+      const onUpdate = vi.fn()
+      const existing = {
+        volume: { min: 0 },
+        loss_ratio: { max: 1.1 },
+      }
+      const ranges = {
+        volume: { min: 10, max: 20 },
+        loss_ratio: { min: 30, max: 40 },
+      }
+      const { result } = renderHook(() =>
+        useConstraintHandlers(existing, "premium", COLUMNS, onUpdate, ranges),
+      )
+
+      act(() => result.current.handleRemoveConstraint("volume"))
+
+      expect(onUpdate).toHaveBeenCalledWith({
+        constraints: { loss_ratio: { max: 1.1 } },
+        frontier_ranges: { loss_ratio: { min: 30, max: 40 } },
+      })
+    })
   })
 
   // ─── handleConstraintColumnChange ───────────────────────────────
@@ -141,6 +163,34 @@ describe("useConstraintHandlers", () => {
       act(() => result.current.handleConstraintColumnChange("volume", "volume"))
 
       expect(onUpdate).not.toHaveBeenCalled()
+    })
+
+    it("migrates the matching frontier range in the same update", () => {
+      const onUpdate = vi.fn()
+      const existing = {
+        volume: { min: 0 },
+        loss_ratio: { max: 1.1 },
+      }
+      const ranges = {
+        volume: { min: 10, max: 20 },
+        loss_ratio: { min: 30, max: 40 },
+      }
+      const { result } = renderHook(() =>
+        useConstraintHandlers(existing, "premium", COLUMNS, onUpdate, ranges),
+      )
+
+      act(() => result.current.handleConstraintColumnChange("volume", "premium"))
+
+      expect(onUpdate).toHaveBeenCalledWith({
+        constraints: {
+          premium: { min: 0 },
+          loss_ratio: { max: 1.1 },
+        },
+        frontier_ranges: {
+          premium: { min: 10, max: 20 },
+          loss_ratio: { min: 30, max: 40 },
+        },
+      })
     })
 
     it("preserves order of other constraints", () => {

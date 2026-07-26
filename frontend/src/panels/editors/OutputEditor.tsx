@@ -89,8 +89,8 @@ function frameIsUnresolved(edge: SimpleEdge, sourceNode: SimpleNode | undefined)
  * For an apiInput source with a v2 `tables` config, the frame's columns come
  * STRAIGHT from the config (no preview/run needed) — so Infer and the source
  * dropdown work the moment a table is inferred:
- *   - multi-frame: the emitted table whose `label === edge.sourceHandle`;
- *   - single-frame (null sourceHandle): the sole emit-true table.
+ *   - a resolved handle uses the table whose `label === edge.sourceHandle`;
+ *   - a null/undefined handle is unresolved and exposes no table columns.
  * Only `selected` columns are returned, matching what the frame actually emits
  * at runtime (an unselected column is not in the frame, so mapping it would
  * fail the upstream-column contract). For a NON-apiInput source (transform,
@@ -112,11 +112,11 @@ function frameColumns(edge: SimpleEdge, sourceNode: SimpleNode | undefined): str
     const objs = tables.filter(
       (t): t is Record<string, unknown> => !!t && typeof t === "object",
     )
-    // Multi-frame matches by handle; single-frame (null handle) is the sole
-    // emit-true table.
-    const table = edge.sourceHandle
+    // A null handle is unresolved; never let it impersonate the sole emitted
+    // table because the persisted edge has no executable frame identity.
+    const table = typeof edge.sourceHandle === "string"
       ? objs.find((t) => t.label === edge.sourceHandle)
-      : objs.find((t) => t.emit === true)
+      : undefined
     if (table && Array.isArray(table.columns)) {
       return (table.columns as unknown[])
         .filter(
@@ -166,9 +166,9 @@ function frameSchemaColumns(
     const objs = tables.filter(
       (t): t is Record<string, unknown> => !!t && typeof t === "object",
     )
-    const table = edge.sourceHandle
+    const table = typeof edge.sourceHandle === "string"
       ? objs.find((t) => t.label === edge.sourceHandle)
-      : objs.find((t) => t.emit === true)
+      : undefined
     if (table && Array.isArray(table.columns)) {
       return (table.columns as unknown[])
         .filter(

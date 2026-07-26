@@ -180,7 +180,7 @@ export default function OptimiserPreview({ data, nodeId, allNodes, edges }: Opti
   useEffect(() => {
     abortResultDetailRequest()
     setResultDetail({ status: "idle" })
-  }, [abortResultDetailRequest, jobId])
+  }, [abortResultDetailRequest, jobId, selectedIdx])
   useEffect(() => abortResultDetailRequest, [abortResultDetailRequest])
 
   // Per-effect cleanup at L271 already deletes the in-flight key when deps
@@ -224,8 +224,8 @@ export default function OptimiserPreview({ data, nodeId, allNodes, edges }: Opti
     )
       .then((res) => {
         if (requestedRates.get(key) !== requestId) return
-        requestedRates.delete(key)
         storeUpdateAfterSelect(nodeId, selectedIdx, res)
+        requestedRates.delete(key)
         setRatesDetail((current) => {
           if (current.status !== "loading" || current.key !== key) return current
           return hasFactorTables(res.factor_tables)
@@ -290,7 +290,7 @@ export default function OptimiserPreview({ data, nodeId, allNodes, edges }: Opti
       })
       setActionMsg(res.message ?? `Saved to ${res.path ?? outputPath}`)
     } catch (e) {
-      setActionMsg(`Save failed: ${e}`)
+      setActionMsg(`Save failed: ${errorDetail(e)}`)
     } finally {
       setSaving(false)
     }
@@ -307,7 +307,7 @@ export default function OptimiserPreview({ data, nodeId, allNodes, edges }: Opti
       const target = res.experiment_name ? ` to ${res.experiment_name}` : ""
       setActionMsg(res.run_url ? `Logged${target}: ${res.run_url}` : `Logged${target} (run ${res.run_id ?? "ok"})`)
     } catch (e) {
-      setActionMsg(`MLflow log failed: ${e}`)
+      setActionMsg(`MLflow log failed: ${errorDetail(e)}`)
     } finally {
       setLogging(false)
     }
@@ -330,8 +330,7 @@ export default function OptimiserPreview({ data, nodeId, allNodes, edges }: Opti
       setResultDetail({ status: "loaded", data: res })
     } catch (e) {
       if (controller.signal.aborted) return
-      const detail = e instanceof Error ? e.message : String(e)
-      setResultDetail({ status: "error", error: detail })
+      setResultDetail({ status: "error", error: errorDetail(e) })
     } finally {
       if (resultDetailAbortRef.current === controller) {
         resultDetailAbortRef.current = null

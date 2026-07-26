@@ -24,15 +24,21 @@ results are supplied by API and result-store layers.
   options and frontier ranges; it can auto-range constraints and submit solves. Starting another
   auto-range request or unmounting best-effort cancels that auto-range job; this panel has no
   solve-cancel control.
+- Ratebook source and inferred factor columns change in one atomic config update. Constraint
+  renames/removals migrate or remove their matching canonical `frontier_ranges` entry in the
+  same update; range fields never inherit the removed global frontier bounds.
 - Optimiser preview renders summary, convergence, detail, frontier, ratebook/rates and export
-  flows. The data preview groups and charts bounded scenario samples and can calculate statistics.
+  flows. Selecting another frontier point clears stale materialised detail before enabling Save
+  or MLflow actions, and structured API details are preferred on failures. The data preview
+  groups and charts bounded scenario samples and can calculate statistics.
 
 ## Design rationale
 
 Large config forms are split into focused subcomponents so algorithm/mode gates preserve hidden
-configuration instead of destructively rewriting it. Asynchronous actions are sequence/abort
-aware where a newer request can supersede an older request. Result tabs defer expensive work until
-opened and use structured backend diagnostics when available.
+configuration instead of destructively rewriting it. Multi-field invariants use one object
+update because the production callback spreads the last committed config. Asynchronous actions
+are sequence/abort aware where a newer request can supersede an older request. Result tabs defer
+expensive work until opened and use structured backend diagnostics when available.
 
 ## Interactions
 
@@ -49,29 +55,16 @@ while a terminal cancelled/superseded status returned by the server is shown in 
 error area. Deliberately strict helper parsers throw for malformed numerical result contracts
 rather than silently charting incorrect values.
 
-## Polars backend contracts (0.6.0)
+## Execution diagnostics
 
-Remaining frontend modelling and optimiser improvement work is tracked in the
-[frontend canvas roadmap](../../roadmap/frontend-canvas.md).
-Modelling and optimiser entry points will present the shared version-1 states `projected`,
-`boundary`, `admitted_eager`, `rejected`, and `not_planned`, plus a distinct diagnostic-
-unavailable state. Components use the authoritative shared mapping and never reinterpret internal
-strategies. Missing/malformed required fields, unknown version-1 enum values, and unsupported
-higher versions become diagnostic unavailable; unknown additive fields are ignored only within
-version 1.
+Modelling and optimiser action/result areas consume the shared guarded execution metrics.
+Actionable memory pressure and rejected-strategy payloads name available profile, blocking
+node/operator, cost, reason, and remediation, with technical details disclosed secondarily.
+Other planner states do not create a success claim or pre-emptively disable submit. A missing or
+unsupported diagnostic payload currently produces no secondary diagnostic; the primary
+request/status error remains visible.
 
-Rejections and boundaries name available blocking node/operator/profile, cost, reason, and
-remediation, with bounded metric/provenance detail available secondarily and its
-`available|unavailable|truncated` state preserved. Group-by may appear only as a RAM-admitted
-`materialisation-boundary` or a typed HTTP 422 rejection; it is never shown as ordinary checked or
-unprojected streaming execution. `not_planned`, rejection, and diagnostic unavailable are not
-successful execution. Stable contract-error codes and named fields remain available to accessible
-error copy.
-
-## Approved change contract — 0.7.0 unified data-input UI consumption
-
-Remaining frontend modelling and optimiser improvement work is tracked in the
-[frontend canvas roadmap](../../roadmap/frontend-canvas.md).
+## Data-input consumption
 
 - Optimiser source selection remains scoped to connected upstream nodes and continues to support
   an explicit `data_input` id; it never assumes one global Data Input merely because
@@ -85,44 +78,35 @@ Remaining frontend modelling and optimiser improvement work is tracked in the
 - Existing sole-direct-banding fallback semantics remain unchanged. Removed Data Source/Data Sink
   types disappear from candidates, fixtures, guards, and tests without a compatibility mapping.
 
-Acceptance covers multiple Data Input roots/direct parents, explicit selection, direct/cached
+Tests cover multiple Data Input roots/direct parents, explicit selection, direct/cached
 column discovery including post-input code, missing-snapshot diagnostics, no implicit build, and
 absence of legacy candidates.
 
-## Approved change contract — deterministic optimiser canvas journey
+## Optimiser canvas assurance
 
-This contract implements the optimiser portions of ROAD-UI-02 and ROAD-UI-03 in the
-[frontend canvas roadmap](../../roadmap/frontend-canvas.md).
-
-- **Current limitation.** Existing browser coverage solves an optimiser, selects a frontier point,
-  and applies it locally, but does not jointly prove constraint/range persistence, source identity,
-  reload behaviour, and the MLflow selection boundary. A deleted or disconnected explicitly
-  selected Banding source, or a selected source whose configured outputs contain no valid levels,
-  can leave downstream choices silently incomplete.
-- **Target behaviour.** One deterministic journey configures and reloads objective/constraint
+- One deterministic journey configures and reloads objective/constraint
   ranges, runs a fixed frontier, selects a point by backend `point_index`, applies that exact
   solution locally, and verifies the MLflow boundary through a deterministic intercepted contract
   rather than a live tracking service. The configured Banding source remains identified by node
   id. Missing explicit sources and zero-level configured outputs produce an accessible aggregated
   warning while healthy factor choices remain available.
-- **Non-goals.** This change does not test optimiser quality, MLflow itself, network availability,
+- The journey does not test optimiser quality, MLflow itself, network availability,
   or canvas pixel coordinates, and it does not broaden the existing sole-direct-Banding fallback.
-- **Failure and compatibility.** No warning is shown for an unconfigured source or an ordinary
+- No warning is shown for an unconfigured source or an ordinary
   empty graph. A non-blank explicit source id is considered missing when that node no longer
   exists as a directly connected Banding candidate. Point-index mismatches and malformed backend
   results continue to fail at their existing guarded boundaries.
-- **Acceptance.** Component tests cover missing-source and mixed healthy/zero-level warnings.
+- Component tests cover missing-source and mixed healthy/zero-level warnings.
   Browser evidence pins saved constraint/range fields across reload, frontier point identity,
   local apply identity, and the intercepted MLflow request/response identity without a live
   service.
 
-## Approved change contract — prerelease canonical frontier-range editor
+## Frontier-range editor
 
-This contract implements the optimiser-editor portion of
-[ROAD-CANON-01](../../roadmap/engineering-quality.md#road-canon-01--prerelease-canonical-only-contract).
 The panel reads and writes only per-constraint `frontier_ranges`. It does not use global
 `frontier_min`/`frontier_max` as display defaults and does not mirror a single constraint back to
-those fields. Existing auto-range and validation behaviour remains on the canonical map.
+those fields. Renaming or removing a constraint atomically migrates or removes its range entry.
+Existing auto-range and validation behaviour remains on the canonical map.
 
 Component tests assert that range edits preserve unrelated constraint ranges and persist only the
 canonical map.

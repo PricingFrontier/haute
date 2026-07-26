@@ -999,6 +999,12 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
       inputMapping: { drivers: "Mapped_Second", stable_key: "Stable_Second" },
       untouched: "second-instance-config",
     }
+    const liveSwitchInstance = makeNode("live_instance", "Scenario Router Instance", "polars")
+    liveSwitchInstance.data.config = {
+      instanceOf: "live_1",
+      inputMapping: { Other_Source: "Mapped_Ordinary", stable_key: "Stable_Value" },
+      untouched: "live-instance-config",
+    }
     const ordinarySource = makeNode(
       "ordinary_source",
       options.collision ? "collision name" : "Other Source",
@@ -1015,6 +1021,7 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
         downstreamInstance,
         firstOriginalInstance,
         secondOriginalInstance,
+        liveSwitchInstance,
       ],
       edges: [
         {
@@ -1043,6 +1050,13 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
           source: "api_0",
           target: "instance_value",
           sourceHandle: "drivers",
+          targetHandle: null,
+        },
+        {
+          id: "e_ordinary_instance",
+          source: "ordinary_source",
+          target: "instance_value",
+          sourceHandle: null,
           targetHandle: null,
         },
       ],
@@ -1283,6 +1297,64 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
     expect(useGraphStore.getState().undoStack.length).toBe(undoDepthBefore)
   })
 
+  it("renames an ordinary source and migrates every downstream input identity atomically", async () => {
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeRenameMigrationGraph())
+    vi.mocked(api.previewNode).mockImplementation(() => new Promise<never>(() => {}))
+    render(<App />)
+    await waitForAppReady()
+
+    const nodesBefore = JSON.stringify(useGraphStore.getState().nodes)
+    const undoDepthBefore = useGraphStore.getState().undoStack.length
+    fireEvent.click(await screen.findByTestId("node-Other Source"))
+
+    const label = await screen.findByTestId("node-panel-label-input")
+    fireEvent.change(label, { target: { value: "Renamed Source" } })
+    fireEvent.blur(label)
+
+    await waitFor(() => {
+      expect(useGraphStore.getState().nodes.find((node) => node.id === "ordinary_source")?.data.label)
+        .toBe("Renamed Source")
+    })
+    expect(configFor("live_1")).toEqual({
+      input_scenario_map: { drivers: "batch", Renamed_Source: "live" },
+      untouched: "live-switch-config",
+    })
+    expect(configFor("instance_value")).toEqual({
+      instanceOf: "original_2",
+      inputMapping: { original_input: "drivers", stable_value: "Renamed_Source" },
+      untouched: "downstream-instance-config",
+    })
+    expect(configFor("live_instance")).toEqual({
+      instanceOf: "live_1",
+      inputMapping: { Renamed_Source: "Mapped_Ordinary", stable_key: "Stable_Value" },
+      untouched: "live-instance-config",
+    })
+    expect(useGraphStore.getState().undoStack.length).toBe(undoDepthBefore + 1)
+
+    await useGraphStore.getState().undo()
+    expect(JSON.stringify(useGraphStore.getState().nodes)).toBe(nodesBefore)
+    expect(useGraphStore.getState().undoStack.length).toBe(undoDepthBefore)
+  })
+
+  it("rejects an ordinary source rename that collides at a downstream target", async () => {
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeRenameMigrationGraph())
+    vi.mocked(api.previewNode).mockImplementation(() => new Promise<never>(() => {}))
+    render(<App />)
+    await waitForAppReady()
+
+    fireEvent.click(await screen.findByTestId("node-Other Source"))
+    const stateBefore = graphCommitStateBytes()
+    const label = await screen.findByTestId("node-panel-label-input")
+    fireEvent.change(label, { target: { value: "drivers" } })
+    fireEvent.blur(label)
+
+    const error = await screen.findByTestId("node-panel-label-error")
+    expect(error).toHaveTextContent(/Scenario Router/)
+    expect(error).toHaveTextContent(/drivers/)
+    expect(label).toHaveValue("Other Source")
+    expect(graphCommitStateBytes()).toBe(stateBefore)
+  })
+
   it("rejects a colliding frame rename before any config, edge, mapping, or history mutation", async () => {
     vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeRenameMigrationGraph({ collision: true }))
     vi.mocked(api.previewNode).mockImplementation(() => new Promise<never>(() => {}))
@@ -1496,10 +1568,8 @@ describe("App integration — panel open/close", () => {
     // The panel mounts inside the aside labelled "Node properties".
     const aside = screen.getByRole("complementary", { name: /node properties/i })
     // UtilityPanel renders a PanelShell with a "Close" button.
-    const closeBtn = within(aside).queryByRole("button", { name: /close/i })
-    expect(closeBtn, "Utility panel close button").not.toBeNull()
-
-    fireEvent.click(closeBtn!)
+    const closeBtn = await within(aside).findByRole("button", { name: /close/i })
+    fireEvent.click(closeBtn)
     await waitFor(() => {
       expect(useUIStore.getState().utilityOpen).toBe(false)
     })

@@ -189,6 +189,43 @@ describe("DataPreview", () => {
     expect(screen.queryByText(/Boundaries:/)).not.toBeInTheDocument()
   })
 
+  it("surfaces a rejected execution strategy as an actionable preview error", () => {
+    const metrics = makeExecutionMetricsFixture({
+      memory_pressure_events: [],
+      execution_strategy: {
+        schema_version: 1,
+        status: "rejected",
+        strategy: "unsupported",
+        profile: "preview_eager",
+        boundedness: "unbounded",
+        reason_code: "unsafe_materialisation",
+        detail_state: "available",
+        boundaries: { state: "available", total_count: 0, items: [] },
+        reasons: {
+          state: "available",
+          total_count: 1,
+          items: [{
+            reason_code: "unsafe_materialisation",
+            topological_rank: 0,
+            node_id: "competitor_premiums",
+            operator: "dataInput",
+          }],
+        },
+        provenance: { state: "available", total_count: 0, items: [] },
+        blocking_node_id: "competitor_premiums",
+        blocking_operator: "dataInput",
+        remediation: "Define the node columns before previewing.",
+      },
+    })
+    render(<DataPreview data={makePreview({ execution_metrics: metrics })} />)
+
+    const error = screen.getByLabelText("Preview execution error details")
+    fireEvent.click(error)
+    expect(screen.getByText("Execution could not use a safe strategy")).toBeInTheDocument()
+    expect(screen.getByText(/competitor_premiums/)).toBeInTheDocument()
+    expect(screen.getByText(/Define the node columns before previewing/)).toBeInTheDocument()
+  })
+
   it("cell click calls onCellClick with row index and column", () => {
     const onCellClick = vi.fn()
     render(<DataPreview data={makePreview()} onCellClick={onCellClick} />)

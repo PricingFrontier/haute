@@ -9,6 +9,7 @@
 | `frontend/src/panels/OptimiserConfig.tsx` | Optimiser form, solve submission, source/constraint configuration and auto-range lifecycle. |
 | `frontend/src/panels/OptimiserPreview.tsx` | Solve-result tab orchestration, point selection, exports and ratebook detail materialisation. |
 | `frontend/src/panels/OptimiserDataPreview.tsx` | Bounded pre-solve scenario table, quote navigation, multi-series chart and statistics. |
+| `frontend/src/components/ExecutionDiagnosticsSummary.tsx` | Actionable execution-memory and rejected-strategy banner shared with modelling progress, optimiser actions, and Explore. |
 | `frontend/src/panels/optimiserScenarioStats.ts` | Strict finite-number parsing and per-scenario statistical aggregation used by the optimiser data preview. |
 | `frontend/src/hooks/useConstraintHandlers.ts`, `frontend/src/hooks/useDataInputColumns.ts` | Constraint mutation handlers and stale-aware data-input column fetching. |
 | `frontend/src/utils/configField.ts`, `frontend/src/utils/trainingObjective.ts`, `frontend/src/utils/executionDiagnostics.ts` | Typed config reads/parsing, training-objective gate and structured execution-error/metric display helpers. |
@@ -36,7 +37,8 @@
   parameter and split contracts. `trainingObjectiveIssue` gates an incomplete backend objective.
 - Optimiser uses input node/banding-node descriptions, `FrontierRangeConfig`, constraints and
   ratebook `FactorTables`. `frontend/src/utils/banding.ts` returns ordered factor levels, including
-  a banding default only for the ordering APIs that request it.
+  a banding default only for the ordering APIs that request it. Per-constraint
+  `frontier_ranges` is the sole editable range representation.
 
 ## Control flow
 
@@ -61,18 +63,21 @@
 
 1. `frontend/src/panels/OptimiserConfig.tsx` finds direct inputs and candidate banding sources.
    It uses cached node columns, provided upstream columns, then `useDataInputColumns` as needed.
-   Ratebook mode may set an unconfigured source/factor columns from banding levels, while an
-   explicitly configured empty factor list is preserved.
+   Ratebook mode may set an unconfigured source and inferred factor columns from banding levels
+   in one atomic update, while an explicitly configured empty factor list is preserved.
 2. Solve submission builds the current graph and records job/result state. Config estimates use
    the same stale-config pattern as modelling. API execution diagnostics are preserved in action
    errors/progress.
 3. Starting auto-range aborts/cancels the prior job, polls status every second with an abort-aware
    delay, and applies completed ranges only when every configured constraint has a returned range.
+   The action remains available as **Restart auto range** while a request is active.
    A locally aborted request is silent; a cancelled/superseded or other terminal status returned
    by the server is shown in the local auto-range error area.
 4. `frontend/src/panels/OptimiserPreview.tsx` picks the available result tabs and selected frontier
    point. In ratebook mode a selected point without tables is materialised only on Rates/Summary;
-   request sequence bookkeeping drops stale replies and persists accepted tables in the result store.
+   request sequence bookkeeping drops stale replies and persists accepted tables in the result
+   store. A point change aborts and clears materialised export detail before Save/MLflow actions
+   can be used for the new point.
 5. `frontend/src/panels/OptimiserDataPreview.tsx` caps rows at 5,000 before grouping by quote,
    orders scenario rows, and calculates full-preview statistics only when its Statistics tab is open.
 
@@ -86,6 +91,9 @@
   explicit optimiser source exists it falls back only if exactly one direct banding input exists.
 - Auto-range failure is atomic for constraints: a completed response missing any configured range
   fails instead of partially updating ranges. Unmount cancels active work best-effort.
+- Constraint renames and removals update `constraints` and `frontier_ranges` atomically, preserving
+  the renamed range and deleting an orphan on removal. A range field reads only its named
+  `frontier_ranges` entry and never falls back to global `frontier_min`/`frontier_max`.
 - Strict frontier/detail and scenario-statistics helpers handle empty data and zero visual spans,
   but throw on present malformed required numeric fields. The pre-solve chart separately coerces
   missing series/scenario values with `Number(... ?? 0)`. Ratebook tables preserve factor level
@@ -97,8 +105,10 @@
 
 Action errors prefer structured API/execution details. Training/solve errors are retained in the
 result store and shown locally; estimate/MLflow/export/materialisation actions show their own
-messages. AbortError and recognised supersession do not flash a failure. Render-time numeric
-contract violations in strict frontier/statistics helpers are intentionally not coerced.
+messages. A rejected frontier point-index contract clears the in-flight request marker and
+surfaces the error instead of leaving Rates loading. AbortError and recognised supersession do
+not flash a failure. Render-time numeric contract violations in strict frontier/statistics
+helpers are intentionally not coerced.
 
 ## Testing
 
@@ -117,37 +127,20 @@ through their parent preview tests; not every helper has a dedicated test file.
 Performance regression coverage for background progress rendering is in
 `frontend/e2e/job-progress-render.benchmark.spec.ts`.
 
-## Polars backend contracts (0.6.0)
+## Execution diagnostics
 
-Remaining frontend modelling and optimiser improvement work is tracked in the
-[frontend canvas roadmap](../../roadmap/frontend-canvas.md).
-`ModellingConfig.tsx`, `OptimiserConfig.tsx`, their action/result areas, and shared diagnostics
-consume only the guarded version-1 strategy contract. They render `projected`, `boundary`,
-`admitted_eager`, `rejected`, and `not_planned`, plus diagnostic unavailable, using the shared
-authoritative strategy-to-status mapping. Components must not define local response readers or
-reinterpret `strategy`.
+`ModellingConfig.tsx`, `OptimiserConfig.tsx`, their action/result areas, and
+`ExecutionDiagnosticsSummary` consume the guarded execution-metrics contract. The summary renders
+actionable memory pressure and a rejected strategy with blocking node/operator/profile, cost,
+stable reason and remediation; technical collections remain behind an accessible disclosure.
+Other planner statuses stay silent and do not pre-emptively gate submit. Missing or unsupported
+strategy detail currently yields no secondary diagnostic while the request's ordinary error/status
+copy remains authoritative.
 
-Boundary/rejection detail includes available blocking node/operator/profile, cost, stable reason,
-and remediation; bounded metric/provenance detail is disclosed on demand and preserves
-`detail_state=available|unavailable|truncated`. Missing/malformed required fields, unknown
-version-1 enums, and unsupported higher versions render diagnostic unavailable. Unknown additive
-fields are ignored only within version 1.
+Focused tests cover rejected-strategy and memory-pressure detail, structured request failures,
+contract-error retention, and the absence of invented planner state.
 
-`rejected` disables the relevant submit action while leaving configuration editable;
-`not_planned` and diagnostic unavailable remain explicit non-success diagnostics without
-inventing an execution decision. A group-by enables execution only when the strategy is the
-RAM-admitted `materialisation-boundary`; `GroupByExecutionUnsupportedError` surfaces as the
-typed HTTP 422 contract error with stable code/named fields. The UI never labels group-by
-ordinary checked execution or `unprojected-streaming-boundary`.
-
-Focused tests cover all five status semantics, diagnostic unavailable, strict version/enum
-handling, additive version-1 fields, accessible truncated/raw detail, group-by boundary versus
-rejection, stable 422 fields, and submit gating.
-
-## Approved change contract — 0.7.0 unified data-input UI consumption
-
-Remaining frontend modelling and optimiser improvement work is tracked in the
-[frontend canvas roadmap](../../roadmap/frontend-canvas.md).
+## Data-input consumption
 
 - `OptimiserConfig.tsx` continues to derive candidate ids from direct graph inputs and preserves
   explicit selection when valid. `useDataInputColumns.ts` consumes the retained node's guarded
@@ -161,16 +154,12 @@ Remaining frontend modelling and optimiser improvement work is tracked in the
   roots, cached generation changes, and removed-node absence. Guard tests reject legacy node
   values rather than rewriting them.
 
-## Approved change contract — deterministic optimiser canvas journey
+## Optimiser canvas assurance
 
-This contract implements ROAD-UI-02 and ROAD-UI-03 in the
-[frontend canvas roadmap](../../roadmap/frontend-canvas.md).
-
-- `utils/banding.ts` supplies the same typed factor classification consumed by Rating. For an
-  optimiser it accepts the current direct Banding candidate ids and the explicit configured
-  source id. A non-blank explicit id absent from that candidate set is returned as a confirmed
-  missing source; absence of an explicit id retains the existing exactly-one-direct-source
-  fallback and is not itself an error.
+- `utils/banding.ts` supplies the same typed factor classification consumed by Rating.
+  `OptimiserConfig.tsx` compares an explicit source id with current direct Banding candidates;
+  an absent explicit source is a confirmed missing source, while an unconfigured optimiser
+  retains the existing exactly-one-direct-source fallback and is not itself an error.
 - `OptimiserConfig.tsx` renders one accessible warning that aggregates the missing selected source
   and named zero-level outputs from the effective selected Banding node. Healthy levels still
   render as factor controls. Changing to a healthy source clears only issues that no longer apply.
@@ -187,10 +176,9 @@ This contract implements ROAD-UI-02 and ROAD-UI-03 in the
   zero-level source, and mixed-output alert boundaries. Existing result-store tests continue to
   own rejection of a backend response whose echoed point index differs from the requested one.
 
-## Approved change contract — prerelease canonical frontier-range editor
+## Frontier-range editor
 
-The target is defined in
-[the frontend optimiser high-level contract](high-level.md#approved-change-contract--prerelease-canonical-frontier-range-editor).
-`frontend/src/panels/OptimiserConfig.tsx` removes the scalar range reads and single-constraint
-mirror writes. `rangeForConstraint` resolves only the named object in `frontier_ranges`, and
-focused component tests inspect the complete update payload.
+`frontend/src/panels/OptimiserConfig.tsx` reads and writes only the named object in
+`frontier_ranges`; it has no scalar-range fallback or mirror write. `useConstraintHandlers`
+migrates the matching range on rename and removes it with its constraint in the same complete
+update payload. Focused hook/component tests inspect the atomic updates.

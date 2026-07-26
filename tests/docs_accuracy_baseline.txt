@@ -140,15 +140,7 @@ docs/specs/frontend-graph-canvas/low-level.md	non-root-relative-test-reference	u
 docs/specs/frontend-graph-canvas/low-level.md	non-root-relative-test-reference	useWebSocketSync.panelState.test.ts
 docs/specs/frontend-graph-canvas/low-level.md	non-root-relative-test-reference	useWebSocketSync.undoHistory.test.ts
 docs/specs/frontend-graph-canvas/low-level.md	non-root-relative-test-reference	validateConfigRefs.test.ts
-docs/specs/frontend-modelling-optimiser-ui/high-level.md	legacy-contract-section	Polars backend contracts (0.6.0)
-docs/specs/frontend-modelling-optimiser-ui/low-level.md	legacy-contract-section	Polars backend contracts (0.6.0)
-docs/specs/frontend-node-editors/high-level.md	broken-link-anchor	../io-layer/high-level.md#approved-change-contract-070-data-io-convergence
-docs/specs/frontend-node-editors/low-level.md	missing-repo-reference	frontend/src/panels/editors/DataSourceEditor.tsx
-docs/specs/frontend-node-editors/low-level.md	missing-repo-reference	frontend/src/panels/editors/SinkEditor.tsx
-docs/specs/frontend-preview-explore/high-level.md	legacy-contract-section	Polars backend contracts (0.6.0)
-docs/specs/frontend-preview-explore/low-level.md	legacy-contract-section	Polars backend contracts (0.6.0)
 docs/specs/frontend-shared/low-level.md	ambiguous-repo-reference	formatValue.test.ts -> frontend/src/__tests__/utils/formatValue.test.ts, frontend/src/utils/__tests__/formatValue.test.ts
-docs/specs/frontend-shared/low-level.md	missing-module-map-symbol	ApiInputEditor
 docs/specs/frontend-shared/low-level.md	missing-test-reference	.gaps.test.ts
 docs/specs/frontend-shared/low-level.md	missing-test-reference	.gaps.test.tsx
 docs/specs/frontend-shared/low-level.md	missing-test-reference	components/__tests__/ErrorBoundary.test.tsx
