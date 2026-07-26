@@ -120,6 +120,26 @@ def test_catboost_shap_fails_loudly_for_missing_features(
         )
 
 
+@pytest.mark.parametrize("offset_value", [None, np.nan, np.inf])
+def test_catboost_shap_rejects_null_or_nonfinite_offset_cleanly(
+    catboost_scoring_model: Any,
+    offset_value: object,
+) -> None:
+    from haute._model_explainability import ModelExplanationError, explain_catboost_prediction
+
+    catboost_scoring_model.offset_column = "offset"
+    with pytest.raises(ModelExplanationError, match="offset.*finite"):
+        explain_catboost_prediction(
+            catboost_scoring_model,
+            {
+                "vehicle_value": 12_500.0,
+                "age": 29.0,
+                "region": "north",
+                "offset": offset_value,
+            },
+        )
+
+
 def test_catboost_shap_fails_loudly_when_prediction_mismatches(
     catboost_scoring_model: Any,
 ) -> None:

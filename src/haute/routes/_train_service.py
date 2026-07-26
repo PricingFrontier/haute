@@ -309,6 +309,14 @@ def _training_required_metadata_columns(config: Mapping[str, Any]) -> set[str]:
     return columns
 
 
+def _training_projection_keep_columns(config: Mapping[str, Any]) -> list[str]:
+    """Return every configured column that exclusion projection must retain."""
+    return sorted(
+        _training_required_metadata_columns(config)
+        | set(_string_list_config(config, "feature_columns"))
+    )
+
+
 def _training_metadata_reasons(config: Mapping[str, Any]) -> dict[str, str]:
     """Return configured non-feature columns in deterministic role precedence."""
     reasons: dict[str, str] = {}
@@ -1232,7 +1240,7 @@ class TrainService:
             # Build the list of columns that must survive projection
             # (target, weight, offset — even if they're in the exclude list).
             excluded = config.get("exclude", [])
-            keep_cols = list(_training_required_metadata_columns(config))
+            keep_cols = _training_projection_keep_columns(config)
 
             required_columns_by_node = _training_required_columns_by_node(
                 body.node_id,
@@ -1244,6 +1252,13 @@ class TrainService:
                 job_id=job_id,
             )
             bind_running_execution_metrics_publisher(self._store, job_id, execution_context)
+            # Register before synchronous materialisation so cancellation can
+            # stop the expensive upstream execution as well as child fitting.
+            self._training_jobs.register_latest(
+                (_TRAINING_JOB_TYPE, job_id),
+                job_id,
+                execution_token=execution_context.cancellation_token,
+            )
             tmp_parquet = self._execute_and_sink(
                 body,
                 preamble_ns,
@@ -1433,7 +1448,7 @@ class TrainService:
             row_limit = min(row_limit or _DISPERSION_ESTIMATE_ROW_CAP, _DISPERSION_ESTIMATE_ROW_CAP)
 
             excluded = config.get("exclude", [])
-            keep_cols = list(_training_required_metadata_columns(config))
+            keep_cols = _training_projection_keep_columns(config)
             required_columns_by_node = _training_required_columns_by_node(
                 body.node_id,
                 config,
@@ -1539,8 +1554,9 @@ class TrainService:
                 status_code=400,
                 detail="Dispersion estimation applies to GLM modelling nodes only.",
             )
-        family = str(config.get("family", "") or "")
-        link = str(config.get("link", "") or "")
+        train_params = build_train_params(config)
+        family = str(train_params.get("family", "") or "")
+        link = str(train_params.get("link", "") or "")
         _validate_glm_family_link(family, link)
         if family != expected_family:
             raise HTTPException(
@@ -1833,8 +1849,9 @@ class TrainService:
         # loss-vs-task. _validate_glm_family_link also raises on an empty
         # family, and an absent loss is caught by the completeness gate below.
         if algorithm == "glm":
-            family = config.get("family", "")
-            link = config.get("link", "")
+            train_params = build_train_params(config)
+            family = str(train_params.get("family", "") or "")
+            link = str(train_params.get("link", "") or "")
             _validate_glm_family_link(family, link)
         else:
             loss_function = config.get("loss_function")
@@ -1941,10 +1958,7 @@ class TrainService:
         ram_warning: str | None,
         job_id: str,
     ) -> str | None:
-        """Check GPU VRAM; fall back to CPU if insufficient.
-
-        Mutates *train_params* in-place.  Returns updated ram_warning.
-        """
+        """Check GPU VRAM and refuse a job that cannot fit on the selected GPU."""
         if str(train_params.get("task_type", "")).upper() != "GPU":
             return ram_warning
 
@@ -2250,11 +2264,6 @@ class TrainService:
     ) -> IsolatedSupervisorThread | None:
         stored_job = self._store.require_job(job_id)
         start_time, timeout_seconds = _worker_timing(stored_job, job_id=job_id)
-        self._training_jobs.register_latest(
-            (_TRAINING_JOB_TYPE, job_id),
-            job_id,
-            execution_token=execution_context.cancellation_token,
-        )
         launch_cleanup = self._parent_worker_cleanup(
             job_id,
             execution_context=execution_context,
@@ -2415,22 +2424,42 @@ class TrainService:
             execution_metrics = result.metadata.get("execution_metrics")
             if not isinstance(execution_metrics, dict):
                 raise WorkerProtocolError("Training execution metrics must be an object")
-            published = _publish_training_artifacts(
-                result,
-                artifact_root=artifact_root,
-                output_root=output_root,
-                job_id=job_id,
-                expected_model_name=str(job_kwargs["name"]),
-            )
-            artifact_publication_committed.set()
-            response_fields["model_path"] = str(published["model"])
-            response = TrainResponse.model_validate(response_fields)
-            _assert_json_finite(response)
-            return {
-                "result": response,
-                "execution_metrics": execution_metrics,
-                "progress": 1.0,
-            }
+            # Publication and the running->completed transition must be one
+            # critical section.  A cancellation that wins first leaves the
+            # staged artifacts untouched; one that arrives afterwards sees a
+            # completed job and cannot relabel a newly deployed model as
+            # cancelled.
+            with self._store._write_lock:  # noqa: SLF001 - paired publication CAS.
+                if self._store.jobs[job_id].get("status") != "running":
+                    return {}
+                published = _publish_training_artifacts(
+                    result,
+                    artifact_root=artifact_root,
+                    output_root=output_root,
+                    job_id=job_id,
+                    expected_model_name=str(job_kwargs["name"]),
+                )
+                artifact_publication_committed.set()
+                response_fields["model_path"] = str(published["model"])
+                response = TrainResponse.model_validate(response_fields)
+                _assert_json_finite(response)
+                committed = self._lifecycle.transition(
+                    job_id,
+                    to="completed",
+                    message="Training completed",
+                    fields={
+                        "result": response,
+                        "execution_metrics": execution_metrics,
+                        "progress": 1.0,
+                    },
+                    elapsed_seconds=time.monotonic() - start_time,
+                )
+                if committed is None:
+                    raise RuntimeError("Training publication lost its lifecycle claim")
+            # The supervisor will make its normal terminal write after this
+            # callback; it is intentionally a no-op because the committed
+            # result is already durable alongside its artifacts.
+            return {}
 
         try:
             worker_config = worker_config_for_memory_policy(
