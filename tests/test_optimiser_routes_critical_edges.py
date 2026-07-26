@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import polars as pl
+import pytest
 from fastapi import HTTPException
 
 from tests.optimiser_fixtures import make_select_job as _make_select_job
@@ -60,6 +61,87 @@ def _frontier_job(*, artifact_handles: object | None = None) -> dict:
     if artifact_handles is not None:
         job["artifact_handles"] = artifact_handles
     return job
+
+
+def test_estimate_schema_rejects_missing_columns() -> None:
+    from haute.routes.optimiser import _estimate_quote_id_column_or_raise
+
+    source = pl.LazyFrame({"quote_id": ["q1"]})
+    config = {
+        "objective": "expected_income",
+        "constraints": {"volume": {"min": 0.9}},
+        "quote_id": "quote_id",
+        "scenario_index": "scenario_index",
+        "scenario_value": "scenario_value",
+    }
+
+    with pytest.raises(HTTPException) as exc_info:
+        _estimate_quote_id_column_or_raise(source, config)
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == (
+        "Missing columns in scored data: "
+        "['expected_income', 'scenario_index', 'scenario_value', 'volume']. "
+        "Available: ['quote_id']"
+    )
+
+
+def test_estimate_schema_rejects_numeric_quote_ids() -> None:
+    from haute.routes.optimiser import _estimate_quote_id_column_or_raise
+
+    source = pl.LazyFrame(
+        {
+            "quote_id": [1],
+            "scenario_index": [0],
+            "scenario_value": [1.0],
+            "expected_income": [100.0],
+        }
+    )
+    config = {
+        "objective": "expected_income",
+        "constraints": {},
+        "quote_id": "quote_id",
+        "scenario_index": "scenario_index",
+        "scenario_value": "scenario_value",
+    }
+
+    with pytest.raises(HTTPException) as exc_info:
+        _estimate_quote_id_column_or_raise(source, config)
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == (
+        "quote_id must be Utf8 (String), Categorical, or Enum, got Int64. "
+        "Numeric, binary, and other dtypes are not supported as quote_id columns."
+    )
+
+
+def test_frontier_lambda_rejects_empty_name() -> None:
+    from haute.routes.optimiser import _add_frontier_point_lambda
+
+    with pytest.raises(HTTPException) as exc_info:
+        _add_frontier_point_lambda({}, "", 0.2, field="lambda")
+
+    assert exc_info.value.status_code == 500
+    assert exc_info.value.detail == (
+        "Frontier point data is malformed: lambda names must be non-empty strings"
+    )
+
+
+def test_frontier_lambda_rejects_conflicting_value() -> None:
+    from haute.routes.optimiser import _add_frontier_point_lambda
+
+    with pytest.raises(HTTPException) as exc_info:
+        _add_frontier_point_lambda(
+            {"volume": 0.2},
+            "volume",
+            0.4,
+            field="lambda_volume",
+        )
+
+    assert exc_info.value.status_code == 500
+    assert exc_info.value.detail == (
+        "Frontier point data is malformed: conflicting lambda for 'volume'"
+    )
 
 
 def test_estimate_returns_input_metrics_when_metadata_lookup_fails(client, tmp_path: Path):
