@@ -4,7 +4,9 @@ import {
   groupTraceSteps,
   collapsePassthroughs,
   buildFlowChain,
+  isSourceLikeTraceStep,
 } from "../traceGrouping"
+import { isTraceGeneratedColumnOriginType, isTraceSourceNodeType } from "../../../trace/traceOrigins"
 import type { TraceResult, TraceStep } from "../../../types/trace"
 
 function makeStep(overrides: Partial<TraceStep> = {}): TraceStep {
@@ -33,7 +35,7 @@ function makeTrace(overrides: Partial<TraceResult> = {}): TraceResult {
     column: "premium",
     output_value: 42.5,
     steps: [
-      makeStep({ node_id: "n1", node_name: "Source", node_type: "source" }),
+      makeStep({ node_id: "n1", node_name: "Source", node_type: "dataInput" }),
       makeStep({
         node_id: "n2",
         node_name: "Calc",
@@ -67,7 +69,7 @@ function makeTrace(overrides: Partial<TraceResult> = {}): TraceResult {
 describe("findTargetStep", () => {
   it("finds the step where traced column is in columns_added", () => {
     const steps = [
-      makeStep({ node_id: "n1", node_name: "Source", node_type: "source" }),
+      makeStep({ node_id: "n1", node_name: "Source", node_type: "dataInput" }),
       makeStep({
         node_id: "n2",
         node_name: "Creator",
@@ -90,7 +92,7 @@ describe("findTargetStep", () => {
       makeStep({
         node_id: "n1",
         node_name: "Source",
-        node_type: "source",
+        node_type: "dataInput",
         schema_diff: {
           columns_added: ["premium"],
           columns_removed: [],
@@ -295,20 +297,33 @@ describe("findTargetStep", () => {
   })
 })
 
+describe("source-like trace steps", () => {
+  it("agrees with the canonical source-only node classification", () => {
+    for (const nodeType of ["dataInput", "apiInput", "constant", "scenarioExpander", "polars"]) {
+      expect(isSourceLikeTraceStep(makeStep({ node_type: nodeType }))).toBe(isTraceSourceNodeType(nodeType))
+    }
+  })
+
+  it("keeps scenario expanders as generated-column origins rather than source-only nodes", () => {
+    expect(isTraceSourceNodeType("scenarioExpander")).toBe(false)
+    expect(isTraceGeneratedColumnOriginType("scenarioExpander")).toBe(true)
+  })
+})
+
 // ---------------------------------------------------------------------------
 // groupTraceSteps
 // ---------------------------------------------------------------------------
 describe("groupTraceSteps", () => {
   it("groups source nodes together", () => {
     const steps = [
-      makeStep({ node_id: "s1", node_name: "CSV Source", node_type: "source" }),
-      makeStep({ node_id: "s2", node_name: "DB Source", node_type: "source" }),
+      makeStep({ node_id: "s1", node_name: "CSV Source", node_type: "dataInput" }),
+      makeStep({ node_id: "s2", node_name: "DB Source", node_type: "dataInput" }),
       makeStep({ node_id: "t1", node_name: "Transform", node_type: "polars" }),
     ]
     const groups = groupTraceSteps(steps, "premium")
 
     const sourceGroup = groups.find((g) =>
-      g.steps.some((s) => s.node_type === "source"),
+      g.steps.some((s) => s.node_type === "dataInput"),
     )
     expect(sourceGroup).toBeDefined()
     expect(sourceGroup!.steps).toHaveLength(2)
@@ -318,7 +333,7 @@ describe("groupTraceSteps", () => {
 
   it("groups polars transform nodes together", () => {
     const steps = [
-      makeStep({ node_id: "s1", node_name: "Source", node_type: "source" }),
+      makeStep({ node_id: "s1", node_name: "Source", node_type: "dataInput" }),
       makeStep({ node_id: "t1", node_name: "Transform A", node_type: "polars" }),
       makeStep({ node_id: "t2", node_name: "Transform B", node_type: "polars" }),
     ]
@@ -365,7 +380,7 @@ describe("groupTraceSteps", () => {
 
   it("single-step groups: no wrapper needed", () => {
     const steps = [
-      makeStep({ node_id: "s1", node_name: "Source", node_type: "source" }),
+      makeStep({ node_id: "s1", node_name: "Source", node_type: "dataInput" }),
       makeStep({ node_id: "t1", node_name: "Transform", node_type: "polars" }),
       makeStep({ node_id: "r1", node_name: "Rating", node_type: "rating" }),
     ]
@@ -380,22 +395,22 @@ describe("groupTraceSteps", () => {
 
   it("mixed types: sources, transforms, scoring in separate groups", () => {
     const steps = [
-      makeStep({ node_id: "s1", node_name: "Source", node_type: "source" }),
-      makeStep({ node_id: "s2", node_name: "Source 2", node_type: "source" }),
+      makeStep({ node_id: "s1", node_name: "Source", node_type: "dataInput" }),
+      makeStep({ node_id: "s2", node_name: "Source 2", node_type: "dataInput" }),
       makeStep({ node_id: "t1", node_name: "Transform", node_type: "polars" }),
       makeStep({ node_id: "m1", node_name: "Model", node_type: "model_score" }),
     ]
     const groups = groupTraceSteps(steps, "premium")
 
     expect(groups).toHaveLength(3)
-    expect(groups[0].steps.every((s) => s.node_type === "source")).toBe(true)
+    expect(groups[0].steps.every((s) => s.node_type === "dataInput")).toBe(true)
     expect(groups[1].steps.every((s) => s.node_type === "polars")).toBe(true)
     expect(groups[2].steps.every((s) => s.node_type === "model_score")).toBe(true)
   })
 
   it("marks group as 'primary' when it contains the column-creating step", () => {
     const steps = [
-      makeStep({ node_id: "s1", node_name: "Source", node_type: "source" }),
+      makeStep({ node_id: "s1", node_name: "Source", node_type: "dataInput" }),
       makeStep({
         node_id: "t1",
         node_name: "Creator",
@@ -427,7 +442,7 @@ describe("groupTraceSteps", () => {
 
   it("marks group as primary when it contains the column-modifying step", () => {
     const steps = [
-      makeStep({ node_id: "s1", node_name: "Source", node_type: "source" }),
+      makeStep({ node_id: "s1", node_name: "Source", node_type: "dataInput" }),
       makeStep({
         node_id: "t1",
         node_name: "Transform A",
@@ -463,7 +478,7 @@ describe("groupTraceSteps", () => {
       makeStep({
         node_id: "s1",
         node_name: "Source",
-        node_type: "source",
+        node_type: "dataInput",
         schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: ["age"] },
       }),
       makeStep({
@@ -487,7 +502,7 @@ describe("collapsePassthroughs", () => {
       makeStep({
         node_id: "s1",
         node_name: "Source",
-        node_type: "source",
+        node_type: "dataInput",
         schema_diff: {
           columns_added: ["premium"],
           columns_removed: [],
@@ -532,7 +547,7 @@ describe("collapsePassthroughs", () => {
       makeStep({
         node_id: "s1",
         node_name: "Source",
-        node_type: "source",
+        node_type: "dataInput",
         schema_diff: {
           columns_added: ["premium"],
           columns_removed: [],
@@ -587,7 +602,7 @@ describe("collapsePassthroughs", () => {
       makeStep({
         node_id: "s1",
         node_name: "Source",
-        node_type: "source",
+        node_type: "dataInput",
         schema_diff: {
           columns_added: ["premium"],
           columns_removed: [],
@@ -640,7 +655,7 @@ describe("collapsePassthroughs", () => {
       makeStep({
         node_id: "s1",
         node_name: "Creator",
-        node_type: "source",
+        node_type: "dataInput",
         schema_diff: {
           columns_added: ["premium"],
           columns_removed: [],
@@ -672,7 +687,7 @@ describe("collapsePassthroughs", () => {
       makeStep({
         node_id: "s1",
         node_name: "Source",
-        node_type: "source",
+        node_type: "dataInput",
         schema_diff: {
           columns_added: ["premium"],
           columns_removed: [],
@@ -704,7 +719,7 @@ describe("collapsePassthroughs", () => {
       makeStep({
         node_id: "s1",
         node_name: "Source",
-        node_type: "source",
+        node_type: "dataInput",
         schema_diff: {
           columns_added: [],
           columns_removed: [],
@@ -728,7 +743,7 @@ describe("collapsePassthroughs", () => {
 
     // Source should not be collapsed even if column is only in columns_passed
     const nonCollapsed = result.filter((e) => !("collapsed" in e))
-    expect(nonCollapsed.some((e) => (e as TraceStep).node_type === "source")).toBe(true)
+    expect(nonCollapsed.some((e) => (e as TraceStep).node_type === "dataInput")).toBe(true)
   })
 
   it("all steps are pass-through: all collapsed except first and last", () => {
@@ -792,7 +807,7 @@ describe("collapsePassthroughs", () => {
       makeStep({
         node_id: "s1",
         node_name: "Source",
-        node_type: "source",
+        node_type: "dataInput",
         schema_diff: {
           columns_added: ["premium"],
           columns_removed: [],
@@ -942,7 +957,7 @@ describe("collapsePassthroughs", () => {
       makeStep({
         node_id: "s1",
         node_name: "Source",
-        node_type: "source",
+        node_type: "dataInput",
         schema_diff: { columns_added: ["premium"], columns_removed: [], columns_modified: [], columns_passed: [] },
       }),
       makeStep({
@@ -989,7 +1004,7 @@ describe("buildFlowChain", () => {
       makeStep({
         node_id: "s1",
         node_name: "Source",
-        node_type: "source",
+        node_type: "dataInput",
         column_relevant: true,
       }),
       makeStep({
@@ -1022,7 +1037,7 @@ describe("buildFlowChain", () => {
       makeStep({
         node_id: "s1",
         node_name: "Source",
-        node_type: "source",
+        node_type: "dataInput",
         schema_diff: {
           columns_added: [],
           columns_removed: [],
@@ -1065,7 +1080,7 @@ describe("buildFlowChain", () => {
       makeStep({
         node_id: "s1",
         node_name: "Source",
-        node_type: "source",
+        node_type: "dataInput",
         schema_diff: {
           columns_added: ["premium"],
           columns_removed: [],
@@ -1108,7 +1123,7 @@ describe("buildFlowChain", () => {
       makeStep({
         node_id: "s1",
         node_name: "Source",
-        node_type: "source",
+        node_type: "dataInput",
         schema_diff: {
           columns_added: ["age"],
           columns_removed: [],
@@ -1151,7 +1166,7 @@ describe("buildFlowChain", () => {
       makeStep({
         node_id: "s1",
         node_name: "Source",
-        node_type: "source",
+        node_type: "dataInput",
         column_relevant: true,
         schema_diff: {
           columns_added: ["premium"],
@@ -1198,7 +1213,7 @@ describe("buildFlowChain", () => {
       makeStep({
         node_id: "s1",
         node_name: "Source",
-        node_type: "source",
+        node_type: "dataInput",
         schema_diff: {
           columns_added: ["age"],
           columns_removed: [],
@@ -1216,7 +1231,7 @@ describe("buildFlowChain", () => {
       makeStep({
         node_id: "s1",
         node_name: "Source",
-        node_type: "source",
+        node_type: "dataInput",
         column_relevant: true,
         schema_diff: { columns_added: ["premium"], columns_removed: [], columns_modified: [], columns_passed: [] },
       }),

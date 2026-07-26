@@ -144,6 +144,22 @@ def _normalise_entries_for_table(table: dict[str, Any], table_index: int) -> dic
     return result
 
 
+def validate_unique_rating_table_outputs(tables: list[dict[str, Any]]) -> None:
+    """Reject table outputs that would overwrite and then be combined twice."""
+    first_index_by_output: dict[str, int] = {}
+    for table_index, table in enumerate(tables):
+        output_column = str(table.get("outputColumn", "") or "").strip()
+        if not output_column:
+            continue
+        first_index = first_index_by_output.get(output_column)
+        if first_index is not None:
+            raise ValueError(
+                f"ratingStep tables[{table_index}].outputColumn {output_column!r} "
+                f"duplicates ratingStep tables[{first_index}].outputColumn"
+            )
+        first_index_by_output[output_column] = table_index
+
+
 def normalise_rating_step_config(config: dict[str, Any]) -> dict[str, Any]:
     """Validate rating-step config in its canonical row-array form."""
     result = deepcopy(config)
@@ -152,12 +168,14 @@ def normalise_rating_step_config(config: dict[str, Any]) -> dict[str, Any]:
         return result
     if not isinstance(tables, list):
         raise ValueError("ratingStep tables must be a list")
-    result["tables"] = [
+    normalised_tables = [
         _normalise_entries_for_table(table, table_index)
         if isinstance(table, dict)
         else _raise_table_not_object(table_index)
         for table_index, table in enumerate(tables)
     ]
+    validate_unique_rating_table_outputs(normalised_tables)
+    result["tables"] = normalised_tables
     return result
 
 

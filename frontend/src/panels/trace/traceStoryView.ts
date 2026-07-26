@@ -27,9 +27,11 @@ export function hasRichBandingDetail(step: TraceStep | null | undefined): boolea
 
 export function hasRichModelScoreDetail(step: TraceStep | null | undefined): boolean {
   const detail = step?.node_detail as ModelScoreNodeDetail | null | undefined
+  const rootError = (detail as unknown as Record<string, unknown> | null | undefined)?.error
   return Boolean(
     detail?.detail_type === "model_score" &&
     (
+      typeof rootError === "string" ||
       "prediction_value" in detail ||
       Array.isArray(detail.feature_columns) ||
       detail.feature_values != null ||

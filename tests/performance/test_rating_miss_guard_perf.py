@@ -67,13 +67,12 @@ def _workload(
 
 
 def _no_miss_guard(
+    lf: pl.DataFrame | pl.LazyFrame,
     _factors: list[str],
-    *,
-    lookup_value_column: str,
     **_kwargs: Any,
-) -> pl.Expr:
-    """Control expression that isolates the current guard's collection cost."""
-    return pl.col(lookup_value_column)
+) -> pl.DataFrame | pl.LazyFrame:
+    """Control plan that isolates the current guard's collection cost."""
+    return lf
 
 
 def _plan(
@@ -135,7 +134,7 @@ def test_rating_miss_guard_records_representative_decision_evidence(
         )
         guarded = _plan(frame, config, entry_point=entry_point)
         with monkeypatch.context() as patch:
-            patch.setattr(rating, "_rating_miss_guard_expr", _no_miss_guard)
+            patch.setattr(rating, "_apply_rating_miss_guard", _no_miss_guard)
             control = _plan(frame, config, entry_point=entry_point)
 
         collect = _collector(entry_point)

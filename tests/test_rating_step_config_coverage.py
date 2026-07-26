@@ -194,6 +194,29 @@ def test_normalise_table_not_object_raises() -> None:
         normalise_rating_step_config({"tables": [42]})
 
 
+def test_duplicate_table_output_columns_are_rejected_with_both_indices() -> None:
+    config = {
+        "tables": [
+            {
+                "factors": ["band"],
+                "outputColumn": "duplicate_factor",
+                "entries": [{"band": "A", "value": 2.0}],
+            },
+            {
+                "factors": ["region"],
+                "outputColumn": "duplicate_factor",
+                "entries": [{"region": "north", "value": 5.0}],
+            },
+        ]
+    }
+
+    with pytest.raises(
+        ValueError,
+        match=r"tables\[1\]\.outputColumn 'duplicate_factor'.*tables\[0\]",
+    ):
+        normalise_rating_step_config(config)
+
+
 def test_normalise_rating_tables_none_returns_empty() -> None:
     assert normalise_rating_tables({}) == []
 

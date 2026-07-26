@@ -312,15 +312,9 @@ def test_enrichment_completed_result_memo_reuses_sibling_concern(
         calls += 1
         return SimpleNamespace(substituted_text="2 * 2", result_value=4)
 
-    monkeypatch.setattr(
-        enrichment,
-        "_trace_module",
-        lambda: SimpleNamespace(
-            parse_expression=parse_expression,
-            evaluate_expression=evaluate_expression,
-            enrich_banding=lambda *_args, **_kwargs: {},
-        ),
-    )
+    monkeypatch.setattr(enrichment, "parse_expression", parse_expression)
+    monkeypatch.setattr(enrichment, "evaluate_expression", evaluate_expression)
+    monkeypatch.setattr(enrichment, "enrich_banding", lambda *_args, **_kwargs: {})
     memo: dict[tuple[object, ...], dict[str, object]] = {}
 
     first = _build_input_sources(
@@ -365,15 +359,11 @@ def test_enrichment_failures_are_not_memoized(monkeypatch: pytest.MonkeyPatch) -
 
     monkeypatch.setattr(
         enrichment,
-        "_trace_module",
-        lambda: SimpleNamespace(
-            parse_expression=lambda *_args: SimpleNamespace(
-                expression_text="broken", referenced_columns=[]
-            ),
-            evaluate_expression=fail_evaluate,
-            enrich_banding=lambda *_args, **_kwargs: {},
-        ),
+        "parse_expression",
+        lambda *_args: SimpleNamespace(expression_text="broken", referenced_columns=[]),
     )
+    monkeypatch.setattr(enrichment, "evaluate_expression", fail_evaluate)
+    monkeypatch.setattr(enrichment, "enrich_banding", lambda *_args, **_kwargs: {})
     memo: dict[tuple[object, ...], dict[str, object]] = {}
 
     for _ in range(2):

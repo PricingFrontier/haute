@@ -1,4 +1,5 @@
 import type { TraceStep } from "../../types/trace"
+import { isTraceSourceNodeType } from "../../trace/traceOrigins"
 
 /**
  * Find the best step to display expression/calculation for the traced column.
@@ -109,7 +110,7 @@ function isPassthrough(step: TraceStep, column: string): boolean {
 }
 
 export function isSourceLikeTraceStep(step: Pick<TraceStep, "node_type">): boolean {
-  return step.node_type === "source" || step.node_type === "dataInput" || step.node_type === "apiInput"
+  return isTraceSourceNodeType(step.node_type)
 }
 
 /**
