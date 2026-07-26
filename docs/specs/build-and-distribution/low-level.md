@@ -13,7 +13,7 @@
 | `hatch_build.py` | Defines `FrontendBuildHook`: validates or explicitly rebuilds embedded frontend assets, detects stale inputs, resolves npm, and turns failed build prerequisites/commands into `RuntimeError`. |
 | `src/haute/__init__.py` | Defines the installed package's public import surface, which is the package root selected for wheel distribution. |
 | `src/haute/py.typed` | PEP 561 marker declaring that the installed `haute` package ships type information. |
-| `frontend/package.json` | Declares the private frontend's locked-toolchain commands, production build (`tsc -b && vite build`), and build-time dependencies. |
+| `frontend/package.json` | Declares the private frontend's pinned Node/npm engines, locked-toolchain commands, production build (`tsc -b && vite build`), and build-time dependencies. |
 | `frontend/package-lock.json` | Pins the npm dependency graph consumed by `npm ci` for reproducible frontend builds. |
 | `frontend/bun.lock` | Checked-in Bun lockfile for the frontend; current package-build and CI commands use npm and `frontend/package-lock.json`, not this lockfile. |
 | `frontend/.npmrc` | Supplies npm configuration used when installing the frontend dependency graph. |
@@ -21,7 +21,10 @@
 | `frontend/index.html` | Vite HTML entry document for the browser bundle. |
 | `frontend/public/favicon.svg` | Public favicon copied through the Vite build. |
 | `frontend/public/vite.svg` | Checked-in Vite public asset copied through the Vite build. |
-| `frontend/vite.config.ts` | Configures React/Tailwind plugins, the package-version define, development API/WebSocket proxies, chunking, and output to `src/haute/static/`. |
+| `frontend/vite.config.ts` | Reads the package version from `pyproject.toml`, defines `__APP_VERSION__`, and configures React/Tailwind plugins, a strict `127.0.0.1:5173` development listener, API/WebSocket proxies, chunking, and output to `src/haute/static/`. |
+| `docs/overrides/home.html` | Supplies the public documentation landing-page override and is a documentation-build input. |
+| `docs/stylesheets/extra.css` | Supplies public documentation styling and is a documentation-build input. |
+| `docs/CI_MIRROR.md`, `docs/COMMIT_STANDARDS.md`, `docs/PERFORMANCE_CHECKS.md`, `docs/opus-5-*.md` | Internal engineering procedures and review corpus: retained as workflow inputs in the repository but excluded from public-site output. |
 | `frontend/tsconfig.json` | References the application and Vite-node TypeScript projects. |
 | `frontend/tsconfig.app.json` | Sets strict browser-source TypeScript compilation and build-info placement. |
 | `frontend/tsconfig.node.json` | Sets strict TypeScript compilation for `frontend/vite.config.ts`. |
@@ -42,34 +45,41 @@ package input validated by `hatch_build.py`, not hand-edited source.
   and `on` opt in; empty, `0`, `false`, `no`, and `off` select validation. Any
   other value is invalid.
 - **Static artifact set** is the Vite output rooted at
-  `src/haute/static/`, with `index.html` as the existence and freshness sentinel.
+  `src/haute/static/`, with both `index.html` and a non-empty `assets/` directory
+  required for readiness and `index.html` as the freshness sentinel.
   The hook checks frontend `src/` TypeScript/TSX/CSS/HTML files and
-  `vite.config.ts`, `tsconfig.json`, `tsconfig.app.json`, and `package.json`
+  `vite.config.ts`, `tsconfig.json`, `tsconfig.app.json`, `package.json`, and
+  `package-lock.json`
   against that sentinel's modification time.
 - **Frontend TypeScript projects** are strict, no-emit build projects: the app
   project targets browser ES2022/React JSX and the node project targets ES2023
   for Vite configuration. The root TypeScript config references both.
-- **MkDocs site inputs** are public Markdown/CSS/overrides under `docs/` plus
-  `mkdocs.yml`; `exclude_docs` prevents internal specs, roadmaps, review
-  archives, and TRIP material from becoming pages.
+- **Browser package version** is the required `project.version` value read from
+  root `pyproject.toml` by Vite and exposed as the compile-time
+  `__APP_VERSION__` string.
+- **MkDocs site inputs** are public Markdown, `docs/overrides/home.html`,
+  `docs/stylesheets/extra.css`, and `mkdocs.yml`; `exclude_docs` prevents internal
+  specs, roadmaps, the three engineering procedure documents, the complete Opus
+  review/workstream corpus, and TRIP material from becoming pages.
 
 ## Control flow
 
 1. `uv build` invokes Hatchling according to `pyproject.toml`; non-editable
    target initialisation invokes `FrontendBuildHook.initialize()` in
    `hatch_build.py`.
-2. The hook returns immediately for editable builds. Otherwise it finds
+2. The hook parses `HAUTE_BUILD_FRONTEND` first, then returns immediately for
+   editable builds. Otherwise it finds
    `frontend/` and `src/haute/static/index.html`; if `frontend/` is absent it
    also returns, which accommodates source-distribution/CI contexts without
    frontend source.
-3. Validation mode checks that `index.html` exists and is not older than the
-   selected frontend source/configuration. Build mode runs `npm ci
-   --prefer-offline` only when `frontend/node_modules/` is absent, skips work if
-   the sentinel is current, or invokes `npm run build` when it is stale.
+3. Validation mode checks that the complete static artifact set exists and is
+   not older than the selected frontend source/configuration. Build mode always
+   runs `npm ci --prefer-offline`, then skips the production build if the
+   artifact set is current or invokes `npm run build` when it is stale.
 4. `frontend/package.json` runs `tsc -b` before Vite. `frontend/vite.config.ts`
-   reads the root package version, supplies React/Tailwind and development
-   proxies, clears `src/haute/static/`, then emits the HTML/public assets and
-   JavaScript/CSS chunks there.
+   reads the package version, supplies React/Tailwind and development proxies, clears
+   `src/haute/static/`, then emits the HTML/public assets and JavaScript/CSS
+   chunks there.
 5. Hatch packages `src/haute` into the wheel and includes static artifacts;
    the sdist exclusions in `pyproject.toml` remove source-only trees. The
    command entry point resolves `haute.cli:cli` after installation.
@@ -87,9 +97,6 @@ package input validated by `hatch_build.py`, not hand-edited source.
 - React/ReactFlow, ELK, CodeMirror, and Lucide dependencies are assigned
   explicit vendor chunks; other dependencies retain Vite/Rollup's default
   chunking behaviour.
-- The browser application's version read from `pyproject.toml` falls back to
-  `0.1.0` only when its regular expression cannot find a version; package
-  metadata itself remains authoritative for distribution versioning.
 - The static marker is intentionally absent from source control in this
   checkout. A validated wheel build must create or receive it; source code is
   never used as a runtime fallback for a missing browser bundle.
@@ -104,25 +111,26 @@ package input validated by `hatch_build.py`, not hand-edited source.
 - `_validate_static_assets()` raises `RuntimeError` for a missing or stale
   sentinel, naming either the frontend rebuild command or the environment opt-in.
 - `_npm()` raises `RuntimeError` if npm is not on PATH and the known Windows
-  location is unavailable. `_run()` prints subprocess stdout/stderr and raises
-  `RuntimeError` on a non-zero return code; the missing-output sanity check does
-  the same.
+  location is unavailable. `_run()` uses replacement decoding, applies the
+  package-build timeout, prints subprocess stdout/stderr, and raises
+  `RuntimeError` on a non-zero return code or timeout; the missing-output sanity
+  check does the same.
 - TypeScript/Vite failures return non-zero through the npm command and therefore
   surface as the hook's `RuntimeError`; they are not converted into a partial
   static bundle.
+- A missing root `pyproject.toml` package-version declaration raises from the
+  Vite configuration before bundling; no fallback version is embedded.
 - MkDocs strict-mode errors make the docs workflow's build job fail. The deploy
   job is gated by `needs: build`, so it is not attempted after such an error.
 
 ## Testing
 
-- `tests/test_hatch_build.py` contains two focused unit tests: editable builds
-  return without validation, and a standard build with `frontend/` present but
-  no static sentinel raises the documented `RuntimeError`.
-- There is no direct unit coverage for environment-value parsing, the
-  frontend-absent early return, freshness calculation, npm resolution,
-  subprocess failure forwarding, or the post-build output check. Package smoke
-  jobs exercise broader build paths but do not replace those missing branch
-  assertions.
+- `tests/test_hatch_build.py` covers editable-build behavior, environment-value
+  validation ordering, missing/incomplete static artifacts, unconditional
+  locked installation for explicit builds, lockfile freshness, safe subprocess
+  decoding and timeout translation, and post-build readiness.
+- Package smoke jobs exercise the real sdist/wheel and clean-install paths;
+  focused hook tests keep failure branches deterministic without invoking npm.
 - `tests/test_docs_accuracy.py` is a repository documentation consistency gate;
   it is not a substitute for MkDocs's strict render/build validation.
 - Package/install smoke coverage is defined and run by

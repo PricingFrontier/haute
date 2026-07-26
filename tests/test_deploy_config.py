@@ -72,6 +72,27 @@ endpoint_suffix = "-stg"
 
 
 class TestFromToml:
+    def test_accepts_server_host_used_by_cli(self, tmp_path: Path) -> None:
+        from haute.cli._serve import _load_toml_server_host
+
+        path = tmp_path / "haute.toml"
+        path.write_text(
+            """\
+[project]
+name = "simple"
+pipeline = "main.py"
+
+[server]
+host = "localhost"
+""",
+            encoding="utf-8",
+        )
+
+        config = DeployConfig.from_toml(path)
+
+        assert config.model_name == "simple"
+        assert _load_toml_server_host(tmp_path) == "localhost"
+
     def test_loads_safety_section(self, toml_file: Path) -> None:
         config = DeployConfig.from_toml(toml_file)
         assert config.safety.impact_dataset == "data/portfolio.parquet"

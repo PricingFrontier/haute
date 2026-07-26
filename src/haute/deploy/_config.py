@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import os
 import re
+from contextlib import ExitStack
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -178,6 +179,7 @@ _VALID_TOML_SCHEMA: dict[str, set[str] | dict[str, set[str]]] = {
         "staging": {"endpoint_suffix", "endpoint_url"},
         "production": {"endpoint_url"},
     },
+    "server": {"host"},
 }
 
 
@@ -481,6 +483,22 @@ class ResolvedDeploy:
     input_schema: dict[str, str]
     output_schema: dict[str, str]
     removed_node_ids: list[str] = field(default_factory=list)
+    snapshot_provenance: dict[str, dict[str, Any]] = field(default_factory=dict)
+    _resources: ExitStack = field(default_factory=ExitStack, repr=False, compare=False)
+    _closed: bool = field(default=False, init=False, repr=False, compare=False)
+
+    def close(self) -> None:
+        """Release snapshot leases and other resolution-owned resources."""
+        if self._closed:
+            return
+        self._closed = True
+        self._resources.close()
+
+    def __enter__(self) -> ResolvedDeploy:
+        return self
+
+    def __exit__(self, *_exc_info: object) -> None:
+        self.close()
 
 
 def _load_env(project_root: Path) -> None:
@@ -554,22 +572,35 @@ def resolve_config(config: DeployConfig) -> ResolvedDeploy:
                 "@pipeline.api_input(path=...)."
             )
 
-    # Collect artifacts
+    # Collect artifacts. Snapshot generations remain leased until the
+    # resolved deployment is validated and shipped (or explicitly closed).
     pipeline_dir = config.pipeline_file.parent
-    artifacts = collect_artifacts(pruned_graph, deploy_inputs, pipeline_dir)
+    resources = ExitStack()
+    snapshot_provenance: dict[str, dict[str, Any]] = {}
+    try:
+        artifacts = collect_artifacts(
+            pruned_graph,
+            deploy_inputs,
+            pipeline_dir,
+            resources=resources,
+            snapshot_provenance=snapshot_provenance,
+        )
 
-    # Infer schemas. The output-schema dry-run scores with the exact bundled
-    # artifacts the container serves so validate-time and serve-time load the
-    # same model bytes (not a live MLflow lookup), and so the schema cache key
-    # reflects the served model identity.
-    artifact_paths = {name: str(path) for name, path in artifacts.items()}
-    input_schema = infer_input_schema(pruned_graph, deploy_inputs[0])
-    output_schema = infer_output_schema(
-        pruned_graph,
-        output_node_id,
-        deploy_inputs,
-        artifact_paths=artifact_paths,
-    )
+        # Infer schemas. The output-schema dry-run scores with the exact bundled
+        # artifacts the container serves so validate-time and serve-time load the
+        # same model bytes (not a live MLflow lookup), and so the schema cache key
+        # reflects the served model identity.
+        artifact_paths = {name: str(path) for name, path in artifacts.items()}
+        input_schema = infer_input_schema(pruned_graph, deploy_inputs[0])
+        output_schema = infer_output_schema(
+            pruned_graph,
+            output_node_id,
+            deploy_inputs,
+            artifact_paths=artifact_paths,
+        )
+    except BaseException:
+        resources.close()
+        raise
 
     logger.info(
         "config_resolved",
@@ -590,4 +621,6 @@ def resolve_config(config: DeployConfig) -> ResolvedDeploy:
         input_schema=input_schema,
         output_schema=output_schema,
         removed_node_ids=removed_ids,
+        snapshot_provenance=snapshot_provenance,
+        _resources=resources,
     )

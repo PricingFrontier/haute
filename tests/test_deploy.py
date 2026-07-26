@@ -94,7 +94,9 @@ def mock_mlflow_deploy():
         patch("haute.deploy._mlflow._build_signature") as m_sig,
         patch("haute.deploy._mlflow._create_or_update_serving_endpoint") as m_ep,
     ):
-        m_client.return_value.search_model_versions.return_value = []
+        registered = MagicMock()
+        registered.version = "1"
+        m_client.return_value.search_model_versions.return_value = [registered]
         m_run.return_value.__enter__ = MagicMock()
         m_run.return_value.__exit__ = MagicMock(return_value=False)
 

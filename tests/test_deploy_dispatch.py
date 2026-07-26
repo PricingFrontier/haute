@@ -205,6 +205,48 @@ class TestDeployDispatchReturnValue:
         assert result.model_uri == "models:/test-model/1"
         assert result.manifest_path == Path("/tmp/deploy_manifest.json")
 
+    def test_deploy_releases_resolved_resources_after_success(self) -> None:
+        from haute.deploy import deploy
+
+        config = _make_config("databricks")
+        fake_resolved = _make_resolved(config)
+        with (
+            patch("haute.deploy.resolve_config", return_value=fake_resolved),
+            patch("haute.deploy.validate_deploy"),
+            patch("haute.deploy.deploy_to_mlflow", return_value=_make_deploy_result()),
+        ):
+            deploy(config)
+
+        fake_resolved.close.assert_called_once_with()
+
+    def test_deploy_releases_resolved_resources_after_validation_failure(self) -> None:
+        from haute.deploy import deploy
+
+        config = _make_config("databricks")
+        fake_resolved = _make_resolved(config)
+        with (
+            patch("haute.deploy.resolve_config", return_value=fake_resolved),
+            patch("haute.deploy.validate_deploy", side_effect=RuntimeError("invalid")),
+        ):
+            with pytest.raises(RuntimeError, match="invalid"):
+                deploy(config)
+
+        fake_resolved.close.assert_called_once_with()
+
+    def test_deploy_resolved_releases_resources_after_backend_failure(self) -> None:
+        from haute.deploy import deploy_resolved
+
+        config = _make_config("databricks")
+        fake_resolved = _make_resolved(config)
+        with patch(
+            "haute.deploy.deploy_to_mlflow",
+            side_effect=RuntimeError("ship failed"),
+        ):
+            with pytest.raises(RuntimeError, match="ship failed"):
+                deploy_resolved(fake_resolved)
+
+        fake_resolved.close.assert_called_once_with()
+
     def test_resolve_config_failure_propagates(self) -> None:
         """If resolve_config raises, deploy() must not swallow it."""
         from haute.deploy import deploy

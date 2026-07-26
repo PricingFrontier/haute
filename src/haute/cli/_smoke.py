@@ -40,6 +40,13 @@ def handle_smoke(config: SmokeConfig) -> None:
         raise SystemExit(1)
 
     deploy_config = DeployConfig.from_toml(toml_path)
+    if config.endpoint_suffix and deploy_config.target != "databricks":
+        click.echo(
+            "Error: --endpoint-suffix is only supported for Databricks. "
+            "Set the full [ci.staging].endpoint_url in haute.toml for HTTP targets.",
+            err=True,
+        )
+        raise SystemExit(1)
     click.echo("  \u2713 Loaded config from haute.toml")
     if config.endpoint_suffix:
         deploy_config = deploy_config.override(endpoint_suffix=config.endpoint_suffix)
@@ -111,9 +118,32 @@ def _smoke_databricks(endpoint_name: str, json_files: list[Path]) -> bool:
 
     try:
         from databricks.sdk import WorkspaceClient
-    except ImportError:
+    except ModuleNotFoundError as exc:
+        if not (exc.name or "").startswith("databricks"):
+            click.echo(
+                "Error: installed databricks-sdk is incomplete or incompatible. "
+                "Upgrade with: uv add --upgrade databricks-sdk",
+                err=True,
+            )
+            raise SystemExit(1)
         click.echo(
             "Error: databricks-sdk not installed. Install with: uv add haute[databricks]",
+            err=True,
+        )
+        raise SystemExit(1)
+    except ImportError:
+        click.echo(
+            "Error: installed databricks-sdk is incomplete or incompatible. "
+            "Upgrade with: uv add --upgrade databricks-sdk",
+            err=True,
+        )
+        raise SystemExit(1)
+    try:
+        from databricks.sdk.errors import NotFound
+    except ImportError:
+        click.echo(
+            "Error: installed databricks-sdk is too old for endpoint readiness checks. "
+            "Upgrade with: uv add --upgrade databricks-sdk",
             err=True,
         )
         raise SystemExit(1)
@@ -146,10 +176,12 @@ def _smoke_databricks(endpoint_name: str, json_files: list[Path]) -> bool:
             click.echo(
                 f"  \u2026 Endpoint not ready ({status_msg}), polling in {poll_interval}s..."
             )
+        except NotFound as exc:
+            click.echo(f"  Endpoint not found ({exc}), retrying in {poll_interval}s...")
         except Exception as exc:
-            click.echo(
-                f"  \u2026 Endpoint not found or error ({exc}), retrying in {poll_interval}s..."
-            )
+            raise click.ClickException(
+                f"Could not check Databricks endpoint '{endpoint_name}': {exc}"
+            ) from exc
         time.sleep(poll_interval)
         waited += poll_interval
     else:

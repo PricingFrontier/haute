@@ -61,7 +61,9 @@ def mock_mlflow_deploy():
         patch("haute.deploy._mlflow._build_signature") as m_sig,
         patch("haute.deploy._mlflow._create_or_update_serving_endpoint") as m_ep,
     ):
-        m_client.return_value.search_model_versions.return_value = []
+        registered = MagicMock()
+        registered.version = "1"
+        m_client.return_value.search_model_versions.return_value = [registered]
         m_run.return_value.__enter__ = MagicMock()
         m_run.return_value.__exit__ = MagicMock(return_value=False)
 
@@ -157,8 +159,11 @@ class TestVersionSelection:
         # Endpoint creation must receive the same resolved version.
         assert mocks.create_or_update_endpoint.call_args.kwargs["model_version"] == 3
 
-    def test_no_versions_defaults_to_one(self, deploy_pipeline_file: Path) -> None:
+    def test_no_versions_fails_instead_of_synthesising_one(
+        self, deploy_pipeline_file: Path
+    ) -> None:
         from haute.deploy._mlflow import deploy_to_mlflow
+        from haute.errors import DeployError
 
         resolved = _make_resolved(pipeline_file=deploy_pipeline_file)
 
@@ -166,10 +171,10 @@ class TestVersionSelection:
             mock_mlflow_deploy(),
             patch("haute.deploy._mlflow.search_versions", return_value=[]),
         ):
-            result = deploy_to_mlflow(resolved)
+            with pytest.raises(DeployError, match="registered model version") as exc_info:
+                deploy_to_mlflow(resolved)
 
-        assert result.model_version == 1
-        assert result.model_uri.endswith("/1")
+        assert "main.pricing.test-model" in str(exc_info.value)
 
 
 class TestBuildDirCleanup:

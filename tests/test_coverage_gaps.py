@@ -398,7 +398,7 @@ class TestHauteModelEdgeCases:
     """Additional tests for HauteModel."""
 
     def test_load_context_multiple_artifacts(self, tmp_path):
-        """load_context maps all artifacts present in context."""
+        """load_context maps every artifact declared by the manifest."""
         from haute.deploy._model_code import HauteModel
 
         manifest = {
@@ -421,15 +421,15 @@ class TestHauteModelEdgeCases:
             "deploy_manifest": str(manifest_path),
             "model.pkl": "/served/model.pkl",
             "scaler.pkl": "/served/scaler.pkl",
-            # encoder.pkl deliberately missing from context
+            "encoder.pkl": "/served/encoder.pkl",
         }
         model.load_context(ctx)
 
         assert model._artifact_paths == {
             "model.pkl": "/served/model.pkl",
             "scaler.pkl": "/served/scaler.pkl",
+            "encoder.pkl": "/served/encoder.pkl",
         }
-        assert "encoder.pkl" not in model._artifact_paths
 
     def test_load_context_empty_artifacts(self, tmp_path):
         """Manifest with no artifacts results in empty artifact_paths."""

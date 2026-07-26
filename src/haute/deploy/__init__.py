@@ -92,8 +92,11 @@ def deploy_resolved(resolved: ResolvedDeploy) -> DeployResult:
     used by ``haute deploy`` after it resolves, validates, and scores test
     quotes so the backend receives that exact same resolved object.
     """
-    _validate_target(resolved.config.target)
-    return _dispatch_resolved(resolved)
+    try:
+        _validate_target(resolved.config.target)
+        return _dispatch_resolved(resolved)
+    finally:
+        resolved.close()
 
 
 def deploy(config: DeployConfig) -> DeployResult:
@@ -104,6 +107,8 @@ def deploy(config: DeployConfig) -> DeployResult:
 
     resolved = resolve_config(config)
 
-    validate_deploy(resolved)
-
-    return _dispatch_resolved(resolved)
+    try:
+        validate_deploy(resolved)
+        return _dispatch_resolved(resolved)
+    finally:
+        resolved.close()

@@ -34,7 +34,9 @@ Out of scope, owned elsewhere:
 - `haute init [--target ...] [--ci ...] [--force]` scaffolds a new project in the current directory:
   `haute.toml`, a starter `rating/` pipeline package, `.env.example`, test-quote fixtures, CI/CD
   workflow files for the chosen provider, a git pre-commit hook, and `.gitignore` guard entries.
-  Refuses to run if `haute.toml` already exists unless `--force` is given.
+  Refuses to run if `haute.toml` already exists unless `--force` is given. An existing root
+  `main.py` is never deleted or overwritten: the scaffold uses `rating/main.py` and reports that
+  it preserved the root entry point.
 - `haute run [pipeline_file]` executes a pipeline end-to-end through the same
   `parse_pipeline_file` → `execute_graph` path the GUI uses, printing a per-node row/column summary
   and a preview of the final node's output.
@@ -53,6 +55,8 @@ Out of scope, owned elsewhere:
 - `haute smoke [--endpoint-suffix]` sends every test-quote JSON file in `tests/quotes/` to a live
   serving endpoint and checks that each request completes. The current backends do not
   consistently require a non-empty prediction list, and HTTP health accepts any decodable 2xx JSON.
+  An endpoint suffix is a Databricks naming override; HTTP targets reject it and direct operators
+  to configure the complete staging endpoint URL instead.
 - `haute status [model_name] [--version-only]` looks up a model's latest version/stage in the MLflow
   Model Registry.
 - `haute impact [--sample] [--batch-size] [--endpoint-suffix]` scores a configured safety dataset
@@ -61,12 +65,12 @@ Out of scope, owned elsewhere:
 
 Invariants that hold across every command:
 - Where `resolve_model_name` is used (`status`), precedence is **CLI value >
-  `[deploy].model_name` in `haute.toml` > loud error**. `deploy` loads the TOML config then
+  `HAUTE_MODEL_NAME` > `[deploy].model_name` in `haute.toml` > loud error**. `deploy` loads the TOML config then
   applies its `--model-name` override; without TOML it derives the default from the resolved
   pipeline stem when the option is absent.
-- `run`, `lint`, and no-`haute.toml` `deploy` delegate CLI/default pipeline discovery to
-  `haute._project.resolve_pipeline_file`; TOML-backed deploy instead carries its configured
-  path through `DeployConfig` and `resolve_config`.
+- `run`, `lint`, and `deploy` delegate CLI/default pipeline discovery to
+  `haute._project.resolve_pipeline_file`; a TOML-configured deploy pipeline is passed through
+  that same resolver before `DeployConfig` and `resolve_config` consume it.
 - Command handlers use exit code 1 for their handled operational failures; Click uses exit
   code 2 for argument/choice/range parsing errors. Two informational outcomes intentionally
   succeed: ordinary `status` reports a missing registered model and exits 0, and `impact`
@@ -89,6 +93,10 @@ Invariants that hold across every command:
   `localhost`, IPv4 loopback addresses, or IPv6 `::1` from the CLI or `haute.toml`. Wildcard,
   LAN/public IP, and custom-hostname values fail before port probing or process launch; this
   command is a local editor surface, not an application-hosting surface.
+- **The development UI has one deterministic address.** Vite binds
+  `127.0.0.1:5173` with strict-port mode. `serve` refuses to start if either the API port or
+  Vite port is occupied, waits for both listeners before opening the browser, and never follows
+  Vite's automatic port rollover to a different, unreported origin.
 - **Command-scoped failure rules.** Missing Node/npm and a missing production frontend build
   fail rather than guessing; malformed TOML fails. `smoke`/`impact` require `haute.toml`, while
   deploy and explicit-model status have non-TOML paths. `serve` deliberately treats a missing
@@ -145,17 +153,14 @@ around `resolve_config`, `deploy_resolved`, script execution in `train`), it is 
 internal exception into a formatted CLI error message and `SystemExit(1)`, not to continue past the
 failure.
 
+The Databricks smoke readiness loop retries only the SDK's explicit not-found response while an
+endpoint is being created. Authentication, permission, transport, and other SDK failures stop
+immediately with the original exception chained. Training execution and result rendering are
+separate failure boundaries: once `job.run()` has returned successfully, a formatting problem is
+reported as a result-reporting failure and never as “Training failed”.
+
 > NOTE: `handle_deploy`'s dispatch to the target-specific backend catches bare `except Exception`
 > after already catching `ImportError` and `NotImplementedError` separately — a sufficiently exotic
 > backend failure (e.g. a bug in the deploy backend itself) is reported identically to a legitimate
 > deploy-target error, which can make debugging backend bugs from the CLI output harder than
 > necessary.
-
-## Approved change contract — local UI serving
-
-`haute serve` is a local editor command, not an application-hosting surface.
-`ServeConfig` and the Click entry point reject every non-loopback host before
-port probing or process launch. `localhost`, the full IPv4 loopback range, and
-IPv6 `::1` remain supported. Wildcard, LAN, public, and unresolved hostname
-binds fail with an actionable CLI error; there is no warning-and-continue mode
-and no reverse-proxy configuration. Dev and built-UI modes share this rule.

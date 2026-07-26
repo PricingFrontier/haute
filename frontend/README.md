@@ -67,5 +67,6 @@ src/
   orchestrator readable.
 - **Build output** lands in `../src/haute/static/` so the Python package can
   serve the frontend as static files in production.
-- **Version injection.** `vite.config.ts` reads the version from
-  `../pyproject.toml` and exposes it as `__APP_VERSION__`.
+- **Development listener.** `vite.config.ts` owns the fixed
+  `127.0.0.1:5173` Vite address and the API/WebSocket proxies. Package
+  versioning remains Python metadata and is not injected into the browser.

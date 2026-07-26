@@ -347,6 +347,7 @@ class TestDeployCiDetection:
             '[deploy]\nmodel_name = "test-model"\nendpoint_name = "test-ep"\n'
             '[test_quotes]\ndir = "tests/quotes"\n'
         )
+        (tmp_path / "main.py").write_text("# pipeline\n")
 
     def _mock_resolved(self) -> MagicMock:
         resolved = MagicMock()

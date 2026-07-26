@@ -192,6 +192,26 @@ class TestImpact:
 
         assert result.exit_code == 0, result.output
 
+    def test_container_target_rejects_endpoint_suffix(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _setup_impact_project(
+            tmp_path,
+            monkeypatch,
+            target="container",
+        )
+
+        with patch("haute.cli._impact._impact_http") as impact_http:
+            result = runner.invoke(cli, ["impact", "--endpoint-suffix", "-canary"])
+
+        assert result.exit_code == 1
+        assert "only supported for databricks" in result.output.lower()
+        assert "endpoint_url" in result.output
+        impact_http.assert_not_called()
+
     def test_github_step_summary(
         self,
         runner: CliRunner,

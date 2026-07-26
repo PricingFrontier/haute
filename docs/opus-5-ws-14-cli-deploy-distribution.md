@@ -1,9 +1,9 @@
 # WS-14 — CLI, deploy & distribution
 
 Part of the Opus 5 review split (`opus-5-workstreams.md`). Evidence and fix guidance:
-`opus-5-review.md`. Owner: unassigned · Status: not started.
+`opus-5-review.md`. Owner: WS-14 · Status: complete.
 
-**Branch:** `opus5/ws-14-cli-deploy-distribution`
+**Branch:** `ws-14`
 
 ## Mission
 
@@ -102,7 +102,10 @@ Low (24): `cli-7`, `cli-8`, `cli-9`, `cli-10`, `cli-11`, `cli-13`, `contracts-d-
   hunks (`[server]` schema here, resolver delegation there) — agree the order, and prefer
   landing the schema fix first since it unblocks four commands.
 - `deploy-1` consumes WS-02's source-cache lease API — coordinate the "lease across the whole
-  deploy lifecycle" pattern rather than inventing a second one.
+  deploy lifecycle" pattern rather than inventing a second one. The shipped API's lease
+  registry is process-local; cross-process retirement remains the separately owned
+  `io-layer-9` defect, so WS-14 documents that boundary rather than claiming a stronger
+  guarantee or adding a competing cache-lock implementation.
 - `.github/workflows/**` and `scripts/**` are shared with WS-01 (mutation/lint gates). This
   stream owns `docs.yml` and the packaging jobs; WS-01 owns `mutation.yml` and the dependency
   audit script.

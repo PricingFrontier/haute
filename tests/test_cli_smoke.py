@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import sys
+import types
 from pathlib import Path
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
@@ -193,6 +195,27 @@ class TestSmokeDatabricks:
 
 
 class TestSmokeHttp:
+    def test_http_rejects_endpoint_suffix(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _setup_smoke_project(
+            tmp_path,
+            monkeypatch,
+            target="container",
+            staging_url="http://localhost:8080/quote",
+        )
+
+        with patch("haute.cli._smoke._smoke_http") as smoke_http:
+            result = runner.invoke(cli, ["smoke", "--endpoint-suffix", "-canary"])
+
+        assert result.exit_code == 1
+        assert "only supported for databricks" in result.output.lower()
+        assert "endpoint_url" in result.output
+        smoke_http.assert_not_called()
+
     def test_http_success(
         self,
         runner: CliRunner,
@@ -260,7 +283,10 @@ class TestSmokeDatabricksEdgeCases:
 
             def mock_import(name, *args, **kwargs):
                 if name == "databricks.sdk":
-                    raise ImportError("No module named 'databricks.sdk'")
+                    raise ModuleNotFoundError(
+                        "No module named 'databricks.sdk'",
+                        name="databricks.sdk",
+                    )
                 return real_import(name, *args, **kwargs)
 
             monkeypatch.setattr(builtins, "__import__", mock_import)
@@ -268,6 +294,32 @@ class TestSmokeDatabricksEdgeCases:
 
         assert result.exit_code == 1
         assert "databricks-sdk" in result.output.lower() or "databricks" in result.output.lower()
+
+    def test_old_databricks_sdk_has_upgrade_guidance(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _setup_smoke_project(tmp_path, monkeypatch)
+
+        databricks_module = types.ModuleType("databricks")
+        databricks_module.__path__ = []
+        sdk_module = types.ModuleType("databricks.sdk")
+        sdk_module.__path__ = []
+        sdk_module.WorkspaceClient = MagicMock
+        errors_module = types.ModuleType("databricks.sdk.errors")
+        databricks_module.sdk = sdk_module
+        sdk_module.errors = errors_module
+        monkeypatch.setitem(sys.modules, "databricks", databricks_module)
+        monkeypatch.setitem(sys.modules, "databricks.sdk", sdk_module)
+        monkeypatch.setitem(sys.modules, "databricks.sdk.errors", errors_module)
+
+        result = runner.invoke(cli, ["smoke"])
+
+        assert result.exit_code == 1
+        assert "upgrade" in result.output.lower()
+        assert "not installed" not in result.output.lower()
 
     def test_databricks_endpoint_timeout(
         self,
@@ -295,18 +347,18 @@ class TestSmokeDatabricksEdgeCases:
         assert result.exit_code == 1
         assert "not ready" in result.output.lower() or "minutes" in result.output.lower()
 
-    def test_databricks_endpoint_get_error_retries(
+    def test_databricks_endpoint_get_error_fails_without_retry(
         self,
         runner: CliRunner,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Endpoint.get() errors should be retried until ready."""
+        """Only the SDK's NotFound signal is retryable."""
         _setup_smoke_project(tmp_path, monkeypatch)
 
         mock_ws = MagicMock()
 
-        # First call raises, second returns ready
+        # A transport/auth-style error must surface immediately.
         mock_ws.serving_endpoints.get.side_effect = [
             RuntimeError("endpoint not found"),
             _ready_endpoint_mock(),
@@ -319,9 +371,9 @@ class TestSmokeDatabricksEdgeCases:
         with patch("databricks.sdk.WorkspaceClient", return_value=mock_ws), patch("time.sleep"):
             result = runner.invoke(cli, ["smoke"])
 
-        assert result.exit_code == 0, result.output
-        assert mock_ws.serving_endpoints.get.call_count == 2
-        assert "passed" in result.output.lower()
+        assert result.exit_code == 1, result.output
+        assert mock_ws.serving_endpoints.get.call_count == 1
+        assert "could not check databricks endpoint" in result.output.lower()
 
     def test_databricks_multiple_predictions(
         self,

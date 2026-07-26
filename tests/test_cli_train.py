@@ -120,6 +120,32 @@ class TestTrain:
         assert result.exit_code == 1
         assert "failed" in result.output.lower() or "CUDA" in result.output
 
+    def test_result_formatting_failure_does_not_relabel_training(
+        self, runner: CliRunner, tmp_path: Path
+    ) -> None:
+        script = _write_training_script(
+            tmp_path,
+            body=(
+                "from types import SimpleNamespace\n"
+                "class Job:\n"
+                "    def run(self, progress=None):\n"
+                "        return SimpleNamespace(\n"
+                "            model_path='/tmp/saved.cbm', train_rows=10,\n"
+                "            validation_rows=2, cat_features=[], features=['x'],\n"
+                "            metrics={'broken': object()},\n"
+                "        )\n"
+                "job = Job()\n"
+            ),
+        )
+
+        with patch("haute._sandbox.validate_user_code"):
+            result = runner.invoke(cli, ["train", str(script)])
+
+        assert result.exit_code == 1
+        assert "training succeeded" in result.output.lower()
+        assert "reporting failed" in result.output.lower()
+        assert "training failed" not in result.output.lower()
+
     def test_progress_callback_output(self, runner: CliRunner, tmp_path: Path) -> None:
         """Progress callback should produce bar output with percentage."""
         # Script that captures the progress callback and calls it

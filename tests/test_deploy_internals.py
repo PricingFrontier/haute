@@ -173,7 +173,7 @@ class TestHauteModelLoadContext:
         assert model._output_fields is None
 
     def test_load_context_artifact_not_in_context(self, tmp_path):
-        """Artifacts listed in manifest but absent from context are skipped."""
+        """Artifacts listed in the manifest are mandatory at model load."""
         from haute.deploy._model_code import HauteModel
 
         manifest = {
@@ -189,9 +189,8 @@ class TestHauteModelLoadContext:
         ctx = MagicMock()
         ctx.artifacts = {"deploy_manifest": str(manifest_path)}
 
-        model.load_context(ctx)
-
-        assert model._artifact_paths == {}
+        with pytest.raises(RuntimeError, match="missing.pkl"):
+            model.load_context(ctx)
 
 
 class TestHauteModelPredict:
@@ -4038,20 +4037,36 @@ class TestBuildSignature:
         type_map = self._input_type_map(sig)
         assert type_map["ts"] == DataType.datetime, "Parameterized Datetime must map to datetime"
 
-    def test_unknown_dtype_falls_back_to_string(self):
-        """Unknown polars dtype should map to DataType.string."""
+    @pytest.mark.parametrize("dtype", ["Categorical", "Enum(categories=['a', 'b'])"])
+    def test_categorical_types_map_to_string(self, dtype):
         from mlflow.types import DataType
 
         from haute.deploy._mlflow import _build_signature
 
         resolved = _make_resolved(
-            input_schema={"exotic": "CategoricalComplex"},
+            input_schema={"category": dtype},
             output_schema={"val": "Float64"},
         )
 
         sig = _build_signature(resolved)
-        type_map = self._input_type_map(sig)
-        assert type_map["exotic"] == DataType.string, "Unknown dtype must fall back to string"
+
+        assert self._input_type_map(sig)["category"] == DataType.string
+
+    @pytest.mark.parametrize("dtype", ["Decimal(12, 2)", "List(Int64)", "Struct({'x': Int64})"])
+    def test_unknown_dtype_fails_loudly(self, dtype):
+        """Unsupported Polars dtypes must not be misdeclared as strings."""
+        from haute.deploy._mlflow import _build_signature
+        from haute.errors import DeployError
+
+        resolved = _make_resolved(
+            input_schema={"exotic": dtype},
+            output_schema={"val": "Float64"},
+        )
+
+        with pytest.raises(DeployError, match="exotic") as exc_info:
+            _build_signature(resolved)
+
+        assert dtype in str(exc_info.value)
 
     def test_all_numeric_types(self):
         """All supported numeric types should produce correct MLflow type mappings."""
@@ -4450,6 +4465,31 @@ class TestBuildReport:
 
         assert report.scored_rows == 2
         assert report.failed_rows == 1
+        assert report.sampled_rows == 3
+
+    def test_equal_prediction_lengths_shorter_than_inputs_stay_aligned(self):
+        """Both endpoints can drop the same row; segment inputs still align."""
+        from haute.deploy._impact import build_report
+
+        stg = [{"premium": float(i + 101)} for i in range(11)]
+        prd = [{"premium": float(i + 100)} for i in range(11)]
+        input_df = pl.DataFrame({"segment": ["A"] * 10 + ["B"] * 2})
+
+        report = build_report(
+            stg,
+            prd,
+            input_df,
+            pipeline_name="test",
+            staging_endpoint="stg",
+            prod_endpoint="prod",
+            dataset_path="d.parquet",
+            total_rows=12,
+        )
+
+        assert report.sampled_rows == 12
+        assert report.scored_rows == 11
+        assert report.failed_rows == 1
+        assert "segment" in report.segments
 
     def test_empty_predictions(self):
         from haute.deploy._impact import build_report

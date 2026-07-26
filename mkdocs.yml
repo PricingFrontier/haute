@@ -62,6 +62,10 @@ exclude_docs: |
   roadmap/
   trip/
   opus-5-review.md
+  opus-5-*.md
+  CI_MIRROR.md
+  COMMIT_STANDARDS.md
+  PERFORMANCE_CHECKS.md
 
 dev_addr: 127.0.0.1:8001
 
@@ -89,13 +93,6 @@ markdown_extensions:
 
 plugins:
   - search
-  - mkdocstrings:
-      handlers:
-        python:
-          paths: [src]
-          options:
-            show_source: true
-            show_root_heading: true
 
 nav:
   - Haute: index.md

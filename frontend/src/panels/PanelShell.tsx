@@ -82,8 +82,11 @@ export default function PanelShell({
 }: PanelShellProps) {
   const storedWidth = useUIStore((s) => s.nodePanelWidth)
   const setNodePanelWidth = useUIStore((s) => s.setNodePanelWidth)
-  // 0 = sentinel: use dynamic default (50% of available space)
-  const rawWidth = storedWidth > 0 ? storedWidth : defaultPanelWidth()
+  // 0 = sentinel: choose the dynamic default once when the panel mounts.
+  // Incidental rerenders must not resize an open panel after the viewport
+  // changes; only an explicit drag should change its established width.
+  const [mountDefaultWidth] = useState(defaultPanelWidth)
+  const rawWidth = storedWidth > 0 ? storedWidth : mountDefaultWidth
   // Per-panel ceiling (e.g. the Git sidebar) clamps the shared width locally.
   const panelWidth = maxWidth ? Math.min(rawWidth, maxWidth) : rawWidth
 

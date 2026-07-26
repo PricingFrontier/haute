@@ -43,12 +43,10 @@ docs/specs/codegen/low-level.md	missing-module-map-symbol	edge_input_name
 docs/specs/deploy/high-level.md	ambiguous-repo-reference	_config.py::_validate_base_image_pinning -> src/haute/assistant/_config.py, src/haute/deploy/_config.py
 docs/specs/deploy/high-level.md	ambiguous-repo-reference	_impact.py -> src/haute/cli/_impact.py, src/haute/deploy/_impact.py
 docs/specs/deploy/high-level.md	ambiguous-repo-reference	_impact.py::_raise_for_non_finite_predictions -> src/haute/cli/_impact.py, src/haute/deploy/_impact.py
-docs/specs/deploy/high-level.md	legacy-contract-section	Polars backend contracts (0.6.0)
 docs/specs/deploy/low-level.md	ambiguous-repo-reference	_config.py -> src/haute/assistant/_config.py, src/haute/deploy/_config.py
 docs/specs/deploy/low-level.md	ambiguous-repo-reference	_config.py::resolve_config -> src/haute/assistant/_config.py, src/haute/deploy/_config.py
 docs/specs/deploy/low-level.md	ambiguous-repo-reference	_impact.py -> src/haute/cli/_impact.py, src/haute/deploy/_impact.py
 docs/specs/deploy/low-level.md	ambiguous-repo-reference	_impact.py::build_report -> src/haute/cli/_impact.py, src/haute/deploy/_impact.py
-docs/specs/deploy/low-level.md	legacy-contract-section	Polars backend contracts (0.6.0)
 docs/specs/execution-engine/low-level.md	missing-module-map-symbol	OUTPUT
 docs/specs/execution-engine/low-level.md	missing-module-map-symbol	PreparedGraph
 docs/specs/execution-engine/low-level.md	missing-module-map-symbol	RLIMIT_AS
@@ -252,7 +250,6 @@ tests/test_frontend_backend_contract.py	unreferenced-test	not named in any low-l
 tests/test_gpu_fit_cancel.py	unreferenced-test	not named in any low-level Testing section
 tests/test_graph_input_identity.py	unreferenced-test	not named in any low-level Testing section
 tests/test_host_binding.py	unreferenced-test	not named in any low-level Testing section
-tests/test_impact.py	unreferenced-test	not named in any low-level Testing section
 tests/test_mem_helpers.py	unreferenced-test	not named in any low-level Testing section
 tests/test_mlflow_log.py	unreferenced-test	not named in any low-level Testing section
 tests/test_mlflow_log_button_roundtrip.py	unreferenced-test	not named in any low-level Testing section

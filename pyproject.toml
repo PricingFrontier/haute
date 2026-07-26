@@ -86,7 +86,6 @@ dev = [
     "mypy==1.19.1",
     "mkdocs==1.6.1",
     "mkdocs-material==9.7.1",
-    "mkdocstrings[python]==1.0.3",
     "haute[databricks]",
     "hypothesis==6.151.9",
 ]

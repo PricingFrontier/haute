@@ -172,11 +172,19 @@ def handle_deploy(config: DeployCliConfig) -> None:
                 click.echo(f"    - {err}", err=True)
         else:
             click.echo(f"    - {exc}", err=True)
+        resolved_deploy.close()
         raise SystemExit(1)
+    except BaseException:
+        resolved_deploy.close()
+        raise
     click.echo("  \u2713 Validation passed")
 
     # 4. Score test quotes
-    tq_results = score_test_quotes(resolved_deploy)
+    try:
+        tq_results = score_test_quotes(resolved_deploy)
+    except BaseException:
+        resolved_deploy.close()
+        raise
     if tq_results:
         all_ok = True
         for r in tq_results:
@@ -193,10 +201,12 @@ def handle_deploy(config: DeployCliConfig) -> None:
                 "\n  \u2717 Test quote scoring failed. Fix errors before deploying.",
                 err=True,
             )
+            resolved_deploy.close()
             raise SystemExit(1)
 
     if config.dry_run:
         click.echo("\n  Dry run complete - no model was deployed.")
+        resolved_deploy.close()
         return
 
     # 5. Deploy to target
@@ -223,6 +233,8 @@ def handle_deploy(config: DeployCliConfig) -> None:
     except Exception as e:
         click.echo(f"\n  \u2717 Deployment failed: {e}", err=True)
         raise SystemExit(1)
+    finally:
+        resolved_deploy.close()
 
 
 @click.command()

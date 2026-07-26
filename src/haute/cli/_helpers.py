@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 
 # ``subprocess`` is intentionally imported at module scope so tests enforcing
@@ -79,6 +80,10 @@ def resolve_model_name(cli_arg: str | None, toml_path: Path | None) -> str:
     """
     if cli_arg is not None and cli_arg != "":
         return cli_arg
+
+    environment_name = os.environ.get("HAUTE_MODEL_NAME")
+    if environment_name:
+        return environment_name
 
     if toml_path is None:
         raise ValueError(

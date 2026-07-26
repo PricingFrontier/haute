@@ -236,6 +236,13 @@ def test_internal_engineering_docs_are_excluded_from_public_mkdocs_site() -> Non
 
     for internal_dir in ("specs/", "roadmap/", "trip/"):
         assert f"  {internal_dir}\n" in exclude_block
+    for internal_file in (
+        "CI_MIRROR.md",
+        "COMMIT_STANDARDS.md",
+        "PERFORMANCE_CHECKS.md",
+        "opus-5-*.md",
+    ):
+        assert f"  {internal_file}\n" in exclude_block
     assert "\n  - Roadmap:" not in config
 
 

@@ -25,10 +25,16 @@ class HauteModel(mlflow.pyfunc.PythonModel):  # type: ignore[name-defined]
         self._output_node_id = self._manifest["output_node_id"]
         self._output_fields = self._manifest.get("output_fields")
 
-        self._artifact_paths = {}
-        for artifact_name in self._manifest.get("artifacts", {}):
-            if artifact_name in context.artifacts:
-                self._artifact_paths[artifact_name] = context.artifacts[artifact_name]
+        manifest_artifacts = set(self._manifest.get("artifacts", {}))
+        missing_artifacts = sorted(manifest_artifacts - set(context.artifacts))
+        if missing_artifacts:
+            raise RuntimeError(
+                "MLflow model context is missing deployment artifact(s) declared "
+                f"by the manifest: {', '.join(missing_artifacts)}."
+            )
+        self._artifact_paths = {
+            artifact_name: context.artifacts[artifact_name] for artifact_name in manifest_artifacts
+        }
 
     def predict(
         self,

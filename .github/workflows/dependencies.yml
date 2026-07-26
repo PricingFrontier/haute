@@ -61,7 +61,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 22.14.0
 
       - name: Forced failure (alarm-path test)
         if: inputs.force_fail
@@ -138,7 +138,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 22.14.0
 
       - name: Audit locked dependency advisories
         run: python scripts/check_dependency_audit.py --reports-dir dependency-audit-reports

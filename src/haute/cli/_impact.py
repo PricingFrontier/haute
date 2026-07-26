@@ -55,6 +55,15 @@ def handle_impact(config: ImpactConfig) -> None:
     click.echo("  \u2713 Loaded config from haute.toml")
     project_root = get_project_root()
 
+    if config.endpoint_suffix and deploy_config.target != "databricks":
+        click.echo(
+            "Error: --endpoint-suffix is only supported for Databricks. "
+            "Set the full [ci.staging].endpoint_url in haute.toml for HTTP targets.",
+            err=True,
+        )
+        raise SystemExit(1)
+    transport = resolve_transport(deploy_config)
+
     # Resolve staging suffix: CLI flag wins when given, otherwise the
     # TOML-loaded ``deploy_config.ci.staging_endpoint_suffix`` is
     # authoritative.  No literal fallback — a blank suffix would produce
@@ -66,7 +75,7 @@ def handle_impact(config: ImpactConfig) -> None:
         if config.endpoint_suffix
         else deploy_config.ci.staging_endpoint_suffix
     )
-    if not staging_suffix:
+    if transport.kind == "databricks" and not staging_suffix:
         click.echo(
             "Error: No staging endpoint suffix configured. "
             "Set [ci.staging] endpoint_suffix in haute.toml "
@@ -76,7 +85,7 @@ def handle_impact(config: ImpactConfig) -> None:
         raise SystemExit(1)
 
     base_name = deploy_config.endpoint_name or deploy_config.model_name
-    staging_name = base_name + staging_suffix
+    staging_name = base_name + (staging_suffix or "")
     prod_name = base_name
 
     # Load impact dataset
@@ -107,8 +116,6 @@ def handle_impact(config: ImpactConfig) -> None:
     click.echo(f"  Dataset: {impact_path} ({len(records):,} rows)")
 
     # Score via the appropriate transport
-    transport = resolve_transport(deploy_config)
-
     if transport.kind == "databricks":
         staging_preds, prod_preds, prod_exists = _impact_databricks(
             staging_name,
