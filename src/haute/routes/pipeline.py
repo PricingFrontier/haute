@@ -427,22 +427,29 @@ async def get_first_pipeline() -> PipelineGraph:
     """
     cwd = Path.cwd()
 
-    def _find_first() -> PipelineGraph:
+    def _find_first() -> tuple[PipelineGraph | None, str | None]:
         best: PipelineGraph | None = None
+        first_parse_error: str | None = None
         for f in discover_pipelines():
             try:
                 graph = parse_pipeline_to_graph(f)
                 graph.source_file = str(f.relative_to(cwd))
                 if graph.nodes:
-                    return graph
+                    return graph, None
                 if best is None:
                     best = graph
             except Exception as e:
                 logger.warning("parse_failed", file=f.name, error=str(e))
-                continue
-        return best or PipelineGraph()
+                if first_parse_error is None:
+                    first_parse_error = str(e)
+        return best, first_parse_error
 
-    return await asyncio.to_thread(_find_first)
+    graph, parse_error = await asyncio.to_thread(_find_first)
+    if graph is not None:
+        return graph
+    if parse_error is not None:
+        raise HTTPException(status_code=422, detail=parse_error)
+    return PipelineGraph()
 
 
 @router.post("/pipeline/save", response_model=SavePipelineResponse)

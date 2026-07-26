@@ -223,6 +223,21 @@ class TestCodegenMultiFile:
         compile(sm_code, "<submodel>", "exec")
         assert "haute" in sm_code
 
+    def test_submodel_preamble_and_preserved_block_are_emitted_once(self, submodel_graph):
+        subgraph = submodel_graph.submodels["scoring"]["graph"]
+        subgraph.update(
+            {
+                "pipeline_description": "Score a policy",
+                "preamble": "HELPER = 1",
+                "preserved_blocks": ["KEPT = 2"],
+            }
+        )
+        files = graph_to_code_multi(submodel_graph, pipeline_name="main")
+        code = files["modules/scoring.py"]
+        assert "description='Score a policy'" in code
+        assert code.count("HELPER = 1") == 1
+        assert code.count("KEPT = 2") == 1
+
     def test_main_file_compiles(self, submodel_graph):
         """The main pipeline code should compile without errors."""
         files = graph_to_code_multi(submodel_graph, pipeline_name="main")
