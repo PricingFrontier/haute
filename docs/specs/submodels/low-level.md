@@ -94,7 +94,8 @@ identity through hierarchical merge and flattening.
 
 ### `resolve_submodel_reference(rel_path, *, pipeline_dir, project_root)`
 
-1. Reject an empty or NUL-containing reference with
+1. Normalise path separators and reject an empty or NUL-containing reference,
+   or any explicit `..` traversal component, with
    `MalformedSubmodelPathError`.
 2. `resolved_root = project_root.resolve()`; `active_dir = (pipeline_dir or
    project_root).resolve()`.
@@ -216,8 +217,10 @@ Acquires `save_lock`, runs in a threadpool:
 Acquires `save_lock`, runs the body in a threadpool:
 1. Look up `body.submodel_name` in `body.graph.submodels or {}` → `404` if
    absent.
-2. Require `body.source_file` and a non-empty string `"file"` in the selected
-   metadata; malformed values return `400`.
+2. Require `body.source_file`, validate that its resolved path remains inside
+   the project before reading the child module, and require a non-empty string
+   `"file"` in the selected metadata. Malformed values return `400`; an
+   escaping parent source path returns `403`.
 3. Resolve the recorded file relative to `pipeline_dir()`, mapping typed
    malformed/outside-project path errors to `400`/`403`, and return `404` if
    the file is absent.
@@ -290,7 +293,7 @@ Acquires `save_lock`, runs the body in a threadpool:
 | Missing `source_file` on create or dissolve | `HTTPException(400, "source_file is required...")` | `create_submodel` / `dissolve_submodel`. |
 | Dissolve target not in `graph.submodels` | `HTTPException(404, f"Submodel '{sm_name}' not found in graph")` | `dissolve_submodel`. |
 | Drill-down target `.py` file missing | `HTTPException(404, f"Submodel '{name}' not found")` | `_get_submodel_blocking`. |
-| Empty/NUL-containing reference or route name containing `/` or `\` | `MalformedSubmodelPathError` → `HTTPException(400)` | `_submodel_paths.py`, mapped by drill-down/dissolve. |
+| Empty/NUL-containing reference, explicit `..` reference component, or route name containing `/` or `\` | `MalformedSubmodelPathError` → `HTTPException(400)` | `_submodel_paths.py`, mapped by drill-down/dissolve. |
 | Recorded reference resolves outside project root | `SubmodelPathOutsideProjectError` → `HTTPException(403)` | `_submodel_paths.py`, mapped by drill-down/dissolve. |
 | Malformed/missing boundary handle or unknown child passed to `flatten_graph` | `ParseError` with edge/submodel context | `_flatten._boundary_child_id`; dissolve stops before save/delete. |
 | Any write step in the underlying save transaction fails (config write, sidecar write, module delete) | Best-effort rollback by `SavePipelineService`, original error re-raised | Surfaces as `HTTPException(500, ...)`; a failed compensating operation is logged and can leave partial state. See [server-api](../server-api/high-level.md). |

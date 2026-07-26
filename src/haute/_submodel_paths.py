@@ -35,9 +35,10 @@ def resolve_submodel_reference(
 
     References are relative to the active pipeline directory.
     """
-    if not rel_path or "\x00" in rel_path:
+    normalised = rel_path.replace("\\", "/")
+    if not rel_path or "\x00" in rel_path or any(part == ".." for part in normalised.split("/")):
         raise MalformedSubmodelPathError(
-            "Submodel reference must be a non-empty filesystem path.",
+            "Submodel reference must be a non-empty path without traversal segments.",
         )
     resolved_root = project_root.resolve()
     active_dir = (pipeline_dir or project_root).resolve()

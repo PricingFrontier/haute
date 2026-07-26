@@ -369,7 +369,8 @@ def source() -> pl.LazyFrame:
     def test_get_uses_path_recorded_by_active_pipeline(
         self, client: TestClient, tmp_path: Path
     ) -> None:
-        rating_root = _write_nested_project(tmp_path)
+        rating_root = tmp_path / "rating"
+        _write_nested_project(tmp_path)
         library = rating_root / "lib"
         library.mkdir()
         (library / "pricing.py").write_text(

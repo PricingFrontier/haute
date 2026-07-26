@@ -21,6 +21,7 @@ from haute.routes._helpers import (
     discover_pipelines,
     load_sidecar_positions,
     pipeline_dir,
+    validate_safe_path,
 )
 from haute.schemas import (
     CreateSubmodelRequest,
@@ -231,6 +232,11 @@ async def dissolve_submodel(body: DissolveSubmodelRequest) -> DissolveSubmodelRe
                 " and send the original pipeline file path",
             )
 
+        cwd = Path.cwd()
+        # The authoritative child read must not mask an invalid parent save
+        # target. The save service repeats this check before any write.
+        validate_safe_path(cwd, body.source_file)
+
         # Resolve and parse the recorded file before trusting client metadata.
         sm_meta = dict(submodels[sm_name])
         sm_file = sm_meta.get("file", "")
@@ -240,7 +246,6 @@ async def dissolve_submodel(body: DissolveSubmodelRequest) -> DissolveSubmodelRe
                 detail="Submodel metadata has no valid source file path",
             )
 
-        cwd = Path.cwd()
         try:
             sm_path, config_base = resolve_submodel_reference(
                 sm_file,
