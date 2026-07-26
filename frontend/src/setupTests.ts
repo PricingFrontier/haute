@@ -1,5 +1,10 @@
 import "@testing-library/jest-dom/vitest"
 
+Object.defineProperty(globalThis, "__APP_VERSION__", {
+  configurable: true,
+  value: "999.0.0-test",
+})
+
 // jsdom polyfill for React Flow's transform measurement.
 // `useUpdateNodeInternals` (added in Bundle 3c for apiInput emit-frame
 // re-attachment) triggers an internal re-measure that constructs
