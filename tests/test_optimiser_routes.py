@@ -5435,6 +5435,65 @@ class TestFrontierRoute:
         assert len(frontier_jobs) == 1
         assert clean_job_store.require_job("atomic_frontier_parent")["frontier_generation"] == 1
 
+    def test_frontier_worker_start_failure_marks_job_error_and_releases_registry(
+        self,
+        clean_job_store,
+    ):
+        """A failed frontier launch must leave no running job or cancellation token."""
+        import haute.routes.optimiser as optimiser_routes
+        from haute.schemas import OptimiserFrontierRequest
+
+        clean_job_store.jobs["frontier_thread_start_parent"] = {
+            "status": "completed",
+            "solver": MagicMock(),
+            "quote_grid": MagicMock(),
+            "config": {"mode": "online", "constraints": {"volume": {"min": 0.9}}},
+            "result": {
+                "mode": "online",
+                "total_objective": 90.0,
+                "baseline_objective": 80.0,
+                "constraints": {"volume": 0.85},
+                "baseline_constraints": {"volume": 0.8},
+                "lambdas": {"volume": 0.1},
+                "converged": True,
+            },
+            "artifact_handles": {},
+            "created_at": time.time(),
+            "completed_at": time.time(),
+        }
+
+        body = OptimiserFrontierRequest(
+            job_id="frontier_thread_start_parent",
+            threshold_ranges={"volume": [0.85, 0.95]},
+            n_points_per_dim=2,
+        )
+        failed_thread = MagicMock()
+        failed_thread.start.side_effect = RuntimeError("thread boom")
+        frontier_threading = MagicMock()
+        frontier_threading.Thread.return_value = failed_thread
+        with (
+            patch.object(optimiser_routes, "threading", frontier_threading),
+            pytest.raises(HTTPException) as exc_info,
+        ):
+            optimiser_routes.run_frontier(body)
+
+        assert exc_info.value.status_code == 500
+        assert exc_info.value.detail == (
+            "Frontier worker failed to start. Check the server logs for details."
+        )
+        frontier_jobs = [
+            (job_id, job)
+            for job_id, job in clean_job_store.jobs.items()
+            if job.get("job_type") == "frontier_recompute"
+            and job.get("parent_job_id") == "frontier_thread_start_parent"
+        ]
+        assert len(frontier_jobs) == 1
+        frontier_job_id, frontier_job = frontier_jobs[0]
+        assert frontier_job["status"] == "error"
+        assert frontier_job["terminal_reason"] == "error"
+        assert frontier_job["message"] == "Failed to start frontier worker: thread boom"
+        assert optimiser_routes._frontier_jobs.cancel(frontier_job_id) is False
+
     def test_frontier_cancel_stops_late_parent_publication(
         self,
         client,
@@ -13716,6 +13775,36 @@ class TestSaveArtifactGate:
     failed write leaves the previous artifact intact, and a failed save
     leaves the solve result in the job store for retry.
     """
+
+    @pytest.mark.parametrize(
+        ("payload", "expected_detail"),
+        [
+            ({"total_objective": 1.0}, "lambda mapping"),
+            ({"lambdas": {}}, "total objective"),
+            (
+                {
+                    "lambdas": {},
+                    "total_objective": 1.0,
+                    "mode": "ratebook",
+                    "factor_tables": {"region": []},
+                },
+                "factor dtype metadata",
+            ),
+        ],
+        ids=["lambdas", "total-objective", "ratebook-factor-dtypes"],
+    )
+    def test_artifact_gate_rejects_missing_required_sections(
+        self,
+        payload,
+        expected_detail,
+    ):
+        from haute.routes.optimiser import _validate_artifact_payload
+
+        with pytest.raises(HTTPException) as exc_info:
+            _validate_artifact_payload(payload)
+
+        assert exc_info.value.status_code == 400
+        assert expected_detail in exc_info.value.detail
 
     @staticmethod
     def _completed_job(

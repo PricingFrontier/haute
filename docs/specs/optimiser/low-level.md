@@ -246,7 +246,9 @@ phase and a background sweep phase, mirroring the solve submission pattern:
    spawns a daemon thread running `_run_frontier_sweep` inside `solver_worker_context()`.
    The route returns immediately with `OptimiserFrontierResponse(status="started",
    job_id=<frontier_job_id>)` — a *different* job id from `body.job_id`, since the frontier sweep
-   is tracked as its own job.
+   is tracked as its own job. If `thread.start()` itself raises, the route transitions that
+   frontier job to terminal `error`, releases its cancellation-registry entry, and returns a
+   sanitised 500 response without starting sweep work.
 3. **Background** (`_run_frontier_sweep`): calls
    `haute.routes._optimiser_service._compute_frontier`, a thin dispatcher: ratebook passes
    `ratebook_factors`/`factor_columns` kwargs to `solver.frontier(...)`, while online omits them.
@@ -320,10 +322,11 @@ Both `save_result` and `mlflow_log` resolve the applicable `SolveResultLike`
 (from a selected frontier point via `_solve_result_for_selected_frontier_point`, or directly from
 the job's retained `solve_result`), build a shared JSON payload via `_build_artifact_payload`
 (lambdas, objective/constraint totals, baseline totals, convergence/iteration counts,
-column-name config, frontier-selection provenance, and for ratebook the factor tables), validate
-it with `_validate_artifact_payload` (rejects a missing lambda mapping, a missing
-total objective, a missing ratebook factor-table section, or *any* non-finite float anywhere in
-the payload, naming up to 5 offending JSON paths), then either atomically write it to disk
+column-name config, frontier-selection provenance, and for ratebook the factor tables plus ordered
+dtype descriptors), validate it with `_validate_artifact_payload` (rejects a missing lambda
+mapping, a missing total objective, missing or malformed ratebook factor-table/dtype metadata, or
+*any* non-finite float anywhere in the payload, naming up to 5 offending JSON paths), then either
+atomically write it to disk
 (`atomic_write_text`, with `allow_nan=False` as a defence-in-depth backstop behind the explicit
 validation) or attach it as an MLflow run artifact alongside metrics/params and (if present) a
 frontier-points CSV. Tracking-URI/registry setup and experiment-name resolution for `mlflow_log`
@@ -581,7 +584,8 @@ returned as a generic `status: "error"` payload.
   corrupt persisted artifact), 507 (`ExecutionAdmissionError`/`ExecutionMemoryLimitExceededError`
   wrapped via `_memory_limit_http_exception`). This applies to `POST /frontier` only up through its
   synchronous validation phase (runtime resolution, compute budget, already-running-sweep check);
-  once validation passes, the request always returns 200 with a `status: "started"` body.
+  once validation and worker launch succeed, the request returns 200 with a `status: "started"`
+  body.
 - **Background-thread paths** (the setup thread, the solver thread, the streaming/non-streaming
   auto-range worker, and — since the frontier sweep offload — the frontier sweep worker) never let
   an exception propagate out of the thread; every failure branch is caught and converted into a
@@ -638,12 +642,16 @@ returns the nested result. The helpers are used across `test_optimiser_routes.py
   column validation, non-convergence warnings, background-thread error classification, job-state
   guards (cancel/timeout/supersede races), pipeline-execution argument wiring, bounded-sink grid
   building, execute-pipeline cleanup, artifact-payload building (including extended/edge-case
-  variants), mlflow-log extended paths, and many CAS/atomic-update race scenarios (`atomic_update`
+  variants), save-artifact required-section validation
+  (`test_artifact_gate_rejects_missing_required_sections`), mlflow-log extended paths, and many
+  CAS/atomic-update race scenarios (`atomic_update`
   returning `None`, artifact orphaning on a lost race, etc.). Also covers: null-input rejection
   (`test_solve_rejects_null_input_values`,
   `test_frontier_auto_range_rejects_null_values_before_deriving_ranges`); the frontier
   background-job handshake (`test_frontier_returns_job_handle_promptly` — asserts the initial
   response returns before the sweep finishes, `test_frontier_after_solve`,
+  `test_frontier_worker_start_failure_marks_job_error_and_releases_registry` — a synchronous
+  worker-launch failure leaves a terminal frontier job and no live cancellation registration,
   `test_frontier_solver_exception_surfaces_as_job_error` — a solver exception inside the sweep
   surfaces as the frontier job's terminal `error` status, not a synchronous 5xx); and
   `TestSolverWorkerContextGuard` (`_compute_frontier`/`_solve_online`/`_solve_ratebook` each raise
