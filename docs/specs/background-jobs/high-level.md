@@ -310,9 +310,14 @@ worker transport.
 Execution-owned artifacts that can survive a process crash live only in explicitly named Haute
 artifact roots. Every reapable child directory contains a versioned ownership marker written at
 creation. The restart reaper may remove a child only when the root is explicitly registered, the
-child is a direct non-symlink descendant, its marker is valid for the expected owner, and its
-marker age exceeds the configured stale interval. Unmarked directories, malformed markers,
-symlinks, unexpected owners, and unrelated operating-system temporary data are preserved.
+child is a direct non-link, non-reparse descendant, its marker is valid for the expected owner,
+and its marker age exceeds the configured stale interval. Unmarked directories, malformed markers,
+symlinks, Windows reparse points (including junctions), unexpected owners, and unrelated
+operating-system temporary data are preserved. On Windows, proving that an ordinary listed child
+is direct must not require opening that child to resolve its final path: access controls and
+short-lived file locks may deny that handle even though the parent entry is safe to inspect.
+Expected filesystem access failures remain local to housekeeping and produce concise structured
+warnings without startup tracebacks.
 
 Optimiser apply-result and ratebook-factor directories adopt this marker contract and are reaped
 from versioned marker-aware roots by a tracked background task scheduled during server lifespan

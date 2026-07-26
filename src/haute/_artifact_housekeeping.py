@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import shutil
+import stat
 import tempfile
 import time
 from collections.abc import Iterator
@@ -17,6 +19,7 @@ logger = get_logger(component="artifact_housekeeping")
 
 _MARKER_FILENAME = ".haute-artifact.json"
 _SCHEMA_VERSION = 1
+_FILE_ATTRIBUTE_REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x0400)
 
 
 def create_owned_artifact_directory(root: Path, prefix: str, owner: str) -> Path:
@@ -26,6 +29,8 @@ def create_owned_artifact_directory(root: Path, prefix: str, owner: str) -> Path
     if root.is_symlink():
         raise ValueError("artifact root must not be a symlink")
     root.mkdir(parents=True, exist_ok=True)
+    if _is_link_or_reparse_point(root.lstat()):
+        raise ValueError("artifact root must not be a symlink or reparse point")
     directory = Path(tempfile.mkdtemp(prefix=prefix, dir=root))
     try:
         if directory.resolve().parent != root.resolve():
@@ -71,7 +76,19 @@ def reap_stale_artifact_directories(
     ):
         raise ValueError("now must be a finite non-negative number")
     report = {"inspected": 0, "removed": 0, "skipped": 0, "failed": 0, "reclaimed_bytes": 0}
-    if root.is_symlink() or not root.is_dir():
+    try:
+        root_metadata = root.lstat()
+    except FileNotFoundError:
+        return report
+    except OSError as exc:
+        logger.warning(
+            "artifact_reap_root_inspection_failed",
+            root=str(root),
+            error=str(exc),
+        )
+        report["failed"] += 1
+        return report
+    if _is_link_or_reparse_point(root_metadata) or not stat.S_ISDIR(root_metadata.st_mode):
         return report
     try:
         resolved_root = root.resolve(strict=True)
@@ -80,7 +97,6 @@ def reap_stale_artifact_directories(
             "artifact_reap_root_resolution_failed",
             root=str(root),
             error=str(exc),
-            exc_info=True,
         )
         report["failed"] += 1
         return report
@@ -93,28 +109,29 @@ def reap_stale_artifact_directories(
             "artifact_reap_root_scan_failed",
             root=str(root),
             error=str(exc),
-            exc_info=True,
         )
         report["failed"] += 1
         return report
 
     for child in children:
         report["inspected"] += 1
-        if child.is_symlink() or not child.is_dir():
-            report["skipped"] += 1
-            continue
         try:
-            if child.resolve(strict=True).parent != resolved_root:
-                report["skipped"] += 1
-                continue
+            child_metadata = child.lstat()
+            resolved_parent = child.parent.resolve(strict=True)
         except OSError as exc:
             logger.warning(
-                "artifact_reap_child_resolution_failed",
+                "artifact_reap_child_inspection_failed",
                 path=str(child),
                 error=str(exc),
-                exc_info=True,
             )
             report["failed"] += 1
+            continue
+        if (
+            _is_link_or_reparse_point(child_metadata)
+            or not stat.S_ISDIR(child_metadata.st_mode)
+            or resolved_parent != resolved_root
+        ):
+            report["skipped"] += 1
             continue
         marker = _read_valid_marker(child / _MARKER_FILENAME)
         if marker is None or marker["owner"] != owner or marker["created_at"] > cutoff:
@@ -128,13 +145,19 @@ def reap_stale_artifact_directories(
                 "artifact_reap_cleanup_failed",
                 path=str(child),
                 error=str(exc),
-                exc_info=True,
             )
             report["failed"] += 1
             continue
         report["removed"] += 1
         report["reclaimed_bytes"] += reclaimed_bytes
     return report
+
+
+def _is_link_or_reparse_point(metadata: os.stat_result) -> bool:
+    """Return whether non-following metadata identifies a link-like entry."""
+    return stat.S_ISLNK(metadata.st_mode) or bool(
+        getattr(metadata, "st_file_attributes", 0) & _FILE_ATTRIBUTE_REPARSE_POINT
+    )
 
 
 def _validate_owner(owner: object) -> None:

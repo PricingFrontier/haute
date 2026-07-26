@@ -557,13 +557,18 @@ tests assert that no production source path subscripts `JobStore.jobs`.
   is `.haute-artifact.json` with integer `schema_version=1`, non-empty `owner`, and finite,
   non-negative `created_at` epoch seconds.
   `create_owned_artifact_directory(root, prefix, owner)` creates a
-  direct child under a non-symlink root from a single-component prefix and writes the marker before
-  returning; validation or marker-write failure removes any new child and propagates.
+  direct child under a non-link, non-reparse root from a single-component prefix and writes the
+  marker before returning; validation or marker-write failure removes any new child and
+  propagates.
 - `reap_stale_artifact_directories(root, owner, stale_after_seconds, now=None)` inspects direct
-  children only. It skips the root itself, symlinks, non-direct paths, unmarked children, invalid
-  JSON/schema/time values, owner mismatches, and entries newer than the inclusive stale cutoff. It
-  returns bounded counts and reclaimed bytes; its age inputs must be finite, non-negative numeric
-  values, and cleanup failures are counted and logged without causing a broader unmarked sweep.
+  children only. It skips the root itself, symlinks, Windows reparse points (including junctions),
+  non-direct paths, unmarked children, invalid JSON/schema/time values, owner mismatches, and
+  entries newer than the inclusive stale cutoff. Direct-child classification uses non-following
+  entry metadata plus the resolved parent; it does not resolve the child target itself, because
+  Windows can deny that handle for an otherwise ordinary direct child. It returns bounded counts
+  and reclaimed bytes; its age inputs must be finite, non-negative numeric values. Metadata and
+  cleanup failures are isolated to the affected root or child, counted, and logged as concise
+  structured warnings without exception tracebacks or a broader unmarked sweep.
 - `_optimiser_service.py` creates apply-result and ratebook-factor artifact directories through
   this helper. Marker-aware artifacts live below the
   `<tempdir>/haute/artifacts/v1/` hierarchy. `reap_stale_optimiser_artifacts(stale_after_seconds)`

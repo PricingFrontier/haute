@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import stat
 import threading
 from pathlib import Path
 from types import SimpleNamespace
@@ -12,6 +13,7 @@ from types import SimpleNamespace
 import polars as pl
 import pytest
 
+from haute import _artifact_housekeeping as artifact_housekeeping
 from haute._artifact_housekeeping import (
     create_owned_artifact_directory,
     reap_stale_artifact_directories,
@@ -37,12 +39,23 @@ def _directory_symlink_for_test(
         return
 
     link.mkdir()
-    original_is_symlink = Path.is_symlink
+    original_lstat = Path.lstat
 
-    def is_symlink(path: Path) -> bool:
-        return path == link or original_is_symlink(path)
+    def classify_as_symlink(
+        path: Path, *args: object, **kwargs: object
+    ) -> os.stat_result | SimpleNamespace:
+        metadata = original_lstat(path, *args, **kwargs)
+        if path != link:
+            return metadata
+        return SimpleNamespace(
+            st_mode=stat.S_IFLNK | stat.S_IMODE(metadata.st_mode),
+            st_file_attributes=(
+                getattr(metadata, "st_file_attributes", 0)
+                | getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x0400)
+            ),
+        )
 
-    monkeypatch.setattr(Path, "is_symlink", is_symlink)
+    monkeypatch.setattr(Path, "lstat", classify_as_symlink)
 
 
 def test_reaper_removes_only_marked_owned_stale_direct_child(tmp_path: Path) -> None:
@@ -97,6 +110,101 @@ def test_reaper_skips_symlink_and_reaps_exact_stale_cutoff(
     assert not stale.exists()
     assert target.exists()
     assert link.is_symlink()
+
+
+def test_reaper_does_not_resolve_ordinary_direct_child(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stale = tmp_path / "stale"
+    _marker(stale)
+    original_resolve = Path.resolve
+
+    def deny_child_resolution(path: Path, strict: bool = False) -> Path:
+        if path == stale:
+            raise PermissionError(5, "Access is denied", str(path))
+        return original_resolve(path, strict=strict)
+
+    monkeypatch.setattr(Path, "resolve", deny_child_resolution)
+
+    report = reap_stale_artifact_directories(tmp_path, "test-owner", 10, now=100.0)
+
+    assert report["removed"] == 1
+    assert report["failed"] == 0
+    assert not stale.exists()
+
+
+def test_reaper_preserves_windows_reparse_point_child(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reparse_child = tmp_path / "junction"
+    _marker(reparse_child)
+    original_lstat = Path.lstat
+
+    def classify_child_as_reparse_point(
+        path: Path, *args: object, **kwargs: object
+    ) -> os.stat_result | SimpleNamespace:
+        metadata = original_lstat(path, *args, **kwargs)
+        if path != reparse_child:
+            return metadata
+        return SimpleNamespace(
+            st_mode=metadata.st_mode,
+            st_file_attributes=(
+                getattr(metadata, "st_file_attributes", 0)
+                | getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x0400)
+            ),
+        )
+
+    monkeypatch.setattr(Path, "lstat", classify_child_as_reparse_point)
+
+    report = reap_stale_artifact_directories(tmp_path, "test-owner", 10, now=100.0)
+
+    assert report["removed"] == 0
+    assert report["skipped"] == 1
+    assert report["failed"] == 0
+    assert reparse_child.exists()
+
+
+def test_reaper_isolates_unreadable_child_metadata_without_traceback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    unreadable = tmp_path / "unreadable"
+    _marker(unreadable)
+    original_lstat = Path.lstat
+
+    def deny_child_metadata(path: Path, *args: object, **kwargs: object) -> os.stat_result:
+        if path == unreadable:
+            raise PermissionError(5, "Access is denied", str(path))
+        return original_lstat(path, *args, **kwargs)
+
+    warnings: list[tuple[str, dict[str, object]]] = []
+    monkeypatch.setattr(Path, "lstat", deny_child_metadata)
+    monkeypatch.setattr(
+        artifact_housekeeping,
+        "logger",
+        SimpleNamespace(
+            warning=lambda event, **fields: warnings.append((event, fields)),
+        ),
+    )
+
+    report = reap_stale_artifact_directories(tmp_path, "test-owner", 10, now=100.0)
+
+    assert report == {
+        "inspected": 1,
+        "removed": 0,
+        "skipped": 0,
+        "failed": 1,
+        "reclaimed_bytes": 0,
+    }
+    assert unreadable.exists()
+    assert len(warnings) == 1
+    event, fields = warnings[0]
+    assert event == "artifact_reap_child_inspection_failed"
+    assert fields["path"] == str(unreadable)
+    assert fields["error"]
+    assert "exc_info" not in fields
 
 
 @pytest.mark.parametrize(
@@ -215,6 +323,43 @@ def test_housekeeping_refuses_symlink_root(
         "reclaimed_bytes": 0,
     }
     assert list(target.iterdir()) == []
+
+
+def test_housekeeping_refuses_windows_reparse_point_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "junction-root"
+    root.mkdir()
+    original_lstat = Path.lstat
+
+    def classify_root_as_reparse_point(
+        path: Path, *args: object, **kwargs: object
+    ) -> os.stat_result | SimpleNamespace:
+        metadata = original_lstat(path, *args, **kwargs)
+        if path != root:
+            return metadata
+        return SimpleNamespace(
+            st_mode=metadata.st_mode,
+            st_file_attributes=(
+                getattr(metadata, "st_file_attributes", 0)
+                | getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x0400)
+            ),
+        )
+
+    monkeypatch.setattr(Path, "lstat", classify_root_as_reparse_point)
+
+    with pytest.raises(ValueError, match="reparse point"):
+        create_owned_artifact_directory(root, "apply_", "test-owner")
+
+    assert reap_stale_artifact_directories(root, "test-owner", 10, now=100.0) == {
+        "inspected": 0,
+        "removed": 0,
+        "skipped": 0,
+        "failed": 0,
+        "reclaimed_bytes": 0,
+    }
+    assert list(root.iterdir()) == []
 
 
 def test_optimiser_artifact_creators_write_owner_markers(
