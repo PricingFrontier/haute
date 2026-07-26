@@ -228,8 +228,10 @@ text between the parens is non-whitespace).
 - **Windows-style paths in generated `path=` literals** — `_safe_path`
   normalizes backslashes to forward slashes before escaping, so a pipeline
   saved on Windows and read on Linux (or vice versa) still parses
-  correctly. Runtime helpers receive the generated file's resolved parent as
-  their base-directory candidate for relative sidecar paths.
+  correctly. Retained API Input and External File helpers additionally use
+  the generated file's resolved parent as their base-directory candidate;
+  other generated helpers retain their existing `Path(__file__).parent`
+  spelling.
 - **External-file user imports directly after the generated load** —
   `_match_external` is position-aware: imports BEFORE the generated
   `load_external_object_from_config(...)` call are stripped as

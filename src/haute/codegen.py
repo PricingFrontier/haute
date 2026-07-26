@@ -1220,9 +1220,7 @@ def graph_to_code_multi(
         sm_lines = _generate_pipeline_lines(
             kind="submodel",
             name=sm_name,
-            description=sm_graph.get("pipeline_description")
-            or sm_graph.get("submodel_description")
-            or "",
+            description=sm_graph.get("pipeline_description") or "",
             preamble=sm_graph.get("preamble") or "",
             sorted_nodes=sorted_sm_nodes,
             id_to_func=sm_id_to_func,

@@ -387,6 +387,31 @@ def source() -> pl.LazyFrame:
         source_file = response.json()["graph"]["source_file"].replace("\\", "/")
         assert source_file.endswith("lib/pricing.py")
 
+    def test_get_skips_broken_sibling_pipeline(self, client: TestClient, tmp_path: Path) -> None:
+        modules_dir = tmp_path / "modules"
+        modules_dir.mkdir()
+        (modules_dir / "pricing.py").write_text(
+            'import polars as pl\nimport haute\nsubmodel = haute.Submodel("pricing")\n'
+            "@submodel.polars\ndef rate(df: pl.LazyFrame) -> pl.LazyFrame:\n    return df\n",
+            encoding="utf-8",
+        )
+        (tmp_path / "a_broken.py").write_text(
+            'import haute\npipeline = haute.Pipeline("broken")\n'
+            'pipeline.submodel("modules/missing.py")\n',
+            encoding="utf-8",
+        )
+        (tmp_path / "z_owner.py").write_text(
+            'import haute\npipeline = haute.Pipeline("owner")\n'
+            'pipeline.submodel("modules/pricing.py")\n',
+            encoding="utf-8",
+        )
+
+        response = client.get("/api/submodel/pricing")
+
+        assert response.status_code == 200
+        source_file = response.json()["graph"]["source_file"].replace("\\", "/")
+        assert source_file.endswith("modules/pricing.py")
+
     def test_encoded_backslash_traversal_is_bad_request(self, client: TestClient) -> None:
         response = client.get("/api/submodel/%5C..%5Coutside")
         assert response.status_code == 400
@@ -505,6 +530,49 @@ class TestDissolveSubmodel:
         ] == [{"id": "disk_edge", "source": "disk_child", "target": "disk_internal"}]
         assert disk_meta["preamble"] == "DISK_HELPER = 1"
         assert disk_meta["preserved_blocks"] == ["DISK_KEPT = 2"]
+
+    def test_dissolve_applies_authoritative_sidecar_positions(
+        self, client: TestClient, tmp_path: Path
+    ) -> None:
+        modules_dir = tmp_path / "modules"
+        modules_dir.mkdir()
+        (modules_dir / "pricing.py").write_text("# valid disk module\n", encoding="utf-8")
+        (modules_dir / "pricing.haute.json").write_text(
+            '{"positions":{"base_rate":{"x":125.0,"y":260.0}}}',
+            encoding="utf-8",
+        )
+        (tmp_path / "pipeline.py").write_text("# parent\n", encoding="utf-8")
+        disk_graph = PipelineGraph(
+            pipeline_name="pricing",
+            nodes=[
+                {
+                    "id": "base_rate",
+                    "data": {
+                        "label": "base_rate",
+                        "nodeType": "polars",
+                        "config": {"code": "return df"},
+                    },
+                }
+            ],
+        )
+
+        with (
+            patch("haute.parser.parse_submodel_file", return_value=disk_graph),
+            patch("haute.codegen.graph_to_code", return_value="# regenerated\n"),
+        ):
+            response = client.post(
+                "/api/submodel/dissolve",
+                json={
+                    "submodel_name": "pricing",
+                    "graph": _graph_with_submodel(),
+                    "source_file": "pipeline.py",
+                    "pipeline_name": "main",
+                },
+            )
+
+        assert response.status_code == 200
+        nodes = {node["id"]: node for node in response.json()["graph"]["nodes"]}
+        assert nodes["base_rate"]["position"] == {"x": 125.0, "y": 260.0}
 
     def test_dissolve_passes_pipeline_description(self, client: TestClient, tmp_path: Path) -> None:
         """pipeline_description should be forwarded to graph_to_code."""

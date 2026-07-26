@@ -650,21 +650,22 @@ def _extract_preamble_textual(
     receiver: str,
     constructor_name: str,
 ) -> str:
-    """Extract user-defined preamble between standard imports and pipeline code.
+    """Extract user preamble between standard imports and generated object code.
 
     The preamble is any code that appears after the standard imports
     (``import polars as pl``, ``import haute``) but before the first
-    ``@pipeline.<type>`` decorator or ``pipeline = haute.Pipeline(...)`` line.
+    ``@<receiver>.<type>`` decorator or
+    ``<receiver> = haute.<constructor_name>(...)`` line.
 
     Import spellings are alias-aware: ``import haute as ht`` is recognised as
     a standard import (not preamble) and its alias is used to detect the
-    ``pipeline = ht.Pipeline(...)`` construction line.  Without this, an
-    aliased import over-captured the Pipeline construction into the preamble
-    and duplicated it on the next round-trip save.
+    matching construction line. Without this, an aliased import over-captures
+    the generated construction into the preamble and duplicates it on the
+    next round-trip save.
     """
     lines = source.splitlines()
     # Find the end of standard imports region, capturing either supported
-    # spelling of the Pipeline constructor.
+    # spelling of the requested constructor.
     last_standard_idx = -1
     constructor = f"haute.{constructor_name}"
     for i, line in enumerate(lines):
@@ -690,7 +691,7 @@ def _extract_preamble_textual(
     if last_standard_idx == -1:
         return ""
 
-    # Find the start of pipeline code (pipeline = ... or @pipeline.<type>)
+    # Find the start of generated object code (assignment or node decorator).
     generated_start_idx = len(lines)
     for i in range(last_standard_idx + 1, len(lines)):
         stripped = lines[i].strip()
@@ -710,7 +711,7 @@ def _extract_preamble_textual(
                 generated_start_idx = i
                 break
 
-    # Extract lines between standard imports and pipeline code
+    # Extract lines between standard imports and generated object code.
     preamble_lines = _slice_without_module_preserve_spans(
         lines,
         last_standard_idx + 1,

@@ -66,15 +66,18 @@ Out of scope (owned elsewhere, linked where relevant):
 - **Drill-down** (`GET /api/submodel/{name}`): returns the named submodel's
   internal graph, parsed fresh from the path recorded by the active pipeline,
   with any sidecar node positions applied. The `modules/<name>.py` convention
-  is used only when no discovered pipeline records the requested submodel.
+  is used only when no parseable discovered pipeline records the requested
+  submodel. A broken sibling pipeline is logged and skipped rather than
+  preventing an unrelated healthy submodel from opening.
   This is how the GUI renders the inside of a placeholder when the user opens
   it, including hand-authored references such as `lib/pricing.py`.
 - **Dissolution** (`POST /api/submodel/dissolve`): the inverse of creation —
   the recorded submodel file is parsed again under the write lock, its
-  authoritative graph replaces the client's possibly stale metadata, and
-  only then is the placeholder replaced by child nodes/internal edges via
-  targeted `flatten_graph`. The parent file is rewritten and the recorded
-  child file is deleted through one save transaction.
+  authoritative graph is merged with its sidecar node positions and replaces
+  the client's possibly stale metadata, and only then is the placeholder
+  replaced by child nodes/internal edges via targeted `flatten_graph`. The
+  parent file is rewritten and the recorded child file is deleted through one
+  save transaction.
 - **Minimum size.** A submodel must contain at least 2 nodes after any
   nonexistent or duplicate ids in the request are resolved against the actual
   graph; fewer is rejected.
@@ -205,6 +208,9 @@ Out of scope (owned elsewhere, linked where relevant):
   metadata returns `404`.
 - Drilling into a submodel whose `.py` file does not exist on disk returns
   `404`.
+- A discovered sibling pipeline that cannot be parsed is logged and skipped
+  during drill-down lookup. Other discovered pipelines and the conventional
+  module fallback remain eligible.
 - A malformed route name or recorded reference (empty, NUL-containing, or a
   `{name}` containing `/` or `\`) returns `400`; a reference resolving
   outside the project returns `403`. These typed path failures are mapped

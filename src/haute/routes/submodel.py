@@ -15,6 +15,7 @@ from haute._submodel_paths import (
     resolve_submodel_reference,
     validate_submodel_name,
 )
+from haute._types import PipelineGraph
 from haute.routes._helpers import (
     _INTERNAL_ERROR_DETAIL,
     discover_pipelines,
@@ -32,6 +33,18 @@ from haute.schemas import (
 logger = get_logger(component="server.submodel")
 
 router = APIRouter(prefix="/api/submodel", tags=["submodel"])
+
+
+def _apply_sidecar_positions(graph: PipelineGraph, source_path: Path) -> PipelineGraph:
+    """Merge the submodel sidecar's canvas positions into a parsed graph."""
+    positions = load_sidecar_positions(source_path)
+    if not any(node.id in positions for node in graph.nodes):
+        return graph
+    updated_nodes = [
+        node.model_copy(update={"position": positions[node.id]}) if node.id in positions else node
+        for node in graph.nodes
+    ]
+    return graph.model_copy(update={"nodes": updated_nodes})
 
 
 @router.post("/create", response_model=CreateSubmodelResponse)
@@ -135,7 +148,16 @@ def _get_submodel_blocking(name: str) -> SubmodelGraphResponse:
         validate_submodel_name(name)
         resolved: tuple[Path, Path] | None = None
         for pipeline_path in discover_pipelines():
-            parent_graph = parse_pipeline_file(pipeline_path)
+            try:
+                parent_graph = parse_pipeline_file(pipeline_path)
+            except Exception as exc:
+                logger.warning(
+                    "submodel_parent_parse_failed",
+                    file=pipeline_path.name,
+                    error_type=type(exc).__name__,
+                    error=str(exc),
+                )
+                continue
             sm_meta = (parent_graph.submodels or {}).get(name)
             if sm_meta is None:
                 continue
@@ -165,16 +187,7 @@ def _get_submodel_blocking(name: str) -> SubmodelGraphResponse:
         raise HTTPException(status_code=404, detail=f"Submodel '{name}' not found")
 
     sm_graph = parse_submodel_file(sm_path, _base_dir=config_base)
-
-    # Load sidecar positions if available
-    positions = load_sidecar_positions(sm_path)
-    updated_nodes = []
-    for node in sm_graph.nodes:
-        if node.id in positions:
-            node = node.model_copy(update={"position": positions[node.id]})
-        updated_nodes.append(node)
-    if updated_nodes:
-        sm_graph = sm_graph.model_copy(update={"nodes": updated_nodes})
+    sm_graph = _apply_sidecar_positions(sm_graph, sm_path)
 
     return SubmodelGraphResponse(
         status="ok",
@@ -245,6 +258,7 @@ async def dissolve_submodel(body: DissolveSubmodelRequest) -> DissolveSubmodelRe
             raise HTTPException(status_code=404, detail=f"Submodel '{sm_name}' not found")
 
         disk_graph = parse_submodel_file(sm_path, _base_dir=config_base)
+        disk_graph = _apply_sidecar_positions(disk_graph, sm_path)
         sm_meta["graph"] = disk_graph.model_dump()
         authoritative_submodels = dict(submodels)
         authoritative_submodels[sm_name] = sm_meta

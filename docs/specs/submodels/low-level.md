@@ -195,20 +195,19 @@ Acquires `save_lock`, runs in a threadpool:
 1. Validate `name` before pipeline discovery; map
    `MalformedSubmodelPathError` to `400`.
 2. Iterate `discover_pipelines()` in configured-first order. Parse each
-   pipeline and, when its `submodels` metadata contains `name`, resolve that
-   entry's recorded `"file"` relative to the pipeline file's parent.
+   pipeline inside a per-file `try`: a parse failure is logged as
+   `submodel_parent_parse_failed` and skipped. When a parsed pipeline's
+   `submodels` metadata contains `name`, resolve that entry's recorded
+   `"file"` relative to the pipeline file's parent.
 3. If no discovered pipeline records the name, use the
    `modules/<name>.py` convention relative to `pipeline_dir()`.
    `SubmodelPathOutsideProjectError` maps to `403`.
 4. `sm_path.is_file()` → else `HTTPException(404, f"Submodel '{name}' not
    found")`.
 5. `parse_submodel_file(sm_path, _base_dir=config_base)` → `sm_graph`.
-6. `load_sidecar_positions(sm_path)` → apply any stored `(x, y)` position
-   onto matching node ids via `model_copy`. `sm_graph.nodes` is rebuilt via
-   `model_copy` whenever the parsed submodel has at least one node; the
-   selection-created two-node minimum does not constrain hand-authored parsed
-   submodels. The `if updated_nodes:` guard skips only an empty node list,
-   not the "no sidecar positions found" case.
+6. `_apply_sidecar_positions(sm_graph, sm_path)` loads sidecar positions and
+   applies each matching `(x, y)` via per-node `model_copy`. Parsed nodes
+   without a sidecar entry retain their parser-provided position.
 7. Return `SubmodelGraphResponse(status="ok", submodel_name=
    sm_graph.pipeline_name or name, graph=sm_graph)`.
 
@@ -222,7 +221,8 @@ Acquires `save_lock`, runs the body in a threadpool:
 3. Resolve the recorded file relative to `pipeline_dir()`, mapping typed
    malformed/outside-project path errors to `400`/`403`, and return `404` if
    the file is absent.
-4. `parse_submodel_file(sm_path, _base_dir=config_base)` and replace only the
+4. `parse_submodel_file(sm_path, _base_dir=config_base)`, apply its sidecar
+   positions through `_apply_sidecar_positions`, and replace only the
    selected metadata entry's `"graph"` with that authoritative disk graph.
    Copy `body.preamble` onto the parent graph before flattening.
 5. `flatten_graph(authoritative_graph, target_name=sm_name)` → `flat`. A
@@ -276,13 +276,10 @@ Acquires `save_lock`, runs the body in a threadpool:
   every OS at create time (not just Windows), so a pipeline saved on
   Linux/macOS cannot mint a submodel that becomes unloadable on a Windows
   checkout.
-- **`get_submodel` re-applies sidecar positions per-node, not per-graph** —
-  each node is individually `model_copy`'d only if its id has a stored
-  position (nodes with no sidecar entry keep whatever position the parser
-  produced), but the resulting node list is then always reassigned onto
-  `sm_graph` via one outer `model_copy` as long as the submodel has any
-  nodes at all; there is no optimisation that skips the outer rebuild when
-  `positions` is empty.
+- **Drill-down and dissolve share `_apply_sidecar_positions`.** Each matching
+  node is individually `model_copy`'d; nodes without an entry keep their
+  parser-provided position. Dissolve therefore combines authoritative source
+  structure with authoritative canvas layout before flattening.
 
 ## Error handling
 
@@ -334,9 +331,10 @@ Tests live in `tests/test_submodel_graph.py`, `tests/test_submodel_ops.py`,
   and selected codegen calls mocked where the test isolates the
   route/transaction layer: invalid selections → `400`; create metadata
   forwarding; output allowlisting and rollback; nested pipeline roots;
-  drill-down through a recorded custom child path; malformed encoded
-  backslashes → `400`; configured-root fallback; dissolve not-found and
-  missing-source failures; authoritative reparse of the child file from disk;
+  drill-down through a recorded custom child path; broken sibling pipelines
+  skipped during lookup; malformed encoded backslashes → `400`;
+  configured-root fallback; dissolve not-found and missing-source failures;
+  authoritative reparse of the child file with sidecar positions preserved;
   submodel deletion; configured-root deletion targeting; and two explicit
   rollback tests (`test_dissolve_sidecar_failure_rolls_back_main_file`,
   `test_dissolve_delete_failure_rolls_back_main_file`) that force a mid-
