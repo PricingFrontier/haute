@@ -329,10 +329,10 @@ class TestPushAndFastForwardRaises:
 
         git_mod._fetch_cooldowns.clear()
 
-        # The leg-state read (which classifies the working branch as "behind")
-        # resolves the remote-tracking ref first; only the SUBSEQUENT resolution
-        # inside the working-ref CAS block is broken, so the leg is still seen as
-        # behind, the CAS branch is entered, and the resolve-failure raise fires.
+        # Catch-up first verifies the freshly fetched remote leg exists, then the
+        # leg-state read resolves it again to classify the working branch as
+        # "behind". Break only the THIRD resolution inside the working-ref CAS
+        # block, so the CAS branch is entered and its resolve-failure raise fires.
         real_rev = git_mod._rev_parse
         tracking = f"refs/remotes/origin/{WORKING}"
         seen = {"n": 0}
@@ -340,7 +340,7 @@ class TestPushAndFastForwardRaises:
         def fake_rev(ref: str, cwd: Path | None = None) -> str | None:
             if ref == tracking:
                 seen["n"] += 1
-                if seen["n"] >= 2:
+                if seen["n"] >= 3:
                     return None
             return real_rev(ref, cwd=cwd)
 
