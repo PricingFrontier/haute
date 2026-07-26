@@ -968,6 +968,7 @@ def test_is_active_mapping_entry() -> None:
     assert is_active_mapping_entry(_entry("p", "", "$[:].x")) is False  # blank source_column
     assert is_active_mapping_entry(_entry("p", "x", "")) is False  # blank output_path
     assert is_active_mapping_entry(_entry("p", "x", "$[:].x", enabled=False)) is False
+    assert is_active_mapping_entry({"enabled": True}) is False
     assert (
         is_active_mapping_entry(
             {"source_port": "p", "source_column": "  ", "output_path": "$[:].x", "enabled": True}

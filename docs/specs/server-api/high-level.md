@@ -121,13 +121,16 @@ fingerprint already matches (no redundant payload). Edits the server itself make
 `/api/pipeline/save`) are tagged as self-writes so they never round-trip back through the watcher
 as a phantom external edit. A change to a `modules/*.py` file re-parses only the pipelines
 that import it; a change to a `config/*.json` file re-parses every discovered pipeline (a
-config change can affect any pipeline that reads it). Only direct pipeline `.py` changes
-invalidate the name→path index. Startup priming, watcher invalidation, and successful save
-invalidation are the index's lifecycle mutation points, and the module-dependency index uses
-the same lock so an invalidation cannot be overwritten by an in-flight rebuild. A failed
-debounced batch is retried at most three times with exponential backoff; after that the
-watcher logs abandonment and leaves the batch pending for the next filesystem event instead
-of creating an unbounded chain of retry tasks.
+config change can affect any pipeline that reads it). Direct pipeline `.py` additions,
+modifications, and deletions invalidate the name→path index; module/config-only batches do
+not. Startup priming, watcher invalidation, and successful save invalidation are the index's
+lifecycle mutation points. The module-dependency index scans under its own build lock and
+publishes only when the pipeline-index generation it observed is still current, so
+invalidation does not block on the AST scan and an in-flight rebuild cannot overwrite it. A
+failed debounced batch is retried at most three times with exponential backoff; after that
+the watcher isolates each change once, processes healthy entries, and logs and drops only
+the still-failing entries instead of poisoning future batches or creating an unbounded retry
+chain.
 
 **Pipeline CRUD, preview, trace, and output publication.** `GET /api/pipelines` lists every
 discovered pipeline with parse status; `GET /api/pipeline` returns an empty graph only when
@@ -337,8 +340,9 @@ turn that loudness into a well-typed HTTP response rather than a raw traceback.
 - **The file watcher is crash-resilient**: an unexpected exception in the watch loop is
   logged and the loop restarts after a short delay (`_watcher_forever`); a failure inside one
   debounced flush retries the same batch at most three times with exponential backoff. After
-  the retry cap it logs abandonment and leaves the paths pending for a later filesystem event;
-  it never self-schedules an unbounded retry chain.
+  the retry cap it isolates the batch into single-change attempts, processes healthy changes,
+  and logs and drops each still-failing event. A later event for that path is eligible again;
+  no poisoned batch is retained and no unbounded retry chain is scheduled.
 - **WebSocket sends never block the broadcaster indefinitely**: each client send has a hard
   1-second timeout; a stalled client is force-closed and dropped from the client set rather
   than stalling the fan-out to every other connected canvas.

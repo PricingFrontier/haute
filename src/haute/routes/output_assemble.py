@@ -116,6 +116,7 @@ async def output_assemble_dry_run(
             operation="output_assemble_dry_run",
             profile=ExecutionProfile.PREVIEW_EAGER,
         )
+        admitted_context = context
 
         def _run() -> dict[str, Any]:
             return execute_graph(
@@ -124,7 +125,7 @@ async def output_assemble_dry_run(
                 row_limit=body.row_limit,
                 source=body.source,
                 target_preview_only=True,
-                execution_context=context,
+                execution_context=admitted_context,
             )
 
         results = await run_blocking_with_response_timeout(

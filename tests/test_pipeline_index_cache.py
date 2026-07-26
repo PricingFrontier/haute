@@ -521,26 +521,35 @@ class TestConcurrentReadsDoNotRace:
         # Sanity: the agreed-upon contents must be the expected two pipelines.
         assert set(results[0].keys()) == {"pipeline_a", "pipeline_b"}
 
-    def test_module_dependency_invalidation_wins_over_inflight_build(
+    def test_module_dependency_invalidation_does_not_block_and_forces_fresh_scan(
         self,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """An invalidator must not be overwritten by a stale dependency-map publish."""
+        """Invalidation stays short and a stale dependency scan is rebuilt before publish."""
         import haute.routes._helpers as helpers
 
         pipeline_file = tmp_path / "pipeline.py"
         build_started = threading.Event()
         allow_build_to_finish = threading.Event()
+        invalidation_started = threading.Event()
         invalidation_finished = threading.Event()
         results: list[dict[str, set[Path]]] = []
+        read_count = 0
 
         monkeypatch.setattr(helpers, "discover_pipelines", lambda: [pipeline_file])
+        monkeypatch.setattr(helpers, "_pipeline_index", helpers._pipeline_index)
+        monkeypatch.setattr(helpers, "_module_deps", None)
+        monkeypatch.setattr(helpers, "_pipeline_index_generation", 0)
 
         def _slow_read(_path: Path) -> str:
-            build_started.set()
-            assert allow_build_to_finish.wait(2)
-            return 'pipeline.submodel("modules/shared.py")\n'
+            nonlocal read_count
+            read_count += 1
+            if read_count == 1:
+                build_started.set()
+                assert allow_build_to_finish.wait(2)
+                return 'pipeline.submodel("modules/stale.py")\n'
+            return 'pipeline.submodel("modules/fresh.py")\n'
 
         monkeypatch.setattr(helpers, "read_user_text", _slow_read)
 
@@ -549,13 +558,15 @@ class TestConcurrentReadsDoNotRace:
         assert build_started.wait(2)
 
         def _invalidate() -> None:
+            invalidation_started.set()
             helpers.invalidate_pipeline_index()
             invalidation_finished.set()
 
         invalidator = threading.Thread(target=_invalidate)
         invalidator.start()
 
-        assert not invalidation_finished.wait(0.05)
+        assert invalidation_started.wait(1)
+        invalidation_did_not_wait = invalidation_finished.wait(0.5)
         allow_build_to_finish.set()
         builder.join(timeout=2)
         invalidator.join(timeout=2)
@@ -563,8 +574,10 @@ class TestConcurrentReadsDoNotRace:
         assert not builder.is_alive()
         assert not invalidator.is_alive()
         assert invalidation_finished.is_set()
-        assert results == [{"shared": {pipeline_file}}]
-        assert helpers._module_deps is None
+        assert invalidation_did_not_wait
+        assert read_count == 2
+        assert results == [{"fresh": {pipeline_file}}]
+        assert helpers._module_deps == {"fresh": {pipeline_file}}
 
     def test_reader_during_rebuild_never_sees_none(
         self,

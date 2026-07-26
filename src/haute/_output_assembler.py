@@ -602,7 +602,14 @@ def is_active_mapping_entry(entry: dict[str, Any]) -> bool:
     """
     if not entry["enabled"]:
         return False
-    return bool(entry["source_column"].strip()) and bool(entry["output_path"].strip())
+    source_column = entry.get("source_column", "")
+    output_path = entry.get("output_path", "")
+    return (
+        isinstance(source_column, str)
+        and isinstance(output_path, str)
+        and bool(source_column.strip())
+        and bool(output_path.strip())
+    )
 
 
 def validate_v2_output_mapping(mapping: list[dict[str, Any]]) -> None:
@@ -625,11 +632,10 @@ def validate_v2_output_mapping(mapping: list[dict[str, Any]]) -> None:
     """
     by_port: dict[str, list[tuple[str, str]]] = {}
     parsed_by_path: dict[str, _ParsedPath] = {}
-    parse_output_path = _parse_output_path
 
     def _cached_parse(path: str) -> _ParsedPath:
         if path not in parsed_by_path:
-            parsed_by_path[path] = parse_output_path(path)
+            parsed_by_path[path] = _parse_output_path(path)
         return parsed_by_path[path]
 
     for entry in mapping:
@@ -652,11 +658,11 @@ def validate_v2_output_mapping(mapping: list[dict[str, Any]]) -> None:
 
         distinct = sorted(
             dict.fromkeys(path for _, path in entries),
-            key=lambda path: parsed_by_path[path].segments,
+            key=lambda path: _cached_parse(path).segments,
         )
         for a, b in zip(distinct, distinct[1:], strict=False):
-            a_segments = parsed_by_path[a].segments
-            b_segments = parsed_by_path[b].segments
+            a_segments = _cached_parse(a).segments
+            b_segments = _cached_parse(b).segments
             if a_segments == b_segments[: len(a_segments)]:
                 raise OutputMappingSchemaError(
                     "output paths within a source frame must be pairwise "
@@ -665,7 +671,7 @@ def validate_v2_output_mapping(mapping: list[dict[str, Any]]) -> None:
                     output_path=f"{a} vs {b}",
                 )
 
-        prefixes = [(path, _array_prefix(parsed_by_path[path])) for path in distinct]
+        prefixes = [(path, _array_prefix(_cached_parse(path))) for path in distinct]
         prefixes.sort(key=lambda item: item[1])
         for (a, a_prefix), (b, b_prefix) in zip(prefixes, prefixes[1:], strict=False):
             if not (a_prefix[: len(b_prefix)] == b_prefix or b_prefix[: len(a_prefix)] == a_prefix):

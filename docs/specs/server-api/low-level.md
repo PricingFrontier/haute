@@ -210,9 +210,10 @@ crash. Every filesystem event batches into `pending_changes`; a 300ms debounce t
 4. Classifies each remaining `.py`/`.json` change: `config/*.json` → re-parse every
    discovered pipeline; `modules/*.py` → re-parse only pipelines importing that module stem
    (case-insensitively, via `_module_dep_key`); any other `.py` (excluding `utility/` and
-   dunder-prefixed files) → re-parse that pipeline directly. Only this direct-source class
-   invalidates the pipeline name→path index before discovery; module and config changes do
-   not discard an otherwise valid index.
+   dunder-prefixed files) → re-parse that pipeline directly when added/modified. Any direct
+   pipeline `.py` addition, modification, or deletion invalidates the pipeline name→path
+   index before discovery; a deletion is not reparsed. Module and config changes (including
+   deletion) do not discard an otherwise valid pipeline index.
 5. For each changed pipeline: hash raw bytes first (cheap) and skip the parse entirely if the
    byte hash is unchanged *and* the change wasn't dependency-triggered (a module/config
    change always re-parses even if this pipeline's own bytes are unchanged, since its
@@ -221,9 +222,11 @@ crash. Every filesystem event batches into `pending_changes`; a 300ms debounce t
    `parse.error` and evict the stale fingerprint so the next successful parse re-broadcasts
    even if the bytes happen to match a previous good state.
 6. If the flush body itself raises, the *entire* processed batch is requeued and `_flush`
-   retries it in the same task at most three times with exponential backoff. Exhaustion logs
-   `file_watcher_flush_abandoned` and leaves the paths in `pending_changes` for the next
-   filesystem event; it does not recursively schedule another flush task.
+   retries it in the same task at most three times with exponential backoff. Cancellation
+   after snapshotting also requeues the batch. On exhaustion, `_flush` removes that batch
+   from `pending_changes`, tries each change once in isolation so healthy paths still
+   broadcast, and logs/drops each still-failing event. A later event for a dropped path is a
+   fresh attempt; no retry task is recursively scheduled.
 
 **Pipeline save (`SavePipelineService.save`)**, run inside the process-wide `save_lock` (an
 `asyncio.Lock`, so it serialises against concurrent submodel create/dissolve as well as
@@ -336,11 +339,13 @@ until the worker actually exits.
   other out of order. Each send (and each stalled-client close) has a hard 1-second timeout;
   a timeout marks the client dead and discards it rather than blocking the whole fan-out.
 - **The pipeline index has three lifecycle mutation points**: startup priming, watcher
-  invalidation for a direct pipeline `.py` change, and invalidation after a successful save.
+  invalidation for a direct pipeline `.py` add/modify/delete, and invalidation after a
+  successful save.
   `_ensure_pipeline_index()` uses double-checked locking so concurrent cold-cache readers
-  never scan twice. The module-dependency twin uses the same lock and publishes its complete
-  map only while holding it, so an invalidator that arrives during a build cannot be
-  overwritten by that stale build.
+  never scan twice. The module-dependency twin uses a dedicated single-builder lock and
+  snapshots the pipeline-index generation; it publishes only if that generation is still
+  current, otherwise it rescans. Invalidators therefore remain short and a stale in-flight
+  dependency scan cannot overwrite them.
 - **Module-dependency keys are casefolded** (`_module_dep_key`) because the build side
   derives a module stem from a `pipeline.submodel("modules/<name>.py")` *source literal*
   while the watcher derives it from an *on-disk filename* — on case-insensitive filesystems

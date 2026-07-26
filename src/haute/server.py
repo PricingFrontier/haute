@@ -674,16 +674,28 @@ async def _file_watcher() -> None:
     debounce_task: asyncio.Task[None] | None = None
     completed_normally = False
 
-    async def _flush_once() -> None:
-        """Parse and broadcast one pending watcher batch."""
-        to_process: set[tuple[Change, str]] = set()
-        try:
-            # Snapshot and clear before processing so new events can queue
-            # independently. If a higher-level flush failure happens below,
-            # we requeue this batch and schedule a retry.
-            to_process = set(pending_changes)
-            pending_changes.clear()
+    class _FlushBatchError(Exception):
+        """One watcher batch failed before it could be processed."""
 
+        def __init__(
+            self,
+            cause: Exception,
+            changes: set[tuple[Change, str]],
+        ) -> None:
+            super().__init__(str(cause))
+            self.cause = cause
+            self.changes = changes
+
+    async def _flush_once(
+        changes: set[tuple[Change, str]] | None = None,
+        *,
+        requeue_on_error: bool = True,
+    ) -> None:
+        """Parse and broadcast one pending watcher batch."""
+        to_process = set(pending_changes) if changes is None else set(changes)
+        if changes is None:
+            pending_changes.clear()
+        try:
             # S30: drop everything that arrived while a haute-initiated git op
             # holds the watcher pause. A move/checkout replaces the tree
             # wholesale, so those events are not user edits and must not be
@@ -696,6 +708,7 @@ async def _file_watcher() -> None:
             # Collect changed files from pending set
             changed_files: dict[str, tuple[Path, bool]] = {}
             direct_py_changes: list[Path] = []
+            direct_index_changed = False
             module_stems: list[str] = []
             config_changed = False
             self_write_keys: set[str] = set()
@@ -706,7 +719,7 @@ async def _file_watcher() -> None:
                     self_write_keys.add(key)
                     logger.debug("file_watcher_skipped_self_write", file=str(p))
                     continue
-                if change_type not in (Change.modified, Change.added):
+                if change_type not in (Change.modified, Change.added, Change.deleted):
                     continue
                 # JSON config files in config/ directory
                 if p.suffix == ".json" and config_dir.is_dir() and p.is_relative_to(config_dir):
@@ -721,13 +734,19 @@ async def _file_watcher() -> None:
                 if modules_dir.is_dir() and p.is_relative_to(modules_dir):
                     module_stems.append(p.stem)
                 else:
-                    direct_py_changes.append(p)
+                    # Deletions must invalidate the name→path index but must not
+                    # be reparsed. A rename is normally a deleted+added pair:
+                    # the added path below is the only one broadcast.
+                    direct_index_changed = True
+                    if change_type != Change.deleted:
+                        direct_py_changes.append(p)
 
             known_pipelines: dict[str, Path] = {}
             if direct_py_changes:
-                # Only direct pipeline-source edits can add, remove, or rename
-                # an indexed pipeline or change its module dependencies.
                 known_pipelines = _known_pipeline_paths()
+            if direct_index_changed:
+                # Direct pipeline-source additions, modifications, deletions,
+                # and renames can change index membership or dependencies.
                 invalidate_pipeline_index()
 
             discovered_pipelines: dict[str, Path] | None = None
@@ -810,9 +829,14 @@ async def _file_watcher() -> None:
                             "source_file": _wire_source_file(p),
                         },
                     )
-        except Exception:  # noqa: BLE001
-            pending_changes.update(to_process)
+        except asyncio.CancelledError:
+            if requeue_on_error:
+                pending_changes.update(to_process)
             raise
+        except Exception as exc:  # noqa: BLE001
+            if requeue_on_error:
+                pending_changes.update(to_process)
+            raise _FlushBatchError(exc, to_process) from exc
 
     async def _flush() -> None:
         """Debounce, then retry one batch with a bounded exponential backoff."""
@@ -823,19 +847,50 @@ async def _file_watcher() -> None:
                 return
             except asyncio.CancelledError:
                 raise
-            except Exception as exc:  # noqa: BLE001
+            except _FlushBatchError as exc:
                 logger.error(
                     "file_watcher_flush_failed",
-                    error=str(exc),
+                    error=str(exc.cause),
                     traceback=traceback.format_exc(),
-                    requeued_changes=len(pending_changes),
+                    requeued_changes=len(exc.changes),
                     attempt=attempt + 1,
                 )
                 if attempt >= _WATCHER_FLUSH_MAX_RETRIES:
+                    # Do not retain a poisoned batch forever. Isolate it once
+                    # so healthy siblings still reach the canvas, then log and
+                    # drop only the changes that remain broken. A later event
+                    # for a dropped path is a fresh attempt.
+                    pending_changes.difference_update(exc.changes)
+                    ordered_changes = sorted(
+                        exc.changes,
+                        key=lambda item: (str(item[1]), str(item[0])),
+                    )
+                    recovered_changes = 0
+                    quarantined_changes = 0
+                    for index, change in enumerate(ordered_changes):
+                        try:
+                            await _flush_once({change}, requeue_on_error=False)
+                        except asyncio.CancelledError:
+                            pending_changes.update(ordered_changes[index:])
+                            raise
+                        except _FlushBatchError as isolated_exc:
+                            quarantined_changes += 1
+                            change_type, changed_path = change
+                            logger.error(
+                                "file_watcher_change_quarantined",
+                                file=changed_path,
+                                change_type=getattr(change_type, "name", str(change_type)),
+                                error=str(isolated_exc.cause),
+                                traceback=traceback.format_exc(),
+                            )
+                        else:
+                            recovered_changes += 1
                     logger.error(
                         "file_watcher_flush_abandoned",
                         attempts=attempt + 1,
-                        pending_changes=len(pending_changes),
+                        batch_changes=len(exc.changes),
+                        recovered_changes=recovered_changes,
+                        quarantined_changes=quarantined_changes,
                     )
                     return
                 retry_delay = _WATCHER_FLUSH_RETRY_BASE_SECONDS * (2**attempt)

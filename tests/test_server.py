@@ -3515,12 +3515,109 @@ class TestFileWatcherRecovery:
 
         asyncio.run(_run())
 
+    def test_deleted_pipeline_invalidates_index_without_reparse(
+        self,
+        pipeline_dir: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A deleted pipeline must invalidate the index without a parse attempt."""
+        from haute.server import _file_watcher
+
+        monkeypatch.chdir(pipeline_dir)
+        deleted_file = pipeline_dir / "deleted_pipeline.py"
+
+        async def _single_deletion(*dirs, **kw):
+            yield [(Change.deleted, str(deleted_file))]
+
+        async def _run() -> None:
+            with (
+                patch("watchfiles.awatch", _single_deletion),
+                patch("haute.server.is_self_write", return_value=False),
+                patch("haute.server._known_pipeline_paths", return_value={}),
+                patch("haute.server.invalidate_pipeline_index") as invalidate,
+                patch("haute.server.parse_pipeline_to_graph") as parse,
+                patch("haute.server._DEBOUNCE_SECONDS", 0),
+            ):
+                await _file_watcher()
+                invalidate.assert_called_once_with()
+                parse.assert_not_called()
+
+        asyncio.run(_run())
+
+    def test_cancelled_flush_requeues_snapshotted_batch(
+        self,
+        pipeline_dir: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Cancellation after snapshotting must not discard the interrupted change."""
+        from haute.server import _file_watcher
+
+        monkeypatch.chdir(pipeline_dir)
+        interrupted_file = pipeline_dir / "interrupted.py"
+        later_file = pipeline_dir / "later.py"
+        interrupted_file.write_text("interrupted = True\n")
+        later_file.write_text("later = True\n")
+        known = {
+            str(interrupted_file.resolve()): interrupted_file,
+            str(later_file.resolve()): later_file,
+        }
+
+        class _FakeGraph:
+            nodes: list[object] = []
+
+            def model_dump(self) -> dict[str, object]:
+                return {"nodes": [], "edges": []}
+
+        class _BusStub:
+            def publish(self, event: str, payload: dict[str, object]) -> None:
+                del event, payload
+
+        async def _run() -> list[Path]:
+            cancellation_injected = asyncio.Event()
+            original_read_bytes = Path.read_bytes
+            interrupted_reads = 0
+
+            def _read_bytes(path: Path) -> bytes:
+                nonlocal interrupted_reads
+                if path.resolve() == interrupted_file.resolve():
+                    interrupted_reads += 1
+                    if interrupted_reads == 1:
+                        cancellation_injected.set()
+                        raise asyncio.CancelledError
+                return original_read_bytes(path)
+
+            async def _two_changes(*dirs, **kw):
+                del dirs, kw
+                yield [(Change.modified, str(interrupted_file))]
+                await cancellation_injected.wait()
+                await asyncio.sleep(0)
+                yield [(Change.modified, str(later_file))]
+
+            with (
+                patch("watchfiles.awatch", _two_changes),
+                patch.object(Path, "read_bytes", _read_bytes),
+                patch("haute.server.is_self_write", return_value=False),
+                patch("haute.server._known_pipeline_paths", return_value=known),
+                patch("haute.server._discovered_pipeline_paths", return_value=known),
+                patch("haute.server.invalidate_pipeline_index"),
+                patch(
+                    "haute.server.parse_pipeline_to_graph",
+                    return_value=_FakeGraph(),
+                ) as parse,
+                patch("haute.server.default_bus", _BusStub()),
+                patch("haute.server._DEBOUNCE_SECONDS", 0),
+            ):
+                await _file_watcher()
+                return [call.args[0] for call in parse.call_args_list]
+
+        assert set(asyncio.run(_run())) == {interrupted_file, later_file}
+
     def test_persistently_failing_flush_stops_after_bounded_retries(
         self,
         pipeline_dir: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """A poisoned batch must not create an infinite chain of retry tasks."""
+        """A poisoned change gets bounded batch retries plus one isolated attempt."""
         from haute.server import _file_watcher
 
         monkeypatch.chdir(pipeline_dir)
@@ -3544,7 +3641,66 @@ class TestFileWatcherRecovery:
                 await _file_watcher()
                 return invalidate.call_count
 
-        assert asyncio.run(_run()) == 3
+        assert asyncio.run(_run()) == 4
+
+    def test_retry_exhaustion_isolates_poisoned_change_and_processes_healthy_change(
+        self,
+        pipeline_dir: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """One bad event must not remain queued or suppress a healthy sibling forever."""
+        from haute.server import _file_watcher
+
+        monkeypatch.chdir(pipeline_dir)
+        healthy_file = pipeline_dir / "test_pipeline.py"
+        poisoned_file = pipeline_dir / "poisoned.py"
+        published: list[tuple[str, dict[str, object]]] = []
+
+        class _FakeGraph:
+            nodes: list[object] = []
+
+            def model_dump(self) -> dict[str, object]:
+                return {"nodes": [], "edges": []}
+
+        class _BusStub:
+            def publish(self, event: str, payload: dict[str, object]) -> None:
+                published.append((event, payload))
+
+        def _self_write(path: Path, *, consume: bool) -> bool:
+            del consume
+            if path.name == poisoned_file.name:
+                raise RuntimeError("poisoned watcher event")
+            return False
+
+        async def _mixed_batch(*dirs, **kw):
+            yield [
+                (Change.modified, str(poisoned_file)),
+                (Change.modified, str(healthy_file)),
+            ]
+
+        known = {
+            str(poisoned_file.resolve()): poisoned_file,
+            str(healthy_file.resolve()): healthy_file,
+        }
+
+        async def _run() -> None:
+            with (
+                patch("watchfiles.awatch", _mixed_batch),
+                patch("haute.server.is_self_write", _self_write),
+                patch("haute.server._known_pipeline_paths", return_value=known),
+                patch("haute.server._discovered_pipeline_paths", return_value=known),
+                patch("haute.server.invalidate_pipeline_index"),
+                patch("haute.server.parse_pipeline_to_graph", return_value=_FakeGraph()),
+                patch("haute.server.default_bus", _BusStub()),
+                patch("haute.server._DEBOUNCE_SECONDS", 0),
+                patch("haute.server._WATCHER_FLUSH_RETRY_BASE_SECONDS", 0),
+                patch("haute.server._WATCHER_FLUSH_MAX_RETRIES", 1),
+            ):
+                await _file_watcher()
+
+        asyncio.run(_run())
+
+        assert [event for event, _ in published] == ["graph.update"]
 
     def test_flush_error_recovery_allows_later_change(
         self,

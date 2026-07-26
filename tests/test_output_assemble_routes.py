@@ -10,7 +10,7 @@ canonical data-model example so the route's assembled output matches the
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -233,14 +233,24 @@ def test_dry_run_releases_admission_after_success(project) -> None:
 async def test_dry_run_timeout_defers_admission_release_until_worker_finishes(project) -> None:
     _, data_path = project
     release_calls: list[bool] = []
+    execution_contexts: list[object | None] = []
+    queued_work: list[Callable[[], dict[str, Any]]] = []
     background_task: asyncio.Future[object] = asyncio.get_running_loop().create_future()
 
     class _Context:
         def release_admission(self, *, preserve_primary_error: bool = False) -> None:
             release_calls.append(preserve_primary_error)
 
-    async def _raise_timeout(*args, **kwargs):
+    context = _Context()
+
+    def _execute_graph(*args, execution_context=None, **kwargs):
         del args, kwargs
+        execution_contexts.append(execution_context)
+        return {}
+
+    async def _raise_timeout(work, **kwargs):
+        del kwargs
+        queued_work.append(work)
         raise BlockingWorkTimeoutError(
             "output_assemble_dry_run",
             1,
@@ -252,8 +262,9 @@ async def test_dry_run_timeout_defers_admission_release_until_worker_finishes(pr
     with (
         patch(
             "haute.routes.output_assemble.create_admitted_execution_context",
-            return_value=_Context(),
+            return_value=context,
         ),
+        patch("haute.routes.output_assemble.execute_graph", _execute_graph),
         patch(
             "haute.routes.output_assemble.run_blocking_with_response_timeout",
             _raise_timeout,
@@ -270,8 +281,12 @@ async def test_dry_run_timeout_defers_admission_release_until_worker_finishes(pr
                 },
             )
 
-    assert resp.status_code == 504
-    assert release_calls == []
+        assert resp.status_code == 504
+        assert release_calls == []
+        assert len(queued_work) == 1
+
+        queued_work[0]()
+        assert execution_contexts == [context]
 
     background_task.set_result(None)
     await asyncio.sleep(0)
