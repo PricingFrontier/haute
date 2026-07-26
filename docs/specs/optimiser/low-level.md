@@ -643,7 +643,7 @@ returns the nested result. The helpers are used across `test_optimiser_routes.py
   guards (cancel/timeout/supersede races), pipeline-execution argument wiring, bounded-sink grid
   building, execute-pipeline cleanup, artifact-payload building (including extended/edge-case
   variants), save-artifact required-section validation
-  (`test_artifact_gate_rejects_missing_required_sections`), mlflow-log extended paths, and many
+  (`test_artifact_gate_rejects_invalid_required_sections`), mlflow-log extended paths, and many
   CAS/atomic-update race scenarios (`atomic_update`
   returning `None`, artifact orphaning on a lost race, etc.). Also covers: null-input rejection
   (`test_solve_rejects_null_input_values`,

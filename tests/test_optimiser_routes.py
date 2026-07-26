@@ -13790,10 +13790,66 @@ class TestSaveArtifactGate:
                 },
                 "factor dtype metadata",
             ),
+            (
+                {
+                    "lambdas": {},
+                    "total_objective": 1.0,
+                    "mode": "ratebook",
+                    "factor_tables": {"region": []},
+                    "factor_dtypes": {"other": [{"column": "region", "dtype": {"kind": "String"}}]},
+                },
+                "do not match",
+            ),
+            (
+                {
+                    "lambdas": {},
+                    "total_objective": 1.0,
+                    "mode": "ratebook",
+                    "factor_tables": {"region": []},
+                    "factor_dtypes": {"region": []},
+                },
+                "non-empty ordered list",
+            ),
+            (
+                {
+                    "lambdas": {},
+                    "total_objective": 1.0,
+                    "mode": "ratebook",
+                    "factor_tables": {"region": []},
+                    "factor_dtypes": {"region": ["not a mapping"]},
+                },
+                "malformed record at index 0",
+            ),
+            (
+                {
+                    "lambdas": {},
+                    "total_objective": 1.0,
+                    "mode": "ratebook",
+                    "factor_tables": {"region": []},
+                    "factor_dtypes": {"region": [{"column": "region"}]},
+                },
+                "malformed record at index 0",
+            ),
+            (
+                {
+                    "lambdas": {f"constraint_{index}": float("nan") for index in range(6)},
+                    "total_objective": 1.0,
+                },
+                "6 in total",
+            ),
         ],
-        ids=["lambdas", "total-objective", "ratebook-factor-dtypes"],
+        ids=[
+            "lambdas",
+            "total-objective",
+            "ratebook-factor-dtypes",
+            "ratebook-table-mismatch",
+            "ratebook-empty-dtypes",
+            "ratebook-malformed-dtype-record",
+            "ratebook-incomplete-dtype-record",
+            "many-non-finite-values",
+        ],
     )
-    def test_artifact_gate_rejects_missing_required_sections(
+    def test_artifact_gate_rejects_invalid_required_sections(
         self,
         payload,
         expected_detail,
