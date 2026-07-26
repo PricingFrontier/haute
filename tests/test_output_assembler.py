@@ -12,6 +12,7 @@ Fields are single capital letters as in the doc; ``K`` is a common parent key,
 from __future__ import annotations
 
 from collections import Counter
+from dataclasses import FrozenInstanceError
 
 import polars as pl
 import pytest
@@ -22,6 +23,7 @@ from haute._output_assembler import (
     OutputMappingSchemaError,
     OutputNestingKeyError,
     _assemble_document,
+    _Core,
     _CutPlan,
     _execute_plan,
     _gyo_residue,
@@ -53,6 +55,16 @@ def test_output_mapping_error_is_haute_error() -> None:
     assert isinstance(err, HauteError)
     assert "bad mapping" in str(err)
     assert "output_path=$.a" in str(err)
+
+
+def test_output_nesting_key_error_requires_keyword_context() -> None:
+    with pytest.raises(TypeError):
+        OutputNestingKeyError(  # type: ignore[misc]
+            "bad nesting key",
+            "frame",
+            "$[:].id",
+            "$[:].id",
+        )
 
 
 # ─── GYO core detection — α-acyclic cases (no core, nothing cut) ───
@@ -803,6 +815,15 @@ def test_validate_rejects_two_columns_on_one_path() -> None:
         validate_v2_output_mapping([_entry("p", "x", "$[:].v"), _entry("p", "y", "$[:].v")])
 
 
+def test_validate_allows_equal_nonidentical_column_names_on_one_path() -> None:
+    first = b"same_column".decode()
+    second = b"same_column".decode()
+    assert first == second
+    assert first is not second
+
+    validate_v2_output_mapping([_entry("p", first, "$[:].v"), _entry("p", second, "$[:].v")])
+
+
 def test_validate_rejects_unsupported_selector() -> None:
     with pytest.raises(OutputMappingSchemaError):
         validate_v2_output_mapping([_entry("p", "x", "$[:].drivers[0].name")])
@@ -829,6 +850,17 @@ def test_validate_rejects_divergent_array_branches_in_descending_order() -> None
     mapping = [
         _entry("p", "right_id", "$[:].right[:].id"),
         _entry("p", "left_id", "$[:].left[:].id"),
+    ]
+
+    with pytest.raises(OutputMappingSchemaError, match="divergent"):
+        validate_v2_output_mapping(mapping)
+
+
+def test_validate_checks_divergent_branches_separated_by_a_root_leaf() -> None:
+    mapping = [
+        _entry("p", "left", "$[:].aaa[:].value"),
+        _entry("p", "middle", "$[:].middle"),
+        _entry("p", "right", "$[:].zzz[:].value"),
     ]
 
     with pytest.raises(OutputMappingSchemaError, match="divergent"):
@@ -897,6 +929,54 @@ def test_assemble_allows_null_scalar_payload_that_is_not_a_nesting_key() -> None
         "child": pl.LazyFrame({"$[:].id": [1], "$[:].items[:].value": ["v"]}),
     }
     assert _assemble_document(frames) == [{"id": 1, "items": [{"value": "v"}]}]
+
+
+def test_assemble_allows_null_scalar_payload_at_a_leaf_array_level() -> None:
+    frames = {
+        "item": pl.LazyFrame(
+            {
+                "$[:].items[:].id": [1],
+                "$[:].items[:].optional": [None],
+            }
+        )
+    }
+
+    assert _assemble_document(frames) == [{"items": [{"id": 1}]}]
+
+
+@pytest.mark.parametrize(
+    ("parent_item_id", "child_item_id", "expected_frame"),
+    [(None, 7, "item"), (7, None, "detail")],
+)
+def test_assemble_rejects_null_key_across_a_synthesised_child_level(
+    parent_item_id: int | None,
+    child_item_id: int | None,
+    expected_frame: str,
+) -> None:
+    frames = {
+        "detail": pl.LazyFrame(
+            {
+                "$[:].root_id": [1],
+                "$[:].items[:].item_id": [child_item_id],
+                "$[:].items[:].subitems[:].details[:].value": ["v"],
+            }
+        ),
+        "item": pl.LazyFrame(
+            {
+                "$[:].root_id": [1],
+                "$[:].items[:].item_id": [parent_item_id],
+            }
+        ),
+    }
+
+    with pytest.raises(OutputNestingKeyError) as exc_info:
+        _assemble_document(frames)
+
+    assert exc_info.value.context == {
+        "frame": expected_frame,
+        "output_path": "$[:].items[:].item_id",
+        "key": "$[:].items[:].item_id",
+    }
 
 
 def test_assemble_ignores_absent_nesting_key_in_partial_frame() -> None:
@@ -1018,6 +1098,32 @@ def test_output_contract_excludes_blank_source_column() -> None:
 # the mutation, not merely "it still runs".
 
 
+@pytest.mark.parametrize(
+    ("record", "attribute"),
+    [
+        (
+            _Core(
+                tables=frozenset({"T"}),
+                parent_keys=frozenset(),
+                carriers=frozenset(),
+            ),
+            "tables",
+        ),
+        (
+            _CutPlan(
+                cores=(),
+                cuts=frozenset(),
+                merge_residue={"T": frozenset()},
+            ),
+            "cuts",
+        ),
+    ],
+)
+def test_cut_plan_records_are_immutable(record: object, attribute: str) -> None:
+    with pytest.raises(FrozenInstanceError):
+        setattr(record, attribute, None)
+
+
 # _merge_groups union-find — find() must reach the true root regardless of the
 # alphabetical relation between a node and its parent pointer (the '!=' loop
 # bound must not become '<' or '>'). Two single-field merges with the carriers
@@ -1122,6 +1228,62 @@ def test_assemble_synthesised_level_with_own_key_excludes_siblings() -> None:
             "other": [{"ko": "o1", "sub": [{"vo": "ov"}]}],
         }
     ]
+
+
+def test_assemble_synthesised_siblings_scope_each_root_independently() -> None:
+    field_frames = {
+        "parent": pl.LazyFrame(
+            {
+                "$[:].a_key": [101, 102],
+                "$[:].z_key": [201, 202],
+                "$[:].name": ["first", "second"],
+            }
+        ),
+        "aaa": pl.LazyFrame(
+            {
+                "$[:].a_key": [101, 102],
+                "$[:].aaa[:].sub[:].value": ["a1", "a2"],
+            }
+        ),
+        "zzz": pl.LazyFrame(
+            {
+                "$[:].z_key": [201, 202],
+                "$[:].zzz[:].sub[:].value": ["z1", "z2"],
+            }
+        ),
+    }
+
+    assert _assemble_document(field_frames) == [
+        {
+            "a_key": 101,
+            "z_key": 201,
+            "name": "first",
+            "aaa": [{"sub": [{"value": "a1"}]}],
+            "zzz": [{"sub": [{"value": "z1"}]}],
+        },
+        {
+            "a_key": 102,
+            "z_key": 202,
+            "name": "second",
+            "aaa": [{"sub": [{"value": "a2"}]}],
+            "zzz": [{"sub": [{"value": "z2"}]}],
+        },
+    ]
+
+
+def test_assemble_allows_null_payload_owned_only_by_a_child() -> None:
+    field_frames = {
+        "parent": pl.LazyFrame({"$[:].id": [1]}),
+        "child": pl.LazyFrame(
+            {
+                "$[:].id": [1],
+                "$[:].items[:].name": ["item"],
+                "$[:].items[:].optional": [None],
+            }
+        ),
+    }
+
+    assert _assemble_document(field_frames) == [{"id": 1, "items": [{"name": "item"}]}]
 
 
 # _prune loop control — the empty-collection skips are `continue`, not `break`,
