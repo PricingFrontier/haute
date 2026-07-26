@@ -212,10 +212,14 @@ docs/specs/frontend-shared/low-level.md	non-root-relative-test-reference	useWebS
 docs/specs/frontend-shared/low-level.md	non-root-relative-test-reference	utils/__tests__/chartHelpers.test.ts
 docs/specs/frontend-shared/low-level.md	non-root-relative-test-reference	utils/__tests__/formatTime.test.ts
 docs/specs/git-integration/low-level.md	missing-module-map-symbol	_git
-docs/specs/json-shredding/high-level.md	empty-roadmap-pointer	../../roadmap/io-layer.md
-docs/specs/json-shredding/high-level.md	legacy-contract-section	Polars backend contracts (0.6.0)
-docs/specs/json-shredding/low-level.md	empty-roadmap-pointer	../../roadmap/io-layer.md
-docs/specs/json-shredding/low-level.md	legacy-contract-section	Polars backend contracts (0.6.0)
+docs/specs/io-layer/high-level.md	ambiguous-repo-reference	__init__.py -> rating/utility/__init__.py, src/haute/__init__.py, src/haute/assistant/__init__.py, src/haute/cli/__init__.py, src/haute/deploy/__init__.py, src/haute/modelling/__init__.py, src/haute/routes/__init__.py, tests/__init__.py
+docs/specs/io-layer/high-level.md	empty-roadmap-pointer	../../roadmap/io-layer.md
+docs/specs/io-layer/high-level.md	legacy-contract-section	Polars backend contracts (0.6.0)
+docs/specs/io-layer/low-level.md	broken-link-anchor	high-level.md#approved-change-contract-070-data-io-convergence
+docs/specs/io-layer/low-level.md	empty-roadmap-pointer	../../roadmap/io-layer.md
+docs/specs/io-layer/low-level.md	legacy-contract-section	Polars backend contracts (0.6.0)
+docs/specs/io-layer/low-level.md	missing-module-map-symbol	hive_schema
+docs/specs/io-layer/low-level.md	missing-module-map-symbol	schema_overrides
 docs/specs/mlflow-model-registry/high-level.md	legacy-contract-section	Polars backend contracts (0.6.0)
 docs/specs/mlflow-model-registry/low-level.md	legacy-contract-section	Polars backend contracts (0.6.0)
 docs/specs/modelling/high-level.md	legacy-contract-section	Polars backend contracts (0.6.0)
@@ -247,8 +251,6 @@ docs/specs/reference-pipeline/low-level.md	missing-module-map-symbol	my_pipeline
 docs/specs/reference-pipeline/low-level.md	missing-repo-reference	rating/config/expander/premium.json
 docs/specs/reference-pipeline/low-level.md	missing-repo-reference	rating/data/quotes/nest_example.json
 docs/specs/sandbox-security/low-level.md	missing-module-map-symbol	exec()
-docs/specs/server-api/high-level.md	legacy-contract-section	Polars backend contracts (0.6.0)
-docs/specs/server-api/low-level.md	legacy-contract-section	Polars backend contracts (0.6.0)
 docs/specs/server-api/low-level.md	missing-module-map-symbol	contract_error
 docs/specs/submodels/low-level.md	missing-module-map-symbol	SUBMODEL
 docs/specs/tracing/high-level.md	legacy-contract-section	Polars backend contracts (0.6.0)

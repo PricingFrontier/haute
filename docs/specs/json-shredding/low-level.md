@@ -481,9 +481,6 @@ V2 schema codec and OUTPUT shape:
   pins the fixture-level nested-document contract, while
   `tests/test_executor_builders.py` and `tests/test_codegen_builders.py` own the
   executor/generated-code integration boundary.
-- `tests/test_v1_removal_contract.py` owns the assertion that removed v1 schema
-  symbols stay absent; that compatibility-removal contract is not part of
-  `test_v2_codec_and_shred.py`.
 - `frontend/src/__tests__/editors/OutputEditor.test.tsx`,
   `frontend/src/__tests__/editors/OutputEditorPathTools.test.tsx`, and
   `frontend/src/__tests__/editors/jsonpath.test.ts` own the UI-adjacent mapping,
