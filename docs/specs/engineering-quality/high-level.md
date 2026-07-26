@@ -61,7 +61,7 @@ Out of scope:
   branches, 80% functions, and 80% lines, followed by the configured
   source-specific critical-coverage ratchet. ESLint treats useless assignments,
   discarded caught-error context, unsafe hook refs, and state updates in effects
-  as errors; two pre-existing file/rule pairs remain visible as narrow config
+  as errors; fourteen pre-existing file/rule pairs remain visible as narrow config
   exceptions until their owning changes land.
 - The project-isolated Chromium canvas-assurance module owns the high-risk
   Banding-to-Rating and optimiser/MLflow-boundary journeys, keyboard operation,

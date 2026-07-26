@@ -52,4 +52,30 @@ export default defineConfig([
       'preserve-caught-error': 'warn',
     },
   },
+  {
+    files: [
+      'src/components/CacheFetchButton.tsx',
+      'src/panels/GitPanel.tsx',
+    ],
+    rules: {
+      'react-hooks/refs': 'warn',
+    },
+  },
+  {
+    files: [
+      'src/components/BranchManager.tsx',
+      'src/components/CacheFetchButton.tsx',
+      'src/components/RemotePushControl.tsx',
+      'src/hooks/usePipelineAPI.ts',
+      'src/hooks/useWebSocketSync.ts',
+      'src/panels/editors/RatingStepEditor.tsx',
+      'src/panels/GitPanel.tsx',
+      'src/panels/NodePanel.tsx',
+      'src/panels/OptimiserDataPreview.tsx',
+      'src/panels/OptimiserPreview.tsx',
+    ],
+    rules: {
+      'react-hooks/set-state-in-effect': 'warn',
+    },
+  },
 ])

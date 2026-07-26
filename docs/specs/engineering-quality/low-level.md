@@ -16,7 +16,7 @@
 | `.github/workflows/mutation.yml` | Plans changed mutation targets, runs separate CI-job shards whose mutants execute serially per runner, and uses a failure-aware non-cancelled status condition on the single merge gate so plan/shard failures become failed rather than skipped checks. |
 | `.github/workflows/performance.yml` | Runs scheduled/manual Python and browser-performance lanes and uploads their artifacts. |
 | `frontend/package.json` | Defines frontend lint/type/unit/coverage/bundle/E2E/benchmark command entry points and frontend critical-coverage entries. |
-| `frontend/eslint.config.js` | Defines blocking browser TypeScript/React ESLint rules, two explicit pre-existing file/rule exceptions, generated-report ignores, and underscore-prefixed intentionally-unused names. |
+| `frontend/eslint.config.js` | Defines blocking browser TypeScript/React ESLint rules, fourteen explicit pre-existing file/rule exceptions, generated-report ignores, and underscore-prefixed intentionally-unused names. |
 | `frontend/vitest.config.ts` | Configures the Vitest unit-test environment, setup, source/test selection, coverage reporting, and blocking 80/75/80/80 global thresholds. |
 | `frontend/playwright.config.ts` | Configures serial browser E2E projects, retries, artifacts, and readiness-managed local E2E server. |
 | `frontend/e2e/core-flows.spec.ts` | Playwright coverage for core browser flows. |
@@ -269,10 +269,12 @@
   `tests/test_infrastructure_contracts.py`, and `tests/test_docs_accuracy.py`
   cover important assurance tooling and repository-policy contracts. The
   documentation-accuracy checks validate complete-document repository paths
-  from a fail-loud tracked-file inventory, `path::symbol` and Module-map
-  responsibility symbols, exact headings, Testing references and backend-test
-  indexing, link anchors, roadmap evidence, present-tense ownership claims,
-  positive-evidence temporary-contract retirement, and the one-line ratchet.
+  from a fail-loud tracked-file inventory whose exact, suffix, and parent-path
+  indexes are built once per ratchet evaluation; they also validate
+  `path::symbol` and Module-map responsibility symbols, exact headings, Testing
+  references and backend-test indexing, link anchors, roadmap evidence,
+  present-tense ownership claims, positive-evidence temporary-contract
+  retirement, and the one-line ratchet.
 - `tests/test_dependency_audit.py` covers clean/blocking reports, npm
   high/critical and transitive identities, valid/expired/malformed/duplicate/
   unused acceptances, the invariant that an accepted parent meta-finding cannot

@@ -475,6 +475,46 @@ class DocViolation:
         return "\t".join((self.document, self.rule, self.detail))
 
 
+@dataclass(frozen=True)
+class RepoInventory:
+    """Tracked repository paths indexed once for repeated documentation lookups."""
+
+    root: Path
+    files: frozenset[Path]
+    file_names: frozenset[str]
+    paths_by_name: Mapping[str, Path]
+    files_by_suffix: Mapping[str, tuple[Path, ...]]
+    directories_by_suffix: Mapping[str, tuple[Path, ...]]
+
+    @classmethod
+    def build(cls, root: Path, files: set[Path] | frozenset[Path]) -> RepoInventory:
+        tracked = frozenset(files)
+        file_paths = {path.relative_to(root).as_posix(): path for path in tracked}
+        directory_paths: dict[str, Path] = {}
+        for path in tracked:
+            for parent in path.parents:
+                if parent == root:
+                    break
+                directory_paths[parent.relative_to(root).as_posix()] = parent
+
+        def suffix_index(paths: Mapping[str, Path]) -> dict[str, tuple[Path, ...]]:
+            indexed: dict[str, list[Path]] = {}
+            for relative, path in paths.items():
+                parts = relative.split("/")
+                for start in range(len(parts)):
+                    indexed.setdefault("/".join(parts[start:]), []).append(path)
+            return {suffix: tuple(sorted(matches)) for suffix, matches in indexed.items()}
+
+        return cls(
+            root=root,
+            files=tracked,
+            file_names=frozenset(file_paths),
+            paths_by_name={**directory_paths, **file_paths},
+            files_by_suffix=suffix_index(file_paths),
+            directories_by_suffix=suffix_index(directory_paths),
+        )
+
+
 def _without_fences(text: str) -> str:
     return _MARKDOWN_FENCE.sub("", text)
 
@@ -516,7 +556,11 @@ def _is_placeholder(reference: str) -> bool:
     return any(marker in reference for marker in ("<", ">", "{", "}"))
 
 
-def _looks_like_repo_reference(value: str, root_files: set[str]) -> bool:
+def _looks_like_repo_reference(
+    value: str,
+    root_files: set[str] | frozenset[str],
+    file_suffixes: set[str] | frozenset[str] | None = None,
+) -> bool:
     path, symbol = _strip_path_suffix(value)
     if not path or path.startswith("/") or _is_placeholder(path) or re.search(r"\s", path):
         return False
@@ -527,7 +571,11 @@ def _looks_like_repo_reference(value: str, root_files: set[str]) -> bool:
     return (
         path in root_files
         or path.startswith(_REPOSITORY_PATH_PREFIXES)
-        or any(item.endswith(f"/{path}") for item in root_files)
+        or (
+            path in file_suffixes
+            if file_suffixes is not None
+            else any(item.endswith(f"/{path}") for item in root_files)
+        )
         or (
             symbol is not None
             and bool(re.search(r"[.](?:css|js|json|md|mjs|py|toml|ts|tsx|yml|yaml)$", path))
@@ -536,47 +584,31 @@ def _looks_like_repo_reference(value: str, root_files: set[str]) -> bool:
 
 
 def _repo_reference_candidates(
-    reference: str, root: Path, files: set[Path]
+    reference: str,
+    root: Path,
+    files: set[Path] | frozenset[Path],
+    *,
+    inventory: RepoInventory | None = None,
 ) -> tuple[tuple[Path, ...], str | None]:
     path, symbol = _strip_path_suffix(reference)
     if not path or path.startswith("/") or _is_placeholder(path):
         return (), symbol
+    inventory = inventory or RepoInventory.build(root, files)
     if any(character in path for character in "*?["):
-        repo_paths = files | {
-            parent
-            for item in files
-            for parent in item.parents
-            if parent != root and parent.is_relative_to(root)
-        }
         candidates = {
             item
-            for item in repo_paths
-            if fnmatch.fnmatch(item.relative_to(root).as_posix(), path)
+            for relative, item in inventory.paths_by_name.items()
+            if fnmatch.fnmatch(relative, path)
             or ("/" not in path and fnmatch.fnmatch(item.name, path))
         }
     else:
-        exact = root / path
-        if exact in files or any(item.is_relative_to(exact) for item in files):
+        exact = inventory.paths_by_name.get(path)
+        if exact is not None:
             candidates = {exact}
         else:
-            suffix = f"/{path}"
-            candidates = {
-                item
-                for item in files
-                if item.name == path or item.as_posix().replace("\\", "/").endswith(suffix)
-            }
+            candidates = set(inventory.files_by_suffix.get(path, ()))
             if not candidates:
-                candidates = {
-                    parent
-                    for item in files
-                    for parent in item.parents
-                    if parent != root
-                    and parent.is_relative_to(root)
-                    and (
-                        parent.relative_to(root).as_posix() == path
-                        or parent.relative_to(root).as_posix().endswith(suffix)
-                    )
-                }
+                candidates = set(inventory.directories_by_suffix.get(path, ()))
     return tuple(sorted(candidates)), symbol
 
 
@@ -587,20 +619,19 @@ def _python_symbol_names(path: Path) -> frozenset[str]:
             tree = ast.parse(path.read_text(encoding="utf-8"))
         except (OSError, SyntaxError, UnicodeDecodeError):
             return frozenset()
-        names = {
-            node.name
-            for node in ast.walk(tree)
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
-        }
+        names: set[str] = set()
         for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                names.add(node.name)
+            elif isinstance(node, ast.Import):
                 names.update(alias.asname or alias.name.split(".")[0] for alias in node.names)
             elif isinstance(node, ast.ImportFrom):
                 names.update(
                     alias.asname or alias.name for alias in node.names if alias.name != "*"
                 )
-        names.update(node.arg for node in ast.walk(tree) if isinstance(node, ast.arg))
-        for node in ast.walk(tree):
+            elif isinstance(node, ast.arg):
+                names.add(node.arg)
+
             targets: list[ast.expr] = []
             if isinstance(node, ast.Assign):
                 targets = node.targets
@@ -640,9 +671,19 @@ def _file_has_symbol(path: Path, symbol: str) -> bool:
 
 
 def _reference_violation(
-    document: str, reference: str, root: Path, files: set[Path]
+    document: str,
+    reference: str,
+    root: Path,
+    files: set[Path] | frozenset[Path],
+    *,
+    inventory: RepoInventory | None = None,
 ) -> DocViolation | None:
-    candidates, symbol = _repo_reference_candidates(reference, root, files)
+    candidates, symbol = _repo_reference_candidates(
+        reference,
+        root,
+        files,
+        inventory=inventory,
+    )
     has_glob = any(character in _strip_path_suffix(reference)[0] for character in "*?[")
     if not candidates:
         return DocViolation(document, "missing-repo-reference", reference)
@@ -766,17 +807,27 @@ def _symbol_delivery_evidence(
     root: Path,
     files: set[Path],
     file_names: set[str],
+    file_suffixes: set[str],
+    inventory: RepoInventory,
     tests_only: bool = False,
 ) -> tuple[str, ...]:
     references = [
         item
         for item in _MARKDOWN_CODE_SPAN.findall(block)
-        if _looks_like_repo_reference(item, file_names)
+        if _looks_like_repo_reference(item, file_names, file_suffixes)
         and _strip_path_suffix(item)[1]
         and (not tests_only or _is_test_reference(item))
     ]
     if not references or any(
-        _reference_violation(document, item, root, files) is not None for item in references
+        _reference_violation(
+            document,
+            item,
+            root,
+            files,
+            inventory=inventory,
+        )
+        is not None
+        for item in references
     ):
         return ()
     return tuple(dict.fromkeys(references))
@@ -797,7 +848,9 @@ def _docs_violations(
 ) -> list[DocViolation]:
     specs_root = specs_root or root / "docs" / "specs"
     files = _repo_files(root) if repo_files is None else set(repo_files)
-    file_names = {item.relative_to(root).as_posix() for item in files}
+    inventory = RepoInventory.build(root, files)
+    file_names = set(inventory.file_names)
+    file_suffixes = set(inventory.files_by_suffix)
     violations: set[DocViolation] = set()
     referenced_tests: set[str] = set()
     roadmap_root = root / "docs" / "roadmap"
@@ -818,9 +871,15 @@ def _docs_violations(
                 violations.add(DocViolation(relative, "missing-required-heading", heading))
 
         for reference in _MARKDOWN_CODE_SPAN.findall(text):
-            if not _looks_like_repo_reference(reference, file_names):
+            if not _looks_like_repo_reference(reference, file_names, file_suffixes):
                 continue
-            violation = _reference_violation(relative, reference, root, files)
+            violation = _reference_violation(
+                relative,
+                reference,
+                root,
+                files,
+                inventory=inventory,
+            )
             if violation:
                 violations.add(violation)
 
@@ -867,7 +926,7 @@ def _docs_violations(
                 refs = [
                     item
                     for item in _MARKDOWN_CODE_SPAN.findall(sentence)
-                    if _looks_like_repo_reference(item, file_names)
+                    if _looks_like_repo_reference(item, file_names, file_suffixes)
                 ]
                 delivery_refs = _symbol_delivery_evidence(
                     sentence,
@@ -875,6 +934,8 @@ def _docs_violations(
                     root=root,
                     files=files,
                     file_names=file_names,
+                    file_suffixes=file_suffixes,
+                    inventory=inventory,
                 )
                 if refs and len(delivery_refs) == len(refs) and _FUTURE_ACTION.search(sentence):
                     violations.add(
@@ -901,6 +962,8 @@ def _docs_violations(
                         root=root,
                         files=files,
                         file_names=file_names,
+                        file_suffixes=file_suffixes,
+                        inventory=inventory,
                         tests_only=True,
                     )
                 )
@@ -911,7 +974,7 @@ def _docs_violations(
                 refs = [
                     item
                     for item in _MARKDOWN_CODE_SPAN.findall(target_block)
-                    if _looks_like_repo_reference(item, file_names)
+                    if _looks_like_repo_reference(item, file_names, file_suffixes)
                 ]
                 target_evidence = _symbol_delivery_evidence(
                     target_block,
@@ -919,6 +982,8 @@ def _docs_violations(
                     root=root,
                     files=files,
                     file_names=file_names,
+                    file_suffixes=file_suffixes,
+                    inventory=inventory,
                 )
                 evidence = (
                     target_evidence
@@ -943,7 +1008,15 @@ def _docs_violations(
                 paths = [
                     candidates[0]
                     for reference in path_references
-                    if len(candidates := _repo_reference_candidates(reference, root, files)[0]) == 1
+                    if len(
+                        candidates := _repo_reference_candidates(
+                            reference,
+                            root,
+                            files,
+                            inventory=inventory,
+                        )[0]
+                    )
+                    == 1
                 ]
                 for cell in row[1:]:
                     for symbol in _MARKDOWN_CODE_SPAN.findall(cell):
@@ -961,7 +1034,12 @@ def _docs_violations(
                 if not _is_test_reference(reference):
                     continue
                 path, _ = _strip_path_suffix(reference)
-                candidates, _ = _repo_reference_candidates(reference, root, files)
+                candidates, _ = _repo_reference_candidates(
+                    reference,
+                    root,
+                    files,
+                    inventory=inventory,
+                )
                 if _is_frontend_test_reference(reference, candidates, root) and not path.startswith(
                     "frontend/"
                 ):
@@ -972,7 +1050,13 @@ def _docs_violations(
                             reference,
                         )
                     )
-                violation = _reference_violation(relative, reference, root, files)
+                violation = _reference_violation(
+                    relative,
+                    reference,
+                    root,
+                    files,
+                    inventory=inventory,
+                )
                 referenced_tests.update(
                     candidate.relative_to(root).as_posix()
                     for candidate in candidates
@@ -1002,9 +1086,15 @@ def _docs_violations(
         text = _without_fences(document.read_text(encoding="utf-8"))
         for evidence in _roadmap_evidence_blocks(text):
             for reference in _MARKDOWN_CODE_SPAN.findall(evidence):
-                if not _looks_like_repo_reference(reference, file_names):
+                if not _looks_like_repo_reference(reference, file_names, file_suffixes):
                     continue
-                violation = _reference_violation(relative, reference, root, files)
+                violation = _reference_violation(
+                    relative,
+                    reference,
+                    root,
+                    files,
+                    inventory=inventory,
+                )
                 if violation:
                     violations.add(
                         DocViolation(
@@ -1519,8 +1609,36 @@ def test_repo_reference_candidates_respect_explicit_inventory(tmp_path: Path) ->
     untracked = tmp_path / "src" / "untracked.py"
     untracked.parent.mkdir()
     untracked.write_text("value = 1\n", encoding="utf-8")
+    tracked = tmp_path / "src" / "tracked.py"
+    tracked.write_text("value = 1\n", encoding="utf-8")
+    files = {tracked}
+    inventory = RepoInventory.build(tmp_path, files)
 
     assert _repo_reference_candidates("src/untracked.py", tmp_path, set()) == ((), None)
+    assert _repo_reference_candidates(
+        "src/tracked.py::value",
+        tmp_path,
+        files,
+        inventory=inventory,
+    ) == ((tracked,), "value")
+    assert _repo_reference_candidates(
+        "tracked.py",
+        tmp_path,
+        files,
+        inventory=inventory,
+    ) == ((tracked,), None)
+    assert _repo_reference_candidates(
+        "src/*.py",
+        tmp_path,
+        files,
+        inventory=inventory,
+    ) == ((tracked,), None)
+    assert _repo_reference_candidates(
+        "src",
+        tmp_path,
+        files,
+        inventory=inventory,
+    ) == ((tracked.parent,), None)
 
 
 def test_docs_guard_seeded_s3_regressions(tmp_path: Path) -> None:
