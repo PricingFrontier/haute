@@ -37,7 +37,7 @@ export default function MoveConfirmModal({ onConfirm, onClose }: MoveConfirmModa
   return (
     <ModalShell
       ariaLabel="Move to a version"
-      onClose={onClose}
+      onClose={() => { if (!busy) onClose() }}
       width="w-[460px]"
       testId="move-confirm-modal"
     >

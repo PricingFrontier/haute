@@ -61,6 +61,41 @@ describe("RemotePushControl — error paths and catch-up matrix", () => {
 
   afterEach(cleanup)
 
+  it("distinguishes a remote-list failure from a confirmed empty configuration", async () => {
+    mockGetGitRemotes.mockRejectedValue(new Error("offline"))
+
+    render(<RemotePushControl pendingSaveCount={0} />)
+
+    expect(await screen.findByTestId("git-push-load-error")).toHaveTextContent(
+      "Couldn't load remotes",
+    )
+    expect(screen.queryByTestId("git-push-no-remotes")).not.toBeInTheDocument()
+  })
+
+  it("keeps the rejection modal and last good remotes when its refresh fails", async () => {
+    mockGetGitRemotes
+      .mockResolvedValueOnce({ remotes: [remote()], working_branch: "dev" })
+      .mockRejectedValueOnce(new Error("offline"))
+    const rejection = {
+      status: "rejected_diverged",
+      remote: "origin",
+      working: { status: "diverged", ahead: 1, behind: 2 },
+      ledger: { status: "ahead", ahead: 1, behind: 0 },
+      message: "The shared copy changed; local work is safe.",
+    }
+    mockGitPush.mockRejectedValue(
+      new ApiError("HTTP 409", 409, JSON.stringify({ detail: rejection }), { detail: rejection }),
+    )
+    render(<RemotePushControl pendingSaveCount={0} />)
+    await waitFor(() => expect(screen.getByTestId("git-push-button")).toBeEnabled())
+    fireEvent.click(screen.getByTestId("git-push-button"))
+
+    expect(await screen.findByTestId("git-push-rejected")).toBeInTheDocument()
+    expect(screen.getByTestId("git-push-remote")).toHaveValue("origin")
+    expect(screen.getByTestId("git-push-load-error")).toHaveTextContent("refresh failed")
+    expect(screen.queryByTestId("git-push-no-remotes")).not.toBeInTheDocument()
+  })
+
   // ── catch-up (fast-forward) rejection / throw ────────────────────────────
   it("toasts 'Couldn't catch up' with the Error message when fast-forward throws", async () => {
     mockGetGitRemotes.mockResolvedValue({

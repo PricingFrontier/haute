@@ -132,6 +132,30 @@ class TestRollbackFork:
         assert _git(repo, "branch", "--list", "moved-save") == ""
         assert read_working_branch(repo) == WORKING
 
+    def test_move_mode_unexpected_exception_rolls_back(
+        self, repo: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from haute._git_state import read_working_branch
+
+        _fork_setup(repo)
+        ledger_tip_before = _git(repo, "rev-parse", LEDGER)
+        working_before = _git(repo, "rev-parse", WORKING)
+        _fail_run_git_on(
+            monkeypatch,
+            lambda a: a[:2] == ("branch", "-f") and len(a) > 2 and a[2] == LEDGER,
+            RuntimeError("injected unexpected failure"),
+        )
+
+        with pytest.raises(RuntimeError, match="injected unexpected failure"):
+            create_working_branch("moved-runtime", repo, move=True, cwd=repo)
+
+        assert _git(repo, "rev-parse", LEDGER) == ledger_tip_before
+        assert _git(repo, "rev-parse", WORKING) == working_before
+        assert _git(repo, "symbolic-ref", "--short", "HEAD") == LEDGER
+        assert _git(repo, "branch", "--list", "moved-runtime") == ""
+        assert _git(repo, "branch", "--list", "moved-runtime-save") == ""
+        assert read_working_branch(repo) == WORKING
+
     def test_parallel_fork_lone_ref_cleanup(
         self, repo: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

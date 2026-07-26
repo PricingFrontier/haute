@@ -53,6 +53,7 @@ export default function RemotePushControl({
   const [remotes, setRemotes] = useState<GitRemote[]>([])
   const [selected, setSelected] = useState<string>("")
   const [loaded, setLoaded] = useState(false)
+  const [loadError, setLoadError] = useState(false)
   const [pushing, setPushing] = useState(false)
   const [confirming, setConfirming] = useState(false)
   const [catchingUp, setCatchingUp] = useState(false)
@@ -70,6 +71,7 @@ export default function RemotePushControl({
       const res = await getGitRemotes()
       if (id !== reqId.current) return // superseded by a newer load
       setRemotes(res.remotes)
+      setLoadError(false)
       // Keep a still-valid selection; otherwise default to the sole remote (a
       // common case) or to no selection so a push is always deliberate.
       setSelected((prev) =>
@@ -80,8 +82,9 @@ export default function RemotePushControl({
             : "",
       )
     } catch {
-      // Remotes are best-effort chrome; a failure just leaves the control empty.
-      if (id === reqId.current) setRemotes([])
+      // Keep prior remote data usable after a transient failure. An initial
+      // failure is distinct from a confirmed empty remote list.
+      if (id === reqId.current) setLoadError(true)
     } finally {
       if (id === reqId.current) setLoaded(true)
     }
@@ -184,7 +187,14 @@ export default function RemotePushControl({
   }, [selected, addToast, load])
 
   // Fully offline (no remotes): say so plainly rather than show an empty dropdown.
-  if (loaded && remotes.length === 0) {
+  if (loaded && loadError && remotes.length === 0 && !rejection) {
+    return (
+      <div data-testid="git-push-load-error" className="px-3 py-2 text-[11px]" style={{ color: "var(--danger)" }}>
+        Couldn&apos;t load remotes. Try refreshing the Git panel.
+      </div>
+    )
+  }
+  if (loaded && !loadError && remotes.length === 0 && !rejection) {
     return (
       <div
         data-testid="git-push-no-remotes"
@@ -199,6 +209,17 @@ export default function RemotePushControl({
 
   return (
     <div data-testid="git-push-control" className="px-2 pt-2 flex items-center gap-2">
+      {loadError && (
+        <span
+          data-testid="git-push-load-error"
+          className="text-[10px] shrink-0"
+          style={{ color: "var(--danger)" }}
+          title="The last remote refresh failed; showing the most recent known state."
+          aria-label="Remote refresh failed; showing the most recent known state"
+        >
+          refresh failed
+        </span>
+      )}
       <select
         data-testid="git-push-remote"
         aria-label="Remote to push to"

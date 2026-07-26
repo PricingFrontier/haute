@@ -122,6 +122,12 @@ export default function GitPanel({ onClose, onSave }: GitPanelProps) {
   const [dotMenu, setDotMenu] = useState<{ sha: string; x: number; y: number } | null>(null)
   const [laneMenu, setLaneMenu] = useState<{ branch: string; x: number; y: number } | null>(null)
   const [switching, setSwitching] = useState(false)
+  // refresh is intentionally stable across peeks: nonce effects must not
+  // replay merely because the requested branch changed.
+  const viewBranchRef = useRef(viewBranch)
+  useEffect(() => {
+    viewBranchRef.current = viewBranch
+  }, [viewBranch])
 
   // ---------------------------------------------------------------------------
   // Data
@@ -153,6 +159,7 @@ export default function GitPanel({ onClose, onSave }: GitPanelProps) {
     { milestones: GitMilestoneEntry[]; pending: GitLedgerSave[] } | null
   > => {
     setLoading(true)
+    const requestedViewBranch = viewBranchRef.current
     // The rail's graph is chrome, not history (A-5): a separate, individually
     // caught fetch whose failure never toasts. Only the newest refresh's
     // response lands (generation guard), and a transient refetch failure
@@ -175,8 +182,8 @@ export default function GitPanel({ onClose, onSave }: GitPanelProps) {
     )
     try {
       const [ms, ps] = await Promise.all([
-        getMilestones(50, viewBranch),
-        getPendingSaves(viewBranch),
+        getMilestones(50, requestedViewBranch),
+        getPendingSaves(requestedViewBranch),
       ])
       // Land the rows WITH the rail rather than a beat before it: hold the
       // row commit until the graph settles or 250ms passes, whichever is
@@ -191,7 +198,7 @@ export default function GitPanel({ onClose, onSave }: GitPanelProps) {
       // them — no setState, no applied bookkeeping, and no session-cache
       // write (it would overwrite a fresher snapshot with older data).
       if (generation !== refreshGeneration.current) return null
-      const resolvedBranch = viewBranch ?? ms.working_branch
+      const resolvedBranch = requestedViewBranch ?? ms.working_branch
       const msJson = serializePayload(ms.entries)
       const psJson = serializePayload(ps.saves)
       // Always snapshot the successful response for cross-remount hydration —
@@ -227,7 +234,7 @@ export default function GitPanel({ onClose, onSave }: GitPanelProps) {
       // must not clear it while the newer fetch is still in flight.
       if (generation === refreshGeneration.current) setLoading(false)
     }
-  }, [addToast, viewBranch])
+  }, [addToast])
 
   // The commit effect needs the latest peek state without re-subscribing on
   // every peek change (which would re-fire a stale commit selection).
@@ -247,8 +254,11 @@ export default function GitPanel({ onClose, onSave }: GitPanelProps) {
 
   useEffect(() => {
     loadStatus()
-    refresh()
-  }, [loadStatus, refresh])
+  }, [loadStatus])
+
+  useEffect(() => {
+    void refresh()
+  }, [viewBranch, refresh])
 
   // Viewing a different branch shows a different history — reset expansion and
   // clear the selection (it referred to the previous branch's save). The row

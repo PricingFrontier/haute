@@ -10,12 +10,13 @@ one layer, so guardrails (no writing to protected branches, no force-push, no si
 merges), user-friendly error translation, and safety nets (trash tombstones, transactional
 rollback paths) are enforced in exactly one place rather than scattered across call sites.
 All mutations and clone-state transactions for one repository are serialized by one
-logical reentrant engine critical section; unrelated read-only history and Git readiness
-work remains concurrent. Lock identity lookup is bounded and cached so clone-state reads
-used by readiness polling do not repeatedly walk the filesystem. A stable project-path key
-remains part of the critical section after `git init`, while linked worktrees additionally
-share their common-Git-directory key, so the initialization transition cannot split one
-project's mutations across two locks.
+logical reentrant engine critical section. Pure Git-object/history reads remain concurrent,
+but reads of Haute's clone-state files acquire that same repository lock so they cannot
+observe a state transaction halfway through. Lock identity lookup is bounded and cached so
+readiness polling does not repeatedly walk the filesystem. A stable project-path key remains
+part of the critical section after `git init`, while linked worktrees additionally share
+their common-Git-directory key, so the initialization transition cannot split one project's
+mutations across two locks.
 
 The component owns the full lifecycle of a "working branch": creating one, saving
 incremental progress to it, promoting saves to a named milestone, forking a parallel
@@ -59,9 +60,13 @@ Out of scope (owned by neighbouring components):
 **The branch-pair model.** Every working branch `<W>` the user creates is paired with a
 save ledger `<W>-save`. Ordinary "saves" are commits on the ledger — one commit per save,
 scoped to exactly the files that changed. HEAD lives on the ledger during normal use, so
-the user is always looking at their latest saved state. "Save & commit" (a milestone)
-folds every pending ledger commit into a single, always-real merge commit on the working
-branch, with the user's own message and an optional version-label tag. The working
+the user is always looking at their latest saved state. "Save & commit" (a milestone) first
+sweeps every modified file that is already tracked by Git into one final ledger save (new
+untracked files are never included implicitly), then folds every pending ledger commit into
+a single, always-real merge commit on the working branch, with the user's own message and an
+optional version-label tag. The branch advance and optional annotated tag ref are one atomic
+ref transaction, so a rejected or failed label cannot leave an unlabelled milestone behind.
+The working
 branch's first-parent chain therefore reads as a clean sequence of deliberate milestones,
 while every individual save remains reachable through each merge's second parent.
 
@@ -96,9 +101,11 @@ ref and validates that it shares history with the local working line before publ
 working+ledger pair. It never implicitly advances or replaces an existing remote default
 branch. A non-empty remote missing the expected default, an unrelated default history, or
 an inspection/fetch failure refuses before publication; the atomic push guarantees that a
-later ref rejection cannot leave only part of the submitted set behind. A working/ledger
-non-fast-forward rejection still surfaces as a structured "fork" the UI can explain (which
-leg diverged, by how much) rather than a dead-end error. No path force-pushes.
+later ref rejection cannot leave only part of the submitted set behind. The push subprocess
+itself is prompt-proof and time-bounded, so a wedged transport cannot retain the repository
+mutation lock indefinitely; timeout or launch failure becomes a sanitized Git error. A
+working/ledger non-fast-forward rejection still surfaces as a structured "fork" the UI can
+explain (which leg diverged, by how much) rather than a dead-end error. No path force-pushes.
 
 A remote fast-forward catch-up only ever advances refs when every leg is a clean fast-
 forward; anything else is refused so the user spins off a copy instead of triggering a
@@ -149,9 +156,11 @@ complete old or new document, never torn JSON.
   lets saves be cheap and automatic (an auto-generated message) while milestones stay
   deliberate and named, without losing either granularity.
 - **Real merge commits via plumbing, not a working-tree merge.** Milestones are built with
-  `commit-tree` + `update-ref` rather than `git merge`, so there is no checkout, no index,
-  and by construction no possibility of a merge conflict landing in front of the user —
-  the tree is exactly the ledger's tree, unconditionally.
+  `commit-tree` plus a ref transaction rather than `git merge`, so there is no checkout, no
+  index, and by construction no possibility of a merge conflict landing in front of the
+  user — the tree is exactly the ledger's tree, unconditionally. When a version label is
+  supplied, its annotated tag object is prepared first and the working ref plus tag ref are
+  committed together.
 - **Never force, never auto-merge remotely.** The product's trust model is that a user's
   local work is never silently discarded or rewritten. Push refuses on divergence rather
   than forcing; fast-forward refuses on anything but a clean fast-forward; a remote rewrite
@@ -250,10 +259,10 @@ caches are reconstructable by definition; and no routine read starts a network o
 Deliberate remote operations abort on a required refresh/inspection failure and never
 degrade to an assumed-empty, assumed-related, or successfully-updated remote.
 
-> NOTE: `_get_default_branch_cached` and the content-addressed caches
-> (`_merge_base_cached`, `_is_ancestor_cached`, `_first_parent_spine_cached`,
-> `_commit_parents_cached`, `_graph_log_cached`, `_tree_of_cached`) are `functools.lru_cache`
-> module-level globals, not per-request or per-repo-instance state. Multiple repos (or
-> worktrees) served by one long-lived process are disambiguated only by including
-> `str(cwd)` in the cache key; `_clear_content_caches()` exists specifically for test
-> isolation and repo-reset hygiene because there is no automatic invalidation otherwise.
+> NOTE: The content-addressed caches (`_merge_base_cached`, `_is_ancestor_cached`,
+> `_first_parent_spine_cached`, `_commit_parents_cached`, `_graph_log_cached`,
+> `_tree_of_cached`) are `functools.lru_cache` module-level globals, not per-request or
+> per-repo-instance state. Multiple repos (or worktrees) served by one long-lived process
+> are disambiguated by including `str(cwd)` in the cache key; `_clear_content_caches()`
+> exists for test isolation and repo-reset hygiene. Mutable ref-name lookups, including
+> default-branch discovery, are deliberately uncached.

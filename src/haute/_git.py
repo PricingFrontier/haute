@@ -83,6 +83,9 @@ _FETCH_COOLDOWN_SECONDS: float = 30.0
 # Hard ceiling on a single background fetch so a slow / unreachable / auth-walled
 # remote can never wedge the request thread (F1).
 _FETCH_TIMEOUT_SECONDS: float = 10.0
+# Publication can legitimately take longer than a ref advertisement/fetch, but
+# it must still release the repository mutation lock on a wedged transport.
+_PUSH_TIMEOUT_SECONDS: float = 60.0
 # Per-(cwd, remote, kind) last-fetch timestamps. Keyed — not one global float —
 # so concurrent worktrees served by a single process don't share one cooldown
 # window, where one clone's fetch would starve another's (F7). ``kind`` keeps
@@ -231,6 +234,7 @@ def _run_git(
     check: bool = True,
     cwd: Path | None = None,
     env: dict[str, str] | None = None,
+    input_text: str | None = None,
 ) -> str:
     """Run a git command and return stdout.  Raises ``GitError`` on failure.
 
@@ -244,19 +248,37 @@ def _run_git(
     identity + dates when replaying commits via ``commit-tree``).
     """
     cmd = ["git"] + list(args)
-    result = subprocess.run(
-        cmd,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        cwd=cwd or Path.cwd(),
-        env=_git_env(env),
-    )
-    if check and result.returncode != 0:
-        stderr = result.stderr.strip()
+    if input_text is None:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            cwd=cwd or Path.cwd(),
+            env=_git_env(env),
+        )
+        returncode = result.returncode
+        stdout = result.stdout
+        stderr = result.stderr
+    else:
+        # Text-mode stdin translates LF to CRLF on Windows. Git's stdin
+        # transaction protocols require literal LF separators, so pass bytes
+        # whenever a caller supplies input.
+        byte_result = subprocess.run(
+            cmd,
+            capture_output=True,
+            cwd=cwd or Path.cwd(),
+            env=_git_env(env),
+            input=input_text.encode("utf-8"),
+        )
+        returncode = byte_result.returncode
+        stdout = byte_result.stdout.decode("utf-8")
+        stderr = byte_result.stderr.decode("utf-8")
+    if check and returncode != 0:
+        stderr = stderr.strip()
         logger.warning("git_command_failed", cmd=cmd, stderr=stderr)
         raise GitError(stderr or f"git {args[0]} failed")
-    return result.stdout.strip()
+    return stdout.strip()
 
 
 def _run_git_ok(*args: str, cwd: Path | None = None) -> tuple[bool, str]:
@@ -333,8 +355,16 @@ def _fetch_refs(remote: str, *refs: str, cwd: Path | None = None) -> bool:
     + SSH ``BatchMode`` already stop interactive prompts, and the timeout bounds
     any hang, so a legitimately-configured non-interactive helper (token cache)
     keeps working rather than being forced off.
+
+    With no explicit *refs*, fetch and prune the configured remote namespace.
+    Authoritative actions use that form so a genuinely absent optional pair leg
+    is represented by a missing tracking ref rather than a failed fetch.
     """
-    cmd = ["git", "fetch", remote, *refs, "--quiet"]
+    cmd = (
+        ["git", "fetch", remote, *refs, "--quiet"]
+        if refs
+        else ["git", "fetch", "--prune", remote, "--quiet"]
+    )
     try:
         result = subprocess.run(
             cmd,
@@ -365,12 +395,12 @@ def _get_current_branch(cwd: Path | None = None) -> str:
     return branch if ok else "HEAD"
 
 
-@lru_cache(maxsize=32)
-def _get_default_branch_cached(cwd_str: str) -> str:
-    """Cached inner implementation.  Keyed on stringified *cwd* because
-    ``Path`` is unhashable and ``lru_cache`` keys must be hashable.
+def _get_default_branch(cwd: Path | None = None) -> str:
+    """Detect the current default branch from live ref state.
+
+    Remote selection and ``refs/remotes/<remote>/HEAD`` can both change during a
+    server session, so this ref-name lookup is deliberately not memoized.
     """
-    cwd = Path(cwd_str) if cwd_str else None
     # X5: resolve the deploy branch against the CANONICAL remote, not a hardcoded
     # ``origin`` — a clone whose sole remote is named e.g. "upstream" still reads
     # a correct default branch instead of falling through to the local guesses.
@@ -396,16 +426,6 @@ def _get_default_branch_cached(cwd_str: str) -> str:
     # inventing "main" (which would make switch-away checkouts fail, and would
     # leak the real default branch into the working-branch manager list).
     return _get_current_branch(cwd)
-
-
-def _get_default_branch(cwd: Path | None = None) -> str:
-    """Detect the default branch (main or master).
-
-    Result is cached per *cwd* — the default branch almost never changes
-    during a session so this avoids up to 3 subprocess calls on every
-    operation.
-    """
-    return _get_default_branch_cached(str(cwd) if cwd else "")
 
 
 def _get_user_slug(cwd: Path | None = None) -> str:
@@ -739,8 +759,7 @@ def _tree_of(ref: str, cwd: Path | None = None) -> str:
 # (unreadable ref/object) are never cached: each inner cached function raises
 # ``GitError`` on failure and ``functools.lru_cache`` does not memoise a call
 # that raises; the public wrappers catch and keep the old failure semantics.
-# Keys include ``str(cwd)`` (the ``_get_default_branch_cached`` precedent) so
-# repos served by one process never share entries.
+# Keys include ``str(cwd)`` so repos served by one process never share entries.
 # ---------------------------------------------------------------------------
 
 _FULL_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
@@ -831,8 +850,7 @@ def _first_parent_spine(tip: str, cwd: Path | None = None) -> list[str] | None:
 
 
 def _clear_content_caches() -> None:
-    """Drop every content-addressed cache (test isolation + repo-reset hygiene,
-    alongside ``_get_default_branch_cached.cache_clear()``)."""
+    """Drop every content-addressed cache (test isolation + repo-reset hygiene)."""
     _merge_base_cached.cache_clear()
     _is_ancestor_cached.cache_clear()
     _first_parent_spine_cached.cache_clear()
@@ -1016,6 +1034,14 @@ def merge_to_working(
     if any((ord(c) < 0x20 and c not in "\t\n\r") or ord(c) == 0x7F for c in message):
         raise GitDomainError("Commit message must not contain control characters.")
 
+    tag_ref: str | None = None
+    if tag_label is not None:
+        _validate_ref_name(tag_label)
+        tag_ref = f"version/{tag_label}"
+        ok, _ = _run_git_ok("rev-parse", "--verify", "--quiet", f"refs/tags/{tag_ref}", cwd=cwd)
+        if ok:
+            raise GitDomainError(f"Version label '{tag_label}' already exists.")
+
     violations = check_invariants(working, cwd=cwd)
     if violations:
         raise GitDomainError(
@@ -1031,15 +1057,34 @@ def merge_to_working(
     sha = _run_git(
         "commit-tree", tree, "-p", working_tip, "-p", ledger_tip, "-m", message, cwd=cwd
     ).strip()
-    _run_git("update-ref", f"refs/heads/{working}", sha, working_tip, cwd=cwd)
-
-    if tag_label is not None:
-        _validate_ref_name(tag_label)
-        tag_ref = f"version/{tag_label}"
-        ok, _ = _run_git_ok("rev-parse", "--verify", "--quiet", f"refs/tags/{tag_ref}", cwd=cwd)
-        if ok:
-            raise GitDomainError(f"Version label '{tag_label}' already exists.")
-        _run_git("tag", "-a", tag_ref, "-m", tag_label, sha, cwd=cwd)
+    if tag_ref is None:
+        _run_git("update-ref", f"refs/heads/{working}", sha, working_tip, cwd=cwd)
+    else:
+        # Build the annotated tag object without publishing its ref, then update
+        # the branch CAS and create the label in one ref transaction. If either
+        # precondition loses a race, Git applies neither update.
+        tagger = _run_git("var", "GIT_COMMITTER_IDENT", cwd=cwd)
+        tag_object = _run_git(
+            "hash-object",
+            "--literally",
+            "-t",
+            "tag",
+            "-w",
+            "--stdin",
+            cwd=cwd,
+            input_text=(
+                f"object {sha}\ntype commit\ntag {tag_ref}\ntagger {tagger}\n\n{tag_label}\n"
+            ),
+        )
+        _run_git(
+            "update-ref",
+            "--stdin",
+            cwd=cwd,
+            input_text=(
+                f"update refs/heads/{working} {sha} {working_tip}\n"
+                f"create refs/tags/{tag_ref} {tag_object}\n"
+            ),
+        )
 
     logger.info("milestone_merged", working=working, sha=sha, tag=tag_label or "", ledger=ledger)
     return sha
@@ -1272,7 +1317,6 @@ def set_working_branch(
                         "but 'main' already exists."
                     )
                 _run_git("branch", "-m", "main", cwd=cwd)
-                _get_default_branch_cached.cache_clear()
                 _clear_content_caches()
 
             # Seed staging is defence-in-depth: a file
@@ -1750,7 +1794,7 @@ def create_working_branch(
         # has been relocated; the commits stay reachable via the new ledger).
         _run_git("branch", "-f", ledger, point, cwd=cwd)
         write_working_branch(project_root, name)
-    except (GitError, OSError) as exc:
+    except Exception as exc:
         refs_restored = _rollback_fork(name, ledger, ledger_tip, cwd=cwd)
         try:
             write_working_branch(project_root, current)
@@ -1841,7 +1885,7 @@ def commit_milestone(
 
 def working_milestones(
     project_root: Path,
-    limit: int = 20,
+    limit: int | None = 20,
     cwd: Path | None = None,
     branch: str | None = None,
 ) -> GitMilestonesResponse:
@@ -1988,7 +2032,7 @@ def commit_context(
     full, short_sha, message, timestamp = _commit_meta(resolved, cwd=cwd)
     is_root = _is_root_commit(resolved, cwd=cwd)
 
-    milestones = working_milestones(project_root, cwd=cwd).entries
+    milestones = working_milestones(project_root, limit=None, cwd=cwd).entries
     milestone_shas = {m.sha for m in milestones}
     is_milestone = full in milestone_shas
     version_label = _version_label_for(full, cwd=cwd)
@@ -2346,20 +2390,18 @@ def _fork_source_and_credit(
 _GraphLogRow = tuple[str, str, tuple[str, ...], str, str]
 
 
-def _graph_log_rows(tip: str, limit: int, cwd: Path | None = None) -> tuple[_GraphLogRow, ...]:
+def _graph_log_rows(
+    tip: str, limit: int | None, cwd: Path | None = None
+) -> tuple[_GraphLogRow, ...]:
     """Uncached windowed first-parent log below *tip*, parsed. Commit fields
     are NUL-delimited, so authored tabs cannot shift fixed metadata columns.
     Raises :class:`GitError` when the ref/object is unreadable (so the cached
     wrapper never memoises a failure)."""
-    ok, raw = _run_git_ok(
-        "log",
-        "--first-parent",
-        f"--max-count={limit}",
-        "--format=%H%x00%h%x00%P%x00%aI%x00%s%x00",
-        tip,
-        "--",
-        cwd=cwd,
-    )
+    args = ["log", "--first-parent"]
+    if limit is not None:
+        args.append(f"--max-count={limit}")
+    args.extend(["--format=%H%x00%h%x00%P%x00%aI%x00%s%x00", tip, "--"])
+    ok, raw = _run_git_ok(*args, cwd=cwd)
     if not ok:
         raise GitError(f"git log failed for {tip}")
     rows: list[_GraphLogRow] = []
@@ -2375,7 +2417,7 @@ def _graph_log_rows(tip: str, limit: int, cwd: Path | None = None) -> tuple[_Gra
 
 
 @lru_cache(maxsize=256)
-def _graph_log_cached(tip_sha: str, limit: int, cwd_key: str) -> tuple[_GraphLogRow, ...]:
+def _graph_log_cached(tip_sha: str, limit: int | None, cwd_key: str) -> tuple[_GraphLogRow, ...]:
     """Cached inner — the window below an immutable tip SHA. Deliberately
     stores the PARSED rows, not GitGraphEntry objects: version labels come
     from tags (mutable) and must be applied per-request after retrieval."""
@@ -3138,15 +3180,23 @@ def push_working_pair(remote: str, project_root: Path, cwd: Path | None = None) 
     if bootstrapping:
         cmd.append(f"--force-with-lease=refs/heads/{default}:")
     cmd.extend([remote, *refspecs])
-    result = subprocess.run(
-        cmd,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        cwd=cwd or Path.cwd(),
-        env=_remote_env(),
-    )
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            cwd=cwd or Path.cwd(),
+            env=_remote_env(),
+            timeout=_PUSH_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as exc:
+        logger.warning("git_push_timed_out", remote=remote, refs=refspecs)
+        raise GitError("git push timed out") from exc
+    except OSError as exc:
+        logger.warning("git_push_launch_failed", remote=remote, refs=refspecs, error=str(exc))
+        raise GitError("git push failed") from exc
     if result.returncode != 0:
         stderr = result.stderr.strip()
         logger.warning("git_push_failed", remote=remote, refs=refspecs, stderr=stderr)
@@ -3224,7 +3274,11 @@ def fast_forward_pair(
     # Re-fetch so the catch-up decision is on fresh tips (authoritative, not a
     # poll), then read both legs.
     with _fetch_exec_lock:
-        _fetch_refs(remote, working, ledger, cwd=cwd)
+        refreshed = _fetch_refs(remote, working, ledger, cwd=cwd)
+    if not refreshed:
+        raise GitDomainError(
+            f"Could not refresh '{remote}'. Check your connection or credentials and try again."
+        )
     w_leg = _leg_state(working, remote, cwd=cwd)
     l_leg = _leg_state(ledger, remote, cwd=cwd)
 
@@ -3374,7 +3428,11 @@ def branch_away(remote: str, project_root: Path, cwd: Path | None = None) -> Git
 
     # Fresh tips so we adopt the current shared line (deliberate action).
     with _fetch_exec_lock:
-        _fetch_refs(remote, working, ledger, cwd=cwd)
+        refreshed = _fetch_refs(remote, cwd=cwd)
+    if not refreshed:
+        raise GitDomainError(
+            f"Could not refresh '{remote}'. Check your connection or credentials and try again."
+        )
     remote_w = _rev_parse(f"refs/remotes/{remote}/{working}", cwd=cwd)
     if remote_w is None:
         raise GitDomainError(
