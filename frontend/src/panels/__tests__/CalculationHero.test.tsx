@@ -706,7 +706,7 @@ describe("CalculationHero \u2014 Input Values Display", () => {
 describe("CalculationHero \u2014 Conditional Branch Display", () => {
   afterEach(cleanup)
 
-  it("simple when/then: highlights which branch was taken", () => {
+  it("simple when/then: shows backend selection without associating it to a parsed row", () => {
     const { container } = render(
       <CalculationHero
         {...makeProps({
@@ -724,14 +724,11 @@ describe("CalculationHero \u2014 Conditional Branch Display", () => {
         })}
       />,
     )
-    // The matched branch should be highlighted (e.g., has an active/matched class)
-    const matchedBranch = container.querySelector(
-      "[class*='matched'], [class*='active'], [data-matched='true'], [class*='taken']",
-    )
-    expect(matchedBranch).toBeTruthy()
+    expect(screen.getByTestId("conditional-backend-selection")).toHaveTextContent("Selected branch: 0")
+    expect(container.querySelector("[data-matched], [class*='matched'], [class*='dimmed'], [class*='inactive']")).toBeNull()
   })
 
-  it("chained when/then (3+ branches): shows matched branch prominently, dims others", () => {
+  it("chained when/then (3+ branches): does not dim locally parsed rows", () => {
     const { container } = render(
       <CalculationHero
         {...makeProps({
@@ -751,16 +748,11 @@ describe("CalculationHero \u2014 Conditional Branch Display", () => {
         })}
       />,
     )
-    // The matched branch ("high") should be prominent
     expect(screen.getAllByText(/high/).length).toBeGreaterThanOrEqual(1)
-    // Unmatched branches should be dimmed
-    const dimmedEls = container.querySelectorAll(
-      "[class*='dimmed'], [class*='inactive'], [style*='opacity'], [data-matched='false']",
-    )
-    expect(dimmedEls.length).toBeGreaterThanOrEqual(1)
+    expect(container.querySelectorAll("[class*='dimmed'], [class*='inactive'], [style*='opacity'], [data-matched]")).toHaveLength(0)
   })
 
-  it("uses the backend taken branch index when multiple branches return the same value", () => {
+  it("keeps backend selection metadata separate from ambiguous parsed rows", () => {
     const { container } = render(
       <CalculationHero
         {...makeProps({
@@ -785,12 +777,9 @@ describe("CalculationHero \u2014 Conditional Branch Display", () => {
       container.querySelectorAll<HTMLElement>(".conditional-display .branch"),
     )
     expect(branches).toHaveLength(3)
-    expect(branches.map((branch) => branch.dataset.matched)).toEqual([
-      "false",
-      "true",
-      "false",
-    ])
-    expect(branches[1]).toHaveTextContent("tier = 'B'")
+    expect(branches.every((branch) => branch.dataset.matched === undefined)).toBe(true)
+    expect(branches.every((branch) => !branch.classList.contains("inactive"))).toBe(true)
+    expect(screen.getByTestId("conditional-backend-selection")).toHaveTextContent("Selected branch: 1")
   })
 
   it("does not guess a taken branch when typed backend selection is absent", () => {

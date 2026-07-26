@@ -27,12 +27,9 @@ orchestrator.  Heavy lifting lives in sibling modules:
   * ``_trace_waterfall``    — sequential multiplicative / additive
     waterfall assembly.
 
-This module re-imports a handful of names (``parse_expression``,
-``evaluate_expression``, ``parse_expression_chain``, the node-type
-enrichers) at module scope so that tests can ``monkeypatch.setattr`` on
-``haute.trace.<name>`` and have the dispatch walk in
-``_trace_enrichment`` pick up the patched version via its
-``sys.modules["haute.trace"]`` lookup.
+This module re-exports selected parser and enrichment helpers as part of
+the trace facade; the enrichment implementation imports its dependencies
+directly and does not depend on this facade being imported first.
 """
 
 from __future__ import annotations
@@ -541,7 +538,8 @@ def execute_trace(
     # Multi-frame sources (e.g. a ≥2-table apiInput) store a
     # dict[label, DataFrame] in eager_outputs; a trace must target a node
     # downstream of a specific frame, never the bundle itself.
-    if isinstance(eager_outputs.get(target_node_id), dict):
+    target_output = eager_outputs.get(target_node_id)
+    if isinstance(target_output, dict):
         raise ValueError(
             f"Target node {target_node_id!r} emits multiple frames; "
             "trace a node downstream of a specific frame instead."
@@ -565,8 +563,8 @@ def execute_trace(
     # A mismatch means the preview and trace are using different
     # DataFrames (e.g., due to non-deterministic Polars join ordering
     # after a cache miss).
-    if row_values is not None:
-        target_df = eager_outputs[target_node_id]
+    if row_values is not None and isinstance(target_output, pl.DataFrame):
+        target_df = target_output
         row_matches = False
         if row_index < len(target_df):
             shared = [column for column in row_values if column in target_df.columns]
@@ -605,7 +603,7 @@ def execute_trace(
 
     # Extract correct row from each node via post-hoc correlation
     # (only if target node has output data)
-    if target_node_id in eager_outputs:
+    if isinstance(target_output, pl.DataFrame):
         cached_rows = _correlate_rows_posthoc(
             eager_outputs,
             order,
@@ -622,8 +620,8 @@ def execute_trace(
         # Target node execution failed — build partial rows from available nodes
         cached_rows = {}
         for nid in order:
-            if nid in eager_outputs and not isinstance(eager_outputs[nid], dict):
-                df = eager_outputs[nid]
+            df = eager_outputs.get(nid)
+            if isinstance(df, pl.DataFrame):
                 if row_index < len(df):
                     cached_rows[nid] = _jsonify_row(df.row(row_index, named=True))
                 else:
@@ -1030,12 +1028,14 @@ def _build_trace_omissions(
     relevant_node_ids = set(unresolved_rows)
     if column is not None:
         referenced_columns: set[str] = set()
+        origin_found = False
         origin_without_references = False
         for step in steps:
             diff = step.schema_diff
             is_origin = column in diff.columns_added or column in diff.columns_modified
             if not is_origin:
                 continue
+            origin_found = True
             references = (
                 step.expression.get("referenced_columns", [])
                 if isinstance(step.expression, dict)
@@ -1046,7 +1046,7 @@ def _build_trace_omissions(
             else:
                 origin_without_references = True
 
-        if not origin_without_references:
+        if origin_found and not origin_without_references:
             relevant_columns = {column, *referenced_columns}
             relevant_node_ids = {
                 node_id

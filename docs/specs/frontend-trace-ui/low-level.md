@@ -34,15 +34,17 @@
 
 ## Control flow
 
-1. `frontend/src/hooks/useTracing.ts` captures graph `structuralVersion`, active source, row limit,
-   target, row, column, and clicked values with each request. A semantic change aborts and clears
-   the state; requests resolving within the 500 ms progress delay show no loading
+1. `frontend/src/hooks/useTracing.ts` captures graph `structuralVersion`, active
+   source, row limit, streaming chunk size, target, row, column, and clicked
+   values with each request. A semantic change aborts and clears the state;
+   requests resolving within the 500 ms progress delay show no loading
    chrome, while a request still pending after that delay enables compact
    progress/cancel UI.
-2. `frontend/src/panels/TracePanel.tsx` derives a remount key, finds the last applicable producer
-   for the traced column, calculates dependency-preservation/default-expansion sets, and chooses a
-   focused or full sequence. It interleaves typed omissions by topological rank. With no traced
-   column, it leaves the steps uncollapsed.
+2. `frontend/src/panels/TracePanel.tsx` derives the story key used for card
+   identity, finds the last applicable producer for the traced column,
+   calculates dependency-preservation/default-expansion sets, and chooses a
+   focused or full sequence. It interleaves typed omissions by topological
+   rank. With no traced column, it leaves the steps uncollapsed.
 3. `collapsePassthroughs` groups hidden runs. If a focused target exists the UI removes the
    collapsed markers until the user asks for the full trace; otherwise the marker is a button that
    reveals the full trace.
@@ -52,11 +54,18 @@
 5. `frontend/src/trace/NodeDetailBlock.tsx` dispatches on `detail_type` (and optimiser status/mode).
    Detail components call their matching helpers before rendering; an unknown type is shown as
    formatted generic detail instead of disappearing.
-6. `frontend/src/trace/CalculationHero.tsx` prefers backend waterfall entries. It builds a local
-   arithmetic waterfall only when appropriate backend data/error is absent, and renders branch
-   information from calculation/expression context.
-7. An export action dynamically imports `frontend/src/trace/traceExport.ts`; clipboard, download,
-   and print failures remain visible in the mounted trace panel.
+6. `frontend/src/trace/CalculationHero.tsx` prefers backend waterfall entries.
+   `StepCard` owns the single backend-waterfall-error alert and never passes an
+   error payload into the hero. The hero builds a local arithmetic waterfall
+   only when backend entries are absent. It renders client-parsed conditional
+   branch text without attaching the backend index to those rows; the backend
+   `taken_branch`/`taken_branch_index` values are shown separately as selection
+   metadata.
+7. An export action dynamically imports `frontend/src/trace/traceExport.ts`;
+   downloads use the shared browser helper, which removes the synthetic anchor
+   immediately but revokes its object URL on the next task so the browser can
+   start the download. Clipboard, download, and print failures remain visible
+   in the mounted trace panel.
 
 ## Edge cases and invariants
 
@@ -65,22 +74,29 @@
 - An opaque/missing primary creator may be replaced by a later usable pass-through expression.
   Source-like/bulk origins are treated specially so a broad import does not dominate the default
   story.
+- Source-like classification delegates to the canonical source-only node set:
+  `dataInput`, `apiInput`, and `constant`. Production trace code contains no
+  synthetic `source` or legacy `dataSource` node literal.
 - The header handles a null traced column and supports row-id or row-index identity. Correlation
   warning keys include code/node/child/index to remain unique even with null IDs.
 - Detail helpers distinguish absent optional fields from present wrong-typed/non-finite values;
   formatting has explicit null and non-finite representations. Optimiser candidate charts guard
   zero spans and omit candidates without usable coordinates.
-- `showHidden` is panel state and resets when the trace identity changes because cards are keyed
-  by `traceStoryKey`; individual card expansion is therefore not leaked across traces.
+- `showHidden` is panel state. It resets only when the owning `TracePanel`
+  unmounts/remounts; card keys derived from `traceStoryKey` reset individual
+  card expansion but do not reset panel state. Callers that replace a trace in
+  place must therefore remount the panel if they require hidden-state reset.
 
 ## Error handling
 
 Missing calculation data for an expression that should explain a value, backend waterfall errors,
-typed omissions, request failures, and optimiser/scenario/live-switch errors render persistent
-`role="alert"` UI. A 409 invalidates the preview and requires a new row selection rather than
-retrying the same identity. Unknown node detail falls back to generic JSON. Pure parsers
-intentionally throw on invalid required numerical contracts instead of silently showing a
-plausible-but-wrong calculation.
+typed omissions, request failures, and banding/model-score/optimiser/scenario/live-switch errors
+render persistent `role="alert"` UI. A banding or model-score root `error`
+suppresses all normal summary/result rows so placeholder nulls cannot look like
+valid evidence. A 409 invalidates the preview and requires a new row selection
+rather than retrying the same identity. Unknown node detail falls back to
+generic JSON. Pure parsers intentionally throw on invalid required numerical
+contracts instead of silently showing a plausible-but-wrong calculation.
 
 ## Testing
 
@@ -89,6 +105,10 @@ plausible-but-wrong calculation.
 behaviour, alerts and detail variants. `frontend/src/panels/trace/__tests__/traceGrouping.test.ts`
 tests grouping and preservation rules. Focused helper/error suites are under
 `frontend/src/trace/__tests__/` for calculations, formatting, banding, model score and rating.
+`frontend/src/hooks/__tests__/useTracing.test.ts` covers semantic request binding,
+abort/clear races, progress, and recovery. `frontend/src/trace/__tests__/traceExport.test.ts`
+covers the deterministic Markdown/CSV projection and filesystem-safe names used
+by clipboard, download, and print.
 Some presentational primitives (`ExpressionChain`, `InputSourceTree`, `WaterfallChart`, and the
 detail dispatcher) are principally covered through integration rendering rather than one test file
 per module.
@@ -98,19 +118,3 @@ The browser-level preview-to-trace path is covered by
 trace-request-to-render latency for representative linear and multi-frame traces. The
 trace-specific component and helper suites do not provide browser coverage for every specialised
 detail renderer.
-
-## Approved change contract — 0.7.0 data-input trace presentation
-
-Remaining trace-UI improvement work is tracked in the
-[tracing and explainability roadmap](../../roadmap/tracing-explainability.md).
-
-- Change `traceGrouping.isSourceLikeTraceStep` to accept `dataInput`/`apiInput` (and only
-  backend-defined non-node source markers where still valid) and remove `dataSource`.
-- Extend guarded trace provenance types/rendering/export with safe provider, format, cache mode,
-  generation, and `fresh | stale | unknown` fields. Unknown additive fields remain inspectable,
-  but malformed known fields fail the guard rather than being coerced.
-- `useTracing` includes the backend source/generation identity in semantic request state so a
-  refresh aborts/clears stale trace presentation. No frontend cache-status lookup is used to
-  reinterpret a completed trace.
-- Update grouping, panel, export, hook-race, redaction, and browser tests for retained inputs and
-  assert no legacy node literal remains in production trace code.

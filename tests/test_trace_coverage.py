@@ -590,6 +590,55 @@ class TestExecuteTraceEdgeCases:
         with pytest.raises(ValueError, match="not found"):
             execute_trace(graph, target_node_id="nonexistent")
 
+    def test_partial_materialisation_without_target_uses_documented_fallback(
+        self,
+        tmp_path,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        import haute.trace as trace_module
+
+        p = tmp_path / "data.parquet"
+        pl.DataFrame({"x": [1]}).write_parquet(p)
+        graph = _g(
+            {
+                "nodes": [
+                    _source_node("src", str(p)),
+                    _transform_node("target", "df = df.with_columns(y=pl.col('x') + 1)"),
+                ],
+                "edges": [_edge("src", "target")],
+            }
+        )
+        node_map = {node.id: node for node in graph.nodes}
+
+        monkeypatch.setattr(
+            trace_module,
+            "_materialize_eager_outputs",
+            lambda **_kwargs: (
+                {"src": pl.DataFrame({"x": [1]})},
+                ["src", "target"],
+                {"target": ["src"]},
+                node_map,
+                {"src"},
+                "fresh_execution",
+            ),
+        )
+        trace_module._cache.clear()
+        try:
+            result = execute_trace(
+                graph,
+                row_index=0,
+                target_node_id="target",
+                row_values={"x": 1},
+            )
+        finally:
+            trace_module._cache.clear()
+
+        assert result.target_node_id == "target"
+        assert result.output_value == {}
+        assert next(step for step in result.steps if step.node_id == "src").output_values == {
+            "x": 1
+        }
+
     def test_row_index_out_of_range_raises(self, tmp_path):
         p = tmp_path / "data.parquet"
         pl.DataFrame({"x": [1]}).write_parquet(p)

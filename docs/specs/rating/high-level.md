@@ -21,8 +21,8 @@ In scope:
   (ordered boundary list) banding rule evaluation.
 - One-, two-, and three-factor rating-table lookups, including default-value
   fill and a loud/quiet miss policy.
-- Combining multiple rating-table outputs (and an optional numeric base value)
-  with `multiply` / `add` / `min` / `max`.
+- Combining multiple rating-table outputs with a required fixed finite numeric
+  base value using `multiply` / `add` / `min` / `max`.
 - Config normalisation: rating-table entries persist only in one canonical
   ordered row-array shape. Categorical and breakpoints banding rules retain
   their compact key/value-map sidecar shape.
@@ -62,9 +62,9 @@ Out of scope (owned by neighbouring components):
   in order and the first matching rule wins (`when/then` chain semantics), the
   rest fall to an explicit `default`.
   An unrecognised operator is rejected before a banding expression is
-  published. Runtime banding and trace enrichment consume the same immutable
-  supported-operator contract, so a trace cannot credit a rule the engine
-  skipped.
+  published. Runtime banding and trace enrichment consume the same rule
+  eligibility parser as well as the same immutable supported-operator
+  contract, so a trace cannot credit a rule the engine skipped.
 - `categorical` rules are an exact-match remap from input value to assignment.
 - `breakpoints` rules are converted internally into `continuous` rules: an
   ordered list of numeric boundaries with labels, closed on the right by default
@@ -72,8 +72,11 @@ Out of scope (owned by neighbouring components):
   boundary may be open-ended (empty), and it anchors the final unbounded range.
 - Float columns have NaN/Infinity sanitised to null before rule matching, so
   they always fall to the default rather than matching an arbitrary rule.
-- A factor with no column, no output column, or no rules is a documented no-op
-  (the frame passes through unchanged for that factor).
+- A draft factor with no column, no output column, or no rules is a documented
+  no-op (the frame passes through unchanged for that factor). Once a non-empty
+  rule list is authored, at least one rule must have a usable key/condition and
+  assignment; an all-unusable rule set is rejected rather than silently
+  omitting the configured output column.
 
 **Rating** (`apply_rating_step_from_config` / `_apply_rating_step_outputs`):
 
@@ -106,10 +109,15 @@ Out of scope (owned by neighbouring components):
 - Multiple entries sharing the same factor key keep the *last* one (matches
   the intent of "later edits win" in the entry list).
 - After the table stage, `combinedOutputs` combine named table output columns
-  (optionally with a fixed numeric `baseValue`) using `multiply`, `add`,
+  with a required fixed finite numeric `baseValue` using `multiply`, `add`,
   `min`, or `max`. A table that never materialised its output column (because
   it was incomplete — see Failure model) is omitted from combining, not
   silently referenced as null.
+- Every table output column and combined-output column is unique across the
+  rating step. Duplicate `tables[].outputColumn` values are rejected with the
+  later table index and duplicated column named; the runtime combine boundary
+  independently rejects duplicate participant columns so a bypassed
+  normaliser cannot square or double-count a surviving factor.
 - A rating table or combined-output definition with a structural problem
   (unsupported operation, non-finite base value, duplicate output column,
   NaN/Infinity/null entry values) fails loudly at config-normalisation or
@@ -221,8 +229,18 @@ Out of scope (owned by neighbouring components):
   or null rating entry `value`, more than one open-ended breakpoint, an
   open-ended breakpoint with no bounded anchor, a duplicate breakpoint
   boundary, an unsupported combine operation, a non-finite/missing
-  `combinedOutputs[].baseValue`, a duplicate `combinedOutputs[].outputColumn`):
+  `combinedOutputs[].baseValue`, or a duplicate table/combined output column):
   raise `ValueError` eagerly, before the frame is touched.
+- **All-null `min`/`max` participants:** raises
+  `RatingExtremaUndefinedError(ExecutionError)` at materialisation, naming the
+  combined-output column and operation. One invalid row fails the whole eager
+  or lazy batch before publication or cache promotion. Public transport maps
+  it to HTTP 422 and background `contract_error`.
+- **Declared input factor absent from the frame:** raises
+  `RatingFactorMissingError(SchemaMismatchError)` before lookup construction,
+  even when the table has no entries or otherwise qualifies as an incomplete
+  draft. The error carries stable table/factor fields and maps to HTTP 422 or
+  background `contract_error`.
 - **Unsupported factor dtype** (nested/container, binary, object, or unknown
   dtype): raises `ValueError` naming the table, factor, and dtype before lookup
   construction. The message also names the supported scalar dtype families and
@@ -233,91 +251,18 @@ Out of scope (owned by neighbouring components):
   absence), and apply dtype. Legacy ratebook artifacts without
   `factor_dtypes` must be re-solved and re-saved; they are not applied with
   guesswork.
-- **Incomplete table or factor** (no factors, no entries, no output column, no
-  rules): this is a *documented no-op*, not a failure — the frame passes
+- **Incomplete table or factor** (no factors, no entries, no output column, or
+  an entirely empty banding rule list): this is a *documented no-op*, not a
+  failure — the frame passes
   through unchanged for that table/factor. When a rating table has an
   `outputColumn` configured but is otherwise incomplete, the skip is logged at
   WARNING (`rating_table_skipped_incomplete`) so the gap is observable instead
   of a silently-missing column reaching a combined output.
+  A non-empty banding rule list whose rules are all unusable is malformed and
+  raises instead of taking this no-op path.
   > NOTE: the public config-driven path rejects a populated entry row that
   > lacks any declared factor during `_rating_step_config` normalisation.
   > The lower-level `_apply_rating_table` primitive still returns unchanged
   > when a factor is absent from every already-normalised entry; when reached
   > through `_apply_rating_step_outputs`, that skip is visible only through the
   > WARNING log.
-
-## Polars backend and rating-roadmap contracts (0.6.0)
-
-The completed rating improvements and their evidence are tracked in the
-[rating roadmap](../../roadmap/rating.md). Their implementation contracts are:
-
-- A `min` or `max` combined output whose participating values are all null for any row
-  raises `RatingExtremaUndefinedError(ExecutionError)` at runtime materialisation. The
-  error identifies the combined-output column and operation; it never quietly returns
-  null or an invented neutral value. Discovery of one invalid row fails the whole eager
-  or lazy materialisation batch atomically before output publication or cache promotion,
-  including a batch containing both valid rows and all-null rows. Partial output is never
-  published.
-- The transport contract maps `RatingExtremaUndefinedError` to HTTP 422 for synchronous
-  requests and to `contract_error` for background execution. This is a data-dependent
-  execution failure, not an eager configuration-validation failure.
-- Once finite lookup-entry values have been validated, rating must remove the dead/masking `fill_nan` neutralisation from combine semantics. Null behaviour remains the documented miss-policy behaviour; NaN must not be silently converted into an arithmetic neutral value.
-- A table whose declared input factor is absent from the input frame raises
-  `RatingFactorMissingError(SchemaMismatchError)`, identifying the table and factor. The
-  factor is checked against the once-resolved input schema before join construction or
-  collection; it is not an incomplete-table no-op. The transport contract maps this error
-  to HTTP 422 and background `contract_error`.
-- A rating/combine plan resolves its input schema once and shares that resolved schema through every table and combined-output operation in that plan.
-- Runtime, trace, sidecar persistence, and optimiser save/apply use the
-  originating Polars dtype as part of rating-key identity. The differential
-  contract covers Float32/64, every signed/unsigned integer width, Boolean,
-  String, Categorical/Enum, Decimal, Date, Datetime, Time, Duration, Null,
-  null values, and non-finite floats. Scalar key normalisation requires that
-  dtype explicitly; production callers cannot opt into Python-scalar inference.
-- Saved ratebook factor-table labels are canonicalised component-by-component
-  through the exact ordered dtypes read from the solved factor artifact. The
-  serializer does not infer Float64 from widened Python values and does not use
-  a candidate/minimum-collapse heuristic to guess which counted key a solver
-  label represents.
-- Rating sidecars write and read ordered entry rows as their only canonical
-  shape. Canonical output is deterministic, and a failed validation occurs
-  before staging a write so the prior sidecar remains byte-for-byte untouched.
-- Optimising the miss guard (FR22) is conditional on a representative benchmark
-  showing both at least 20% lookup-time overhead and at least 10 ms absolute
-  overhead at 100,000 or more rows in at least two repeated workload cells.
-  The workload spans one/three factors, hit-heavy/miss-heavy cases, and
-  eager/lazy entry points, and records environment, timings, semantic checks,
-  and an implement/no-change decision. Any accepted rewrite must retain
-  lazy/streaming materialisation timing, exact `RatingTableMissError` type and
-  message content, warning behaviour for `onMissing: "neutral"`, and
-  missing-key/row-count reporting.
-
-Required tests cover all-null `min`/`max` rows, mixed-null extrema, mixed valid/all-null
-batches, eager/lazy atomicity before publication and cache promotion, HTTP/background error
-mapping, NaN rejection/non-masking after entry validation, absent factors for every supported
-factor arity, one schema-resolution call across multi-table/combine plans, and error/warning
-parity for any benchmark-gated miss-guard change. The 0.6 pre-1.0 release notes must call out
-that all-null extrema and absent factors now fail loudly and name their exception and transport
-contracts. Non-goals: changing documented neutral-miss semantics, coercing a
-mismatched saved ratebook dtype at apply, or implementing a speculative
-miss-guard optimisation without benchmark evidence.
-
-## Approved change contract — prerelease canonical rating configuration
-
-This contract implements
-[ROAD-CANON-01](../../roadmap/engineering-quality.md#road-canon-01--prerelease-canonical-only-contract).
-
-- A rating table has one persisted entry representation: an ordered list of row objects. Each row
-  contains every named factor and the rating under the literal `value` key. The implementation
-  contains no nested-map reader, traversal, compactor, or output-column value alias.
-- A rating step has one combined-output representation: `combinedOutputs`, whose entries require
-  `outputColumn`, a supported `operation`, and finite `baseValue`. No singular-field reader,
-  `_legacy` working entry, merge, fallback base, or single-column skip exists.
-- The Python decorator uses `combined_outputs`, `output_column`, and `default_value`; graph and
-  sidecar JSON use `combinedOutputs`, `outputColumn`, and `defaultValue`. Camel-case decorator
-  aliases and singular combined-output arguments are not alternate formats.
-- Opening, parsing, executing, tracing, or regenerating a rating step never upgrades obsolete
-  input. Canonical empty drafts retain their documented editor/runtime semantics.
-
-Focused backend and frontend suites delete migration assertions and prove canonical
-parse/save/codegen/runtime round trips using only the surviving fields.

@@ -1,6 +1,5 @@
 import React from "react"
 import WaterfallChart from "./WaterfallChart"
-import WaterfallErrorAlert from "./WaterfallErrorAlert"
 import ExpressionChainRow from "./ExpressionChain"
 import InputSourceTree from "./InputSourceTree"
 import {
@@ -456,29 +455,19 @@ const CalculationHero: React.FC<CalculationHeroProps> = (props) => {
       )
         ? rawTakenBranchIndex
         : null
-      const hasTypedSelection = (
-        backendTakenBranchIndex !== null
-        && backendTakenBranchIndex >= 0
-        && backendTakenBranchIndex < branches.length
-      )
-
       return (
         <div className="conditional-display" style={{ marginTop: 4 }}>
+          {backendTakenBranchIndex !== null && (
+            <div data-testid="conditional-backend-selection" style={{ color: "var(--text-muted)", fontSize: 10 }}>
+              Selected branch: {backendTakenBranchIndex}
+              {calculation.taken_branch ? ` (${calculation.taken_branch})` : ""}
+            </div>
+          )}
           {branches.map((branch, idx) => {
-            const matched = hasTypedSelection && idx === backendTakenBranchIndex
-
             return (
               <div
                 key={idx}
-                className={`branch ${
-                  !hasTypedSelection
-                    ? ""
-                    : matched
-                    ? "taken matched-branch"
-                    : "dimmed inactive"
-                }`}
-                data-matched={hasTypedSelection ? (matched ? "true" : "false") : undefined}
-                style={hasTypedSelection && !matched ? { opacity: 0.5 } : undefined}
+                className="branch"
               >
                 {branch.isOtherwise ? (
                   <span>
@@ -499,15 +488,6 @@ const CalculationHero: React.FC<CalculationHeroProps> = (props) => {
 
     // Waterfall build failed on the backend — surface the error loudly
     // rather than rendering a silently-empty trace.
-    if (waterfallError) {
-      return (
-        <WaterfallErrorAlert
-          error={waterfallError.error}
-          errorType={waterfallError.error_type}
-        />
-      )
-    }
-
     // Waterfall mode: takes precedence for 3+ multiplicative factors
     if (waterfallSteps && calculation) {
       return (

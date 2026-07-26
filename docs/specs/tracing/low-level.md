@@ -4,8 +4,8 @@
 
 | File | Responsibility |
 | --- | --- |
-| `src/haute/trace.py` | Public facade and orchestrator. `execute_trace()` entry point, `PreviewReader` protocol, `TraceStep`/`TraceOmission`/`TraceResult` dataclasses, the trace execution cache (`_cache`, `TRACE_CACHE_MAX_BYTES`), row/omission assembly, column-relevance pruning, provenance, and JSON serialisation (`trace_result_to_dict`). Re-imports and re-exports expression-parser and node-type enricher names so `monkeypatch.setattr("haute.trace.<name>", ...)` in tests reaches the dispatch code in `_trace_enrichment.py`. |
-| `src/haute/_trace_correlation.py` | Post-hoc row correlation and schema diff. Value predicates/coercion (`_trace_values_match`, `_jsonify_row`), `SchemaDiff` computation, dtype-robust Polars match-expression construction, exact/relaxed row matching with ambiguity diagnostics, edge-join provenance-aware parent-row projection, per-frame row matching (`_match_parent_row`, shared by the single-frame and multi-frame paths), multi-frame per-edge parent resolution (`_resolve_multi_frame_parent`), and the backward-walk driver `_correlate_rows_posthoc`. |
+| `src/haute/trace.py` | Public facade and orchestrator. `execute_trace()` entry point, `PreviewReader` protocol, `TraceStep`/`TraceOmission`/`TraceResult` dataclasses, the trace execution cache (`_cache`, `TRACE_CACHE_MAX_BYTES`), row/omission assembly, column-relevance pruning, provenance, and JSON serialisation (`trace_result_to_dict`). Re-exports expression-parser and node-type enricher names as public convenience imports; `_trace_enrichment.py` owns its dependencies directly. |
+| `src/haute/_trace_correlation.py` | Post-hoc row correlation and schema diff. JSON-safe row coercion (`_jsonify_row`), `SchemaDiff` computation, dtype-robust Polars match-expression construction (`_typed_value_match_expr`), exact/relaxed row matching with ambiguity diagnostics, edge-join provenance-aware parent-row projection, per-frame row matching (`_match_parent_row`, shared by the single-frame and multi-frame paths), multi-frame per-edge parent resolution (`_resolve_multi_frame_parent`), and the backward-walk driver `_correlate_rows_posthoc`. |
 | `src/haute/_trace_enrichment.py` | Node-type enrichers (`enrich_rating_step`, `enrich_banding`, `enrich_model_score`, `enrich_scenario_expansion`, `enrich_live_switch`, `enrich_optimiser_apply`), row-lineage-type detection (`detect_row_lineage_type`, backed by `_node_output_row_count` for multi-frame-safe row counting), and the per-step dispatch walk (`enrich_steps`) that drives expression parsing/evaluation (with a pre-assignment-value guard for self-referential columns), intra-node chain analysis, recursive upstream input-source derivation, rename detection, and node-type dispatch for every `TraceStep`. |
 | `src/haute/_trace_waterfall.py` | Waterfall assembly for sequential multiplicative/additive rating chains. `WaterfallEntry`/`WaterfallResult` dataclasses, the value-derived `build_waterfall_from_steps()` traced-path driver, and the C8 arithmetic-reconciliation guards. |
 
@@ -46,6 +46,15 @@
   `preview_cache`, or `trace_cache`).
 - **`SchemaDiff`** (`_trace_correlation.py`, dataclass) — `columns_added`,
   `columns_removed`, `columns_modified`, `columns_passed`, each a `list[str]`.
+- **`_RowMatchResult`** (`_trace_correlation.py`, frozen dataclass) — one
+  vectorised correlation outcome with status `no_match`, `unique_strict`,
+  `unique_relaxed`, `ambiguous`, or `unsupported_dtype`; strict/effective key
+  columns; relaxation/unsupported reason; aligned dtypes; exact
+  `candidate_count`; at most 16 ascending physical `candidate_indices`; and
+  `candidate_indices_state` (`available`, `truncated`, or `unavailable`).
+  Supported results use `available` exactly through 16 candidates and
+  `truncated` above 16. Unsupported results carry null count, no indices, and
+  `unavailable`.
 - **`WaterfallEntry`** / **`WaterfallResult`** (`_trace_waterfall.py`, dataclasses)
   — `label`, `operation` (`"base"` / `"multiply"` / `"add"`), `value`, `delta`,
   `cumulative`, and `default_used` per entry; `WaterfallResult` wraps `entries`
@@ -97,28 +106,32 @@
    node in topological order, computed from the node list in *declared* order —
    not a set — so the tie-break is deterministic across process invocations,
    independent of CPython hash randomisation).
-2. Compute the canonical dataframe graph input fingerprint over the graph,
-   target, row limit, and source, memoised via a `GraphFingerprintMemo` — the caller's, if one
-   was passed in `fingerprint_memo` (the trace route reuses the memo it already
-   built for its supersession key), otherwise a fresh one scoped to this call.
-3. On a trace-cache hit (`_cache.try_get(fp)`), reuse the cached
+2. Call `execution_facade.preview_lineage_cache_key(...)` with target, source,
+   row limit, `requested_columns=None`, `initial_column_limit=None`,
+   `port_label=None`, `enforce_contracts=True`, and
+   `materialisation_scope="full"`, memoised via a `GraphFingerprintMemo` — the
+   caller's, if one was passed in `fingerprint_memo` (the trace route reuses the
+   memo it already built for its supersession key), otherwise a fresh one scoped
+   to this call.
+3. On a trace-cache hit (`_cache.get(fp)`), reuse the cached
    `eager_outputs`/`order`/`parents_of`/`node_map`/`source_ids`. On a miss, call
    `_materialize_eager_outputs()` (below) and store the result under `fp`.
-4. If `eager_outputs[target_node_id]` is a `dict` (a multi-frame source targeted
-   directly, with no downstream node to pick a frame), raise `ValueError` naming
-   the node and directing the caller to trace a node downstream of a specific
-   frame instead.
+4. Read the target output with `.get()`. If it is a `dict` (a multi-frame source
+   targeted directly, with no downstream node to pick a frame), raise
+   `ValueError` naming the node and directing the caller to trace a node
+   downstream of a specific frame instead. If it is absent because execution
+   produced only a partial result, retain the documented partial-trace path
+   below rather than indexing the missing key.
 5. Build `source_frames_of`: for every edge in the graph, append its
    `sourceHandle` to the list keyed by `(edge.source, edge.target)`, preserving
    edge order. One entry per edge, not per pair — a multi-frame source can feed
    the same child through several edges.
-6. If the caller supplied `row_values`, verify the target DataFrame's row at
-   `row_index` matches them (`_trace_values_match` per column). On mismatch,
-   search the target DataFrame for a row that does match
-   (`_find_target_row_index`) and relocate `row_index` to it; if none matches,
-   raise `ValueError`. `_find_target_row_index` itself raises `ValueError` if the
-   clicked values match *more than one* row (ambiguous relocation — mirrors the
-   correlation-layer policy of failing loud over guessing at the first match).
+6. If the caller supplied `row_values` and the target DataFrame exists, verify
+   the row at `row_index` with `_match_rows_vectorized`. On mismatch, search via
+   `_find_target_row_index` and relocate; no match or ambiguity raises
+   `ValueError`, while an unsupported target dtype raises
+   `TraceCorrelationUnsupportedError`. A missing target skips verification and
+   continues through the partial-result path.
 7. If the target node produced output, call `_correlate_rows_posthoc()` (below,
    passed `source_frames_of` and `column` as `traced_column`) to get a JSON-safe
    row dict per node (or `None` for unresolved nodes). If the target node's
@@ -174,15 +187,19 @@ identical matching logic:
 1. Project the child's row onto the parent's columns (`_build_parent_match_row`)
    — a generic name-based projection, except for the JOIN-role parent of an
    `edgeJoin` child, which is routed through `_edge_join_right_match_row` (see
-   Edge cases below).
+   Edge cases below). If that join's BASE parent is a multi-frame bundle,
+   `_build_parent_match_row` resolves the frame(s) named by
+   `source_frames_of[(base_id, child_id)]` before deriving the left-column set;
+   no bare source `dict` is treated as a DataFrame.
 2. **Fast path**: if the parent and child DataFrames have equal row counts and
    the child's row index is in range, try the parent row at that same
    positional index. Trust it only if (a) there are no shared columns and
    either the parent has exactly one row or the child transform provably
    cannot reorder (`_child_transform_may_reorder` returns `False`); or (b)
    there are shared columns, they all value-match, and either the child cannot
-   reorder or the shared key uniquely identifies one row in the parent
-   (`_shared_key_is_unique`).
+   reorder or `_match_rows_vectorized` over the full parent identifies exactly
+   the expected physical row. There is no second uniqueness comparator or
+   private fast-path truth table.
 3. **Value-matching fallback**: `_find_matching_row()` tries an exact match on
    all shared columns first; on no exact match (and `allow_relaxed=True`), it
    scores every row by how many shared columns match and picks the widest
@@ -243,6 +260,11 @@ per edge between that pair, in edge order:
 Iterates every `TraceStep` (each step wrapped in its own outer `try`/`except` so
 one step's unforeseen failure cannot abort the whole enrichment pass) and:
 
+Expression parser and node-type enricher dependencies are direct module
+references. Tests patch `_trace_enrichment` itself; no dispatcher reads
+`sys.modules["haute.trace"]`, so enrichment has no import-order dependency on
+its public facade.
+
 1. Resolves the node's code, following `instanceOf` config to the original
    node's code when the instance's own code has no `.with_columns(`.
 2. Parses/evaluates the expression for `column` when the column is
@@ -299,7 +321,10 @@ one step's unforeseen failure cannot abort the whole enrichment pass) and:
    `normalise_rating_key(value, dtype)`. A real rating table with entries cannot
    fall back to Python-scalar dtype inference: missing factor dtype resolution
    raises inside enrichment and is surfaced through the existing structured
-   node-enrichment error boundary.
+   node-enrichment error boundary. Continuous banding rules are filtered through
+   rating's shared usable-condition parser before comparison, so a rule the
+   runtime skipped for having no usable operator/value pair cannot be selected
+   by enrichment.
 7. Classifies `step.row_lineage_type` via `detect_row_lineage_type()`, using the
    node type first (source nodes → `"created"`, `liveSwitch` → `"selected"`,
    `edgeJoin` → `"joined"` — checked before any code-sniffing because a join's
@@ -326,8 +351,10 @@ one step's unforeseen failure cannot abort the whole enrichment pass) and:
    opens the chain as `"base"` (`value_before = observed`). Each subsequent step
    where the column is modified, *or* where the node's code structurally
    assigns the column even though this row's value did not change
-   (`_step_targets_column` — an identity factor like `×1.0` would otherwise
-   vanish as a `"passed"` schema-diff entry), contributes an entry via
+   (`_step_targets_column` parses `with_columns(...)` assignments with the
+   Python AST; comments and `==` comparisons are not assignments — an identity
+   factor like `×1.0` would otherwise vanish as a `"passed"` schema-diff entry),
+   contributes an entry via
    `_classify_contribution()`.
 5. `_classify_contribution()` computes `delta = value_after - value_before` and,
    when `value_before` is positive, `value_after` is non-negative, and the implied
@@ -362,10 +389,29 @@ snapshot deterministically.
 
 ## Edge cases and invariants
 
-- **Non-finite and oversized values never silently coerce.** `_trace_values_match`
-  treats `nan`/`inf`/`-inf` as first-class tokens (via
-  `non_finite_float_token`/`_value_non_finite_token`) so a NaN can match a NaN
-  from JSON without a bare `==` false negative. `_as_trace_waterfall_float`
+- **One vectorised value contract serves every correlation call site.**
+  `_match_rows_vectorized` is used for target relocation, ordinary parents,
+  edge-join parents, and multi-frame candidates; shared keys never fall back to
+  a Python full-frame scan. Null matches only null, Boolean only the same
+  Boolean, integer/integer is exact, and finite float comparison uses
+  `abs(a-b) <= max(1e-12, 1e-9 * max(abs(a), abs(b)))`. Integer/float comparison
+  is allowed only through the JavaScript-safe boundary; an unsafe integer may
+  match only its exact canonical decimal string.
+- **Temporal, decimal, categorical, and nested matching stays typed.** Date,
+  Time, Datetime, and Duration compare through checked integer temporal
+  representations with timezone-awareness preserved; Decimal uses exact
+  lossless rescaling and never floats; Categorical/Enum compares normalised
+  string values; compatible List/Array/Struct uses a typed one-row Polars
+  literal. Object and incompatible nested schemas are unsupported.
+- **Ambiguity and relaxation are explicit.** Multiple candidates never select
+  the first row. Relaxation is attempted only after zero strict candidates,
+  may omit keys but cannot weaken a retained key's value contract, and emits a
+  low-confidence diagnostic naming the strict/effective keys and exact bounded
+  candidate evidence.
+- **Non-finite and oversized values never silently coerce.**
+  `_typed_value_match_expr` treats `nan`/`inf`/`-inf` as first-class tokens
+  (via `non_finite_float_token`/`_value_non_finite_token`) so a NaN can match a
+  NaN from JSON without a bare `==` false negative. `_as_trace_waterfall_float`
   explicitly raises `WaterfallUnavailableError` for an integer (or a
   JSON-safe-integer-marked string) outside JavaScript's exact integer range,
   rather than silently truncating precision into a rendered number.
@@ -376,6 +422,10 @@ snapshot deterministically.
   returns either the exact predicate or an explicit unsupported reason; the
   correlation result records that state rather than coercing across dtype
   families.
+- **String/numeric dtype mismatches do not fall back to stringwise equality.**
+  Except for the exact canonical unsafe-integer/string rule, incompatible
+  value/dtype families return an unsupported reason or no match. Correlation
+  never broadens them by casting both sides to strings.
 - **Positional alignment is gated, never assumed from row-count equality alone.**
   Equal row counts between parent and child is necessary but not sufficient — a
   row-reordering transform (sort/join/group_by/gather/sample/shuffle/unique/
@@ -394,6 +444,9 @@ snapshot deterministically.
   every row where the right side participated (rows where it did not — left-join
   misses, full-join left-only rows — correlate to nothing and the step is left
   unresolved rather than inventing lineage).
+  A multi-frame BASE parent is narrowed through the edge's named source
+  handle(s) before these rules inspect its columns. No selectable frame raises a
+  message-bearing `ValueError` naming the edge join and base parent.
 - **Column relevance pruning has two distinct cases**, both anchored on
   `_tag_column_relevance` tagging every step first: a pass-through column keeps
   only nodes whose *output* actually carries it (pruning unrelated source
@@ -452,6 +505,7 @@ snapshot deterministically.
 | `TypeError` | `_resolve_preview_snapshot` — `preview` is not `None`/reader/dict, or a reader's `try_get` returns a non-`dict` non-`None` value | Caller of `execute_trace` |
 | `RuntimeError` | Module import — malformed/non-positive `HAUTE_PREVIEW_CACHE_MAX_BYTES` or `HAUTE_TRACE_CACHE_MAX_BYTES` | Importing caller; cache construction does not start |
 | `ContractMismatchError` | Propagated unchanged from `_execute_eager_core` (execution-engine) on a cold-execution contract violation | HTTP route, mapped to 422 |
+| `TraceCorrelationUnsupportedError` (`ExecutionError`) | `_find_target_row_index` — selected target keys use an unsupported dtype/value comparison | HTTP 422 / background `contract_error`; stable code and node/key/dtype/reason fields |
 | Any exception from cold execution (`_execute_eager_core`, `swallow_errors=False`) | Propagated unchanged — no regex-based masking/retry | HTTP route, mapped to 500 (or a specific status if it happens to be one of the recognised `ValueError` shapes) |
 | `WaterfallReconciliationError` (`ValueError` subclass) | `_check_display_consistency`, the final-cumulative reconciliation check in `build_waterfall_from_steps` | Caught inside `build_waterfall_from_steps`; converted to `{"error": ..., "error_type": "WaterfallReconciliationError"}` in `TraceResult.waterfall` |
 | `WaterfallUnavailableError` (`ValueError` subclass) | `_ensure_single_column_lineage`, `_reject_renamed_join_branch_origins`, `_as_trace_waterfall_float` (unsafe integer) | Same as above — converted to a structured error dict, not raised |
@@ -459,7 +513,7 @@ snapshot deterministically.
 | Any exception during a single enrichment concern (expression parse/eval, chain, input sources, rename detection, node-type enrichment, row-lineage detection) | `_trace_enrichment.py`, per-concern `try`/`except` | Caught, logged at WARNING with `exc_info=True`, surfaced as an `error`/`error_type` key on the relevant field (`expression`, `calculation`, `node_detail`, or the `row_lineage_type` string itself as `"error: ..."`) — never re-raised |
 | Any exception escaping an entire step's enrichment (outer catch-all in `enrich_steps`) | `_trace_enrichment.py` | Caught, logged (`trace_enrichment_step_failed`), an `error` marker is set on `step.node_detail` if not already present, and the loop continues to the next step |
 | `ValueError` (edge-join misconfiguration) | `_build_parent_match_row` — a node wired as a parent of an `edgeJoin` that matches neither its `baseInput` nor `joinInput` | Propagates unchanged out of `_correlate_rows_posthoc` |
-| `ValueError` (missing base frame) | `_build_parent_match_row` — the edge-join's base parent has no materialized output when correlating the join parent | Propagates unchanged |
+| `ValueError` (missing/unselectable base frame) | `_build_parent_match_row` — the edge-join's base parent has no materialized output, is a multi-frame bundle with no wired/selectable frame handle, or names a missing frame while correlating the join parent | Propagates unchanged with join/base context; never leaks `AttributeError` |
 
 ## Testing
 
@@ -520,7 +574,20 @@ integration/regression suites:
   traced; `_node_output_row_count` counts a multi-frame bundle's rows (max
   across frames) rather than its frame count; and a banding node fed by one
   frame of a multi-frame source resolves factor dtypes from that frame alone,
-  not a dict-iteration-order merge across every frame the source emits.
+  not a dict-iteration-order merge across every frame the source emits; and an
+  `edgeJoin` whose BASE is one named frame of a multi-frame source correlates
+  its JOIN parent without treating the base bundle as a DataFrame.
+- **`tests/test_trace_correlation_remediation.py`** — the typed vectorised
+  matcher matrix, candidate bounds, ambiguity/unsupported diagnostics, and
+  public unsupported target error contract.
+- **`tests/test_trace_evidence_contract.py`** — diagnostic-linked omissions,
+  conservative relevance fallback when the assigning step is unresolved, and
+  evidence retention.
+- **`tests/test_trace_fidelity_contract.py`** — runtime/trace agreement for
+  banding and rating rules, fail-loud enrichment, and preview-value fidelity.
+- **`tests/test_lineage_preview_cache.py`** — shared lineage key construction,
+  runtime input invalidation, and the deliberate full-versus-target-only cache
+  scope boundary.
 - **`tests/test_trace_banding_lineage.py`** — lineage tests specific to
   banding-created fields.
 - **`tests/test_optimiser_apply_trace_enrichment.py`** — optimiser-apply
@@ -558,183 +625,12 @@ integration/regression suites:
   `pyproject.toml`); run explicitly via
   `uv run python scripts/run_perf_suite.py --pytest-target tests/performance/test_preview_trace_perf.py`.
 
-Known coverage gaps: none identified from a read of the test file list and
-docstrings above — the correlation, waterfall, and enrichment fail-loud paths in
-particular have dedicated regression files (`test_trace_w4_fixes.py`,
-`test_trace_fail_loudly.py`, `test_trace_waterfall.py`) beyond ordinary feature
-tests. This spec does not itself execute the suite; treat file/class presence as
-an index, not a substitute for running `pytest tests/test_trace*.py
-tests/test_optimiser_apply_trace_enrichment.py` when changing this component.
-
-## Polars backend contracts (0.6.0)
-
-Remaining tracing improvement work is tracked in the
-[tracing and explainability roadmap](../../roadmap/tracing-explainability.md).
-Delivery is split deliberately: P9a owns correlation and request-local enrichment, followed by
-P9b for cache integration. P9a does not wait for or introduce lineage-key code. P9b starts
-only after the shared caching/lineage-preview-key slice is complete.
-
-### Correlation primitive
-
-Introduce one internal vectorized matching primitive and typed result used by
-`_find_target_row_index`, ordinary post-hoc parent correlation, edge-join parent
-matching, and multi-frame source-frame selection. The result distinguishes
-`no_match`, `unique_strict`, `unique_relaxed`, `ambiguous`, and
-`unsupported_dtype`, and includes at least strict/effective key columns,
-relaxation reason, exact `candidate_count`, up to 16 candidate indices, and an
-explicit candidate availability/truncation state. It builds Polars expressions
-and never materialises shared keys into Python or iterates a frame row-by-row in
-Python. Counting candidates can inspect the full result inside Polars, but no
-more than 16 indices cross into Python.
-
-The V1 strict-comparison matrix is bounded and exhaustive. It is also the
-per-value comparator used after any key relaxation; relaxation can omit keys but
-cannot weaken a retained key's comparison:
-
-| Dtype family | Exact V1 comparison contract |
-| --- | --- |
-| Null | Null matches only null. It does not match any finite/non-finite value or sentinel. |
-| Boolean | Exact boolean equality. Boolean is never numeric: `true` does not match `1`/`1.0`, and `false` does not match `0`/`0.0`. |
-| Integer/integer | Exact mathematical integer equality after lossless signed/unsigned coercion. Overflow or an unrepresentable cross-signed comparison is `unsupported_dtype`, not a float cast. |
-| Integer/float | Allowed only when `abs(integer) <= 2**53` and the float is finite. Compare with the finite-numeric formula below. Above that boundary integer/float is `unsupported_dtype`. |
-| Unsafe integer/string | An integer represented at the JSON boundary outside the JavaScript-safe range matches only its exact canonical base-10 decimal string. No whitespace, `+`, exponent, decimal point, or redundant leading zero is accepted; `0` is the only zero spelling. No other numeric/string coercion is supported. |
-| Finite float/numeric | For finite values `a` and `b`, match iff `abs(a - b) <= max(1e-12, 1e-9 * max(abs(a), abs(b)))`. This one formula is used for float/float and the permitted integer/float case. |
-| Non-finite float/sentinel | NaN matches only NaN or `{"__haute_type__": "non_finite_float", "value": "nan"}`; positive infinity only positive infinity or the same canonical sentinel with value `"inf"`; negative infinity only negative infinity or the sentinel with value `"-inf"`. There is no cross-sign, finite, null, malformed-sentinel, or other-sentinel match. |
-| String/binary | Exact equality within a compatible string or binary family. Apart from the unsafe-integer rule above, string is not numeric. String/binary cross-family comparison is unsupported. |
-| Date | Date matches only Date representing the same calendar day. Date-versus-Datetime is unsupported. |
-| Time | Time matches only Time at the exact same integer nanosecond-of-day. Unit conversion is checked. |
-| Datetime | Normalise compatible units to a checked integer UTC nanosecond value. Timezone-aware matches only timezone-aware at the same instant; naive matches only naive. Aware-versus-naive, Date-versus-Datetime, or conversion overflow is `unsupported_dtype`. |
-| Duration | Exact equality after checked conversion to signed integer nanoseconds. A lossy or overflowing conversion is `unsupported_dtype`. |
-| Decimal | Exact equality after losslessly rescaling both integer coefficients to the larger scale. Decimal never compares through float; rescaling overflow or incompatible precision is `unsupported_dtype`. |
-| Categorical/enum | Compare normalised string values, not physical category codes. |
-| List/array/struct | Polars 1.39.3 native equality against a typed one-row literal, only for the same compatible schema. |
-
-Object values and incompatible nested schemas return `unsupported_dtype`.
-Neither case can invoke a Python scalar loop or full-frame fallback. The
-canonical preview/trace serializer remains the display-value authority only;
-its support for arbitrary objects is not a correlation-key contract.
-
-Relaxation runs only after zero strict candidates, follows an explicit ordered
-rule set, and returns `unique_relaxed` only for one candidate. Ambiguous relaxed
-results remain ambiguous. Callers emit a `low_confidence_relaxed_match`
-diagnostic naming omitted/relaxed keys, reason, exact candidate count, available
-candidate indices, and whether those indices were truncated; they cannot promote
-it to an unmarked strict result.
-
-Every match result has these exact candidate fields:
-
-- `candidate_count: int|null`
-- `candidate_indices: list[int]`
-- `candidate_indices_state: available|truncated|unavailable`
-
-For every supported path, the primitive adds `with_row_index` before filtering,
-counts the full candidate set exactly inside Polars, orders the original physical
-row indices ascending, and returns the first 16. `candidate_indices_state` is
-`available` if and only if `candidate_count <= 16` (including zero), and is
-`truncated` if and only if `candidate_count > 16`. For `unsupported_dtype`, the
-only valid payload is `candidate_count = null`, `candidate_indices = []`, and
-`candidate_indices_state = unavailable`. All arrays returned by the primitive
-or copied into diagnostics are deterministic and capped at 16 entries.
-
-Target relocation maps ambiguity to the existing loud `ValueError`; upstream
-correlation maps it to the unresolved-step diagnostic. Target relocation maps
-`unsupported_dtype` to the public
-`TraceCorrelationUnsupportedError(ExecutionError)`, exported from
-`haute.errors`. That exception has stable code
-`trace_correlation_unsupported` and exactly the stable diagnostic fields
-`node_id`, `key_columns`, `dtypes`, and `reason_code`; the HTTP route maps it to
-422 and a background execution records `contract_error`. Array-valued fields
-are deterministic and capped at 16 entries. `key_columns` and `dtypes` are
-aligned, retain deterministic match-key order, and are capped together. Upstream
-correlation remains unresolved and records a typed `unsupported_dtype`
-diagnostic. Existing edge-join provenance and multi-frame deterministic
-selection rules supply match rows and frames to the common primitive rather
-than reimplementing comparison.
-
-### Serialisation, caching, and enrichment
-
-`trace_result_to_dict()` delegates value conversion to the canonical preview
-JSON-safe serializer, including recursive temporal/nested values, arbitrary
-objects, non-finite values, and unsafe integers. Parity tests compare every
-trace input/output cell's JSON value with its preview equivalent. This serializer
-is display-only for arbitrary objects and must not be called as a way to turn an
-unsupported object or incompatible nested value into a correlation key.
-
-P9b trace-key construction calls the shared lineage preview-key factory from the
-caching remediation slice, after that API lands. It supplies every mandatory
-factory input and may add only trace-specific dimensions allowed by that factory;
-it must not recompute whole-graph identity or maintain a parallel lineage
-fingerprint. P9a makes no temporary cache-key abstraction.
-
-Create two distinct request-local structures owned by one `execute_trace()` call:
-
-- A completed-result enrichment memo, passed to enrichment helpers. Its key
-  includes node identity, concern, column, row identity, frame/port identity, and
-  every other input read by that concern. A sibling diamond may reuse an already
-  completed result with the identical key. Exceptions are never inserted.
-- An active recursion stack scoped to each call path. A helper pushes before
-  descent and pops in `finally`; encountering an active key produces the existing
-  structured cycle/error marker. Active entries are not completed memo values,
-  so a sibling branch is not mistaken for a cycle.
-
-Neither structure is module-level, embedded in the response, or retained after
-the request finishes.
-
-### Delivery and verification
-
-Implement P9a in this order: (1) typed primitive and every V1 matrix-cell test;
-(2) strict/JSON-parity tests; (3) all correlation call-site migration with
-duplicate and unsupported-dtype regressions; (4) relaxed diagnostics and bounded
-candidate reporting; (5) completed-result memo and per-call-path stack tests.
-Implement P9b only after the lineage key factory exists: integrate it and delete
-duplicate trace key construction. Do not implement row-id injection, persistent
-enrichment caching, new API/UI surfaces, arbitrary-object key coercion, or
-heuristic ambiguity resolution in either slice.
-
-Tests prove no Python shared-key full-frame scan remains (source/AST or
-instrumented structural assertion), vectorized matching is used by every call
-site, and every matrix cell has supported and unsupported coverage. Boundary
-tests pin finite comparisons just below, exactly on, and just above the absolute
-and relative tolerance branches; negative and zero-centred values; boolean
-versus 0/1; exact integer/integer comparison; integer/float at `abs(integer) ==
-2**53` and rejection above it; exact canonical unsafe-integer strings plus
-leading-zero, plus-sign, whitespace, exponent, and decimal-point rejections; and
-the complete NaN/`nan`, positive-infinity/`inf`, negative-infinity/`-inf`,
-cross-sign, finite, and null truth table.
-
-Temporal and Decimal boundary tests cover Date only with Date; Date-versus-
-Datetime rejection; Time nanosecond-of-day equality; Datetime unit normalisation,
-aware same-instant equality, aware-versus-naive rejection, and checked-nanosecond
-overflow; negative and positive Duration equality plus lossy/overflow rejection;
-and Decimal equal values at different scales, unequal values, precision/rescale
-overflow, and Decimal-versus-float rejection. Candidate tests assert the exact
-payload at counts 0, 1, 16, and 17, including ascending original physical row
-indices from `with_row_index` and the only valid unsupported payload. Duplicate
-target/parent matches remain loud or unresolved; unsupported target values raise
-`TraceCorrelationUnsupportedError`; its code, named fields, 422/background
-mapping, deterministic order, and 16-entry caps are pinned; unsupported parent
-values stay unresolved with the typed diagnostic; and trace/preview JSON parity
-holds without broadening key support. Add large-frame correlation performance
-coverage plus memo tests for same-key reuse, differing concern inputs, sibling
-diamonds, cycle push/pop, exceptions, and cross-request isolation.
-
-## Approved change contract — 0.7.0 data-input tracing
-
-Remaining tracing improvement work is tracked in the
-[tracing and explainability roadmap](../../roadmap/tracing-explainability.md).
-
-- Replace `DATA_SOURCE` branches in trace enrichment/export/grouping with provider-aware
-  `DATA_INPUT` handling. Resolve safe source identity and cache generation through the same
-  execution metadata object rather than reparsing config or cache paths.
-- Extend trace cache keys and response provenance with direct/snapshot mode and generation
-  signature. Guarded API types model freshness independently from execution origin.
-- Tests cover each provider group, direct/snapshot equivalence, code-before-correlation,
-  generation refresh invalidation, redaction, external-file separation, and source searches
-  excluding executable legacy branches.
-
-## Approved change contract — canonical-only trace contracts
-
-Under [ROAD-CANON-01](../../roadmap/engineering-quality.md#road-canon-01--prerelease-canonical-only-contract),
-trace correlation and enrichment consume only current typed values, rating configuration, and
-diagnostic payloads. Historical value matchers, simplified test configuration, wrapper
-expressions, and temporary duplicate response fields are removed.
+Known coverage gap: the ordinary HTTP preview route stores target-only
+materialisation, so its first trace cannot exercise successful full-lineage
+preview-cache reuse without a cross-component cache-scope change. Correlation,
+waterfall, enrichment fail-loud, evidence, fidelity, and lineage-key paths
+otherwise have dedicated regression files indexed above. This spec does not
+itself execute the suite; treat file/class presence as an index, not a
+substitute for running
+`pytest tests/test_trace*.py tests/test_optimiser_apply_trace_enrichment.py`
+when changing this component.

@@ -168,6 +168,34 @@ def test_benign_column_pruning_does_not_create_an_omission() -> None:
     assert omissions == []
 
 
+def test_unresolved_assigning_step_keeps_all_attempted_ancestor_omissions() -> None:
+    node_map = {
+        node_id: SimpleNamespace(data=SimpleNamespace(label=node_id, nodeType="polars"))
+        for node_id in ("unresolved-origin", "unresolved-upstream", "target")
+    }
+
+    omissions = _build_trace_omissions(
+        unresolved_rows={
+            "unresolved-upstream": ("no_matching_row", 0),
+            "unresolved-origin": ("no_matching_row", 1),
+        },
+        order=["unresolved-upstream", "unresolved-origin", "target"],
+        node_map=node_map,
+        eager_outputs={
+            "unresolved-upstream": pl.DataFrame({"unrelated_name": [1]}),
+            "unresolved-origin": pl.DataFrame({"another_name": [2]}),
+            "target": pl.DataFrame({"premium": [120]}),
+        },
+        steps=[],
+        column="premium",
+    )
+
+    assert [omission.node_id for omission in omissions] == [
+        "unresolved-upstream",
+        "unresolved-origin",
+    ]
+
+
 def test_ambiguous_source_frame_is_unresolved_instead_of_guessing() -> None:
     node_map = {
         node_id: SimpleNamespace(

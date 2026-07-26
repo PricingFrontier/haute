@@ -265,9 +265,6 @@ docs/specs/pipeline-config/low-level.md	missing-module-map-symbol	_scaffold.haut
 docs/specs/pipeline-config/low-level.md	missing-module-map-symbol	edge_input_name
 docs/specs/pipeline-config/low-level.md	missing-module-map-symbol	input_scenario_map
 docs/specs/pipeline-config/low-level.md	missing-repo-reference	rating/data/
-docs/specs/rating/high-level.md	empty-roadmap-pointer	../../roadmap/rating.md
-docs/specs/rating/low-level.md	empty-roadmap-pointer	../../roadmap/rating.md
-docs/specs/rating/low-level.md	legacy-contract-section	Polars backend contracts (0.6.0)
 docs/specs/reference-pipeline/high-level.md	ambiguous-repo-reference	config/quote_input/quotes.json -> rating/config/quote_input/quotes.json, tests/fixtures/config/quote_input/quotes.json
 docs/specs/reference-pipeline/high-level.md	missing-repo-reference	rating/config/expander/premium.json
 docs/specs/reference-pipeline/high-level.md	missing-repo-reference	rating/data/quotes/nest_example.json
@@ -283,8 +280,6 @@ docs/specs/server-api/high-level.md	legacy-contract-section	Polars backend contr
 docs/specs/server-api/low-level.md	legacy-contract-section	Polars backend contracts (0.6.0)
 docs/specs/server-api/low-level.md	missing-module-map-symbol	contract_error
 docs/specs/submodels/low-level.md	missing-module-map-symbol	SUBMODEL
-docs/specs/tracing/high-level.md	legacy-contract-section	Polars backend contracts (0.6.0)
-docs/specs/tracing/low-level.md	legacy-contract-section	Polars backend contracts (0.6.0)
 tests/performance/test_cache_identity_perf.py	unreferenced-test	not named in any low-level Testing section
 tests/performance/test_polars_scale_scenario.py	unreferenced-test	not named in any low-level Testing section
 tests/performance/test_training_scoring_wide_perf.py	unreferenced-test	not named in any low-level Testing section
@@ -323,7 +318,6 @@ tests/test_graph_input_identity.py	unreferenced-test	not named in any low-level 
 tests/test_host_binding.py	unreferenced-test	not named in any low-level Testing section
 tests/test_impact.py	unreferenced-test	not named in any low-level Testing section
 tests/test_input_providers.py	unreferenced-test	not named in any low-level Testing section
-tests/test_lineage_preview_cache.py	unreferenced-test	not named in any low-level Testing section
 tests/test_mem_helpers.py	unreferenced-test	not named in any low-level Testing section
 tests/test_mlflow_log.py	unreferenced-test	not named in any low-level Testing section
 tests/test_mlflow_log_button_roundtrip.py	unreferenced-test	not named in any low-level Testing section
@@ -364,8 +358,6 @@ tests/test_stat_gated_cache.py	unreferenced-test	not named in any low-level Test
 tests/test_state_transitions.py	unreferenced-test	not named in any low-level Testing section
 tests/test_streaming_collect_contract.py	unreferenced-test	not named in any low-level Testing section
 tests/test_test_debt.py	unreferenced-test	not named in any low-level Testing section
-tests/test_trace_correlation_remediation.py	unreferenced-test	not named in any low-level Testing section
-tests/test_trace_evidence_contract.py	unreferenced-test	not named in any low-level Testing section
 tests/test_training_worker_protocol.py	unreferenced-test	not named in any low-level Testing section
 tests/test_worker_protocol.py	unreferenced-test	not named in any low-level Testing section
 tests/test_write_sandbox_guard.py	unreferenced-test	not named in any low-level Testing section

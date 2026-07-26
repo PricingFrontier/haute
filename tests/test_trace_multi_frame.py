@@ -20,6 +20,7 @@ from __future__ import annotations
 import copy
 from collections.abc import Iterator
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import polars as pl
@@ -29,6 +30,7 @@ from fastapi.testclient import TestClient
 from haute._json_flatten import _json_cache_dir
 from haute._json_shred import build_per_port_cache
 from haute._sandbox import _get_project_root, set_project_root
+from haute._trace_correlation import _correlate_rows_posthoc
 from haute._types import NodeType
 from haute.executor import _preview_cache
 from haute.trace import execute_trace
@@ -74,6 +76,65 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     yield data_path
     set_project_root(original)
     _preview_cache.clear()
+
+
+def test_edge_join_with_multi_frame_base_correlates_join_parent() -> None:
+    node_map = {
+        "base": SimpleNamespace(
+            id="base",
+            data=SimpleNamespace(nodeType=NodeType.API_INPUT, config={}),
+        ),
+        "join": SimpleNamespace(
+            id="join",
+            data=SimpleNamespace(nodeType=NodeType.POLARS, config={}),
+        ),
+        "edge": SimpleNamespace(
+            id="edge",
+            data=SimpleNamespace(
+                nodeType=NodeType.EDGE_JOIN,
+                config={
+                    "baseInput": "base",
+                    "joinInput": "join",
+                    "how": "left",
+                    "on": ["policy_id"],
+                    "suffix": "_right",
+                },
+            ),
+        ),
+    }
+    eager_outputs = {
+        "base": {
+            "policies": pl.DataFrame({"policy_id": ["P1"], "territory": ["north"]}),
+            "drivers": pl.DataFrame({"driver_id": ["D1"], "age": [42]}),
+        },
+        "join": pl.DataFrame({"policy_id": ["P1"], "territory": ["joined"], "rate": [1.2]}),
+        "edge": pl.DataFrame(
+            {
+                "policy_id": ["P1"],
+                "territory": ["north"],
+                "territory_right": ["joined"],
+                "rate": [1.2],
+            }
+        ),
+    }
+
+    rows = _correlate_rows_posthoc(
+        eager_outputs,
+        order=["base", "join", "edge"],
+        parents_of={"edge": ["base", "join"]},
+        target_node_id="edge",
+        row_index=0,
+        node_map=node_map,
+        source_frames_of={("base", "edge"): ["policies"]},
+        traced_column="rate",
+    )
+
+    assert rows["base"] == {"policy_id": "P1", "territory": "north"}
+    assert rows["join"] == {
+        "policy_id": "P1",
+        "territory": "joined",
+        "rate": 1.2,
+    }
 
 
 def test_trace_through_multi_frame_source_succeeds(project: Path) -> None:
@@ -327,9 +388,9 @@ def test_banding_factor_dtypes_scoped_to_consumed_frame(
         captured["factor_input_dtypes"] = kwargs.get("factor_input_dtypes")
         return None
 
-    import haute.trace as trace_mod
+    import haute._trace_enrichment as trace_enrichment
 
-    monkeypatch.setattr(trace_mod, "enrich_banding", _spy_enrich_banding)
+    monkeypatch.setattr(trace_enrichment, "enrich_banding", _spy_enrich_banding)
 
     execute_trace(graph, row_index=0, target_node_id="band")
 
@@ -389,9 +450,9 @@ def test_rating_factor_dtypes_scoped_to_consumed_frame(
         captured["factor_input_dtypes"] = kwargs.get("factor_input_dtypes")
         return None
 
-    import haute.trace as trace_mod
+    import haute._trace_enrichment as trace_enrichment
 
-    monkeypatch.setattr(trace_mod, "enrich_rating_step", _spy_enrich_rating_step)
+    monkeypatch.setattr(trace_enrichment, "enrich_rating_step", _spy_enrich_rating_step)
 
     execute_trace(graph, row_index=0, target_node_id="rating")
 
