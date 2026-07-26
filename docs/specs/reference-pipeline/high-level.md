@@ -9,6 +9,10 @@ artifacts, and user utility helpers. It is useful for manual inspection of how
 a project directory can be laid out around Haute; it is not an executable
 compatibility fixture.
 
+The repository-root `haute.toml` selects `rating/main.py` through
+`[project].pipeline`, making this snapshot the repository's authoritative
+pipeline for commands that resolve the project default.
+
 It is not the Haute package's runtime implementation or a guaranteed runnable
 demonstration from a fresh clone. In particular, it is missing
 `rating/data/quotes/nest_example.json`, the quote JSON input referenced by the
@@ -46,9 +50,10 @@ Out of scope:
   one API-input node (`quotes`) and one output node (`Quote_Response_9`), then
   connects the four emitted input ports to the corresponding output function
   parameters.
-- The API-input code loads `data/quotes/nest_example.json` relative to the
-  generated script, loads `config/quote_input/quotes.json`, requires its v2 `tables` shape,
-  validates it, and uses the Haute JSON-shredding loader to return a lazy frame.
+- The API-input code delegates to `resolve_api_input_from_config()` with the generated script
+  directory as its guarded base. The helper loads `config/quote_input/quotes.json`, validates its
+  v2 `tables` shape, resolves the sidecar's data path, and returns the emitted lazy-frame table
+  mapping.
   The sidecar declares four emitted tables: quotes, drivers, vehicles, and
   licenses.
 - The output node returns the `quotes` frame. Its response sidecar maps selected
@@ -98,9 +103,9 @@ Out of scope:
   frame. The generated submodel's `rating/config/expander/premium.json` is
   likewise not a tracked reference artifact; no behaviour for a missing or
   locally supplied version is promised here.
-- A sidecar without a `tables` list raises the generated `RuntimeError` that
-  instructs the author to infer/cache tables; malformed v2 table configuration
-  propagates the validator's error rather than being guessed or repaired.
+- A sidecar without a valid `tables` list fails through the shared API-input configuration
+  error contract; malformed v2 table configuration propagates rather than being guessed or
+  repaired.
 - The generated output function assumes the named four input parameters and
   returns only `quotes`; a graph/port/signature mismatch is left to the Haute
   pipeline/runtime validation rather than hidden by a local fallback.

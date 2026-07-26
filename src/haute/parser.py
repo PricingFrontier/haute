@@ -211,11 +211,17 @@ def parse_pipeline_source(
         missing_paths: list[str] = []
 
         for rel_path in submodel_paths:
-            sm_filepath, sm_base_dir = resolve_submodel_reference(
-                rel_path,
-                pipeline_dir=_base_dir,
-                project_root=resolved_submodel_root,
-            )
+            try:
+                sm_filepath, sm_base_dir = resolve_submodel_reference(
+                    rel_path,
+                    pipeline_dir=_base_dir,
+                    project_root=resolved_submodel_root,
+                )
+            except ValueError as exc:
+                raise ParseError(
+                    "pipeline.submodel() path escapes the project directory",
+                    path=rel_path,
+                ) from exc
             if not sm_filepath.is_file():
                 missing_paths.append(rel_path)
                 continue

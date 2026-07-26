@@ -70,7 +70,7 @@ def assert_parser_structure_conserved(
     seen_implicit: set[tuple[str, str]] = set()
     for node in raw_nodes:
         target = str(node["func_name"])
-        for parameter in node.get("param_names", ()):
+        for parameter in node.get("edge_param_names", node.get("param_names", ())):
             pair = (str(parameter), target)
             if (
                 pair[0] in root_ids

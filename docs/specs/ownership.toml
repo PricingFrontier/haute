@@ -71,6 +71,18 @@ consumers = ["assistant", "engineering-quality"]
 reason = "Package metadata also configures quality tools and declares the assistant dependency."
 
 [[shared_file]]
+path = "src/haute/_builders.py"
+primary = "pipeline-config"
+consumers = ["execution-engine"]
+reason = "Pipeline configuration owns node builder registration; execution consumes the registered runtime closures."
+
+[[shared_file]]
+path = "src/haute/_contracts.py"
+primary = "pipeline-config"
+consumers = ["execution-engine"]
+reason = "Pipeline configuration owns the column-contract model and lookup consumed at runtime."
+
+[[shared_file]]
 path = "src/haute/_gitignore_guard.py"
 primary = "sandbox-security"
 consumers = ["git-integration"]
@@ -83,10 +95,22 @@ consumers = ["server-api"]
 reason = "Local security policy protects the server's file-facing routes."
 
 [[shared_file]]
+path = "src/haute/_node_builder.py"
+primary = "pipeline-config"
+consumers = ["execution-engine"]
+reason = "Pipeline configuration owns builder interception hooks used by deploy execution."
+
+[[shared_file]]
 path = "src/haute/_path_resolution.py"
 primary = "sandbox-security"
 consumers = ["execution-engine", "io-layer"]
 reason = "Security owns runtime containment; execution and I/O consume the shared resolver."
+
+[[shared_file]]
+path = "src/haute/_registry.py"
+primary = "pipeline-config"
+consumers = ["codegen", "execution-engine"]
+reason = "Pipeline configuration owns the node registry shared with graph generation and execution."
 
 [[shared_file]]
 path = "src/haute/routes/_save_pipeline.py"

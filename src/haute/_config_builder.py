@@ -219,25 +219,6 @@ def _attach_code_from_body(
     return config
 
 
-def _compute_contract_resolve_fallback_exceptions() -> tuple[type[BaseException], ...]:
-    """Exceptions that mean "can't resolve builder contract right now".
-
-    Matches ``_execute_lazy._BOUNDARY_CHECK_EXCEPTIONS`` — the parse-time
-    fallback must not swallow more than the runtime boundary check would.
-    Programmer errors (``AttributeError`` / ``TypeError`` / ``KeyError``)
-    propagate so they aren't silenced as "harmless parse-time fallback
-    to opaque".
-    """
-    exc_types: list[type[BaseException]] = [ConfigError, OSError, ImportError, RuntimeError]
-    try:
-        from mlflow.exceptions import MlflowException
-
-        exc_types.append(MlflowException)
-    except ImportError:
-        pass
-    return tuple(exc_types)
-
-
 def _is_contract_resolve_fallback_exception(exc: BaseException) -> bool:
     """Return whether *exc* should fall back to an opaque parse-time contract.
 

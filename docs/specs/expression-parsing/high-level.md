@@ -124,9 +124,11 @@ Out of scope (owned by neighbouring components, cross-linked below):
   reported as uncomputable (`None`) rather than a wrong wraparound value; `.round()` matches
   Polars' float-scale-then-half-to-even rounding, not Python's decimal-accurate `round()`; a
   negative base raised to a non-integer float exponent is `NaN`, matching Polars' float domain.
-  Unsupported AST nodes and methods commonly return `None`; several malformed-call guards also
-  return `None`, ignore unknown arguments, or retain an input value rather than reproducing
-  Polars' exception. For supported operations, an internal evaluator failure **propagates**
+  Unsupported AST nodes and methods return `None`; only explicitly enumerated single-row
+  identity operations (`alias`, `cast`, `over`, `shift`, `diff`, and listed aggregations)
+  return the receiver value. Several malformed-call guards also return `None` or ignore unknown
+  arguments rather than reproducing Polars' exception. For supported operations, an internal
+  evaluator failure **propagates**
   rather than being swallowed — see Failure model.
 - For `pl.when()/.then()/.otherwise()` conditionals, evaluation additionally reports which branch
   was actually taken (and, for nested conditionals, which branch was taken at each inner level),
@@ -202,7 +204,7 @@ Out of scope (owned by neighbouring components, cross-linked below):
 - Structural parsing *does* raise `ParseError` for content the fallback scanner can see but cannot
   safely reconstruct: an unclosed `connect()`/`submodel()`/decorator argument list, a non-literal
   decorator keyword argument or (on the healthy path) a non-literal `submodel()` path, an
-  `async def` pipeline node, a config sidecar folder with no `config=` kwarg, a missing submodel
+  `async def` pipeline node, a missing submodel
   file, a submodel reference without a resolution root, the same resolved submodel file referenced
   more than once, two different submodel files declaring the same name, a nested submodel
   reference, an exact duplicate edge identity, or any node/edge/handle identity rejected by the
@@ -215,7 +217,8 @@ Out of scope (owned by neighbouring components, cross-linked below):
 - `parse_expression` never raises: any internal exception becomes an `"opaque"` result. This is
   the single deliberate catch-all in the expression parser, justified as the honest "could not
   statically understand this" signal.
-- `evaluate_expression` does not catch evaluator failures, and `parse_expression_chain` does not
-  catch non-syntax internal failures; they propagate to the trace/enrichment caller, which is
-  expected to record a visible error marker. `parse_expression_chain` does catch `SyntaxError` and
+- Unsupported or uncomputable evaluation returns `None`; it never substitutes the receiver or
+  `row_values[target_column]` as a plausible result. Other evaluator failures propagate to the
+  trace/enrichment caller, which records a visible error marker. `parse_expression_chain` does
+  not catch non-syntax internal failures. It does catch `SyntaxError` and
   returns the opaque `parse_expression` result as a singleton when available.

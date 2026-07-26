@@ -95,18 +95,16 @@ def _extract_decorated_nodes(
         seen_func_names.add(func_name)
 
         decorator_kwargs = _get_decorator_kwargs(matched_decorator)
-        # Flatten every parameter bucket in source order: positional-only,
-        # positional-or-keyword, and keyword-only. Reading only ``args`` lost
-        # implicit param-name edges and mis-counted ``n_params`` for nodes
-        # whose params used ``/`` or ``*`` separators.
-        param_names = [
+        # All named buckets feed config/body extraction, while only positional
+        # buckets define implicit frame edges. Keyword-only params are config.
+        positional_param_names = [
             arg.arg
             for arg in (
                 *stmt.args.posonlyargs,
                 *stmt.args.args,
-                *stmt.args.kwonlyargs,
             )
         ]
+        param_names = [*positional_param_names, *(arg.arg for arg in stmt.args.kwonlyargs)]
         n_params = len(param_names)
         description = _get_docstring(stmt)
         body = func_bodies.get(func_name, "")
@@ -129,6 +127,7 @@ def _extract_decorated_nodes(
                 "description": description,
                 "config": config,
                 "param_names": param_names,
+                "edge_param_names": positional_param_names,
             }
         )
 
@@ -164,7 +163,7 @@ def _build_edges(
     # Implicit edges from parameter names matching node names
     seen_implicit: set[tuple[str, str]] = set()
     for node_info in raw_nodes:
-        for param in node_info["param_names"]:
+        for param in node_info.get("edge_param_names", node_info["param_names"]):
             if param in node_names and param != node_info["func_name"]:
                 pair = (param, node_info["func_name"])
                 # A duplicated parameter name (reachable via the regex

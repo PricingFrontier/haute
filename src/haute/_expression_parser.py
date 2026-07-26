@@ -38,7 +38,7 @@ __all__ = [
 class ParsedExpression:
     target_column: str
     expression_text: str
-    expression_type: str  # "arithmetic"|"conditional"|"horizontal_func"|"function_call"|"opaque"
+    expression_type: str  # arithmetic|conditional|horizontal_func|function_call|window|opaque
     referenced_columns: list[str]
     constants: list[Any]
     sub_expressions: list[ParsedExpression] = field(default_factory=list)
@@ -126,7 +126,6 @@ _PREC_COMPARE = 0  # below BitOr(1); e.g. (a < b) * c must keep its parens
 _PREC_BOOL_OR = -2
 _PREC_BOOL_AND = -1
 _PREC_IFEXP = -3
-_PREC_TERNARY_FLOOR = -3
 # Unary minus binds looser than ** (so ``-a ** b`` is ``-(a ** b)`` and
 # ``(-a) ** b`` needs parens) but tighter than multiplication.
 _PREC_USUB = 7
@@ -140,6 +139,16 @@ _PREC_USUB = 7
 # as uncomputable (None) instead of guessing a wraparound.
 _INT64_MIN = -(2**63)
 _INT64_MAX = 2**63 - 1
+
+_COLUMN_PRODUCER_METHODS: frozenset[str] = frozenset({"with_columns", "select"})
+_CONTROL_FLOW_STATEMENT_TYPES: tuple[type[ast.stmt], ...] = (
+    ast.If,
+    ast.For,
+    ast.While,
+    ast.Try,
+    ast.TryStar,
+    ast.With,
+)
 
 
 # Binary / comparison operator dispatch tables for the value evaluator. Hoisted
@@ -1003,23 +1012,11 @@ def _is_df_assignment(value: ast.AST) -> bool:
     return False
 
 
-def _has_control_flow(stmts: list[ast.stmt]) -> bool:
-    """Check if statements contain if/for/try/match/while/with at top level."""
-    for stmt in stmts:
-        if isinstance(stmt, (ast.If, ast.For, ast.While, ast.Try, ast.With)):
-            return True
-        if hasattr(ast, "Match") and isinstance(stmt, ast.Match):
-            return True
-        if hasattr(ast, "TryStar") and isinstance(stmt, ast.TryStar):
-            return True
-    return False
-
-
 def _find_control_flow_assigned_vars(stmts: list[ast.stmt]) -> set[str]:
     """Find variable names assigned inside control flow blocks."""
     result: set[str] = set()
     for stmt in stmts:
-        if isinstance(stmt, (ast.If, ast.For, ast.While, ast.Try, ast.With)):
+        if isinstance(stmt, _CONTROL_FLOW_STATEMENT_TYPES):
             _collect_assigned_names(stmt, result)
         if hasattr(ast, "Match") and isinstance(stmt, ast.Match):
             _collect_assigned_names(stmt, result)
@@ -1041,7 +1038,7 @@ def _collect_assigned_names(node: ast.AST, names: set[str]) -> None:
 def _has_control_flow_wrapping_target(stmts: list[ast.stmt], target_column: str) -> bool:
     """Check if with_columns producing target_column is inside control flow."""
     for stmt in stmts:
-        if isinstance(stmt, (ast.If, ast.For, ast.While, ast.Try, ast.With)):
+        if isinstance(stmt, _CONTROL_FLOW_STATEMENT_TYPES):
             if _contains_with_columns_producing(stmt, target_column):
                 return True
         if hasattr(ast, "Match") and isinstance(stmt, ast.Match):
@@ -1054,7 +1051,7 @@ def _contains_with_columns_producing(node: ast.AST, target_column: str) -> bool:
     """Check if any node in subtree has with_columns that produces target_column."""
     for child in ast.walk(node):
         if isinstance(child, ast.Call) and isinstance(child.func, ast.Attribute):
-            if child.func.attr == "with_columns":
+            if child.func.attr in _COLUMN_PRODUCER_METHODS:
                 # Check if any arg produces the target column
                 for arg in child.args:
                     _, alias = _strip_alias(arg)
@@ -1085,7 +1082,7 @@ def _find_with_columns_calls(tree: ast.Module) -> list[tuple[ast.Call, int | Non
     results = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
-            if node.func.attr in ("with_columns", "select"):
+            if node.func.attr in _COLUMN_PRODUCER_METHODS:
                 lineno = getattr(node, "lineno", None)
                 results.append((node, lineno))
 
@@ -1439,19 +1436,24 @@ def evaluate_expression(
     return _evaluate_expression_impl(code, target_column, row_values, preamble_ns=preamble_ns)
 
 
+def _wrap_expression_code(code: str) -> str:
+    """Make expression snippets parseable without corrupting assignments."""
+    code_clean = code.lstrip("\ufeff")
+    if code_clean.startswith("."):
+        return f"df = (df\n{code_clean})"
+    first_line_prefix = code_clean.split("\n", 1)[0].split("(", 1)[0]
+    if code_clean and not code_clean.startswith("df") and "=" not in first_line_prefix:
+        return f"df = (\n{code_clean}\n)"
+    return code_clean
+
+
 def _evaluate_expression_impl(
     code: str,
     target_column: str,
     row_values: dict[str, Any],
     preamble_ns: dict[str, Any] | None = None,
 ) -> EvaluatedExpression:
-    # Wrap dot-chain syntax so the parser sees valid Python
-    if code.lstrip().startswith("."):
-        code = f"df = (df\n{code})"
-    elif (
-        code and not code.lstrip().startswith("df") and "=" not in code.split("\n")[0].split("(")[0]
-    ):
-        code = f"df = (\n{code}\n)"
+    code = _wrap_expression_code(code)
 
     # Merge preamble constants into row_values for evaluation.
     # Column values (row_values) take priority over preamble constants.
@@ -1680,7 +1682,7 @@ def _compute_result_impl(
     try:
         tree = _cached_parse(code_clean)
     except SyntaxError:
-        return row_values.get(target_column)
+        return None
 
     stmts = tree.body
     symbol_table = _build_safe_symbol_table(stmts)
@@ -1709,7 +1711,7 @@ def _compute_result_impl(
                 break
 
     if best_match is None:
-        return row_values.get(target_column)
+        return None
 
     evaluator = _ExprEvaluator(row_values, symbol_table)
     return evaluator.evaluate(best_match)
@@ -2192,8 +2194,8 @@ class _ExprEvaluator:
             if method in ("replace_strict", "replace"):
                 return self._eval_replace(node, method)
 
-            # Default: try to evaluate receiver
-            return self.evaluate(receiver)
+            # Unsupported methods are unknown, never identity operations.
+            return None
 
         # Bare function call
         if isinstance(node.func, ast.Name):
@@ -2465,15 +2467,7 @@ def parse_expression_chain(code: str, target_column: str) -> list[ParsedExpressi
 
 def _parse_expression_chain_impl(code: str, target_column: str) -> list[ParsedExpression]:
     """Implementation of parse_expression_chain."""
-    code_clean = code.lstrip("\ufeff")
-
-    # Wrap dot-chain code
-    if code_clean.startswith("."):
-        code_wrapped = f"df = (df\n{code_clean})"
-    elif code_clean and "df" not in code_clean.split("=")[0]:
-        code_wrapped = f"df = (\n{code_clean}\n)"
-    else:
-        code_wrapped = code_clean
+    code_wrapped = _wrap_expression_code(code)
 
     try:
         tree = _cached_parse(code_wrapped)

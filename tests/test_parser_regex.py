@@ -236,6 +236,10 @@ class TestParseDecoratorKwargsRegex:
         with pytest.raises(ParseError, match=r"\*\*"):
             _parse_decorator_kwargs_regex("@pipeline.polars(**cfg, selected_columns=['x'])")
 
+    def test_malformed_kwargs_raise_parse_error(self) -> None:
+        with pytest.raises(ParseError, match="decorator kwargs"):
+            _parse_decorator_kwargs_regex("@pipeline.polars(percent=50%)")
+
 
 # ---------------------------------------------------------------------------
 # _find_connect_calls — remediation 5.7
@@ -892,6 +896,42 @@ x = {unclosed
         graph = fallback_parse(source, "f.py", err)
         assert graph.pipeline_name == 'p"q'
         assert graph.pipeline_description == 'd"e'
+
+    @pytest.mark.parametrize(
+        ("import_line", "constructor"),
+        [
+            ("import haute as ht", "ht.Pipeline"),
+            ("from haute import Pipeline as BuildPipeline", "BuildPipeline"),
+        ],
+    )
+    def test_aliased_pipeline_metadata_survives_fallback(
+        self,
+        import_line: str,
+        constructor: str,
+    ) -> None:
+        source = f"""\
+{import_line}
+pipeline = {constructor}("motor_rating", description="real desc")
+
+@pipeline.polars()
+def broken(df):
+    return (
+"""
+        graph = fallback_parse(source, "f.py", SyntaxError("bad"))
+        assert graph.pipeline_name == "motor_rating"
+        assert graph.pipeline_description == "real desc"
+
+    def test_visible_unrecoverable_pipeline_assignment_fails_loud(self) -> None:
+        source = """\
+from somewhere import Builder
+pipeline = Builder("secret_name")
+
+@pipeline.polars()
+def broken(df):
+    return (
+"""
+        with pytest.raises(ParseError, match="pipeline metadata"):
+            fallback_parse(source, "f.py", SyntaxError("bad"))
 
     def test_unclosed_pipeline_metadata_fails_loud(self) -> None:
         source = """\

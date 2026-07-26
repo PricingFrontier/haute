@@ -127,7 +127,7 @@ class TestStripDocstringEscapedTrailingQuote:
 
 
 class TestParameterBucketConservation:
-    def test_posonly_and_kwonly_params_yield_implicit_edges(self) -> None:
+    def test_only_positional_params_yield_implicit_edges(self) -> None:
         source = textwrap.dedent(
             """\
             import polars as pl
@@ -156,7 +156,7 @@ class TestParameterBucketConservation:
         pairs = {(e.source, e.target) for e in graph.edges}
         assert ("a", "target") in pairs  # positional-only
         assert ("b", "target") in pairs  # positional-or-keyword
-        assert ("c", "target") in pairs  # keyword-only
+        assert ("c", "target") not in pairs  # keyword-only configuration
 
 
 # ---------------------------------------------------------------------------

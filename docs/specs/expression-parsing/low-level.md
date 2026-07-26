@@ -13,7 +13,8 @@
 ## Key types and data structures
 
 - **`ParsedExpression`** (dataclass, `_expression_parser.py`) — `target_column`, `expression_text`,
-  `expression_type` (`"arithmetic"|"conditional"|"horizontal_func"|"function_call"|"opaque"`),
+  `expression_type`
+  (`"arithmetic"|"conditional"|"horizontal_func"|"function_call"|"window"|"opaque"`),
   `referenced_columns: list[str]`, `constants: list[Any]`, `sub_expressions: list[ParsedExpression]`
   (nested conditionals inside a `then`/`otherwise` arm), `source_line: int | None`.
 - **`EvaluatedExpression`** (dataclass, extends `ParsedExpression`) — adds `substituted_text`,
@@ -193,7 +194,8 @@ appended before the column that depends on it) → return the parsed expressions
 - **Submodel resolution roots are mandatory**: healthy in-memory parsing cannot conserve a
   `pipeline.submodel()` reference without `_base_dir` or `_submodel_base_dir`, so it raises with
   `unresolved_paths` instead of returning a root-only graph. `fallback_parse` always has a
-  resolution root: `_base_dir`, else `Path(source_file).parent`, else `Path.cwd()`.
+  resolution root: `_submodel_base_dir`, else `_base_dir`, else
+  `Path(source_file).parent`, else `Path.cwd()`.
 - **Repeated submodel files are diagnosed separately**: `build_unique_submodel_maps` groups
   parsed children by resolved `PipelineGraph.source_file` before grouping by declared name. If
   one file was authored more than once, the error reports that file and its reference spellings;
@@ -229,11 +231,9 @@ appended before the column that depends on it) → return the parsed expressions
   function; a syntactically invalid referenced submodel file; a missing submodel file; a
   submodel reference without a resolution root; a repeated resolved submodel file; duplicate
   declared submodel names across different files; nested submodel references; an exact duplicate
-  edge identity; a structure-conservation mismatch; or a config sidecar folder present for a node
-  type with no matching `config=` kwarg (`_sidecar_required_error`, defined in
-  `src/haute/_config_builder.py` and owned by
-  [pipeline-config](../pipeline-config/low-level.md), but raised from this component's fallback
-  path).
+  edge identity; a structure-conservation mismatch; or a submodel path that escapes the project
+  root. A folder-backed node with no matching `config=` kwarg raises `ConfigError` through
+  `_sidecar_required_error`, consistently with other sidecar configuration failures.
 - **`SyntaxError` from `ast.parse`** at the top of `parse_pipeline_source` is caught and converted
   into a full `fallback_parse` call — never re-raised to the caller. A `SyntaxError` recovering one
   individual function body *inside* `fallback_parse` is similarly caught and turned into a
@@ -276,6 +276,9 @@ Tests live under `tests/`, split by concern:
   function shape, alias awareness, implicit-edge dedup, exact node/edge/handle/submodel identity,
   aggregated missing/unrecoverable submodel diagnostics, duplicate submodel-name rejection, and
   parity between the fallback scan/submodel-recovery/contract-validation and the healthy path.
+- **`test_parser_project_layout.py`**, **`test_parser_internals.py`**, and
+  **`test_parser_sanitize_contracts.py`** — project-root/base-directory handling, internal
+  parser invariants, and sanitisation contracts.
 - **`test_parser_fail_loudly.py`** — a fail-loud sweep pinning config-path failures, stale
   instance mapping, submodel cross-boundary handle validation, extend-path staleness, and empty
   Polars code to *raise* rather than silently degrade.
@@ -314,7 +317,7 @@ Known coverage gaps:
   randomly-generated broken Python source.
 - `test_expression_parser_polars_parity.py` cross-checks a curated subset (notably rounding,
   regex `str.contains`, `is_between`, `is_in`, conditionals, and a few numeric methods) against
-  real Polars. It is not an exhaustive semantic differential. Unsupported AST/method forms often
+  real Polars. It is not an exhaustive semantic differential. Unsupported AST/method forms
   return `None`, and defensive malformed-call branches sometimes intentionally differ from
   Polars by ignoring an argument or avoiding an exception.
 - Window result calculation is described textually using regex extraction and a row-local AST

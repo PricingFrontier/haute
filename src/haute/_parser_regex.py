@@ -56,7 +56,9 @@ from haute.errors import ParseError
 
 _RE_DECORATOR_ANCHOR = re.compile(r"(?m)^@pipeline\.(\w+)\b")
 
-_RE_PIPELINE_META_ANCHOR = re.compile(r"(?m)^pipeline\s*=\s*haute\.Pipeline\s*\(")
+_RE_HAUTE_IMPORT = re.compile(r"(?m)^\s*import\s+haute(?:\s+as\s+(\w+))?\s*$")
+_RE_PIPELINE_IMPORT = re.compile(r"(?m)^\s*from\s+haute\s+import\s+Pipeline(?:\s+as\s+(\w+))?\s*$")
+_RE_PIPELINE_ASSIGNMENT = re.compile(r"(?m)^pipeline\s*=")
 
 # Anchor for pipeline.connect(...) call sites.  The negative lookbehind
 # rejects other receivers (``mypipeline.connect``, ``module.pipeline.connect``).
@@ -429,8 +431,18 @@ def _line_end(source: str, idx: int) -> int:
 
 
 def _recover_pipeline_meta(source: str) -> tuple[str, str]:
-    """Recover ``pipeline = haute.Pipeline(...)`` metadata from fallback source."""
-    for match in _RE_PIPELINE_META_ANCHOR.finditer(source):
+    """Recover alias-aware ``pipeline = Pipeline(...)`` fallback metadata."""
+    module_aliases = {"haute"}
+    module_aliases.update(match.group(1) or "haute" for match in _RE_HAUTE_IMPORT.finditer(source))
+    constructor_aliases = {
+        match.group(1) or "Pipeline" for match in _RE_PIPELINE_IMPORT.finditer(source)
+    }
+    spellings = [*(rf"{re.escape(alias)}\.Pipeline" for alias in module_aliases)]
+    spellings.extend(re.escape(alias) for alias in constructor_aliases)
+    constructor_pattern = "|".join(sorted(spellings, key=len, reverse=True))
+    meta_anchor = re.compile(rf"(?m)^pipeline\s*=\s*(?:{constructor_pattern})\s*\(")
+
+    for match in meta_anchor.finditer(source):
         if not _position_is_code(source, match.start()):
             continue
         line_no = source.count("\n", 0, match.start()) + 1
@@ -465,6 +477,15 @@ def _recover_pipeline_meta(source: str) -> tuple[str, str]:
             ) from exc
         return _extract_pipeline_meta(meta_tree)
 
+    if any(
+        _position_is_code(source, match.start())
+        for match in _RE_PIPELINE_ASSIGNMENT.finditer(source)
+    ):
+        raise ParseError(
+            "pipeline metadata assignment is visible but its Pipeline constructor "
+            "cannot be recovered; use `import haute`/`import haute as ...` or "
+            "`from haute import Pipeline as ...`"
+        )
     return "main", ""
 
 
@@ -602,15 +623,23 @@ def _find_function_blocks(source: str) -> list[dict]:
             m.start() + len(decorator_text),
         )
 
-        # Extract parameter names (strip type annotations)
-        param_names = []
-        for p in params_text.split(","):
-            p = p.strip()
-            if not p:
-                continue
-            name = p.split(":")[0].strip()
-            if name:
-                param_names.append(name)
+        try:
+            signature_tree = ast.parse(f"def _recovered({params_text}):\n    pass\n")
+        except SyntaxError as exc:
+            raise ParseError(
+                "decorated function signature could not be recovered",
+                line=def_line_idx + 1,
+            ) from exc
+        signature = signature_tree.body[0]
+        if not isinstance(signature, ast.FunctionDef):
+            raise ParseError("decorated function signature could not be recovered")
+        positional_param_names = [
+            arg.arg for arg in (*signature.args.posonlyargs, *signature.args.args)
+        ]
+        param_names = [
+            *positional_param_names,
+            *(arg.arg for arg in signature.args.kwonlyargs),
+        ]
 
         # Find the body: everything indented after the def line
         start_line = def_line_idx
@@ -636,6 +665,8 @@ def _find_function_blocks(source: str) -> list[dict]:
                 "decorator_method": decorator_method,
                 "explicit_node_type": DECORATOR_TO_NODE_TYPE[decorator_method],
                 "param_names": param_names,
+                "edge_param_names": positional_param_names,
+                "params_text": params_text,
                 "body_text": "\n".join(body_lines),
                 "start_line": start_line,
             }
@@ -690,7 +721,14 @@ def _parse_decorator_kwargs_regex(decorator_text: str) -> dict[str, Any]:
     # Wrap in a synthetic call so ast.parse produces an ast.Call we can
     # walk — this handles every shape ``ast.literal_eval`` supports, plus
     # multi-line bodies and nested structures, in one pass.
-    tree = ast.parse(f"f({inner})", mode="eval")
+    try:
+        tree = ast.parse(f"f({inner})", mode="eval")
+    except SyntaxError as exc:
+        raise ParseError(
+            "decorator kwargs could not be parsed during syntax-error recovery",
+            line=exc.lineno,
+            offset=exc.offset,
+        ) from exc
     call = tree.body
     if not isinstance(call, ast.Call):
         raise ValueError(f"decorator kwargs body is not a call expression: {inner!r}")
@@ -789,11 +827,17 @@ def _recover_submodels(
     missing_paths: list[str] = []
 
     for rel_path in submodel_paths:
-        sm_filepath, sm_base_dir = resolve_submodel_reference(
-            rel_path,
-            pipeline_dir=base_dir,
-            project_root=resolved_root,
-        )
+        try:
+            sm_filepath, sm_base_dir = resolve_submodel_reference(
+                rel_path,
+                pipeline_dir=base_dir,
+                project_root=resolved_root,
+            )
+        except ValueError as exc:
+            raise ParseError(
+                "pipeline.submodel() path escapes the project directory",
+                path=rel_path,
+            ) from exc
         if not sm_filepath.is_file():
             missing_paths.append(rel_path)
             continue
@@ -872,9 +916,9 @@ def fallback_parse(
                 loaded_config, _ = recovered
 
         # Try to parse the function individually to get the docstring
-        params_str = ", ".join(param_names)
         func_source = (
-            f"{block['decorator_text']}\ndef {func_name}({params_str}):\n{block['body_text']}"
+            f"{block['decorator_text']}\ndef {func_name}({block['params_text']}):\n"
+            f"{block['body_text']}"
         )
         description = ""
         has_syntax_error = False
@@ -933,6 +977,7 @@ def fallback_parse(
                 "description": description or f"{func_name} node",
                 "config": config,
                 "param_names": param_names,
+                "edge_param_names": block["edge_param_names"],
             }
         )
 
