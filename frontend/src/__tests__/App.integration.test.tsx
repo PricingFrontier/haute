@@ -1568,10 +1568,8 @@ describe("App integration — panel open/close", () => {
     // The panel mounts inside the aside labelled "Node properties".
     const aside = screen.getByRole("complementary", { name: /node properties/i })
     // UtilityPanel renders a PanelShell with a "Close" button.
-    const closeBtn = within(aside).queryByRole("button", { name: /close/i })
-    expect(closeBtn, "Utility panel close button").not.toBeNull()
-
-    fireEvent.click(closeBtn!)
+    const closeBtn = await within(aside).findByRole("button", { name: /close/i })
+    fireEvent.click(closeBtn)
     await waitFor(() => {
       expect(useUIStore.getState().utilityOpen).toBe(false)
     })

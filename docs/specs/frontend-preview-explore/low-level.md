@@ -10,7 +10,7 @@
 | `frontend/src/components/ExecutionDiagnosticsSummary.tsx` | Modelling-owned actionable execution-diagnostic banner consumed by Explore progress and cache reports. |
 | `frontend/src/components/ExecutionDiagnosticsIndicator.tsx` | Compact preview-header execution diagnostic indicator. |
 | `frontend/src/panels/ExplorePreview.tsx` | Explore run/cancel/store lifecycle and Preview/Overview tab composition. |
-| `frontend/src/panels/UtilityPanel.tsx` | Utility-module list/read/create/delete/editor UI with debounced, flushable saves and syntax-error display. |
+| `frontend/src/panels/UtilityPanel.tsx` | Utility-module list/read/create/delete/editor UI with debounced, flushable saves and syntax-error display. `App.tsx` loads the panel through a lazy import only after the user opens Utility, keeping its editor and API path out of startup JavaScript. |
 | `frontend/src/panels/explore/cacheIdentity.ts` | Upstream-lineage/config identity for an Explore cache request. |
 | `frontend/src/panels/explore/overviewCardDefinitions.ts`, `frontend/src/panels/explore/overviewConfig.ts` | Ordered overview-card registry and defensive config reader. |
 | `frontend/src/panels/explore/ExploreOverviewPane.tsx` | Enabled-card/empty-state dispatcher. |
@@ -59,13 +59,15 @@
 
 ### Utility editing concurrency
 
-1. `frontend/src/panels/UtilityPanel.tsx` loads files on mount and selects the first file when
+1. `frontend/src/App.tsx` mounts `UtilityPanel` behind a local `Suspense` boundary only while
+   `utilityOpen`; the bundle checker treats its chunk as lazy-only and rejects startup preload.
+2. `frontend/src/panels/UtilityPanel.tsx` loads files on mount and selects the first file when
    none is active. Switching files first awaits `flushSave()`; a pending/in-flight failure or an
    already-settled rejected draft stops the switch, and the draft plus inline error remain visible
    until a later save succeeds.
-2. Edits debounce for 500ms. Unmount flushes any pending write fire-and-forget; post-await
+3. Edits debounce for 500ms. Unmount flushes any pending write fire-and-forget; post-await
    state updates verify both mounted state and the module still selected, dropping stale replies.
-3. Delete explicitly cancels a pending save for the deleted file. Create refreshes the list,
+4. Delete explicitly cancels a pending save for the deleted file. Create refreshes the list,
    loads the new module and passes the server-returned import line back to the preamble owner.
 
 ## Edge cases and invariants
@@ -104,7 +106,8 @@ Tests live in `frontend/src/panels/__tests__/DataPreview.test.tsx`,
 `frontend/src/panels/explore/__tests__/`. They cover virtualisation, frames, search, trace click
 delegation, boundary/rejected execution diagnostics, cache identity/result/job lifecycle,
 card ordering/config, roving-tab accessibility, utility save-flush/stale-response behaviour and
-syntax errors. Shared layout/constants and small visual
+syntax errors. `frontend/src/__tests__/App.utilityPanelLazy.test.ts` and the bundle-budget tests
+guard the Utility panel's on-demand chunk boundary. Shared layout/constants and small visual
 helpers are exercised through these component tests rather than owning standalone suites.
 
 Browser preview/smoke coverage is in `frontend/e2e/core-flows.spec.ts`,
