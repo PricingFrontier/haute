@@ -10,23 +10,25 @@ specifications. `Reverify` packages came from older evidence and must be
 reproduced against `HEAD` before implementation. `Decision` packages require
 an explicit product or architecture choice. Remove a package when its outcome
 is covered by current specifications and ordinary regression tests.
+`Start with` names a non-deferred package; it is `—` when a component has no
+currently startable package.
 
 | Component | Improvement surface | Start with |
 |---|---|---|
 | [Assistant](assistant.md) | Session fidelity, authoring feedback, provider/model workflow | `ASSIST-01` |
-| [Background jobs and API lifecycle](background-jobs-api.md) | Worker terminal states, artifacts, events, cleanup | `ROAD-WORKER-01` |
-| [Caching](caching.md) | Fingerprint completeness, invalidation, lifetime, concurrency | No open package |
+| [Background jobs and API lifecycle](background-jobs-api.md) | Worker terminal states, artifacts, events, cleanup | — |
+| [Caching](caching.md) | Fingerprint completeness, invalidation, lifetime, concurrency | — |
 | [Deploy and platform](deploy-platform.md) | Deployment paths, scaffolding, platform/resource boundaries | `AUD-DEPLOY-01` |
 | [Engineering quality](engineering-quality.md) | Invariants, oracles, fixtures, CI, types, documentation truth | `ROAD-TEST-01` |
 | [Execution engine](execution-engine.md) | Execution boundary, projection, memory, faults, metrics | — |
 | [Explore and EDA](explore-eda.md) | Report correctness, scale, UX, analysis, export | `EDA-E01` |
 | [Frontend and canvas](frontend-canvas.md) | Cache/sync correctness, journeys, visibility, accessibility | `AUD-C16` |
-| [Git integration](git-integration.md) | Mutation safety, history integrity, performance, feedback | `GIT-G01` |
-| [I/O layer](io-layer.md) | Input/output correctness, formats, caches, editor workflow | `IO-IO03` |
+| [Git integration](git-integration.md) | Mutation safety, history integrity, performance, feedback | — |
+| [I/O layer](io-layer.md) | Input/output correctness, formats, caches, editor workflow | — |
 | [Modelling](modelling.md) | Training/scoring correctness, lifecycle, performance, capability | `MOD-M01` |
 | [Optimiser](optimiser.md) | Apply/save correctness, scaling, lifecycle, workers | `OPT-P01` |
 | [Pipeline authoring](pipeline-authoring.md) | Parser, code generation, standalone and DSL contracts | `AUD-C05` |
-| [Rating](rating.md) | Key canonicalisation and persisted table round trips | `AUD-C06` |
+| [Rating](rating.md) | Key canonicalisation and persisted table round trips | — |
 | [Security and supply chain](security-supply-chain.md) | Trust boundaries and dependency risk | — |
 | [Tracing and explainability](tracing-explainability.md) | Evaluation fidelity, row correlation, waterfall honesty | `AUD-C07` |
 

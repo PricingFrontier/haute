@@ -1041,7 +1041,7 @@ async def test_timed_out_same_key_preview_stays_active_until_worker_finishes(
 async def test_superseded_timed_out_preview_holds_slot_until_worker_finishes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Supersession must not drop the cap for an old timed-out worker."""
+    """Supersession must preserve timeout ownership until the old worker exits."""
     import haute.routes.pipeline as route_mod
     from haute.server import app
 
@@ -1058,6 +1058,21 @@ async def test_superseded_timed_out_preview_holds_slot_until_worker_finishes(
     call_count = 0
     active = 0
     max_active = 0
+    contexts: list[_TrackedExecutionContext] = []
+
+    class _TrackedExecutionContext:
+        def __init__(self) -> None:
+            self.release_calls = 0
+
+        def release_admission(self, *, preserve_primary_error: bool = False) -> None:
+            del preserve_primary_error
+            self.release_calls += 1
+
+    def _create_context(**kwargs) -> _TrackedExecutionContext:
+        del kwargs
+        context = _TrackedExecutionContext()
+        contexts.append(context)
+        return context
 
     def slow_preview(*args, **kwargs) -> dict[str, NodeResult]:
         nonlocal active, call_count, max_active
@@ -1084,6 +1099,7 @@ async def test_superseded_timed_out_preview_holds_slot_until_worker_finishes(
             finished[call_number].set()
 
     monkeypatch.setattr(route_mod, "execute_graph", slow_preview)
+    monkeypatch.setattr(route_mod, "create_admitted_execution_context", _create_context)
 
     transport = httpx.ASGITransport(app=app)
     try:
@@ -1105,21 +1121,33 @@ async def test_superseded_timed_out_preview_holds_slot_until_worker_finishes(
                 "second same-key preview to enter supersession queue",
             )
             first_response = await first
-            assert first_response.status_code == 409
+            assert first_response.status_code == 504
+            assert contexts[0].release_calls == 0
             assert not await _thread_event_was_set(started[2], 0.05)
             with state_lock:
                 assert active == 1
 
             release[1].set()
             await _wait_for_thread_event(started[2], "second same-key preview worker")
+            for _ in range(100):
+                if contexts[0].release_calls == 1:
+                    break
+                await asyncio.sleep(0.005)
+            assert contexts[0].release_calls == 1
 
             second_response = await second
             assert second_response.status_code == 504
+            assert contexts[1].release_calls == 0
             with state_lock:
                 assert active == 1
 
             release[2].set()
             await _wait_for_thread_event(finished[2], "second preview completion")
+            for _ in range(100):
+                if contexts[1].release_calls == 1:
+                    break
+                await asyncio.sleep(0.005)
+            assert contexts[1].release_calls == 1
 
         await _wait_for_coordinator_snapshot(
             coordinator,
