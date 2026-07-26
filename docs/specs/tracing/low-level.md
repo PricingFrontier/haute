@@ -73,9 +73,9 @@
   `parents_of`, `node_map`, and `source_ids`. `TRACE_CACHE_MAX_BYTES` defaults to
   `PREVIEW_CACHE_MAX_BYTES` (see [caching](../caching/high-level.md)), overridable
   via `HAUTE_TRACE_CACHE_MAX_BYTES`. Both values are parsed into module constants
-  at import time by `executor._positive_int_from_env`; a malformed, zero, or
-  negative value raises `RuntimeError` during import rather than using `_env.py`'s
-  fail-soft request-knob policy. The cache is bounded by both entry count and
+  at import time by canonical fail-fast `_env.int_env`; a malformed, zero, or
+  negative explicit value raises `RuntimeError`, while absence uses the documented
+  default. The cache is bounded by both entry count and
   retained bytes; sizing reuses `_estimate_preview_cache_entry_bytes` from
   `haute.executor`, and only the `eager_outputs` slot is treated as
   byte-size-sensitive. `eager_outputs` values are `pl.DataFrame | dict[str,

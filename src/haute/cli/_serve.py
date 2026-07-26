@@ -30,7 +30,11 @@ from typing import Protocol
 
 import click
 
-from haute._local_security import TRUSTED_HOSTS_ENV, ensure_local_session_token_env
+from haute._local_security import (
+    DEFAULT_TRUSTED_HOSTS,
+    TRUSTED_HOSTS_ENV,
+    ensure_local_session_token_env,
+)
 from haute._logging import get_logger
 from haute.cli._helpers import _find_frontend_dir, _node_env, _npm, _open_browser
 
@@ -266,9 +270,10 @@ def _require_loopback_host(config: ServeConfig) -> None:
 
 
 def _configure_trusted_hosts(config: ServeConfig) -> None:
-    """Remove stale remote-bind policy after the loopback gate has passed."""
+    """Trust canonical loopbacks plus the validated bind host for the child."""
     _require_loopback_host(config)
-    os.environ.pop(TRUSTED_HOSTS_ENV, None)
+    trusted_hosts = dict.fromkeys((*DEFAULT_TRUSTED_HOSTS, config.host))
+    os.environ[TRUSTED_HOSTS_ENV] = ",".join(trusted_hosts)
 
 
 def _abort_if_port_in_use(config: ServeConfig) -> None:

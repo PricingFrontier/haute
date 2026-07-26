@@ -518,8 +518,6 @@ class DataFrameExecutionCache(LRUCache[str, DataFrameExecutionCacheEntry]):
                 size_bytes=entry.size_bytes,
                 max_bytes=self._max_bytes,
             )
-            self.evict_where(lambda stored_key: stored_key == key.cache_key)
-            entry.path.unlink(missing_ok=True)
             raise CacheArtifactTooLargeError(
                 "Materialized dataframe cache artifact exceeds the configured byte budget "
                 f"(node_id={key.node_id!r}, cache_key={key.cache_key!r}, "
