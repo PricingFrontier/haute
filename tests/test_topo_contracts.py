@@ -15,7 +15,7 @@ What this file pins
    when the implementation switches.
 3. Determinism — re-running the sort on the same inputs produces the
    same output (regardless of the specific tie-break rule).
-4. An integration smoke through :func:`haute._execute_lazy._prepare_graph`
+4. An integration smoke through :func:`haute.projection.prepare_graph`
    to catch signature drift between the topo function and its real caller.
 
 What this file deliberately does NOT pin
@@ -33,10 +33,10 @@ import graphlib
 
 import pytest
 
-from haute._execute_lazy import _prepare_graph
 from haute._topo import CycleError, topo_sort_ids
 from haute._types import GraphEdge, GraphNode, NodeData, PipelineGraph
 from haute.errors import HauteError
+from haute.projection import prepare_graph
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -362,11 +362,11 @@ class TestDeterminism:
 
 class TestIntegrationSmoke:
     """Verify the topo sort still wires up correctly behind
-    :func:`haute._execute_lazy._prepare_graph` — the main executor caller.
+    :func:`haute.projection.prepare_graph` — the main executor caller.
     """
 
     def test_prepare_graph_returns_topologically_valid_order(self) -> None:
-        """Run a small synthetic PipelineGraph through ``_prepare_graph``
+        """Run a small synthetic PipelineGraph through ``prepare_graph``
         and check the returned order respects every edge in the graph.
 
         This is the real integration point that the executor, trace, and
@@ -382,7 +382,7 @@ class TestIntegrationSmoke:
         edges = [_e("src", "mid"), _e("mid", "snk")]
         graph = PipelineGraph(nodes=nodes, edges=edges)
 
-        _node_map, order, _parents_of, _id_to_name = _prepare_graph(graph)
+        order = prepare_graph(graph).order
 
         assert set(order) == {"src", "mid", "snk"}
         assert _is_topologically_valid(order, edges)
@@ -404,7 +404,7 @@ class TestIntegrationSmoke:
         edges = [_e("a", "b"), _e("b", "d"), _e("c", "d")]
         graph = PipelineGraph(nodes=nodes, edges=edges)
 
-        _node_map, order, _parents_of, _id_to_name = _prepare_graph(graph, target_node_id="b")
+        order = prepare_graph(graph, target_node_id="b").order
 
         # Targeting b should include only b's ancestors (a, b), not c or d.
         assert set(order) == {"a", "b"}

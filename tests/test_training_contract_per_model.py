@@ -1,26 +1,4 @@
-"""Per-model feature-contract artifacts — remediation 4b.9.
-
-CODE_REVIEW MEDIUM "Modelling": shared ``feature_contract.json`` per
-output dir → two models overwrite each other (``_training_job.py:1263``).
-``TrainingJob._save_artifacts`` writes the model file with a per-model
-name (``{name}.cbm``) but wrote the contract under the FIXED name
-``feature_contract.json`` — so the second model trained into a shared
-``output_dir`` (the UI default is a single ``outputs/``) silently
-replaced the first model's contract.  A scorer pointed at that path then
-validated model A against model B's schema: silent wrongness at serve
-time.
-
-Fix under test: the write side owns naming (the contract loaders all take
-explicit paths) and writes ``{model_name}.feature_contract.json`` next to
-the model file.  Evidence for the migration decision: nothing in the
-repo automatically reads ``output_dir/feature_contract.json`` — the
-deploy bundler only looks next to MLflow-downloaded models in the
-per-run ``.cache/models/<run_id>/`` layout (one model per dir, no
-collision, and training never populates it), and every scorer takes an
-explicit ``feature_contract_path``.  So the shared name is dropped
-outright; a leftover legacy file triggers a loud warning instead of a
-compat dual-write that would resurrect the overwrite bug.
-"""
+"""Per-model feature-contract artifact tests."""
 
 from __future__ import annotations
 
@@ -30,9 +8,8 @@ from unittest.mock import MagicMock
 import numpy as np
 import polars as pl
 import pytest
-import structlog.testing
 
-from haute.modelling._feature_contract import CONTRACT_FILENAME, load_contract
+from haute.modelling._feature_contract import load_contract
 from haute.modelling._training_job import TrainingJob, _TrainModelResult
 
 _FAST_PARAMS = {"iterations": 2, "depth": 1, "verbose": 0}
@@ -94,33 +71,6 @@ class TestPerModelContractFiles:
         contract_path = out / model_contract_filename("claims_freq")
         assert contract_path.is_file()
         assert load_contract(contract_path).features == ["a1"]
-        # The legacy shared name is no longer written.
-        assert not (out / CONTRACT_FILENAME).exists()
-
-    def test_legacy_shared_contract_triggers_loud_warning(self, tmp_path: Path) -> None:
-        """A stale ``feature_contract.json`` from an older haute version is
-        never silently trusted, deleted, or rewritten — saving next to it
-        emits a warning naming both paths so operators repoint configs."""
-        from haute.modelling._training_job import model_contract_filename
-
-        out = tmp_path / "outputs"
-        out.mkdir(parents=True)
-        legacy = out / CONTRACT_FILENAME
-        legacy.write_text('{"stale": true}', encoding="utf-8")
-
-        with structlog.testing.capture_logs() as logs:
-            _save_job("model_a", "a1", out)
-
-        warnings = [
-            ev
-            for ev in logs
-            if ev.get("log_level") == "warning"
-            and ev.get("legacy_path") == str(legacy)
-            and ev.get("per_model_path") == str(out / model_contract_filename("model_a"))
-        ]
-        assert warnings, f"expected a warning naming legacy and per-model paths; got {logs!r}"
-        # Untouched: same stale bytes, still present.
-        assert legacy.read_text(encoding="utf-8") == '{"stale": true}'
 
     def test_end_to_end_two_runs_one_dir_serve_correct_contracts(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -174,4 +124,3 @@ class TestPerModelContractFiles:
         # Both model files coexist with their contracts; no shared file.
         assert (out / "model_a.cbm").is_file()
         assert (out / "model_b.cbm").is_file()
-        assert not (out / CONTRACT_FILENAME).exists()

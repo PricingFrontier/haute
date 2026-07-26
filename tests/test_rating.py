@@ -382,9 +382,9 @@ class TestRatingFactorInputSchema:
             _apply_rating_table(lf, table)
         error = exc_info.value
         assert isinstance(error, SchemaMismatchError)
-        assert error.table == "Named table"
+        assert error.table == "factor"
         assert error.factor == missing
-        assert "Named table" in str(error)
+        assert "factor" in str(error)
         assert missing in str(error)
 
     def test_missing_input_factor_is_not_hidden_by_incomplete_entries(self) -> None:
@@ -398,7 +398,7 @@ class TestRatingFactorInputSchema:
         with pytest.raises(RatingFactorMissingError) as exc_info:
             _apply_rating_table(pl.DataFrame({"present": ["x"]}).lazy(), table)
 
-        assert exc_info.value.table == "Incomplete lookup"
+        assert exc_info.value.table == "factor"
         assert exc_info.value.factor == "missing"
 
 
@@ -1861,8 +1861,8 @@ class TestRatingTableNullInFactorColumn:
         assert result["factor"].to_list() == [1.2, 1.0, 0.9]
 
 
-class TestApplyRatingStepCompactConfig:
-    def test_direct_compact_entries_config_applies_rating_tables(self) -> None:
+class TestApplyRatingStepCanonicalConfig:
+    def test_direct_row_entries_config_applies_rating_tables(self) -> None:
         lf = pl.DataFrame(
             {
                 "vehicle_age_band": ["1-3", "1-3", "10+"],
@@ -1876,15 +1876,23 @@ class TestApplyRatingStepCompactConfig:
                     "factors": ["vehicle_age_band", "cover_type"],
                     "outputColumn": "vehicle_factor",
                     "defaultValue": "1.0",
-                    "entries": {
-                        "1-3": {
-                            "comprehensive": 0.9,
-                            "tpft": 1.1,
+                    "entries": [
+                        {
+                            "vehicle_age_band": "1-3",
+                            "cover_type": "comprehensive",
+                            "value": 0.9,
                         },
-                        "10+": {
-                            "comprehensive": 1.4,
+                        {
+                            "vehicle_age_band": "1-3",
+                            "cover_type": "tpft",
+                            "value": 1.1,
                         },
-                    },
+                        {
+                            "vehicle_age_band": "10+",
+                            "cover_type": "comprehensive",
+                            "value": 1.4,
+                        },
+                    ],
                 }
             ]
         }
@@ -1893,7 +1901,7 @@ class TestApplyRatingStepCompactConfig:
 
         assert result["vehicle_factor"].to_list() == [0.9, 1.1, 1.4]
 
-    def test_three_factor_compact_entries_follow_editor_axis_order(self) -> None:
+    def test_three_factor_rows_preserve_declared_factor_order(self) -> None:
         lf = pl.DataFrame(
             {
                 "vehicle_age_band": ["1-3", "4-5", "1-3", "10+"],
@@ -1918,19 +1926,26 @@ class TestApplyRatingStepCompactConfig:
                     "factors": ["vehicle_age_band", "cover_type", "channel"],
                     "outputColumn": "vehicle_factor",
                     "defaultValue": "1.0",
-                    "entries": {
-                        "confused": {
-                            "comprehensive": {
-                                "1-3": 0.91,
-                                "4-5": 0.96,
-                            }
+                    "entries": [
+                        {
+                            "vehicle_age_band": "1-3",
+                            "cover_type": "comprehensive",
+                            "channel": "confused",
+                            "value": 0.91,
                         },
-                        "compare_the_market": {
-                            "third_party_only": {
-                                "1-3": 1.08,
-                            }
+                        {
+                            "vehicle_age_band": "4-5",
+                            "cover_type": "comprehensive",
+                            "channel": "confused",
+                            "value": 0.96,
                         },
-                    },
+                        {
+                            "vehicle_age_band": "1-3",
+                            "cover_type": "third_party_only",
+                            "channel": "compare_the_market",
+                            "value": 1.08,
+                        },
+                    ],
                 }
             ]
         }

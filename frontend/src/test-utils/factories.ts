@@ -185,7 +185,7 @@ export function makeTrainResult(
     ],
     model_path: "/tmp/model.cbm",
     train_rows: 8000,
-    test_rows: 2000,
+    validation_rows: 2000,
     ...overrides,
   }
 }

@@ -431,9 +431,8 @@ describe("ts/tsx source — design-token contract", () => {
     // Regression guard for the bug class where a component references a
     // token that was never declared (or was renamed away): the style is
     // invalid at computed-value time and the property silently falls back
-    // to its initial value — e.g. `background` → transparent, `border-color`
-    // → currentColor.  Caught here: ApiInputEditor's var(--bg)/var(--bg-soft)/
-    // var(--text), and the never-declared --bg-surface / --border-subtle.
+    // to its initial value — e.g. `background` → transparent or
+    // `border-color` → currentColor.
     const declared = findTokenDeclarations(CSS)
     const offenders: string[] = []
     const files = collectSourceFiles(SRC_ROOT)

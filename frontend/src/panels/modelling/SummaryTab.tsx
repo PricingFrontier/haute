@@ -95,7 +95,7 @@ export function SummaryTab({ result, jobId, mlflowBackend, config }: SummaryTabP
           {([
             ["Model path", result.model_path],
             ["Train rows", result.train_rows.toLocaleString()],
-            ...(result.test_rows > 0 ? [["Validation rows", result.test_rows.toLocaleString()]] : []),
+            ...(result.validation_rows > 0 ? [["Validation rows", result.validation_rows.toLocaleString()]] : []),
             ...(result.holdout_rows && result.holdout_rows > 0 ? [["Holdout rows", result.holdout_rows.toLocaleString()]] : []),
             ["Features", String(featuresCount)],
             ["Cat features", String(catFeaturesCount)],

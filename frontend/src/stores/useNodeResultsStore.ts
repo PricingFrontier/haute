@@ -14,8 +14,8 @@
 import { create } from "zustand"
 import useGraphStore from "./useGraphStore"
 import type { PreviewData } from "../panels/DataPreview"
-import type { SolveResult, OptimiserPreviewData } from "../panels/OptimiserPreview"
-import type { FrontierSelectResponse, FrontierData, JobStatus, ExecutionMetrics, ExploreCacheReport, ExploreStatusResponse } from "../api/types"
+import type { OptimiserPreviewData } from "../panels/OptimiserPreview"
+import type { FrontierSelectResponse, FrontierData, JobStatus, ExecutionMetrics, ExploreCacheReport, ExploreStatusResponse, OptimiserSolveResult } from "../api/types"
 import type { ColumnInfo } from "../types/node"
 
 export const MAX_CACHED_PREVIEWS = 24
@@ -35,7 +35,7 @@ export type SolveProgress = {
   progress: number
   message: string
   elapsed_seconds: number
-  result?: SolveResult
+  result?: OptimiserSolveResult
   terminal_reason?: string | null
   execution_metrics?: ExecutionMetrics | null
 }
@@ -46,7 +46,7 @@ export type TrainResult = {
   feature_importance: { feature: string; importance: number }[]
   model_path: string
   train_rows: number
-  test_rows: number  // validation rows
+  validation_rows: number  // validation rows
   holdout_rows?: number
   holdout_metrics?: Record<string, number>
   diagnostics_set?: string  // "train" | "validation" | "holdout"
@@ -100,8 +100,8 @@ interface CachedPreview {
 }
 
 interface CachedSolveResult {
-  result: SolveResult
-  originalResult: SolveResult
+  result: OptimiserSolveResult
+  originalResult: OptimiserSolveResult
   error?: string
   terminalStatus?: SolveProgress | null
   jobId: string
@@ -304,7 +304,7 @@ function optionalFrontierInteger(row: Record<string, unknown>, field: string): n
   return value
 }
 
-function optionalScenarioValueStats(row: Record<string, unknown>): SolveResult["scenario_value_stats"] | undefined {
+function optionalScenarioValueStats(row: Record<string, unknown>): OptimiserSolveResult["scenario_value_stats"] | undefined {
   if (row.scenario_value_stats != null) {
     const stats = recordValue(row.scenario_value_stats, "scenario_value_stats")
     return {
@@ -359,7 +359,7 @@ function numericArrayValue(value: unknown, field: string): number[] {
   return value.map((entry, index) => numericFrontierValue(entry, `${field}[${index}]`))
 }
 
-function optionalScenarioValueHistogram(row: Record<string, unknown>): SolveResult["scenario_value_histogram"] | undefined {
+function optionalScenarioValueHistogram(row: Record<string, unknown>): OptimiserSolveResult["scenario_value_histogram"] | undefined {
   if (row.scenario_value_histogram == null) return undefined
   const histogram = recordValue(row.scenario_value_histogram, "scenario_value_histogram")
   return {
@@ -368,7 +368,7 @@ function optionalScenarioValueHistogram(row: Record<string, unknown>): SolveResu
   }
 }
 
-function optionalFactorTables(row: Record<string, unknown>): SolveResult["factor_tables"] | undefined {
+function optionalFactorTables(row: Record<string, unknown>): OptimiserSolveResult["factor_tables"] | undefined {
   if (row.factor_tables == null) return undefined
   const tables = recordValue(row.factor_tables, "factor_tables")
   return Object.fromEntries(
@@ -381,7 +381,7 @@ function optionalFactorTables(row: Record<string, unknown>): SolveResult["factor
   )
 }
 
-function optionalHistory(row: Record<string, unknown>): SolveResult["history"] | null {
+function optionalHistory(row: Record<string, unknown>): OptimiserSolveResult["history"] | null {
   if (row.history === undefined || row.history === null) return null
   if (!Array.isArray(row.history)) {
     throw new Error("Frontier point field 'history' must be an array")
@@ -392,7 +392,7 @@ function optionalHistory(row: Record<string, unknown>): SolveResult["history"] |
       iteration: numericFrontierValue(historyEntry.iteration, `history[${index}].iteration`),
       total_objective: numericFrontierValue(historyEntry.total_objective, `history[${index}].total_objective`),
       max_lambda_change: numericFrontierValue(historyEntry.max_lambda_change, `history[${index}].max_lambda_change`),
-    } as NonNullable<SolveResult["history"]>[number]
+    } as NonNullable<OptimiserSolveResult["history"]>[number]
     if (historyEntry.all_constraints_satisfied !== undefined) {
       if (typeof historyEntry.all_constraints_satisfied !== "boolean") {
         throw new Error(`Frontier point field 'history[${index}].all_constraints_satisfied' must be a boolean`)
@@ -435,7 +435,7 @@ function frontierPointHasSelectableSummary(frontier: FrontierData, point: unknow
   })
 }
 
-function deriveSolveResultForFrontierPoint(cached: CachedSolveResult, pointIndex: number): SolveResult {
+function deriveSolveResultForFrontierPoint(cached: CachedSolveResult, pointIndex: number): OptimiserSolveResult {
   const frontier = cached.frontier
   if (!frontier) return cached.result
   const point = frontier.points[pointIndex]
@@ -600,7 +600,7 @@ interface NodeResultsState {
   // ── Optimiser actions ──
   startSolveJob: (nodeId: string, jobId: string, nodeLabel: string, constraints: Record<string, Record<string, number>>, configHash: string, source: string, structuralVersion: number) => void
   updateSolveProgress: (nodeId: string, progress: SolveProgress) => void
-  completeSolveJob: (nodeId: string, result: SolveResult, terminalStatus?: SolveProgress) => void
+  completeSolveJob: (nodeId: string, result: OptimiserSolveResult, terminalStatus?: SolveProgress) => void
   failSolveJob: (nodeId: string, error: string, terminalStatus?: SolveProgress) => void
   selectFrontierPoint: (nodeId: string, pointIndex: number | null) => void
   updateFrontierAfterSelect: (nodeId: string, pointIndex: number, selectResult: FrontierSelectResponse) => void
@@ -785,8 +785,8 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
       touchCachedResult(solveResultRecency, nodeId)
       const nextCached: CachedSolveResult = {
         ...(s.solveResults[nodeId] ?? {
-          result: { status: "error", total_objective: 0, baseline_objective: 0, constraints: {}, baseline_constraints: {}, lambdas: {}, converged: false } as SolveResult,
-          originalResult: { status: "error", total_objective: 0, baseline_objective: 0, constraints: {}, baseline_constraints: {}, lambdas: {}, converged: false } as SolveResult,
+          result: { status: "error", total_objective: 0, baseline_objective: 0, constraints: {}, baseline_constraints: {}, lambdas: {}, converged: false } as OptimiserSolveResult,
+          originalResult: { status: "error", total_objective: 0, baseline_objective: 0, constraints: {}, baseline_constraints: {}, lambdas: {}, converged: false } as OptimiserSolveResult,
         }),
         terminalStatus: terminalStatus ?? null,
         jobId: job.jobId,
@@ -1004,7 +1004,7 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
       const { [nodeId]: _removedJob, ...remainingJobs } = s.trainJobs; void _removedJob
       touchCachedResult(trainResultRecency, nodeId)
       const nextCached: CachedTrainResult = {
-        result: { status: "error", error, metrics: {}, feature_importance: [], model_path: "", train_rows: 0, test_rows: 0 } as TrainResult,
+        result: { status: "error", error, metrics: {}, feature_importance: [], model_path: "", train_rows: 0, validation_rows: 0 } as TrainResult,
         terminalStatus: terminalStatus ?? null,
         jobId: job.jobId,
         configHash: job.configHash,

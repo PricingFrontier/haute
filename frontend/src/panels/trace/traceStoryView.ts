@@ -56,8 +56,7 @@ export function hasPrimaryNodeDetail(step: TraceStep | null | undefined): boolea
     hasRichRatingStepDetail(step) ||
     hasRichBandingDetail(step) ||
     detailType === "scenario_expander" ||
-    detailType === "live_switch" ||
-    detailType === "rate_table_lookup"
+    detailType === "live_switch"
 }
 
 export function isOptimiserApplyErrorDetail(
@@ -148,9 +147,6 @@ export function targetStepDependencyColumns(step: TraceStep, tracedColumn: strin
       for (const column of Object.keys(combined.input_values ?? {})) {
         dependencyColumns.add(column)
       }
-    }
-    for (const lookupColumn of Object.keys(detail.lookup_keys ?? {})) {
-      dependencyColumns.add(lookupColumn)
     }
   }
 

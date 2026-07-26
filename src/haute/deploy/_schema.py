@@ -187,13 +187,9 @@ def infer_output_schema(
 
     try:
         resolved_path = _resolve_pipeline_path(graph, path) if path else ""
-        from haute._execution_context import ExecutionProfile
         from haute._polars_utils import streaming_collect
 
-        sample = streaming_collect(
-            _read_input_source(graph, node, resolved_path).head(1),
-            profile=ExecutionProfile.DEPLOY_LIVE,
-        )
+        sample = streaming_collect(_read_input_source(graph, node, resolved_path).head(1))
     except Exception as exc:
         raise ValueError(f"Failed to read sample from '{path}': {exc}") from exc
 

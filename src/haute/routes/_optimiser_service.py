@@ -172,10 +172,10 @@ _APPLY_RESULT_HANDLE_KIND = "optimiser_apply_result"
 _RATEBOOK_FACTORS_HANDLE_KEY = "ratebook_factors"
 _RATEBOOK_FACTORS_HANDLE_KIND = "optimiser_ratebook_factors"
 _ARTIFACT_HANDLE_VERSION = 1
-_APPLY_ARTIFACT_ROOT_NAME = "haute/optimiser_apply"
+_APPLY_ARTIFACT_ROOT_NAME = "haute/artifacts/v1/optimiser_apply"
 _APPLY_ARTIFACT_DIR_PREFIX = "apply_"
 _APPLY_RESULT_FILENAME = "result.parquet"
-_RATEBOOK_FACTORS_ARTIFACT_ROOT_NAME = "haute/optimiser_ratebook_factors"
+_RATEBOOK_FACTORS_ARTIFACT_ROOT_NAME = "haute/artifacts/v1/optimiser_ratebook_factors"
 _RATEBOOK_FACTORS_ARTIFACT_DIR_PREFIX = "factors_"
 _RATEBOOK_FACTORS_FILENAME = "factors.parquet"
 _APPLY_ARTIFACT_OWNER = "optimiser_apply"
@@ -1107,9 +1107,10 @@ def _artifact_stale_seconds() -> int:
     return value
 
 
-def reap_stale_optimiser_artifacts() -> dict[str, dict[str, int]]:
+def reap_stale_optimiser_artifacts(
+    stale_after_seconds: int,
+) -> dict[str, dict[str, int]]:
     """Reap stale marked artifacts from the optimiser's dedicated roots only."""
-    stale_after_seconds = _artifact_stale_seconds()
     reports: dict[str, dict[str, int]] = {}
     for name, root, owner in (
         ("apply", _apply_artifact_root(), _APPLY_ARTIFACT_OWNER),
@@ -1498,20 +1499,8 @@ def _compute_frontier(
     return solver.frontier(quote_grid, **frontier_kwargs)
 
 
-# Public alias preserved for existing in-tree imports; canonical
-# implementation lives in ``haute.schemas`` so request-body validators and
-# the config-side path share one source of truth.
-_normalise_frontier_range = _normalise_frontier_range_pair
-
-
 def _auto_frontier_ranges_from_config(config: dict[str, Any]) -> dict[str, tuple[float, float]]:
-    """Build absolute frontier ranges from optimiser config.
-
-    Prefer per-constraint ``frontier_ranges``.  The legacy scalar
-    ``frontier_min`` / ``frontier_max`` pair remains a compatibility path for
-    existing single-range configs, but it is no longer treated as a multiplier
-    on baseline values.
-    """
+    """Build absolute frontier ranges from canonical per-constraint config."""
     constraints = config.get("constraints") or {}
     if not constraints:
         return {}
@@ -1524,27 +1513,13 @@ def _auto_frontier_ranges_from_config(config: dict[str, Any]) -> dict[str, tuple
         for cname in constraints:
             if cname not in configured_ranges:
                 raise ValueError(f"frontier_ranges is missing a range for constraint {cname!r}.")
-            ranges[str(cname)] = _normalise_frontier_range(
+            ranges[str(cname)] = _normalise_frontier_range_pair(
                 configured_ranges[cname],
                 field=f"frontier_ranges.{cname}",
             )
         return ranges
 
-    if "frontier_min" not in config or "frontier_max" not in config:
-        raise ValueError(
-            "frontier_ranges must provide min and max for each constraint. "
-            "Legacy frontier_min/frontier_max values are only used when both are "
-            "explicitly configured."
-        )
-
-    frontier_min = float(config["frontier_min"])
-    frontier_max = float(config["frontier_max"])
-    if not np.isfinite(frontier_min) or not np.isfinite(frontier_max):
-        raise ValueError("frontier_min and frontier_max must be finite values.")
-    if frontier_min > frontier_max:
-        raise ValueError("frontier_min must be less than or equal to frontier_max.")
-
-    return {str(cname): (frontier_min, frontier_max) for cname in constraints}
+    raise ValueError("frontier_ranges must provide min and max for each constraint.")
 
 
 class _ScenarioFrontierRangeAccumulator:
@@ -1671,11 +1646,7 @@ class _ScenarioFrontierRangeAccumulator:
                 with temporary_streaming_chunk_size(chunk_size):
                     bucket_totals = streaming_collect(
                         bucket_totals_lf,
-                        profile=(
-                            execution_context.profile
-                            if execution_context is not None
-                            else ExecutionProfile.AUTO_RANGE
-                        ),
+                        execution_context=execution_context,
                     )
             if execution_context is not None:
                 execution_context.checkpoint(label="frontier_range_bucket_done")
@@ -1771,7 +1742,6 @@ def _estimate_scenario_frontier_ranges(
             for batch_index, batch in enumerate(
                 bounded_collect_batches(
                     selected_lf,
-                    profile=ExecutionProfile.AUTO_RANGE,
                     chunk_size=chunk_size,
                     maintain_order=False,
                     execution_context=execution_context,
@@ -1870,17 +1840,10 @@ def _append_unique_factor_level(levels: list[str], seen: set[str], value: object
 
 
 def _banding_rule_output_level(rule: dict[str, Any]) -> object:
-    """Return the rule's output level (``assignment`` or ``label``).
-
-    A banding rule emitted by the parser always carries one of these keys; the
-    ``None`` return is reserved for legacy fixtures with hand-written rules
-    that omit both, in which case the level is dropped from the order.
-    """
+    """Return the rule's output level (``assignment`` or ``label``)."""
     if "assignment" in rule:
-        return rule.get("assignment")
-    if "label" in rule:
-        return rule.get("label")
-    return None
+        return rule["assignment"]
+    return rule["label"]
 
 
 def _find_node_by_id(graph: PipelineGraph, node_id: str) -> GraphNode | None:
@@ -2008,9 +1971,7 @@ def _ratebook_factor_level_counts(
         if is_lazy:
             chunk_size = streaming_chunk_size or DEFAULT_STREAMING_CHUNK_SIZE
             with temporary_streaming_chunk_size(chunk_size):
-                count_rows = streaming_collect(
-                    grouped, profile=ExecutionProfile.OPTIMISER_SETUP
-                ).to_dicts()
+                count_rows = streaming_collect(grouped).to_dicts()
         else:
             count_rows = grouped.to_dicts()
         table_counts: dict[str, int] = {}
@@ -2094,14 +2055,6 @@ def _quote_grid_quote_ids(quote_grid: Any) -> list[str]:
     return [str(quote_id) for quote_id in quote_grid.quote_ids]
 
 
-def _quote_grid_n_quotes(quote_grid: Any, quote_ids: list[str]) -> int:
-    """Return QuoteGrid.n_quotes, falling back to the already-cloned quote ids in tests."""
-    n_quotes = getattr(quote_grid, "n_quotes", None)
-    if isinstance(n_quotes, int) and not isinstance(n_quotes, bool):
-        return n_quotes
-    return len(quote_ids)
-
-
 def _ratebook_factor_artifact_quote_id(
     handle: dict[str, Any],
     config: Mapping[str, Any],
@@ -2112,11 +2065,7 @@ def _ratebook_factor_artifact_quote_id(
     qid_col = str(config.get("quote_id", "quote_id"))
     if qid_col in available:
         return qid_col
-    if "quote_id" in available:
-        return "quote_id"
-    raise RuntimeError(
-        f"Ratebook banding source must include quote id column {qid_col!r} or a 'quote_id' column."
-    )
+    raise RuntimeError(f"Ratebook banding source must include quote id column {qid_col!r}.")
 
 
 def _build_ratebook_factor_contexts(
@@ -2148,7 +2097,7 @@ def _build_ratebook_factor_contexts(
         chunk_size,
         quote_id=_ratebook_factor_artifact_quote_id(handle, config),
         expected_quote_ids=quote_ids,
-        expected_n_quotes=_quote_grid_n_quotes(quote_grid, quote_ids),
+        expected_n_quotes=quote_grid.n_quotes,
     )
 
 
@@ -2588,11 +2537,10 @@ def _solve_ratebook(
     *,
     quote_grid: QuoteGrid,
     config: dict[str, Any],
-    ratebook_factors_handle: dict[str, Any] | pl.DataFrame | None,
+    ratebook_factors_handle: dict[str, Any] | None,
     factor_level_order: dict[str, list[str]] | None = None,
 ) -> None:
     """Run the ratebook optimiser solver on a pre-built QuoteGrid."""
-    import polars as pl
     from price_contour import RatebookOptimiser
 
     if ctx.store is None:
@@ -2614,15 +2562,6 @@ def _solve_ratebook(
     constraints = config["constraints"]
 
     raw_factor_columns = config.get("factor_columns", [])
-    owned_factors_handle: dict[str, Any] | None = None
-    if isinstance(ratebook_factors_handle, pl.DataFrame):
-        owned_factors_handle = _persist_ratebook_factors_artifact(ratebook_factors_handle)
-        if owned_factors_handle is None:
-            raise RuntimeError("Ratebook factors could not be persisted.")
-        ratebook_factors_handle = owned_factors_handle
-    if not isinstance(ratebook_factors_handle, dict):
-        raise RuntimeError("Ratebook mode requires a persisted banding source artifact.")
-
     available_raw = ratebook_factors_handle.get("columns")
     available_cols = set(available_raw) if isinstance(available_raw, list) else set()
     missing = [c for group in raw_factor_columns for c in group if c not in available_cols]
@@ -2633,30 +2572,21 @@ def _solve_ratebook(
         )
     factor_columns_valid = [list(group) for group in raw_factor_columns]
 
-    try:
-        factor_artifact_path, _factor_artifact_dir = _validate_ratebook_factors_artifact_handle(
-            ratebook_factors_handle
-        )
-        factor_chunk_decision = _chunk_size_decision_for_parquet(
-            config,
-            factor_artifact_path,
-            source="ratebook_factor_contexts",
-        )
-        factor_contexts = _build_ratebook_factor_contexts(
-            ratebook_factors_handle,
-            quote_grid,
-            config,
-            factor_columns_valid,
-            chunk_decision=factor_chunk_decision,
-        )
-    except BaseException:
-        if owned_factors_handle is not None:
-            _cleanup_orphan_apply_result_artifact(
-                owned_factors_handle,
-                job_id=job_id,
-                event="ratebook_owned_factor_artifact_cleanup_failed",
-            )
-        raise
+    factor_artifact_path, _factor_artifact_dir = _validate_ratebook_factors_artifact_handle(
+        ratebook_factors_handle
+    )
+    factor_chunk_decision = _chunk_size_decision_for_parquet(
+        config,
+        factor_artifact_path,
+        source="ratebook_factor_contexts",
+    )
+    factor_contexts = _build_ratebook_factor_contexts(
+        ratebook_factors_handle,
+        quote_grid,
+        config,
+        factor_columns_valid,
+        chunk_decision=factor_chunk_decision,
+    )
 
     solver = RatebookOptimiser(
         objective=config["objective"],
@@ -3123,56 +3053,6 @@ class OptimiserSolveService:
                             job_id=job_id,
                             event="setup_orphan_ratebook_factors_cleanup_failed",
                         )
-
-    def estimate_frontier_auto_range(
-        self,
-        body: OptimiserFrontierAutoRangeRequest,
-    ) -> OptimiserFrontierAutoRangeResponse:
-        """Estimate absolute frontier ranges from the scenario dataframe.
-
-        The online optimiser can independently choose one scenario per quote,
-        so summing per-quote extrema gives the exact achievable envelope for
-        each constraint.  The calculation operates on the projected lazy frame
-        and returns only tiny metadata.
-        """
-        body = cast(OptimiserFrontierAutoRangeRequest, _with_flattened_optimiser_graph(body))
-        prepared = self._prepare_frontier_auto_range(body)
-        node = prepared["node"]
-        config = prepared["config"]
-        job_id = self._store.create_job(
-            {
-                "status": "running",
-                _JOB_TYPE_KEY: _FRONTIER_AUTO_RANGE_JOB_TYPE,
-                "progress": 0.0,
-                "message": "Estimating frontier range",
-                "config": dict(config),
-                "node_label": node.data.label,
-            }
-        )
-        execution_context: ExecutionContext | None = None
-        try:
-            execution_context = create_admitted_execution_context(
-                operation="frontier_auto_range",
-                profile=ExecutionProfile.AUTO_RANGE,
-                job_id=job_id,
-            )
-            bind_running_execution_metrics_publisher(
-                self._store,
-                job_id,
-                execution_context,
-            )
-            return self._run_frontier_auto_range_job(
-                body,
-                job_id,
-                execution_context=execution_context,
-                **prepared,
-            )
-        except (ExecutionAdmissionError, ExecutionMemoryLimitExceededError) as exc:
-            raise _memory_limit_http_exception(exc) from None
-        finally:
-            if execution_context is not None:
-                execution_context.release_admission(preserve_primary_error=True)
-            self._store.delete_job(job_id)
 
     def start_frontier_auto_range(
         self,
@@ -4025,7 +3905,7 @@ class OptimiserSolveService:
                                         *[pl.col(cname) for cname in constraint_cols],
                                     ]
                                 ),
-                                profile=execution_context.profile,
+                                execution_context=execution_context,
                             )
                     self._raise_if_frontier_auto_range_stopped(job_id)
                     _add_frontier_range_batch(
@@ -4225,7 +4105,7 @@ class OptimiserSolveService:
         body: OptimiserFrontierAutoRangeRequest,
         streaming_plan: _StreamingAutoRangePlan,
     ) -> int:
-        from haute._builders import _DEFAULT_SCENARIO_STEPS
+        from haute._node_apply import _DEFAULT_SCENARIO_STEPS
 
         node = body.graph.node_map[streaming_plan.scenario_node_id]
         raw_steps = node.data.config.get("steps")
@@ -4414,8 +4294,6 @@ class OptimiserSolveService:
 
             chunk_size = body.streaming_chunk_size or DEFAULT_STREAMING_CHUNK_SIZE
             with temporary_streaming_chunk_size(chunk_size):
-                from haute.executor import ENFORCE_CONTRACTS
-
                 execution_target_node_id = target_node_id or body.node_id
                 if target_node_id is None:
                     optimiser_node = _find_optimiser_node(body.graph, body.node_id)
@@ -4499,7 +4377,7 @@ class OptimiserSolveService:
                     target_node_id=execution_target_node_id,
                     preserve_node_ids=preserved_node_ids,
                     required_columns_by_node=cache_required_columns_by_node,
-                    enforce_contracts=ENFORCE_CONTRACTS,
+                    enforce_contracts=True,
                     preamble_ns_supplied=preamble_ns is not None,
                     streaming_chunk_size=chunk_size,
                 )
@@ -4510,7 +4388,7 @@ class OptimiserSolveService:
                     preamble_ns=preamble_ns,
                     source=scenario,
                     checkpoint_dir=checkpoint_dir,
-                    enforce_contracts=ENFORCE_CONTRACTS,
+                    enforce_contracts=True,
                     preserve_node_ids=preserved_node_ids,
                     required_columns_by_node=required_columns_by_node,
                     execution_context=execution_context,
@@ -4764,7 +4642,7 @@ class OptimiserSolveService:
         with temporary_streaming_chunk_size(chunk_size):
             validation_counts = streaming_collect(
                 source_lf.select(validation_exprs),
-                profile=execution_context.profile if execution_context is not None else profile,
+                execution_context=execution_context,
             )
         if validate_quote_id_nulls:
             null_count = int(validation_counts.get_column(_QUOTE_ID_NULL_COUNT_ALIAS).item())

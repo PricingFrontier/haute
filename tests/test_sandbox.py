@@ -680,23 +680,6 @@ class TestPickleAllowlistDotAnchoring:
         with pytest.raises(pickle.UnpicklingError, match="not in.*allowlist"):
             safe_joblib_load(str(f))
 
-    def test_allowlist_allows_legitimate_submodule(self):
-        """``numpy.core`` remains reachable as a real submodule of ``numpy``.
-
-        Checked through the real gate (``find_class``): the exact scaffolding
-        entry ``numpy.core.multiarray._reconstruct`` resolves via a numpy
-        submodule, and a class under the ``numpy`` tree still resolves.
-        """
-        import io
-
-        import numpy as np
-
-        from haute._sandbox import _RestrictedUnpickler
-
-        unpickler = _RestrictedUnpickler(io.BytesIO(b""))
-        assert callable(unpickler.find_class("numpy.core.multiarray", "_reconstruct"))
-        assert unpickler.find_class("numpy", "ndarray") is np.ndarray
-
 
 class TestJoblibMonkeyPatchThreadSafety:
     """Gap 2: safe_joblib_load replaces NumpyUnpickler.find_class at the

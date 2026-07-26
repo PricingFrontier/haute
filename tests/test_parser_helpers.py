@@ -1,4 +1,4 @@
-"""Comprehensive tests for haute._parser_helpers.
+"""Comprehensive tests for the parser implementation modules.
 
 Covers public functions not already exercised in test_parser_internals.py:
   - _eval_ast_literal
@@ -26,36 +26,34 @@ from unittest.mock import patch
 
 import pytest
 
-from haute._parser_helpers import (
-    _build_edges,
-    _build_node_config,
-    _build_rf_nodes,
-    _copy_config_keys,
+from haute._ast_helpers import (
     _dedent,
     _eval_ast_literal,
     _extract_connect_calls,
-    _extract_decorated_nodes,
-    _extract_external_user_code,
     _extract_function_bodies,
     _extract_meta,
-    _extract_model_score_user_code,
     _extract_pipeline_meta,
     _extract_preamble,
     _extract_preserved_blocks,
-    _extract_rating_step_user_code,
-    _extract_scenario_expander_user_code,
-    _extract_source_user_code,
     _extract_submodel_meta,
-    _extract_user_code,
     _get_decorator_kwargs,
     _get_decorator_node_type,
     _get_docstring,
     _is_pipeline_node_decorator,
     _is_submodel_node_decorator,
-    _resolve_node_config,
     _strip_docstring,
+)
+from haute._code_extraction import (
+    _extract_external_user_code,
+    _extract_model_score_user_code,
+    _extract_rating_step_user_code,
+    _extract_scenario_expander_user_code,
+    _extract_source_user_code,
+    _extract_user_code,
     _unwrap_chain_assignment,
 )
+from haute._config_builder import _build_node_config, _copy_config_keys, _resolve_node_config
+from haute._graph_builders import _build_edges, _build_rf_nodes, _extract_decorated_nodes
 from haute._types import NodeType
 from haute.errors import ParseError
 
@@ -307,10 +305,6 @@ class TestIsPipelineNodeDecorator:
 
     def test_wrong_attr(self):
         assert not _is_pipeline_node_decorator(self._dec("@pipeline.connect\ndef f(): pass"))
-
-    def test_old_node_not_matched(self):
-        """The old @pipeline.node style is no longer recognised."""
-        assert not _is_pipeline_node_decorator(self._dec("@pipeline.node\ndef f(): pass"))
 
     def test_other_object_does_not_match(self):
         """The function checks both .attr in DECORATOR_TO_NODE_TYPE AND receiver == 'pipeline'."""
@@ -583,7 +577,7 @@ class TestBuildEdges:
 
     def test_explicit_edges(self):
         nodes = [self._raw("a", []), self._raw("b", ["a"])]
-        edges = _build_edges(nodes, [("a", "b")])
+        edges = _build_edges(nodes, [("a", "b", None, None)])
         assert len(edges) == 1
         assert edges[0].source == "a" and edges[0].target == "b"
 
@@ -600,7 +594,7 @@ class TestBuildEdges:
             self._raw("b", []),
             self._raw("c", ["a", "b"]),  # param names match a and b
         ]
-        edges = _build_edges(nodes, [("a", "c")])
+        edges = _build_edges(nodes, [("a", "c", None, None)])
         targets_of_c = sorted([(e.source, e.target) for e in edges if e.target == "c"])
         # Explicit (a,c) + implicit (b,c) -- both present
         assert targets_of_c == [("a", "c"), ("b", "c")]
@@ -627,7 +621,7 @@ class TestBuildEdges:
 
     def test_ignores_connect_to_unknown_node(self):
         nodes = [self._raw("a", [])]
-        edges = _build_edges(nodes, [("a", "missing")])
+        edges = _build_edges(nodes, [("a", "missing", None, None)])
         assert edges == []
 
     def test_self_reference_not_added(self):
@@ -913,43 +907,48 @@ class TestBuildNodeConfigExtended:
         )
         assert config["factors"] == []
 
-    def test_rating_step_non_list_tables(self):
+    def test_rating_step_canonical_decorator_keys_map_to_graph_config(self) -> None:
         config = _build_node_config(
             NodeType.RATING_STEP,
-            {"tables": "not_a_list"},
+            {
+                "tables": [
+                    {
+                        "factors": ["band"],
+                        "output_column": "factor",
+                        "default_value": 1.0,
+                        "entries": [{"band": "A", "value": 2.0}],
+                    }
+                ],
+                "combined_outputs": [
+                    {
+                        "output_column": "premium",
+                        "operation": "multiply",
+                        "base_value": 100,
+                    }
+                ],
+            },
             "",
             [],
         )
-        assert config["tables"] == []
 
-    def test_rating_step_with_operation_and_combined(self):
-        config = _build_node_config(
-            NodeType.RATING_STEP,
-            {"tables": [], "operation": "multiply", "combinedColumn": "premium"},
-            "",
-            [],
-        )
-        assert config["operation"] == "multiply"
-        assert config["combinedColumn"] == "premium"
-
-    def test_rating_step_op_shorthand(self):
-        config = _build_node_config(
-            NodeType.RATING_STEP,
-            {"tables": [], "op": "add"},
-            "",
-            [],
-        )
-        assert config["operation"] == "add"
-
-    def test_rating_step_entries_default_to_list(self):
-        config = _build_node_config(
-            NodeType.RATING_STEP,
-            {"tables": [{"name": "T", "entries": "not_a_list", "factors": "also_not"}]},
-            "",
-            [],
-        )
-        assert config["tables"][0]["entries"] == []
-        assert config["tables"][0]["factors"] == []
+        assert config == {
+            "tables": [
+                {
+                    "factors": ["band"],
+                    "outputColumn": "factor",
+                    "defaultValue": 1.0,
+                    "entries": [{"band": "A", "value": 2.0}],
+                }
+            ],
+            "combinedOutputs": [
+                {
+                    "outputColumn": "premium",
+                    "operation": "multiply",
+                    "baseValue": 100,
+                }
+            ],
+            "code": "",
+        }
 
     def test_constant_values(self):
         config = _build_node_config(
@@ -1046,10 +1045,10 @@ class TestBuildNodeConfigExtended:
         assert config["target"] == "loss"
         assert config["algorithm"] == "catboost"
 
-    def test_instance_of_added_to_config(self):
+    def test_instance_reference_added_to_config(self):
         config = _build_node_config(
             NodeType.POLARS,
-            {"instance_of": "original_node"},
+            {"of": "original_node"},
             "",
             [],
         )
@@ -1085,17 +1084,6 @@ class TestBuildNodeConfigExtended:
             [],
         )
         assert config == {}
-
-    def test_external_file_default_file_type(self):
-        config = _build_node_config(NodeType.EXTERNAL_FILE, {"external": "m.pkl"}, "", [])
-        assert config["fileType"] == "pickle"
-
-    def test_output_branch_is_a_noop(self):
-        # v2: OUTPUT config (outputMapping) lives in the sidecar JSON loaded via
-        # config= before this builder runs, so its branch is a deliberate no-op
-        # — it no longer synthesises the legacy v1 `fields` key.
-        config = _build_node_config(NodeType.OUTPUT, {"fields": ["x"]}, "", [])
-        assert "fields" not in config
 
     def test_model_score_source_type_mapped_to_camelcase(self):
         config = _build_node_config(
@@ -1292,7 +1280,8 @@ class TestResolveNodeConfig:
 
         body = (
             '    """Load data."""\n'
-            '    df = pl.scan_parquet("data.parquet")\n'
+            "    from haute.graph_utils import resolve_data_input_from_config\n"
+            '    df = resolve_data_input_from_config("config/data_input/my_source.json")\n'
             "    df = df.filter(pl.col('x') > 0)\n"
             "    return df"
         )
@@ -1308,8 +1297,8 @@ class TestResolveNodeConfig:
         assert node_type == NodeType.DATA_INPUT
         assert "filter" in loaded.get("code", "")
 
-    def test_data_input_no_sentinel_gives_empty_code(self, tmp_path):
-        """DataInput without sentinel has empty code."""
+    def test_data_input_without_post_code_gives_empty_code(self, tmp_path):
+        """DataInput with only its generated scaffold has empty code."""
         cfg = {
             "inputType": "file",
             "format": "parquet",
@@ -1323,7 +1312,12 @@ class TestResolveNodeConfig:
         cfg_file = cfg_dir / "my_source.json"
         cfg_file.write_text(json.dumps(cfg))
 
-        body = '    """Load data."""\n    return pl.scan_parquet("data.parquet")'
+        body = (
+            '    """Load data."""\n'
+            "    from haute.graph_utils import resolve_data_input_from_config\n"
+            '    df = resolve_data_input_from_config("config/data_input/my_source.json")\n'
+            "    return df"
+        )
         with patch("haute._config_builder.warn_unrecognized_config_keys"):
             node_type, loaded = _resolve_node_config(
                 {"config": "config/data_input/my_source.json"},
@@ -1597,7 +1591,9 @@ class TestExtractDecoratedNodes:
             '@pipeline.data_input(config="config/data_input/source.json")\n'
             "def source():\n"
             '    """Load data."""\n'
-            "    return pl.scan_parquet('data.parquet')\n"
+            "    from haute.graph_utils import resolve_data_input_from_config\n"
+            "    df = resolve_data_input_from_config('config/data_input/source.json')\n"
+            "    return df\n"
             "\n"
             "@pipeline.polars\n"
             "def transform(source):\n"
@@ -1783,133 +1779,31 @@ class TestUnwrapChainAssignment:
 
 
 class TestExtractSourceUserCode:
-    def test_multiline_first_assignment(self):
-        body = (
-            '    df = pl.scan_parquet(\n        "data.parquet"\n    )\n'
-            "    df = df.filter(pl.col('x') > 0)\n"
-            "    return df"
-        )
-        result = _extract_source_user_code(body)
-        assert "filter" in result
-
-    def test_first_assignment_with_parenthesized_expression(self):
-        body = (
-            '    df = pl.scan_parquet("data.parquet")\n'
-            "    df = df.select('a', 'b')\n"
-            "    return df"
-        )
-        result = _extract_source_user_code(body)
-        assert "select" in result
-        assert "scan_parquet" not in result
-
-    def test_code_after_first_assignment(self):
-        body = (
-            '    df = pl.scan_parquet("data.parquet")\n'
-            "    df = df.rename({'a': 'b'})\n"
-            "    df = df.select('b')\n"
-            "    return df"
-        )
-        result = _extract_source_user_code(body)
-        assert "rename" in result
-        assert "select" in result
-
-    def test_repeated_generated_loads_are_not_user_code(self):
-        body = (
-            '    df = pl.scan_parquet("data.parquet")\n'
-            '    df = pl.scan_parquet("data.parquet")\n'
-            "    df = df.limit(10)\n"
-            "    return df"
-        )
-        result = _extract_source_user_code(body)
-        assert "scan_parquet" not in result
-        assert result == "df = df.limit(10)"
-
-    def test_generated_read_data_input_load_is_not_user_code(self):
+    def test_canonical_loader_is_not_user_code(self):
         body = (
             "    from pathlib import Path\n"
-            "    from haute.graph_utils import read_data_input\n"
-            '    df = pl.scan_csv(Path(__file__).parent / "data.csv")\n'
-            "    df = df.limit(10)\n"
-            "    return df"
-        )
-        result = _extract_source_user_code(body)
-        assert "scan_csv" not in result
-        assert result == "df = df.limit(10)"
-
-    def test_generated_retained_api_input_load_is_not_user_code(self):
-        body = (
-            "    from pathlib import Path\n"
-            "    from haute.graph_utils import resolve_api_input_from_config\n"
-            "    return resolve_api_input_from_config(\n"
-            '        "config/quote_input/quotes.json",\n'
-            "        base_dir=Path(__file__).resolve().parent,\n"
-            "    )"
-        )
-
-        assert _extract_source_user_code(body) == ""
-
-    def test_repeated_multiline_generated_loads_are_not_user_code(self):
-        body = (
-            "    from pathlib import Path\n"
-            '    df = pl.scan_parquet(Path(__file__).parent / "data.parquet")\n'
-            "    df = pl.scan_parquet(\n"
-            '        Path(__file__).parent / "data.parquet"\n'
-            "    )\n"
-            "    return df"
-        )
-        result = _extract_source_user_code(body)
-        assert result == ""
-
-    def test_empty_rest_returns_empty(self):
-        body = '    df = pl.scan_parquet("data.parquet")\n    return df'
-        result = _extract_source_user_code(body)
-        assert result == ""
-
-    def test_blank_before_return_load_is_not_user_code(self):
-        body = (
-            "    \n"
-            "    from pathlib import Path\n"
-            '    return pl.scan_parquet(Path(__file__).parent / "data.parquet")'
-        )
-        result = _extract_source_user_code(body)
-        assert result == ""
-
-    def test_duplicate_generated_load_is_not_user_code(self):
-        body = (
-            "    from pathlib import Path\n"
-            '    df = pl.scan_parquet(Path(__file__).parent / "data.parquet")\n'
-            '    df = pl.scan_parquet(Path(__file__).parent / "data.parquet")\n'
-            "    return df"
-        )
-        result = _extract_source_user_code(body)
-        assert result == ""
-
-    def test_stale_generated_import_and_load_block_is_not_user_code(self):
-        body = (
-            "    from pathlib import Path\n"
-            '    df = pl.scan_parquet(Path(__file__).parent / "data.parquet")\n'
-            "    from pathlib import Path\n"
-            "    df = pl.scan_parquet(\n"
-            '        Path(__file__).parent / "data.parquet"\n'
-            "    )\n"
-            "    return df"
-        )
-        result = _extract_source_user_code(body)
-        assert result == ""
-
-    def test_transform_after_stale_generated_load_block_is_preserved(self):
-        body = (
-            "    from pathlib import Path\n"
-            '    df = pl.scan_csv(Path(__file__).parent / "data.csv")\n'
-            "    from pathlib import Path\n"
-            "    df = pl.scan_csv(\n"
-            '        Path(__file__).parent / "data.csv"\n'
+            "    from haute.graph_utils import resolve_data_input_from_config\n"
+            "    df = resolve_data_input_from_config(\n"
+            '        "config/data_input/input.json",\n'
+            "        base_dir=Path(__file__).parent,\n"
             "    )\n"
             "    df = df.filter(pl.col('x') > 0)\n"
             "    return df"
         )
         result = _extract_source_user_code(body)
         assert result == "df = df.filter(pl.col('x') > 0)"
+
+    def test_canonical_loader_without_post_code_returns_empty(self):
+        body = (
+            "    from pathlib import Path\n"
+            "    from haute.graph_utils import resolve_data_input_from_config\n"
+            "    df = resolve_data_input_from_config(\n"
+            '        "config/data_input/input.json",\n'
+            "        base_dir=Path(__file__).parent,\n"
+            "    )\n"
+            "    return df"
+        )
+        assert _extract_source_user_code(body) == ""
 
 
 # ===========================================================================
@@ -1918,16 +1812,6 @@ class TestExtractSourceUserCode:
 
 
 class TestExtractScenarioExpanderUserCode:
-    def test_generated_passthrough_is_not_user_code(self):
-        body = "    return quotes"
-        result = _extract_scenario_expander_user_code(body, ["quotes"])
-        assert result == ""
-
-    def test_generated_alias_is_stripped_but_post_code_is_preserved(self):
-        body = "    df = quotes\n    df = df.filter(pl.col('scenario_value') > 1)\n    return df"
-        result = _extract_scenario_expander_user_code(body, ["quotes"])
-        assert result == "df = df.filter(pl.col('scenario_value') > 1)"
-
     def test_handwritten_first_statement_is_not_mistaken_for_scaffold(self):
         body = "    df = df.filter(pl.col('scenario_value') > 1)\n    return df"
         result = _extract_scenario_expander_user_code(body, ["quotes"])
@@ -1940,54 +1824,8 @@ class TestExtractScenarioExpanderUserCode:
 
 
 class TestExtractModelScoreUserCode:
-    def test_finds_score_from_config_call(self):
-        body = (
-            "    from pathlib import Path\n"
-            '    result = score_from_config(df, Path("model.json"))\n'
-            "    result = result.with_columns(x=1)\n"
-            "    return result"
-        )
-        result = _extract_model_score_user_code(body)
-        assert "with_columns" in result
-        assert "result" not in result
-        assert "df" in result
-
-    def test_extracts_code_after_scoring_call(self):
-        body = (
-            '    result = score_from_config(df, Path("model.json"))\n'
-            "    result = result.filter(pl.col('x') > 0)\n"
-            "    return result"
-        )
-        result = _extract_model_score_user_code(body)
-        assert "filter" in result
-        assert result == "df = df.filter(pl.col('x') > 0)"
-
     def test_no_sentinel_and_no_score_returns_empty(self):
         body = "    x = 1\n    return x"
-        result = _extract_model_score_user_code(body)
-        assert result == ""
-
-    def test_multiline_score_from_config_call(self):
-        body = (
-            "    from pathlib import Path\n"
-            "    result = score_from_config(\n"
-            "        df,\n"
-            '        Path("model.json"),\n'
-            "    )\n"
-            "    result = result.with_columns(flag=True)\n"
-            "    return result"
-        )
-        result = _extract_model_score_user_code(body)
-        assert "with_columns" in result
-        assert "score_from_config" not in result
-        assert "result" not in result
-
-    def test_no_code_after_score_returns_empty(self):
-        body = (
-            "    from pathlib import Path\n"
-            '    result = score_from_config(df, Path("model.json"))\n'
-            "    return result"
-        )
         result = _extract_model_score_user_code(body)
         assert result == ""
 
@@ -2064,69 +1902,22 @@ class TestExtractRatingStepUserCode:
 
 
 class TestExtractExternalUserCode:
-    def test_strips_import_and_with_block(self):
-        body = (
-            "import pickle\n"
-            "with open('model.pkl', 'rb') as f:\n"
-            "    obj = pickle.load(f)\n"
-            "df = df.with_columns(pred=obj.predict(df['x']))\n"
-            "return df"
-        )
-        result = _extract_external_user_code(body, ["df"])
-        assert "with_columns" in result
-        assert "import pickle" not in result
-        assert "with open" not in result
-
-    def test_strips_obj_assignment(self):
-        body = (
-            "import pickle\n"
-            "with open('model.pkl', 'rb') as f:\n"
-            "    obj = pickle.load(f)\n"
-            "obj = obj.submodel\n"
-            "df = df.with_columns(pred=obj.predict(df['x']))\n"
-            "return df"
-        )
-        result = _extract_external_user_code(body, ["df"])
-        assert "with_columns" in result
-        assert "obj = obj.submodel" not in result
-
     def test_empty_body_returns_empty(self):
         result = _extract_external_user_code("", ["df"])
         assert result == ""
 
-    def test_only_boilerplate_returns_empty(self):
-        body = (
-            "import pickle\nwith open('model.pkl', 'rb') as f:\n    obj = pickle.load(f)\nreturn df"
-        )
-        result = _extract_external_user_code(body, ["df"])
-        assert result == ""
-
-    def test_user_code_after_boilerplate(self):
-        body = (
-            "import pickle\n"
-            "with open('model.pkl', 'rb') as f:\n"
-            "    obj = pickle.load(f)\n"
-            "x = obj.predict(df['a'])\n"
-            "df = df.with_columns(pred=x)\n"
-            "return df"
-        )
-        result = _extract_external_user_code(body, ["df"])
-        assert "x = obj.predict" in result
-        assert "with_columns" in result
-
-    def test_multiline_load_external_object_is_not_user_code(self):
+    def test_canonical_load_is_not_user_code(self):
         body = (
             "from pathlib import Path\n"
-            "from haute.graph_utils import load_external_object\n"
-            "obj = load_external_object(\n"
-            '    Path(__file__).parent / "model.pkl", "pickle"\n'
+            "from haute.graph_utils import load_external_object_from_config\n"
+            "obj = load_external_object_from_config(\n"
+            '    "config/load_file/model.json", base_dir=Path(__file__).parent\n'
             ")\n"
             "df = df.limit(10)\n"
             "return df"
         )
         result = _extract_external_user_code(body, ["df"])
         assert result == "df = df.limit(10)"
-        assert "load_external_object" not in result
 
 
 # ===========================================================================

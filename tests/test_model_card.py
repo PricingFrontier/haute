@@ -18,7 +18,7 @@ def _minimal_kwargs() -> dict:
             algorithm="catboost",
             task="regression",
             train_rows=800,
-            test_rows=200,
+            validation_rows=200,
             features=["x1", "x2"],
             split_config={"strategy": "random", "validation_size": 0.2},
         ),
@@ -156,7 +156,7 @@ class TestModelCardAllSections:
             algorithm="catboost",
             task="regression",
             train_rows=800,
-            test_rows=200,
+            validation_rows=200,
             holdout_rows=500,
             features=["x1", "x2"],
             split_config={"strategy": "random", "validation_size": 0.2},
@@ -194,7 +194,7 @@ class TestModelCardHoldoutAndDiagnostics:
             algorithm="catboost",
             task="regression",
             train_rows=800,
-            test_rows=200,
+            validation_rows=200,
             holdout_rows=1000,
             features=["x1", "x2"],
             split_config={"strategy": "random"},
@@ -263,7 +263,7 @@ class TestModelCardEscaping:
             algorithm="<img src=x>",
             task="regression",
             train_rows=100,
-            test_rows=50,
+            validation_rows=50,
         )
         html = generate_model_card(**kwargs)
         assert "<img src=x>" not in html
@@ -383,7 +383,7 @@ class TestModelCardBestIteration:
             algorithm="catboost",
             task="regression",
             train_rows=800,
-            test_rows=200,
+            validation_rows=200,
             features=["x1"],
             best_iteration=42,
         )

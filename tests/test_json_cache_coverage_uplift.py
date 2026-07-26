@@ -8,8 +8,8 @@ uncovered code is live, not dead:
 
 * ``mirror_cache_to_committed`` (~55 lines) — atomic working→committed
   promotion on Save, called from the save endpoint per DUAL_CACHE.md §4.
-* Cache-layer scaffolding (``_json_cache_dir``, ``_wipe_legacy_flat_cache``,
-  ``_read_cache_meta``, ``clear_json_cache``) — invariants the cache route
+* Cache-layer scaffolding (``_json_cache_dir``, ``_read_cache_meta``,
+  ``clear_json_cache``) — invariants the cache route
   + executor rely on.
 * Route-level error handlers (``_read_v2_config`` rejection paths,
   ``build_json_cache``/``/status``/``/infer`` exception arms) — exercise
@@ -39,7 +39,6 @@ from haute._json_flatten import (
     _json_cache_meta_path,
     _mark_working_consulted,
     _read_cache_meta,
-    _wipe_legacy_flat_cache,
     cache_state_signature_for_graph,
     clear_json_cache,
     mirror_cache_to_committed,
@@ -131,41 +130,6 @@ class TestJsonCacheDir:
         """Line 97: unknown layer name raises ValueError with the bad value."""
         with pytest.raises(ValueError, match=r"Unknown cache layer.*'bogus'"):
             _json_cache_dir("data/x.json", "bogus")
-
-
-# ---------------------------------------------------------------------------
-# _wipe_legacy_flat_cache — flat-cache cleanup (v1 leftover sweeper)
-# ---------------------------------------------------------------------------
-
-
-class TestWipeLegacyFlatCache:
-    def test_no_legacy_artifacts_returns_false(self, isolated_cwd: Path) -> None:
-        """No legacy flat-cache artifacts → no-op, returns False."""
-        assert _wipe_legacy_flat_cache("data/never.json") is False
-
-    def test_wipes_existing_legacy_artifacts(self, isolated_cwd: Path) -> None:
-        """Pre-existing flat-cache artifacts get unlinked; returns True.
-
-        Pre-dual-cache layout used `.haute_cache/json_<hash>.parquet`
-        plus a sidecar `.parquet.meta.json` (and `.tmp` / `.raw.parquet`
-        intermediates). The wipe must remove all of them.
-        """
-        from haute._json_flatten import _CACHE_DIR, _path_hash
-
-        h = _path_hash("data/x.json")
-        legacy_dir = isolated_cwd / _CACHE_DIR
-        legacy_dir.mkdir(parents=True, exist_ok=True)
-        artifact = legacy_dir / f"json_{h}.parquet"
-        artifact.write_bytes(b"stale")
-        meta = legacy_dir / f"json_{h}.parquet.meta.json"
-        meta.write_bytes(b"{}")
-        raw = legacy_dir / f"json_{h}.raw.parquet"
-        raw.write_bytes(b"raw-stale")
-
-        assert _wipe_legacy_flat_cache("data/x.json") is True
-        assert not artifact.exists()
-        assert not meta.exists()
-        assert not raw.exists()
 
 
 # ---------------------------------------------------------------------------
@@ -574,35 +538,6 @@ class TestMirrorCacheToCommitted:
         # The corrupt meta got replaced by the working/ meta.
         assert _read_cache_meta(committed_dir) == working_meta
 
-    def test_stale_tmp_dir_gets_wiped_before_copy(
-        self,
-        mirror_case: tuple[Path, dict[str, Any]],
-    ) -> None:
-        """If a previous mirror attempt left a `.tmp` sibling, the new
-        attempt cleans it before reusing the slot."""
-        data_path, v2_config = mirror_case
-        _mark_working_consulted(data_path)
-        working_dir = _json_cache_dir(data_path, _LAYER_WORKING)
-        committed_dir = _json_cache_dir(data_path, _LAYER_COMMITTED)
-        _write_signed_cache(
-            working_dir,
-            data_path=data_path,
-            v2_config=v2_config,
-        )
-
-        tmp_dir = committed_dir.with_name(committed_dir.name + ".tmp")
-        tmp_dir.mkdir(parents=True)
-        (tmp_dir / "leftover").write_bytes(b"stale-tmp")
-
-        assert mirror_cache_to_committed(data_path, v2_config) is True
-        assert not tmp_dir.exists()
-        assert (
-            _current_parquet(committed_dir).read_bytes()
-            == _current_parquet(
-                working_dir,
-            ).read_bytes()
-        )
-
 
 # ---------------------------------------------------------------------------
 # _read_v2_config — rejection paths (route-level, lines 149-157)
@@ -624,7 +559,7 @@ class TestReadV2ConfigRejectionPaths:
     def test_malformed_json_raises_corruption_error(self, tmp_path: Path) -> None:
         """A present-but-corrupt config raises (distinct from absent/None) so the
         route can surface a precise corruption message rather than the
-        misleading 'no schema source' migration prompt."""
+        misleading 'no schema source' message."""
         from haute._api_input_schema import ApiInputSchemaError
         from haute.routes.json_cache import _read_v2_config
 
@@ -633,22 +568,6 @@ class TestReadV2ConfigRejectionPaths:
         with pytest.raises(ApiInputSchemaError) as ei:
             _read_v2_config(str(cfg))
         assert "not valid json" in str(ei.value).lower()
-
-    def test_non_dict_root_returns_none(self, tmp_path: Path) -> None:
-        from haute.routes.json_cache import _read_v2_config
-
-        cfg = tmp_path / "list.json"
-        cfg.write_bytes(orjson.dumps([1, 2, 3]))
-        assert _read_v2_config(str(cfg)) is None
-
-    def test_v1_shape_returns_none(self, tmp_path: Path) -> None:
-        """Config with flattenSchema but no tables[] → not v2 shape → None.
-        After v1 deletion this means "no usable schema source"."""
-        from haute.routes.json_cache import _read_v2_config
-
-        cfg = tmp_path / "v1.json"
-        cfg.write_bytes(orjson.dumps({"flattenSchema": {"x": "str"}}))
-        assert _read_v2_config(str(cfg)) is None
 
 
 # ---------------------------------------------------------------------------

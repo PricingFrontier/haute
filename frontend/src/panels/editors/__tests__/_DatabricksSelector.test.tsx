@@ -461,9 +461,9 @@ describe("CatalogTablePicker", () => {
 
   it("shows retained option when current value is not in loaded catalog list", async () => {
     mockGetCatalogs.mockResolvedValue({ catalogs: [{ name: "other", comment: "" }] })
-    render(<CatalogTablePicker table="legacy.public.accounts" onSelect={vi.fn()} />)
+    render(<CatalogTablePicker table="unlisted.public.accounts" onSelect={vi.fn()} />)
 
-    // The catalog "legacy" is initialized from props but not in the API response
+    // The catalog "unlisted" is initialized from props but not in the API response
     fireEvent.focus(getCatalogSelect())
     await waitFor(() => expect(mockGetCatalogs).toHaveBeenCalled())
 
@@ -471,7 +471,7 @@ describe("CatalogTablePicker", () => {
     const catalogSelect = getCatalogSelect()
     const options = Array.from(catalogSelect.querySelectorAll("option"))
     const optionValues = options.map(o => o.value)
-    expect(optionValues).toContain("legacy")
+    expect(optionValues).toContain("unlisted")
     expect(optionValues).toContain("other")
   })
 

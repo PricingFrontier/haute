@@ -17,7 +17,7 @@ from pathlib import Path
 
 import polars as pl
 
-from haute._local_security import SESSION_TOKEN_HEADER, ensure_local_session_token_env
+from haute._local_security import SESSION_TOKEN_COOKIE, ensure_local_session_token_env
 from haute.cli._helpers import _node_env, _npm
 from haute.cli._init_cmd import InitConfig, handle_init
 
@@ -585,16 +585,25 @@ def _start_backend() -> subprocess.Popen[bytes]:
     )
 
 
-def _local_session_headers() -> dict[str, str]:
+def _local_session_headers(url: str) -> dict[str, str]:
+    if not url.startswith(f"{BACKEND_ORIGIN}/"):
+        return {}
     token = ensure_local_session_token_env()
     if not token:
         return {}
-    return {SESSION_TOKEN_HEADER: token}
+    return {
+        "Cookie": f"{SESSION_TOKEN_COOKIE}={token}",
+        "Origin": BACKEND_ORIGIN,
+    }
 
 
 def _url_ready(url: str, *, timeout: float = 1.0) -> tuple[bool, str]:
     try:
-        request = urllib.request.Request(url, headers=_local_session_headers(), method="GET")
+        request = urllib.request.Request(
+            url,
+            headers=_local_session_headers(url),
+            method="GET",
+        )
         with urllib.request.urlopen(request, timeout=timeout) as response:
             status = response.status
         if 200 <= status < 400:

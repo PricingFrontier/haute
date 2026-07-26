@@ -44,12 +44,12 @@ def _setup_smoke_project(
     # Create test quotes
     quotes_dir = tmp_path / "tests" / "quotes"
     quotes_dir.mkdir(parents=True)
-    (quotes_dir / "basic.json").write_text(json.dumps([{"VehPower": 5, "Area": "A"}]))
+    (quotes_dir / "basic.json").write_text(json.dumps([{"input": {"VehPower": 5, "Area": "A"}}]))
     (quotes_dir / "multi.json").write_text(
         json.dumps(
             [
-                {"VehPower": 5, "Area": "A"},
-                {"VehPower": 10, "Area": "B"},
+                {"input": {"VehPower": 5, "Area": "A"}},
+                {"input": {"VehPower": 10, "Area": "B"}},
             ]
         )
     )
@@ -361,7 +361,7 @@ class TestSmokeUnsupportedTarget:
         )
         quotes_dir = tmp_path / "tests" / "quotes"
         quotes_dir.mkdir(parents=True)
-        (quotes_dir / "test.json").write_text(json.dumps([{"x": 1}]))
+        (quotes_dir / "test.json").write_text(json.dumps([{"input": {"x": 1}}]))
 
         result = runner.invoke(cli, ["smoke"])
         assert result.exit_code == 1

@@ -696,8 +696,8 @@ class TestColdCacheConsistency:
         )
 
         # Clear both caches to simulate cold start
-        _preview_cache.invalidate()
-        _trace_cache.invalidate()
+        _preview_cache.clear()
+        _trace_cache.clear()
 
         # Trace runs first — no preview cache to reuse
         trace = execute_trace(graph, row_index=0, target_node_id="join", row_limit=_ROW_LIMIT)
@@ -747,8 +747,8 @@ class TestColdCacheConsistency:
         results1 = execute_graph(graph, target_node_id="join", row_limit=_ROW_LIMIT)
 
         # Evict preview cache (simulates cache pressure)
-        _preview_cache.invalidate()
-        _trace_cache.invalidate()
+        _preview_cache.clear()
+        _trace_cache.clear()
 
         # Trace runs — must execute independently
         traces = []
@@ -804,8 +804,8 @@ class TestColdCacheConsistency:
             }
         )
 
-        _preview_cache.invalidate()
-        _trace_cache.invalidate()
+        _preview_cache.clear()
+        _trace_cache.clear()
 
         # Trace first (cold cache)
         trace0 = execute_trace(graph, row_index=0, target_node_id="filt", row_limit=_ROW_LIMIT)

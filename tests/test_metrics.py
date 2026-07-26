@@ -327,7 +327,13 @@ class TestLorenzCurve:
 class _MockAlgo:
     """Mock algo that returns the mean of the specified feature column."""
 
-    def predict(self, model: Any, df: pl.DataFrame, features: list[str]) -> np.ndarray:
+    def predict(
+        self,
+        model: Any,
+        df: pl.DataFrame,
+        features: list[str],
+        offset: str | None = None,
+    ) -> np.ndarray:
         # Return the first feature column values as predictions
         return df[features[0]].to_numpy().astype(float)
 
@@ -354,7 +360,13 @@ class TestPdp:
         df = pl.DataFrame({"cat": ["a", "b", "c"] * 20})
 
         class CatAlgo:
-            def predict(self, model: Any, df: pl.DataFrame, features: list[str]) -> np.ndarray:
+            def predict(
+                self,
+                model: Any,
+                df: pl.DataFrame,
+                features: list[str],
+                offset: str | None = None,
+            ) -> np.ndarray:
                 return np.ones(df.height)
 
         result = compute_pdp(MagicMock(), CatAlgo(), df, ["cat"], ["cat"], n_grid=10)
@@ -369,7 +381,13 @@ class TestPdp:
         df = pl.DataFrame({"x": np.arange(n, dtype=float), "y": np.arange(n, dtype=float)})
 
         class MultiAlgo:
-            def predict(self, model: Any, df: pl.DataFrame, features: list[str]) -> np.ndarray:
+            def predict(
+                self,
+                model: Any,
+                df: pl.DataFrame,
+                features: list[str],
+                offset: str | None = None,
+            ) -> np.ndarray:
                 return np.ones(df.height)
 
         result = compute_pdp(MagicMock(), MultiAlgo(), df, ["x", "y"], [], n_grid=5)
@@ -384,7 +402,13 @@ class TestPdp:
         call_sizes: list[int] = []
 
         class TrackingAlgo:
-            def predict(self, model: Any, df: pl.DataFrame, features: list[str]) -> np.ndarray:
+            def predict(
+                self,
+                model: Any,
+                df: pl.DataFrame,
+                features: list[str],
+                offset: str | None = None,
+            ) -> np.ndarray:
                 call_sizes.append(df.height)
                 return np.ones(df.height)
 
@@ -416,7 +440,13 @@ class TestPdp:
         )
 
         class FailOnBadAlgo:
-            def predict(self, model: Any, df: pl.DataFrame, features: list[str]) -> np.ndarray:
+            def predict(
+                self,
+                model: Any,
+                df: pl.DataFrame,
+                features: list[str],
+                offset: str | None = None,
+            ) -> np.ndarray:
                 # "bad" rows are distinct in the source frame; only the PDP
                 # grid replacement makes them constant — so this raises
                 # exactly when (and only when) "bad" is the modified feature.
@@ -444,7 +474,13 @@ class TestPdp:
         df = pl.DataFrame({"c": cats * 2})
 
         class CatAlgo:
-            def predict(self, model: Any, df: pl.DataFrame, features: list[str]) -> np.ndarray:
+            def predict(
+                self,
+                model: Any,
+                df: pl.DataFrame,
+                features: list[str],
+                offset: str | None = None,
+            ) -> np.ndarray:
                 return np.ones(df.height)
 
         result = compute_pdp(MagicMock(), CatAlgo(), df, ["c"], ["c"], n_grid=10)
@@ -455,7 +491,13 @@ class TestPdp:
         df = pl.DataFrame({"x": [5.0] * 100})
 
         class ConstAlgo:
-            def predict(self, model: Any, df: pl.DataFrame, features: list[str]) -> np.ndarray:
+            def predict(
+                self,
+                model: Any,
+                df: pl.DataFrame,
+                features: list[str],
+                offset: str | None = None,
+            ) -> np.ndarray:
                 return np.ones(df.height)
 
         result = compute_pdp(MagicMock(), ConstAlgo(), df, ["x"], [], n_grid=20)
@@ -474,7 +516,13 @@ class TestPdp:
         )
 
         class SimpleAlgo:
-            def predict(self, model: Any, df: pl.DataFrame, features: list[str]) -> np.ndarray:
+            def predict(
+                self,
+                model: Any,
+                df: pl.DataFrame,
+                features: list[str],
+                offset: str | None = None,
+            ) -> np.ndarray:
                 return np.ones(df.height)
 
         result = compute_pdp(MagicMock(), SimpleAlgo(), df, ["z", "a", "m"], [], n_grid=5)
@@ -487,12 +535,24 @@ class TestPdp:
 
 
 class _AlwaysFailAlgo:
-    def predict(self, model: Any, df: pl.DataFrame, features: list[str]) -> np.ndarray:
+    def predict(
+        self,
+        model: Any,
+        df: pl.DataFrame,
+        features: list[str],
+        offset: str | None = None,
+    ) -> np.ndarray:
         raise ValueError("poisoned model")
 
 
 class _OnesAlgo:
-    def predict(self, model: Any, df: pl.DataFrame, features: list[str]) -> np.ndarray:
+    def predict(
+        self,
+        model: Any,
+        df: pl.DataFrame,
+        features: list[str],
+        offset: str | None = None,
+    ) -> np.ndarray:
         return np.ones(df.height)
 
 
@@ -508,7 +568,13 @@ class TestPdpFailureSurfacing:
         df = pl.DataFrame({"ok": np.arange(n, dtype=float), "boom": np.arange(n, dtype=float)})
 
         class FailOnBoom:
-            def predict(self, model: Any, df: pl.DataFrame, features: list[str]) -> np.ndarray:
+            def predict(
+                self,
+                model: Any,
+                df: pl.DataFrame,
+                features: list[str],
+                offset: str | None = None,
+            ) -> np.ndarray:
                 if df["boom"][0] == df["boom"][1]:
                     raise RuntimeError("kaboom")
                 return np.ones(df.height)
@@ -574,7 +640,13 @@ class TestPdpFailureSurfacing:
         df = pl.DataFrame({"c": ["a", "b"] * 10, "x": np.arange(20, dtype=float)})
 
         class FailOnCat:
-            def predict(self, model: Any, df: pl.DataFrame, features: list[str]) -> np.ndarray:
+            def predict(
+                self,
+                model: Any,
+                df: pl.DataFrame,
+                features: list[str],
+                offset: str | None = None,
+            ) -> np.ndarray:
                 if df["c"].n_unique() == 1:  # only true when "c" is the PDP grid column
                     raise ValueError("cat fail")
                 return np.ones(df.height)
@@ -772,7 +844,7 @@ class TestNonFiniteFilterSurfacing:
         with pytest.raises(ValueError, match=r"[Aa]ll 3 rows"):
             compute_metrics(y_true, y_pred, metric_names=["rmse", "gini"])
 
-    def test_empty_input_keeps_legacy_nan_semantics(self):
+    def test_empty_input_returns_nan_metrics(self):
         """Empty input never had rows to filter — it is not the
         all-rows-filtered case and keeps its (pre-existing, pinned)
         NaN-metrics behaviour with no filter key."""

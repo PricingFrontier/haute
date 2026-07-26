@@ -11,7 +11,6 @@ from starlette.websockets import WebSocketDisconnect
 
 from haute._local_security import (
     SESSION_TOKEN_COOKIE,
-    SESSION_TOKEN_HEADER,
     local_session_token,
 )
 from haute.server import _serve_index_html, app
@@ -128,7 +127,6 @@ def test_cookie_authenticates_api_without_exposing_token_to_javascript(
         headers={
             "host": "localhost:8000",
             "origin": "http://localhost:8000",
-            SESSION_TOKEN_HEADER: "",
         },
     )
 
@@ -141,14 +139,14 @@ def test_absent_origin_is_allowed_only_after_cookie_authentication(
 ) -> None:
     unauthenticated = local_client.get(
         "/api/session",
-        headers={"host": "localhost:8000", SESSION_TOKEN_HEADER: ""},
+        headers={"host": "localhost:8000", "cookie": ""},
     )
     assert unauthenticated.status_code == 403
 
     assert _bootstrap(local_client).status_code == 200
     authenticated = local_client.get(
         "/api/session",
-        headers={"host": "localhost:8000", SESSION_TOKEN_HEADER: ""},
+        headers={"host": "localhost:8000"},
     )
     assert authenticated.status_code == 200
 
@@ -163,7 +161,6 @@ def test_websocket_uses_cookie_and_never_needs_a_query_token(local_client: TestC
             "host": "localhost:8000",
             "origin": "http://localhost:8000",
             "cookie": f"{SESSION_TOKEN_COOKIE}={session_cookie}",
-            SESSION_TOKEN_HEADER: "",
         },
     ):
         pass
@@ -179,7 +176,6 @@ def test_websocket_rejects_absent_origin_even_with_valid_cookie(local_client: Te
             headers={
                 "host": "localhost:8000",
                 "cookie": f"{SESSION_TOKEN_COOKIE}={session_cookie}",
-                SESSION_TOKEN_HEADER: "",
             },
         ):
             pass
@@ -196,7 +192,7 @@ def test_websocket_query_token_is_not_an_authentication_transport(
             headers={
                 "host": "localhost:8000",
                 "origin": "http://localhost:8000",
-                SESSION_TOKEN_HEADER: "",
+                "cookie": "",
             },
         ):
             pass

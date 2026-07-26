@@ -16,8 +16,8 @@ from hypothesis import HealthCheck, assume, given, settings
 from hypothesis import strategies as st
 
 from haute._path_resolution import resolve_runtime_file_path
+from haute._rating import _apply_banding
 from haute.codegen import graph_to_code
-from haute.executor import _apply_banding
 from haute.graph_utils import (
     GraphEdge,
     GraphNode,

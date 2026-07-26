@@ -94,7 +94,7 @@ class _SuccessfulTrainingJob:
             feature_importance=[],
             model_path=str(model_path),
             train_rows=8,
-            test_rows=2,
+            validation_rows=2,
             features=["x"],
             cat_features=[],
             loss_history=[{"iteration": 1.0, "loss": 0.5}],
@@ -292,7 +292,9 @@ def test_dispersion_entrypoint_runs_profile_search_and_emits_fit_events(
         "interactions": [("x", "x")],
         "on_fit": ANY,
     }
-    assert collect.call_args.kwargs["profile"] is ExecutionProfile.TRAINING_PREP
+    execution_context = collect.call_args.kwargs["execution_context"]
+    assert isinstance(execution_context, ExecutionContext)
+    assert execution_context.profile is ExecutionProfile.TRAINING_PREP
 
 
 @pytest.mark.parametrize(
@@ -587,21 +589,18 @@ def test_publication_rejects_invalid_artifact_manifests(
         )
 
 
-def test_publication_warns_about_legacy_contract_and_rejects_backup_collision(
+def test_publication_rejects_backup_collision(
     tmp_path: Path,
 ) -> None:
     artifact_root, _staged_output, manifest = _staged_training_manifest(tmp_path)
     output_root = tmp_path / "outputs"
     output_root.mkdir()
-    legacy_contract = output_root / "feature_contract.json"
-    legacy_contract.write_bytes(b"legacy")
     final_model = output_root / "quoted.cbm"
     final_model.write_bytes(b"old-model")
     backup = output_root / ".quoted.cbm.job-1.haute-backup"
     backup.write_bytes(b"existing backup")
-    warning = patch("haute.routes._train_service.logger.warning")
 
-    with warning as logger_warning, pytest.raises(FileExistsError, match="backup already exists"):
+    with pytest.raises(FileExistsError, match="backup already exists"):
         _publish_training_artifacts(
             manifest,
             artifact_root=artifact_root,
@@ -610,12 +609,6 @@ def test_publication_warns_about_legacy_contract_and_rejects_backup_collision(
             expected_model_name="quoted",
         )
 
-    logger_warning.assert_called_once_with(
-        "legacy_shared_feature_contract_present",
-        legacy_path=str(legacy_contract),
-        per_model_path=str(output_root / model_contract_filename("quoted")),
-        model_name="quoted",
-    )
     assert backup.read_bytes() == b"existing backup"
     assert final_model.read_bytes() == b"old-model"
     assert (artifact_root / "output" / "quoted.cbm").exists()

@@ -66,9 +66,14 @@ pipeline = haute.Pipeline("test_pipeline", description="A test pipeline")
 
 
 @pipeline.data_input(config="{source_config}")
-def source() -> pl.DataFrame:
+def source() -> pl.LazyFrame:
     """Read data."""
-    return pl.scan_parquet("{data_path}")
+    from pathlib import Path
+    from haute.graph_utils import resolve_data_input_from_config
+    df = resolve_data_input_from_config(
+        "{source_config}", base_dir=Path(__file__).parent
+    )
+    return df
 
 
 @pipeline.polars
@@ -131,13 +136,11 @@ class TestSessionStatus:
         assert resp.json() == {"ok": True}
 
     def test_session_status_rejects_missing_local_session_token(self, client: TestClient):
-        from haute._local_security import SESSION_TOKEN_HEADER
-
         resp = client.get(
             "/api/session",
             headers={
                 "origin": "http://localhost",
-                SESSION_TOKEN_HEADER: "",
+                "cookie": "",
             },
         )
 
@@ -1034,13 +1037,13 @@ class TestWebSocketResync:
         def __init__(self) -> None:
             from starlette.datastructures import Headers, QueryParams
 
-            from haute._local_security import SESSION_TOKEN_HEADER, local_session_token
+            from haute._local_security import SESSION_TOKEN_COOKIE, local_session_token
 
             self.headers = Headers(
                 {
                     "host": "localhost",
                     "origin": "http://localhost",
-                    SESSION_TOKEN_HEADER: local_session_token(),
+                    "cookie": f"{SESSION_TOKEN_COOKIE}={local_session_token()}",
                 }
             )
             self.scope = {"scheme": "ws"}

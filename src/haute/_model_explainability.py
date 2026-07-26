@@ -492,22 +492,6 @@ def explain_rustystats_glm_prediction(
     }
 
 
-def explain_rustystats_prediction(
-    scoring_model: Any,
-    input_row: dict[str, Any],
-    *,
-    prediction_value: Any = None,
-    max_contributions: int | None = None,
-) -> dict[str, Any]:
-    """Compatibility wrapper for RustyStats GLM contribution explanations."""
-    return explain_rustystats_glm_prediction(
-        scoring_model,
-        input_row,
-        prediction_value=prediction_value,
-        max_contributions=max_contributions,
-    )
-
-
 def _config_requests_supported_explanation(config: dict[str, Any]) -> bool:
     source_type = config.get("sourceType")
     if source_type not in {"run", "registered"}:

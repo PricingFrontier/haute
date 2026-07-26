@@ -25,8 +25,7 @@ In scope:
   filesystem watcher that drives it.
 - Local HTTP/WebSocket protection (`haute._local_security`): trusted Host parsing,
   exact local-Origin checks, the HttpOnly-cookie bootstrap, and the per-process
-  session token accepted through that cookie or the non-browser
-  `x-haute-session-token` header. URL token transport is unsupported.
+  session token accepted through that cookie. URL/header token transport is unsupported.
 - The shared Pydantic contract layer: `haute.schemas` (the cross-route request/response models;
   OUTPUT dry-run keeps two route-local models). JSON-cache and output routes consume the
   v2 input/output schema modules owned by [json-shredding](../json-shredding/high-level.md).
@@ -102,9 +101,9 @@ rejections therefore occur before request-ID middleware and have no
 `x-request-id` header. `POST /api/session/bootstrap` requires an explicit Origin whose
 scheme/loopback authority/effective port exactly match Host, and returns only an HttpOnly,
 SameSite=Strict cookie plus `{ok:true}` under no-store headers. Other `/api/*` requests require
-that cookie or `x-haute-session-token`; an absent Origin is allowed only with a valid existing
-credential. `OPTIONS` still requires a trusted Origin but bypasses the token check. WebSocket
-handshakes always require an explicit matching Origin plus cookie/header credential and close
+that cookie; an absent Origin is allowed only with a valid existing cookie.
+`OPTIONS` still requires a trusted Origin but bypasses the token check. WebSocket
+handshakes always require an explicit matching Origin plus cookie credential and close
 with code 1008 on rejection. `HAUTE_DISABLE_LOCAL_SESSION_AUTH` bypasses only session auth.
 
 **Live sync.** A pricing analyst can edit a pipeline's `.py` file directly in an IDE while

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import threading
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
@@ -14,7 +16,7 @@ import polars as pl
 import pytest
 from fastapi import HTTPException
 
-from haute._parser_helpers import _build_node_config
+from haute._config_builder import _build_node_config
 from haute._sandbox import set_project_root
 from haute.graph_utils import NodeType
 from haute.routes._optimiser_limits import (
@@ -100,6 +102,22 @@ def _direct_parquet_data_input(path: str, **extra: object) -> dict[str, object]:
         "arguments": {},
         **extra,
     }
+
+
+@contextmanager
+def _persisted_ratebook_factors_handle(factors_df: pl.DataFrame) -> Iterator[dict[str, object]]:
+    """Yield a canonical ratebook factor handle and remove its artifact afterwards."""
+    from haute.routes._optimiser_service import (
+        _cleanup_ratebook_factors_artifact,
+        _persist_ratebook_factors_artifact,
+    )
+
+    handle = _persist_ratebook_factors_artifact(factors_df)
+    assert handle is not None
+    try:
+        yield handle
+    finally:
+        _cleanup_ratebook_factors_artifact(handle)
 
 
 def _make_optimiser_graph(data_path: str, config: dict | None = None) -> dict:
@@ -941,22 +959,28 @@ class TestSolveRoute:
                                         "banding": "breakpoints",
                                         "column": "proposer_age",
                                         "outputColumn": "proposer_age_band",
-                                        "rules": {
-                                            "27": "20-27",
-                                            "34": "28-34",
-                                            "41": "35-41",
-                                        },
+                                        "rules": [
+                                            {"boundary": "27", "label": "20-27"},
+                                            {"boundary": "34", "label": "28-34"},
+                                            {"boundary": "41", "label": "35-41"},
+                                        ],
                                         "default": "missing",
                                     },
                                     {
                                         "banding": "categorical",
                                         "column": "channel",
                                         "outputColumn": "channel_band",
-                                        "rules": {
-                                            "compare_the_market": "compare_the_market",
-                                            "moneysupermarket": "moneysupermarket",
-                                            "confused": "confused",
-                                        },
+                                        "rules": [
+                                            {
+                                                "value": "compare_the_market",
+                                                "assignment": "compare_the_market",
+                                            },
+                                            {
+                                                "value": "moneysupermarket",
+                                                "assignment": "moneysupermarket",
+                                            },
+                                            {"value": "confused", "assignment": "confused"},
+                                        ],
                                     },
                                 ]
                             },
@@ -1070,6 +1094,7 @@ class TestStatusRoute:
                 "frontier": frontier_data,
             },
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
 
         resp = client.get("/api/optimiser/solve/status/capped_frontier_status")
@@ -1483,11 +1508,8 @@ class TestEstimateRoute:
         self,
         client,
         tmp_path,
-        clean_job_store,
     ):
         """Auto range scans every scenario per quote, so middle extrema count."""
-        from haute.routes.optimiser import _store
-
         df = pl.DataFrame(
             {
                 "quote_id": ["q1", "q1", "q1", "q2", "q2", "q2"],
@@ -1507,25 +1529,19 @@ class TestEstimateRoute:
             },
         )
 
-        with patch.object(_store, "create_job", wraps=_store.create_job) as create_job:
-            resp = client.post(
-                "/api/optimiser/frontier/auto-range",
-                json={"graph": graph, "node_id": "opt"},
-            )
+        start_resp = client.post(
+            "/api/optimiser/frontier/auto-range/start",
+            json={"graph": graph, "node_id": "opt"},
+        )
 
-        assert resp.status_code == 200
-        data = resp.json()
+        assert start_resp.status_code == 200
+        status = _poll_auto_range_until_done(client, start_resp.json()["job_id"])
+        assert status["status"] == "completed"
+        data = status["result"]
         assert data["status"] == "ok"
         assert data["method"] == "scenario_envelope"
         assert data["ranges"]["expected_margin"]["min"] == pytest.approx(11.0)
         assert data["ranges"]["expected_margin"]["max"] == pytest.approx(39.0)
-        assert any(
-            call.args[0].get("job_type") == "frontier_auto_range"
-            for call in create_job.call_args_list
-        )
-        assert not any(
-            job.get("job_type") == "frontier_auto_range" for job in clean_job_store.jobs.values()
-        )
 
     @pytest.mark.usefixtures("_widen_sandbox_root")
     def test_frontier_auto_range_does_not_require_solver_only_columns(
@@ -1545,13 +1561,15 @@ class TestEstimateRoute:
         df.write_parquet(path)
         graph = _make_optimiser_graph(str(path))
 
-        resp = client.post(
-            "/api/optimiser/frontier/auto-range",
+        start_resp = client.post(
+            "/api/optimiser/frontier/auto-range/start",
             json={"graph": graph, "node_id": "opt"},
         )
 
-        assert resp.status_code == 200
-        data = resp.json()
+        assert start_resp.status_code == 200
+        status = _poll_auto_range_until_done(client, start_resp.json()["job_id"])
+        assert status["status"] == "completed"
+        data = status["result"]
         assert data["ranges"]["volume"]["min"] == pytest.approx(9.0)
         assert data["ranges"]["volume"]["max"] == pytest.approx(12.0)
 
@@ -1739,13 +1757,15 @@ class TestEstimateRoute:
         df.write_parquet(path)
         graph = _make_optimiser_graph(str(path))
 
-        resp = client.post(
-            "/api/optimiser/frontier/auto-range",
+        start_resp = client.post(
+            "/api/optimiser/frontier/auto-range/start",
             json={"graph": graph, "node_id": "opt"},
         )
 
-        assert resp.status_code == 400
-        detail = resp.json()["detail"]
+        assert start_resp.status_code == 200
+        status = _poll_auto_range_until_done(client, start_resp.json()["job_id"])
+        assert status["status"] == "contract_error"
+        detail = status["error_detail"]
         assert "Non-finite values found in optimiser input" in detail
         assert "'expected_income' (1 NaN row)" in detail
         assert "finite objective, constraint, and scenario values" in detail
@@ -1783,6 +1803,9 @@ class TestEstimateRoute:
         body = OptimiserFrontierAutoRangeRequest(graph=graph, node_id="opt")
         store = JobStore()
         service = OptimiserSolveService(store)
+        job_id = store.create_job({"status": "running", "job_type": "frontier_auto_range"})
+        prepared = service._prepare_frontier_auto_range(body)
+        prepared["streaming_plan"] = None
         real_bounded_collect_batches = optimiser_service.bounded_collect_batches
 
         with (
@@ -1793,7 +1816,7 @@ class TestEstimateRoute:
                 side_effect=real_bounded_collect_batches,
             ) as bounded_collect_batches,
         ):
-            response = service.estimate_frontier_auto_range(body)
+            response = service._run_frontier_auto_range_job(body, job_id, **prepared)
 
         expected_min = n_quotes * (n_quotes + 1) / 2
         expected_max = expected_min + n_quotes
@@ -1873,13 +1896,15 @@ class TestEstimateRoute:
             }
         )
 
-        resp = client.post(
-            "/api/optimiser/frontier/auto-range",
+        start_resp = client.post(
+            "/api/optimiser/frontier/auto-range/start",
             json={"graph": graph.model_dump(), "node_id": "opt"},
         )
 
-        assert resp.status_code == 200, resp.text
-        data = resp.json()
+        assert start_resp.status_code == 200, start_resp.text
+        status = _poll_auto_range_until_done(client, start_resp.json()["job_id"])
+        assert status["status"] == "completed"
+        data = status["result"]
         assert data["ranges"]["volume"]["min"] == pytest.approx(9.0)
         assert data["ranges"]["volume"]["max"] == pytest.approx(12.0)
 
@@ -2152,7 +2177,11 @@ class TestEstimateRoute:
         assert (
             store.atomic_update(
                 started.job_id,
-                {"status": "completed", "progress": 1.0},
+                {
+                    "status": "completed",
+                    "progress": 1.0,
+                    "completed_at": time.time(),
+                },
                 expected_status="running",
             )
             is None
@@ -2414,8 +2443,15 @@ class TestEstimateRoute:
             feature_names = ["scenario_feature"]
             cat_feature_names = frozenset()
 
-        def fake_score_eager(scoring_model, lf, features, output_col, task):
-            del scoring_model, features, task
+        def fake_score_eager(
+            scoring_model,
+            lf,
+            features,
+            output_col,
+            task,
+            offset_column=None,
+        ):
+            del scoring_model, features, task, offset_column
             row_count = int(lf.select(pl.len().alias("n")).collect().item())
             score_chunk_sizes.append(row_count)
             return lf.with_columns((pl.col("scenario_feature") * 2.0).alias(output_col))
@@ -3867,13 +3903,16 @@ class TestEstimateRoute:
         )
         body = OptimiserFrontierAutoRangeRequest(graph=graph, node_id="opt")
 
-        service = OptimiserSolveService(JobStore())
+        store = JobStore()
+        service = OptimiserSolveService(store)
+        job_id = store.create_job({"status": "running", "job_type": "frontier_auto_range"})
+        prepared = service._prepare_frontier_auto_range(body)
         with patch.object(
             service,
             "_execute_pipeline",
             wraps=service._execute_pipeline,
         ) as execute:
-            response = service.estimate_frontier_auto_range(body)
+            response = service._run_frontier_auto_range_job(body, job_id, **prepared)
 
         assert response.status == "ok"
         assert response.ranges["conversion_prediction"].min == pytest.approx(350.0)
@@ -4064,7 +4103,7 @@ class TestEstimateRoute:
         graph = _make_optimiser_graph(scored_data, config={"chunk_size": 0})
 
         resp = client.post(
-            "/api/optimiser/frontier/auto-range",
+            "/api/optimiser/frontier/auto-range/start",
             json={"graph": graph, "node_id": "opt"},
         )
 
@@ -4083,7 +4122,7 @@ class TestEstimateRoute:
         )
 
         resp = client.post(
-            "/api/optimiser/frontier/auto-range",
+            "/api/optimiser/frontier/auto-range/start",
             json={"graph": graph, "node_id": "opt"},
         )
 
@@ -4127,13 +4166,15 @@ class TestEstimateRoute:
             str(right_path),
         )
 
-        resp = client.post(
-            "/api/optimiser/frontier/auto-range",
+        start_resp = client.post(
+            "/api/optimiser/frontier/auto-range/start",
             json={"graph": graph, "node_id": "opt"},
         )
 
-        assert resp.status_code == 200
-        data = resp.json()
+        assert start_resp.status_code == 200
+        status = _poll_auto_range_until_done(client, start_resp.json()["job_id"])
+        assert status["status"] == "completed"
+        data = status["result"]
         assert data["ranges"] == {
             "conversion_prediction": {"min": 350.0, "max": 700.0},
             "margin": {"min": 70.0, "max": 220.0},
@@ -4173,11 +4214,18 @@ class TestEstimateRoute:
             "conversion_prediction": {"min": 350.0, "max": 700.0},
             "margin": {"min": 70.0, "max": 220.0},
         }
-        diagnostics = status["execution_metrics"]["projection_plan_diagnostics"]
-        assert diagnostics["strategy_summary"]["profile"] == "auto_range"
-        assert diagnostics["strategy_summary"]["opaque_boundary_count"] == 0
-        assert diagnostics["edge_reasons"]["left->joined"]["rule"] == "runtime_inferred_streaming"
-        assert diagnostics["edge_reasons"]["right->joined"]["rule"] == "runtime_inferred_streaming"
+        diagnostics = status["execution_metrics"]["execution_strategy"]
+        assert diagnostics["schema_version"] == 1
+        assert diagnostics["profile"] == "auto_range"
+        assert diagnostics["status"] == "projected"
+        assert diagnostics["boundedness"] == "bounded"
+        assert diagnostics["boundaries"]["total_count"] == 0
+        reason_edges = {
+            (item["parent_node_id"], item["node_id"], item["reason_code"])
+            for item in diagnostics["reasons"]["items"]
+        }
+        assert ("left", "joined", "runtime_inferred_streaming") in reason_edges
+        assert ("right", "joined", "runtime_inferred_streaming") in reason_edges
 
     @pytest.mark.usefixtures("_widen_sandbox_root")
     def test_frontier_auto_range_rejects_null_quote_id_in_chunked_estimator(
@@ -4199,13 +4247,15 @@ class TestEstimateRoute:
         df.write_parquet(path)
         graph = _make_optimiser_graph(str(path), config={"chunk_size": 1})
 
-        resp = client.post(
-            "/api/optimiser/frontier/auto-range",
+        start_resp = client.post(
+            "/api/optimiser/frontier/auto-range/start",
             json={"graph": graph, "node_id": "opt"},
         )
 
-        assert resp.status_code == 400
-        detail = resp.json()["detail"]
+        assert start_resp.status_code == 200
+        status = _poll_auto_range_until_done(client, start_resp.json()["job_id"])
+        assert status["status"] == "contract_error"
+        detail = status["error_detail"]
         assert "Null quote_id values found in optimiser input" in detail
         assert "(2 rows)" in detail
 
@@ -4234,14 +4284,16 @@ class TestEstimateRoute:
             },
         )
 
-        resp = client.post(
-            "/api/optimiser/frontier/auto-range",
+        start_resp = client.post(
+            "/api/optimiser/frontier/auto-range/start",
             json={"graph": graph, "node_id": "opt"},
         )
 
-        assert resp.status_code == 400
-        assert "Source projection references columns missing" in resp.json()["detail"]
-        assert "expected_margin" in resp.json()["detail"]
+        assert start_resp.status_code == 200
+        status = _poll_auto_range_until_done(client, start_resp.json()["job_id"])
+        assert status["status"] == "contract_error"
+        assert "Source projection references columns missing" in status["error_detail"]
+        assert "expected_margin" in status["error_detail"]
 
     @pytest.mark.usefixtures("_widen_sandbox_root")
     def test_frontier_auto_range_ratebook_returns_no_warning(
@@ -4271,16 +4323,18 @@ class TestEstimateRoute:
             },
         )
 
-        resp = client.post(
-            "/api/optimiser/frontier/auto-range",
+        start_resp = client.post(
+            "/api/optimiser/frontier/auto-range/start",
             json={"graph": graph, "node_id": "opt"},
         )
 
-        assert resp.status_code == 200
-        data = resp.json()
+        assert start_resp.status_code == 200
+        status = _poll_auto_range_until_done(client, start_resp.json()["job_id"])
+        assert status["status"] == "completed"
+        data = status["result"]
         assert data["status"] == "ok"
         assert data["warning"] is None
-        assert "Ratebook factor-table coupling" not in resp.text
+        assert "Ratebook factor-table coupling" not in str(status)
 
     @pytest.mark.usefixtures("_widen_sandbox_root")
     def test_frontier_auto_range_ratebook_preserves_intermediate_data_input(
@@ -4558,7 +4612,7 @@ class TestEstimateRoute:
         )
 
         resp = client.post(
-            "/api/optimiser/frontier/auto-range",
+            "/api/optimiser/frontier/auto-range/start",
             json={"graph": graph, "node_id": "opt"},
         )
 
@@ -4916,6 +4970,7 @@ def _make_ratebook_frontier_materialisation_job(clean_job_store, job_id: str):
         },
         "artifact_handles": {},
         "created_at": time.time(),
+        "completed_at": time.time(),
     }
     return mock_solver, mock_grid, factor_contexts
 
@@ -5413,6 +5468,7 @@ class TestFrontierRoute:
             "factor_columns_valid": [["region"]],
             "config": {"mode": "ratebook"},
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
 
         data = _frontier_result(
@@ -5431,7 +5487,7 @@ class TestFrontierRoute:
         assert mock_solver.frontier.call_args.kwargs["n_points_per_dim"] == 3
         assert mock_solver.frontier.call_args.kwargs["factor_columns"] == [["region"]]
 
-    def test_frontier_without_ranges_uses_config_absolute_ranges(self, client, clean_job_store):
+    def test_frontier_request_without_ranges_uses_config_ranges(self, client, clean_job_store):
         mock_solver = MagicMock()
         mock_grid = MagicMock()
         mock_solver.frontier.return_value = SimpleNamespace(
@@ -5455,10 +5511,13 @@ class TestFrontierRoute:
             "config": {
                 "mode": "online",
                 "constraints": {"volume": {"min": 0.9}, "loss": {"max": 20.0}},
-                "frontier_min": 10.0,
-                "frontier_max": 20.0,
+                "frontier_ranges": {
+                    "volume": {"min": 10.0, "max": 20.0},
+                    "loss": {"min": 30.0, "max": 40.0},
+                },
             },
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
 
         data = _frontier_result(
@@ -5474,7 +5533,7 @@ class TestFrontierRoute:
         assert data["constraint_names"] == ["volume", "loss"]
         assert mock_solver.frontier.call_args.kwargs["threshold_ranges"] == {
             "volume": (10.0, 20.0),
-            "loss": (10.0, 20.0),
+            "loss": (30.0, 40.0),
         }
         assert mock_solver.frontier.call_args.kwargs["n_points_per_dim"] == 3
 
@@ -5518,6 +5577,7 @@ class TestFrontierRoute:
             "solver": solver,
             "quote_grid": quote_grid,
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
 
         _frontier_result(
@@ -5549,6 +5609,7 @@ class TestFrontierRoute:
                 "frontier_ranges": {"volume": {"min": 0.8}},
             },
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
 
         resp = client.post(
@@ -5567,6 +5628,7 @@ class TestFrontierRoute:
             "quote_grid": MagicMock(),
             "config": {"mode": "online", "constraints": {}},
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
 
         resp = client.post(
@@ -5596,6 +5658,7 @@ class TestFrontierRoute:
             "quote_grid": MagicMock(),
             "config": {"mode": "online", "constraints": {"volume": {"min": 0.9}}},
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
 
         # length-1: should fail validation with the canonical wording.
@@ -5644,6 +5707,7 @@ class TestFrontierRoute:
                 "constraints": {f"c{i}": {"min": 0.0} for i in range(6)},
             },
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
 
         # 100 ** 6 = 10**12 grid points — well past anything reasonable.
@@ -5685,6 +5749,7 @@ class TestFrontierRoute:
                 "constraints": {"volume": {"min": 0.9}},
             },
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
 
         _frontier_result(
@@ -6022,6 +6087,7 @@ class TestOptimiserMlflowLog:
             "solver": None,
             "solve_result": None,
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
         resp = client.post(
             "/api/optimiser/mlflow/log",
@@ -6044,6 +6110,7 @@ class TestOptimiserMlflowLog:
             "config": {"mode": "online"},
             "node_label": "opt",
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
 
         with patch.dict("sys.modules", {"mlflow": None}):
@@ -6174,6 +6241,7 @@ class TestJobStateGuards:
             "status": "completed",
             "solve_result": None,
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
         resp = client.post("/api/optimiser/apply", json={"job_id": "no_sr"})
         assert resp.status_code == 400
@@ -6201,6 +6269,7 @@ class TestJobStateGuards:
             "solver": None,
             "quote_grid": None,
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
         resp = client.post(
             "/api/optimiser/frontier",
@@ -6234,6 +6303,7 @@ class TestJobStateGuards:
             "solve_result": None,
             "solver": None,
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
         resp = client.post(
             "/api/optimiser/save",
@@ -7003,8 +7073,11 @@ class TestExecutePipelineArgs:
 
         store = JobStore()
         service = OptimiserSolveService(store)
+        job_id = store.create_job({"status": "running", "job_type": "frontier_auto_range"})
+        prepared = service._prepare_frontier_auto_range(body)
+        prepared["streaming_plan"] = None
         with patch.object(service, "_execute_pipeline", return_value={"opt": scored_lf}) as execute:
-            response = service.estimate_frontier_auto_range(body)
+            response = service._run_frontier_auto_range_job(body, job_id, **prepared)
 
         assert response.status == "ok"
         assert execute.call_args.kwargs["required_columns_by_node"] == {
@@ -7484,6 +7557,7 @@ class TestFrontierSelect:
             },
             "result": {},
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
         resp = client.post(
             "/api/optimiser/frontier/select",
@@ -7515,6 +7589,7 @@ class TestFrontierSelect:
             },
             "result": {},
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
 
         resp = client.post(
@@ -7579,6 +7654,7 @@ class TestFrontierSelect:
                 "constraint_names": ["volume"],
             },
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
 
         resp = client.post(
@@ -7636,6 +7712,7 @@ class TestFrontierSelect:
             "frontier_data": None,
             "result": {},
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
         resp = client.post(
             "/api/optimiser/frontier/select",
@@ -7850,6 +7927,7 @@ class TestFrontierSelect:
             },
             "artifact_handles": {},
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
 
         with (
@@ -8214,8 +8292,7 @@ class TestFinalizeSolveResult:
                 "config": {
                     "constraints": {"volume": {"min": 0.9}},
                     "frontier_enabled": True,
-                    "frontier_min": 0.8,
-                    "frontier_max": 1.1,
+                    "frontier_ranges": {"volume": {"min": 0.8, "max": 1.1}},
                     "frontier_steps": 3,
                 },
             }
@@ -8263,8 +8340,7 @@ class TestFinalizeSolveResult:
                 "config": {
                     "constraints": {"volume": {"min": 0.9}},
                     "frontier_enabled": True,
-                    "frontier_min": 0.8,
-                    "frontier_max": 1.1,
+                    "frontier_ranges": {"volume": {"min": 0.8, "max": 1.1}},
                     "frontier_steps": 3,
                 },
             }
@@ -8305,7 +8381,7 @@ class TestFinalizeSolveResult:
         assert job["message"] == "Completed"
         assert job["elapsed_seconds"] >= 5.0
 
-    def test_frontier_prefers_per_constraint_absolute_ranges(self):
+    def test_frontier_uses_per_constraint_absolute_ranges(self):
         from haute.routes._job_store import JobStore
         from haute.routes._optimiser_service import _finalize_solve_result
 
@@ -8316,8 +8392,6 @@ class TestFinalizeSolveResult:
                 "config": {
                     "constraints": {"volume": {"min": 0.9}},
                     "frontier_enabled": True,
-                    "frontier_min": 0.8,
-                    "frontier_max": 1.1,
                     "frontier_ranges": {"volume": {"min": 70.0, "max": 95.0}},
                     "frontier_steps": 3,
                 },
@@ -8352,8 +8426,7 @@ class TestFinalizeSolveResult:
                 "config": {
                     "constraints": {"volume": {"min": 0.9}},
                     "frontier_enabled": True,
-                    "frontier_min": 0.8,
-                    "frontier_max": 1.1,
+                    "frontier_ranges": {"volume": {"min": 0.8, "max": 1.1}},
                     "frontier_steps": 3,
                 },
             }
@@ -8448,8 +8521,7 @@ class TestFinalizeSolveResult:
                 "config": {
                     "constraints": {"volume": {"min": 0.9}},
                     "frontier_enabled": True,
-                    "frontier_min": 0.8,
-                    "frontier_max": 1.1,
+                    "frontier_ranges": {"volume": {"min": 0.8, "max": 1.1}},
                     "frontier_steps": 3,
                 },
             }
@@ -8495,8 +8567,7 @@ class TestFinalizeSolveResult:
                 "config": {
                     "constraints": {"volume": {"min": 0.9}},
                     "frontier_enabled": True,
-                    "frontier_min": 0.8,
-                    "frontier_max": 1.1,
+                    "frontier_ranges": {"volume": {"min": 0.8, "max": 1.1}},
                     "frontier_steps": 3,
                 },
             }
@@ -8720,6 +8791,7 @@ class TestSolveStatusEdgeCases:
                 "constraint_names": ["volume"],
             },
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
         resp = client.get("/api/optimiser/solve/status/done_frontier")
         assert resp.status_code == 200
@@ -8753,6 +8825,7 @@ class TestApplyLambdasUnit:
             "status": "completed",
             "solve_result": mock_solve_result,
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
         resp = client.post("/api/optimiser/apply", json={"job_id": "apply_unit"})
         assert resp.status_code == 200
@@ -8785,6 +8858,7 @@ class TestApplyLambdasUnit:
             "status": "completed",
             "solve_result": mock_solve_result,
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
 
         resp = client.post("/api/optimiser/apply", json={"job_id": "apply_capped"})
@@ -8820,6 +8894,7 @@ class TestApplyLambdasUnit:
             },
             "artifact_handles": {"apply_result": handle},
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
 
         resp = client.post("/api/optimiser/apply", json={"job_id": "apply_handle"})
@@ -8865,6 +8940,7 @@ class TestApplyLambdasUnit:
             },
             "artifact_handles": {"apply_result": handle},
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
 
         resp = client.post("/api/optimiser/apply", json={"job_id": "apply_terminal"})
@@ -8904,6 +8980,7 @@ class TestApplyLambdasUnit:
             },
             "artifact_handles": {"apply_result": handle},
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
 
         resp = client.post("/api/optimiser/apply", json={"job_id": "apply_missing_handle"})
@@ -8932,6 +9009,7 @@ class TestApplyLambdasUnit:
             ),
             "result": {"total_objective": 42.0, "constraints": {"volume": 1.0}},
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
 
         resp = client.post("/api/optimiser/apply", json={"job_id": "apply_no_dataframe"})
@@ -8957,6 +9035,7 @@ class TestApplyLambdasUnit:
             ),
             "result": {"total_objective": 100.0},
             "created_at": time.time() - _DEFAULT_HEAVY_OBJECT_TTL_SECONDS - 1,
+            "completed_at": time.time() - _DEFAULT_HEAVY_OBJECT_TTL_SECONDS - 1,
         }
 
         resp = client.post("/api/optimiser/apply", json={"job_id": "apply_expired"})
@@ -9097,6 +9176,7 @@ class TestRunFrontierUnit:
             "solver": mock_solver,
             "quote_grid": MagicMock(),
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
         data = _frontier_result(
             client,
@@ -9173,6 +9253,7 @@ class TestRunFrontierUnit:
             "selected_frontier_point": 0,
             "artifact_handles": {},
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
 
         _frontier_result(
@@ -9262,6 +9343,7 @@ class TestRunFrontierUnit:
                 "frontier_apply_result:0": stale_frontier_handle,
             },
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
 
         _frontier_result(
@@ -9374,6 +9456,7 @@ class TestRunFrontierUnit:
             "selected_frontier_point": 0,
             "artifact_handles": {"apply_result": base_apply_handle},
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
 
         _frontier_result(
@@ -9405,6 +9488,7 @@ class TestRunFrontierUnit:
             "solver": mock_solver,
             "quote_grid": MagicMock(),
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
 
         data = _frontier_result(
@@ -9451,6 +9535,7 @@ class TestRunFrontierUnit:
             "solver": mock_solver,
             "quote_grid": MagicMock(),
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
 
         data = _frontier_result(
@@ -9506,6 +9591,7 @@ class TestSaveResultUnit:
             "config": {"mode": "online"},
             "node_label": "opt",
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
         set_project_root(tmp_path)
         resp = client.post(
@@ -9544,6 +9630,7 @@ class TestSaveResultUnit:
             },
             "node_label": "opt",
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
         set_project_root(tmp_path)
         out_path = str(tmp_path / "out.json")
@@ -9652,6 +9739,7 @@ class TestSelectFrontierPointIdempotent:
                 "constraint_names": ["volume"],
             },
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
         resp = client.post(
             "/api/optimiser/frontier/select",
@@ -9686,6 +9774,7 @@ class TestSelectFrontierPointIdempotent:
                 "selected_frontier_point": 2,
             },
             "created_at": time.time(),
+            "completed_at": time.time(),
             "heavy_objects_cleared_at": time.time(),
         }
 
@@ -9744,6 +9833,7 @@ class TestSelectFrontierPointIdempotent:
                 "constraint_names": ["volume"],
             },
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
 
         resp = client.post(
@@ -9805,6 +9895,7 @@ class TestSelectFrontierPointIdempotent:
                 "constraint_names": ["volume"],
             },
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
 
         resp = client.post(
@@ -9860,6 +9951,7 @@ class TestSelectFrontierPointResolve:
             },
             "artifact_handles": {},
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
         return mock_solver
 
@@ -10261,6 +10353,7 @@ class TestSelectFrontierPointResolve:
             },
             "result": {},
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
         resp = client.post(
             "/api/optimiser/frontier/select",
@@ -10292,6 +10385,7 @@ class TestSelectFrontierPointResolve:
                 "baseline_constraints": {"volume": 0.85},
             },
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
         resp = client.post(
             "/api/optimiser/frontier/select",
@@ -10325,6 +10419,7 @@ class TestSelectFrontierPointResolve:
                 "baseline_constraints": {"volume": 0.85},
             },
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
         resp = client.post(
             "/api/optimiser/frontier/select",
@@ -10503,6 +10598,7 @@ class TestMlflowLogExtended:
             },
             "node_label": "my_opt",
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
         if frontier_data is not None:
             job["frontier_data"] = frontier_data
@@ -10695,6 +10791,7 @@ class TestMlflowLogExtended:
             "config": {"mode": "online", "objective": "income", "constraints": {}},
             "node_label": "opt",
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
         mock_mlflow = self._make_mlflow_mock()
 
@@ -10778,6 +10875,7 @@ class TestSolveStatusTimeout:
                     "converged": True,
                 },
                 "created_at": time.time(),
+                "completed_at": time.time(),
             }
             return clean_job_store.jobs["tout_race"]
 
@@ -10882,6 +10980,7 @@ class TestSolveStatusTimeout:
                 "converged": True,
             },
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
 
         resp = client.get("/api/optimiser/solve/status/done_past_timeout")
@@ -10908,6 +11007,7 @@ class TestSolveStatusTimeout:
                 "converged": True,
             },
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
         resp = client.get("/api/optimiser/solve/status/no_front")
         data = resp.json()
@@ -11080,19 +11180,20 @@ class TestSolveRatebookUnit:
             "factor_columns": [["nonexistent_col"]],
         }
 
-        with pytest.raises(RuntimeError, match="Missing ratebook factor columns"):
-            _solve_ratebook(
-                SolveContext(
-                    job_id=job_id,
-                    node_id="opt",
-                    mode="ratebook",
-                    store=store,
-                    start_time=time.monotonic(),
-                ),
-                quote_grid=mock_grid,
-                config=config,
-                ratebook_factors_handle=factors_df,
-            )
+        with _persisted_ratebook_factors_handle(factors_df) as factors_handle:
+            with pytest.raises(RuntimeError, match="Missing ratebook factor columns"):
+                _solve_ratebook(
+                    SolveContext(
+                        job_id=job_id,
+                        node_id="opt",
+                        mode="ratebook",
+                        store=store,
+                        start_time=time.monotonic(),
+                    ),
+                    quote_grid=mock_grid,
+                    config=config,
+                    ratebook_factors_handle=factors_handle,
+                )
 
     def test_solve_ratebook_success(self):
         """Ratebook solve succeeds with valid factors_df."""
@@ -11113,6 +11214,7 @@ class TestSolveRatebookUnit:
 
         mock_grid = MagicMock()
         mock_grid.quote_ids = ["q1", "q2", "q3"]
+        mock_grid.n_quotes = 3
 
         factors_df = pl.DataFrame(
             {
@@ -11139,34 +11241,35 @@ class TestSolveRatebookUnit:
             "quote_id": "quote_id",
         }
 
-        with patch("price_contour.RatebookOptimiser") as mock_solver:
-            mock_solver.return_value.solve.return_value = mock_result
-            _solve_ratebook(
-                SolveContext(
-                    job_id=job_id,
-                    node_id="opt",
-                    mode="ratebook",
-                    store=store,
-                    start_time=time.monotonic(),
-                ),
-                quote_grid=mock_grid,
-                config=config,
-                ratebook_factors_handle=factors_df,
-            )
+        with _persisted_ratebook_factors_handle(factors_df) as factors_handle:
+            with patch("price_contour.RatebookOptimiser") as mock_solver:
+                mock_solver.return_value.solve.return_value = mock_result
+                _solve_ratebook(
+                    SolveContext(
+                        job_id=job_id,
+                        node_id="opt",
+                        mode="ratebook",
+                        store=store,
+                        start_time=time.monotonic(),
+                    ),
+                    quote_grid=mock_grid,
+                    config=config,
+                    ratebook_factors_handle=factors_handle,
+                )
 
-        assert "chunk_size" not in mock_solver.call_args.kwargs
-        job = store.require_job(job_id)
-        assert job["status"] == "completed"
-        assert "factor_tables" in job["result"]
-        assert "region" in job["result"]["factor_tables"]
-        assert job["result"]["factor_tables"]["region"] == [
-            {"__factor_group__": "North", "optimal_scenario_value": 1.1, "quote_count": 2},
-            {"__factor_group__": "East", "optimal_scenario_value": 1.0, "quote_count": 1},
-        ]
-        assert "factors_df" not in job
-        assert "ratebook_factor_contexts" in job
-        factors_handle = job["artifact_handles"][_RATEBOOK_FACTORS_HANDLE_KEY]
-        assert _load_ratebook_factors_artifact(factors_handle).columns == ["quote_id", "region"]
+            assert "chunk_size" not in mock_solver.call_args.kwargs
+            job = store.require_job(job_id)
+            assert job["status"] == "completed"
+            assert "factor_tables" in job["result"]
+            assert "region" in job["result"]["factor_tables"]
+            assert job["result"]["factor_tables"]["region"] == [
+                {"__factor_group__": "North", "optimal_scenario_value": 1.1, "quote_count": 2},
+                {"__factor_group__": "East", "optimal_scenario_value": 1.0, "quote_count": 1},
+            ]
+            assert "factors_df" not in job
+            assert "ratebook_factor_contexts" in job
+            factors_handle = job["artifact_handles"][_RATEBOOK_FACTORS_HANDLE_KEY]
+            assert _load_ratebook_factors_artifact(factors_handle).columns == ["quote_id", "region"]
 
     def test_solve_ratebook_real_shape_persists_no_apply_artifact_or_stats(self):
         """3b.9 characterization pin: the REAL ``RatebookResult`` has no
@@ -11187,6 +11290,7 @@ class TestSolveRatebookUnit:
 
         mock_grid = MagicMock()
         mock_grid.quote_ids = ["q1", "q2"]
+        mock_grid.n_quotes = 2
         factors_df = pl.DataFrame({"quote_id": ["q1", "q2"], "region": ["North", "South"]})
         config = {
             "objective": "income",
@@ -11195,29 +11299,30 @@ class TestSolveRatebookUnit:
             "quote_id": "quote_id",
         }
 
-        with patch("price_contour.RatebookOptimiser") as mock_solver:
-            mock_solver.return_value.solve.return_value = _ratebook_solve_result_namespace(
-                factor_tables={"region": {"North": 1.08, "South": 0.92}},
-            )
-            _solve_ratebook(
-                SolveContext(
-                    job_id=job_id,
-                    node_id="opt",
-                    mode="ratebook",
-                    store=store,
-                    start_time=time.monotonic(),
-                ),
-                quote_grid=mock_grid,
-                config=config,
-                ratebook_factors_handle=factors_df,
-            )
+        with _persisted_ratebook_factors_handle(factors_df) as factors_handle:
+            with patch("price_contour.RatebookOptimiser") as mock_solver:
+                mock_solver.return_value.solve.return_value = _ratebook_solve_result_namespace(
+                    factor_tables={"region": {"North": 1.08, "South": 0.92}},
+                )
+                _solve_ratebook(
+                    SolveContext(
+                        job_id=job_id,
+                        node_id="opt",
+                        mode="ratebook",
+                        store=store,
+                        start_time=time.monotonic(),
+                    ),
+                    quote_grid=mock_grid,
+                    config=config,
+                    ratebook_factors_handle=factors_handle,
+                )
 
-        job = store.require_job(job_id)
-        assert job["status"] == "completed"
-        assert _APPLY_RESULT_HANDLE_KEY not in job["artifact_handles"]
-        assert _RATEBOOK_FACTORS_HANDLE_KEY in job["artifact_handles"]
-        assert job["result"]["scenario_value_stats"] is None
-        assert job["result"]["scenario_value_histogram"] is None
+            job = store.require_job(job_id)
+            assert job["status"] == "completed"
+            assert _APPLY_RESULT_HANDLE_KEY not in job["artifact_handles"]
+            assert _RATEBOOK_FACTORS_HANDLE_KEY in job["artifact_handles"]
+            assert job["result"]["scenario_value_stats"] is None
+            assert job["result"]["scenario_value_histogram"] is None
 
     def test_solve_ratebook_orders_factor_tables_by_banding_rule_order(self):
         """Ratebook rates are serialised in the source banding row order."""
@@ -11229,6 +11334,7 @@ class TestSolveRatebookUnit:
 
         mock_grid = MagicMock()
         mock_grid.quote_ids = ["q1", "q2", "q3", "q4", "q5"]
+        mock_grid.n_quotes = 5
 
         factors_df = pl.DataFrame(
             {
@@ -11270,37 +11376,38 @@ class TestSolveRatebookUnit:
             "channel_band": ["direct", "broker"],
         }
 
-        with patch("price_contour.RatebookOptimiser") as mock_solver:
-            mock_solver.return_value.solve.return_value = mock_result
-            _solve_ratebook(
-                SolveContext(
-                    job_id=job_id,
-                    node_id="opt",
-                    mode="ratebook",
-                    store=store,
-                    start_time=time.monotonic(),
-                ),
-                quote_grid=mock_grid,
-                config=config,
-                ratebook_factors_handle=factors_df,
-                factor_level_order=factor_level_order,
-            )
+        with _persisted_ratebook_factors_handle(factors_df) as factors_handle:
+            with patch("price_contour.RatebookOptimiser") as mock_solver:
+                mock_solver.return_value.solve.return_value = mock_result
+                _solve_ratebook(
+                    SolveContext(
+                        job_id=job_id,
+                        node_id="opt",
+                        mode="ratebook",
+                        store=store,
+                        start_time=time.monotonic(),
+                    ),
+                    quote_grid=mock_grid,
+                    config=config,
+                    ratebook_factors_handle=factors_handle,
+                    factor_level_order=factor_level_order,
+                )
 
-        factor_tables = store.require_job(job_id)["result"]["factor_tables"]
-        assert list(factor_tables) == ["proposer_age_band", "channel_band"]
-        rows = factor_tables["proposer_age_band"]
-        assert [row["__factor_group__"] for row in rows] == [
-            "20-27",
-            "28-34",
-            "35-41",
-            "missing",
-            "solver_only",
-        ]
-        assert [row["quote_count"] for row in rows] == [1, 1, 1, 1, 1]
-        assert [row["__factor_group__"] for row in factor_tables["channel_band"]] == [
-            "direct",
-            "broker",
-        ]
+            factor_tables = store.require_job(job_id)["result"]["factor_tables"]
+            assert list(factor_tables) == ["proposer_age_band", "channel_band"]
+            rows = factor_tables["proposer_age_band"]
+            assert [row["__factor_group__"] for row in rows] == [
+                "20-27",
+                "28-34",
+                "35-41",
+                "missing",
+                "solver_only",
+            ]
+            assert [row["quote_count"] for row in rows] == [1, 1, 1, 1, 1]
+            assert [row["__factor_group__"] for row in factor_tables["channel_band"]] == [
+                "direct",
+                "broker",
+            ]
 
     def test_ratebook_factor_level_counts_support_composite_factor_groups(self):
         """Counts use price-contour's table and level keys for composite groups."""
@@ -11574,6 +11681,7 @@ class TestSolveRatebookUnit:
         job_id = store.create_job({"status": "running", "config": {"constraints": {}}})
         mock_grid = MagicMock()
         mock_grid.quote_ids = ["q1", "q2", "q3"]
+        mock_grid.n_quotes = 3
 
         factors_df = pl.DataFrame(
             {
@@ -11589,25 +11697,26 @@ class TestSolveRatebookUnit:
             "quote_id": "quote_id",
         }
 
-        with patch("price_contour.RatebookOptimiser") as mock_solver:
-            with pytest.raises(ValueError) as exc_info:
-                _solve_ratebook(
-                    SolveContext(
-                        job_id=job_id,
-                        node_id="opt",
-                        mode="ratebook",
-                        store=store,
-                        start_time=time.monotonic(),
-                    ),
-                    quote_grid=mock_grid,
-                    config=config,
-                    ratebook_factors_handle=factors_df,
-                )
+        with _persisted_ratebook_factors_handle(factors_df) as factors_handle:
+            with patch("price_contour.RatebookOptimiser") as mock_solver:
+                with pytest.raises(ValueError) as exc_info:
+                    _solve_ratebook(
+                        SolveContext(
+                            job_id=job_id,
+                            node_id="opt",
+                            mode="ratebook",
+                            store=store,
+                            start_time=time.monotonic(),
+                        ),
+                        quote_grid=mock_grid,
+                        config=config,
+                        ratebook_factors_handle=factors_handle,
+                    )
 
-        detail = str(exc_info.value)
-        assert "contains null values" in detail
-        assert "region" in detail
-        mock_solver.assert_not_called()
+            detail = str(exc_info.value)
+            assert "contains null values" in detail
+            assert "region" in detail
+            mock_solver.assert_not_called()
 
     def test_solve_ratebook_frontier_passes_prepared_factors(self):
         """Ratebook frontier-in-solve passes prepared factor contexts."""
@@ -11633,6 +11742,7 @@ class TestSolveRatebookUnit:
 
         mock_grid = MagicMock()
         mock_grid.quote_ids = ["q1", "q2"]
+        mock_grid.n_quotes = 2
         factors_df = pl.DataFrame(
             {
                 "quote_id": ["q1", "q2"],
@@ -11665,41 +11775,42 @@ class TestSolveRatebookUnit:
             "frontier_steps": 3,
         }
 
-        with patch("price_contour.RatebookOptimiser") as mock_solver:
-            solver = mock_solver.return_value
-            solver.solve.return_value = mock_result
-            solver.frontier.return_value = SimpleNamespace(points=frontier_points)
-            _solve_ratebook(
-                SolveContext(
-                    job_id=job_id,
-                    node_id="opt",
-                    mode="ratebook",
-                    store=store,
-                    start_time=time.monotonic(),
-                ),
-                quote_grid=mock_grid,
-                config=config,
-                ratebook_factors_handle=factors_df,
-            )
+        with _persisted_ratebook_factors_handle(factors_df) as factors_handle:
+            with patch("price_contour.RatebookOptimiser") as mock_solver:
+                solver = mock_solver.return_value
+                solver.solve.return_value = mock_result
+                solver.frontier.return_value = SimpleNamespace(points=frontier_points)
+                _solve_ratebook(
+                    SolveContext(
+                        job_id=job_id,
+                        node_id="opt",
+                        mode="ratebook",
+                        store=store,
+                        start_time=time.monotonic(),
+                    ),
+                    quote_grid=mock_grid,
+                    config=config,
+                    ratebook_factors_handle=factors_handle,
+                )
 
-        assert mock_solver.call_args.kwargs["factor_columns"] == [["region"]]
-        prepared_factors = solver.frontier.call_args.args[1]
-        assert solver.frontier.call_args.args[0] is mock_grid
-        assert prepared_factors.n_quotes == 2
-        assert prepared_factors.factor_specs == [["region"]]
-        assert solver.frontier.call_args.kwargs["threshold_ranges"]["volume"] == pytest.approx(
-            (0.8, 1.1)
-        )
-        assert solver.frontier.call_args.kwargs["n_points_per_dim"] == 3
-        assert solver.frontier.call_args.kwargs["factor_columns"] == [["region"]]
-        job = store.require_job(job_id)
-        assert job["result"]["frontier"]["n_points"] == 1
-        assert "ratebook_factor_contexts" in job
-        factors_handle = job["artifact_handles"][_RATEBOOK_FACTORS_HANDLE_KEY]
-        assert _load_ratebook_factors_artifact(factors_handle).to_dicts() == [
-            {"quote_id": "q1", "region": "North"},
-            {"quote_id": "q2", "region": "South"},
-        ]
+            assert mock_solver.call_args.kwargs["factor_columns"] == [["region"]]
+            prepared_factors = solver.frontier.call_args.args[1]
+            assert solver.frontier.call_args.args[0] is mock_grid
+            assert prepared_factors.n_quotes == 2
+            assert prepared_factors.factor_specs == [["region"]]
+            assert solver.frontier.call_args.kwargs["threshold_ranges"]["volume"] == pytest.approx(
+                (0.8, 1.1)
+            )
+            assert solver.frontier.call_args.kwargs["n_points_per_dim"] == 3
+            assert solver.frontier.call_args.kwargs["factor_columns"] == [["region"]]
+            job = store.require_job(job_id)
+            assert job["result"]["frontier"]["n_points"] == 1
+            assert "ratebook_factor_contexts" in job
+            factors_handle = job["artifact_handles"][_RATEBOOK_FACTORS_HANDLE_KEY]
+            assert _load_ratebook_factors_artifact(factors_handle).to_dicts() == [
+                {"quote_id": "q1", "region": "North"},
+                {"quote_id": "q2", "region": "South"},
+            ]
 
     def test_solve_ratebook_custom_quote_id(self):
         """Ratebook solve with custom quote_id column renames it."""
@@ -11716,6 +11827,7 @@ class TestSolveRatebookUnit:
 
         mock_grid = MagicMock()
         mock_grid.quote_ids = ["q1", "q2"]
+        mock_grid.n_quotes = 2
 
         factors_df = pl.DataFrame(
             {
@@ -11742,23 +11854,24 @@ class TestSolveRatebookUnit:
             "quote_id": "policy_id",
         }
 
-        with patch("price_contour.RatebookOptimiser") as mock_solver:
-            mock_solver.return_value.solve.return_value = mock_result
-            _solve_ratebook(
-                SolveContext(
-                    job_id=job_id,
-                    node_id="opt",
-                    mode="ratebook",
-                    store=store,
-                    start_time=time.monotonic(),
-                ),
-                quote_grid=mock_grid,
-                config=config,
-                ratebook_factors_handle=factors_df,
-            )
+        with _persisted_ratebook_factors_handle(factors_df) as factors_handle:
+            with patch("price_contour.RatebookOptimiser") as mock_solver:
+                mock_solver.return_value.solve.return_value = mock_result
+                _solve_ratebook(
+                    SolveContext(
+                        job_id=job_id,
+                        node_id="opt",
+                        mode="ratebook",
+                        store=store,
+                        start_time=time.monotonic(),
+                    ),
+                    quote_grid=mock_grid,
+                    config=config,
+                    ratebook_factors_handle=factors_handle,
+                )
 
-        job = store.require_job(job_id)
-        assert job["status"] == "completed"
+            job = store.require_job(job_id)
+            assert job["status"] == "completed"
 
     def test_solve_ratebook_banding_source_resolution(self):
         """Ratebook _extract_factors resolves banding source from lazy outputs."""
@@ -13078,6 +13191,7 @@ class TestApplyException:
             "status": "completed",
             "solve_result": FailingResult(),
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
         with patch("haute.routes.optimiser.logger.error") as log_error:
             resp = client.post("/api/optimiser/apply", json={"job_id": "apply_err"})
@@ -13104,6 +13218,7 @@ class TestFrontierException:
             "solver": mock_solver,
             "quote_grid": MagicMock(),
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
         with patch("haute.routes.optimiser.logger.error") as log_error:
             resp = client.post(
@@ -13190,6 +13305,7 @@ class TestSaveExceptionPaths:
             "config": {"mode": "online"},
             "node_label": "opt",
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
         set_project_root(tmp_path)
         out_path = str(tmp_path / "out.json")
@@ -13232,6 +13348,7 @@ class TestSaveExceptionPaths:
             "config": {"mode": "online"},
             "node_label": "opt",
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
         set_project_root(tmp_path)
         out_path = str(tmp_path / "out.json")
@@ -13289,6 +13406,7 @@ class TestSaveArtifactGate:
             "config": config or {"mode": "online"},
             "node_label": "opt",
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
 
     @pytest.mark.parametrize(
@@ -13507,6 +13625,7 @@ class TestMlflowLogExceptionPath:
             "config": {"mode": "online"},
             "node_label": "opt",
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
         mock_mlflow = MagicMock()
         with (
@@ -13526,71 +13645,6 @@ class TestMlflowLogExceptionPath:
         job = clean_job_store.jobs["mlf_err"]
         assert "solver" in job
         assert "solve_result" in job
-
-
-@pytest.mark.usefixtures("_in_solver_worker_context")
-class TestSolveRatebookFallbackQuoteId:
-    """Test _solve_ratebook branch where quote_id col is absent but 'quote_id' exists."""
-
-    def test_ratebook_fallback_quote_id_branch(self):
-        """When config quote_id is absent from factors_df but 'quote_id' exists, use fallback."""
-        from haute.routes._job_store import JobStore
-        from haute.routes._optimiser_service import _solve_ratebook
-
-        store = JobStore()
-        job_id = store.create_job(
-            {
-                "status": "running",
-                "config": {"constraints": {}},
-            }
-        )
-
-        mock_grid = MagicMock()
-        mock_grid.quote_ids = ["q1", "q2"]
-
-        # factors_df has 'quote_id' but config says 'policy_id' which is NOT in the df
-        factors_df = pl.DataFrame(
-            {
-                "quote_id": ["q1", "q2"],
-                "region": ["North", "South"],
-            }
-        )
-
-        # 3b.9: real RatebookResult field set — no phantom ``dataframe``.
-        mock_result = _ratebook_solve_result_namespace(
-            total_objective=100.0,
-            baseline_objective=90.0,
-            total_constraints={},
-            baseline_constraints={},
-            lambdas={},
-            cd_iterations=2,
-            factor_tables={},
-        )
-
-        config = {
-            "objective": "income",
-            "constraints": {},
-            "factor_columns": [["region"]],
-            "quote_id": "policy_id",  # not in factors_df
-        }
-
-        with patch("price_contour.RatebookOptimiser") as mock_solver:
-            mock_solver.return_value.solve.return_value = mock_result
-            _solve_ratebook(
-                SolveContext(
-                    job_id=job_id,
-                    node_id="opt",
-                    mode="ratebook",
-                    store=store,
-                    start_time=time.monotonic(),
-                ),
-                quote_grid=mock_grid,
-                config=config,
-                ratebook_factors_handle=factors_df,
-            )
-
-        job = store.require_job(job_id)
-        assert job["status"] == "completed"
 
 
 @pytest.mark.usefixtures("_widen_sandbox_root")
@@ -14628,6 +14682,7 @@ class TestOptimiserMutationBoundaries:
             },
             "artifact_handles": {},
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
 
         data = _frontier_result(
@@ -14677,6 +14732,7 @@ class TestOptimiserMutationBoundaries:
             "quote_grid": MagicMock(),
             "config": {"mode": "online", "constraints": {"volume": {"min": 0.9}}},
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
 
         # Equal min/max is the pin case — must be accepted.
@@ -14721,6 +14777,7 @@ class TestOptimiserMutationBoundaries:
             "quote_grid": MagicMock(),
             "config": {"mode": "online", "constraints": {"volume": {"min": 0.9}}},
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
 
         data = _frontier_result(

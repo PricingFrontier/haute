@@ -198,8 +198,8 @@ def log_experiment(
     enhanced_params = dict(params)
     if meta.train_rows:
         enhanced_params["train_rows"] = meta.train_rows
-    if meta.test_rows:
-        enhanced_params["test_rows"] = meta.test_rows
+    if meta.validation_rows:
+        enhanced_params["validation_rows"] = meta.validation_rows
     if meta.features:
         enhanced_params["n_features"] = len(meta.features)
     if meta.best_iteration is not None:

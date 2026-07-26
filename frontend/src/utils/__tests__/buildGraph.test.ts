@@ -58,7 +58,7 @@ describe("buildGraph", () => {
   it("passes through submodels and preamble when provided", () => {
     // Catches: if these optional fields are accidentally dropped,
     // saving a pipeline with submodels or preamble would lose that data.
-    const submodels = { sub1: { nodes: [], edges: [] } }
+    const submodels = { sub1: { graph: { nodes: [], edges: [] } } }
     const preamble = "import polars as pl"
 
     const result = buildGraph([], [], submodels, preamble)

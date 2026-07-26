@@ -13,12 +13,12 @@ from __future__ import annotations
 
 import polars as pl
 
+import haute.projection as projection_planner
 from haute._builders import resolve_instance_node
 from haute._execute_lazy import (
     _build_funcs,
     _execute_eager_core,
     _execute_lazy,
-    _prepare_graph,
     _prune_live_switch_edges,
 )
 from haute._types import (
@@ -140,13 +140,17 @@ class TestScenarioForwardingToBuilders:
     def test_build_funcs_forwards_scenario(self):
         captured: dict[str, str] = {}
         node_map = {"s": _source_node("s"), "t": _transform_node("t")}
+        edge = _e("s", "t")
+        incoming_edges = {"t": [edge]}
         _build_funcs(
             ["s", "t"],
             node_map,
-            {"s": [], "t": ["s"]},
             {"s": "s", "t": "t"},
             {"t": ["s"]},
             _scenario_tracking_build_fn(captured),
+            incoming_edges_by_target=incoming_edges,
+            all_incoming_edges_by_target=incoming_edges,
+            all_node_map=node_map,
             source="custom_scenario",
         )
         assert captured["s"] == "custom_scenario"
@@ -218,13 +222,13 @@ class TestSourceSwitchScenarioRouting:
         assert "batch_source" in sources
 
     def test_prepare_graph_uses_scenario_for_pruning(self):
-        """_prepare_graph should prune edges based on the passed scenario."""
+        """Graph preparation should prune edges based on the passed scenario."""
         g = self._make_switch_graph()
-        _, order, parents, _ = _prepare_graph(g, source="nb_batch")
+        prepared = projection_planner.prepare_graph(g, source="nb_batch")
         # The batch path should be in the ancestry
-        sw_parents = parents.get("sw", [])
+        sw_parents = prepared.parents_of.get("sw", [])
         parent_ids = set(sw_parents)
-        assert "batch_source" in parent_ids or "batch_source" in order
+        assert "batch_source" in parent_ids or "batch_source" in prepared.order
         # The live source should be excluded from sw's parents
         assert "live_source" not in sw_parents
 

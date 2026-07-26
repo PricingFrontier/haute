@@ -20,11 +20,10 @@ from typing import Any, Protocol
 
 import polars as pl
 
-from haute._builders import _DEFAULT_SCENARIO_STEPS
-from haute._code_extraction import _strip_generated_boilerplate_from_code
 from haute._execution_context import ExecutionProfile
 from haute._input_providers import resolve_data_input
 from haute._logging import get_logger
+from haute._node_apply import _DEFAULT_SCENARIO_STEPS
 from haute._polars_io_registry import (
     PolarsIoConfigError,
     format_for_config,
@@ -769,10 +768,7 @@ def _sample_variable_column_widths(
     variable_set = set(variable_columns)
     ordered = [column for column in schema.names() if column in variable_set]
     try:
-        sample = streaming_collect(
-            target_lf.select(ordered).limit(_ROW_BYTE_SAMPLE_SIZE),
-            profile=ExecutionProfile.CHUNKED_MAP_REDUCE,
-        )
+        sample = streaming_collect(target_lf.select(ordered).limit(_ROW_BYTE_SAMPLE_SIZE))
     except Exception as exc:
         raise ChunkPlanUnsupportedError(
             "Byte-budgeted chunk planning could not sample variable-width target columns.",
@@ -831,10 +827,7 @@ def _source_projected_column_widths(
         if not columns:
             return widths
 
-        sample = streaming_collect(
-            lf.select(columns).limit(_ROW_BYTE_SAMPLE_SIZE),
-            profile=ExecutionProfile.CHUNKED_MAP_REDUCE,
-        )
+        sample = streaming_collect(lf.select(columns).limit(_ROW_BYTE_SAMPLE_SIZE))
     except Exception as exc:
         raise ChunkPlanUnsupportedError(
             "Byte-budgeted chunk planning could not inspect source schema.",
@@ -1104,7 +1097,6 @@ def iter_chunked_frames(request: ChunkRunnerRequest) -> Iterator[ChunkBatch]:
     funcs = _build_funcs(
         list(plan.node_ids),
         node_map,
-        parents_of,
         prepared.id_to_name,
         graph.parents_of,
         request.build_node_fn,
@@ -1140,9 +1132,6 @@ def iter_chunked_frames(request: ChunkRunnerRequest) -> Iterator[ChunkBatch]:
             context.checkpoint(label="chunk_runner_start")
         source_batches = bounded_collect_batches(
             source_lf,
-            profile=(
-                context.profile if context is not None else ExecutionProfile.CHUNKED_MAP_REDUCE
-            ),
             chunk_size=plan.source_chunk_size,
             maintain_order=True,
             execution_context=context,
@@ -1218,11 +1207,7 @@ def iter_chunked_frames(request: ChunkRunnerRequest) -> Iterator[ChunkBatch]:
             ):
                 frame = streaming_collect(
                     target_lf,
-                    profile=(
-                        context.profile
-                        if context is not None
-                        else ExecutionProfile.CHUNKED_MAP_REDUCE
-                    ),
+                    execution_context=context,
                 )
             checkpoint_path = _write_chunk_checkpoint(
                 frame,
@@ -1583,10 +1568,7 @@ def _row_local_stmt_is_supported(
 
 
 def _data_input_code(node: GraphNode) -> str:
-    return _strip_generated_boilerplate_from_code(
-        node.data.config.get("code") or "",
-        kind="data_input",
-    )
+    return str(node.data.config.get("code") or "").strip()
 
 
 def _validate_chunkable_input(node: GraphNode) -> None:

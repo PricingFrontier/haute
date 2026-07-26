@@ -103,7 +103,7 @@ class TestStreamingChunkRestoreExecutor:
             "haute.executor._execute_lazy",
             return_value=(mock_outputs, ["s", "sink"], {}, {}),
         ):
-            result = write_data_output(graph, "sink")
+            result = write_data_output(graph, "sink", project_root=tmp_path)
 
         assert result.status == "ok"
         assert result.row_count == 3
@@ -138,7 +138,7 @@ class TestStreamingChunkRestoreExecutor:
             "haute.executor._execute_lazy",
             return_value=(mock_outputs, ["s", "sink"], {}, {}),
         ):
-            result = write_data_output(graph, "sink")
+            result = write_data_output(graph, "sink", project_root=tmp_path)
 
         assert result.status == "ok"
 

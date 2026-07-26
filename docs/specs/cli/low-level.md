@@ -25,9 +25,11 @@ Every command uses a plain mutable `@dataclass` as a configuration value bag con
 - `RunConfig(pipeline_file: Path)` — `_run.py`.
 - `LintConfig(pipeline_file: Path)` — `_lint.py`.
 - `TrainConfig(training_script: Path)` — `_train.py`.
-- `ServeConfig(port, no_browser, host="127.0.0.1")` — `_serve.py`. The `host` default is on the
+- `ServeConfig(port, no_browser, host="localhost")` — `_serve.py`. The `host` default is on the
   dataclass itself (not just the Click option) so every non-CLI caller inherits the loopback-safe
-  default too.
+  default too. The browser-facing default deliberately uses the hostname rather than a numeric
+  loopback address because the local HttpOnly session-cookie flow must work in ordinary browsers
+  with a bare `haute serve`.
 - `DeployCliConfig(pipeline_file, model_name, endpoint_suffix, dry_run)` — `_deploy.py`. Distinct
   from `haute.deploy._config.DeployConfig`, which is the fully-resolved deploy configuration built
   from this plus `haute.toml`.
@@ -55,7 +57,7 @@ without validating required positional arguments.
 | `haute run [PIPELINE_FILE]` | Optional path; absent input uses `resolve_pipeline_file` project/discovery rules. | Missing/ambiguous file, parse failure, empty graph, executor failure, or any node result with non-`ok` status exits 1; success exits 0 after the optional final preview. |
 | `haute lint [PIPELINE_FILE]` | Optional path resolved exactly as `run`. | Missing/ambiguous file, parse failure, empty graph, or any collected structural issue exits 1; a clean graph exits 0. |
 | `haute train TRAINING_SCRIPT` | Required positional path. | Omission is a Click exit-2 usage error. Missing/unsafe/unloadable script, missing `job`, script exception, or `job.run` failure exits 1; successful training exits 0. |
-| `haute serve` | `--host TEXT` (CLI → `[server].host` → `127.0.0.1`); `--port INTEGER` (effective default `8000`, not shown by current help); `--no-browser`. Port range is not Click-validated: negative/out-of-range integers reach socket setup and may raise rawly. | Port conflict or missing production static build exits 1; malformed `haute.toml` propagates `ConfigError`. A browser-launch failure prints the manual URL but leaves the running server path intact. |
+| `haute serve` | `--host TEXT` (CLI → `[server].host` → `localhost`); `--port INTEGER` (effective default `8000`, not shown by current help); `--no-browser`. Port range is not Click-validated: negative/out-of-range integers reach socket setup and may raise rawly. | Port conflict or missing production static build exits 1; malformed `haute.toml` propagates `ConfigError`. A browser-launch failure prints the manual URL but leaves the running server path intact. |
 | `haute deploy [PIPELINE_FILE]` | Optional path; `--model-name TEXT`; `--dry-run`; `--endpoint-suffix TEXT`. | Non-dry-run outside recognised CI exits 1. Resolution, validation, either validation's quote pass or the separately printed quote pass, missing backend dependency, unimplemented target, and backend failure all exit 1. Dry-run success exits 0 before backend dispatch. |
 | `haute smoke` | `--endpoint-suffix TEXT`. | Missing config/quotes/endpoint, missing Databricks SDK, unsupported target, readiness timeout, health-request failure, or any scoring request failure exits 1. A successful request can currently pass with an empty prediction payload. |
 | `haute status [MODEL_NAME]` | Optional model name; `--version-only`. | Missing resolvable name or MLflow dependency exits 1. Normal mode prints “not found” and exits 0; `--version-only` prints only a version on success and raises `ClickException` (exit 1, stderr only) when no version exists. |
@@ -110,7 +112,8 @@ value before any startup side effect), `_configure_trusted_hosts` (clears any st
     build" — from an installed wheel — "reinstall haute") if not ready, schedules a delayed browser
     open, and runs plain `uvicorn.run(...)` with no autoreload.
   - Host resolution precedence (in the Click wrapper, before `ServeConfig` is built): `--host` flag
-    → `[server] host` in `haute.toml` (`_load_toml_server_host`) → `"127.0.0.1"`.
+    → `[server] host` in `haute.toml` (`_load_toml_server_host`) → `"localhost"`. Therefore plain
+    `haute serve` binds and opens `http://localhost:8000` without requiring project configuration.
 
 **`deploy`**: `handle_deploy` loads `DeployConfig` from `haute.toml` if present, else builds one from
 CLI args via `resolve_pipeline_file` + `DeployConfig.from_cli_args`. Blocks non-dry-run deploys

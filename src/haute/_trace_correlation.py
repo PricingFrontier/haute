@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal, InvalidOperation
 from enum import StrEnum
-from typing import Any, cast
+from typing import Any
 
 import polars as pl
 
@@ -115,37 +115,6 @@ def _jsonify_row(row: dict[str, Any]) -> dict[str, Any]:
     and JavaScript-unsafe integer values.
     """
     return {str(key): to_json_safe(value) for key, value in row.items()}
-
-
-def _legacy_trace_values_match(actual: Any, expected: Any) -> bool:
-    """Compare a DataFrame cell value against a JSON-serialized value from the frontend.
-
-    Handles type coercion (JSON ints ↔ Python floats, date strings, etc.)
-    and floating-point tolerance.
-    """
-    if actual == expected:
-        return True
-    if actual is None and expected is None:
-        return True
-    actual_non_finite = _value_non_finite_token(actual)
-    expected_non_finite = _value_non_finite_token(expected)
-    if actual_non_finite is not None or expected_non_finite is not None:
-        return actual_non_finite == expected_non_finite
-    if isinstance(actual, float) and isinstance(expected, (int, float)):
-        if math.isnan(actual):
-            return isinstance(expected, float) and math.isnan(expected)
-        return math.isclose(actual, float(expected), rel_tol=_TRACE_REL_TOL, abs_tol=_TRACE_ABS_TOL)
-    if isinstance(actual, int) and isinstance(expected, float):
-        return math.isclose(float(actual), expected, rel_tol=_TRACE_REL_TOL, abs_tol=_TRACE_ABS_TOL)
-    if isinstance(actual, int) and isinstance(expected, str):
-        return abs(actual) > MAX_SAFE_INTEGER and expected == str(actual)
-    # String coercion for dates/datetimes only
-    from datetime import date, datetime
-
-    if isinstance(actual, (date, datetime)) or isinstance(expected, (date, datetime)):
-        if str(actual) == str(expected):
-            return True
-    return False
 
 
 def _trace_values_match(actual: Any, expected: Any) -> bool:
@@ -269,63 +238,6 @@ def _compute_schema_diff(
 # ---------------------------------------------------------------------------
 # Post-hoc row correlation
 # ---------------------------------------------------------------------------
-
-
-def _legacy_build_value_match_expr(
-    column: str, value: Any, dtype: pl.DataType | None = None
-) -> pl.Expr:
-    """Build a Polars boolean expression matching one column to one trace value.
-
-    *dtype* is the column's Polars dtype.  It makes the predicate
-    dtype-robust: a numeric/NaN/Inf trace value compared against a column
-    of an incompatible dtype (e.g. a numeric value vs a ``Utf8`` column,
-    or ``is_nan`` against a non-float column) would otherwise raise a
-    ``ComputeError``/``InvalidOperationError`` at collect time and crash
-    the whole correlation.  With the dtype known, such comparisons
-    degrade to a non-matching predicate — preserving the documented
-    fail-soft ``(None, -1)`` — while genuine cross-type coercions
-    (int-like ``25`` matching a ``"25"`` string key) still go through a
-    stringwise compare.  When *dtype* is ``None`` the historical
-    behaviour is kept.
-    """
-    col_is_float = dtype in (pl.Float32, pl.Float64)
-    col_is_numeric = bool(dtype.is_numeric()) if dtype is not None else True
-    col_is_string = dtype in (pl.Utf8, pl.String)
-
-    # An always-false predicate that references the column, so it
-    # broadcasts to the frame's height (a bare ``pl.lit(False)`` is a
-    # length-1 literal and would not align with the other per-row
-    # predicates).
-    never_match = pl.col(column).is_null() & pl.lit(False)
-
-    non_finite = non_finite_float_token(value)
-    if non_finite in ("nan", "inf", "-inf"):
-        if dtype is not None and not col_is_float:
-            # A non-finite float value can never equal a non-float cell.
-            return never_match
-        if non_finite == "nan":
-            return pl.col(column).is_nan()
-        if non_finite == "inf":
-            return pl.col(column).is_infinite() & (pl.col(column) > 0)
-        return pl.col(column).is_infinite() & (pl.col(column) < 0)
-    if value is None:
-        return pl.col(column).is_null()
-    if isinstance(value, float) and math.isnan(value):
-        if dtype is not None and not col_is_float:
-            return never_match
-        return pl.col(column).is_nan()
-    if isinstance(value, str):
-        # Cast column to Utf8 so stringified dates/datetimes match.
-        return pl.col(column).cast(pl.Utf8) == value
-    if dtype is not None and not col_is_numeric:
-        # Numeric (or bool) value against a non-numeric column: comparing
-        # them directly raises.  A string column can still match an
-        # int-like key via a stringwise compare (mirrors the str-value
-        # branch); any other dtype degrades to a non-match.
-        if col_is_string:
-            return pl.col(column) == str(value)
-        return never_match
-    return cast(pl.Expr, pl.col(column) == value)
 
 
 _CANONICAL_INTEGER_RE = re.compile(r"-?(?:0|[1-9][0-9]*)\Z")
@@ -549,14 +461,6 @@ def _typed_value_match_expr(
         return pl.col(column) == literal, None
 
     return None, "unsupported_dtype"
-
-
-def _build_value_match_expr(column: str, value: Any, dtype: pl.DataType | None = None) -> pl.Expr:
-    """Compatibility expression wrapper over the typed V1 matcher."""
-    if dtype is None:
-        return pl.col(column) == pl.lit(value)
-    expression, _reason = _typed_value_match_expr(column, value, dtype)
-    return expression if expression is not None else _never_match_expr(column)
 
 
 def _candidate_payload(

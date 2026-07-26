@@ -246,7 +246,7 @@ class TestExecuteAndSinkProjection:
 
         sunk_frames: list[object] = []
 
-        def fake_safe_sink(frame, path, **kwargs):
+        def fake_bounded_sink(frame, path, **kwargs):
             sunk_frames.append(frame)
 
         def lazy_returns_target(*args, **kwargs):
@@ -258,7 +258,7 @@ class TestExecuteAndSinkProjection:
                 "haute.routes._train_service.execute_lazy_graph",
                 side_effect=lazy_returns_target,
             ),
-            patch("haute._polars_utils.bounded_sink", side_effect=fake_safe_sink),
+            patch("haute._polars_utils.bounded_sink", side_effect=fake_bounded_sink),
             patch("haute._polars_utils._malloc_trim"),
             p1,
             p2,
@@ -298,7 +298,7 @@ class TestExecuteAndSinkProjection:
         lf = pl.LazyFrame({"y": [1.0, 2.0], "x1": [0.1, 0.2]})
         sunk_frames: list[object] = []
 
-        def fake_safe_sink(frame, path, **kwargs):
+        def fake_bounded_sink(frame, path, **kwargs):
             sunk_frames.append(frame)
 
         def lazy_returns_target(*args, **kwargs):
@@ -310,7 +310,7 @@ class TestExecuteAndSinkProjection:
                 "haute.routes._train_service.execute_lazy_graph",
                 side_effect=lazy_returns_target,
             ),
-            patch("haute._polars_utils.bounded_sink", side_effect=fake_safe_sink),
+            patch("haute._polars_utils.bounded_sink", side_effect=fake_bounded_sink),
             patch("haute._polars_utils._malloc_trim"),
             p1,
             p2,
@@ -455,37 +455,6 @@ class TestStartGlmMergeAndKeepColumns:
         assert isinstance(observed["start_time"], float)
         assert observed["timeout"] == 17
 
-    def test_existing_train_param_not_overwritten_by_config_key(self):
-        """A key already in params is NOT clobbered by the top-level config value."""
-        from haute.routes._job_store import JobStore
-        from haute.schemas import TrainRequest
-
-        store = JobStore()
-        service = TrainService(store)
-        graph = self._glm_graph()
-        # Put `family` inside params too — it must win over the top-level key.
-        for node in graph.nodes:
-            if node.id == "train":
-                node.data.config["params"] = {"family": "gamma", "iterations": 3}
-        body = TrainRequest(graph=graph, node_id="train")
-
-        captured: dict[str, object] = {}
-
-        def fake_launch(job_id, node_id, config, train_params, *args, **kwargs):
-            captured["train_params"] = train_params
-
-        with (
-            patch.object(service, "_compile_preamble", return_value=None),
-            patch.object(service, "_estimate_ram", return_value=(None, None, 100, 3)),
-            patch.object(service, "_check_gpu_fallback", return_value=None),
-            patch.object(service, "_execute_and_sink", return_value="/tmp/fake.parquet"),
-            patch.object(service, "_launch_background", side_effect=fake_launch),
-        ):
-            service.start(body)
-
-        # params value is preserved; the branch at 272 evaluates k-in-train_params.
-        assert captured["train_params"]["family"] == "gamma"
-
     def test_failure_during_execute_marks_job_error_and_reraises(self):
         """An exception between job creation and launch must flip the job to error."""
         from haute.routes._job_store import JobStore
@@ -539,7 +508,7 @@ class TestExecuteAndSinkWithExecutionContext:
         lf = pl.LazyFrame({"y": [1.0, 2.0], "x1": [0.1, 0.2]})
         sunk_frames: list[object] = []
 
-        def fake_safe_sink(frame, path, **kwargs):
+        def fake_bounded_sink(frame, path, **kwargs):
             sunk_frames.append(frame)
 
         def lazy_returns_target(*args, **kwargs):
@@ -553,7 +522,7 @@ class TestExecuteAndSinkWithExecutionContext:
                 "haute.routes._train_service.execute_lazy_graph",
                 side_effect=lazy_returns_target,
             ),
-            patch("haute._polars_utils.bounded_sink", side_effect=fake_safe_sink),
+            patch("haute._polars_utils.bounded_sink", side_effect=fake_bounded_sink),
             patch("haute._polars_utils._malloc_trim"),
             p1,
             p2,

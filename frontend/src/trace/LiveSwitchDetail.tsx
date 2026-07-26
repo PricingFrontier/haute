@@ -16,10 +16,9 @@ export function LiveSwitchDetailBlock({ detail }: {
 }) {
   const valueStyle = traceDetailValueStyle
   const liveSwitch = detail
-  const activeBranch = liveSwitch.active_branch ?? liveSwitch.selected_branch
+  const activeBranch = liveSwitch.active_branch
   const activeScenario = liveSwitch.active_scenario
   const prunedBranches = Array.isArray(liveSwitch.pruned_branches) ? liveSwitch.pruned_branches : []
-  const availableBranches = Array.isArray(liveSwitch.available_branches) ? liveSwitch.available_branches : []
   return (
     <TraceDetailPanel
       title="Live Switch"
@@ -36,9 +35,6 @@ export function LiveSwitchDetailBlock({ detail }: {
     >
       {prunedBranches.length > 0 && (
         <div style={valueStyle}>Pruned branches: {prunedBranches.join(", ")}</div>
-      )}
-      {availableBranches.length > 0 && prunedBranches.length === 0 && (
-        <div style={valueStyle}>Available branches: {availableBranches.join(", ")}</div>
       )}
       {liveSwitch.error && (
         <TraceDetailAlert>

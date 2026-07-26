@@ -25,15 +25,15 @@ _TEST_LOCAL_SESSION_TOKEN = "pytest-haute-local-session-token"
 def _clear_trace_caches():
     """Invalidate the global trace and preview caches between tests.
 
-    The FingerprintCache is a module-level singleton.  Without clearing it,
+    The preview and trace caches are module-level singletons. Without clearing them,
     a prior test's cached DataFrames can bleed into the next test if they
     happen to share the same fingerprint (e.g., same node ids, same code).
     """
-    _trace_cache.invalidate()
-    _preview_cache.invalidate()
+    _trace_cache.clear()
+    _preview_cache.clear()
     yield
-    _trace_cache.invalidate()
-    _preview_cache.invalidate()
+    _trace_cache.clear()
+    _preview_cache.clear()
 
 
 @pytest.fixture(autouse=True)
@@ -43,26 +43,28 @@ def _local_session_auth_for_route_clients(monkeypatch: pytest.MonkeyPatch):
     from starlette.testclient import TestClient as StarletteTestClient
 
     from haute._local_security import (
+        SESSION_TOKEN_COOKIE,
         SESSION_TOKEN_ENV,
-        SESSION_TOKEN_HEADER,
         local_session_token,
     )
 
     monkeypatch.setenv(SESSION_TOKEN_ENV, _TEST_LOCAL_SESSION_TOKEN)
 
-    def headers_with_session_token(headers) -> httpx.Headers:
+    def headers_with_session_cookie(headers) -> httpx.Headers:
         merged = httpx.Headers(headers or {})
         if "host" not in merged:
             merged["host"] = "localhost"
-        if SESSION_TOKEN_HEADER not in merged:
-            merged[SESSION_TOKEN_HEADER] = local_session_token()
+        cookie = merged.get("cookie", "")
+        if f"{SESSION_TOKEN_COOKIE}=" not in cookie:
+            session_cookie = f"{SESSION_TOKEN_COOKIE}={local_session_token()}"
+            merged["cookie"] = f"{cookie}; {session_cookie}" if cookie else session_cookie
         return merged
 
     original_test_client_init = StarletteTestClient.__init__
 
     def test_client_init_with_session_token(self, *args, **kwargs):
         kwargs.setdefault("base_url", "http://localhost")
-        kwargs["headers"] = headers_with_session_token(kwargs.get("headers"))
+        kwargs["headers"] = headers_with_session_cookie(kwargs.get("headers"))
         return original_test_client_init(self, *args, **kwargs)
 
     monkeypatch.setattr(StarletteTestClient, "__init__", test_client_init_with_session_token)
@@ -73,7 +75,7 @@ def _local_session_auth_for_route_clients(monkeypatch: pytest.MonkeyPatch):
         if isinstance(kwargs.get("transport"), httpx.ASGITransport):
             if str(kwargs.get("base_url", "")).rstrip("/") == "http://testserver":
                 kwargs["base_url"] = "http://localhost"
-            kwargs["headers"] = headers_with_session_token(kwargs.get("headers"))
+            kwargs["headers"] = headers_with_session_cookie(kwargs.get("headers"))
         return original_async_client_init(self, *args, **kwargs)
 
     monkeypatch.setattr(httpx.AsyncClient, "__init__", async_client_init_with_session_token)
@@ -166,9 +168,9 @@ def _clear_git_content_caches():
 def _clear_dual_cache_session():
     """Reset the dual-cache consulted-hashes set between tests.
 
-    The set is module-level in ``haute._json_flatten`` — once a test calls
-    ``build_json_cache`` or ``read_json_flat`` for a data file, the hash
-    persists across subsequent tests in the same process. That would let
+    The set is module-level in ``haute._json_flatten`` — once a test builds
+    a per-port JSON cache for a data file, the hash persists across subsequent
+    tests in the same process. That would let
     one test's working-layer state spill into another's emitter precedence
     check, masking regressions or producing flaky failures. Clearing
     before AND after each test gives the same per-process isolation the
@@ -352,13 +354,11 @@ def make_transform_node(nid: str, code: str = "") -> GraphNode:
 
 
 def make_output_config(fields: list[str], *, source_port: str = "in") -> dict:
-    """Build a v2 OUTPUT node config (``outputMapping``) from a flat field list.
+    """Build an OUTPUT node config from a flat field list.
 
     Each field maps to a top-level array-element path (``$[:].<field>``), so the
-    assembled document is a flat array-of-rows — the behavioural equivalent of
-    the retired v1 ``fields`` passthrough. ``source_port`` defaults to a
-    placeholder that the single-parent fallback in ``_build_output`` resolves to
-    the sole incoming frame; projection-only tests never read it.
+    assembled document is a flat array of rows. ``source_port`` defaults to the
+    placeholder used by single-parent test graphs.
     """
     return {
         "outputMapping": [
@@ -375,7 +375,7 @@ def make_output_config(fields: list[str], *, source_port: str = "in") -> dict:
 
 
 def make_output_node(nid: str, fields: list[str] | None = None) -> GraphNode:
-    """Build a minimal output node (v2 ``outputMapping``)."""
+    """Build a minimal output node."""
     return GraphNode(
         id=nid,
         data=NodeData(label=nid, nodeType="output", config=make_output_config(fields or [])),

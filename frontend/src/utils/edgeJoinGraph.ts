@@ -318,7 +318,7 @@ function rewriteDownstreamEdgeJoinNode(
     return { ...node, selected: false }
   }
   const config = { ...(node.data.config as Record<string, unknown> | undefined) }
-  const roleKey = edgeJoinRoleConfigKey(targetEdge.targetHandle) ?? roleKeyFromConfig(config, targetEdge.source)
+  const roleKey = edgeJoinRoleConfigKey(targetEdge.targetHandle)
   if (!roleKey) return { ...node, selected: false }
 
   return {
@@ -366,19 +366,6 @@ function rewriteDownstreamInputsByParentContract(
       },
     },
   }
-}
-
-function roleKeyFromConfig(
-  config: Record<string, unknown>,
-  sourceId: string,
-): typeof EDGE_JOIN_BASE_CONFIG_KEY | typeof EDGE_JOIN_JOIN_CONFIG_KEY | null {
-  if (config[EDGE_JOIN_BASE_CONFIG_KEY] === sourceId && config[EDGE_JOIN_JOIN_CONFIG_KEY] !== sourceId) {
-    return EDGE_JOIN_BASE_CONFIG_KEY
-  }
-  if (config[EDGE_JOIN_JOIN_CONFIG_KEY] === sourceId && config[EDGE_JOIN_BASE_CONFIG_KEY] !== sourceId) {
-    return EDGE_JOIN_JOIN_CONFIG_KEY
-  }
-  return null
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

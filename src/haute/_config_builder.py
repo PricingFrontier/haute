@@ -44,7 +44,7 @@ __all__ = [
     "_sidecar_required_error",
 ]
 
-logger = get_logger(component="parser_helpers.config")
+logger = get_logger(component="parser.config_builder")
 
 
 def _copy_config_keys(
@@ -74,12 +74,8 @@ def _build_node_config(
     config: dict[str, Any] = {}
     if node_type == NodeType.API_INPUT:
         config["path"] = decorator_kwargs.get("path", "")
-        # v2 apiInput surface: `tables[]` is the schema mapping (in the
-        # sidecar JSON, typically loaded by ``_resolve_node_config``).
-        # `row_id_column` is now per-table inside `tables[]`. The
-        # v1 dtype keys (`schema_overrides`, `dtypes`, `column_dtypes`,
-        # `schema`) are deleted with the v1 codec — do NOT copy them
-        # into config (they'd otherwise warn at validation time).
+        # `tables[]` is the schema mapping, typically loaded from the sidecar
+        # by ``_resolve_node_config``; `row_id_column` belongs to each table.
         if isinstance(decorator_kwargs.get("tables"), list):
             config["tables"] = decorator_kwargs["tables"]
         if isinstance(decorator_kwargs.get("contract"), str):
@@ -106,7 +102,7 @@ def _build_node_config(
                 {
                     "banding": f.get("banding", "continuous"),
                     "column": f.get("column", ""),
-                    "outputColumn": f.get("output_column", f.get("outputColumn", "")),
+                    "outputColumn": f.get("output_column", ""),
                     "rules": f.get("rules", []),
                     "default": f.get("default"),
                 }
@@ -124,40 +120,26 @@ def _build_node_config(
                 }
             ]
     elif node_type == NodeType.RATING_STEP:
-        if "tables" in decorator_kwargs:
-            raw_tables = decorator_kwargs["tables"]
-            config["tables"] = [
-                {
-                    "name": t.get("name", ""),
-                    "factors": t.get("factors", []),
-                    "outputColumn": t.get("output_column", t.get("outputColumn", "")),
-                    "defaultValue": t.get("default_value", t.get("defaultValue")),
-                    "entries": t.get("entries", []),
-                }
-                for t in (raw_tables if isinstance(raw_tables, list) else [])
-            ]
-        else:
-            config["tables"] = []
-        for t in config["tables"]:
-            if not isinstance(t.get("entries"), list):
-                t["entries"] = []
-            if not isinstance(t.get("factors"), list):
-                t["factors"] = []
-        op = decorator_kwargs.get("operation", decorator_kwargs.get("op"))
-        if op:
-            config["operation"] = str(op)
-        combined = decorator_kwargs.get(
-            "combined_column",
-            decorator_kwargs.get("combinedColumn"),
-        )
-        if combined:
-            config["combinedColumn"] = str(combined)
-        combined_outputs = decorator_kwargs.get(
-            "combined_outputs",
-            decorator_kwargs.get("combinedOutputs"),
-        )
+        config["tables"] = [
+            {
+                "factors": table.get("factors", []),
+                "outputColumn": table.get("output_column", ""),
+                "defaultValue": table.get("default_value"),
+                "entries": table.get("entries", []),
+            }
+            for table in decorator_kwargs.get("tables", [])
+        ]
+
+        combined_outputs = decorator_kwargs.get("combined_outputs")
         if combined_outputs is not None:
-            config["combinedOutputs"] = combined_outputs
+            config["combinedOutputs"] = [
+                {
+                    "outputColumn": output.get("output_column", ""),
+                    "operation": output.get("operation", "multiply"),
+                    "baseValue": output.get("base_value"),
+                }
+                for output in combined_outputs
+            ]
         config["code"] = _extract_rating_step_user_code(body, param_names) if body else ""
     elif node_type == NodeType.SCENARIO_EXPANDER:
         _copy_config_keys(config, decorator_kwargs, SCENARIO_EXPANDER_CONFIG_KEYS)
@@ -177,11 +159,16 @@ def _build_node_config(
             {"name": v.get("name", ""), "value": str(v.get("value", ""))}
             for v in (raw_values if isinstance(raw_values, list) else [])
         ]
-    elif node_type in (NodeType.DATA_INPUT, NodeType.DATA_OUTPUT):
+    elif node_type in (
+        NodeType.DATA_INPUT,
+        NodeType.DATA_OUTPUT,
+        NodeType.EXTERNAL_FILE,
+        NodeType.OUTPUT,
+    ):
         # Config-folder nodes: format/mode/source fields/arguments live in the
         # JSON sidecar loaded via config= *before* this builder runs, so this
         # branch is unreachable on the healthy path (the caller raises
-        # ConfigError for a data_input/data_output without config=). Kept
+        # ConfigError when the sidecar is absent). Kept
         # explicit so a stray inline decorator can't fall to the transform
         # branch and pick up a `code` config.
         pass
@@ -196,20 +183,6 @@ def _build_node_config(
             )
             if overview:
                 config["overview"] = dict(overview)
-    elif node_type == NodeType.EXTERNAL_FILE:
-        config["path"] = decorator_kwargs.get("path", decorator_kwargs.get("external", ""))
-        config["fileType"] = decorator_kwargs.get("file_type", "pickle")
-        if config["fileType"] == "catboost":
-            config["modelClass"] = decorator_kwargs.get("model_class", "classifier")
-        config["code"] = _extract_external_user_code(body, param_names) if body else ""
-    elif node_type == NodeType.OUTPUT:
-        # OUTPUT is a config-folder node: its v2 outputMapping lives in a JSON
-        # sidecar loaded via config= *before* this builder runs, so this branch
-        # is unreachable (the caller raises ConfigError for an OUTPUT without
-        # config=). Kept explicit — and emptied of the legacy v1 `fields` read —
-        # so a stray inline OUTPUT decorator can't silently fall to the
-        # transform branch and pick up a `code` config.
-        pass
     else:
         # transform
         config["code"] = _extract_user_code(body, param_names) if body else ""
@@ -218,9 +191,7 @@ def _build_node_config(
         if "categorical_levels" in decorator_kwargs:
             config["categorical_levels"] = decorator_kwargs["categorical_levels"]
     # Instance reference (works for any node type)
-    if "instance_of" in decorator_kwargs:
-        config["instanceOf"] = decorator_kwargs["instance_of"]
-    elif "of" in decorator_kwargs:
+    if "of" in decorator_kwargs:
         config["instanceOf"] = decorator_kwargs["of"]
     return config
 

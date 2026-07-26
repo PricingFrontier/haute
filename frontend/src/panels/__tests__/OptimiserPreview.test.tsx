@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest"
 import { render, screen, fireEvent, cleanup, waitFor } from "@testing-library/react"
 import OptimiserPreview from "../OptimiserPreview"
-import type { OptimiserPreviewData, SolveResult, FrontierData } from "../OptimiserPreview"
+import type { OptimiserPreviewData, FrontierData } from "../OptimiserPreview"
+import type { OptimiserSolveResult } from "../../api/types"
 
 // ── Mocks ────────────────────────────────────────────────────────
 
@@ -47,7 +48,9 @@ vi.mock("../../stores/useSettingsStore", () => ({
 
 // ── Helpers ──────────────────────────────────────────────────────
 
-function makeSolveResult(overrides: Partial<SolveResult> = {}): SolveResult {
+function makeSolveResult(
+  overrides: Partial<OptimiserSolveResult> = {},
+): OptimiserSolveResult {
   return {
     total_objective: 1234567,
     baseline_objective: 1200000,

@@ -23,10 +23,9 @@ In scope:
   fill and a loud/quiet miss policy.
 - Combining multiple rating-table outputs (and an optional numeric base value)
   with `multiply` / `add` / `min` / `max`.
-- Config normalisation: rating-table entries persist in one canonical ordered
-  row-array shape; legacy nested factor-value maps remain readable and are
-  migrated to that shape on the next save. Categorical and breakpoints banding
-  rules retain their compact key/value-map sidecar shape.
+- Config normalisation: rating-table entries persist only in one canonical
+  ordered row-array shape. Categorical and breakpoints banding rules retain
+  their compact key/value-map sidecar shape.
 - The dtype-faithful canonical string form of a rating-table factor key
   (`normalise_rating_key(value, dtype)`) and its Polars-expression twin, shared
   with trace enrichment and the optimiser's ratebook save/apply path so every
@@ -151,9 +150,8 @@ Out of scope (owned by neighbouring components):
 - **Lossless canonical rating sidecars.** Rating-table entries persist as
   ordered row arrays rather than JSON object-key maps. JSON object keys erase
   the distinction between values such as numeric `25.0` and the string label
-  `"25.0"`, so the old nested shape cannot be a lossless canonical format.
-  Legacy nested maps are accepted on read, traversed in deterministic key order,
-  and written back as row arrays. Table order, factor order, entry order,
+  `"25.0"`, so nested maps are not a lossless canonical format. Table order,
+  factor order, entry order,
   scalar identity, outputs, defaults, miss policy, and optional
   `factorDtypes` metadata survive a canonical save/load round trip.
 - **Deduplicate before joining, not after.** A rating table's factor keys are
@@ -188,8 +186,8 @@ Out of scope (owned by neighbouring components):
   `_combine_rating_columns` to apply a saved ratebook as a rating lookup.
 - **[pipeline-config](../pipeline-config/high-level.md)** — `_config_io.py`
   routes `BANDING`/`RATING_STEP` sidecar JSON through
-  `expand_banding_config_from_sidecar` / `expand_rating_step_config_from_sidecar`
-  on load and the `compact_*_for_sidecar` counterparts on save.
+  `expand_banding_config_from_sidecar` and `normalise_rating_step_config`
+  on load. Rating-step sidecars use the same canonical normaliser on save.
 - **[codegen](../codegen/high-level.md)** — emits `apply_banding_from_config(...)`
   / `apply_rating_step_from_config(...)` calls into generated standalone
   pipeline scripts, and `_code_extraction.py` locates the boundary between
@@ -281,10 +279,9 @@ The completed rating improvements and their evidence are tracked in the
   serializer does not infer Float64 from widened Python values and does not use
   a candidate/minimum-collapse heuristic to guess which counted key a solver
   label represents.
-- Rating sidecars write ordered entry rows as their only canonical shape.
-  Legacy nested maps are read-only compatibility input. Canonical output is
-  deterministic, and a failed validation occurs before staging a write so the
-  prior sidecar remains byte-for-byte untouched.
+- Rating sidecars write and read ordered entry rows as their only canonical
+  shape. Canonical output is deterministic, and a failed validation occurs
+  before staging a write so the prior sidecar remains byte-for-byte untouched.
 - Optimising the miss guard (FR22) is conditional on a representative benchmark
   showing both at least 20% lookup-time overhead and at least 10 ms absolute
   overhead at 100,000 or more rows in at least two repeated workload cells.
@@ -304,3 +301,23 @@ that all-null extrema and absent factors now fail loudly and name their exceptio
 contracts. Non-goals: changing documented neutral-miss semantics, coercing a
 mismatched saved ratebook dtype at apply, or implementing a speculative
 miss-guard optimisation without benchmark evidence.
+
+## Approved change contract — prerelease canonical rating configuration
+
+This contract implements
+[ROAD-CANON-01](../../roadmap/engineering-quality.md#road-canon-01--prerelease-canonical-only-contract).
+
+- A rating table has one persisted entry representation: an ordered list of row objects. Each row
+  contains every named factor and the rating under the literal `value` key. The implementation
+  contains no nested-map reader, traversal, compactor, or output-column value alias.
+- A rating step has one combined-output representation: `combinedOutputs`, whose entries require
+  `outputColumn`, a supported `operation`, and finite `baseValue`. No singular-field reader,
+  `_legacy` working entry, merge, fallback base, or single-column skip exists.
+- The Python decorator uses `combined_outputs`, `output_column`, and `default_value`; graph and
+  sidecar JSON use `combinedOutputs`, `outputColumn`, and `defaultValue`. Camel-case decorator
+  aliases and singular combined-output arguments are not alternate formats.
+- Opening, parsing, executing, tracing, or regenerating a rating step never upgrades obsolete
+  input. Canonical empty drafts retain their documented editor/runtime semantics.
+
+Focused backend and frontend suites delete migration assertions and prove canonical
+parse/save/codegen/runtime round trips using only the surviving fields.

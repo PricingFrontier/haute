@@ -4,11 +4,7 @@
  * Mirrors `src/haute/_api_input_schema.py` on the backend. Identifies
  * v2-shape configs and exposes typed access to the tables/columns.
  *
- * v1 configs on disk are treated as **empty** at runtime — there is no
- * migration codec in the editor any more. The user opens the editor
- * against a v1 file, sees the empty v2 surface, clicks Infer Tables,
- * and saves. The v1 keys silently fall off when the strict v2 contract
- * serialises (see backend Pydantic config model).
+ * Fresh configs without tables use the empty editor state.
  */
 import { frameSegments, parseColumnPathFull, segmentPrefix } from "./jsonpath"
 
@@ -31,8 +27,7 @@ export interface ApiInputColumnV2 {
   status: ColumnStatus
   selected: boolean
   levels?: (string | null)[] | null
-  /** Originating dimension (see {@link ColumnOrigin}). Optional on disk for
-   * back-compat; `readV2` derives it from the path when absent. */
+  /** Originating dimension (see {@link ColumnOrigin}). */
   origin?: ColumnOrigin
   /** True once this field has been used as a key — added or sourced through
    * cascade / inherit / add-keys (ruled 2026-07-09). Editor metadata like
@@ -53,14 +48,6 @@ export interface ApiInputConfigV2 {
   path?: string
   contract?: string
   tables: ApiInputTableV2[]
-  // Bundle 1 sanitisation: `removedTables` was specified as an
-  // editor-side ledger of deleted table labels but never wired
-  // (inferTables clobbers `tables` directly). User deletion of
-  // tables MUST NOT permanently alter Infer Tables behaviour, so the
-  // field is dropped here, in writeV2 (not emitted), in readV2 (not
-  // surfaced), and in the Python TypedDicts. Legacy on-disk configs
-  // carrying it are silently ignored on read. Contract:
-  // frontend/src/__tests__/editors/apiInputSchemaSanitisation.test.ts.
 }
 
 /** Tagged-union classification — only v2 and empty kinds. */
@@ -83,9 +70,8 @@ const ALLOWED_ORIGINS: ReadonlySet<ColumnOrigin> = new Set([
 ] as const)
 
 /**
- * Derive a column's origin from its path relative to its frame, used when the
- * persisted config carries no `origin` (back-compat, or a save that dropped the
- * field): a column whose locating is a *proper-ancestor* prefix of the frame is
+ * Derive a column's origin from its path relative to its frame when inference
+ * has not assigned one: a column whose locating is a *proper-ancestor* prefix of the frame is
  * a broadcast column (`"inherited"`); anything at the frame's own level defaults
  * to `"inferred"` (a hand-entered `"manual"` column is only known when its
  * `origin` was persisted). Defensive — a malformed path yields `"inferred"`.
@@ -105,9 +91,6 @@ function deriveOrigin(columnPath: string, framePath: string): ColumnOrigin {
 
 /**
  * v2 shape iff `tables` is a non-empty (or at least present) array.
- * Stray legacy keys alongside (`flattenSchema`, `column_renames`, …)
- * are tolerated silently — the runtime reads only the v2 surface, and
- * a strict v2 serialiser at save time drops unknown keys.
  */
 export function isV2Shape(config: Record<string, unknown> | undefined | null): boolean {
   if (!config) return false
@@ -117,9 +100,7 @@ export function isV2Shape(config: Record<string, unknown> | undefined | null): b
 /**
  * Classify a config for the editor: v2 or empty.
  *
- * Anything without a `tables[]` array — including v1 configs that only
- * have `flattenSchema` — is treated as empty. The editor renders the
- * v2 surface and the user clicks Infer Tables.
+ * Anything without a `tables[]` array is a fresh empty editor state.
  */
 export function classifyConfig(
   config: Record<string, unknown> | undefined | null,
@@ -257,15 +238,12 @@ export function readV2(
       ? ((config as { contract: string }).contract)
       : "opaque",
     tables,
-    // Sanitisation contract: any `removedTables` in the raw input is
-    // silently dropped here (no surface, no error). See the comment on
-    // ApiInputConfigV2 above for the full rationale.
   }
 }
 
 /** Serialise a v2 config back into the raw shape persisted to disk. */
 export function writeV2(v2: ApiInputConfigV2): Record<string, unknown> {
-  const out: Record<string, unknown> = {
+  return {
     path: v2.path ?? "",
     contract: v2.contract ?? "opaque",
     tables: v2.tables.map((t) => ({
@@ -286,10 +264,6 @@ export function writeV2(v2: ApiInputConfigV2): Record<string, unknown> {
       })),
     })),
   }
-  // Sanitisation contract: `removedTables` is never emitted, even if
-  // some upstream caller smuggled it in via an unsafe cast. See the
-  // comment on ApiInputConfigV2 above for the full rationale.
-  return out
 }
 
 /** Empty v2 config — used when the editor opens against a brand-new apiInput. */

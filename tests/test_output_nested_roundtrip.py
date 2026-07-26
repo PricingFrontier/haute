@@ -143,13 +143,13 @@ def project_with_data(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.chdir(tmp_path)
     original = _get_project_root()
     set_project_root(tmp_path)
-    _preview_cache.invalidate()
+    _preview_cache.clear()
     data_path = tmp_path / "data" / "data_model_example.json"
     data_path.parent.mkdir(parents=True, exist_ok=True)
     data_path.write_text(_FIXTURE.read_text())
     yield tmp_path, data_path
     set_project_root(original)
-    _preview_cache.invalidate()
+    _preview_cache.clear()
 
 
 def _roundtrip_graph(config: dict[str, Any]) -> PipelineGraph:

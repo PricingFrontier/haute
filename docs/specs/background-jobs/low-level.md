@@ -18,6 +18,10 @@
 - **`JobStore`** — wraps `_jobs: dict[str, dict[str, Any]]` plus `_running_activity_at:
   dict[str, float]` (per-job last-active timestamp, used only while `status ==
   "running"`), guarded by a single `_write_lock: threading.RLock`. Invariant: every
+  inserted job has a numeric `created_at`; a completed job with retained heavy objects has
+  a numeric `completed_at`; and every value in optional `artifact_handles` is a current
+  typed handle dict. Internal consumers access those required fields directly and do not
+  support missing-timestamp or malformed-handle record variants. Every
   store mutation method replaces the job's dict object wholesale
   (`_store_merged_job_locked`) — never mutates an existing dict in place — so a reader's
   previous reference is never torn by those methods.
@@ -507,8 +511,7 @@ outer `BaseException` boundary:
    `SupervisorInfrastructureError` on the thread and log it with the original outcome.
 
 An unexpected parent-side exception is recorded as `error` with the generic message
-`Unexpected isolated worker supervisor failure.` and both `worker_error_class` and
-`supervisor_error_class`. The original exception is re-raised only after terminal persistence
+`Unexpected isolated worker supervisor failure.` and `supervisor_error_class`. The original exception is re-raised only after terminal persistence
 succeeds, so the thread exception hook retains diagnostic visibility without leaking internal
 details into the job response or misclassifying the exception as a persistence failure. Typed
 worker failures retain their existing `worker_error_class`, remote type/traceback, exit code, and
@@ -550,24 +553,31 @@ tests assert that no production source path subscripts `JobStore.jobs`.
 
 ## Approved execution-housekeeping contract
 
-- `src/haute/_artifact_housekeeping.py` owns marker creation and startup reaping. The marker file
+- `src/haute/_artifact_housekeeping.py` owns marker creation and restart reaping. The marker file
   is `.haute-artifact.json` with integer `schema_version=1`, non-empty `owner`, and finite,
   non-negative `created_at` epoch seconds.
   `create_owned_artifact_directory(root, prefix, owner)` creates a
-  direct child under a non-symlink root from a single-component prefix and writes the marker before
-  returning; validation or marker-write failure removes any new child and propagates.
+  direct child under a non-link, non-reparse root from a single-component prefix and writes the
+  marker before returning; validation or marker-write failure removes any new child and
+  propagates.
 - `reap_stale_artifact_directories(root, owner, stale_after_seconds, now=None)` inspects direct
-  children only. It skips the root itself, symlinks, non-direct paths, unmarked children, invalid
-  JSON/schema/time values, owner mismatches, and entries newer than the inclusive stale cutoff. It
-  returns bounded counts and reclaimed bytes; its age inputs must be finite, non-negative numeric
-  values, and cleanup failures are counted and logged without causing a broader unmarked sweep.
+  children only. It skips the root itself, symlinks, Windows reparse points (including junctions),
+  non-direct paths, unmarked children, invalid JSON/schema/time values, owner mismatches, and
+  entries newer than the inclusive stale cutoff. Direct-child classification uses non-following
+  entry metadata plus the resolved parent; it does not resolve the child target itself, because
+  Windows can deny that handle for an otherwise ordinary direct child. It returns bounded counts
+  and reclaimed bytes; its age inputs must be finite, non-negative numeric values. Metadata and
+  cleanup failures are isolated to the affected root or child, counted, and logged as concise
+  structured warnings without exception tracebacks or a broader unmarked sweep.
 - `_optimiser_service.py` creates apply-result and ratebook-factor artifact directories through
-  this helper. `reap_stale_optimiser_artifacts()` targets only
-  `_apply_artifact_root()` and `_ratebook_factors_artifact_root()`. `server._lifespan` calls it
-  once at startup through `asyncio.to_thread` and logs its bounded per-root report, so directory
-  traversal, recursive reclaimed-byte sizing, and deletion do not block the server event loop.
-  `HAUTE_ARTIFACT_STALE_SECONDS` is parsed strictly as a non-negative integer and defaults to
-  86,400 seconds.
+  this helper. Marker-aware artifacts live below the
+  `<tempdir>/haute/artifacts/v1/` hierarchy. `reap_stale_optimiser_artifacts(stale_after_seconds)`
+  requires the validated interval and targets only
+  `_apply_artifact_root()` and `_ratebook_factors_artifact_root()`. `server._lifespan` validates
+  `HAUTE_ARTIFACT_STALE_SECONDS` synchronously, then schedules one tracked
+  `asyncio.to_thread` reaper without awaiting it before readiness. The variable is parsed strictly
+  as a non-negative integer and defaults to 86,400 seconds. Shutdown observes the task, and an
+  unexpected reaper failure is logged.
 - `IsolatedJobSupervisor.launch` catches an unexpected exception escaping the parent-side
   isolation helper, transitions the job to `error` with the bounded generic message plus
   `worker_error_class` and `supervisor_error_class`, then re-raises only after the terminal write

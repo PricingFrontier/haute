@@ -126,22 +126,13 @@ Out of scope (owned by neighbouring components, linked where they exist):
   identifier label — **from one frame up**: the handle id is always the
   frame's raw label, a sole frame included, so every edge an API-input
   creates names the frame it delivers and there is no null-id single-frame
-  mode. Only a node with zero eligible frames (nothing emitted yet, or a
-  backend-invalid config whose labels are all invalid) renders the legacy
-  default null-id handle alongside the zero-frame body — and that handle is
-  **not connectable in either direction** (`isConnectable` false — start
-  AND end, since `ConnectionMode.Loose` normalises reverse target→source
-  drags into ordinary edges), and the graph-level `isValidConnection`
-  validator independently rejects any API-input connection with a null
-  handle, covering every gesture path: a source that emits nothing cannot
-  be wired, so a persisted API-input edge always names a frame.
-  Reconciliation enforces the same rule from the other side: a null-handle
-  API-input edge (only reachable through a hand-edited file) is pruned with
-  the standard warning toast, never kept. At the full zoom
+  mode. A node with zero eligible frames renders no source handle, so a
+  source that emits nothing cannot be wired and every persisted API-input
+  edge names a frame. At the full zoom
   level the labelled handles are mounted on the body's frame rows, so each
   dot sits at the vertical centre of the row naming its frame; at
-  medium/compact zoom, where no frame rows render, the same handles fall
-  back to even spacing down the right edge. The handle id set is identical
+  medium/compact zoom, where no frame rows render, the same handles are
+  evenly spaced down the right edge. The handle id set is identical
   at every zoom level, so edges stay bound across zoom changes.
 - **API-input body.** At full detail, an API-input node with at least one
   eligible emitted frame uses its body as the frame list: each visible
@@ -180,8 +171,7 @@ Out of scope (owned by neighbouring components, linked where they exist):
   `setPreambleRaw`) that skip history — used for mid-drag position churn,
   WebSocket sync, pipeline load, and the continuously edited imports
   preamble. History snapshots carry `submodels` alongside nodes/edges/
-  preamble, and undo/redo restores all four together (older snapshots
-  without the field restore an empty metadata map).
+  preamble, and undo/redo restores all four together.
 - **Authored boundary ports survive the client.** `PipelineEdge` extends the React Flow edge shape
   with optional `sourcePort`/`targetPort` fields used while a submodel placeholder occupies the
   visible handle. Response parsing, edge normalisation, graph snapshots, and save payloads retain

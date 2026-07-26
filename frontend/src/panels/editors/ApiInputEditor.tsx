@@ -14,7 +14,6 @@ import { CacheFetchButton } from "../../components/CacheFetchButton"
 import { FrameTableActions } from "./FrameTableActions"
 import {
   buildJsonCache,
-  cancelJsonCache,
   getJsonCacheProgress,
   getJsonCacheStatus,
   getJsonCacheStatusForSchema,
@@ -33,7 +32,6 @@ import {
   type ColumnType,
 } from "./apiInputSchema"
 import { validateInputColumnPath, validateInputTablePath } from "./jsonpath"
-import { nonCanonicalHint, nonCanonicalNote } from "./pathCanonicalWarning"
 import {
   buildAllKeyGroups,
   buildInheritGroups,
@@ -67,8 +65,7 @@ import Tooltip from "../../components/Tooltip"
 // (working principle 4: volatile vs persistent at the schema plane
 // mirrors PR13's data plane). When the editor has nothing to cache
 // (no schema source, or no emit:true tables) the button is rendered
-// `disabled` rather than firing a no-op POST — T9/T10 in the v1-removal
-// contract.
+// `disabled` rather than firing a no-op POST.
 
 type JsonCacheStatus = {
   cached: boolean
@@ -130,7 +127,6 @@ function JsonCacheButton({
       }
       getProgress={(_key) => getJsonCacheProgress(dataPath)}
       deleteCache={(_key) => deleteJsonCache(dataPath) as Promise<JsonCacheStatus>}
-      cancelFetch={(_key) => cancelJsonCache(dataPath)}
       timestampField="cached_at"
       labels={{
         fetchLabel: "Cache as Parquet",
@@ -158,10 +154,7 @@ export default function ApiInputEditor({
   onUpdate: OnUpdateConfig
   accentColor: string
   /** Pipeline-relative path to the on-disk schema mapping file (e.g.
-   * `rating/config/quote_input/quotes.json`). Passed through to the
-   * cache button so the backend can dispatch v2 vs v1 by inspecting
-   * the file's shape. The parent NodePanel computes this from the
-   * node's id + nodeType. */
+   * `rating/config/quote_input/quotes.json`). */
   configPath?: string
 }) {
   const currentPath = configField<string | undefined>(config, "path", undefined)
@@ -192,11 +185,8 @@ export default function ApiInputEditor({
     | null
   >(null)
 
-  // Classify the config. v2 → render the schema editor with its
-  // tables. empty (including any pre-v2 config with stray legacy keys)
-  // → render a bare v2 surface the user populates via Infer Tables /
-  // Add Table. No migration banner — v1 is treated as if it doesn't
-  // exist (working principle 1).
+  // Classify the config. v2 renders its tables; a fresh empty config
+  // renders a bare surface populated via Infer Tables / Add Table.
   const shape = useMemo(() => classifyConfig(config), [config])
   const v2: ApiInputConfigV2 =
     shape.kind === "v2" ? shape.v2 : emptyV2(currentPath)
@@ -228,10 +218,7 @@ export default function ApiInputEditor({
     const raw = writeV2(next)
     // Use a single batched update so NodePanel only fires one
     // handleConfigUpdate (per the existing OnUpdateConfig contract).
-    const result = onUpdate(raw)
-    // Existing editor-only callers may still use a bare spy while the
-    // production contract is compile-time required to return a result.
-    const commitResult: OnUpdateConfigResult = result ?? { ok: true }
+    const commitResult = onUpdate(raw)
     if (commitResult.ok) setLabelCommitErrors({})
     return commitResult
   }
@@ -724,7 +711,7 @@ export default function ApiInputEditor({
           <span>This node receives live API requests at deploy time</span>
         </div>
 
-        {/* File picker — unchanged from v1 */}
+        {/* File picker */}
         <div>
           <label
             className="text-[11px] font-bold uppercase tracking-[0.08em] mb-1.5 block"
@@ -968,7 +955,7 @@ export default function ApiInputEditor({
 
       {/* Raw source-file schema (top-level columns — e.g. `Struct(...)` /
           `List(...)` for nested fields). This is the un-shredded root, which
-          only makes sense as a bootstrap source peek for a fresh/legacy node.
+          only makes sense as a bootstrap source peek for a fresh node.
           Once the config is v2 (has tables[]), the per-frame tables editor
           ABOVE is the schema view; the raw root schema is redundant and
           misleading for a multi-frame source (it shows opaque Struct types for
@@ -1195,7 +1182,6 @@ function TableBlock({
           value={table.path}
           onCommit={(path) => onUpdate({ path })}
           validate={validateTablePath}
-          warnNonCanonical
           containerClassName="flex-1 min-w-0"
           className="w-full text-xs font-mono px-1.5 py-0.5 rounded"
           style={{
@@ -1373,7 +1359,6 @@ function ColumnRow({
         value={col.path}
         onCommit={(path) => onUpdate({ path })}
         validate={validateColumnPath}
-        warnNonCanonical
         containerClassName="flex-1 min-w-0"
         className="w-full px-1 py-0.5 rounded font-mono"
         style={{
@@ -1486,18 +1471,11 @@ function ColumnRow({
 // is idle-flagged by this same validator — then the grammar decides everything
 // else, so an invalid path is caught in-editor, not as a 422 on save.
 
-/** INPUT table-path validator: blank-guard + the shared table-path grammar,
- * plus the editor-side gate on the bare `$` root spelling (ruled 2026-07-14):
- * the grammar accepts `$` as an alias of the root array `$[:]`, but the bare
- * spelling is reserved for a possible future object-outer transport, so the
- * editor refuses to persist it. The backend still reads old configs with `$`. */
+/** INPUT table-path validator: blank-guard + the shared table-path grammar. */
 function validateTablePath(candidate: string): string | null {
   const trimmed = candidate.trim()
   if (!trimmed) {
     return "A path is required — this table is invalid and can't be saved without one."
-  }
-  if (trimmed === "$") {
-    return "Use '$[:]' for the root array — the bare '$' spelling is reserved (object-outer JSON is a different transport)."
   }
   return validateInputTablePath(trimmed)
 }
@@ -1553,7 +1531,6 @@ function CommittedTextInput({
   containerClassName,
   className,
   style,
-  warnNonCanonical = false,
 }: {
   /** The committed value from config — the source of truth when idle. */
   value: string
@@ -1568,11 +1545,6 @@ function CommittedTextInput({
   style: CSSProperties
   /** Graph-level rejection from the commit owner, distinct from local validation. */
   commitError?: string | null
-  /** When set (path inputs only — NOT labels/column-names), a VALID but
-   * non-canonical value is persistently highlighted as informational (§4 —
-   * assembles identically; never blocks). Off for labels/column-names, which
-   * are not paths and have no canonical form. */
-  warnNonCanonical?: boolean
 }) {
   // Raw edit buffer; null = not editing, render the committed value.
   const [draft, setDraft] = useState<string | null>(null)
@@ -1590,12 +1562,6 @@ function CommittedTextInput({
   const shown = draft ?? value
   const validationError = validate(shown)
   const error = validationError ?? commitError
-  // Persistent §4 highlight for path inputs: a VALID but non-canonical path
-  // (typed or introduced by schema inference) is flagged informationally — it is
-  // accepted and assembles identically, so this never blocks. Gated on
-  // `warnNonCanonical` (paths only, not labels/column-names) and on grammar
-  // validity (an invalid value surfaces its grammar error instead).
-  const hint = warnNonCanonical && error === null ? nonCanonicalHint(shown) : null
   const commit = () => {
     if (draft === null) return
     // Skip no-op commits: a draft equal to the committed value would
@@ -1627,9 +1593,7 @@ function CommittedTextInput({
         style={
           error !== null
             ? { ...style, border: "1px solid var(--danger-border-strong)" }
-            : hint !== null
-              ? { ...style, border: "1px solid var(--accent-soft-strong)" }
-              : style
+            : style
         }
       />
       {error !== null && (
@@ -1639,15 +1603,6 @@ function CommittedTextInput({
           style={{ background: "var(--danger-soft)", color: "var(--danger-text)" }}
         >
           {error}
-        </div>
-      )}
-      {hint !== null && (
-        <div
-          data-testid={`${dataTestId}-noncanonical`}
-          className="mt-0.5 px-1.5 py-0.5 rounded text-[10px] leading-snug"
-          style={{ background: "var(--accent-soft)", color: "var(--accent)" }}
-        >
-          {nonCanonicalNote(hint)}
         </div>
       )}
     </div>

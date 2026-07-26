@@ -159,7 +159,7 @@ def test_modelling_execution_routes_reject_external_graph_source(
 
 @pytest.mark.parametrize(
     "route_name",
-    ["solve", "estimate", "auto-range", "auto-range-start"],
+    ["solve", "estimate", "auto-range-start"],
 )
 def test_optimiser_execution_routes_reject_external_graph_source(
     route_name: str,
@@ -175,14 +175,6 @@ def test_optimiser_execution_routes_reject_external_graph_source(
     elif route_name == "estimate":
         route = optimiser_routes.estimate_solve
         body = OptimiserEstimateRequest(graph=graph, node_id="optimiser")
-    elif route_name == "auto-range":
-        monkeypatch.setattr(
-            optimiser_routes._solve_service,
-            "estimate_frontier_auto_range",
-            lambda _body: object(),
-        )
-        route = optimiser_routes.estimate_frontier_auto_range
-        body = OptimiserFrontierAutoRangeRequest(graph=graph, node_id="optimiser")
     else:
         monkeypatch.setattr(
             optimiser_routes._solve_service,

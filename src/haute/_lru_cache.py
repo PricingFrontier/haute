@@ -1,12 +1,8 @@
 """Thread-safe bounded LRU cache with pinning.
 
-Unified eviction + pinning layer consolidated from the three overlapping
-cache modules:
+Unified eviction + pinning layer used by bounded in-memory caches:
 
 * this module — bounded LRU with optional TTL, now absorbing pinning.
-* ``_fingerprint_cache.py`` — multi-slot fingerprint cache, reduced to
-  a thin subclass that adds slot-dict sugar on top of the pinning /
-  eviction machinery defined here.
 * ``_cache.py`` — the ``graph_fingerprint`` helper (graph → digest) is
   a different concern and remains untouched.
 
@@ -137,8 +133,8 @@ class LRUCache(Generic[K, V]):
 
         When capacity is exceeded, the least-recently-used *unpinned*
         entry is evicted.  If every live entry is pinned, the cache is
-        allowed to exceed ``max_size`` — this is the FingerprintCache
-        contract and keeps pinned entries from being silently dropped.
+        allowed to exceed ``max_size`` so pinned entries are not silently
+        dropped.
         """
         size = self._measure(value)
         with self._lock:
@@ -235,6 +231,12 @@ class LRUCache(Generic[K, V]):
                 "max_bytes": self._max_bytes,
                 "pinned_entries": sum(1 for key in self._data if self._is_pinned(key)),
             }
+
+    @property
+    def most_recent_key(self) -> K | None:
+        """Return the most-recently-used key, or ``None`` when empty."""
+        with self._lock:
+            return next(reversed(self._data)) if self._data else None
 
     def __contains__(self, key: K) -> bool:
         """Check presence *without* promoting the entry or checking TTL.

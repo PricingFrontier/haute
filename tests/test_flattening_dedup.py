@@ -148,7 +148,10 @@ class TestStructuralEquivalence:
     def test_two_node_child_equivalent(self) -> None:
         parent = _simple_parent()
         child = _two_node_child()
-        parent_edges = [("data_src", "child_a"), ("child_b", "output")]
+        parent_edges = [
+            ("data_src", "child_a", None, None),
+            ("child_b", "output", None, None),
+        ]
 
         via_parser_flatten = merge_submodels(
             parent,
@@ -172,7 +175,10 @@ class TestStructuralEquivalence:
     def test_single_node_child_equivalent(self) -> None:
         parent = _simple_parent()
         child = _single_node_child()
-        parent_edges = [("data_src", "lone"), ("lone", "output")]
+        parent_edges = [
+            ("data_src", "lone", None, None),
+            ("lone", "output", None, None),
+        ]
 
         via_parser_flatten = merge_submodels(
             parent,
@@ -196,7 +202,10 @@ class TestStructuralEquivalence:
     def test_chained_child_equivalent(self) -> None:
         parent = _simple_parent()
         child = _chained_child()
-        parent_edges = [("data_src", "x"), ("z", "output")]
+        parent_edges = [
+            ("data_src", "x", None, None),
+            ("z", "output", None, None),
+        ]
 
         via_parser_flatten = merge_submodels(
             parent,

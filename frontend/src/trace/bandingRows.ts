@@ -26,9 +26,9 @@ export function asBandingDetail(detail: TraceNodeDetail): BandingNodeDetail {
 }
 
 export function bandingRowFromFactor(factor: BandingFactorDetail, index: number): BandingTraceRow {
-  const inputColumn = factor.input_column ?? factor.column
+  const inputColumn = factor.input_column
   const outputColumn = factor.output_column
-  const matchedBand = factor.matched_band ?? factor.selected_band
+  const matchedBand = factor.matched_band
   return {
     key: `${outputColumn ?? "output"}-${inputColumn ?? "input"}-${index}`,
     inputColumn,
@@ -45,9 +45,9 @@ export function bandingRowFromFactor(factor: BandingFactorDetail, index: number)
 }
 
 export function bandingRowFromDetail(detail: BandingNodeDetail): BandingTraceRow | null {
-  const inputColumn = detail.input_column ?? detail.column
+  const inputColumn = detail.input_column
   const outputColumn = detail.output_column
-  const matchedBand = detail.matched_band ?? detail.selected_band
+  const matchedBand = detail.matched_band
   if (
     inputColumn == null &&
     outputColumn == null &&

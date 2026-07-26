@@ -80,20 +80,15 @@ function _isDraggingFromEdgeJoinOutput(state: ReactFlowState): boolean {
 
 /** Source-Handle setup for the right edge of the node.
  *
- * At medium/compact zoom, when an apiInput has 2+ `emit: true` tables, we
- * render one labelled Handle per table (id = table label). Otherwise the
- * legacy single Handle covers the default single-frame use. Full-detail
- * apiInput frame rows mount their own Handles so the row name and output dot
- * share one layout coordinate system.
+ * At medium/compact zoom, each apiInput frame renders one labelled Handle
+ * (id = table label). Full-detail apiInput frame rows mount their own Handles
+ * so the row name and output dot share one layout coordinate system.
  *
  * Returning a JSX list rather than mutating render order keeps the call
  * sites at the three zoom levels each a one-line switch.
  *
  * Test ids are positional, not semantic: `output-connector[<idx>]:<node
- * label>`, where idx is the visual top-to-bottom frame order. Single-frame
- * nodes (all non-apiInput types today, and apiInputs with 0–1 emit
- * tables) are always index 0, which stays stable when single-frame
- * emission moves to singleton-dict. Ids derive from volatile editor
+ * label>`, where idx is the visual top-to-bottom frame order. Ids derive from volatile editor
  * state (emit topology) and recompute on change — fine for a UI harness
  * reading the live DOM, as long as the harness isn't itself mutating
  * emit topology mid-assertion.
@@ -130,19 +125,7 @@ function _SourceHandles({
   // id the executor could not resolve (W1.4). A sole eligible frame is
   // labelled exactly like every other eligible frame.
   if (frameLabels.length === 0) {
-    // The null-id handle is only the zero-frame diagnostic surface. It must
-    // remain visible so the node explains why no frame can be wired, but it
-    // cannot participate in either direction of a Loose connection.
-    return (
-      <Handle
-        type="source"
-        position={Position.Right}
-        isConnectable={false}
-        isConnectableStart={false}
-        isConnectableEnd={false}
-        data-testid={`output-connector[0]:${nodeLabel}`}
-      />
-    )
+    return null
   }
   // One or more eligible frames: stack labelled Handles down the right edge. Each
   // Handle's `id` is the table's label — React Flow propagates this to
@@ -339,8 +322,8 @@ function PipelineNode({ id, data: nodeData, selected }: NodeProps<PipelineFlowNo
     />
   ) : null
   // At full detail, visible frame rows own the API-input source Handles. At
-  // medium/compact detail, or with no visible frame, `_SourceHandles` remains
-  // mounted on the node container as the zoomed-out/default fallback.
+  // medium/compact detail, `_SourceHandles` renders the same labelled handles
+  // on the node container; with no visible frame it renders nothing.
   const showApiInputFrameRows =
     isDeployInput && zoomLevel === "full" && frameLabels.length > 0
   const traceActive = !!nodeData._traceActive
@@ -596,9 +579,9 @@ function PipelineNode({ id, data: nodeData, selected }: NodeProps<PipelineFlowNo
 
       {/* Body — Bundle 3c: when this is a multi-frame apiInput, the
           full-detail frame rows own the right-edge Handle and display each
-          visible frame in top-to-bottom order.  Medium/compact modes and
-          zero-frame apiInputs retain the `_SourceHandles` fallback; all
-          non-apiInput types retain their existing body.
+          visible frame in top-to-bottom order. Medium/compact modes render the
+          same handles through `_SourceHandles`; zero-frame apiInputs render
+          none. All non-apiInput types retain their existing body.
           `bodyStyle` keeps the opaque-face surface consistent with
           medium mode (VC S38 opaque-face redesign). */}
       <div className="px-3 py-2" style={bodyStyle}>

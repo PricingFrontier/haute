@@ -750,12 +750,7 @@ CACHE_CONFIG_FIELD_CLASSIFICATIONS: Mapping[
         ),
         NodeType.BANDING: _classify_config_fields(node_config=("factors",)),
         NodeType.RATING_STEP: _classify_config_fields(
-            node_config=(
-                "combinedColumn",
-                "combinedOutputs",
-                "operation",
-                "tables",
-            ),
+            node_config=("combinedOutputs", "tables"),
             user_code=("code",),
         ),
         NodeType.OUTPUT: _classify_config_fields(
@@ -821,8 +816,6 @@ CACHE_CONFIG_FIELD_CLASSIFICATIONS: Mapping[
                 "constraints",
                 "factor_columns",
                 "frontier_enabled",
-                "frontier_max",
-                "frontier_min",
                 "frontier_ranges",
                 "frontier_steps",
                 "max_cd_iterations",

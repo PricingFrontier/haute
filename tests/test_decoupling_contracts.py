@@ -108,7 +108,7 @@ class TestTraceDecoupling:
     an explicit parameter — either a snapshot dict / Pydantic model, a
     reader Protocol, or a classmethod like ``Trace.from_preview(...)``.
     All three shapes are allowed; what is forbidden is the current
-    ``from haute.executor import _preview_cache`` + ``_preview_cache.try_get(...)``
+    ``from haute.executor import _preview_cache`` + ``_preview_cache.get(...)``
     reach-through.
     """
 
@@ -275,7 +275,7 @@ class TestTraceDecoupling:
         class _EmptyReader:
             """Minimal reader protocol — always a miss."""
 
-            def try_get(self, fingerprint: str) -> dict[str, Any] | None:
+            def get(self, fingerprint: str) -> dict[str, Any] | None:
                 return None
 
         node = GraphNode(

@@ -126,7 +126,7 @@ export default function useNodeHandlers({
     const { nodes: n } = graphRef.current
     const node = n.find((nd) => nd.id === id)
     if (!node) return
-    setRenameDialog({ nodeId: id, currentLabel: String(node.data.label) })
+    setRenameDialog({ nodeId: id, currentLabel: nodeData(node).label })
   }, [graphRef, setRenameDialog])
 
   const handleAutoLayout = useCallback(async () => {

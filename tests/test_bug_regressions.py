@@ -150,7 +150,7 @@ class TestBugB13StreamingChunkSizeRestore:
                 return_value=(lazy_outputs, ["src", "sink"], {}, {}),
             ),
         ):
-            result = write_data_output(graph, "sink")
+            result = write_data_output(graph, "sink", project_root=tmp_path)
 
         assert result.status == "ok"
         assert result.row_count == 3
@@ -582,7 +582,7 @@ class TestBugB13B14ChunkSizeRestore:
             "haute.executor._execute_lazy",
             return_value=(lazy_outputs, ["src", "sink"], {}, {}),
         ):
-            result = write_data_output(graph, "sink")
+            result = write_data_output(graph, "sink", project_root=tmp_path)
 
         assert result.status == "ok"
         assert pl.Config.state().get("POLARS_STREAMING_CHUNK_SIZE") == "75000"

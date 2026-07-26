@@ -45,8 +45,7 @@ from haute._rating import (
     normalise_rating_key,
 )
 from haute._rating_step_config import (
-    compact_rating_step_config_for_sidecar,
-    expand_rating_step_config_from_sidecar,
+    normalise_rating_step_config,
 )
 from haute._trace_correlation import _jsonify_row
 from haute._trace_enrichment import _enrich_single_table
@@ -503,7 +502,7 @@ class TestSidecarKeyCanonicalisation:
                 }
             ]
         }
-        compacted = compact_rating_step_config_for_sidecar(config)
+        compacted = normalise_rating_step_config(config)
         assert compacted["tables"][0]["entries"] == [{"age": 25.0, "value": 2.0}]
 
     def test_round_trip_still_matches_float_column(self) -> None:
@@ -518,113 +517,12 @@ class TestSidecarKeyCanonicalisation:
                 }
             ]
         }
-        rehydrated = expand_rating_step_config_from_sidecar(
-            json.loads(json.dumps(compact_rating_step_config_for_sidecar(config)))
+        rehydrated = normalise_rating_step_config(
+            json.loads(json.dumps(normalise_rating_step_config(config)))
         )
         lf = pl.DataFrame({"age": [25.0]}).lazy()
         out = apply_rating_step_from_config(lf, rehydrated).collect()
         assert out["f"].to_list() == [2.0]
-
-    def test_legacy_compact_float_key_migrates_on_load(self) -> None:
-        """Older sidecars wrote compact float keys as "25.0"; load migrates
-        them to the canonical lookup key without changing row-array strings."""
-        config = {
-            "tables": [
-                {
-                    "name": "Age",
-                    "factors": ["age"],
-                    "outputColumn": "f",
-                    "entries": {"25.0": 2.0},
-                }
-            ]
-        }
-
-        rehydrated = expand_rating_step_config_from_sidecar(config)
-        assert rehydrated["tables"][0]["entries"] == [{"age": "25", "value": 2.0}]
-
-        out = apply_rating_step_from_config(
-            pl.DataFrame({"age": [25.0]}).lazy(),
-            rehydrated,
-        ).collect()
-        assert out["f"].to_list() == [2.0]
-
-    def test_legacy_compact_float_key_beats_default_value(self) -> None:
-        config = {
-            "tables": [
-                {
-                    "name": "Age",
-                    "factors": ["age"],
-                    "outputColumn": "f",
-                    "defaultValue": 9.0,
-                    "entries": {"25.0": 2.0},
-                }
-            ]
-        }
-
-        out = apply_rating_step_from_config(
-            pl.DataFrame({"age": [25.0, 99.0]}).lazy(),
-            config,
-        ).collect()
-        assert out["f"].to_list() == [2.0, 9.0]
-
-    def test_legacy_compact_key_collision_fails_loudly(self) -> None:
-        config = {
-            "tables": [
-                {
-                    "name": "Age",
-                    "factors": ["age"],
-                    "outputColumn": "f",
-                    "entries": {"25": 1.0, "25.0": 2.0},
-                }
-            ]
-        }
-
-        with pytest.raises(
-            ValueError,
-            match=r"ratingStep tables\[0\]\.entries.*age.*25\.0.*25",
-        ):
-            expand_rating_step_config_from_sidecar(config)
-
-    def test_nested_legacy_compact_float_key_migrates_on_load(self) -> None:
-        config = {
-            "tables": [
-                {
-                    "name": "Age x Region",
-                    "factors": ["age", "region"],
-                    "outputColumn": "f",
-                    "entries": {"25.0": {"North": 2.0}},
-                }
-            ]
-        }
-
-        rehydrated = expand_rating_step_config_from_sidecar(config)
-        assert rehydrated["tables"][0]["entries"] == [
-            {"age": "25", "region": "North", "value": 2.0}
-        ]
-
-        out = apply_rating_step_from_config(
-            pl.DataFrame({"age": [25.0], "region": ["North"]}).lazy(),
-            rehydrated,
-        ).collect()
-        assert out["f"].to_list() == [2.0]
-
-    def test_nested_legacy_compact_key_collision_fails_loudly(self) -> None:
-        config = {
-            "tables": [
-                {
-                    "name": "Age x Region",
-                    "factors": ["age", "region"],
-                    "outputColumn": "f",
-                    "entries": {"25": {"North": 1.0}, "25.0": {"North": 2.0}},
-                }
-            ]
-        }
-
-        with pytest.raises(
-            ValueError,
-            match=r"ratingStep tables\[0\]\.entries.*age.*25\.0.*25",
-        ):
-            expand_rating_step_config_from_sidecar(config)
 
 
 class TestTemporalFactorColumns:

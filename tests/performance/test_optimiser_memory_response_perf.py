@@ -142,6 +142,7 @@ def test_frontier_route_caps_response_before_serialising_large_point_frame(
         "solver": solver,
         "quote_grid": quote_grid,
         "created_at": time.time(),
+        "completed_at": time.time(),
     }
 
     start = client.post(
@@ -231,6 +232,7 @@ def test_completed_optimiser_jobs_slim_heavy_objects_then_evict_owned_artifacts(
                 "progress": 1.0,
                 "message": "Completed",
                 "elapsed_seconds": 12.5,
+                "completed_at": time.time(),
                 "solver": solver,
                 "solve_result": solve_result,
                 "quote_grid": quote_grid,

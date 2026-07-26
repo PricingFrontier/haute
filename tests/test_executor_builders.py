@@ -12,6 +12,7 @@ from pathlib import Path
 import polars as pl
 import pytest
 
+from haute._builders import NodeBuildContext, _build_node_fn
 from haute._execution_context import ExecutionProfile
 from haute._output_assembler import OutputMappingSchemaError
 from haute.errors import (
@@ -19,7 +20,6 @@ from haute.errors import (
     LiveSwitchScenarioError,
     SchemaMismatchError,
 )
-from haute.executor import NodeBuildContext, _build_node_fn
 from haute.graph_utils import GraphNode, NodeData
 from tests.conftest import make_node as _n
 
@@ -230,7 +230,7 @@ class TestBuildConstant:
 
 
 class TestBuildOutput:
-    """Tests for the output node builder (v2 ``outputMapping``; v1 ``fields`` killed)."""
+    """Tests for the output node builder."""
 
     @staticmethod
     def _cfg(fields: list[str], *, source_port: str = "in") -> dict:
@@ -261,13 +261,8 @@ class TestBuildOutput:
         assert result.columns == ["x", "y"]
         assert result.to_dicts() == [{"x": 1, "y": 2}]
 
-    def test_missing_output_mapping_raises(self) -> None:
-        # The legacy ``fields`` shape no longer builds — it carries no mapping.
-        with pytest.raises(OutputMappingSchemaError, match="no `outputMapping`"):
-            _build("output", {"fields": ["x"]}, source_names=["upstream"])
-
     def test_empty_config_raises(self) -> None:
-        with pytest.raises(OutputMappingSchemaError, match="no `outputMapping`"):
+        with pytest.raises(OutputMappingSchemaError, match="requires `outputMapping`"):
             _build("output", {}, source_names=["upstream"])
 
     def test_empty_mapping_renders_empty_document(self) -> None:

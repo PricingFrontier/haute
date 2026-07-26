@@ -531,7 +531,12 @@ class TestExecuteSinkDataOutput:
         monkeypatch.setattr(executor_module.os, "link", unexpected_link)
         monkeypatch.setattr(executor_module, "_cleanup_output_staging_path", record_cleanup)
 
-        executor_module._publish_output_create_only(stage, target, "result.parquet")
+        executor_module._publish_output_create_only(
+            stage,
+            target,
+            "result.parquet",
+            project_root=tmp_path,
+        )
 
         assert calls == [(stage, target)]
         assert cleanup_calls == []
@@ -551,7 +556,12 @@ class TestExecuteSinkDataOutput:
         monkeypatch.setattr(executor_module.os, "link", unsupported_link)
 
         with pytest.raises(DataOutputPublicationError) as exc:
-            executor_module._publish_output_create_only(stage, target, "result.parquet")
+            executor_module._publish_output_create_only(
+                stage,
+                target,
+                "result.parquet",
+                project_root=tmp_path,
+            )
 
         assert "result.parquet" in str(exc.value)
         assert "hard links are unsupported" not in str(exc.value)
@@ -573,7 +583,12 @@ class TestExecuteSinkDataOutput:
         monkeypatch.setattr(executor_module, "_IS_WINDOWS", False)
         monkeypatch.setattr(Path, "unlink", blocked_stage_unlink)
 
-        executor_module._publish_output_create_only(stage, target, "result.parquet")
+        executor_module._publish_output_create_only(
+            stage,
+            target,
+            "result.parquet",
+            project_root=tmp_path,
+        )
 
         assert target.read_bytes() == b"output"
         assert stage.exists()
@@ -1323,7 +1338,7 @@ class TestSidecarPersistence:
         assert NODE_TYPE_TO_FOLDER[NodeType.DATA_INPUT] == "data_input"
         assert NODE_TYPE_TO_FOLDER[NodeType.DATA_OUTPUT] == "data_output"
 
-    def test_prepare_config_keeps_spec_keys_and_drops_off_spec(self) -> None:
+    def test_prepare_config_keeps_spec_keys_and_drops_internal_state(self) -> None:
         from haute._config_io import _prepare_config_for_sidecar
 
         config = {
@@ -1334,7 +1349,6 @@ class TestSidecarPersistence:
             "path": "data/q.csv",
             "arguments": {"separator": ";"},
             "_editorOnly": {"open": True},
-            "flattenSchema": [],  # off-spec: must not persist
         }
         prepared = _prepare_config_for_sidecar(NodeType.DATA_INPUT, config)
         assert prepared == {

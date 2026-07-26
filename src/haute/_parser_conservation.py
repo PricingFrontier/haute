@@ -10,22 +10,11 @@ from haute._types import GraphEdge, GraphNode, PipelineGraph
 from haute.errors import ParseError
 
 _EdgeIdentity = tuple[str, str, str | None, str | None]
-_ConnectTuple = (
-    tuple[str, str] | tuple[str, str, str | None] | tuple[str, str, str | None, str | None]
-)
+_ConnectTuple = tuple[str, str, str | None, str | None]
 
 
 def _connect_identity(edge_tuple: _ConnectTuple) -> _EdgeIdentity:
-    if len(edge_tuple) == 4:
-        source, target, source_handle, target_handle = edge_tuple
-    elif len(edge_tuple) == 3:
-        source, target, source_handle = edge_tuple
-        target_handle = None
-    else:
-        source, target = edge_tuple
-        source_handle = None
-        target_handle = None
-    return source, target, source_handle, target_handle
+    return edge_tuple
 
 
 def _edge_identity(edge: GraphEdge) -> _EdgeIdentity:

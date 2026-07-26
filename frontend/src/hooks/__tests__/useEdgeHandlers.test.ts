@@ -1506,16 +1506,16 @@ describe("useEdgeHandlers edge-join failures and multi-port handles", () => {
     expect(params.setEdgesRaw).not.toHaveBeenCalled()
   })
 
-  it("onConnectEnd rejects a third edgeJoin input when legacy edges occupy no role handles", () => {
+  it("onConnectEnd rejects a third edgeJoin input when malformed persisted edges occupy no role", () => {
     const params = makeParams()
     params.graphRef.current.nodes = [
       { id: "join1", data: { label: "Edge Join 1", nodeType: NODE_TYPES.EDGE_JOIN, config: {} } } as unknown as Node,
     ]
-    // Legacy/imported graphs can hold edges whose targetHandle never went
-    // through the role-handle migration; neither occupies "base" or "join".
+    // A hand-edited graph can contain target handles outside the canonical
+    // base/join pair. It must not bypass the two-input invariant.
     params.graphRef.current.edges = [
-      { id: "e-a-join", source: "a", target: "join1", sourceHandle: null, targetHandle: null } as Edge,
-      { id: "e-b-join", source: "b", target: "join1", sourceHandle: null, targetHandle: null } as Edge,
+      { id: "e-a-join", source: "a", target: "join1", sourceHandle: null, targetHandle: "other-a" } as Edge,
+      { id: "e-b-join", source: "b", target: "join1", sourceHandle: null, targetHandle: "other-b" } as Edge,
     ]
     const { result } = renderHook(() => useEdgeHandlers(params))
 

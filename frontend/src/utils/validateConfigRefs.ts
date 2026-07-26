@@ -32,16 +32,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 /**
  * Collect the ids of nodes inside a single submodel's graph metadata.
  *
- * Accepts both metadata shapes the rest of the app uses (see
- * `NodePanel.tsx#submodelGraphFromMetadata`): the nested
- * `{ graph: { nodes: [...] } }` form and the direct `{ nodes: [...] }` form.
+ * Reads the canonical nested `{ graph: { nodes: [...] } }` shape.
  * Defensive about malformed input — anything that isn't a recognisable node
  * with a string `id` is skipped rather than throwing, since validation must
  * never crash a save.
  */
 function submodelNodeIds(metadata: unknown): string[] {
-  if (!isRecord(metadata)) return []
-  const graph = isRecord(metadata.graph) ? metadata.graph : metadata
+  if (!isRecord(metadata) || !isRecord(metadata.graph)) return []
+  const graph = metadata.graph
   if (!Array.isArray(graph.nodes)) return []
   const ids: string[] = []
   for (const node of graph.nodes) {

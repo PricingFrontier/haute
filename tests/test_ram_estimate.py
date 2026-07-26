@@ -15,7 +15,6 @@ from haute._ram_estimate import (
     MaterialisationEstimate,
     MaterialisationEstimateState,
     RamEstimate,
-    _ancestor_source_metadata,
     _count_source_rows_for_node,
     _csv_row_count,
     _dedupe_resolved_columns,
@@ -30,9 +29,7 @@ from haute._ram_estimate import (
     _resolve_edge_join_column_names,
     _resolve_target_column_names,
     _resolve_target_columns,
-    _resolve_target_columns_detail,
     _source_column_base_widths,
-    _source_metadata_for_node,
     available_ram_bytes,
     available_vram_bytes,
     estimate_gpu_vram_bytes,
@@ -173,6 +170,42 @@ def test_source_metadata_propagates_programming_errors_but_marks_os_errors_unava
 
     with patch("haute._ram_estimate._detailed_parquet_metadata", side_effect=OSError("offline")):
         assert _detailed_source_metadata_for_node(node) is None
+
+
+@pytest.mark.parametrize("suffix", [None, ".json", ".parquet"])
+def test_api_input_detailed_metadata_reports_unavailable_sources(
+    tmp_path,
+    suffix: str | None,
+) -> None:
+    path = "" if suffix is None else str(tmp_path / f"missing{suffix}")
+    node = _make_source_node(node_type="apiInput", config={"path": path})
+
+    assert _detailed_source_metadata_for_node(node) is None
+
+
+def test_api_input_detailed_metadata_reads_existing_parquet(tmp_path) -> None:
+    path = tmp_path / "quotes.parquet"
+    pl.DataFrame({"quote_id": [1, 2], "premium": [100.0, 125.0]}).write_parquet(path)
+    node = _make_source_node(node_type="apiInput", config={"path": str(path)})
+
+    metadata = _detailed_source_metadata_for_node(node)
+
+    assert metadata is not None
+    assert metadata.row_count == 2
+    assert metadata.column_count == 2
+    assert metadata.column_width_keys == {
+        "quote_id": f"{node.id}\0quote_id",
+        "premium": f"{node.id}\0premium",
+    }
+
+
+def test_non_source_node_has_no_detailed_metadata() -> None:
+    node = _make_source_node(
+        node_type="polars",
+        config={"path": "/unused/source.parquet"},
+    )
+
+    assert _detailed_source_metadata_for_node(node) is None
 
 
 def test_low_cardinality_wide_strings_use_expanded_probe_width(tmp_path) -> None:
@@ -669,36 +702,6 @@ class TestEstimateSafeTrainingRows:
         assert result.probe_columns == 2
         assert result.bytes_per_row == 2 * 8 * 3.0
 
-    def test_uses_legacy_column_count_when_detailed_names_unavailable(self, tmp_path) -> None:
-        """Fallback count-only schemas still account for excluded feature columns."""
-        path = tmp_path / "cols.parquet"
-        pl.DataFrame(
-            {
-                "a": range(20),
-                "b": range(20),
-                "c": range(20),
-                "d": range(20),
-            }
-        ).write_parquet(str(path))
-        src = _make_source_node(
-            node_type="dataInput",
-            config=_file_input_config(str(path)),
-        )
-        target = _make_modelling_node(config={"exclude": ["a", "b"]})
-        graph = PipelineGraph(
-            nodes=[src, target],
-            edges=[GraphEdge(id="e1", source=src.id, target=target.id)],
-        )
-
-        with (
-            patch("haute._ram_estimate._resolve_target_columns", return_value=4),
-            patch("haute._ram_estimate._resolve_target_columns_detail", return_value=None),
-        ):
-            result = estimate_safe_training_rows(graph, target.id, _build_dummy_node_fn)
-
-        assert result.probe_columns == 2
-        assert result.bytes_per_row == 2 * 8 * 3.0
-
     def test_edge_join_without_selected_columns_counts_both_parent_outputs(
         self,
         tmp_path,
@@ -1082,7 +1085,7 @@ class TestDetailedColumnResolution:
         )
         graph = PipelineGraph(nodes=[target], edges=[])
 
-        resolved = _resolve_target_columns_detail(graph, target.id, "live")
+        resolved = _resolve_target_columns(graph, target.id, "live")
 
         assert resolved is not None
         assert resolved.columns == ("premium", "quote_id")
@@ -1115,7 +1118,7 @@ class TestDetailedColumnResolution:
             edges=[GraphEdge(id="e1", source=src.id, target=projection.id)],
         )
 
-        resolved = _resolve_target_columns_detail(graph, projection.id, "live")
+        resolved = _resolve_target_columns(graph, projection.id, "live")
 
         assert resolved is not None
         assert resolved.columns == ("segment", "premium")
@@ -1136,7 +1139,7 @@ class TestDetailedColumnResolution:
             edges=[GraphEdge(id="e1", source=parent.id, target=projection.id)],
         )
 
-        resolved = _resolve_target_columns_detail(graph, projection.id, "live")
+        resolved = _resolve_target_columns(graph, projection.id, "live")
 
         assert resolved is not None
         assert resolved.columns == ("premium", "quote_id")
@@ -1150,7 +1153,7 @@ class TestDetailedColumnResolution:
         target = _make_modelling_node(config={"selected_columns": ["premium", 1]})
         graph = PipelineGraph(nodes=[target], edges=[])
 
-        assert _resolve_target_columns_detail(graph, target.id, "live") is None
+        assert _resolve_target_columns(graph, target.id, "live") is None
 
     def test_target_column_names_wraps_detailed_resolution(self, tmp_path) -> None:
         path = tmp_path / "source.parquet"
@@ -1179,7 +1182,7 @@ class TestDetailedColumnResolution:
             ],
         )
 
-        assert _resolve_target_columns_detail(graph, target.id, "live") is None
+        assert _resolve_target_columns(graph, target.id, "live") is None
 
     def test_source_without_detail_metadata_returns_none(self) -> None:
         src = _make_source_node(
@@ -1189,7 +1192,7 @@ class TestDetailedColumnResolution:
         )
         graph = PipelineGraph(nodes=[src], edges=[])
 
-        assert _resolve_target_columns_detail(graph, src.id, "live") is None
+        assert _resolve_target_columns(graph, src.id, "live") is None
 
 
 class TestDetailedEdgeJoinColumnResolution:
@@ -1206,7 +1209,7 @@ class TestDetailedEdgeJoinColumnResolution:
         )
         graph = PipelineGraph(nodes=[joined], edges=[])
 
-        resolved = _resolve_target_columns_detail(graph, joined.id, "live")
+        resolved = _resolve_target_columns(graph, joined.id, "live")
 
         assert resolved is not None
         assert resolved.columns == ("premium",)
@@ -2047,320 +2050,8 @@ class TestCountSourceRowsForNode:
 
 
 # ---------------------------------------------------------------------------
-# _source_metadata_for_node — unit tests
-# ---------------------------------------------------------------------------
-
-
-class TestSourceMetadataForNode:
-    def test_api_input_json_returns_none(self) -> None:
-        """API_INPUT with .json path returns None (v2 has no single aggregate metadata)."""
-        node = _make_source_node(
-            node_type="apiInput",
-            config={"path": "/data/test.json"},
-        )
-        result = _source_metadata_for_node(node)
-        assert result is None
-
-    def test_api_input_jsonl_returns_none(self) -> None:
-        """API_INPUT .jsonl returns None (v2 per-port cache has no single metadata)."""
-        node = _make_source_node(
-            node_type="apiInput",
-            config={"path": "/data/test.jsonl"},
-        )
-        result = _source_metadata_for_node(node)
-        assert result is None
-
-    def test_api_input_parquet(self, tmp_path) -> None:
-        """API_INPUT with parquet returns metadata."""
-        path = tmp_path / "data.parquet"
-        pl.DataFrame({"a": [1, 2, 3], "b": [4, 5, 6]}).write_parquet(str(path))
-        node = _make_source_node(
-            node_type="apiInput",
-            config={"path": str(path)},
-        )
-        result = _source_metadata_for_node(node)
-        assert result == (3, 2)
-
-    def test_api_input_parquet_missing(self) -> None:
-        """API_INPUT with missing parquet returns None."""
-        node = _make_source_node(
-            node_type="apiInput",
-            config={"path": "/nonexistent/data.parquet"},
-        )
-        result = _source_metadata_for_node(node)
-        assert result is None
-
-    def test_data_input_databricks_returns_none(self) -> None:
-        """Data Input databricks returns None."""
-        node = _make_source_node(
-            node_type="dataInput",
-            config=_databricks_input_config("catalog.schema.table"),
-        )
-        result = _source_metadata_for_node(node)
-        assert result is None
-
-    def test_data_input_parquet(self, tmp_path) -> None:
-        """Data Input with parquet returns metadata."""
-        path = tmp_path / "data.parquet"
-        pl.DataFrame({"x": [1], "y": [2], "z": [3]}).write_parquet(str(path))
-        node = _make_source_node(
-            node_type="dataInput",
-            config=_file_input_config(str(path)),
-        )
-        result = _source_metadata_for_node(node)
-        assert result == (1, 3)
-
-    def test_data_input_non_parquet_returns_none(self, tmp_path) -> None:
-        """Data Input with CSV file returns None (metadata only for parquet)."""
-        path = tmp_path / "data.csv"
-        path.write_text("a,b\n1,2\n")
-        node = _make_source_node(
-            node_type="dataInput",
-            config=_file_input_config(str(path)),
-        )
-        result = _source_metadata_for_node(node)
-        assert result is None
-
-    def test_empty_path_returns_none(self) -> None:
-        """Node with empty path returns None."""
-        node = _make_source_node(
-            node_type="apiInput",
-            config={"path": ""},
-        )
-        result = _source_metadata_for_node(node)
-        assert result is None
-
-    def test_unexpected_exception_propagates(self) -> None:
-        """Programming failures during metadata reads remain visible."""
-        node = _make_source_node(
-            node_type="apiInput",
-            config={"path": "/some/file.parquet"},
-        )
-        with patch("haute._ram_estimate.Path") as mock_path:
-            mock_path.return_value.exists.side_effect = RuntimeError("boom")
-            with pytest.raises(RuntimeError, match="boom"):
-                _source_metadata_for_node(node)
-
-    def test_unknown_node_type_returns_none(self) -> None:
-        """Polars node type falls through to None."""
-        node = _make_source_node(
-            node_type="polars",
-            config={"path": "/some/file.parquet"},
-        )
-        result = _source_metadata_for_node(node)
-        assert result is None
-
-
-# ---------------------------------------------------------------------------
-# _ancestor_source_metadata — graph traversal
-# ---------------------------------------------------------------------------
-
-
-class TestAncestorSourceMetadata:
-    def test_multiple_sources_returns_max(self, tmp_path) -> None:
-        """With two sources, returns max rows and max cols."""
-        p1 = tmp_path / "small.parquet"
-        pl.DataFrame({"a": range(100)}).write_parquet(str(p1))
-        p2 = tmp_path / "big.parquet"
-        pl.DataFrame({"x": range(500), "y": range(500), "z": range(500)}).write_parquet(str(p2))
-
-        s1 = _make_source_node(
-            node_id="s1",
-            node_type="dataInput",
-            config=_file_input_config(str(p1)),
-        )
-        s2 = _make_source_node(
-            node_id="s2",
-            node_type="dataInput",
-            config=_file_input_config(str(p2)),
-        )
-        target = _make_modelling_node(node_id="m1")
-        edges = [
-            GraphEdge(id="e1", source="s1", target="m1"),
-            GraphEdge(id="e2", source="s2", target="m1"),
-        ]
-        graph = PipelineGraph(nodes=[s1, s2, target], edges=edges)
-        rows, cols = _ancestor_source_metadata(graph, "m1")
-        assert rows == 500
-        assert cols == 3
-
-    def test_later_smaller_source_keeps_max_rows_but_updates_max_cols(self, tmp_path) -> None:
-        """Ancestor metadata keeps independent maxima for rows and column width."""
-        p1 = tmp_path / "big_rows.parquet"
-        pl.DataFrame({"a": range(500)}).write_parquet(str(p1))
-        p2 = tmp_path / "wide.parquet"
-        pl.DataFrame({"x": range(100), "y": range(100), "z": range(100)}).write_parquet(str(p2))
-
-        s1 = _make_source_node(
-            node_id="s1",
-            node_type="dataInput",
-            config=_file_input_config(str(p1)),
-        )
-        s2 = _make_source_node(
-            node_id="s2",
-            node_type="dataInput",
-            config=_file_input_config(str(p2)),
-        )
-        target = _make_modelling_node(node_id="m1")
-        graph = PipelineGraph(
-            nodes=[s1, s2, target],
-            edges=[
-                GraphEdge(id="e1", source="s1", target="m1"),
-                GraphEdge(id="e2", source="s2", target="m1"),
-            ],
-        )
-
-        rows, cols = _ancestor_source_metadata(graph, "m1")
-
-        assert rows == 500
-        assert cols == 3
-
-    def test_no_source_nodes(self) -> None:
-        """Graph with only transform + model returns (None, 0)."""
-        t1 = _make_transform_node(node_id="t1")
-        m1 = _make_modelling_node(node_id="m1")
-        edges = [GraphEdge(id="e1", source="t1", target="m1")]
-        graph = PipelineGraph(nodes=[t1, m1], edges=edges)
-        rows, cols = _ancestor_source_metadata(graph, "m1")
-        assert rows is None
-        assert cols == 0
-
-    def test_skips_unknown_ancestor_ids(self, tmp_path) -> None:
-        """If ancestors() returns an ID not in node_map, it is skipped."""
-        path = tmp_path / "data.parquet"
-        pl.DataFrame({"a": range(50)}).write_parquet(str(path))
-
-        src = _make_source_node(
-            node_id="s1",
-            node_type="dataInput",
-            config=_file_input_config(str(path)),
-        )
-        m1 = _make_modelling_node(node_id="m1")
-        edges = [GraphEdge(id="e1", source="s1", target="m1")]
-        graph = PipelineGraph(nodes=[src, m1], edges=edges)
-
-        # Patch ancestors to also return a ghost ID not in node_map
-        with patch(
-            "haute._topo.ancestors",
-            return_value={"s1", "ghost_node"},
-        ):
-            rows, cols = _ancestor_source_metadata(graph, "m1")
-        assert rows == 50
-        assert cols == 1
-
-    def test_skips_non_source_ancestors(self, tmp_path) -> None:
-        """Transform nodes in the chain are skipped, source is found."""
-        path = tmp_path / "data.parquet"
-        pl.DataFrame({"a": range(300), "b": range(300)}).write_parquet(str(path))
-
-        src = _make_source_node(
-            node_id="s1",
-            node_type="dataInput",
-            config=_file_input_config(str(path)),
-        )
-        t1 = _make_transform_node(node_id="t1")
-        m1 = _make_modelling_node(node_id="m1")
-        edges = [
-            GraphEdge(id="e1", source="s1", target="t1"),
-            GraphEdge(id="e2", source="t1", target="m1"),
-        ]
-        graph = PipelineGraph(nodes=[src, t1, m1], edges=edges)
-        rows, cols = _ancestor_source_metadata(graph, "m1")
-        assert rows == 300
-        assert cols == 2
-
-
-# ---------------------------------------------------------------------------
 # _resolve_target_columns — BFS column resolution
 # ---------------------------------------------------------------------------
-
-
-class TestResolveTargetColumns:
-    def test_selected_columns_at_target(self) -> None:
-        """If the target node has selected_columns, return its length."""
-        m1 = _make_modelling_node(
-            node_id="m1",
-            config={"selected_columns": ["a", "b", "c"]},
-        )
-        graph = PipelineGraph(nodes=[m1], edges=[])
-        result = _resolve_target_columns(graph, "m1", "live")
-        assert result == 3
-
-    def test_bfs_finds_selected_columns_on_parent(self) -> None:
-        """BFS traverses to parent that has selected_columns."""
-        t1 = _make_transform_node(
-            node_id="t1",
-            config={"selected_columns": ["x", "y"]},
-        )
-        m1 = _make_modelling_node(node_id="m1")
-        edges = [GraphEdge(id="e1", source="t1", target="m1")]
-        graph = PipelineGraph(nodes=[t1, m1], edges=edges)
-        result = _resolve_target_columns(graph, "m1", "live")
-        assert result == 2
-
-    def test_falls_back_to_source_metadata(self, tmp_path) -> None:
-        """With no selected_columns, BFS falls back to source metadata."""
-        path = tmp_path / "data.parquet"
-        pl.DataFrame({"a": [1], "b": [2], "c": [3], "d": [4]}).write_parquet(str(path))
-
-        src = _make_source_node(
-            node_id="s1",
-            node_type="dataInput",
-            config=_file_input_config(str(path)),
-        )
-        m1 = _make_modelling_node(node_id="m1")
-        edges = [GraphEdge(id="e1", source="s1", target="m1")]
-        graph = PipelineGraph(nodes=[src, m1], edges=edges)
-        result = _resolve_target_columns(graph, "m1", "live")
-        assert result == 4
-
-    def test_returns_none_when_no_columns_found(self) -> None:
-        """If no node has columns info, returns None."""
-        m1 = _make_modelling_node(node_id="m1")
-        graph = PipelineGraph(nodes=[m1], edges=[])
-        result = _resolve_target_columns(graph, "m1", "live")
-        assert result is None
-
-    def test_source_without_metadata_does_not_stop_parent_search(self) -> None:
-        """A source node with no metadata is treated like an unknown column source."""
-        src = _make_source_node(
-            node_id="s1",
-            node_type="dataInput",
-            config=_file_input_config("/missing/source.parquet"),
-        )
-        m1 = _make_modelling_node(node_id="m1")
-        graph = PipelineGraph(
-            nodes=[src, m1],
-            edges=[GraphEdge(id="e1", source="s1", target="m1")],
-        )
-
-        result = _resolve_target_columns(graph, "m1", "live")
-
-        assert result is None
-
-    def test_skips_node_not_in_map(self) -> None:
-        """If a parent ID is not in node_map, it is skipped gracefully."""
-        m1 = _make_modelling_node(node_id="m1")
-        # Create an edge referencing a source node that is NOT in the nodes list
-        edges = [GraphEdge(id="e1", source="ghost", target="m1")]
-        graph = PipelineGraph(nodes=[m1], edges=edges)
-        result = _resolve_target_columns(graph, "m1", "live")
-        assert result is None
-
-    def test_skips_already_visited_nodes(self) -> None:
-        """Cycles or diamond graphs don't cause infinite loops."""
-        t1 = _make_transform_node(node_id="t1")
-        t2 = _make_transform_node(node_id="t2")
-        m1 = _make_modelling_node(node_id="m1")
-        edges = [
-            GraphEdge(id="e1", source="t1", target="t2"),
-            GraphEdge(id="e2", source="t2", target="m1"),
-            GraphEdge(id="e3", source="t1", target="m1"),
-        ]
-        graph = PipelineGraph(nodes=[t1, t2, m1], edges=edges)
-        # Should not hang; returns None since no columns info
-        result = _resolve_target_columns(graph, "m1", "live")
-        assert result is None
 
 
 # ---------------------------------------------------------------------------

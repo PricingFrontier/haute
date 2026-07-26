@@ -28,16 +28,10 @@ def _assert_code_equal(actual: str, expected: str) -> None:
 def _rating_node(
     nid: str,
     tables: list[dict] | None = None,
-    operation: str = "multiply",
-    combined_column: str = "",
     combined_outputs: list[dict] | None = None,
     code: str = "",
 ) -> GraphNode:
     cfg: dict = {"tables": tables or []}
-    if operation != "multiply":
-        cfg["operation"] = operation
-    if combined_column:
-        cfg["combinedColumn"] = combined_column
     if combined_outputs is not None:
         cfg["combinedOutputs"] = combined_outputs
     if code:
@@ -275,10 +269,9 @@ class TestRatingStepExecutor:
         config = {
             "tables": [
                 # Incomplete: empty entries -> passthrough, no "phantom" column.
-                {"name": "empty", "factors": ["b"], "outputColumn": "phantom", "entries": []},
+                {"factors": ["b"], "outputColumn": "phantom", "entries": []},
                 # Real table producing "factor".
                 {
-                    "name": "real",
                     "factors": ["b"],
                     "outputColumn": "factor",
                     "entries": [{"b": "A", "value": 2.0}],
@@ -326,7 +319,7 @@ class TestRatingStepExecutor:
         skips = [log for log in logs if log["event"] == "rating_table_skipped_incomplete"]
         assert len(skips) == 1
         assert skips[0]["log_level"] == "warning"
-        assert skips[0]["table"] == "empty"
+        assert skips[0]["table"] == "phantom"
         assert skips[0]["output_column"] == "phantom"
         assert "entries" in skips[0]["reason"]
 
@@ -353,16 +346,16 @@ class TestRatingStepExecutor:
         assert [log for log in logs if log["event"] == "rating_table_skipped_incomplete"] == []
 
     @pytest.mark.parametrize(
-        "operation, col_name, expected",
+        "operation, col_name, base_value, expected",
         [
-            ("multiply", "combined", [6.0, 1.0]),
-            ("add", "total", [5.0, 2.0]),
-            ("min", "mn", [2.0, 1.0]),
-            ("max", "mx", [3.0, 1.0]),
+            ("multiply", "combined", 1.0, [6.0, 1.0]),
+            ("add", "total", 0.0, [5.0, 2.0]),
+            ("min", "mn", 100.0, [2.0, 1.0]),
+            ("max", "mx", 0.0, [3.0, 1.0]),
         ],
         ids=["multiply", "add", "min", "max"],
     )
-    def test_combine_operations(self, operation, col_name, expected):
+    def test_combine_operations(self, operation, col_name, base_value, expected):
         """Two tables combined via the given operation."""
         tables = [
             {
@@ -383,16 +376,21 @@ class TestRatingStepExecutor:
         node = _rating_node(
             f"rc_{operation}",
             tables,
-            operation=operation,
-            combined_column=col_name,
+            combined_outputs=[
+                {
+                    "outputColumn": col_name,
+                    "operation": operation,
+                    "baseValue": base_value,
+                }
+            ],
         )
         _, fn, _ = _build_node_fn(node)
         lf = pl.DataFrame({"band": ["A", "B"]}).lazy()
         result = fn(lf).collect()
         assert result[col_name].to_list() == expected
 
-    def test_no_combined_column_skips_combine(self):
-        """Without combinedColumn, no combination column is created."""
+    def test_no_combined_outputs_skips_combine(self):
+        """Without combinedOutputs, no combination column is created."""
         tables = [
             {
                 "name": "T1",
@@ -416,8 +414,8 @@ class TestRatingStepExecutor:
         assert "combined" not in result.columns
         assert result.columns == ["band", "f1", "f2"]
 
-    def test_empty_combined_outputs_without_legacy_column_is_noop(self):
-        """Explicit combinedOutputs=[] with no legacy column creates no combined output."""
+    def test_empty_combined_outputs_is_noop(self):
+        """Explicit combinedOutputs=[] creates no combined output."""
         tables = [
             {
                 "name": "T1",
@@ -434,87 +432,11 @@ class TestRatingStepExecutor:
                 "entries": [{"band": "A", "value": 3.0}],
             },
         ]
-        node = _rating_node("empty_outputs_no_legacy", tables, combined_outputs=[])
+        node = _rating_node("empty_outputs", tables, combined_outputs=[])
         _, fn, _ = _build_node_fn(node)
         result = fn(pl.DataFrame({"band": ["A"]}).lazy()).collect()
 
         assert result.columns == ["band", "f1", "f2"]
-
-    def test_empty_combined_outputs_with_blank_legacy_column_is_noop(self):
-        """A blank legacy combinedColumn is treated as unconfigured."""
-        tables = [
-            {
-                "name": "T1",
-                "factors": ["band"],
-                "outputColumn": "f1",
-                "defaultValue": "1.0",
-                "entries": [{"band": "A", "value": 2.0}],
-            },
-            {
-                "name": "T2",
-                "factors": ["band"],
-                "outputColumn": "f2",
-                "defaultValue": "1.0",
-                "entries": [{"band": "A", "value": 3.0}],
-            },
-        ]
-        node = _rating_node(
-            "empty_outputs_blank_legacy",
-            tables,
-            combined_column="  ",
-            combined_outputs=[],
-        )
-        _, fn, _ = _build_node_fn(node)
-        result = fn(pl.DataFrame({"band": ["A"]}).lazy()).collect()
-
-        assert result.columns == ["band", "f1", "f2"]
-
-    def test_empty_combined_outputs_preserves_legacy_combined_column(self):
-        """Default empty combinedOutputs must not disable legacy combinedColumn."""
-        tables = [
-            {
-                "name": "T1",
-                "factors": ["band"],
-                "outputColumn": "f1",
-                "defaultValue": "1.0",
-                "entries": [{"band": "A", "value": 2.0}],
-            },
-            {
-                "name": "T2",
-                "factors": ["band"],
-                "outputColumn": "f2",
-                "defaultValue": "1.0",
-                "entries": [{"band": "A", "value": 3.0}],
-            },
-        ]
-        node = _rating_node(
-            "legacy_empty_outputs",
-            tables,
-            combined_column="combined",
-            combined_outputs=[],
-        )
-        _, fn, _ = _build_node_fn(node)
-        result = fn(pl.DataFrame({"band": ["A", "B"]}).lazy()).collect()
-
-        assert result["combined"].to_list() == [6.0, 1.0]
-
-    def test_empty_combined_outputs_without_legacy_is_noop(self):
-        """An empty combinedOutputs list is a valid optional no-op."""
-        tables = [
-            {
-                "name": "T1",
-                "factors": ["band"],
-                "outputColumn": "f1",
-                "defaultValue": "1.0",
-                "entries": [{"band": "A", "value": 2.0}],
-            }
-        ]
-        node = _rating_node("optional_combined", tables, combined_outputs=[])
-        _, fn, _ = _build_node_fn(node)
-        result = fn(pl.DataFrame({"band": ["A", "B"]}).lazy()).collect()
-
-        assert result.columns == ["band", "f1"]
-        assert result["f1"].to_list() == [2.0, 1.0]
 
     def test_string_factor_values_match(self):
         """Factor values are cast to Utf8 so string bands match."""
@@ -572,37 +494,6 @@ class TestRatingStepExecutor:
         assert result["minimum_factor"].to_list() == [1.5, 1.0]
         assert result["maximum_factor"].to_list() == [3.0, 1.5]
 
-    def test_legacy_combined_column_runs_alongside_new_combined_outputs(self):
-        """A legacy combinedColumn is preserved when new combinedOutputs are added."""
-        tables = [
-            {
-                "name": "T1",
-                "factors": ["band"],
-                "outputColumn": "f1",
-                "defaultValue": "1.0",
-                "entries": [{"band": "A", "value": 2.0}],
-            },
-            {
-                "name": "T2",
-                "factors": ["band"],
-                "outputColumn": "f2",
-                "defaultValue": "1.0",
-                "entries": [{"band": "A", "value": 3.0}],
-            },
-        ]
-        node = _rating_node(
-            "legacy_and_new_outputs",
-            tables,
-            operation="min",
-            combined_column="legacy_min",
-            combined_outputs=[{"outputColumn": "new_total", "operation": "add", "baseValue": 10}],
-        )
-        _, fn, _ = _build_node_fn(node)
-        result = fn(pl.DataFrame({"band": ["A", "B"]}).lazy()).collect()
-
-        assert result["legacy_min"].to_list() == [2.0, 1.0]
-        assert result["new_total"].to_list() == [15.0, 12.0]
-
     def test_combined_output_base_value_can_create_base_only_output(self):
         """A numeric base value is enough to create a combined output."""
         node = _rating_node(
@@ -656,34 +547,6 @@ class TestRatingStepExecutor:
             ],
             combined_outputs=[{"outputColumn": "premium", "operation": "divide", "baseValue": 100}],
         )
-        with pytest.raises(ValueError, match="Unsupported rating combine operation"):
-            _build_node_fn(node)
-
-    def test_legacy_combined_column_invalid_operation_raises(self):
-        """Legacy combinedColumn configs also fail loudly on misspelled operations."""
-        tables = [
-            {
-                "name": "T1",
-                "factors": ["band"],
-                "outputColumn": "f1",
-                "defaultValue": "1.0",
-                "entries": [{"band": "A", "value": 2.0}],
-            },
-            {
-                "name": "T2",
-                "factors": ["band"],
-                "outputColumn": "f2",
-                "defaultValue": "1.0",
-                "entries": [{"band": "A", "value": 3.0}],
-            },
-        ]
-        node = _rating_node(
-            "bad_legacy_operation",
-            tables,
-            operation="divide",
-            combined_column="premium",
-        )
-
         with pytest.raises(ValueError, match="Unsupported rating combine operation"):
             _build_node_fn(node)
 
@@ -804,44 +667,6 @@ def rating(df: pl.LazyFrame) -> pl.LazyFrame:
         n = parsed.nodes[0]
         assert n.data.nodeType == "ratingStep"
         assert n.data.config["tables"] == []
-
-    def test_parse_operation_and_combined(self, tmp_path):
-        rating_config = write_node_config(
-            tmp_path,
-            NodeType.RATING_STEP,
-            "rating",
-            {
-                "tables": [
-                    {
-                        "name": "T1",
-                        "factors": ["band"],
-                        "outputColumn": "f1",
-                        "entries": [{"band": "A", "value": 1.0}],
-                    },
-                    {
-                        "name": "T2",
-                        "factors": ["band"],
-                        "outputColumn": "f2",
-                        "entries": [{"band": "A", "value": 2.0}],
-                    },
-                ],
-                "operation": "add",
-                "combinedColumn": "total",
-            },
-        )
-        code = f'''
-import polars as pl
-from haute import pipeline
-
-@pipeline.rating_step(config="{rating_config}")
-def rating(df: pl.LazyFrame) -> pl.LazyFrame:
-    """Combined."""
-    return df
-'''
-        parsed = parse_pipeline_source(code, _base_dir=tmp_path)
-        n = parsed.nodes[0]
-        assert n.data.config["operation"] == "add"
-        assert n.data.config["combinedColumn"] == "total"
 
     def test_parse_combined_outputs_and_code_from_body(self, tmp_path):
         rating_config = write_node_config(
@@ -1000,8 +825,8 @@ class TestRatingStepCodegen:
         assert rt[0]["outputColumn"] == "age_factor"
         assert len(rt[0]["entries"]) == 2
 
-    def test_codegen_with_operation(self, tmp_path):
-        """Codegen emits operation and combined_column in config file when set."""
+    def test_codegen_preserves_canonical_combined_output(self, tmp_path):
+        """Codegen round-trips canonical combinedOutputs through its config file."""
         from haute._config_io import collect_node_configs
 
         tables = [
@@ -1020,7 +845,11 @@ class TestRatingStepCodegen:
                 "entries": [{"b": "A", "value": 3.0}],
             },
         ]
-        node = _rating_node("rating", tables, operation="add", combined_column="total")
+        node = _rating_node(
+            "rating",
+            tables,
+            combined_outputs=[{"outputColumn": "total", "operation": "add", "baseValue": 0}],
+        )
         src = _source_node("src")
         graph = PipelineGraph(
             nodes=[src, node],
@@ -1038,11 +867,12 @@ class TestRatingStepCodegen:
         # Roundtrip
         parsed = parse_pipeline_source(code, _base_dir=tmp_path)
         rn = [n for n in parsed.nodes if n.data.nodeType == "ratingStep"][0]
-        assert rn.data.config["operation"] == "add"
-        assert rn.data.config["combinedColumn"] == "total"
+        assert rn.data.config["combinedOutputs"] == [
+            {"outputColumn": "total", "operation": "add", "baseValue": 0}
+        ]
 
-    def test_codegen_multiply_default_omitted(self, tmp_path):
-        """Multiply (default) is not emitted in decorator; config file has combinedColumn."""
+    def test_codegen_multiply_combined_output_is_explicit(self, tmp_path):
+        """The config file preserves the complete canonical combined output."""
         import json
 
         from haute._config_io import collect_node_configs
@@ -1055,7 +885,11 @@ class TestRatingStepCodegen:
                 "entries": [{"b": "A", "value": 2.0}],
             },
         ]
-        node = _rating_node("rating", tables, combined_column="c")
+        node = _rating_node(
+            "rating",
+            tables,
+            combined_outputs=[{"outputColumn": "c", "operation": "multiply", "baseValue": 1}],
+        )
         src = _source_node("src")
         graph = PipelineGraph(
             nodes=[src, node],
@@ -1068,7 +902,9 @@ class TestRatingStepCodegen:
         # Verify config file contents
         configs = collect_node_configs(graph)
         rating_cfg = json.loads(configs["config/rating_step/rating.json"])
-        assert rating_cfg["combinedColumn"] == "c"
+        assert rating_cfg["combinedOutputs"] == [
+            {"outputColumn": "c", "operation": "multiply", "baseValue": 1}
+        ]
 
     def test_codegen_preserves_combined_outputs_in_sidecar(self):
         import json
@@ -1191,102 +1027,8 @@ class TestRatingStepCodegen:
         assert generated.index("apply_rating_step_from_config") < generated.index("final_premium")
 
 
-class TestRatingStepCompactSidecarIntegration:
-    def test_parser_expands_compact_rating_sidecar_to_canonical_rows(self, tmp_path):
-        import json
-
-        config_path = tmp_path / "config" / "rating_step" / "rating.json"
-        config_path.parent.mkdir(parents=True, exist_ok=True)
-        config_path.write_text(
-            json.dumps(
-                {
-                    "tables": [
-                        {
-                            "name": "vehicle_factor",
-                            "factors": ["vehicle_age_band", "cover_type"],
-                            "outputColumn": "vehicle_factor",
-                            "entries": {"1-3": {"comprehensive": 0.9}},
-                        }
-                    ]
-                }
-            ),
-            encoding="utf-8",
-        )
-        code = """
-import polars as pl
-from haute import pipeline
-
-@pipeline.rating_step(config="config/rating_step/rating.json")
-def rating(df: pl.LazyFrame) -> pl.LazyFrame:
-    return df
-"""
-
-        parsed = parse_pipeline_source(code, _base_dir=tmp_path)
-        rating_node = [n for n in parsed.nodes if n.data.nodeType == "ratingStep"][0]
-
-        assert rating_node.data.config["tables"][0]["entries"] == [
-            {
-                "vehicle_age_band": "1-3",
-                "cover_type": "comprehensive",
-                "value": 0.9,
-            }
-        ]
-
-    def test_parser_expands_three_factor_sidecar_using_editor_axis_order(self, tmp_path):
-        import json
-
-        config_path = tmp_path / "config" / "rating_step" / "rating.json"
-        config_path.parent.mkdir(parents=True, exist_ok=True)
-        config_path.write_text(
-            json.dumps(
-                {
-                    "tables": [
-                        {
-                            "name": "vehicle_factor",
-                            "factors": ["vehicle_age_band", "cover_type", "channel"],
-                            "outputColumn": "vehicle_factor",
-                            "entries": {
-                                "confused": {
-                                    "comprehensive": {
-                                        "1-3": 0.91,
-                                        "4-5": 0.96,
-                                    }
-                                }
-                            },
-                        }
-                    ]
-                }
-            ),
-            encoding="utf-8",
-        )
-        code = """
-import polars as pl
-from haute import pipeline
-
-@pipeline.rating_step(config="config/rating_step/rating.json")
-def rating(df: pl.LazyFrame) -> pl.LazyFrame:
-    return df
-"""
-
-        parsed = parse_pipeline_source(code, _base_dir=tmp_path)
-        rating_node = [n for n in parsed.nodes if n.data.nodeType == "ratingStep"][0]
-
-        assert rating_node.data.config["tables"][0]["entries"] == [
-            {
-                "vehicle_age_band": "1-3",
-                "cover_type": "comprehensive",
-                "channel": "confused",
-                "value": 0.91,
-            },
-            {
-                "vehicle_age_band": "4-5",
-                "cover_type": "comprehensive",
-                "channel": "confused",
-                "value": 0.96,
-            },
-        ]
-
-    def test_collect_then_parse_keeps_graph_canonical_but_sidecar_compact(self, tmp_path):
+class TestRatingStepCanonicalSidecarIntegration:
+    def test_collect_then_parse_keeps_canonical_rows(self, tmp_path):
         import json
 
         from haute._config_io import collect_node_configs

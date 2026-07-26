@@ -45,7 +45,12 @@ pipeline = haute.Pipeline("test_cli", description="CLI test pipeline")
 @pipeline.data_input(config="{source_config}")
 def source() -> pl.DataFrame:
     """Read data."""
-    return pl.scan_parquet("{input_path}")
+    from pathlib import Path
+    from haute.graph_utils import resolve_data_input_from_config
+    df = resolve_data_input_from_config(
+        "{source_config}", base_dir=Path(__file__).parent
+    )
+    return df
 
 
 @pipeline.polars
@@ -425,7 +430,12 @@ pipeline = haute.Pipeline("broken")
 
 @pipeline.data_input(config="{source_config}")
 def source() -> pl.DataFrame:
-    return pl.scan_parquet("{path}")
+    from pathlib import Path
+    from haute.graph_utils import resolve_data_input_from_config
+    df = resolve_data_input_from_config(
+        "{source_config}", base_dir=Path(__file__).parent
+    )
+    return df
 
 
 @pipeline.polars

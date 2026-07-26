@@ -855,14 +855,6 @@ def parse_pipeline_to_graph(py_path: Path) -> PipelineGraph:
 
     for node in graph.nodes:
         position = positions.get(node.id)
-        # Backward-compat: sidecars written before the submodel-key fix keyed
-        # submodel positions by the bare ``sanitize(label)`` (e.g.
-        # ``"model_stuff"``) instead of the parser's ``submodel__<name>`` id.
-        # Fall back to the legacy key so existing pipelines don't snap their
-        # submodel nodes back to (0, 0) on the first reload after the fix;
-        # the next save rewrites the sidecar with the correct key.
-        if position is None and node.data.nodeType == NodeType.SUBMODEL:
-            position = positions.get(_sanitize_func_name(node.data.label))
         if position is not None:
             node.position = position
 

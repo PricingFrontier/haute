@@ -126,7 +126,7 @@ export function MlflowStatusBadge() {
       ? "var(--danger-soft-faint)"
       : tone === "warning"
         ? "var(--warning-soft-subtle)"
-        : "var(--bg-surface)"
+        : "var(--bg-panel)"
   const border = tone === "success"
     ? "var(--success-border)"
     : tone === "danger"

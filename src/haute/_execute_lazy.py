@@ -180,11 +180,9 @@ def _strict_contract_resolution(profile: ExecutionProfile | None) -> bool:
     """Return whether builder-contract resolution must fail loudly.
 
     Contract validity is independent of projection/materialisation policy:
-    every explicitly profiled production execution is strict, including
-    ``DEPLOY_LIVE``. Context-less calls retain the historical non-strict
-    compatibility behaviour of this low-level helper.
+    every execution except interactive eager preview is strict.
     """
-    return profile is not None and profile != ExecutionProfile.PREVIEW_EAGER
+    return profile != ExecutionProfile.PREVIEW_EAGER
 
 
 def _resolve_effective_contract(
@@ -195,10 +193,9 @@ def _resolve_effective_contract(
     """Resolve the effective node contract under the active profile policy.
 
     User-declared concrete sides overlay the builder-derived contract. Known
-    external/configuration failures fail profiled production execution with a
-    typed, redacted error; interactive preview and context-less compatibility
-    calls retain a diagnosed opaque degradation. Programmer errors always
-    propagate unchanged.
+    external/configuration failures fail strict execution with a typed,
+    redacted error; interactive preview retains a diagnosed opaque degradation.
+    Programmer errors always propagate unchanged.
     """
     try:
         builder = Contract.from_tuple(get_column_contract(node.data.nodeType, node.data.config))
@@ -231,11 +228,6 @@ def _resolve_effective_contract(
         contract=projection_planner.overlay_declared_contract(node, builder),
         state="resolved",
     )
-
-
-def _effective_contract(node: GraphNode) -> Contract:
-    """Compatibility helper returning the explicitly non-strict contract."""
-    return _resolve_effective_contract(node, strict=False).contract
 
 
 def _assert_inputs_satisfy_contract(
@@ -318,33 +310,6 @@ def _normalise_required_columns_by_node(
     )
 
 
-# ---------------------------------------------------------------------------
-# Checkpoint projection — backward column analysis
-# ---------------------------------------------------------------------------
-
-
-class _ProjectionPlan(NamedTuple):
-    """Column projection needs at nodes and parent-specific fan-in edges."""
-
-    needed_by_node: dict[str, set[str] | None]
-    edge_demands: dict[tuple[str, str], set[str] | None]
-
-
-def _compat_projection_plan(
-    public_plan: projection_planner.ProjectionPlan,
-) -> _ProjectionPlan:
-    return _ProjectionPlan(
-        needed_by_node={
-            node_id: None if columns is None else set(columns)
-            for node_id, columns in public_plan.needed_by_node.items()
-        },
-        edge_demands={
-            edge: None if columns is None else set(columns)
-            for edge, columns in public_plan.edge_demands.items()
-        },
-    )
-
-
 def _strict_projection_for_context(
     execution_context: ExecutionContext | None,
     required_columns_by_node: Mapping[str, Iterable[str] | projection_planner.AllExceptColumns],
@@ -354,45 +319,6 @@ def _strict_projection_for_context(
         execution_context.profile,
         required_columns_by_node,
     )
-
-
-def _compute_projection_plan(
-    order: list[str],
-    children_of: dict[str, list[str]],
-    node_map: dict[str, GraphNode],
-    required_columns_by_node: Mapping[str, Iterable[str] | projection_planner.AllExceptColumns]
-    | None = None,
-    *,
-    strict_projection: bool = False,
-) -> _ProjectionPlan:
-    """Compatibility wrapper around the public projection planner."""
-    public_plan = projection_planner.compute_prepared_plan(
-        order,
-        children_of,
-        node_map,
-        required_columns_by_node=required_columns_by_node,
-        strict_projection=strict_projection,
-    )
-    return _compat_projection_plan(public_plan)
-
-
-def _compute_needed_columns(
-    order: list[str],
-    children_of: dict[str, list[str]],
-    node_map: dict[str, GraphNode],
-    required_columns_by_node: Mapping[str, Iterable[str] | projection_planner.AllExceptColumns]
-    | None = None,
-    *,
-    strict_projection: bool = False,
-) -> dict[str, set[str] | None]:
-    """Return per-node output needs from the full projection plan."""
-    return _compute_projection_plan(
-        order,
-        children_of,
-        node_map,
-        required_columns_by_node=required_columns_by_node,
-        strict_projection=strict_projection,
-    ).needed_by_node
 
 
 # ---------------------------------------------------------------------------
@@ -685,59 +611,6 @@ def _prune_live_switch_edges(
     return projection_planner.prune_live_switch_edges(edges, node_map, source)
 
 
-def _prepare_graph(
-    graph: PipelineGraph,
-    target_node_id: str | None = None,
-    source: str = "live",
-) -> tuple[
-    dict[str, GraphNode],  # node_map
-    list[str],  # order (topo-sorted node IDs)
-    dict[str, list[str]],  # parents_of
-    dict[str, str],  # id_to_name
-]:
-    """Shared graph preparation: filter, topo-sort, and build lookups.
-
-    Returns (node_map, order, parents_of, id_to_name). Callers that need
-    the post-pruning edge list to index per-edge metadata (sourceHandle,
-    etc.) should call :func:`_prepare_graph_with_edges` instead.
-    """
-    prepared = projection_planner.prepare_graph(
-        graph,
-        target_node_id,
-        source=source,
-    )
-    return prepared.node_map, prepared.order, prepared.parents_of, prepared.id_to_name
-
-
-def _prepare_graph_with_edges(
-    graph: PipelineGraph,
-    target_node_id: str | None = None,
-    source: str = "live",
-) -> tuple[
-    dict[str, GraphNode],
-    list[str],
-    dict[str, list[str]],
-    dict[str, str],
-    list[GraphEdge],
-]:
-    """Like :func:`_prepare_graph` but also returns the relevant-edges list
-    used to build ``parents_of``. The executor uses this to index incoming
-    edges per child without live-switch-pruned edges leaking in.
-    """
-    prepared = projection_planner.prepare_graph(
-        graph,
-        target_node_id,
-        source=source,
-    )
-    return (
-        prepared.node_map,
-        prepared.order,
-        prepared.parents_of,
-        prepared.id_to_name,
-        prepared.relevant_edges,
-    )
-
-
 @runtime_project_root_scoped
 def _execute_lazy(
     graph: PipelineGraph,
@@ -790,8 +663,7 @@ def _execute_lazy(
             cache.  Cached hits seed the lazy output map, letting execution skip
             covered upstream lineage while still building any uncached downstream
             target nodes.
-        enforce_contracts: When ``True`` (see ``executor.ENFORCE_CONTRACTS``
-            for the default), assert declared column contracts at each
+        enforce_contracts: When ``True``, assert declared column contracts at each
             node boundary via ``.collect_schema()``.  Polars computes
             schemas without executing the query, so this stays cheap.
             Production code paths (batch sink, deploy scoring, training,
@@ -806,11 +678,16 @@ def _execute_lazy(
     node_source_overrides = dict(source_by_node or {})
     if execution_context is not None:
         execution_context.checkpoint(label="lazy_start")
-    node_map, order, parents_of, id_to_name, relevant_edges = _prepare_graph_with_edges(
+    prepared = projection_planner.prepare_graph(
         graph,
         target_node_id,
         source=source,
     )
+    node_map = prepared.node_map
+    order = prepared.order
+    parents_of = prepared.parents_of
+    id_to_name = prepared.id_to_name
+    relevant_edges = prepared.relevant_edges
     # Re-check graph-shape contracts for the nodes that will actually execute.
     # The parser already validates parse-time graphs, but routes can build raw
     # graphs from the frontend that bypass the parser; without this check, a
@@ -1003,9 +880,9 @@ def _execute_lazy(
         execution_context=execution_context,
     )
     public_projection_plan = public_strategy_result.projection_plan
-    projection_plan = _compat_projection_plan(public_projection_plan)
-    needed_cols: dict[str, set[str] | None] = projection_plan.needed_by_node
-    edge_demands: dict[tuple[str, str], set[str] | None] = projection_plan.edge_demands
+    projection_plan = public_projection_plan
+    needed_cols = projection_plan.needed_by_node
+    edge_demands = projection_plan.edge_demands
 
     # Full parent lookup from ALL edges for instance resolution
     all_parents = graph.parents_of
@@ -1044,7 +921,6 @@ def _execute_lazy(
         funcs = _build_funcs(
             build_order,
             node_map,
-            parents_of,
             id_to_name,
             all_parents,
             build_node_fn,
@@ -1121,7 +997,7 @@ def _execute_lazy(
         *,
         runtime_demand: set[str] | None = None,
     ) -> tuple[_Frame, frozenset[str] | None]:
-        demand = runtime_demand
+        demand: set[str] | frozenset[str] | None = runtime_demand
         if demand is None and (parent_id, child_id) not in edge_demands:
             return frame, None
         if demand is None:
@@ -1532,14 +1408,13 @@ def _execute_lazy(
 def _build_funcs(
     order: list[str],
     node_map: dict[str, GraphNode],
-    parents_of: dict[str, list[str]],
     id_to_name: dict[str, str],
     all_parents: dict[str, list[str]],
     build_node_fn: Callable,
     *,
-    incoming_edges_by_target: Mapping[str, list[GraphEdge]] | None = None,
-    all_incoming_edges_by_target: Mapping[str, list[GraphEdge]] | None = None,
-    all_node_map: Mapping[str, GraphNode] | None = None,
+    incoming_edges_by_target: Mapping[str, list[GraphEdge]],
+    all_incoming_edges_by_target: Mapping[str, list[GraphEdge]],
+    all_node_map: Mapping[str, GraphNode],
     row_limit: int | None = None,
     preamble_ns: dict | None = None,
     source: str = "live",
@@ -1562,56 +1437,38 @@ def _build_funcs(
     """
     funcs: dict[str, tuple[Callable, bool]] = {}
     node_source_overrides = source_by_node or {}
-    original_node_map = dict(all_node_map or node_map)
-    original_edges_by_target = all_incoming_edges_by_target or incoming_edges_by_target
+    original_node_map = dict(all_node_map)
     for nid in order:
-        incoming_edges = (
-            incoming_edges_by_target.get(nid, []) if incoming_edges_by_target is not None else []
-        )
-        if incoming_edges:
-            connected_edges = [edge for edge in incoming_edges if edge.source in id_to_name]
-            src_ids = [edge.source for edge in connected_edges]
-            target_handles = [edge.targetHandle for edge in connected_edges]
-            # Per-edge source *port* name (sourceHandle or source-node-name),
-            # aligned with the per-edge frames the executor passes positionally.
-            # OUTPUT keys its frames by this to disambiguate a multi-frame source
-            # (one apiInput feeding several frames → one node name, distinct
-            # sourceHandles). MULTI_FRAME_PLAN §4b.
-            src_ports = [edge.sourceHandle or id_to_name[edge.source] for edge in connected_edges]
-            src_names: list[str] = []
-            for edge in connected_edges:
-                source_node = node_map[edge.source]
-                try:
-                    src_names.append(edge_input_name(edge, source_node))
-                except ValueError:
-                    # Leave malformed null-handle apiInput edges buildable so
-                    # eager preview can capture the routing error on the
-                    # consuming node. Fail-fast execution raises the same
-                    # ValueError from _pick_source_frame before node code runs.
-                    if not (
-                        source_node.data.nodeType == NodeType.API_INPUT
-                        and edge.sourceHandle is None
-                    ):
-                        raise
-            duplicates = duplicate_input_names(src_names)
-            if duplicates:
-                raise ConfigError(
-                    f"Node {nid!r} has duplicate input name(s) derived from its "
-                    f"incoming edges: {duplicates!r}.",
-                    node_id=nid,
-                    duplicate_input_names=duplicates,
-                )
-        else:
-            src_ids = [pid for pid in parents_of.get(nid, []) if pid in id_to_name]
-            target_handles = None
-            src_ports = None
-            src_names = [id_to_name[pid] for pid in src_ids]
+        connected_edges = [
+            edge for edge in incoming_edges_by_target.get(nid, []) if edge.source in id_to_name
+        ]
+        src_ids = [edge.source for edge in connected_edges]
+        target_handles = [edge.targetHandle for edge in connected_edges]
+        # OUTPUT uses each source port to distinguish frames from one apiInput.
+        src_ports = [edge.sourceHandle or id_to_name[edge.source] for edge in connected_edges]
+        src_names: list[str] = []
+        for edge in connected_edges:
+            source_node = node_map[edge.source]
+            try:
+                src_names.append(edge_input_name(edge, source_node))
+            except ValueError:
+                # Preview reports null-handle routing errors on the consumer.
+                if not (
+                    source_node.data.nodeType == NodeType.API_INPUT and edge.sourceHandle is None
+                ):
+                    raise
+        duplicates = duplicate_input_names(src_names)
+        if duplicates:
+            raise ConfigError(
+                f"Node {nid!r} has duplicate input name(s) derived from its "
+                f"incoming edges: {duplicates!r}.",
+                node_id=nid,
+                duplicate_input_names=duplicates,
+            )
         orig_src_names = resolve_orig_source_names(
             node_map[nid],
             original_node_map,
-            all_parents,
-            id_to_name,
-            original_edges_by_target,
+            all_incoming_edges_by_target,
         )
         node_source = node_source_overrides.get(nid, source)
         _, fn, is_source = build_node_fn(
@@ -1743,11 +1600,16 @@ def _execute_eager_core(
         memory_bytes.
     """
     graph = _resolve_graph_paths(graph)
-    node_map, order, parents_of, id_to_name, relevant_edges = _prepare_graph_with_edges(
+    prepared = projection_planner.prepare_graph(
         graph,
         target_node_id,
         source=source,
     )
+    node_map = prepared.node_map
+    order = prepared.order
+    parents_of = prepared.parents_of
+    id_to_name = prepared.id_to_name
+    relevant_edges = prepared.relevant_edges
     # See _execute_lazy: the parser is bypassed for frontend-built graphs, so
     # re-check graph-shape contracts on the executed subset to give a clean
     # ParseError instead of a Polars TypeError.
@@ -1806,8 +1668,8 @@ def _execute_eager_core(
             frame_key = (edge.source, edge.sourceHandle)
             frame_fanout_count[frame_key] = frame_fanout_count.get(frame_key, 0) + 1
 
-    projection_plan: _ProjectionPlan | None = (
-        _compute_projection_plan(
+    projection_plan: projection_planner.ProjectionPlan | None = (
+        projection_planner.compute_prepared_plan(
             order,
             children_of,
             node_map,
@@ -1820,7 +1682,7 @@ def _execute_eager_core(
         if normalised_required_columns
         else None
     )
-    needed_cols: dict[str, set[str] | None] = (
+    needed_cols: Mapping[str, frozenset[str] | None] = (
         projection_plan.needed_by_node if projection_plan is not None else {}
     )
     builder_needed_cols = projection_planner.builder_required_output_columns_by_node(
@@ -1832,7 +1694,6 @@ def _execute_eager_core(
     funcs = _build_funcs(
         order,
         node_map,
-        parents_of,
         id_to_name,
         all_parents,
         build_node_fn,
@@ -2134,13 +1995,6 @@ def _execute_eager_core(
                 # collect — exactly like a single-frame ancestor, so per-frame
                 # ``scan_parquet`` pushdown survives into its consumers.
                 mp_should_materialize = materialized_ids is None or nid in materialized_ids
-                _mp_collect_profile = (
-                    execution_context.profile
-                    if execution_context is not None
-                    else ExecutionProfile.PREVIEW_EAGER
-                )
-                _mp_allow_broad = _mp_collect_profile == ExecutionProfile.PREVIEW_EAGER
-
                 # Head-cap each frame's lazy plan up front (before any
                 # collect/schema) like the single-frame source path (the
                 # ``row_limit`` head at the top of this loop): a preview
@@ -2168,8 +2022,7 @@ def _execute_eager_core(
                         if isinstance(capped, pl.LazyFrame):
                             port_df = streaming_collect(
                                 capped,
-                                profile=_mp_collect_profile,
-                                allow_broad=_mp_allow_broad,
+                                execution_context=execution_context,
                             )
                         else:
                             port_df = capped
@@ -2315,27 +2168,16 @@ def _execute_eager_core(
                     and len(output_column_names) > column_limit
                 ):
                     collect_lf = output_lf.select(output_column_names[:column_limit])
-                collect_profile = (
-                    execution_context.profile
-                    if execution_context is not None
-                    else ExecutionProfile.PREVIEW_EAGER
-                )
-                allow_broad_collect = collect_profile == ExecutionProfile.PREVIEW_EAGER
                 if execution_context is not None:
                     execution_context.checkpoint(label="before_collect", node_id=nid)
                     with execution_context.stage("eager_collect", node_id=nid):
                         df = streaming_collect(
                             collect_lf,
-                            profile=collect_profile,
-                            allow_broad=allow_broad_collect,
+                            execution_context=execution_context,
                         )
                     execution_context.checkpoint(label="after_collect", node_id=nid)
                 else:
-                    df = streaming_collect(
-                        collect_lf,
-                        profile=collect_profile,
-                        allow_broad=allow_broad_collect,
-                    )
+                    df = streaming_collect(collect_lf)
                 eager_outputs[nid] = df
                 runtime_outputs[nid] = df
                 memory_bytes[nid] = int(df.estimated_size("b"))

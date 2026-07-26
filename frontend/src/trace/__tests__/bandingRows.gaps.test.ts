@@ -24,13 +24,11 @@ describe("asBandingDetail", () => {
 })
 
 describe("bandingRowFromFactor", () => {
-  it("prefers input_column/matched_band over fallbacks and builds a keyed row", () => {
+  it("builds a keyed row from canonical fields", () => {
     const factor: BandingFactorDetail = {
       input_column: "age",
-      column: "ignored",
       output_column: "age_band",
       matched_band: "30-40",
-      selected_band: "ignored",
       input_value: 35,
       lower_bound: 30,
       upper_bound: 40,
@@ -54,10 +52,10 @@ describe("bandingRowFromFactor", () => {
     })
   })
 
-  it("falls back to column and selected_band, and uses placeholders in the key", () => {
+  it("uses placeholders in the key when output column is absent", () => {
     const factor: BandingFactorDetail = {
-      column: "tenure",
-      selected_band: "long",
+      input_column: "tenure",
+      matched_band: "long",
     }
     const row = bandingRowFromFactor(factor, 0)
     expect(row.inputColumn).toBe("tenure")
@@ -99,11 +97,11 @@ describe("bandingRowFromDetail", () => {
     expect(row?.inputValue).toBe(7)
   })
 
-  it("falls back to column and selected_band", () => {
+  it("reads canonical input and matched-band fields", () => {
     const detail: BandingNodeDetail = {
       detail_type: "banding",
-      column: "tenure",
-      selected_band: "long",
+      input_column: "tenure",
+      matched_band: "long",
     }
     const row = bandingRowFromDetail(detail)
     expect(row?.inputColumn).toBe("tenure")

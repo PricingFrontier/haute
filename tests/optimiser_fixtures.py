@@ -212,6 +212,7 @@ def make_completed_job(
     runtime-state paths; routes that just read summary data don't need
     them.
     """
+    now = time.time()
     job: dict[str, Any] = {
         "status": "completed",
         "config": config
@@ -222,7 +223,8 @@ def make_completed_job(
         },
         "result": result if result is not None else make_solved_result(),
         "artifact_handles": artifact_handles if artifact_handles is not None else {},
-        "created_at": time.time(),
+        "created_at": now,
+        "completed_at": now,
     }
     if frontier_data is not None:
         job["frontier_data"] = frontier_data
@@ -275,6 +277,7 @@ def make_online_frontier_job(
     if selected_frontier_point is not None:
         result["selected_frontier_point"] = selected_frontier_point
 
+    now = time.time()
     job: dict[str, Any] = {
         "status": "completed",
         "config": cfg,
@@ -282,7 +285,8 @@ def make_online_frontier_job(
         "frontier_data": fd,
         "result": result,
         "artifact_handles": {},
-        "created_at": time.time(),
+        "created_at": now,
+        "completed_at": now,
     }
     if solve_result is not None:
         job["solve_result"] = solve_result

@@ -406,12 +406,12 @@ describe("ModelScoreEditor", () => {
 
   it("persisted model shows as option even when not in models list", () => {
     const props = defaultProps()
-    props.config = { registered_model: "legacy-model" }
+    props.config = { registered_model: "unlisted-model" }
     mockMlflow.models = [] // model not in the fetched list
     render(<ModelScoreEditor {...props} />)
     // Should show the persisted model as a fallback option
     const options = screen.getAllByRole("option")
     const values = options.map((o) => o.getAttribute("value"))
-    expect(values).toContain("legacy-model")
+    expect(values).toContain("unlisted-model")
   })
 })

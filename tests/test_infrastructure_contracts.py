@@ -136,30 +136,6 @@ class TestApiRouteContracts:
         assert offenders == []
 
 
-class TestFrontendTransitionLayerContracts:
-    def test_graph_canvas_hook_is_not_a_legacy_facade(self) -> None:
-        frontend_src = Path(__file__).resolve().parents[1] / "frontend" / "src"
-
-        assert not (frontend_src / "hooks" / "useUndoRedo.ts").exists()
-
-        offenders: list[str] = []
-        forbidden = (
-            "useUndoRedo",
-            "compatibility facade",
-            "Migration note",
-            "doesn't need to be rewritten in one commit",
-        )
-        for path in frontend_src.rglob("*"):
-            if path.suffix not in {".ts", ".tsx"}:
-                continue
-            text = path.read_text(encoding="utf-8")
-            for needle in forbidden:
-                if needle in text:
-                    offenders.append(f"{path.relative_to(frontend_src)}: {needle}")
-
-        assert offenders == []
-
-
 class TestLocalToolingContracts:
     def test_pre_commit_config_avoids_platform_shell_wrappers(self) -> None:
         config = (Path(__file__).resolve().parents[1] / ".pre-commit-config.yaml").read_text(

@@ -11,7 +11,6 @@ import {
   deleteUtilityFile,
   dissolveSubmodel,
   buildJsonCache,
-  estimateOptimiserFrontierAutoRange,
   estimateOptimiserSolve,
   estimateTrainingRam,
   commitMilestone,
@@ -41,7 +40,6 @@ import {
   previewNode,
   readUtilityFile,
   runExplore,
-  runFrontier,
   savePipeline,
   saveOptimiser,
   selectFrontierPoint,
@@ -396,27 +394,7 @@ describe("client runtime contracts", () => {
     await expect(getOptimiserStatus("job-1")).rejects.toThrow(/parseOptimiserStatusResponse/i)
   })
 
-  it("preserves optimiser payload budget metadata from contract fixtures", async () => {
-    mockFetch.mockReturnValue(jsonResponse(loadUiContractFixture("optimiser_frontier_response")))
-
-    const frontier = await runFrontier({
-      job_id: "opt-job-1",
-      threshold_ranges: { loss: [0.8, 1.0] },
-    })
-
-    expect(frontier.points_returned).toBe(1)
-    expect(frontier.points_limit).toBe(2000)
-    expect(frontier.points_truncated).toBe(false)
-
-    mockFetch.mockReturnValue(jsonResponse(loadUiContractFixture("optimiser_frontier_auto_range_response")))
-
-    const autoRange = await estimateOptimiserFrontierAutoRange({
-      graph: dummyGraph,
-      node_id: "opt1",
-    })
-
-    expect(autoRange.ranges.expected_margin).toEqual({ min: 11, max: 39 })
-
+  it("preserves optimiser auto-range start contract metadata", async () => {
     mockFetch.mockReturnValue(jsonResponse({ status: "started", job_id: "range-job-1", error: null }))
 
     const startedRange = await startOptimiserFrontierAutoRange({
@@ -642,21 +620,6 @@ describe("next-wave client runtime contracts", () => {
       response: { ...loadUiContractFixture<Record<string, unknown>>("mlflow_log_response"), tracking_uri: 42 },
       call: () => logOptimiserToMlflow({ job_id: "opt-job-1" }),
       error: /parseMlflowLogResponse/i,
-    },
-    {
-      name: "runFrontier",
-      response: { ...loadUiContractFixture<Record<string, unknown>>("optimiser_frontier_response"), constraint_names: "bad" },
-      call: () => runFrontier({ job_id: "opt-job-1", threshold_ranges: { loss: [0.8, 1.0] } }),
-      error: /constraint_names/i,
-    },
-    {
-      name: "estimateOptimiserFrontierAutoRange",
-      response: {
-        ...loadUiContractFixture<Record<string, unknown>>("optimiser_frontier_auto_range_response"),
-        ranges: { expected_margin: { min: "bad", max: 39 } },
-      },
-      call: () => estimateOptimiserFrontierAutoRange({ graph: dummyGraph, node_id: "opt1" }),
-      error: /parseFrontierAutoRangeResponse/i,
     },
     {
       name: "startOptimiserFrontierAutoRange",

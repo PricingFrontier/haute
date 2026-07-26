@@ -43,7 +43,9 @@ beforeEach(() => {
 
 describe("useGraphStore — pushVcEntry", () => {
   it("appends a kind:'vc' entry and clears the redo stack", () => {
-    useGraphStore.setState({ redoStack: [{ nodes: [], edges: [], preamble: "stale" }] })
+    useGraphStore.setState({
+      redoStack: [{ nodes: [], edges: [], preamble: "stale", submodels: {} }],
+    })
     const entry = makeEntry()
     useGraphStore.getState().pushVcEntry(entry)
 
@@ -62,6 +64,7 @@ describe("useGraphStore — pushVcEntry", () => {
       nodes: [makeNode(`n${i}`)],
       edges: [],
       preamble: "",
+      submodels: {},
     }))
     useGraphStore.setState({ undoStack: filler })
     useGraphStore.getState().pushVcEntry(makeEntry())

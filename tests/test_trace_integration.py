@@ -1814,8 +1814,8 @@ class TestCacheFirstTraceFull:
     """
 
     def test_first_trace_executes_fully(self, tmp_path):
-        _trace_cache.invalidate()
-        _preview_cache.invalidate()
+        _trace_cache.clear()
+        _preview_cache.clear()
 
         p = tmp_path / "data.parquet"
         pl.DataFrame({"x": [1, 2, 3]}).write_parquet(p)
@@ -1929,8 +1929,8 @@ class TestCacheReusesPreview:
     """
 
     def test_trace_reuses_preview_cache(self, tmp_path):
-        _trace_cache.invalidate()
-        _preview_cache.invalidate()
+        _trace_cache.clear()
+        _preview_cache.clear()
 
         p = tmp_path / "data.parquet"
         pl.DataFrame({"x": [1, 2, 3]}).write_parquet(p)
@@ -1957,8 +1957,8 @@ class TestCacheReusesPreview:
 
         import haute.trace as trace_mod
 
-        _trace_cache.invalidate()
-        _preview_cache.invalidate()
+        _trace_cache.clear()
+        _preview_cache.clear()
 
         p = tmp_path / "data.parquet"
         pl.DataFrame({"x": [1, 2, 3], "y": [10, 20, 30]}).write_parquet(p)
@@ -2123,8 +2123,8 @@ class TestErrorNodeCodeThrows:
             }
         )
 
-        _trace_cache.invalidate()
-        _preview_cache.invalidate()
+        _trace_cache.clear()
+        _preview_cache.clear()
 
         with pytest.raises(Exception):
             execute_trace(graph, row_index=0, target_node_id="bad")
@@ -2730,8 +2730,8 @@ class TestPerformanceLargeDataset:
 
     @pytest.mark.slow
     def test_large_dataset_first_trace(self, tmp_path):
-        _trace_cache.invalidate()
-        _preview_cache.invalidate()
+        _trace_cache.clear()
+        _preview_cache.clear()
 
         p = tmp_path / "data.parquet"
         n = 100_000
@@ -2818,8 +2818,8 @@ class TestPerformanceManyNodes:
 
         graph = _g({"nodes": nodes, "edges": edges})
 
-        _trace_cache.invalidate()
-        _preview_cache.invalidate()
+        _trace_cache.clear()
+        _preview_cache.clear()
 
         t0 = time.perf_counter()
         result = execute_trace(graph, row_index=0, target_node_id="n20")

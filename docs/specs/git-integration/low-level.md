@@ -6,7 +6,7 @@
 |---|---|
 | `src/haute/_git.py` | All git CLI interaction. Subprocess wrappers, guardrails, the working/ledger branch-pair engine, content-addressed caches, deliberate remote fetch/push/fast-forward, branch manager operations (archive/delete/undelete/restore), and read paths (repository readiness, graph, milestones, ledger expansion, commit context). |
 | `src/haute/_git_lock.py` | Reentrant per-repository mutation-lock registry shared by the engine and clone-state helpers. Uses a bounded marker-aware identity cache, a stable project-path key across `git init`, a common-Git-directory key for linked worktrees, and weak lock values so idle repositories are evicted. It never invokes Git. |
-| `src/haute/_git_state.py` | Per-clone, untracked JSON state under `<project_root>/.haute/`: working-branch association (`state.json`), UI preferences (`prefs.json`), fork-point back-links (`forks.json`), last-pushed SHAs (`pushed.json`), delete tombstones (`trash.json`). Fail-soft parsing plus lock-scoped atomic replace; no git subprocess calls. |
+| `src/haute/_git_state.py` | Per-clone, untracked JSON state under `<project_root>/.haute/`: working-branch association (`state.json`), UI preferences (`prefs.json`), last-pushed SHAs (`pushed.json`), delete tombstones (`trash.json`). Fail-soft parsing plus lock-scoped atomic replace; no git subprocess calls. |
 | `src/haute/_gitignore_guard.py` | Shared `.gitignore` deny-list and append-only `ensure_gitignore_guards()` used both by project initialization and unborn-repository seeding; preserves tracked `*.haute.json` sidecars while excluding per-clone/cache/data/venv state. |
 | `src/haute/routes/git.py` | FastAPI router at `/api/git`. One `def` (sync) handler per endpoint, each a thin `try/except` around a single `_git` call; converts `_git`'s typed exceptions to HTTP responses via `_handle_git_error`. |
 
@@ -48,9 +48,9 @@ falls through to an uncached live subprocess on every call.
 
 **Per-clone state files** (`_git_state.py`), all siblings under `<project_root>/.haute/`:
 `state.json` (`{"workingBranch": str}`), `prefs.json` (flat dict, currently one key:
-`skipSwitchConfirm`), `forks.json` (`{branch_name: fork_point_sha}`), `pushed.json`
+`skipSwitchConfirm`), `pushed.json`
 (`{"<remote>/<ref>": sha}`), `trash.json` (`{deleted_branch_name: {branch_tip, ledger_tip,
-forked_from, was_archived, deleted_at}}`, capped at `_TRASH_MAX_ENTRIES = 20`, insertion
+was_archived, deleted_at}}`, capped at `_TRASH_MAX_ENTRIES = 20`, insertion
 order = recency). Every writer holds the repository mutation lock, stages a complete UTF-8
 document beside its destination, and atomically replaces the target. Every read-modify-write
 helper holds that lock across both phases, preserving concurrent entries while readers
@@ -106,7 +106,7 @@ validation envelope.
 | `POST /api/git/working-branches` | `GitCreateWorkingBranchRequest {name,at=null,move=false}` | `GitCreateWorkingBranchResponse {working_branch,moved,switched,last_save_sha?}` |
 | `GET /api/git/prefs` | None | `GitPrefs {skip_switch_confirm=false}` |
 | `POST /api/git/prefs` | `GitPrefs {skip_switch_confirm=false}` | The persisted `GitPrefs` |
-| `GET /api/git/remotes` | None | `GitRemotesResponse {remotes:[GitRemote...],working_branch?}`; URL userinfo is redacted |
+| `GET /api/git/remotes` | None | `GitRemotesResponse {remotes:[GitRemote {name,url,working,ledger}...],working_branch?}`; `working` and `ledger` are the sole per-leg divergence records and URL userinfo is redacted |
 | `GET /api/git/show/{sha}` | Commit SHA path | Read-only `PipelineGraph` |
 | `GET /api/git/commit-context/{sha}` | Commit SHA path; query `base=null` | `GitCommitContext`, with `delta_from_base` only when `base` is supplied |
 | `POST /api/git/push` | `GitPushRequest {remote}` | `GitPushResponse {remote,working_branch,ledger_branch,default_branch,bootstrapped_default=false,pushed_refs=[]}`; `default_branch` and `bootstrapped_default` are required response members, and working/ledger non-fast-forward is 409 |
@@ -354,7 +354,7 @@ objects from gc) and a tombstone is written to `trash.json` — deliberately in 
 so a failure between the two leaves at worst a harmless extra pin, never an unrecoverable
 delete. `undelete_working_pair` is the exact inverse: recreates both refs at their recorded
 tips (verifying each still resolves — a tombstone can outlive its objects if the trash refs
-were hand-deleted and gc ran), restores the forks.json back-link, and consumes the trash
+were hand-deleted and gc ran), and consumes the trash
 refs + tombstone. The restored pair is NOT auto-adopted as the working branch.
 
 **Historical extraction (`archive_commit` / `commit_pipeline_graph`).** `ls-tree` first

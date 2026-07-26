@@ -92,21 +92,10 @@ NODE_TYPE_TO_DECORATOR: dict[NodeType, str] = {
 
 
 class ApiInputConfig(TypedDict, total=False):
-    """Config for apiInput nodes (v2 multi-frame shape).
+    """Config for apiInput nodes.
 
-    See `src/haute/_api_input_schema.py` for the on-the-wire codec and
-    `tables[]`/columns structure. ``tables`` is the load-bearing v2
-    surface.
-
-    Bundle 1 sanitisation: ``removedTables`` was previously declared
-    here as "an editor-side ledger of labels the user deleted so a
-    Re-Infer doesn't resurrect them", but the `inferTables` handler in
-    ``ApiInputEditor.tsx`` clobbers ``tables`` without consulting it —
-    the feature was specified and never wired. User deletion of tables
-    should NOT permanently alter Infer Tables behaviour. The field is
-    sanitised out; legacy on-disk configs that carry it are silently
-    ignored on read. See ``tests/test_config_validation.py`` →
-    ``test_removed_tables_not_in_api_input_valid_keys``.
+    See `src/haute/_api_input_schema.py` for the persisted
+    `tables[]`/columns structure.
     """
 
     path: str
@@ -298,7 +287,6 @@ class RatingTableEntry(TypedDict, total=False):
 class RatingTable(TypedDict, total=False):
     """A single table in a ratingStep config."""
 
-    name: str
     factors: list[str]
     factorDtypes: dict[str, dict[str, Any]]
     outputColumn: str
@@ -311,13 +299,19 @@ class RatingTable(TypedDict, total=False):
     entries: list[dict[str, Any]]
 
 
+class RatingCombinedOutput(TypedDict):
+    """One canonical combined output in a ratingStep config."""
+
+    outputColumn: str
+    operation: str
+    baseValue: float
+
+
 class RatingStepConfig(TypedDict, total=False):
     """Config for ratingStep nodes."""
 
     tables: list[RatingTable]
-    operation: str  # "multiply" | "add" | "min" | "max"
-    combinedColumn: str
-    combinedOutputs: list[dict[str, Any]]
+    combinedOutputs: list[RatingCombinedOutput]
     code: str
 
 
@@ -336,14 +330,7 @@ class OutputMappingEntry(TypedDict):
 
 
 class OutputConfig(TypedDict, total=False):
-    """Config for output nodes.
-
-    v2 carries ``outputMapping`` (the field→path assignment the assembler
-    consumes) and ``outputFormat`` (``"json"`` only for now). The legacy v1
-    ``fields`` shape is gone: a config without ``outputMapping`` is rejected at
-    build time with a migrate-me error (``_build_output``), and ``fields`` is no
-    longer a recognised key (dropped at save, warned on load).
-    """
+    """Config for output nodes."""
 
     outputMapping: list[OutputMappingEntry]
     outputFormat: str  # "json" (only "json" built initially; jsonl/jsonseq later)
@@ -453,8 +440,6 @@ class OptimiserConfig(TypedDict, total=False):
 
     # Frontier
     frontier_enabled: bool
-    frontier_min: float
-    frontier_max: float
     frontier_ranges: dict[str, dict[str, float]]
     frontier_steps: int
 
@@ -632,8 +617,6 @@ OPTIMISER_CONFIG_KEYS: tuple[str, ...] = (
     "chunk_size",
     "record_history",
     "frontier_enabled",
-    "frontier_min",
-    "frontier_max",
     "frontier_ranges",
     "frontier_steps",
     "factor_columns",

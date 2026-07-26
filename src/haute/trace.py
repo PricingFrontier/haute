@@ -54,9 +54,9 @@ from haute._expression_parser import (
     parse_expression,
     parse_expression_chain,
 )
-from haute._fingerprint_cache import FingerprintCache
 from haute._json_safe import to_json_safe
 from haute._logging import get_logger
+from haute._lru_cache import LRUCache
 from haute._trace_correlation import (
     SchemaDiff,
     _compute_schema_diff,
@@ -78,7 +78,6 @@ from haute._trace_enrichment import enrich_steps as _enrich_steps
 from haute._trace_waterfall import build_waterfall_from_steps
 from haute.errors import TraceCorrelationUnsupportedError
 from haute.executor import (
-    ENFORCE_CONTRACTS,
     PREVIEW_CACHE_MAX_BYTES,
     _build_node_fn,
     _compile_preamble,
@@ -90,7 +89,6 @@ from haute.graph_utils import (
     NodeType,
     PipelineGraph,
     _execute_eager_core,
-    _prepare_graph,
     topo_sort_ids,
 )
 
@@ -130,14 +128,13 @@ __all__ = [
 class PreviewReader(Protocol):
     """Read-only preview-cache lookup surface used by :func:`execute_trace`.
 
-    Any object that exposes ``try_get(fingerprint) -> dict | None``
-    satisfies this protocol.  ``FingerprintCache`` already does so by
-    construction, which is why the production route handler forwards the
-    executor's preview cache directly and tests can inject a trivial
-    stub without touching ``haute.executor``.
+    Any object that exposes ``get(fingerprint) -> dict | None`` satisfies
+    this protocol, so the production route handler can forward the
+    executor's cache directly and tests can inject a trivial stub without
+    touching ``haute.executor``.
     """
 
-    def try_get(self, fingerprint: str) -> dict[str, Any] | None:
+    def get(self, fingerprint: str) -> dict[str, Any] | None:
         """Return the preview slot-dict for *fingerprint*, or ``None`` on miss."""
         ...
 
@@ -173,11 +170,6 @@ class TraceStep:
     calculation: dict[str, Any] | None = None
     node_detail: dict[str, Any] | None = None
     row_lineage_type: str | None = None
-
-    @property
-    def row_data(self) -> dict[str, Any]:
-        """Alias for output_values — used by export and display layers."""
-        return self.output_values
 
 
 @dataclass(frozen=True)
@@ -265,11 +257,10 @@ explicitly.
 """
 
 
-_cache = FingerprintCache(
-    slots=("eager_outputs", "order", "parents_of", "node_map", "source_ids"),
+_cache: LRUCache[str, dict[str, Any]] = LRUCache(
+    max_size=8,
     max_bytes=TRACE_CACHE_MAX_BYTES,
     size_of=_estimate_preview_cache_entry_bytes,
-    size_sensitive_slots=("eager_outputs",),
 )
 
 
@@ -384,7 +375,7 @@ def execute_trace(
                     Used to verify the trace is operating on the same data the
                     user sees.  If the values don't match, a ValueError is raised.
         preview: Optional preview-cache lookup surface — either a reader
-                 object implementing :class:`PreviewReader` (``try_get``)
+                 object implementing :class:`PreviewReader` (``get``)
                  or a pre-materialised snapshot dict with an
                  ``eager_outputs`` slot.  When provided the trace reuses
                  the materialised DataFrames instead of re-executing the
@@ -409,7 +400,7 @@ def execute_trace(
     if not nodes:
         raise ValueError("Empty graph - nothing to trace")
 
-    # Resolve target before _prepare_graph filters to ancestors.
+    # Resolve target before graph preparation filters to ancestors.
     # Pass the node list in its declared order (not a set) so the topo
     # sort's insertion-order tie-break is deterministic — the previous
     # set-derived list made the chosen sink depend on CPython hash
@@ -480,12 +471,12 @@ def execute_trace(
         initial_column_limit=None,
         row_limit=row_limit,
         port_label=None,
-        enforce_contracts=ENFORCE_CONTRACTS,
+        enforce_contracts=True,
         materialisation_scope="full",
         memo=fingerprint_memo,
     )
 
-    cached = _cache.try_get(fp)
+    cached = _cache.get(fp)
     if cached is not None:
         cache_hit = True
         execution_origin = "trace_cache"
@@ -506,7 +497,7 @@ def execute_trace(
             "trace_cache_miss",
             fingerprint=fp[:8],
             target=target_node_id,
-            prev_fingerprint=(_cache.fingerprint or "")[:8],
+            prev_fingerprint=(_cache.most_recent_key or "")[:8],
         )
 
         # A target-only preview deliberately retains only the selected node,
@@ -536,13 +527,15 @@ def execute_trace(
         )
 
         # Populate cache — unmodified DataFrames from the single execution
-        _cache.store(
+        _cache.put(
             fp,
-            eager_outputs=eager_outputs,
-            order=order,
-            parents_of=parents_of,
-            node_map=node_map,
-            source_ids=source_ids,
+            {
+                "eager_outputs": eager_outputs,
+                "order": order,
+                "parents_of": parents_of,
+                "node_map": node_map,
+                "source_ids": source_ids,
+            },
         )
 
     # Multi-frame sources (e.g. a ≥2-table apiInput) store a
@@ -753,9 +746,8 @@ def _resolve_preview_snapshot(
     cheapest to construct:
 
     * ``None`` — caller opted out of preview reuse; returns ``None``.
-    * A reader with ``try_get(fingerprint) -> dict | None`` — we call it
-      with each candidate fingerprint and return the first hit. The executor's
-      ``FingerprintCache`` satisfies this protocol unchanged.
+    * A reader with ``get(fingerprint) -> dict | None`` — we call it with
+      each candidate fingerprint and return the first hit.
     * A snapshot dict — treated as a pre-materialised cache entry.  The
       caller has already done the fingerprint lookup, so we return the
       dict verbatim without consulting *preview_fp*.
@@ -766,24 +758,26 @@ def _resolve_preview_snapshot(
     """
     if preview is None:
         return None
-    # Duck-type the reader protocol: ``FingerprintCache`` and test stubs
-    # both expose ``try_get``.  ``isinstance(..., PreviewReader)`` would
+    # A snapshot dict also exposes ``get``; recognise the concrete snapshot
+    # shape before duck-typing the reader protocol so it is not mistaken for
+    # a keyed cache reader and queried with the fingerprint.
+    if isinstance(preview, dict):
+        return preview, preview_fps[0] if preview_fps else ""
+    # Duck-type the reader protocol. ``isinstance(..., PreviewReader)`` would
     # also work since the Protocol is ``@runtime_checkable``, but
     # ``hasattr`` is explicit about what we actually call.
-    try_get = getattr(preview, "try_get", None)
-    if callable(try_get):
+    get = getattr(preview, "get", None)
+    if callable(get):
         for preview_fp in preview_fps:
-            result = try_get(preview_fp)
+            result = get(preview_fp)
             if result is None:
                 continue
             if not isinstance(result, dict):
                 raise TypeError(
-                    f"PreviewReader.try_get must return dict | None, got {type(result).__name__}"
+                    f"PreviewReader.get must return dict | None, got {type(result).__name__}"
                 )
             return result, preview_fp
         return None
-    if isinstance(preview, dict):
-        return preview, preview_fps[0] if preview_fps else ""
     raise TypeError(
         "execute_trace(preview=...) expects a PreviewReader, a snapshot dict, or None; "
         f"got {type(preview).__name__}"
@@ -822,9 +816,8 @@ def _materialize_eager_outputs(
     singleton.
     """
     # --- Try to reuse outputs from the injected preview ---------------
-    # The injected preview is either a reader object (``try_get(fp) ->
-    # dict | None``; the executor's FingerprintCache satisfies this
-    # protocol) or a pre-materialised snapshot dict.  ``None`` disables
+    # The injected preview is either a reader object (``get(fp) -> dict |
+    # None``) or a pre-materialised snapshot dict. ``None`` disables
     # cache lookup entirely and forces a fresh execution.
     preview_lookup = _resolve_preview_snapshot(preview, preview_fps)
     preview_data = preview_lookup[0] if preview_lookup is not None else None
@@ -840,11 +833,14 @@ def _materialize_eager_outputs(
         if target_node_id in prev_outputs and prev_outputs[target_node_id] is not None:
             # Graph-structure metadata still needs computing for
             # the trace-specific fields (parents_of, node_map, etc.)
-            node_map, order, parents_of, _id_to_name = _prepare_graph(
+            prepared = execution_facade.prepare_graph(
                 graph,
                 target_node_id,
                 source=source,
             )
+            node_map = prepared.node_map
+            order = prepared.order
+            parents_of = prepared.parents_of
             # A full trace needs every executed ancestor so its waterfall
             # remains truthful. Partial target-only preview caches fall
             # through to cold trace execution below.

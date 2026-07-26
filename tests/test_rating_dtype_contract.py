@@ -379,6 +379,6 @@ def test_unsupported_factor_dtype_fails_before_lookup(dtype: pl.DataType) -> Non
 
     with pytest.raises(
         ValueError,
-        match=r"unsupported.*factor.*dtype.*Supported scalar dtypes.*Cast.*upstream",
+        match=r"Rating table.*factor.*unsupported dtype.*Supported scalar dtypes.*Cast.*upstream",
     ):
         _apply_rating_table(frame.lazy(), table)

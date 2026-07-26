@@ -39,7 +39,7 @@ afterEach(() => {
 // they're covered by NodePanel's usage + browser verification rather than here.
 const CASES: Array<{ type: string; config: Record<string, unknown> }> = [
   { type: NODE_TYPES.CONSTANT, config: { value: 5 } },
-  { type: NODE_TYPES.OUTPUT, config: { fields: [] } },
+  { type: NODE_TYPES.OUTPUT, config: { outputMapping: [] } },
 ]
 
 describe("ReadOnlyNodeConfig", () => {

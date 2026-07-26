@@ -144,11 +144,12 @@ no frame. The frame builder rejects an event payload that already contains reser
 
 **Startup.** `_lifespan()`: `_clear_bytecache()` (rmtree every `__pycache__` under
 `src/haute/`) → `configure_logging()` → `_load_env(Path.cwd())` → validate and cache
-execution-telemetry configuration → await `reap_stale_optimiser_artifacts()` in a worker thread
-(registered roots, ownership markers, and recursive byte sizing never block the event loop) →
+execution-telemetry and optimiser-housekeeping configuration →
 `_ensure_pipeline_index()` (builds the name→path index once, under a double-checked lock) →
-spawn `_watcher_forever()` as a background task. Shutdown cancels that task and awaits its
-completion, suppressing `CancelledError`.
+spawn `_watcher_forever()` and a tracked worker-thread optimiser-reaper task. The lifespan yields
+without awaiting filesystem housekeeping, so temp-directory population cannot delay server
+readiness. Shutdown cancels and awaits the watcher and observes the reaper task; reaper failures
+are logged rather than silently discarded.
 
 **Request middleware chain.** `add_middleware` prepends entries and Starlette later wraps in
 reverse, so runtime outer-to-inner order is `LocalTrustedHostMiddleware →
@@ -330,11 +331,9 @@ response, or return the rendered `document` on success.
   while the watcher derives it from an *on-disk filename* — on case-insensitive filesystems
   (macOS, Windows) those can differ in case and must still match, or live-sync silently goes
   stale for that module.
-- **Sidecar position keys reconstruct the parser's node-id scheme**, including a
-  backward-compat fallback: legacy sidecars keyed submodel positions by the bare sanitized
-  label instead of the parser's `submodel__<name>` id; `parse_pipeline_to_graph` falls back to
-  the legacy key on a miss so old sidecars don't snap submodel nodes back to `(0, 0)` on the
-  first reload after the id-scheme fix (the next save rewrites the sidecar correctly).
+- **Sidecar position keys reconstruct the parser's node-id scheme.** Submodel
+  placeholders use `submodel__<name>` and ordinary nodes use their parser ids;
+  load and save use that same canonical key.
 - **Every casefold-collision guard in `_save_pipeline.py`** (config sidecar paths, module
   output paths, save-vs-delete-target overlap) treats names differing only in case as the
   *same file*, even on case-sensitive Linux — the guard runs on every platform so a pipeline
@@ -446,8 +445,8 @@ for route-level tests, and direct unit tests for the pure-function modules.
   CRUD (including AST-syntax-error rejection with line numbers).
 - **`test_output_assemble_routes.py`** — the dry-run route: schema-pre-check ordering,
   volatile-config swap-in behaviour, timeout/error-status mapping.
-- The shared assembler and v2 codec suites (`test_output_assembler.py`,
-  `test_v2_codec_and_shred.py`, and `test_v1_removal_contract.py`) belong to
+- The shared assembler and codec suites (`test_output_assembler.py` and
+  `test_v2_codec_and_shred.py`) belong to
   [json-shredding](../json-shredding/low-level.md); this component's route tests verify
   only their HTTP consumption and error mapping.
 - **`test_errors.py`** — the `HauteError` hierarchy's `**context` rendering and `repr`/`str`
@@ -622,3 +621,10 @@ Remaining server API improvement work is tracked in the
   `polars.exceptions.PolarsError` as expected 400-class input failures with
   static safe details. It retains the generic sanitised `ValueError` and 500
   branches, including `exc_info=True`.
+
+## Approved change contract — canonical-only API payloads
+
+Under [ROAD-CANON-01](../../roadmap/engineering-quality.md#road-canon-01--prerelease-canonical-only-contract),
+server routes return and consume only current versioned payload fields. They do not append
+temporary historical detail keys, classify earlier config generations, strip old fields, or try
+alternate sidecar identifiers. Ordinary current-schema validation and safe error translation remain.

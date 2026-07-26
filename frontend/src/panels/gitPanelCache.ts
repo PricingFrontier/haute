@@ -21,7 +21,6 @@
 import type {
   GitGraphResponse,
   GitLedgerSave,
-  GitManagedBranch,
   GitMilestoneEntry,
 } from "../api/types"
 
@@ -35,8 +34,6 @@ export interface BranchHistoryEntry {
   milestonesJson: string
   pending: GitLedgerSave[]
   pendingJson: string
-  forkBranches: GitManagedBranch[]
-  forkBranchesJson: string
 }
 
 /** Cheap stable serialization for payload equality. Responses are parsed

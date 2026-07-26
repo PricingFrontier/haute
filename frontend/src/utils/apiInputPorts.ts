@@ -128,9 +128,8 @@ function eligibleFrameLabels(emit: readonly Record<string, unknown>[]): string[]
 /**
  * Ordered list of every runtime-eligible apiInput frame label.
  *
- * This is the only frontend frame-label derivation. A single eligible frame
- * is labelled exactly like a multi-frame apiInput; only zero eligible frames
- * use the legacy null-id handle.
+ * This is the only frontend frame-label derivation. Every eligible frame uses
+ * its label as its handle.
  */
 export function apiInputFrameLabels(config: ConfigLike): string[] {
   return eligibleFrameLabels(emitTables(config))
@@ -148,10 +147,10 @@ export type SubmodelGraphLike = {
   submodels: Record<string, unknown>
 }
 
-/** Read either supported submodel metadata shape without inventing a graph. */
+/** Read the graph nested in canonical submodel metadata. */
 export function submodelGraphFromMetadata(value: unknown): SubmodelGraphLike | undefined {
   const metadata = isRecord(value) ? value : undefined
-  const graph = metadata && isRecord(metadata.graph) ? metadata.graph : metadata
+  const graph = metadata && isRecord(metadata.graph) ? metadata.graph : undefined
   if (!graph || !Array.isArray(graph.nodes)) return undefined
   return {
     nodes: graph.nodes as SimpleNode[],
@@ -347,9 +346,7 @@ export function apiInputLabelIssueMessage(issue: ApiInputLabelIssue | null): str
 
 /**
  * The set of `sourceHandle` values an apiInput's outgoing edges may
- * legitimately carry, given its config. One or more eligible frames expose
- * their raw labels; zero eligible frames expose no valid source keys because
- * their legacy default handle is rendered non-connectable.
+ * legitimately carry, given its config.
  */
 export function validSourceHandleKeys(config: ConfigLike): Set<string> {
   return new Set(apiInputFrameLabels(config))
@@ -388,23 +385,16 @@ export function reconcileApiInputEdges<E extends SimpleEdge>({
   nodeId,
   config,
   edges,
-  pruneNamedStale = true,
 }: {
   nodeId: string
   config: ConfigLike
   edges: E[]
-  /** Load reconciliation passes false to preserve named unresolved edges. */
-  pruneNamedStale?: boolean
 }): ReconcileApiInputEdgesResult<E> {
   const validKeys = validSourceHandleKeys(config)
   const removed: ReconciledApiInputEdge[] = []
   const kept: E[] = []
   for (const edge of edges) {
     if (edge.source !== nodeId) {
-      kept.push(edge)
-      continue
-    }
-    if (!pruneNamedStale && edge.sourceHandle !== null && edge.sourceHandle !== undefined) {
       kept.push(edge)
       continue
     }

@@ -60,7 +60,7 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[tuple[T
     monkeypatch.chdir(tmp_path)
     original = _get_project_root()
     set_project_root(tmp_path)
-    _preview_cache.invalidate()
+    _preview_cache.clear()
 
     from haute.server import app
 
@@ -69,7 +69,7 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[tuple[T
     data_path.write_text(_FIXTURE.read_text())
     yield TestClient(app), data_path
     set_project_root(original)
-    _preview_cache.invalidate()
+    _preview_cache.clear()
 
 
 def test_dry_run_assembles_nested_document(project) -> None:
@@ -133,7 +133,7 @@ def test_dry_run_rejects_non_array_root_with_422(project) -> None:
         json={"graph": _graph_json(config), "node_id": "out", "output_mapping": bad},
     )
     assert resp.status_code == 422, resp.text
-    assert "array-outer document" in resp.text
+    assert "must start with '$[:]'" in resp.text
 
 
 def test_dry_run_unknown_node_returns_404(project) -> None:

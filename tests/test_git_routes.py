@@ -81,7 +81,7 @@ class TestGitUndelete:
 
     def _seed_fork_with_history(self, tmp_path: Path) -> None:
         """A fork with real history: dev → milestone → fork feat AT the
-        milestone (writes its forks.json back-link) → a milestone on feat →
+        milestone → a milestone on feat →
         one PENDING save (so an unconfirmed delete refuses) → back on dev."""
         from haute._git import (
             commit_milestone,
@@ -104,13 +104,12 @@ class TestGitUndelete:
         set_working_branch(self._BRANCH, tmp_path, cwd=tmp_path)
 
     def test_delete_then_undelete_roundtrip(self, client: TestClient, tmp_path: Path) -> None:
-        from haute._git_state import read_forks, read_trash
+        from haute._git_state import read_trash
 
         self._seed_fork_with_history(tmp_path)
         ledger = f"{self._FORK}-save"
         branch_tip = _git(tmp_path, "rev-parse", self._FORK)
         ledger_tip = _git(tmp_path, "rev-parse", ledger)
-        forked_from = read_forks(tmp_path)[self._FORK]
 
         refused = client.request("DELETE", "/api/git/branches", json={"branch": self._FORK})
         assert refused.status_code == 403  # the pending save still gates deletion
@@ -126,18 +125,15 @@ class TestGitUndelete:
         tombstone = read_trash(tmp_path)[self._FORK]
         assert tombstone["branch_tip"] == branch_tip
         assert tombstone["ledger_tip"] == ledger_tip
-        assert tombstone["forked_from"] == forked_from
         assert tombstone["was_archived"] is False
         assert tombstone["deleted_at"]
-        assert self._FORK not in read_forks(tmp_path)
 
         res = client.post("/api/git/undelete", json={"branch": self._FORK})
         assert res.status_code == 200
         assert res.json() == {"status": "restored", "branch": self._FORK}
-        # Tips identical to before the delete; back-link restored; trash consumed.
+        # Tips identical to before the delete; trash consumed.
         assert _git(tmp_path, "rev-parse", self._FORK) == branch_tip
         assert _git(tmp_path, "rev-parse", ledger) == ledger_tip
-        assert read_forks(tmp_path)[self._FORK] == forked_from
         assert read_trash(tmp_path) == {}
         assert _git(tmp_path, "rev-parse", "--verify", f"refs/haute/trash/{self._FORK}") == ""
         assert _git(tmp_path, "rev-parse", "--verify", f"refs/haute/trash/{ledger}") == ""

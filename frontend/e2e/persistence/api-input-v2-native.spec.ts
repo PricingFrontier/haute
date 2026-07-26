@@ -1,21 +1,4 @@
-/**
- * Persistence-layer e2e for the v2-native apiInput flow.
- *
- * This is the canonical assertion of the user-visible flow Nick has been
- * trying to validate manually. Per AGENTS.md §UI Test Assertions:
- *   - Drive the user gesture through the real browser (not mocks).
- *   - Assert at the persistent boundary: read the on-disk config file.
- *   - Reload the page and re-classify; an apparent in-memory v2 that
- *     re-renders as v1 after reload is the bug pattern this guards.
- *
- * The migrate banner / `legacyToV2` codec is being removed from the
- * apiInput editor. Step 3 below pins the post-removal expectation. While
- * the banner code still exists, that step is a `expect.soft` so the
- * spec runs cleanly and documents the gap.
- *
- * Step 2 (preview auto-loads on first file select) is documented as a
- * known failure today via `expect.soft` and an `annotations` entry.
- */
+/** Persistence-layer e2e for the canonical apiInput flow. */
 import { existsSync, readFileSync } from "node:fs"
 import { resolve } from "node:path"
 
@@ -39,7 +22,7 @@ const quotesDataPath = resolve(
 
 test.describe.configure({ mode: "serial" })
 
-test.describe("apiInput v2-native flow (persistence layer)", () => {
+test.describe("apiInput persistence", () => {
   test.beforeEach(() => {
     resetE2eProject()
     // Sanity-check the harness scaffolded what we need. If these fail the
@@ -48,7 +31,7 @@ test.describe("apiInput v2-native flow (persistence layer)", () => {
     expect(existsSync(quotesConfigPath), "harness wrote empty quotes.json").toBe(true)
     expect(existsSync(quotesDataPath), "harness copied sample_quote.json").toBe(true)
     const initialCfg = JSON.parse(readFileSync(quotesConfigPath, "utf8"))
-    expect(initialCfg, "starting state is v2-native (path set, no schema)").toEqual(
+    expect(initialCfg, "starting state has a path and no inferred schema").toEqual(
       { path: "data/quotes/sample_quote.json" },
     )
   })
@@ -79,20 +62,9 @@ test.describe("apiInput v2-native flow (persistence layer)", () => {
       await expect(page.locator('[data-testid="api-input-editor"]')).toBeVisible()
     })
 
-    await test.step("3. No migration banner with empty (v2-native) config", async () => {
-      // Empty config → classifyConfig returns "empty" → no banner.
-      // This currently passes for {} but post-removal the banner code is
-      // deleted entirely; the assertion stays meaningful either way.
-      await expect(
-        page.locator('[data-testid="api-input-migration-banner"]'),
-      ).toHaveCount(0)
-    })
-
-    await test.step("4. Infer Tables produces ≥2 tables with no indexed-array paths", async () => {
-      // Path is already set by the harness fixture (v2-native starting
-      // state). File-pick → preview-auto-load gap is covered by a
-      // separate test (TODO) so this test stays focused on Infer →
-      // direct Preview → optional Cache wiring.
+    await test.step("2. Infer Tables produces ≥2 tables with canonical array paths", async () => {
+      // Path is already set by the harness fixture. This test stays focused
+      // on Infer → direct Preview → optional Cache wiring.
       //
       // Click Infer Tables.
       const inferBtn = page.locator('[data-testid="api-input-infer-btn"]')
@@ -120,9 +92,8 @@ test.describe("apiInput v2-native flow (persistence layer)", () => {
         "Infer Tables produces at least 2 tables (arrays as child tables, not flat indexed columns)",
       ).toBeGreaterThanOrEqual(2)
 
-      // No indexed-array paths: a column path matching `.<digit>.` is
-      // the v1-flatten failure mode (`claims.1.claim_date`). Scan all
-      // column-path inputs (api-input-table-<ti>-col-<ci>-path); table-level
+      // Scan all column-path inputs (api-input-table-<ti>-col-<ci>-path);
+      // table-level
       // path inputs (api-input-table-<ti>-path) have no -col- segment.
       const allColumnPathInputs = page.locator(
         '[data-testid="api-input-tables"] [data-testid*="-col-"][data-testid$="-path"]',
@@ -137,11 +108,11 @@ test.describe("apiInput v2-native flow (persistence layer)", () => {
       const indexedPaths = allPaths.filter((p) => /\.\d+\./.test(p))
       expect(
         indexedPaths,
-        "no .N. indexed-array paths (v2 should produce child tables, not v1-flatten)",
+        "arrays produce child tables rather than indexed columns",
       ).toEqual([])
     })
 
-    await test.step("6. Preview works before optional Cache as Parquet prewarm", async () => {
+    await test.step("3. Preview works before optional Cache as Parquet prewarm", async () => {
       // Runtime must be usable immediately after schema inference: with no
       // parquet yet, the backend shreds the JSON directly for this preview.
       // Request the preview after the inferred schema has been committed to
@@ -186,7 +157,7 @@ test.describe("apiInput v2-native flow (persistence layer)", () => {
       ).toHaveCount(0)
     })
 
-    await test.step("7. On-disk persistence: v2 shape with no v1 legacy keys", async () => {
+    await test.step("4. Canonical table schema persists on disk", async () => {
       // The editor's writes auto-save in some paths and require explicit
       // save in others. To pin the disk shape we issue a save explicitly
       // here (via Ctrl/Cmd+S) and wait for the API response.
@@ -200,34 +171,20 @@ test.describe("apiInput v2-native flow (persistence layer)", () => {
 
       const cfg = JSON.parse(readFileSync(quotesConfigPath, "utf8"))
       expect(cfg, "on-disk config has tables[]").toHaveProperty("tables")
-      expect(cfg, "on-disk config has no v1 flattenSchema").not.toHaveProperty(
-        "flattenSchema",
-      )
-      expect(cfg, "on-disk config has no v1 column_renames").not.toHaveProperty(
-        "column_renames",
-      )
-      expect(cfg, "on-disk config has no v1 selected_columns").not.toHaveProperty(
-        "selected_columns",
-      )
       expect(
         cfg.tables.length,
         ">=2 tables persisted (root + ≥1 child)",
       ).toBeGreaterThanOrEqual(2)
     })
 
-    await test.step("8. Reload re-classifies persisted config as v2", async () => {
+    await test.step("5. Reload renders the persisted tables", async () => {
       await page.reload()
       await expect(
         page.getByRole("toolbar", { name: /pipeline toolbar/i }),
       ).toBeVisible()
       await page.locator('[data-testid="rf__node-quotes"]').click()
       await expect(page.locator('[data-testid="api-input-editor"]')).toBeVisible()
-      // No migration banner on reload — the persisted shape must classify
-      // as v2 (or empty, but with tables[] persisted it should be v2).
-      await expect(
-        page.locator('[data-testid="api-input-migration-banner"]'),
-        "no migration banner after reload",
-      ).toHaveCount(0)
+      expect(await page.getByTestId(/^api-input-table-\d+$/).count()).toBeGreaterThanOrEqual(2)
     })
 
     // Capture any console errors or 5xx responses that fired during the run.

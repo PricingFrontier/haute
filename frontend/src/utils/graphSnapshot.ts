@@ -167,7 +167,7 @@ export function cloneGraphSnapshot(input: {
   nodes: readonly Node[]
   edges: readonly PipelineEdge[]
   preamble: string
-  submodels?: Record<string, unknown>
+  submodels: Record<string, unknown>
 }): {
   nodes: Node[]
   edges: PipelineEdge[]
@@ -181,7 +181,7 @@ export function cloneGraphSnapshot(input: {
     ),
     preamble: input.preamble,
     submodels: cloneGraphValue(
-      stripGraphMetadataTransientFields(input.submodels ?? {}),
+      stripGraphMetadataTransientFields(input.submodels),
     ) as Record<string, unknown>,
   }
 }

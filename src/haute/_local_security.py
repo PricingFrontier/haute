@@ -26,7 +26,6 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 SESSION_TOKEN_ENV = "HAUTE_LOCAL_SESSION_TOKEN"
 DISABLE_AUTH_ENV = "HAUTE_DISABLE_LOCAL_SESSION_AUTH"
 TRUSTED_HOSTS_ENV = "HAUTE_TRUSTED_HOSTS"
-SESSION_TOKEN_HEADER = "x-haute-session-token"
 SESSION_TOKEN_COOKIE = "haute_session"
 SESSION_BOOTSTRAP_PATH = "/api/session/bootstrap"
 
@@ -202,9 +201,7 @@ def _cookie_token(headers: Headers) -> str | None:
 
 
 def _request_token_matches(headers: Headers) -> bool:
-    return _token_matches(headers.get(SESSION_TOKEN_HEADER)) or _token_matches(
-        _cookie_token(headers)
-    )
+    return _token_matches(_cookie_token(headers))
 
 
 def _configured_local_hosts() -> list[str]:

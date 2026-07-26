@@ -273,7 +273,7 @@ export function TwoWayGrid({ table, bandingLevels, onUpdateEntries, factorOverri
           </thead>
           <tbody>
             {rowLabels.map((row, ri) => (
-              <tr key={row} style={{ background: ri % 2 === 0 ? 'var(--bg-input)' : 'var(--bg-surface)' }}>
+              <tr key={row} style={{ background: ri % 2 === 0 ? 'var(--bg-input)' : 'var(--bg-panel)' }}>
                 <th scope="row" className="px-2.5 py-1 font-mono text-[11px] font-medium text-left sticky left-0 z-10"
                   style={{
                     ...NON_EDITABLE_LABEL_CELL_STYLE,

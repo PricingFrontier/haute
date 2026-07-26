@@ -262,9 +262,6 @@ def _glm_training_term_columns(config: dict[str, Any]) -> frozenset[str] | None:
     if str(config.get("algorithm", "catboost")).lower() != "glm":
         return None
     raw_terms = config.get("terms")
-    params = config.get("params")
-    if raw_terms is None and isinstance(params, dict):
-        raw_terms = params.get("terms")
     if not isinstance(raw_terms, dict) or not raw_terms:
         return None
     terms = frozenset(name for name in raw_terms if isinstance(name, str) and name)
@@ -713,7 +710,7 @@ def _training_response_payload(
         feature_importance=train_result.feature_importance,
         model_path=model_path,
         train_rows=train_result.train_rows,
-        test_rows=train_result.test_rows,
+        validation_rows=train_result.validation_rows,
         holdout_rows=train_result.holdout_rows,
         holdout_metrics=train_result.holdout_metrics,
         diagnostics_set=train_result.diagnostics_set,
@@ -926,7 +923,6 @@ def _run_dispersion_process_job(
 
         frame = streaming_collect(
             pl.scan_parquet(prepared.data_path).filter(pl.col(target).is_not_null()).select(needed),
-            profile=ExecutionProfile.TRAINING_PREP,
             execution_context=execution_context,
         )
 
@@ -1031,7 +1027,6 @@ def _publish_training_artifacts(
             raise WorkerProtocolError("Training artifact destination escapes output root")
         staged_and_final[kind] = (staged, final)
 
-    from haute.modelling._feature_contract import CONTRACT_FILENAME
     from haute.modelling._training_job import model_contract_filename
 
     model_staged, _model_final = staged_and_final["model"]
@@ -1041,14 +1036,6 @@ def _publish_training_artifacts(
     if contract_staged.name != model_contract_filename(model_staged.stem):
         raise WorkerProtocolError("Training model and feature contract filenames do not match")
     destination_root.mkdir(parents=True, exist_ok=True)
-    legacy_contract = destination_root / CONTRACT_FILENAME
-    if legacy_contract.exists():
-        logger.warning(
-            "legacy_shared_feature_contract_present",
-            legacy_path=str(legacy_contract),
-            per_model_path=str(staged_and_final["feature_contract"][1]),
-            model_name=model_staged.stem,
-        )
 
     backups: dict[Path, Path] = {}
     published: list[Path] = []
@@ -1552,8 +1539,7 @@ class TrainService:
                 status_code=400,
                 detail="Dispersion estimation applies to GLM modelling nodes only.",
             )
-        params = config.get("params") or {}
-        family = str(params.get("family") or config.get("family", "") or "")
+        family = str(config.get("family", "") or "")
         link = str(config.get("link", "") or "")
         _validate_glm_family_link(family, link)
         if family != expected_family:
@@ -1847,8 +1833,7 @@ class TrainService:
         # loss-vs-task. _validate_glm_family_link also raises on an empty
         # family, and an absent loss is caught by the completeness gate below.
         if algorithm == "glm":
-            params = config.get("params") or {}
-            family = params.get("family") or config.get("family", "")
+            family = config.get("family", "")
             link = config.get("link", "")
             _validate_glm_family_link(family, link)
         else:
@@ -2030,10 +2015,10 @@ class TrainService:
         # Free the preview cache to reclaim memory
         from haute.executor import _preview_cache
 
-        _preview_cache.invalidate()
+        _preview_cache.clear()
         from haute.trace import _cache as _trace_cache
 
-        _trace_cache.invalidate()
+        _trace_cache.clear()
         gc.collect()
         _mem_checkpoint("cleared preview cache")
 
@@ -2047,7 +2032,6 @@ class TrainService:
 
             checkpoint_dir = Path(tempfile.mkdtemp(prefix="haute_train_ckpt_"))
             from haute._polars_utils import DEFAULT_STREAMING_CHUNK_SIZE
-            from haute.executor import ENFORCE_CONTRACTS
 
             chunk_size = body.streaming_chunk_size or DEFAULT_STREAMING_CHUNK_SIZE
             dataframe_cache_request = build_dataframe_execution_cache_request(
@@ -2067,7 +2051,7 @@ class TrainService:
                 ),
                 target_node_id=body.node_id,
                 required_columns_by_node=required_columns_by_node,
-                enforce_contracts=ENFORCE_CONTRACTS,
+                enforce_contracts=True,
                 preamble_ns_supplied=preamble_ns is not None,
                 streaming_chunk_size=chunk_size,
             )
@@ -2079,7 +2063,7 @@ class TrainService:
                 preamble_ns=preamble_ns,
                 source=body.source,
                 checkpoint_dir=checkpoint_dir,
-                enforce_contracts=ENFORCE_CONTRACTS,
+                enforce_contracts=True,
                 required_columns_by_node=required_columns_by_node,
                 execution_context=execution_context,
                 dataframe_cache_request=dataframe_cache_request,

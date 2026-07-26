@@ -13,11 +13,11 @@ from unittest.mock import patch
 import polars as pl
 import pytest
 
-from haute._parser_helpers import _build_node_config
+from haute._builders import _apply_online, _apply_ratebook, _build_node_fn
+from haute._config_builder import _build_node_config
 from haute._types import GraphNode, NodeData, NodeType
 from haute.codegen import _generate_node_code, _node_to_code
 from haute.errors import RatingFactorDtypeContractError
-from haute.executor import _apply_online, _apply_ratebook, _build_node_fn
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -464,7 +464,7 @@ class TestExecutorRatebook:
         miss_logs = [log for log in logs if log["event"] == "rating_table_lookup_misses"]
         assert len(miss_logs) == 1
         assert miss_logs[0]["log_level"] == "warning"
-        assert miss_logs[0]["table"] == "region"
+        assert miss_logs[0]["table"] == "region_optimised_factor"
         assert miss_logs[0]["output_column"] == "region_optimised_factor"
         assert miss_logs[0]["miss_count"] == 1
         assert miss_logs[0]["missing_keys"] == [{"region": "Edinburgh"}]
@@ -538,7 +538,7 @@ class TestExecutorRatebook:
         assert result["age_band_optimised_factor"][0] == pytest.approx(1.0)
         assert result["optimised_factor"][0] == pytest.approx(1.05)
         miss_logs = [log for log in logs if log["event"] == "rating_table_lookup_misses"]
-        assert [log["table"] for log in miss_logs] == ["age_band"]
+        assert [log["table"] for log in miss_logs] == ["age_band_optimised_factor"]
 
     def test_ratebook_empty_factor_tables(self, write_artifact):
         artifact = _make_ratebook_artifact()
@@ -801,7 +801,7 @@ class TestExecutorRatebookComposite:
         assert result["channel:age_band_optimised_factor"][0] == pytest.approx(1.0)
         miss_logs = [log for log in logs if log["event"] == "rating_table_lookup_misses"]
         assert len(miss_logs) == 1
-        assert miss_logs[0]["table"] == "channel:age_band"
+        assert miss_logs[0]["table"] == "channel:age_band_optimised_factor"
         assert miss_logs[0]["missing_keys"] == [{"channel": "phone", "age_band": "26-40"}]
 
     def test_composite_numeric_component_column_matches(self):
@@ -1070,56 +1070,6 @@ class TestApplyRatebookHelper:
         assert "selected_price_factor" in result.columns
         assert "optimised_factor" not in result.columns
         assert result["selected_price_factor"].to_list() == pytest.approx([1.05, 0.98])
-
-    def test_missing_factor_group_logs_warning(self):
-        """Entries without __factor_group__ are skipped and a warning is logged."""
-        from unittest.mock import patch
-
-        artifact = {
-            "version": "v1",
-            "mode": "ratebook",
-            "factor_tables": {
-                "area": [
-                    {"__factor_group__": "London", "optimal_scenario_value": 1.1},
-                    # Missing __factor_group__ key:
-                    {"optimal_scenario_value": 0.9},
-                    {"bad_key": "X", "optimal_scenario_value": 0.8},
-                ],
-            },
-            "factor_dtypes": {"area": [{"column": "area", "dtype": {"kind": "String"}}]},
-        }
-        df = pl.DataFrame({"area": ["London"]})
-
-        with patch("haute._builders.logger") as mock_logger:
-            result = _apply_ratebook(df.lazy(), artifact, "v1", "__ver__").collect()
-
-        mock_logger.warning.assert_any_call(
-            "ratebook_entries_missing_factor_group",
-            factor="area",
-            skipped=2,
-            total=3,
-        )
-        # The one valid entry should still produce results
-        assert "area_optimised_factor" in result.columns
-
-    def test_all_entries_valid_no_warning(self):
-        """When all entries have __factor_group__, no warning is logged."""
-        from unittest.mock import patch
-
-        artifact = _make_ratebook_artifact()
-        df = pl.DataFrame(
-            {
-                "region": ["London", "Manchester"],
-                "price": [100.0, 200.0],
-            }
-        )
-
-        with patch("haute._builders.logger") as mock_logger:
-            _apply_ratebook(df.lazy(), artifact, "v1", "__ver__").collect()
-
-        # No call to warning with the skipped-entries event
-        for call in mock_logger.warning.call_args_list:
-            assert call[0][0] != "ratebook_entries_missing_factor_group"
 
 
 # ---------------------------------------------------------------------------

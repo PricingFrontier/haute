@@ -9,7 +9,7 @@ const baseResult: TrainResult = {
   feature_importance: [],
   model_path: "",
   train_rows: 10,
-  test_rows: 5,
+  validation_rows: 5,
 }
 
 afterEach(cleanup)

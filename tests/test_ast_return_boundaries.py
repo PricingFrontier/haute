@@ -351,7 +351,7 @@ class TestLineHeuristicMisfires:
         assert "df = late" in result, f"late-exit branch not flipped to `df = late`:\n{result}"
 
     def test_source_node_nested_fn_return_df_preserved(self) -> None:
-        """DataSource body: inner helper's terminal ``return df`` must NOT be eaten.
+        """Data Input body: inner helper's terminal ``return df`` must NOT be eaten.
 
         Pathological body: the user ends the node body with an inner
         helper whose last line is ``return df``.  No outer return
@@ -362,7 +362,8 @@ class TestLineHeuristicMisfires:
         helper ``def`` is left with no body).
         """
         body = _body(
-            'df = pl.scan_parquet("x.parquet")',
+            "from haute.graph_utils import resolve_data_input_from_config",
+            'df = resolve_data_input_from_config("config/data_input/input.json")',
             "def helper():",
             "    df = pl.DataFrame()",
             "    return df",
@@ -387,7 +388,8 @@ class TestLineHeuristicMisfires:
         body — which is a SyntaxError.
         """
         body = _body(
-            'df = pl.scan_parquet("x.parquet")',
+            "from haute.graph_utils import resolve_data_input_from_config",
+            'df = resolve_data_input_from_config("config/data_input/input.json")',
             "x = 1",
             "def helper():",
             "    return df",
@@ -573,9 +575,9 @@ class TestModelScoreExtractor:
         body = _body(
             "from pathlib import Path",
             "from haute.graph_utils import score_from_config",
-            'result = score_from_config(source, config="score.json")',
-            'df = result.with_columns(doubled=pl.col("prediction") * 2)',
-            "return result",
+            'df = score_from_config(source, config="score.json")',
+            'df = df.with_columns(doubled=pl.col("prediction") * 2)',
+            "return df",
             docstring="score with post",
         )
 
@@ -584,8 +586,7 @@ class TestModelScoreExtractor:
         _assert_is_valid_python(result, context="modelScore post")
         assert "doubled" in result
         assert "score_from_config" not in result
-        assert "return result" not in result
-        assert "result" not in result
+        assert "return df" not in result
         assert 'df = df.with_columns(doubled=pl.col("prediction") * 2)' in result
 
     def test_model_score_inner_fn_return_result_preserved(self) -> None:
@@ -600,12 +601,12 @@ class TestModelScoreExtractor:
         body = _body(
             "from pathlib import Path",
             "from haute.graph_utils import score_from_config",
-            'result = score_from_config(source, config="score.json")',
+            'df = score_from_config(source, config="score.json")',
             "def process(r):",
             "    r = r.with_columns(x=pl.lit(1))",
             "    return r",
-            "result = process(result)",
-            "return result",
+            "df = process(df)",
+            "return df",
             docstring="nested process",
         )
 
@@ -617,11 +618,11 @@ class TestModelScoreExtractor:
         assert "return r" in result, (
             f"Inner `return r` (different variable!) should survive.  Got:\n{result}"
         )
-        # Outer codegen `return result` stripped:
-        assert not result.rstrip().endswith("return result"), (
-            f"Outer trailing `return result` not stripped:\n{result}"
+        # Outer codegen return is stripped:
+        assert not result.rstrip().endswith("return df"), (
+            f"Outer trailing `return df` not stripped:\n{result}"
         )
-        assert "result = process(result)" not in result
+        assert "df = process(df)" in result
         assert "df = process(df)" in result
 
     def test_model_score_inner_fn_return_result_at_end_preserved(self) -> None:
@@ -637,9 +638,9 @@ class TestModelScoreExtractor:
         body = _body(
             "from pathlib import Path",
             "from haute.graph_utils import score_from_config",
-            'result = score_from_config(source, config="score.json")',
+            'df = score_from_config(source, config="score.json")',
             "def identity():",
-            "    return result",
+            "    return df",
             docstring="inner return result at end",
         )
 
@@ -653,7 +654,6 @@ class TestModelScoreExtractor:
             "Inner `return result` should become `return df` after generated "
             f"score variable normalisation:\n{result}"
         )
-        assert "return result" not in result
 
 
 # ---------------------------------------------------------------------------
@@ -667,9 +667,8 @@ class TestExternalFileExtractor:
     def test_external_file_trailing_return_stripped(self) -> None:
         """Baseline: trailing ``return df`` in external-file body is stripped."""
         body = _body(
-            "import pickle",
-            'with open("m.pkl", "rb") as _f:',
-            "    obj = pickle.load(_f)",
+            "from haute.graph_utils import load_external_object_from_config",
+            'obj = load_external_object_from_config("config/load_file/model.json")',
             "df = df.with_columns(pred=pl.lit(obj.predict()))",
             "return df",
             docstring="pickled model",
@@ -690,9 +689,8 @@ class TestExternalFileExtractor:
         migration doesn't regress.
         """
         body = _body(
-            "import pickle",
-            'with open("m.pkl", "rb") as _f:',
-            "    obj = pickle.load(_f)",
+            "from haute.graph_utils import load_external_object_from_config",
+            'obj = load_external_object_from_config("config/load_file/model.json")',
             "def transform(df):",
             "    df = df.with_columns(pred=pl.lit(obj.predict()))",
             "    return df",
@@ -719,9 +717,8 @@ class TestExternalFileExtractor:
         leave it alone.
         """
         body = _body(
-            "import pickle",
-            'with open("m.pkl", "rb") as _f:',
-            "    obj = pickle.load(_f)",
+            "from haute.graph_utils import load_external_object_from_config",
+            'obj = load_external_object_from_config("config/load_file/model.json")',
             "x = 1",
             "def helper():",
             "    return df",

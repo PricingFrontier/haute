@@ -28,7 +28,7 @@ matters for a PR if it runs on `pull_request: branches: [main]`.
 | Workflow | Job | Trigger | PR-gating? | What it runs |
 |---|---|---|---|---|
 | `ci.yml` | `canary` | push+PR | **Yes** | `uv sync --group dev --locked` → `ruff check --output-format=github` + `ruff format --check` → pytest on the core test subset (`scripts/core_test_files.txt`, 8 files, `-n 4 --timeout=60`) |
-| `ci.yml` | `init-smoke` (×3: ubuntu, windows, macos) | push+PR | **Yes** | `uv run --no-project python scripts/init_smoke.py` — wheel build (frontend included) → fresh venv, fresh resolve → `haute init` in an empty dir → headless `haute serve` → authed `/api/files` → clean shutdown |
+| `ci.yml` | `init-smoke` (×3: ubuntu, windows, macos) | push+PR | **Yes** | `uv run --no-project python scripts/init_smoke.py` — wheel build (frontend included) → fresh venv, fresh resolve → `haute init` in an empty dir → headless `haute serve` → session-cookie bootstrap → authed `/api/files` → clean shutdown |
 | `ci.yml` | `dependency-floors` | push+PR | **Yes** | `uv lock --resolution lowest-direct` (py3.11) → `uv sync --frozen --group dev` → core test subset run at the re-resolved floor lockfile — proves the published floor specifiers actually install and pass |
 | `ci.yml` | `backend-static` | push+PR | **Yes** | `uv sync --group dev --locked` (py3.12) → ruff lint + ruff format-check + mypy + `HAUTE_BUILD_FRONTEND=1 uv build` |
 | `ci.yml` | `backend-coverage-shard` (×2 shards) | push+PR | **Yes** | full suite split 2-way via `pytest-split` (py3.12), coverage collected per-shard (`--cov-fail-under=0`), uploaded as an artifact |

@@ -46,11 +46,13 @@ _OUTPUT_MAPPING = [
         "source_port": "src",
         "source_column": "customer_id",
         "output_path": "$[:].customer_id",
+        "enabled": True,
     },
     {
         "source_port": "src",
         "source_column": "premium",
         "output_path": "$[:].premium",
+        "enabled": True,
     },
 ]
 
@@ -70,10 +72,10 @@ def nested_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[
     monkeypatch.chdir(tmp_path)
     original = _get_project_root()
     set_project_root(tmp_path)
-    _preview_cache.invalidate()
+    _preview_cache.clear()
     yield tmp_path
     set_project_root(original)
-    _preview_cache.invalidate()
+    _preview_cache.clear()
 
 
 def _flat_api_node(csv_path: Path) -> GraphNode:

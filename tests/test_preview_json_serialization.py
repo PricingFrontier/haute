@@ -179,7 +179,7 @@ def test_first_click_target_preview_caps_materialized_columns_but_keeps_schema(
     import haute.executor as executor
 
     monkeypatch.setattr(executor, "PREVIEW_INITIAL_COLUMN_LIMIT", 3)
-    executor._preview_cache.invalidate()
+    executor._preview_cache.clear()
     path = tmp_path / "wide_first_click.parquet"
     pl.DataFrame({f"c{i}": [i] for i in range(5)}).write_parquet(path)
 
@@ -194,15 +194,15 @@ def test_first_click_target_preview_caps_materialized_columns_but_keeps_schema(
     assert result.preview_columns == ["c0", "c1", "c2"]
     assert result.preview == [{"c0": 0, "c1": 1, "c2": 2}]
 
-    fp = executor._preview_cache.fingerprint
+    fp = executor._preview_cache.most_recent_key
     assert fp is not None
-    cache_entry = executor._preview_cache.try_get(fp)
+    cache_entry = executor._preview_cache.get(fp)
     assert cache_entry is not None
     assert cache_entry["eager_outputs"]["src"].columns == ["c0", "c1", "c2"]
     assert [name for name, _dtype in cache_entry["output_columns"]["src"]] == [
         f"c{i}" for i in range(5)
     ]
-    executor._preview_cache.invalidate()
+    executor._preview_cache.clear()
 
 
 def test_first_click_target_preview_does_not_collect_columns_beyond_initial_cap(
@@ -212,7 +212,7 @@ def test_first_click_target_preview_does_not_collect_columns_beyond_initial_cap(
     import haute.executor as executor
 
     monkeypatch.setattr(executor, "PREVIEW_INITIAL_COLUMN_LIMIT", 2)
-    executor._preview_cache.invalidate()
+    executor._preview_cache.clear()
     path = tmp_path / "first_click_pushdown.parquet"
     pl.DataFrame({"feature": [1, 2], "keep": [3, 4]}).write_parquet(path)
 
@@ -256,9 +256,9 @@ df = df.with_columns(
     assert result.preview_columns == ["feature", "keep"]
     assert result.preview == [{"feature": 1, "keep": 3}, {"feature": 2, "keep": 4}]
 
-    fp = executor._preview_cache.fingerprint
+    fp = executor._preview_cache.most_recent_key
     assert fp is not None
-    cache_entry = executor._preview_cache.try_get(fp)
+    cache_entry = executor._preview_cache.get(fp)
     assert cache_entry is not None
     assert cache_entry["eager_outputs"]["target"].columns == ["feature", "keep"]
     assert [name for name, _dtype in cache_entry["output_columns"]["target"]] == [
@@ -266,7 +266,7 @@ df = df.with_columns(
         "keep",
         "unused_bomb",
     ]
-    executor._preview_cache.invalidate()
+    executor._preview_cache.clear()
 
 
 def test_first_click_capped_cache_does_not_satisfy_broad_preview(
@@ -276,7 +276,7 @@ def test_first_click_capped_cache_does_not_satisfy_broad_preview(
     import haute.executor as executor
 
     monkeypatch.setattr(executor, "PREVIEW_INITIAL_COLUMN_LIMIT", 2)
-    executor._preview_cache.invalidate()
+    executor._preview_cache.clear()
     path = tmp_path / "wide_then_broad.parquet"
     pl.DataFrame({f"c{i}": [i] for i in range(5)}).write_parquet(path)
     graph = PipelineGraph(nodes=[_source_node("src", str(path))])
@@ -299,12 +299,12 @@ def test_first_click_capped_cache_does_not_satisfy_broad_preview(
     assert broad.preview_columns == [f"c{i}" for i in range(5)]
     assert broad.preview == [{f"c{i}": i for i in range(5)}]
 
-    fp = executor._preview_cache.fingerprint
+    fp = executor._preview_cache.most_recent_key
     assert fp is not None
-    cache_entry = executor._preview_cache.try_get(fp)
+    cache_entry = executor._preview_cache.get(fp)
     assert cache_entry is not None
     assert cache_entry["eager_outputs"]["src"].columns == [f"c{i}" for i in range(5)]
-    executor._preview_cache.invalidate()
+    executor._preview_cache.clear()
 
 
 def test_target_only_preview_reports_upstream_error_on_target(tmp_path) -> None:

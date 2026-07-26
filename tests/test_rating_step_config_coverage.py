@@ -10,15 +10,9 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from haute._rating_step_config import (
-    _compact_entry_rows,
-    _compact_table_for_sidecar,
-    _entry_value,
-    _expand_entries_map,
-    _insert_entry_value,
     _validate_factors,
     _validate_rating_value,
-    compact_rating_step_config_for_sidecar,
-    expand_rating_step_config_from_sidecar,
+    normalise_rating_step_config,
     normalise_rating_tables,
 )
 from tests.fixtures.rating_key_cases import RATING_KEY_CASES, RatingKeyCase
@@ -135,167 +129,11 @@ def test_validate_factors_accepts_three() -> None:
 
 
 # ---------------------------------------------------------------------------
-# _insert_entry_value dict-conflict / duplicate-leaf
+# Canonical row-array round trips
 # ---------------------------------------------------------------------------
 
 
-def test_insert_entry_value_dict_conflict() -> None:
-    target: dict = {"x": 1.0}
-    with pytest.raises(ValueError, match="conflicts with an existing rating value"):
-        _insert_entry_value(target, ["x", "y"], 2.0, "ctx")
-
-
-def test_insert_entry_value_duplicate_leaf() -> None:
-    target: dict = {}
-    _insert_entry_value(target, ["x"], 1.0, "ctx")
-    with pytest.raises(ValueError, match="duplicate ctx key"):
-        _insert_entry_value(target, ["x"], 2.0, "ctx")
-
-
-def test_insert_entry_value_nested_path() -> None:
-    target: dict = {}
-    _insert_entry_value(target, ["a", "b"], 1.0, "ctx")
-    _insert_entry_value(target, ["a", "c"], 2.0, "ctx")
-    assert target == {"a": {"b": 1.0, "c": 2.0}}
-
-
-# ---------------------------------------------------------------------------
-# _entry_value value-vs-outputColumn conflict
-# ---------------------------------------------------------------------------
-
-
-def test_entry_value_conflict_between_value_and_output_column() -> None:
-    row = {"value": 1.0, "premium": 2.0}
-    with pytest.raises(ValueError, match="contains both 'value' and 'premium'"):
-        _entry_value(row, "premium", "ctx")
-
-
-def test_entry_value_prefers_value() -> None:
-    row = {"value": 1.0}
-    assert _entry_value(row, "premium", "ctx") == 1.0
-
-
-def test_entry_value_falls_back_to_output_column() -> None:
-    row = {"premium": 2.0}
-    assert _entry_value(row, "premium", "ctx") == 2.0
-
-
-def test_entry_value_requires_value() -> None:
-    with pytest.raises(ValueError, match="requires value"):
-        _entry_value({"factor": "x"}, "premium", "ctx")
-
-
-def test_entry_value_matching_value_and_output_column_no_conflict() -> None:
-    row = {"value": 3.0, "premium": 3.0}
-    assert _entry_value(row, "premium", "ctx") == 3.0
-
-
-# ---------------------------------------------------------------------------
-# _expand_entries_map duplicate-key / depth-mismatch guards
-# ---------------------------------------------------------------------------
-
-
-def test_expand_entries_map_empty_factors_with_entries_raises() -> None:
-    with pytest.raises(ValueError, match="factors must be a non-empty list"):
-        _expand_entries_map({"a": 1.0}, [], 0)
-
-
-def test_expand_entries_map_empty_factors_empty_entries_ok() -> None:
-    assert _expand_entries_map({}, [], 0) == []
-
-
-def test_expand_entries_map_leaf_dict_depth_mismatch() -> None:
-    # Single factor expects a scalar at depth 1; a dict at the leaf is too deep.
-    with pytest.raises(ValueError, match="must have rating values at depth 1"):
-        _expand_entries_map({"a": {"b": 1.0}}, ["f0"], 0)
-
-
-def test_expand_entries_map_leaf_list_rejected() -> None:
-    with pytest.raises(ValueError, match="rating values must be scalar"):
-        _expand_entries_map({"a": [1.0, 2.0]}, ["f0"], 0)
-
-
-def test_expand_entries_map_non_dict_branch_when_nesting_expected() -> None:
-    # Two factors expect nesting; a scalar where a dict is required is too shallow.
-    with pytest.raises(ValueError, match="must be nested to match 2 factors"):
-        _expand_entries_map({"a": 1.0}, ["f0", "f1"], 0)
-
-
-def test_expand_entries_map_single_factor_roundtrip() -> None:
-    rows = _expand_entries_map({"low": 1.0, "high": 2.0}, ["band"], 0)
-    assert rows == [
-        {"band": "high", "value": 2.0},
-        {"band": "low", "value": 1.0},
-    ]
-
-
-# ---------------------------------------------------------------------------
-# _compact_entry_rows + sidecar dispatch
-# ---------------------------------------------------------------------------
-
-
-def test_compact_entry_rows_empty_factors_with_rows_preserves_draft_rows() -> None:
-    assert _compact_entry_rows([{"value": 1.0}], [], 0, "") == [{"value": 1.0}]
-
-
-def test_compact_entry_rows_empty_factors_no_rows_ok() -> None:
-    assert _compact_entry_rows([], [], 0, "") == []
-
-
-def test_compact_table_for_sidecar_no_entries_passthrough() -> None:
-    table = {"factors": ["a"]}
-    assert _compact_table_for_sidecar(table, 0) == {"factors": ["a"]}
-
-
-def test_compact_table_for_sidecar_none_entries_raises() -> None:
-    table = {"factors": ["a"], "entries": None}
-    with pytest.raises(ValueError, match="must be a list or object"):
-        _compact_table_for_sidecar(table, 0)
-
-
-def test_compact_table_for_sidecar_empty_entries_with_factors_stays_list() -> None:
-    table = {"factors": ["a"], "entries": []}
-    result = _compact_table_for_sidecar(table, 0)
-    assert result["entries"] == []
-
-
-def test_compact_table_for_sidecar_empty_entries_without_factors_stays_list() -> None:
-    table = {"factors": [], "entries": []}
-    result = _compact_table_for_sidecar(table, 0)
-    assert result["entries"] == []
-
-
-def test_compact_table_for_sidecar_dict_entries_dispatch() -> None:
-    # Legacy maps are migrated to canonical rows on their next write.
-    table = {"factors": ["band"], "entries": {"low": 1.0, "high": 2.0}}
-    result = _compact_table_for_sidecar(table, 0)
-    assert result["entries"] == [
-        {"band": "high", "value": 2.0},
-        {"band": "low", "value": 1.0},
-    ]
-
-
-def test_compact_table_for_sidecar_list_entries_dispatch() -> None:
-    table = {
-        "factors": ["band"],
-        "entries": [{"band": "low", "value": 1.0}, {"band": "high", "value": 2.0}],
-    }
-    result = _compact_table_for_sidecar(table, 0)
-    assert result["entries"] == table["entries"]
-
-
-def test_compact_table_for_sidecar_invalid_entries_type_raises() -> None:
-    table = {"factors": ["band"], "entries": 42}
-    with pytest.raises(ValueError, match="must be a list or object"):
-        _compact_table_for_sidecar(table, 0)
-
-
-# ---------------------------------------------------------------------------
-# Clean table round-trips value <-> factor-tuple
-# ---------------------------------------------------------------------------
-
-
-def test_compact_expand_roundtrip_single_factor() -> None:
+def test_normalise_roundtrip_single_factor() -> None:
     canonical = {
         "tables": [
             {
@@ -307,17 +145,17 @@ def test_compact_expand_roundtrip_single_factor() -> None:
             }
         ]
     }
-    compact = compact_rating_step_config_for_sidecar(canonical)
-    assert compact["tables"][0]["entries"] == canonical["tables"][0]["entries"]
+    normalised = normalise_rating_step_config(canonical)
+    assert normalised["tables"][0]["entries"] == canonical["tables"][0]["entries"]
 
-    expanded = expand_rating_step_config_from_sidecar(compact)
-    assert expanded["tables"][0]["entries"] == [
+    repeated = normalise_rating_step_config(normalised)
+    assert repeated["tables"][0]["entries"] == [
         {"band": "low", "value": 1.0},
         {"band": "high", "value": 2.0},
     ]
 
 
-def test_compact_expand_roundtrip_three_factors() -> None:
+def test_normalise_roundtrip_three_factors() -> None:
     canonical = {
         "tables": [
             {
@@ -328,11 +166,11 @@ def test_compact_expand_roundtrip_three_factors() -> None:
             }
         ]
     }
-    compact = compact_rating_step_config_for_sidecar(canonical)
-    assert compact["tables"][0]["entries"] == canonical["tables"][0]["entries"]
+    normalised = normalise_rating_step_config(canonical)
+    assert normalised["tables"][0]["entries"] == canonical["tables"][0]["entries"]
 
-    expanded = expand_rating_step_config_from_sidecar(compact)
-    assert expanded["tables"][0]["entries"] == [
+    repeated = normalise_rating_step_config(normalised)
+    assert repeated["tables"][0]["entries"] == [
         {"a": "1", "b": "2", "c": "3", "value": 1.5},
     ]
 
@@ -342,32 +180,18 @@ def test_compact_expand_roundtrip_three_factors() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_expand_no_tables_passthrough() -> None:
-    assert expand_rating_step_config_from_sidecar({"foo": 1}) == {"foo": 1}
+def test_normalise_no_tables_passthrough() -> None:
+    assert normalise_rating_step_config({"foo": 1}) == {"foo": 1}
 
 
-def test_expand_tables_not_a_list_raises() -> None:
+def test_normalise_tables_not_a_list_raises() -> None:
     with pytest.raises(ValueError, match="tables must be a list"):
-        expand_rating_step_config_from_sidecar({"tables": {}})
+        normalise_rating_step_config({"tables": {}})
 
 
-def test_expand_table_not_object_raises() -> None:
+def test_normalise_table_not_object_raises() -> None:
     with pytest.raises(ValueError, match=r"tables\[0\] must be an object"):
-        expand_rating_step_config_from_sidecar({"tables": [42]})
-
-
-def test_compact_no_tables_passthrough() -> None:
-    assert compact_rating_step_config_for_sidecar({"foo": 1}) == {"foo": 1}
-
-
-def test_compact_tables_not_a_list_raises() -> None:
-    with pytest.raises(ValueError, match="tables must be a list"):
-        compact_rating_step_config_for_sidecar({"tables": {}})
-
-
-def test_compact_table_not_object_raises() -> None:
-    with pytest.raises(ValueError, match=r"tables\[0\] must be an object"):
-        compact_rating_step_config_for_sidecar({"tables": [42]})
+        normalise_rating_step_config({"tables": [42]})
 
 
 def test_normalise_rating_tables_none_returns_empty() -> None:
@@ -379,18 +203,12 @@ def test_normalise_rating_tables_not_a_list_raises() -> None:
         normalise_rating_tables({"tables": {}})
 
 
-def test_normalise_rating_tables_expands_compact_map() -> None:
-    config = {"tables": [{"factors": ["band"], "entries": {"low": 1.0}}]}
-    tables = normalise_rating_tables(config)
-    assert tables == [{"factors": ["band"], "entries": [{"band": "low", "value": 1.0}]}]
-
-
 # ---------------------------------------------------------------------------
-# Symmetric compact<->expand key normalisation (write/read agreement)
+# Canonical row preservation
 # ---------------------------------------------------------------------------
 
 
-def test_compact_distinct_numeric_looking_string_labels_losslessly() -> None:
+def test_normalise_preserves_numeric_looking_string_labels_losslessly() -> None:
     """Canonical rows preserve labels a JSON object-key map would conflate."""
     config = {
         "tables": [
@@ -404,7 +222,7 @@ def test_compact_distinct_numeric_looking_string_labels_losslessly() -> None:
             }
         ]
     }
-    assert compact_rating_step_config_for_sidecar(config) == config
+    assert normalise_rating_step_config(config) == config
 
 
 def test_string_label_spelling_int_like_float_roundtrips_unchanged() -> None:
@@ -418,15 +236,15 @@ def test_string_label_spelling_int_like_float_roundtrips_unchanged() -> None:
             }
         ]
     }
-    compact = compact_rating_step_config_for_sidecar(config)
-    assert compact["tables"][0]["entries"] == [{"age": "25.0", "value": 2.0}]
+    normalised = normalise_rating_step_config(config)
+    assert normalised["tables"][0]["entries"] == [{"age": "25.0", "value": 2.0}]
 
-    expanded = expand_rating_step_config_from_sidecar(compact)
-    assert expanded["tables"][0]["entries"] == [{"age": "25.0", "value": 2.0}]
+    repeated = normalise_rating_step_config(normalised)
+    assert repeated["tables"][0]["entries"] == [{"age": "25.0", "value": 2.0}]
 
     # Round trip is idempotent and does not canonicalise labels.
-    recompacted = compact_rating_step_config_for_sidecar({"tables": expanded["tables"]})
-    assert recompacted["tables"][0]["entries"] == [{"age": "25.0", "value": 2.0}]
+    roundtripped = normalise_rating_step_config({"tables": repeated["tables"]})
+    assert roundtripped["tables"][0]["entries"] == [{"age": "25.0", "value": 2.0}]
 
 
 def test_canonical_rows_preserve_scalar_identity_order_and_metadata() -> None:
@@ -446,10 +264,10 @@ def test_canonical_rows_preserve_scalar_identity_order_and_metadata() -> None:
             }
         ]
     }
-    compact = compact_rating_step_config_for_sidecar(config)
-    assert compact == config
-    assert compact is not config
-    assert compact["tables"][0]["entries"] is not entries
+    normalised = normalise_rating_step_config(config)
+    assert normalised == config
+    assert normalised is not config
+    assert normalised["tables"][0]["entries"] is not entries
 
 
 @settings(max_examples=100, deadline=None)
@@ -489,12 +307,12 @@ def test_canonical_row_sidecars_are_lossless_json_roundtrips(
         ]
     }
 
-    compacted = compact_rating_step_config_for_sidecar(config)
-    encoded = json.dumps(compacted, allow_nan=False)
-    roundtripped = expand_rating_step_config_from_sidecar(json.loads(encoded))
+    normalised = normalise_rating_step_config(config)
+    encoded = json.dumps(normalised, allow_nan=False)
+    roundtripped = normalise_rating_step_config(json.loads(encoded))
 
-    assert compacted == config
-    assert compacted is not config
+    assert normalised == config
+    assert normalised is not config
     assert roundtripped == config
     for original, restored in zip(entries, roundtripped["tables"][0]["entries"], strict=True):
         for factor in factors:
@@ -512,7 +330,7 @@ def test_canonical_row_sidecars_are_lossless_json_roundtrips(
 )
 def test_factor_dtype_metadata_is_validated(factor_dtypes: object) -> None:
     with pytest.raises(ValueError, match="factorDtypes"):
-        compact_rating_step_config_for_sidecar(
+        normalise_rating_step_config(
             {
                 "tables": [
                     {
@@ -539,12 +357,12 @@ def test_factor_dtype_metadata_preserves_every_supported_descriptor(
         ]
     }
 
-    assert compact_rating_step_config_for_sidecar(config) == config
+    assert normalise_rating_step_config(config) == config
 
 
 def test_duplicate_factor_columns_are_rejected_as_ambiguous() -> None:
     with pytest.raises(ValueError, match=r"duplicate column 'age'"):
-        compact_rating_step_config_for_sidecar(
+        normalise_rating_step_config(
             {
                 "tables": [
                     {
@@ -556,24 +374,10 @@ def test_duplicate_factor_columns_are_rejected_as_ambiguous() -> None:
         )
 
 
-def test_legacy_maps_are_traversed_in_deterministic_key_order() -> None:
-    first = expand_rating_step_config_from_sidecar(
-        {"tables": [{"factors": ["a", "b"], "entries": {"z": {"b": 1.0}, "a": {"c": 2.0}}}]}
-    )
-    second = expand_rating_step_config_from_sidecar(
-        {"tables": [{"factors": ["a", "b"], "entries": {"a": {"c": 2.0}, "z": {"b": 1.0}}}]}
-    )
-    assert first == second
-    assert first["tables"][0]["entries"] == [
-        {"a": "a", "b": "c", "value": 2.0},
-        {"a": "z", "b": "b", "value": 1.0},
-    ]
-
-
 @pytest.mark.parametrize("value", [None, [], {}, math.nan])
 def test_canonical_rows_reject_invalid_factor_scalars(value: object) -> None:
     with pytest.raises(ValueError, match=r"entries\[0\] factor 'age'"):
-        compact_rating_step_config_for_sidecar(
+        normalise_rating_step_config(
             {"tables": [{"factors": ["age"], "entries": [{"age": value, "value": 1.0}]}]}
         )
 
@@ -583,26 +387,20 @@ def test_canonical_rows_reject_invalid_factor_scalars(value: object) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_expand_empty_entries_with_invalid_factors_raises() -> None:
+def test_normalise_empty_entries_with_invalid_factors_raises() -> None:
     """F305: an empty-entries table must not skip factor validation."""
     config = {"tables": [{"factors": [123], "outputColumn": "f", "entries": []}]}
     with pytest.raises(ValueError, match="must be a column name"):
-        expand_rating_step_config_from_sidecar(config)
+        normalise_rating_step_config(config)
 
 
-def test_compact_empty_entries_with_invalid_factors_raises() -> None:
-    table = {"factors": [123], "outputColumn": "f", "entries": []}
-    with pytest.raises(ValueError, match="must be a column name"):
-        _compact_table_for_sidecar(table, 0)
-
-
-def test_expand_empty_entries_missing_factors_key_raises() -> None:
+def test_normalise_empty_entries_missing_factors_key_raises() -> None:
     config = {"tables": [{"outputColumn": "f", "entries": []}]}
     with pytest.raises(ValueError, match="factors must be a list"):
-        expand_rating_step_config_from_sidecar(config)
+        normalise_rating_step_config(config)
 
 
 def test_table_without_entries_still_rejects_malformed_factors() -> None:
     config = {"tables": [{"factors": "age", "outputColumn": "f"}]}
     with pytest.raises(ValueError, match="factors must be a list"):
-        compact_rating_step_config_for_sidecar(config)
+        normalise_rating_step_config(config)

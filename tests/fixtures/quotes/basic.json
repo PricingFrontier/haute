@@ -1,1 +1,22 @@
-[{"IDpol": 1, "VehPower": 5, "Area": "A", "VehAge": 1, "BonusMalus": 50, "Exposure": 0.5}, {"IDpol": 2, "VehPower": 6, "Area": "B", "VehAge": 2, "BonusMalus": 60, "Exposure": 0.8}]
+[
+  {
+    "input": {
+      "IDpol": 1,
+      "VehPower": 5,
+      "Area": "A",
+      "VehAge": 1,
+      "BonusMalus": 50,
+      "Exposure": 0.5
+    }
+  },
+  {
+    "input": {
+      "IDpol": 2,
+      "VehPower": 6,
+      "Area": "B",
+      "VehAge": 2,
+      "BonusMalus": 60,
+      "Exposure": 0.8
+    }
+  }
+]

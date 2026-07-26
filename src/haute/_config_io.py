@@ -27,8 +27,7 @@ from haute._graph_utils import _sanitize_func_name
 from haute._io import read_user_text
 from haute._logging import get_logger
 from haute._rating_step_config import (
-    compact_rating_step_config_for_sidecar,
-    expand_rating_step_config_from_sidecar,
+    normalise_rating_step_config,
 )
 from haute._types import NodeType, PipelineGraph
 
@@ -109,50 +108,22 @@ def _config_node_type_from_path(path: Path) -> NodeType | None:
     return FOLDER_TO_NODE_TYPE.get(path.parent.name)
 
 
-# Bundle 2.a — keys that legitimately appear on a non-apiInput config but
-# that v2 apiInput has no spec for. Stripped from apiInput dicts on load
-# (here in `_normalise_loaded_config`) so they cannot leak back out via
-# the editor spread-merge after the user opens then saves a v1-residue
-# file. Promotes the D9 "silently ignored at read" tolerance to "silently
-# stripped at read". The same strip is applied in
-# `routes/json_cache.py::_read_v2_config` for the cache-build read path.
-# Contract pinning test: tests/test_strict_v2_contract.py::TestNormaliseLoadedConfigApiInputStrip.
-_API_INPUT_LEGACY_KEYS_TO_STRIP: frozenset[str] = frozenset(
-    {"selected_columns", "column_renames", "flattenSchema"}
-)
-
-
 def _normalise_loaded_config(config: dict[str, Any], node_type: NodeType | None) -> dict[str, Any]:
     if node_type == NodeType.BANDING:
         return expand_banding_config_from_sidecar(config)
     if node_type == NodeType.RATING_STEP:
-        return expand_rating_step_config_from_sidecar(config)
-    if node_type == NodeType.API_INPUT:
-        # Bundle 2.a — strip legacy v1-only keys before the dict reaches
-        # `node.data.config`. v2 has no spec for these on apiInput; the
-        # per-column `selected` bool inside tables[].columns[] is the
-        # v2-native column-filter surface. Stripping here means the keys
-        # cannot leak back out via the frontend's spread-merge in
-        # NodePanel.tsx.
-        return {k: v for k, v in config.items() if k not in _API_INPUT_LEGACY_KEYS_TO_STRIP}
+        return normalise_rating_step_config(config)
     return config
 
 
 def _prepare_config_for_sidecar(node_type: NodeType, config: dict[str, Any]) -> dict[str, Any]:
-    # Existing filters: drop user-code keys + internal `_*` keys. Kept
-    # first so α's allowlist sees a smaller candidate set.
+    # Drop user-code keys and internal `_*` keys before the typed allowlist.
     filtered = {k: v for k, v in config.items() if k not in _CODE_KEYS and not k.startswith("_")}
     filtered = cast(dict[str, Any], _strip_internal_keys(filtered))
 
-    # Bundle 2.α — strict-v2 write allowlist. Drops any key not in
-    # `VALID_KEYS[node_type]` before persisting. Catches off-spec keys
-    # smuggled in by external tooling, a future code path that hasn't
-    # been hardened, or a frontend bug. Logged at WARNING so dropped
-    # keys are observable in the server log without raising mid-save.
-    # Skipped when node_type isn't in VALID_KEYS (e.g. SUBMODEL_PORT —
-    # no TypedDict to anchor the allowlist on); falls through to the
-    # existing per-type compaction below. Contract pinning test:
-    # tests/test_strict_v2_contract.py::TestPrepareConfigForSidecarAllowlist.
+    # Persist only fields declared by the current node config TypedDict.
+    # Unknown fields are logged and omitted so UI save failures are visible
+    # without corrupting the sidecar.
     from haute._config_validation import VALID_KEYS
 
     allowed = VALID_KEYS.get(node_type)
@@ -169,7 +140,7 @@ def _prepare_config_for_sidecar(node_type: NodeType, config: dict[str, Any]) -> 
     if node_type == NodeType.BANDING:
         return compact_banding_config_for_sidecar(filtered)
     if node_type == NodeType.RATING_STEP:
-        return compact_rating_step_config_for_sidecar(filtered)
+        return normalise_rating_step_config(filtered)
     return filtered
 
 

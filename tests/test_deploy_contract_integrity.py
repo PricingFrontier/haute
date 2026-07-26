@@ -260,7 +260,9 @@ class TestValidateDeployFailsOnTestQuotes:
         # Set up a test_quotes directory with a deliberately bad quote.
         tq_dir = tmp_path / "quotes"
         tq_dir.mkdir()
-        (tq_dir / "bad.json").write_text(json.dumps([{"wrong_column": 1, "also_wrong": 2}]))
+        (tq_dir / "bad.json").write_text(
+            json.dumps([{"input": {"wrong_column": 1, "also_wrong": 2}}])
+        )
 
         config = DeployConfig(
             pipeline_file=PIPELINE_FILE,
@@ -317,7 +319,7 @@ class TestValidateDeployFailsOnTestQuotes:
 
         tq_dir = tmp_path / "quotes"
         tq_dir.mkdir()
-        (tq_dir / "bad.json").write_text(json.dumps([{"nope": 1}]))
+        (tq_dir / "bad.json").write_text(json.dumps([{"input": {"nope": 1}}]))
 
         # Missing output node → structural error.  Plus a broken test quote.
         config = DeployConfig(

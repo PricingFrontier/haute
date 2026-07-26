@@ -202,109 +202,6 @@ class TestConditionalBranchIndication:
 
 
 # ===========================================================================
-# CATEGORY 2: Waterfall Data Generation (6 tests)
-# ===========================================================================
-
-
-class TestWaterfallDataGeneration:
-    """For traces with 3+ sequential multiplicative/additive rating steps,
-    a waterfall summary should be generated."""
-
-    @pytest.fixture(autouse=True)
-    def _import_waterfall(self):
-        self.waterfall = pytest.importorskip(
-            "haute._trace_waterfall",
-            reason="trace waterfall module not available in this build",
-        )
-
-    def test_waterfall_from_multiplicative_chain(self, tmp_path):
-        """Three multiplicative steps -> waterfall with base, deltas, cumulative."""
-        steps = [
-            {"label": "Base Rate", "operation": "base", "value": 100.0},
-            {"label": "Age Factor", "operation": "multiply", "value": 1.2},
-            {"label": "Region Factor", "operation": "multiply", "value": 0.9},
-        ]
-        result = self.waterfall.build_waterfall(steps)
-
-        assert len(result.entries) == 3
-        # Base entry
-        assert result.entries[0].cumulative == 100.0
-        # After age factor: 100 * 1.2 = 120
-        assert abs(result.entries[1].cumulative - 120.0) < 0.01
-        assert abs(result.entries[1].delta - 20.0) < 0.01
-        # After region factor: 120 * 0.9 = 108
-        assert abs(result.entries[2].cumulative - 108.0) < 0.01
-        assert abs(result.entries[2].delta - (-12.0)) < 0.01
-
-    def test_waterfall_from_additive_chain(self, tmp_path):
-        """Three additive steps -> waterfall with correct deltas."""
-        steps = [
-            {"label": "Base", "operation": "base", "value": 200.0},
-            {"label": "Loading A", "operation": "add", "value": 50.0},
-            {"label": "Loading B", "operation": "add", "value": 30.0},
-        ]
-        result = self.waterfall.build_waterfall(steps)
-
-        assert len(result.entries) == 3
-        assert result.entries[0].cumulative == 200.0
-        assert abs(result.entries[1].cumulative - 250.0) < 0.01
-        assert abs(result.entries[1].delta - 50.0) < 0.01
-        assert abs(result.entries[2].cumulative - 280.0) < 0.01
-        assert abs(result.entries[2].delta - 30.0) < 0.01
-
-    def test_waterfall_mixed_multiply_and_add(self, tmp_path):
-        """Mix of multiply and add operations."""
-        steps = [
-            {"label": "Base", "operation": "base", "value": 100.0},
-            {"label": "Factor", "operation": "multiply", "value": 1.5},
-            {"label": "Loading", "operation": "add", "value": 25.0},
-        ]
-        result = self.waterfall.build_waterfall(steps)
-
-        assert len(result.entries) == 3
-        # Base = 100, after multiply = 150, after add = 175
-        assert abs(result.entries[1].cumulative - 150.0) < 0.01
-        assert abs(result.entries[2].cumulative - 175.0) < 0.01
-
-    def test_waterfall_with_discount_negative_delta(self, tmp_path):
-        """NCD discount shows negative delta contribution."""
-        steps = [
-            {"label": "Base", "operation": "base", "value": 500.0},
-            {"label": "Age Factor", "operation": "multiply", "value": 1.1},
-            {"label": "NCD Discount", "operation": "multiply", "value": 0.7},
-        ]
-        result = self.waterfall.build_waterfall(steps)
-
-        # After age: 550, after NCD: 385
-        ncd_entry = result.entries[2]
-        assert ncd_entry.delta < 0, "Discount should produce a negative delta"
-        assert abs(ncd_entry.delta - (-165.0)) < 0.01
-        assert abs(ncd_entry.cumulative - 385.0) < 0.01
-
-    def test_waterfall_final_equals_result(self, tmp_path):
-        """Final cumulative should match the traced result value."""
-        steps = [
-            {"label": "Base", "operation": "base", "value": 300.0},
-            {"label": "Factor A", "operation": "multiply", "value": 1.2},
-            {"label": "Factor B", "operation": "multiply", "value": 0.95},
-        ]
-        result = self.waterfall.build_waterfall(steps)
-
-        expected = 300.0 * 1.2 * 0.95
-        assert abs(result.entries[-1].cumulative - expected) < 0.01
-        assert abs(result.final_value - expected) < 0.01
-
-    def test_waterfall_returns_none_for_single_step(self, tmp_path):
-        """Single step is not enough for a waterfall -> returns None."""
-        steps = [
-            {"label": "Base", "operation": "base", "value": 100.0},
-        ]
-        result = self.waterfall.build_waterfall(steps)
-
-        assert result is None, "Waterfall should be None for fewer than 3 steps"
-
-
-# ===========================================================================
 # CATEGORY 3: Preamble Constant Resolution (5 tests)
 # ===========================================================================
 
@@ -664,7 +561,7 @@ class TestColumnRenameTracking:
 
         # The source step should still show the column as relevant
         src_step = _step_by_id(result, "src")
-        assert src_step.row_data is not None
-        assert "premium" in str(src_step.row_data), (
+        assert src_step.output_values is not None
+        assert "premium" in str(src_step.output_values), (
             "Original column 'premium' should be visible in source step"
         )

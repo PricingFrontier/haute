@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from haute.discovery import _configured_pipeline, discover_pipelines
+from haute.errors import ConfigError
 
 PIPELINE_CONTENT = """\
 import haute
@@ -198,25 +199,6 @@ class TestContentMatching:
 
 
 class TestErrorHandling:
-    def test_oserror_reading_file_is_skipped(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        (tmp_path / "haute.toml").write_text('[project]\nname = "x"\n')
-        (tmp_path / "bad.py").write_text(PIPELINE_CONTENT)
-        (tmp_path / "good.py").write_text(PIPELINE_CONTENT)
-
-        original_read_text = Path.read_text
-
-        def patched_read_text(self: Path, *args, **kwargs):  # type: ignore[no-untyped-def]
-            if self.name == "bad.py":
-                raise OSError("permission denied")
-            return original_read_text(self, *args, **kwargs)
-
-        monkeypatch.setattr(Path, "read_text", patched_read_text)
-        result = discover_pipelines(tmp_path)
-        assert len(result) == 1
-        assert result[0].name == "good.py"
-
     def test_toml_parse_error_still_discovers_root_files(self, tmp_path: Path) -> None:
         (tmp_path / "haute.toml").write_text("not valid toml [[[")
         (tmp_path / "pipe.py").write_text(PIPELINE_CONTENT)
@@ -319,3 +301,26 @@ class TestTomlEdgeCases:
     def test_haute_toml_pipeline_value_is_empty_string(self, tmp_path: Path) -> None:
         (tmp_path / "haute.toml").write_text('[project]\npipeline = ""\n')
         assert _configured_pipeline(tmp_path) is None
+
+
+class TestUnreadablePipeline:
+    def test_candidate_read_error_raises_config_error(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        (tmp_path / "haute.toml").write_text('[project]\nname = "x"\n')
+        candidate = tmp_path / "locked.py"
+        candidate.write_text(PIPELINE_CONTENT)
+
+        original_read_text = Path.read_text
+
+        def patched(path: Path, *args: object, **kwargs: object) -> str:
+            if path == candidate:
+                raise PermissionError(13, "Permission denied", str(path))
+            return original_read_text(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", patched)
+
+        with pytest.raises(ConfigError, match="locked.py"):
+            discover_pipelines(tmp_path)

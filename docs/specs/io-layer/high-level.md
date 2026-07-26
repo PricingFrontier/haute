@@ -110,7 +110,7 @@ Out of scope (owned elsewhere):
 - The explicitly atomic write surfaces — `atomic_write_bytes`/`_text`, the
   `Writer` context manager, and `_polars_utils.atomic_write` — stage to a
   sibling temporary file and rename it onto the target. The
-  `streaming_sink`/`bounded_sink`/`best_effort_sink` family uses that staging
+  `streaming_sink`/`bounded_sink` family uses that staging
   path when the target's parent already exists; if it does not, the helper
   calls Polars on the target directly so the missing-parent error surfaces.
   `_file_ops` gives concurrent writers unique temp names;
@@ -122,14 +122,9 @@ Out of scope (owned elsewhere):
   generated `write_polars_output_from_config` calls also create the target's
   parent directories before that direct write.
 - Bounded-memory collection (`streaming_collect`, `bounded_collect_batches`,
-  `bounded_sink`) never silently widens to a full in-memory collect when
-  Polars cannot honour streaming execution — it raises a typed
-  `BoundedMemoryUnsupportedError` instead. Only functions whose names say
-  so fall back to an eager collect: `best_effort_sink` requires its caller
-  to pass `allow_broad=True` explicitly or it raises `ValueError` before
-  any I/O; `safe_sink` is a fixed-`allow_broad=True` convenience wrapper
-  around it with no `allow_broad` parameter of its own, so it always
-  permits the fallback.
+  `bounded_sink`) makes one native Polars streaming attempt and never widens
+  to a full in-memory collect. Native Polars failures propagate unchanged;
+  there is no compatibility classifier or eager-fallback API.
 - `resolve_runtime_file_path` reconciles a user-facing relative path (as
   reported by a GUI file browser rooted at the project) against two
   candidate roots — the project root and the owning pipeline's directory —
@@ -190,14 +185,9 @@ Out of scope (owned elsewhere):
   normally failing path when a parent is absent. `_polars_utils.atomic_write`
   itself and generated registry-output wrappers do create parents as part of
   their explicit contracts. Unsupported extensions and dtypes raise
-  immediately; a bounded collect that cannot stream raises a typed
-  error instead of transparently materialising a potentially huge frame.
-  Of the two functions that *do* offer a broadening fallback,
-  `best_effort_sink` requires the caller to pass `allow_broad=True`
-  explicitly (so the expensive path is never reached by accident), while
-  `safe_sink` is a thin wrapper that always calls it with
-  `allow_broad=True` — a caller of `safe_sink` has already opted into the
-  broadening fallback by name.
+  immediately; a bounded collect that cannot stream propagates the native
+  Polars failure instead of transparently materialising a potentially huge
+  frame.
 - **No path normalisation, only warning.** Case-folding or Unicode-
   normalising a user-supplied path would change which file a config
   resolves to — a correctness risk larger than the portability problem it
@@ -261,24 +251,13 @@ Out of scope (owned elsewhere):
 Remaining I/O improvement work is tracked in the
 [I/O layer roadmap](../../roadmap/io-layer.md).
 
-- Streaming incompatibility is classified only by a committed, versioned table keyed by
-  the supported Polars version (`1.39.3`), concrete exception class, and a verified anchored
-  full-message signature. Initial entries must be harvested from actual Polars 1.39.3
-  failures and committed to this spec in a spec-only evidence step before classifier code
-  starts; an empty verified table is valid, while invented substring rules are forbidden.
-  Only a listed tuple may be converted or permit the existing caller's documented fallback policy.
-  An unknown Polars version, exception type, or full-message signature propagates unchanged
-  and never triggers a broad/eager fallback.
+- Streaming helpers have one canonical path: call the native streaming API once and propagate
+  any exception unchanged. They contain no version/signature compatibility table and expose no
+  broad/eager fallback switch.
 - Where Polars exposes supported byte and column counters, execution reports their measured values. A counter unavailable for a given operation is represented explicitly as unavailable, never as a guessed zero or estimate.
-- The repository audit for this plan confirms that `safe_sink` and `best_effort_sink`
-  are private underscored-module symbols with no production caller, package export, or
-  supported public-documentation contract. Remove them; if contrary evidence appears before
-  the batch, implementation stops and this contract is revised first. The 0.6 pre-1.0 release notes name both
-  symbols; there is no deprecation shim because the fallback behaviour is unsafe and the
-  API is pre-1.0. Bounded execution retains its fail-loud guarantee.
 - CSV recount changes are deferred behind an explicit benchmark and semantic-equivalence gate; no recount optimisation is part of this approved change.
 
-Non-goals: changing registry format coverage, introducing implicit eager fallbacks, or inventing counter values for operations that cannot report them. Required tests cover every committed classifier tuple; unknown version/type/signature propagation; full-match negatives containing `downstream`, `upstream`, or `stream_id`; each counter's present/unavailable state; and, subject to the audit gate, the absence of the retired sink APIs. Any future CSV recount proposal must first add representative correctness and performance benchmarks.
+Non-goals: changing registry format coverage, introducing implicit eager fallbacks, or inventing counter values for operations that cannot report them. Required tests cover the single native streaming call, unchanged exception propagation, and each counter's present/unavailable state. Any future CSV recount proposal must first add representative correctness and performance benchmarks.
 
 ## Approved change contract — 0.7.0 data I/O convergence
 
@@ -410,7 +389,7 @@ The I/O layer implements the accepted parts of
   case-insensitive; hidden entries and symlinks are not advertised; broken
   entries are skipped; directory enumeration runs off the async event loop.
   A selected format continues to pass its own capability extensions.
-- The legacy read adapter accepts both `.jsonl` and `.ndjson`. Unsupported
+- NDJSON input accepts the conventional `.jsonl` and `.ndjson` extensions. Unsupported
   compound extensions are reported as the compound suffix with the complete
   supported set, rather than mislabelling `x.csv.gz` as merely `.gz`.
 - Schema preview distinguishes safe, expected input failures from internal

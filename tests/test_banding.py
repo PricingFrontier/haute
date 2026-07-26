@@ -10,8 +10,8 @@ import polars as pl
 import polars.testing as plt
 import pytest
 
-from haute._rating import _breakpoints_to_rules
-from haute.executor import _apply_banding, _build_node_fn
+from haute._rating import _apply_banding, _breakpoints_to_rules
+from haute.executor import _build_node_fn
 from haute.graph_utils import GraphNode, NodeData, NodeType, PipelineGraph
 from tests.conftest import write_node_config
 

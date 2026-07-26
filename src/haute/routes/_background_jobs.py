@@ -484,9 +484,7 @@ def _unexpected_supervisor_outcome(
     fields: dict[str, Any] = {
         "supervisor_error_class": type(exc).__name__,
     }
-    if generic_message:
-        fields["worker_error_class"] = type(exc).__name__
-    else:
+    if not generic_message:
         fields["error"] = str(exc)
     return _SupervisorOutcome(
         terminal_reason="error",

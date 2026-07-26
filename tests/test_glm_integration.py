@@ -32,7 +32,6 @@ class TestGLMConfigKeyMerge:
         config = {
             "target": "y",
             "algorithm": "glm",
-            "params": {"iterations": 100},  # CatBoost-style param (should survive)
             "terms": {"age": {"type": "linear"}},
             "family": "poisson",
             "link": "log",
@@ -56,27 +55,12 @@ class TestGLMConfigKeyMerge:
         assert train_params["intercept"] is True
         assert train_params["var_power"] == 1.5
         assert train_params["interactions"] == []
-        # Pre-existing param should also survive
-        assert train_params["iterations"] == 100
-
-    def test_glm_config_keys_do_not_overwrite_params(self):
-        """Keys already in params are NOT overwritten by top-level config."""
-        from haute.modelling._train_config import build_train_params
-
-        config = {
-            "algorithm": "glm",
-            "params": {"family": "gaussian"},  # already in params
-            "family": "poisson",  # top-level — should NOT overwrite
-        }
-        train_params = build_train_params(config)
-
-        assert train_params["family"] == "gaussian"  # params version wins
 
     def test_missing_glm_keys_are_skipped(self):
         """Only keys actually present in config are merged; no KeyError."""
         from haute.modelling._train_config import build_train_params
 
-        config: dict = {"algorithm": "glm", "params": {}, "family": "tweedie"}
+        config: dict = {"algorithm": "glm", "family": "tweedie"}
         train_params = build_train_params(config)
 
         assert train_params["family"] == "tweedie"

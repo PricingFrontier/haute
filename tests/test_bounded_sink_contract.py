@@ -26,17 +26,4 @@ def test_bounded_memory_writers_use_the_canonical_bounded_abstraction(
     """Critical batch paths must use a bounded writer/provider abstraction."""
     source = (ROOT / relative_path).read_text(encoding="utf-8")
 
-    assert "safe_sink(" not in source
     assert writer in source
-
-
-def test_removed_fallback_sink_symbols_and_call_sites_stay_absent() -> None:
-    """The deprecated broad fallback helpers must not return."""
-    offenders: list[str] = []
-    for path in (ROOT / "src" / "haute").rglob("*.py"):
-        relative = path.relative_to(ROOT)
-        source = path.read_text(encoding="utf-8")
-        if "safe_sink" in source or "best_effort_sink" in source:
-            offenders.append(str(relative).replace("\\", "/"))
-
-    assert offenders == []

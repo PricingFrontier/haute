@@ -63,8 +63,7 @@ export interface GraphSnapshot {
   nodes: Node[]
   edges: PipelineEdge[]
   preamble: string
-  /** Present on snapshots created by this store; optional for legacy history entries. */
-  submodels?: Record<string, unknown>
+  submodels: Record<string, unknown>
 }
 
 /** A version-control operation (branch switch / archive / delete) riding the
@@ -171,9 +170,7 @@ type StructuralEdge = {
  * corrupt history or saved baselines.
  */
 export function captureGraphSnapshot(
-  state: Pick<GraphStore, "nodes" | "edges" | "preamble"> & {
-    submodels?: Record<string, unknown>
-  },
+  state: Pick<GraphStore, "nodes" | "edges" | "preamble" | "submodels">,
 ): GraphSnapshot {
   return cloneGraphSnapshot(state)
 }
@@ -778,7 +775,7 @@ const useGraphStore = create<GraphStore>()((set, get) => {
         nodes: prev.nodes,
         edges: prev.edges,
         preamble: prev.preamble,
-        submodels: prev.submodels ?? {},
+        submodels: prev.submodels,
         persistedFingerprint: nextPersistedFingerprint,
         dirty: computeDirty(
           state.lastSavedSnapshot,
@@ -827,7 +824,7 @@ const useGraphStore = create<GraphStore>()((set, get) => {
         nodes: next.nodes,
         edges: next.edges,
         preamble: next.preamble,
-        submodels: next.submodels ?? {},
+        submodels: next.submodels,
         persistedFingerprint: nextPersistedFingerprint,
         dirty: computeDirty(
           state.lastSavedSnapshot,

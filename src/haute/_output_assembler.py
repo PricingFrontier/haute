@@ -24,43 +24,21 @@ Vocabulary (kept to tables / fields / join-constraints throughout):
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from itertools import combinations
 from typing import Any
 
 import polars as pl
 
-from haute._jsonpath import (
-    _BRACKET_NAME,
-    _DOT_NAME,
-    _NAME,
-    _ParsedPath,
-    _Seg,
-    is_canonical,
-    make_output_path,
-    parse_path,
-)
+from haute._jsonpath import _ParsedPath, parse_path
 from haute.errors import HauteError
-
-# The grammar lives in the shared core ``haute._jsonpath`` (PATH_GRAMMAR.md);
-# these are re-exported here so OUTPUT consumers keep their import site. The
-# names are referenced so linters see the re-export as intentional, not dead.
-__all__ = [
-    "_BRACKET_NAME",
-    "_DOT_NAME",
-    "_NAME",
-    "_ParsedPath",
-    "_Seg",
-    "is_canonical",
-    "make_output_path",
-]
-_ = (_NAME, _DOT_NAME, _BRACKET_NAME, is_canonical, make_output_path)
 
 
 class OutputMappingSchemaError(HauteError):
-    """An OUTPUT node's v2 mapping is structurally invalid.
+    """An OUTPUT node's mapping is structurally invalid.
 
     The output-side analogue of
     :class:`haute._api_input_schema.ApiInputSchemaError`: raised at
-    config-validation, save-time sidecar compaction, the dry-run route, and
+    config validation, save-time sidecar writing, the dry-run route, and
     deploy assemble time. Routes catch it and return a structured 422 with
     ``type="OutputMappingSchemaError"`` so the frontend discriminates on the
     type, not on string-matching the message.
@@ -316,29 +294,9 @@ def _parse_output_path(raw: str) -> _ParsedPath:
     A thin OUTPUT-side wrapper over :func:`haute._jsonpath.parse_path`: it injects
     :class:`OutputMappingSchemaError` so a rejected selector raises the type
     OUTPUT routes discriminate on, while the grammar (the accepted subset, the
-    rejections, the messages) lives once in the shared core. The parser accepts
-    the root ``$``/``$[:]``, ``.name`` / ``['name']`` / ``["name"]`` object
-    selectors, and ``[:]``; it rejects index, range, filter, descendant, and
-    non-array wildcard selectors (the ``.:`` form included).
-
-    On top of the core grammar this is the OUTPUT-side **validity gate**
-    (PATH_GRAMMAR.md): every output path must enter the array-outer document
-    through the root array ``$[:]``. :func:`parse_path` records ``root_array`` but
-    leaves the decision to its caller — so a non-array root (``$.x`` object-outer,
-    ``$.values[:].a`` stream) parses but does *not* reliably assemble into
-    array-outer JSON. Rejecting it here (the one place every OUTPUT path routes
-    through — the column contract, the assembler, and
-    :func:`validate_v2_output_mapping`) makes OUTPUT symmetric with INPUT's
-    :func:`haute._jsonpath.parse_data_path`, which already enforces the same root.
+    rejections, and messages) lives once in the shared core.
     """
-    parsed = parse_path(raw, OutputMappingSchemaError)
-    if not parsed.root_array:
-        raise OutputMappingSchemaError(
-            "output path must enter the array-outer document via '$[:]' "
-            "(a bare-'$' object root is a different transport)",
-            output_path=raw,
-        )
-    return parsed
+    return parse_path(raw, OutputMappingSchemaError)
 
 
 def _set_nested(obj: dict[str, Any], keys: list[str], value: Any) -> None:
@@ -656,11 +614,9 @@ def is_active_mapping_entry(entry: dict[str, Any]) -> bool:
     ``missing=['']`` contract failure) or crashes ``pl.col("")``. The editor
     surfaces the incomplete row separately; the runtime simply ignores it.
     """
-    if not entry.get("enabled", True):
+    if not entry["enabled"]:
         return False
-    return bool((entry.get("source_column") or "").strip()) and bool(
-        (entry.get("output_path") or "").strip()
-    )
+    return bool(entry["source_column"].strip()) and bool(entry["output_path"].strip())
 
 
 def validate_v2_output_mapping(mapping: list[dict[str, Any]]) -> None:
@@ -699,27 +655,23 @@ def validate_v2_output_mapping(mapping: list[dict[str, Any]]) -> None:
             path_to_col[path] = col
 
         distinct = list(dict.fromkeys(path for _, path in entries))
-        for i, a in enumerate(distinct):
-            for b in distinct[i + 1 :]:
-                if _prefix_comparable(a, b):
-                    raise OutputMappingSchemaError(
-                        "output paths within a source frame must be pairwise "
-                        "prefix-incomparable (a leaf cannot also be a container)",
-                        source_port=port,
-                        output_path=f"{a} vs {b}",
-                    )
+        for a, b in combinations(distinct, 2):
+            if _prefix_comparable(a, b):
+                raise OutputMappingSchemaError(
+                    "output paths within a source frame must be pairwise "
+                    "prefix-incomparable (a leaf cannot also be a container)",
+                    source_port=port,
+                    output_path=f"{a} vs {b}",
+                )
 
         prefixes = [(path, _array_prefix(_parse_output_path(path))) for path in distinct]
-        for i, (a, a_prefix) in enumerate(prefixes):
-            for b, b_prefix in prefixes[i + 1 :]:
-                if not (
-                    a_prefix[: len(b_prefix)] == b_prefix or b_prefix[: len(a_prefix)] == a_prefix
-                ):
-                    raise OutputMappingSchemaError(
-                        "one source frame cannot emit into divergent array branches",
-                        source_port=port,
-                        output_path=f"{a} vs {b}",
-                    )
+        for (a, a_prefix), (b, b_prefix) in combinations(prefixes, 2):
+            if not (a_prefix[: len(b_prefix)] == b_prefix or b_prefix[: len(a_prefix)] == a_prefix):
+                raise OutputMappingSchemaError(
+                    "one source frame cannot emit into divergent array branches",
+                    source_port=port,
+                    output_path=f"{a} vs {b}",
+                )
 
 
 def assemble_output_from_mapping(

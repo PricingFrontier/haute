@@ -67,7 +67,6 @@ vi.mock("../LazyNodeEditors", () => ({
   ConstantEditor: () => <div data-testid="ConstantEditor" />,
   SubmodelEditor: () => <div data-testid="SubmodelEditor" />,
   ColumnsTab: () => <div data-testid="ColumnsTab" />,
-  GroupedColumnsTab: () => <div data-testid="GroupedColumnsTab" />,
   ModellingConfig: (props: Record<string, unknown>) => {
     modellingConfigProps.push(props)
     return <div data-testid="ModellingConfig" />

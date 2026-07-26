@@ -71,14 +71,14 @@ class TestBrowseFilesExtensionFiltering:
         self, client: TestClient, work_dir: Path
     ) -> None:
         (work_dir / "events.ndjson").write_text('{"x":1}\n', encoding="utf-8")
-        (work_dir / "legacy.xml").write_text("<x />", encoding="utf-8")
+        (work_dir / "unsupported.xml").write_text("<x />", encoding="utf-8")
 
         resp = client.get("/api/files")
 
         assert resp.status_code == 200
         names = {item["name"] for item in resp.json()["items"]}
         assert "events.ndjson" in names
-        assert "legacy.xml" not in names
+        assert "unsupported.xml" not in names
 
     def test_extension_matching_is_case_insensitive(
         self, client: TestClient, work_dir: Path

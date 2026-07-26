@@ -34,11 +34,9 @@ from haute._code_extraction import (
     _rewrite_identifier_tokens,
     _rewrite_outer_returns_as_assignment,
     _statement_end_index,
-    _strip_generated_boilerplate_from_code,
     _strip_generated_passthrough_from_code,
     _strip_outer_trailing_return,
     _strip_redundant_rhs_wrapper_once,
-    _strip_source_load_boilerplate_from_code,
     _strip_trailing_return,
     _UserCodeParseError,
     extract_user_code,
@@ -182,10 +180,6 @@ class TestEmptyInputGuards:
         """Blank code strips to the empty string."""
         assert _strip_generated_passthrough_from_code("", ("df",)) == ""
 
-    def test_source_load_empty_code(self) -> None:
-        """Blank source-load code strips to the empty string."""
-        assert _strip_source_load_boilerplate_from_code("   ") == ""
-
     def test_strip_trailing_return_empty_list(self) -> None:
         """No lines in → empty list out."""
         assert _strip_trailing_return([], ("df",)) == []
@@ -287,20 +281,6 @@ class TestFinalisers:
         assert _finalise_source("df.filter(x)", ()) == "df.filter(x)"
 
 
-# ---------------------------------------------------------------------------
-# _strip_generated_boilerplate_from_code fallthrough + extract_user_code (823, 858, 870)
-# ---------------------------------------------------------------------------
-
-
-class TestStripGeneratedBoilerplate:
-    def test_polars_multi_param_passthrough(self) -> None:
-        """Polars code without a single-param alias marker is returned as-is."""
-        result = _strip_generated_boilerplate_from_code(
-            "df.foo()", kind="polars", param_names=("a", "b")
-        )
-        assert result == "df.foo()"
-
-
 class TestExtractUserCode:
     def test_unknown_kind_raises_key_error(self) -> None:
         """An unregistered matcher kind fails loudly with ``KeyError``."""
@@ -389,7 +369,13 @@ class TestStatementEndIndex:
 
     def test_balanced_single_line_ends_after_that_line(self) -> None:
         """A self-contained statement ends right after its own line."""
-        assert _statement_end_index(["df = pl.scan_parquet('a.pq')", "df.head()"], 0) == 1
+        assert (
+            _statement_end_index(
+                ["df = resolve_data_input_from_config('config/data_input/a.json')", "df.head()"],
+                0,
+            )
+            == 1
+        )
 
     def test_unbalanced_statement_runs_to_end_of_lines(self) -> None:
         """An open paren that never closes consumes every remaining line.
@@ -398,7 +384,7 @@ class TestStatementEndIndex:
         ``return len(lines)`` rather than an early per-statement boundary — the
         boilerplate skipper treats the malformed tail as one statement.
         """
-        lines = ["df = pl.scan_parquet(", "    'a.pq'"]
+        lines = ["df = resolve_data_input_from_config(", "    'config/data_input/a.json'"]
         assert _statement_end_index(lines, 0) == len(lines)
 
 
@@ -417,7 +403,7 @@ class TestMatchScenarioExpanderImportSkip:
         The scaffold marker is the generated *call*; an import that merely
         references the helper name (here inside a trailing comment) is skipped
         via ``continue`` so the user's post-expansion code below it survives.
-        With no real outer-scope call and no legacy alias, extraction keeps the
+        With no real outer-scope call or generated alias, extraction keeps the
         whole body from index 0.
         """
         cleaned = [

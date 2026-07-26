@@ -30,8 +30,8 @@ vi.mock("../../stores/useToastStore", () => ({
 const remote = (over: Partial<Record<string, unknown>> = {}) => ({
   name: "origin",
   url: "git@example.com:x.git",
-  ahead: null,
-  behind: null,
+  working: null,
+  ledger: null,
   ...over,
 })
 
@@ -210,7 +210,7 @@ describe("RemotePushControl", () => {
 
   it("shows ahead/behind for the selected remote", async () => {
     mockGetGitRemotes.mockResolvedValue({
-      remotes: [remote({ ahead: 2, behind: 1 })],
+      remotes: [remote({ working: { status: "diverged", ahead: 2, behind: 1 } })],
       working_branch: "dev",
     })
     render(<RemotePushControl pendingSaveCount={0} />)
@@ -220,7 +220,7 @@ describe("RemotePushControl", () => {
 
   it("shows 'synced' when level with the remote", async () => {
     mockGetGitRemotes.mockResolvedValue({
-      remotes: [remote({ ahead: 0, behind: 0 })],
+      remotes: [remote({ working: { status: "synced", ahead: 0, behind: 0 } })],
       working_branch: "dev",
     })
     render(<RemotePushControl pendingSaveCount={0} />)
@@ -230,7 +230,7 @@ describe("RemotePushControl", () => {
   it("distinguishes 'never pushed' (—) from 'couldn't read' (?) — F2 honesty", async () => {
     mockGetGitRemotes.mockResolvedValue({
       remotes: [
-        remote({ ahead: null, behind: null, working: { status: "unknown", ahead: null, behind: null } }),
+        remote({ working: { status: "unknown", ahead: null, behind: null } }),
       ],
       working_branch: "dev",
     })
@@ -242,8 +242,6 @@ describe("RemotePushControl", () => {
     mockGetGitRemotes.mockResolvedValue({
       remotes: [
         remote({
-          ahead: 0,
-          behind: 0,
           working: { status: "synced", ahead: 0, behind: 0 },
           ledger: { status: "behind", ahead: 0, behind: 2 },
         }),
@@ -260,8 +258,6 @@ describe("RemotePushControl", () => {
     mockGetGitRemotes.mockResolvedValue({
       remotes: [
         remote({
-          ahead: 0,
-          behind: 0,
           working: { status: "synced", ahead: 0, behind: 0 },
           ledger: { status: "diverged", ahead: 1, behind: 2 },
         }),
@@ -315,8 +311,6 @@ describe("RemotePushControl", () => {
     mockGetGitRemotes.mockResolvedValue({
       remotes: [
         remote({
-          ahead: 0,
-          behind: 1,
           working: { status: "behind", ahead: 0, behind: 1 },
           ledger: { status: "behind", ahead: 0, behind: 1 },
         }),
@@ -333,8 +327,6 @@ describe("RemotePushControl", () => {
     mockGetGitRemotes.mockResolvedValue({
       remotes: [
         remote({
-          ahead: 1,
-          behind: 1,
           working: { status: "diverged", ahead: 1, behind: 1 },
           ledger: { status: "diverged", ahead: 1, behind: 1 },
         }),
@@ -415,7 +407,7 @@ describe("RemotePushControl", () => {
   it("shows no ledger chip when the save history is in sync", async () => {
     mockGetGitRemotes.mockResolvedValue({
       remotes: [
-        remote({ ahead: 0, behind: 0, ledger: { status: "synced", ahead: 0, behind: 0 } }),
+        remote({ working: { status: "synced", ahead: 0, behind: 0 }, ledger: { status: "synced", ahead: 0, behind: 0 } }),
       ],
       working_branch: "dev",
     })

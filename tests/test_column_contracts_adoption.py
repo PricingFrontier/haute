@@ -25,7 +25,7 @@ from typing import Any
 import pytest
 
 from haute import errors as haute_errors
-from haute._builders import get_column_contract
+from haute._contracts import get_column_contract
 from haute._registry import NODE_REGISTRY
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from tests.conftest import write_data_input_config, write_node_config
@@ -565,7 +565,7 @@ pipeline.connect("src", "band")
         good_src = f'''\
 import polars as pl
 import haute
-from haute._builders import Contract
+from haute._contracts import Contract
 
 pipeline = haute.Pipeline("contract_ctor")
 
@@ -917,10 +917,7 @@ class TestContractOverheadBenchmark:
                                 "column": "age",
                                 "outputColumn": f"band_{i}",
                                 "banding": "continuous",
-                                # Use the real rule schema (op1/val1/assignment);
-                                # the legacy {"max": ..., "value": ...} form
-                                # parses without producing the declared
-                                # output column at runtime.
+                                # Use the canonical op1/val1/assignment rule schema.
                                 "rules": [{"op1": "<=", "val1": "25", "assignment": "0"}],
                                 "default": "1",
                             }
@@ -940,44 +937,10 @@ class TestContractOverheadBenchmark:
         return PipelineGraph(nodes=nodes, edges=edges)
 
     def _execute(self, graph: PipelineGraph, *, enforce: bool) -> None:
-        """Execute with or without contract enforcement.
-
-        The dev MUST expose ``enforce_contracts`` (or an equivalent
-        kwarg) on ``execute_graph`` so overhead can be measured.  If
-        neither the kwarg nor a module-level flag exists, the test
-        fails — we cannot measure overhead without the ability to
-        toggle enforcement.
-        """
-        import inspect as _inspect
-
+        """Execute with or without contract enforcement."""
         from haute.executor import execute_graph
 
-        sig = _inspect.signature(execute_graph)
-        if "enforce_contracts" in sig.parameters:
-            execute_graph(graph, enforce_contracts=enforce)
-            return
-
-        # Module-level toggle fallback — must exist for the benchmark to
-        # meaningfully distinguish the two paths.  If neither exists we
-        # fail loudly rather than silently measuring "same code twice".
-        import haute.executor as _ex
-
-        if hasattr(_ex, "ENFORCE_CONTRACTS"):
-            prev = _ex.ENFORCE_CONTRACTS
-            _ex.ENFORCE_CONTRACTS = enforce
-            try:
-                execute_graph(graph)
-            finally:
-                _ex.ENFORCE_CONTRACTS = prev
-            return
-
-        pytest.fail(
-            "execute_graph has no 'enforce_contracts' kwarg and "
-            "haute.executor has no 'ENFORCE_CONTRACTS' module toggle. "
-            "The dev must expose one so the <5% overhead bound can "
-            "actually be measured — without a toggle the benchmark is "
-            "meaningless because both runs execute identical code."
-        )
+        execute_graph(graph, enforce_contracts=enforce)
 
     def test_default_suite_catches_gross_contract_overhead_regressions(self, tmp_path: Path):
         """Small default-suite check that contracts are not wildly slower.
@@ -1044,7 +1007,7 @@ class TestContractOverheadBenchmark:
         for iteration in range(iterations):
             order = (False, True) if iteration % 2 == 0 else (True, False)
             for enforce in order:
-                _preview_cache.invalidate()
+                _preview_cache.clear()
                 t0 = time.perf_counter()
                 self._execute(graph, enforce=enforce)
                 elapsed = time.perf_counter() - t0
@@ -1130,7 +1093,7 @@ class TestContractOverheadBenchmark:
         for iteration in range(iterations):
             order = (False, True) if iteration % 2 == 0 else (True, False)
             for enforce in order:
-                _preview_cache.invalidate()
+                _preview_cache.clear()
                 t0 = time.perf_counter()
                 self._execute(graph, enforce=enforce)
                 elapsed = time.perf_counter() - t0
@@ -1147,47 +1110,4 @@ class TestContractOverheadBenchmark:
             f"({t_without * 1000:.1f}ms -> {t_with * 1000:.1f}ms), exceeds "
             "the 15% regression-guard threshold (genuine overhead is ~0-2%; "
             "the plan's product target is <5%)."
-        )
-
-
-# ---------------------------------------------------------------------------
-# Section 6: Sentinels / API shape checks (fast-fail sanity).
-# ---------------------------------------------------------------------------
-
-
-class TestContractAPIShape:
-    """Lightweight checks that the public API the tests depend on exists."""
-
-    def test_opaque_contract_constant_importable(self):
-        """``OPAQUE_CONTRACT`` must be importable from :mod:`haute._builders`.
-
-        The tests above assume this sentinel exists so builder registrations
-        can spell opacity explicitly.
-        """
-        import haute._builders as b
-
-        assert hasattr(b, "OPAQUE_CONTRACT"), (
-            "haute._builders.OPAQUE_CONTRACT must exist as the sentinel "
-            "for builder-level 'honestly opaque' registrations."
-        )
-        # Shape: (None, None) tuple-compatible with existing ColumnContract.
-        assert b.OPAQUE_CONTRACT == (None, None), (
-            "OPAQUE_CONTRACT must equal (None, None) so existing code "
-            "that destructures ColumnContract keeps working."
-        )
-
-    def test_contract_class_exported_from_builders(self):
-        """A ``Contract`` dataclass is available for builders and users.
-
-        The current tuple-based contract is fine internally but users
-        writing ``contract={"inputs": [...], "outputs": [...]}`` in
-        pipeline source files need a corresponding runtime type so the
-        decorator kwarg doesn't silently drift from a typed object.
-        """
-        import haute._builders as b
-
-        assert hasattr(b, "Contract"), (
-            "haute._builders.Contract must exist — a small dataclass "
-            "with 'inputs' and 'outputs' fields that normalises the "
-            "user-facing form and the builder-derived tuple form."
         )

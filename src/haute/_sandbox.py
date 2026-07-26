@@ -534,14 +534,10 @@ def _try_parse_code(code: str) -> ast.Module:
 # (a class) — so only these named entries are admitted.
 _ALLOWED_PICKLE_GLOBALS: frozenset[tuple[str, str]] = frozenset(
     {
-        # numpy array/scalar reconstruction (both the numpy>=2 ``_core`` layout
-        # and the legacy ``core`` shim, whichever the payload references).
+        # NumPy 2 array/scalar reconstruction.
         ("numpy._core.multiarray", "_reconstruct"),
         ("numpy._core.multiarray", "scalar"),
         ("numpy._core.numeric", "_frombuffer"),
-        ("numpy.core.multiarray", "_reconstruct"),
-        ("numpy.core.multiarray", "scalar"),
-        ("numpy.core.numeric", "_frombuffer"),
         # generic object reconstruction helpers used by ``__reduce_ex__``.
         ("copyreg", "_reconstructor"),
         ("copyreg", "__newobj__"),

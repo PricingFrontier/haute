@@ -321,11 +321,10 @@ class SavePipelineService:
         Two passes:
 
         * per-graph — any two nodes in the SAME graph (root, or one
-          submodel) whose labels sanitise identically.  This preserves the
-          historical root-graph semantics unchanged (identical labels
-          collide too) and extends them to each submodel graph, closing
-          the gap where in-submodel collisions escaped this guard and
-          surfaced as codegen ``ParseError`` (an unhandled 500).
+          submodel) whose labels sanitise identically. Identical labels
+          collide too. The same rule applies to each submodel graph so
+          collisions cannot escape this guard and surface as an unhandled
+          codegen ``ParseError``.
         * cross-module — a sanitised name used in more than one module.
           Structural ``SUBMODEL`` / ``SUBMODEL_PORT`` nodes are excluded
           from this pass: a submodel placeholder legally shares its label
@@ -779,15 +778,7 @@ class SavePipelineService:
     # ------------------------------------------------------------------
 
     def _validate_api_inputs_have_schemas(self, graph: PipelineGraph, warnings: list[str]) -> None:
-        """Emit a non-blocking warning per JSON apiInput with no v2 ``tables[]``.
-
-        Renamed from the v1-era ``_infer_flatten_schemas``. The function
-        position is preserved (between ``_write_code`` and
-        ``_write_config_files``) but the behaviour is inverted:
-        instead of auto-writing a v1 ``flattenSchema`` to disk, this
-        appends a warning string to the save response's ``warnings``
-        list when a JSON apiInput has no ``tables[]`` — the user clicks
-        "Infer Tables" in the editor to populate it.
+        """Emit a non-blocking warning per JSON apiInput with no ``tables[]``.
 
         Per D2 / B5: empty ``tables`` is a non-blocking state. The
         pipeline can be saved without being functional; the warning is

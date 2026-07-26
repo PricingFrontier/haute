@@ -45,10 +45,9 @@ class TestBuildTrainParams:
         config = {"params": {"iterations": 10}, "offset": "log_exposure"}
         assert build_train_params(config) == {"iterations": 10}
 
-    def test_glm_merges_all_top_level_keys(self):
+    def test_glm_projects_all_top_level_keys(self):
         config = {
             "algorithm": "glm",
-            "params": {"some_param": 1},
             "terms": {"age": {"type": "linear"}},
             "family": "poisson",
             "link": "log",
@@ -71,18 +70,9 @@ class TestBuildTrainParams:
         assert params["intercept"] is True
         assert params["var_power"] == 1.5
         assert params["offset"] == "log_exposure"
-        assert params["some_param"] == 1
-
-    def test_glm_params_dict_wins_over_top_level(self):
-        config = {
-            "algorithm": "glm",
-            "params": {"family": "gaussian"},
-            "family": "poisson",
-        }
-        assert build_train_params(config)["family"] == "gaussian"
 
     def test_glm_missing_keys_are_skipped_not_defaulted(self):
-        config = {"algorithm": "glm", "params": {}, "family": "tweedie"}
+        config = {"algorithm": "glm", "family": "tweedie"}
         params = build_train_params(config)
         assert params == {"family": "tweedie"}
 
@@ -208,59 +198,6 @@ class TestBuildTrainingJobKwargs:
         assert kwargs["mlflow_experiment"] is None
         assert kwargs["model_name"] is None
 
-    def test_var_power_falls_back_into_variance_power(self):
-        kwargs = build_training_job_kwargs(
-            {"target": "y", "loss_function": "Tweedie", "var_power": 1.8}, data="d"
-        )
-        assert kwargs["variance_power"] == 1.8
-        explicit = build_training_job_kwargs(
-            {"target": "y", "loss_function": "Tweedie", "variance_power": 1.3, "var_power": 1.8},
-            data="d",
-        )
-        assert explicit["variance_power"] == 1.3
-
-    def test_glm_variance_power_falls_back_into_var_power_param(self):
-        config = {
-            "target": "y",
-            "algorithm": "glm",
-            "family": "tweedie",
-            "all_factors": True,
-            "variance_power": 1.7,
-        }
-        kwargs = build_training_job_kwargs(config, data="d")
-        assert kwargs["variance_power"] == 1.7
-        assert kwargs["params"]["var_power"] == 1.7
-
-    def test_glm_explicit_params_var_power_drives_training_job_variance_power(self):
-        kwargs = build_training_job_kwargs(
-            {
-                "target": "y",
-                "algorithm": "glm",
-                "family": "tweedie",
-                "all_factors": True,
-                "var_power": 1.8,
-                "params": {"var_power": 1.4},
-            },
-            data="d",
-        )
-
-        assert kwargs["params"]["var_power"] == 1.4
-        assert kwargs["variance_power"] == 1.4
-
-    def test_glm_conflicting_variance_power_alias_fails_loudly(self):
-        with pytest.raises(ValueError, match="variance_power.*params.*var_power"):
-            build_training_job_kwargs(
-                {
-                    "target": "y",
-                    "algorithm": "glm",
-                    "family": "tweedie",
-                    "all_factors": True,
-                    "variance_power": 1.7,
-                    "params": {"var_power": 1.4},
-                },
-                data="d",
-            )
-
     def test_glm_kwargs_params_carry_merged_config(self):
         config = {
             "target": "y",
@@ -308,20 +245,6 @@ class TestExplicitObjectiveRequired:
     def test_glm_empty_family_fails_loud(self):
         with pytest.raises(TrainingConfigError, match="family"):
             build_training_job_kwargs({"target": "y", "algorithm": "glm", "family": ""}, data="d")
-
-    def test_glm_family_in_params_only_is_accepted(self):
-        """``params["family"]`` wins over top-level per build_train_params —
-        a family present only in params is still an explicit choice."""
-        kwargs = build_training_job_kwargs(
-            {
-                "target": "y",
-                "algorithm": "glm",
-                "all_factors": True,
-                "params": {"family": "poisson"},
-            },
-            data="d",
-        )
-        assert kwargs["params"]["family"] == "poisson"
 
     def test_glm_does_not_require_loss_function(self):
         kwargs = build_training_job_kwargs(
@@ -456,14 +379,14 @@ class TestFailoverGates:
                 data="d",
             )
 
-    def test_glm_tweedie_with_params_var_power_passes(self):
+    def test_glm_tweedie_with_var_power_passes(self):
         kwargs = build_training_job_kwargs(
             {
                 "target": "y",
                 "algorithm": "glm",
                 "family": "tweedie",
                 "all_factors": True,
-                "params": {"var_power": 1.6},
+                "var_power": 1.6,
             },
             data="d",
         )
@@ -498,19 +421,6 @@ class TestFailoverGates:
         # theta must round-trip into the fit params — the gate is pointless
         # if the threaded value never reaches GLMAlgorithm.fit.
         assert kwargs["params"]["theta"] == 2.5
-
-    def test_glm_negbinomial_with_params_theta_passes(self):
-        kwargs = build_training_job_kwargs(
-            {
-                "target": "y",
-                "algorithm": "glm",
-                "family": "negbinomial",
-                "all_factors": True,
-                "params": {"theta": 1.8},
-            },
-            data="d",
-        )
-        assert kwargs["params"]["theta"] == 1.8
 
     def test_glm_non_negbinomial_does_not_require_theta(self):
         build_training_job_kwargs(

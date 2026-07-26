@@ -401,13 +401,6 @@ class TestPathTraversalJsonCache:
         )
         assert resp.status_code == 403
 
-    def test_cancel_path_traversal_rejected(self, client):
-        resp = client.post(
-            "/api/json-cache/cancel",
-            json={"path": "../../etc/passwd"},
-        )
-        assert resp.status_code == 403
-
     def test_build_config_path_traversal_rejected(self, client, tmp_path: Path):
         valid_data = tmp_path / "data.json"
         valid_data.write_text('{"key": "value"}')
@@ -827,7 +820,7 @@ class TestW8bLocalSessionProtection:
     LOCAL_ORIGIN = "http://localhost:8000"
     FOREIGN_HOST = "attacker.example"
     FOREIGN_ORIGIN = "https://attacker.example"
-    SESSION_HEADER = "x-haute-session-token"
+    SESSION_COOKIE = "haute_session"
     SESSION_QUERY = "haute_session_token"
 
     @pytest.fixture()
@@ -867,7 +860,7 @@ class TestW8bLocalSessionProtection:
             headers={
                 "host": self.LOCAL_HOST,
                 "origin": self.LOCAL_ORIGIN,
-                self.SESSION_HEADER: "",
+                "cookie": "",
             },
         )
 
@@ -879,7 +872,7 @@ class TestW8bLocalSessionProtection:
             json={},
             headers={
                 "host": "testserver",
-                self.SESSION_HEADER: "",
+                "cookie": "",
             },
         )
 
@@ -892,7 +885,7 @@ class TestW8bLocalSessionProtection:
             headers={
                 "host": self.LOCAL_HOST,
                 "origin": self.LOCAL_ORIGIN,
-                self.SESSION_HEADER: b"clef-\xe9rron\xe9e",
+                "cookie": b"haute_session=clef-\xe9rron\xe9e",
             },
         )
 
@@ -917,7 +910,7 @@ class TestW8bLocalSessionProtection:
             headers={
                 "host": self.LOCAL_HOST,
                 "origin": self.FOREIGN_ORIGIN,
-                self.SESSION_HEADER: self.SESSION_TOKEN,
+                "cookie": f"{self.SESSION_COOKIE}={self.SESSION_TOKEN}",
             },
         )
 
@@ -930,7 +923,7 @@ class TestW8bLocalSessionProtection:
             headers={
                 "host": self.FOREIGN_HOST,
                 "origin": self.LOCAL_ORIGIN,
-                self.SESSION_HEADER: self.SESSION_TOKEN,
+                "cookie": f"{self.SESSION_COOKIE}={self.SESSION_TOKEN}",
             },
         )
 
@@ -942,7 +935,7 @@ class TestW8bLocalSessionProtection:
             json={},
             headers={
                 "host": "[::1]:8000",
-                self.SESSION_HEADER: self.SESSION_TOKEN,
+                "cookie": f"{self.SESSION_COOKIE}={self.SESSION_TOKEN}",
             },
         )
 
@@ -964,7 +957,7 @@ class TestW8bLocalSessionProtection:
             json={},
             headers={
                 "host": host,
-                self.SESSION_HEADER: self.SESSION_TOKEN,
+                "cookie": f"{self.SESSION_COOKIE}={self.SESSION_TOKEN}",
             },
         )
 
@@ -986,7 +979,7 @@ class TestW8bLocalSessionProtection:
             headers={
                 "host": self.LOCAL_HOST,
                 "origin": origin,
-                self.SESSION_HEADER: self.SESSION_TOKEN,
+                "cookie": f"{self.SESSION_COOKIE}={self.SESSION_TOKEN}",
             },
         )
 
@@ -1015,7 +1008,7 @@ class TestW8bLocalSessionProtection:
             headers={
                 "host": self.LOCAL_HOST,
                 "origin": self.LOCAL_ORIGIN,
-                self.SESSION_HEADER: self.SESSION_TOKEN,
+                "cookie": f"{self.SESSION_COOKIE}={self.SESSION_TOKEN}",
             },
         )
 
@@ -1062,7 +1055,7 @@ class TestW8bLocalSessionProtection:
                 headers={
                     "host": self.LOCAL_HOST,
                     "origin": self.LOCAL_ORIGIN,
-                    self.SESSION_HEADER: self.SESSION_TOKEN,
+                    "cookie": f"{self.SESSION_COOKIE}={self.SESSION_TOKEN}",
                 },
             )
 
@@ -1123,7 +1116,7 @@ class TestW8bLocalSessionProtection:
                 headers={
                     "host": self.LOCAL_HOST,
                     "origin": self.LOCAL_ORIGIN,
-                    self.SESSION_HEADER: "",
+                    "cookie": "",
                 },
             ):
                 pass
@@ -1134,7 +1127,7 @@ class TestW8bLocalSessionProtection:
                 "/ws/sync",
                 headers={
                     "host": "testserver",
-                    self.SESSION_HEADER: "",
+                    "cookie": "",
                 },
             ):
                 pass

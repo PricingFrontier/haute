@@ -21,7 +21,7 @@ def _write_training_script(tmp_path: Path, *, body: str = "") -> Path:
         "result = MagicMock()\n"
         "result.model_path = '/tmp/model.cbm'\n"
         "result.train_rows = 1000\n"
-        "result.test_rows = 200\n"
+        "result.validation_rows = 200\n"
         "result.cat_features = ['a']\n"
         "result.features = ['a', 'b', 'c']\n"
         "result.metrics = {'rmse': 0.1234, 'mae': 0.0567}\n"
@@ -93,7 +93,7 @@ class TestTrain:
         assert "rmse" in result.output.lower()
 
     def test_validation_rows_labelled_truthfully(self, runner: CliRunner, tmp_path: Path) -> None:
-        """F541: ``test_rows`` holds the validation count, so label it 'Validation:'.
+        """F541: ``validation_rows`` holds the validation count, so label it 'Validation:'.
 
         The old output printed 'Test:' for a value that is actually the
         validation-set row count, colliding with the train/validation/holdout
@@ -130,7 +130,7 @@ class TestTrain:
             "result = MagicMock()\n"
             "result.model_path = '/tmp/model.cbm'\n"
             "result.train_rows = 500\n"
-            "result.test_rows = 100\n"
+            "result.validation_rows = 100\n"
             "result.cat_features = []\n"
             "result.features = ['x', 'y']\n"
             "result.metrics = {'rmse': 0.5}\n"
@@ -178,7 +178,7 @@ class TestTrain:
             "result = MagicMock()\n"
             "result.model_path = '/tmp/model.cbm'\n"
             "result.train_rows = 100\n"
-            "result.test_rows = 20\n"
+            "result.validation_rows = 20\n"
             "result.cat_features = ['a', 'b']\n"
             "result.features = ['a', 'b', 'c', 'd']\n"
             "result.metrics = {'rmse': 0.123456789, 'r2': 0.987654321}\n"

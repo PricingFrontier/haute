@@ -2116,7 +2116,7 @@ class TestScoreGraphOptimiserApplyRemap:
         with (
             patch("haute._optimiser_io.load_optimiser_artifact", return_value=mock_artifact),
             patch(
-                "haute.executor._dispatch_apply",
+                "haute._builders._dispatch_apply",
                 return_value=mock_dispatch_result,
             ) as mock_dispatch,
         ):
@@ -2326,7 +2326,7 @@ class TestScoreGraphOptimiserApplyRemap:
         with (
             patch("haute._optimiser_io.load_mlflow_optimiser_artifact", return_value=mock_artifact),
             patch(
-                "haute.executor._dispatch_apply",
+                "haute._builders._dispatch_apply",
                 return_value=mock_dispatch_result,
             ) as mock_dispatch,
         ):
@@ -3834,83 +3834,18 @@ class TestLoadEnv:
         _load_env(tmp_path)
 
     def test_load_env_with_dotenv(self, tmp_path, monkeypatch):
-        """When python-dotenv is available, load_dotenv is called."""
+        """The required python-dotenv parser loads values without overwriting env."""
         from haute.deploy._config import _load_env
 
         env_file = tmp_path / ".env"
-        env_file.write_text("MY_KEY=my_value\n")
+        env_file.write_text('HAUTE_TEST_ENV="from file"\nHAUTE_TEST_KEEP=overwritten\n')
+        monkeypatch.delenv("HAUTE_TEST_ENV", raising=False)
+        monkeypatch.setenv("HAUTE_TEST_KEEP", "original")
 
-        # Ensure load_dotenv is called
-        with patch("haute.deploy._config.load_dotenv", create=True):
-            # The import path for load_dotenv is inside the function,
-            # so we need to mock at the right location
-            with patch.dict("sys.modules", {"dotenv": MagicMock()}):
-                # Just verify it doesn't crash
-                _load_env(tmp_path)
+        _load_env(tmp_path)
 
-    def test_load_env_fallback_without_dotenv(self, tmp_path, monkeypatch):
-        """When python-dotenv is NOT installed, fallback parsing works."""
-        from haute.deploy._config import _load_env
-
-        env_file = tmp_path / ".env"
-        env_file.write_text(
-            "# comment\nMY_TEST_VAR=hello\n  ANOTHER_VAR = world  \n\nNO_EQUALS_LINE\n"
-        )
-
-        # Remove any pre-existing values
-        monkeypatch.delenv("MY_TEST_VAR", raising=False)
-        monkeypatch.delenv("ANOTHER_VAR", raising=False)
-
-        # Force ImportError for dotenv
-        with patch.dict("sys.modules", {"dotenv": None}):
-            _load_env(tmp_path)
-
-        assert os.environ.get("MY_TEST_VAR") == "hello"
-        assert os.environ.get("ANOTHER_VAR") == "world"
-
-        # Clean up
-        monkeypatch.delenv("MY_TEST_VAR", raising=False)
-        monkeypatch.delenv("ANOTHER_VAR", raising=False)
-
-    def test_load_env_setdefault_does_not_overwrite(self, tmp_path, monkeypatch):
-        """Fallback parser uses setdefault, so existing env vars are preserved."""
-        from haute.deploy._config import _load_env
-
-        env_file = tmp_path / ".env"
-        env_file.write_text("MY_PRESET=overwritten\n")
-
-        monkeypatch.setenv("MY_PRESET", "original")
-
-        with patch.dict("sys.modules", {"dotenv": None}):
-            _load_env(tmp_path)
-
-        assert os.environ.get("MY_PRESET") == "original"
-
-    @pytest.mark.parametrize(
-        "raw_value, expected",
-        [
-            ('"hello"', "hello"),
-            ("'hello'", "hello"),
-            ("'quoted with spaces'", "quoted with spaces"),
-            ('"double quoted"', "double quoted"),
-            ("no_quotes", "no_quotes"),
-            ("", ""),
-        ],
-    )
-    def test_load_env_fallback_strips_quotes(self, tmp_path, monkeypatch, raw_value, expected):
-        """Fallback parser must strip surrounding single and double quotes."""
-        from haute.deploy._config import _load_env
-
-        env_file = tmp_path / ".env"
-        env_file.write_text(f"QUOTED_VAR={raw_value}\n")
-
-        monkeypatch.delenv("QUOTED_VAR", raising=False)
-
-        with patch.dict("sys.modules", {"dotenv": None}):
-            _load_env(tmp_path)
-
-        assert os.environ.get("QUOTED_VAR") == expected
-        monkeypatch.delenv("QUOTED_VAR", raising=False)
+        assert os.environ["HAUTE_TEST_ENV"] == "from file"
+        assert os.environ["HAUTE_TEST_KEEP"] == "original"
 
 
 class TestResolveConfigEdgeCases:
@@ -5029,7 +4964,16 @@ class TestBugB4PrunerUsesOriginalEdges:
                 "nodes": [
                     _node("shared"),
                     _node("live_src"),
-                    _node("switch", "liveSwitch", {"inputs": ["live_src", "shared"]}),
+                    _node(
+                        "switch",
+                        "liveSwitch",
+                        {
+                            "input_scenario_map": {
+                                "live_src": "live",
+                                "shared": "test_batch",
+                            }
+                        },
+                    ),
                     _node("transform"),
                     _node("output", "output"),
                 ],

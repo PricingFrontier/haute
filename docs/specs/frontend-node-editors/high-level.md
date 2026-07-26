@@ -191,3 +191,18 @@ The retained editors implement the editor portion of
 Component tests cover schema merge/preservation, loading/error/recovery,
 destination preview/mismatch, remount during a pending write, structured
 success/failure, and the overwrite confirmation retry.
+
+## Approved change contract — prerelease canonical editor formats
+
+This contract implements the editor portion of
+[ROAD-CANON-01](../../roadmap/engineering-quality.md#road-canon-01--prerelease-canonical-only-contract).
+Rating renders and persists only canonical `tables[].entries` row arrays and
+`combinedOutputs`; it never synthesises a combined output from singular fields or mirrors
+canonical edits back into them. Output renders only `outputMapping`; the v1 `fields` working-copy
+conversion, migration banner, and save-to-upgrade path are removed. Each output mapping row
+contains all four current fields, including the required `enabled` boolean; readers do not
+default omitted row fields. API Input accepts only its current `tables` schema and contains no
+pre-v2 classifier.
+
+The editors contain no historical-format detection or special error state. Component tests retain
+canonical new-node, edit, save, and reload coverage while deleting migration assertions.

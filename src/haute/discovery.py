@@ -33,7 +33,7 @@ def _configured_pipeline(root: Path) -> Path | None:
     return None
 
 
-def discover_pipelines(root: Path | None = None, *, strict: bool = False) -> list[Path]:
+def discover_pipelines(root: Path | None = None) -> list[Path]:
     """Find ``.py`` files in *root* that contain ``haute.Pipeline``.
 
     Resolution order:
@@ -46,13 +46,6 @@ def discover_pipelines(root: Path | None = None, *, strict: bool = False) -> lis
     ----------
     root:
         Directory to scan.  Defaults to ``Path.cwd()``.
-    strict:
-        When ``True``, raise :class:`~haute.errors.ConfigError` on any
-        :class:`OSError` encountered while reading a candidate ``.py`` file
-        instead of skipping that file.  The default (``False``) preserves the
-        historical skip-and-continue behaviour, but emits a ``WARNING`` log
-        naming the path and error so the user can diagnose the failure.
-
     Returns
     -------
     list[Path]
@@ -61,7 +54,7 @@ def discover_pipelines(root: Path | None = None, *, strict: bool = False) -> lis
     Raises
     ------
     ConfigError
-        Only when ``strict=True`` and a candidate file cannot be read.
+        When a candidate file cannot be read.
     """
     if root is None:
         root = Path.cwd()
@@ -75,20 +68,12 @@ def discover_pipelines(root: Path | None = None, *, strict: bool = False) -> lis
         try:
             text = configured.read_text(errors="replace")
         except OSError as exc:
-            if strict:
-                raise ConfigError(
-                    "Could not read configured pipeline",
-                    path=str(configured),
-                    error_type=type(exc).__name__,
-                    reason=str(exc),
-                ) from exc
-            logger.warning(
-                "discovery_read_failed",
+            raise ConfigError(
+                "Could not read configured pipeline",
                 path=str(configured),
                 error_type=type(exc).__name__,
                 reason=str(exc),
-                source="configured_pipeline",
-            )
+            ) from exc
         else:
             if "haute.Pipeline" in text:
                 found.append(configured)
@@ -103,21 +88,12 @@ def discover_pipelines(root: Path | None = None, *, strict: bool = False) -> lis
         try:
             text = f.read_text(errors="replace")
         except OSError as exc:
-            if strict:
-                raise ConfigError(
-                    "Could not read candidate pipeline file",
-                    path=str(f),
-                    error_type=type(exc).__name__,
-                    reason=str(exc),
-                ) from exc
-            logger.warning(
-                "discovery_read_failed",
+            raise ConfigError(
+                "Could not read candidate pipeline file",
                 path=str(f),
                 error_type=type(exc).__name__,
                 reason=str(exc),
-                source="glob",
-            )
-            continue
+            ) from exc
         if "haute.Pipeline" in text:
             found.append(f)
 

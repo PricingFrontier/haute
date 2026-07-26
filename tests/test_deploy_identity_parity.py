@@ -350,7 +350,7 @@ class TestScoreTestQuotesThreadsArtifacts:
 
         quotes = tmp_path / "quotes"
         quotes.mkdir()
-        (quotes / "a.json").write_text(json.dumps([{"x": 1.0}]))
+        (quotes / "a.json").write_text(json.dumps([{"input": {"x": 1.0}}]))
 
         model = tmp_path / "model.cbm"
         model.write_bytes(b"model-bytes")
@@ -404,7 +404,7 @@ class TestScoreTestQuotesThreadsArtifacts:
         )
         quotes = tmp_path / "quotes"
         quotes.mkdir()
-        (quotes / "a.json").write_text(json.dumps([{"x": 1.0}]))
+        (quotes / "a.json").write_text(json.dumps([{"input": {"x": 1.0}}]))
 
         graph = _model_score_graph({"sourceType": "", "output_column": "x"})
         resolved = _resolved_with(
@@ -442,7 +442,7 @@ class TestScoreTestQuotesThreadsArtifacts:
         quotes = tmp_path / "quotes"
         quotes.mkdir()
         # Int64 x — drifts from the contract's Float64.
-        (quotes / "a.json").write_text(json.dumps([{"x": 1}]))
+        (quotes / "a.json").write_text(json.dumps([{"input": {"x": 1}}]))
 
         graph = _model_score_graph({"sourceType": "", "output_column": "x"})
         resolved = _resolved_with(

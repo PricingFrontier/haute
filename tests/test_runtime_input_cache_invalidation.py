@@ -35,7 +35,7 @@ from pathlib import Path
 import polars as pl
 import pytest
 
-from haute._json_flatten import _json_cache_dir, cache_state_signature_for_graph
+from haute._json_flatten import _json_cache_dir
 from haute._types import GraphEdge
 from haute.executor import _preview_cache, execute_graph
 from haute.trace import _cache as _trace_cache
@@ -62,11 +62,11 @@ pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
 @pytest.fixture(autouse=True)
 def _fresh_caches():
     """Preview/trace caches are process singletons — isolate every test."""
-    _preview_cache.invalidate()
-    _trace_cache.invalidate()
+    _preview_cache.clear()
+    _trace_cache.clear()
     yield
-    _preview_cache.invalidate()
-    _trace_cache.invalidate()
+    _preview_cache.clear()
+    _trace_cache.clear()
 
 
 def _write_csv(path: Path, values: list[int]) -> None:
@@ -606,13 +606,13 @@ class TestStatGatedFingerprintMemo:
         graph = _csv_graph(p)
 
         execute_graph(graph)
-        fp_before = _preview_cache.fingerprint
+        fp_before = _preview_cache.most_recent_key
         assert fp_before is not None
 
         _bump_mtime(p)
 
         execute_graph(graph)
-        fp_after = _preview_cache.fingerprint
+        fp_after = _preview_cache.most_recent_key
         assert fp_after != fp_before, "mtime change must produce a new preview cache key"
 
     def test_stat_identical_noop_rewrite_serves_cached_preview(self, tmp_path, hash_calls):
@@ -625,14 +625,14 @@ class TestStatGatedFingerprintMemo:
         key = str(p.resolve())
 
         results1 = execute_graph(graph)
-        fp_before = _preview_cache.fingerprint
+        fp_before = _preview_cache.most_recent_key
         stat = p.stat()
 
         _write_csv(p, [1, 2])  # identical bytes
         os.utime(p, ns=(stat.st_atime_ns, stat.st_mtime_ns))  # restore stat exactly
 
         results2 = execute_graph(graph)
-        assert _preview_cache.fingerprint == fp_before
+        assert _preview_cache.most_recent_key == fp_before
         assert hash_calls.get(key) == 1, "stat-identical rewrite must not re-hash"
         assert [row["x"] for row in results2["src"].preview] == [
             row["x"] for row in results1["src"].preview
@@ -683,208 +683,3 @@ class TestStatGatedFingerprintMemo:
 
         with pytest.raises(RuntimeError, match="changed on disk while loading"):
             execution_mod._stat_gated_runtime_path_fingerprint(p)
-
-
-# ---------------------------------------------------------------------------
-# Unit: runtime_input_extra_keys signs exactly the runtime input classes
-# ---------------------------------------------------------------------------
-
-
-class TestRuntimeInputExtraKeys:
-    def test_pure_inline_graph_has_no_extra_keys(self):
-        from haute.execution import runtime_input_extra_keys
-
-        graph = _g({"nodes": [_transform_node("t", "df = df")], "edges": []})
-        assert runtime_input_extra_keys(graph) == ()
-
-    def test_remote_artifact_identifier_is_not_file_signed_without_contract(self, tmp_path):
-        """MLflow ``artifact_path`` is an identifier, not a project file path."""
-        from haute.execution import runtime_input_extra_keys
-
-        artifact = tmp_path / "model.cbm"
-        artifact.write_bytes(b"model-v1")
-        graph = _g(
-            {
-                "nodes": [
-                    _n(
-                        {
-                            "id": "ms",
-                            "data": {
-                                "label": "ms",
-                                "nodeType": "modelScore",
-                                "config": {"artifact_path": str(artifact)},
-                            },
-                        }
-                    ),
-                ],
-                "edges": [],
-            }
-        )
-
-        keys_v1 = runtime_input_extra_keys(graph)
-        assert keys_v1 == ()
-
-        artifact.write_bytes(b"model-v2")
-        _bump_mtime(artifact)
-        assert runtime_input_extra_keys(graph) == keys_v1
-
-    def test_remote_artifact_identifier_remains_in_config_fingerprint(self):
-        """Repointing the MLflow identifier must invalidate dataframe caches."""
-        from haute.execution import dataframe_graph_input_fingerprint
-
-        def graph_for(artifact_path: str):
-            return _g(
-                {
-                    "nodes": [
-                        _n(
-                            {
-                                "id": "ms",
-                                "data": {
-                                    "label": "ms",
-                                    "nodeType": "modelScore",
-                                    "config": {
-                                        "sourceType": "run",
-                                        "run_id": "run-1",
-                                        "artifact_path": artifact_path,
-                                    },
-                                },
-                            }
-                        ),
-                    ],
-                    "edges": [],
-                }
-            )
-
-        first = dataframe_graph_input_fingerprint(
-            graph_for("models/v1/model.cbm"),
-            target_node_id="ms",
-            source="live",
-        )
-        second = dataframe_graph_input_fingerprint(
-            graph_for("models/v2/model.cbm"),
-            target_node_id="ms",
-            source="live",
-        )
-
-        assert first != second
-
-    def test_flat_file_api_input_path_is_signed(self, tmp_path):
-        """Non-JSON apiInput paths are flat-file reads — signed like a
-        dataInput file, mirroring the builder's dispatch predicate."""
-        from haute.execution import runtime_input_extra_keys
-
-        p = tmp_path / "quotes.csv"
-        _write_csv(p, [1])
-        graph = _g({"nodes": [_flat_api_input_node("api", p)], "edges": []})
-
-        keys_v1 = runtime_input_extra_keys(graph)
-
-        _write_csv(p, [2, 3])
-        _bump_mtime(p)
-        keys_v2 = runtime_input_extra_keys(graph)
-        assert keys_v2 != keys_v1
-
-    def test_json_api_input_raw_file_is_file_signed(self, tmp_path, monkeypatch):
-        """JSON-shape apiInputs sign the raw file as well as cache metadata."""
-        from haute.execution import runtime_input_extra_keys
-
-        monkeypatch.chdir(tmp_path)
-        data = tmp_path / "data.json"
-        data.write_text(json.dumps([{"amount": 1}]), encoding="utf-8")
-        graph = _json_api_input_graph(data)
-
-        keys_before = runtime_input_extra_keys(graph)
-
-        data.write_text(json.dumps([{"amount": 999}]), encoding="utf-8")
-        _bump_mtime(data)
-        keys_after = runtime_input_extra_keys(graph)
-        assert keys_after != keys_before
-
-    def test_model_score_contract_is_signed_but_remote_artifact_identifier_is_not(self, tmp_path):
-        from haute.execution import runtime_input_extra_keys
-
-        artifact = tmp_path / "model.cbm"
-        artifact.write_bytes(b"model-v1")
-        contract = tmp_path / "contract.json"
-        contract.write_text(json.dumps({"features": ["age"]}), encoding="utf-8")
-
-        graph = _g(
-            {
-                "nodes": [
-                    _n(
-                        {
-                            "id": "ms",
-                            "data": {
-                                "label": "ms",
-                                "nodeType": "modelScore",
-                                "config": {
-                                    "artifact_path": str(artifact),
-                                    "feature_contract_path": str(contract),
-                                },
-                            },
-                        }
-                    ),
-                ],
-                "edges": [],
-            }
-        )
-
-        keys_v1 = runtime_input_extra_keys(graph)
-        assert keys_v1, "a local feature contract must contribute extra-key material"
-
-        artifact.write_bytes(b"model-v2-retrained")
-        _bump_mtime(artifact)
-        keys_v2 = runtime_input_extra_keys(graph)
-        assert keys_v2 == keys_v1
-
-        contract.write_text(json.dumps({"features": ["age", "region"]}), encoding="utf-8")
-        _bump_mtime(contract)
-        keys_v3 = runtime_input_extra_keys(graph)
-        assert keys_v3 != keys_v2
-
-    def test_missing_datasource_file_keys_differently_than_present(self, tmp_path):
-        from haute.execution import runtime_input_extra_keys
-
-        p = tmp_path / "data.csv"
-        _write_csv(p, [1])
-        graph = _csv_graph(p)
-
-        keys_present = runtime_input_extra_keys(graph)
-        assert keys_present
-
-        p.unlink()
-        keys_missing = runtime_input_extra_keys(graph)
-        assert keys_missing
-        assert keys_missing != keys_present
-
-    def test_json_cache_state_signature_is_included(self, tmp_path, monkeypatch):
-        from haute.execution import runtime_input_extra_keys
-
-        monkeypatch.chdir(tmp_path)
-        data = tmp_path / "data.json"
-        data.write_text(json.dumps([{"amount": 1}]), encoding="utf-8")
-        cache_dir = _json_cache_dir(str(data), "working")
-        cache_dir.mkdir(parents=True)
-        (cache_dir / "meta.json").write_text("{}", encoding="utf-8")
-
-        graph = _g(
-            {
-                "nodes": [
-                    _n(
-                        {
-                            "id": "api",
-                            "data": {
-                                "label": "api",
-                                "nodeType": "apiInput",
-                                "config": {"path": str(data), "tables": []},
-                            },
-                        }
-                    ),
-                ],
-                "edges": [],
-            }
-        )
-
-        signature = cache_state_signature_for_graph(graph)
-        assert signature  # meta.json exists, so the signature is non-empty
-        assert signature in runtime_input_extra_keys(graph)

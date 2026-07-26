@@ -1,23 +1,15 @@
 """V2 schema-mapping codec for API Input nodes.
 
-The v2 shape (per MULTI_FRAME_PLAN.md, commit 3) is the only shape this
-codec understands. The on-disk config under ``rating/config/<...>.json``
-carries ``tables[]``; nested-array data surfaces as child tables, not
-flat indexed columns. Pre-v2 config files in the wild (carrying
-``flattenSchema``) are treated as empty at runtime — the user opens the
-editor and clicks "Infer Tables" to populate ``tables[]`` afresh.
+The on-disk config under ``rating/config/<...>.json`` carries ``tables[]``;
+nested-array data surfaces as child tables, not flat indexed columns.
 
 This module is the on-the-wire contract:
 
-- :func:`is_v2_shape` — does the config carry the load-bearing ``tables``
-  key? (Stray legacy keys alongside are tolerated and ignored.)
 - :func:`parse_table_path`, :func:`parse_column_path` — navigate the
   JSONPath conventions used in ``tables[].path`` and column ``path``.
 - :func:`validate_v2_schema` — raise :class:`ApiInputSchemaError` on
-  any violation of the §4d invariants OR the B-guardrails added in the
-  v1-removal commit: B1 (unknown column types loud-fail), B2 (sanitised
-  label collision loud-fail), B3 (typed exception throughout so the
-  cache route can catch specifically and return a structured 422).
+  any invariant violation, including unknown column types and sanitised
+  label collisions.
 
 What lives in v2:
 
@@ -26,7 +18,7 @@ What lives in v2:
     ``"$[:]"``; nested arrays follow ``"$[:].<key>[:]"``, and an array
     nested inside a 1-1 object reaches it through object hops:
     ``"$[:].proposer.claims[:]"``. ``[:]`` is the only accepted array
-    selector (a legacy ``[*]`` is rejected). The relational depth is the
+    selector. The relational depth is the
     number of ``[:]`` hops — 1-1 object nesting is transparent (see below).
   - ``label``: required, unique within the apiInput, defaults to ``path``
     on inference. Becomes the frame name when the table emits in a
@@ -162,42 +154,11 @@ class TableV2(TypedDict, total=False):
 
 
 class ApiInputV2Config(TypedDict, total=False):
-    """v2 apiInput config — on-disk shape under ``rating/config/<...>.json``.
-
-    Bundle 1 sanitisation: ``removedTables`` was previously declared
-    here as a parallel to the frontend's editor-side ledger; the
-    feature was never wired and is dropped. See
-    ``haute._types.ApiInputConfig`` for the full rationale and the
-    test that pins the absence.
-    """
+    """apiInput config stored under ``rating/config/<...>.json``."""
 
     path: str
     contract: str
     tables: list[TableV2]
-
-
-# ---------------------------------------------------------------------------
-# Shape detection
-# ---------------------------------------------------------------------------
-
-
-def is_v2_shape(config: Any) -> bool:
-    """Return True iff *config* carries a v2 ``tables[]`` array.
-
-    Accepts ``Any`` (not just ``dict``) so unrelated payload shapes
-    coming through the API surface as a clean ``False`` rather than an
-    ``AttributeError``. Callers downstream get a ``False`` and then
-    :func:`validate_v2_schema` raises an :class:`ApiInputSchemaError`
-    with a useful message.
-
-    Per decision D9 ("as if v1 doesn't exist"): a config that ALSO
-    carries pre-v2 keys (``flattenSchema``, ``column_renames``, …) is
-    still v2 if ``tables`` is present. Stray legacy keys are tolerated
-    silently; the runtime reads only the v2 surface.
-    """
-    if not isinstance(config, dict):
-        return False
-    return isinstance(config.get(_V2_TABLES_KEY), list)
 
 
 _JSON_API_INPUT_SUFFIXES = (".json", ".jsonl", ".ndjson")
@@ -236,13 +197,12 @@ PathSeg = tuple[str, bool]
 # path grammar; STATE_OF_PLAY §2: "[:] over [*] because it is explicit array
 # parsing"). One selector = one canonical form: equivalence and diffing are
 # exact, and external tooling has a single shape to parse. There is NO ``[*]``
-# alias — inference and the editor write ``[:]``, and a legacy ``[*]`` path is
-# rejected (not silently normalised) so paths never have two spellings.
+# alias — inference and the editor write ``[:]`` so paths have one spelling.
 #
 # The grammar ITSELF now lives in the shared lynchpin ``haute._jsonpath``
 # (PATH_GRAMMAR.md) — INPUT routes through :func:`parse_data_path` so the
 # acceptance surface (selectors accepted, §3 rejections, identifier charset,
-# the ``['name']`` → ``.name`` bracket normalisation) is single-sourced and
+# the canonical dotted-name selectors) is single-sourced and
 # can no longer drift from OUTPUT. This module keeps only INPUT's *semantics*
 # on top: the table-vs-column classification, relational depth, and the W1
 # ancestor-prefix rule.
@@ -269,10 +229,10 @@ def _parse_dollar_path(path: str, *, allow_root: bool = False) -> list[PathSeg]:
     Delegates the whole acceptance grammar to the shared lynchpin
     (:func:`haute._jsonpath.parse_data_path`, injecting
     :class:`ApiInputSchemaError`): the array-outer root ``$[:]``, ``.name``
-    object hops, ``['name']`` → ``.name`` bracket normalisation, ``key[:]``
+    object hops, ``key[:]``
     array hops, the ``$value`` reserved leaf, and every §3 rejection (``[*]``,
     index/range/filter, ``..``, ``.:``, whitespace, non-identifier dot keys).
-    With *allow_root* the bare root ``$`` / ``$[:]`` parses to ``[]`` (a table
+    With *allow_root* ``$[:]`` parses to ``[]`` (a table
     path's outermost level); without it a leaf is required (a column path).
     """
     parsed = parse_data_path(
@@ -308,7 +268,7 @@ def parse_table_path(path: str) -> tuple[PathSeg, ...]:
     A table sits at an ARRAY boundary: the root array (``"$[:]"`` -> ``()``) or
     a ``[:]`` array of objects, optionally reached through 1-1 object hops.
 
-    - ``"$"`` / ``"$[:]"`` -> ``()`` (root array).
+    - ``"$[:]"`` -> ``()`` (root array).
     - ``"$[:].drivers[:]"`` -> ``(("drivers", True),)``.
     - ``"$[:].proposer.claims[:]"`` ->
       ``(("proposer", False), ("claims", True))`` — an array of objects nested
@@ -421,16 +381,16 @@ def validate_v2_schema(config: dict[str, Any]) -> None:
     - When ``levels`` is set on a column, it's a list (with at least one
       entry). Empty list is rejected — use ``null`` for "no domain".
 
-    Guardrails added at v1-removal time:
-    - **B1** — each column's ``type`` value must be one of
+    Additional invariants:
+    - Each column's ``type`` value must be one of
       ``int|float|str|bool|date``. Today's silent downgrade to ``str``
       (in ``_json_shred.py``) loses information; loud-fail at validate
       time forces the user to correct typos before the cache build.
-    - **B2** — two table labels whose filesystem-safe sanitisation
+    - Two table labels whose filesystem-safe sanitisation
       produces the same parquet filename are rejected. Without this,
       ``build_per_port_cache`` silently overwrites: the second parquet
       clobbers the first.
-    - **B3** — every error path raises :class:`ApiInputSchemaError`
+    - Every error path raises :class:`ApiInputSchemaError`
       (subclass of :class:`HauteError`). The JSON cache route catches
       specifically and returns a structured 422.
     """

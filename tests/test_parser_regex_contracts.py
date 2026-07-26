@@ -1,13 +1,12 @@
 """Decorator-kwarg parsing contract tests.
 
 ``_parse_decorator_kwargs_regex`` in ``src/haute/_parser_regex.py`` powers the
-syntax-error fallback parser.  The AST-based migration (Wave 4C / commit
-``eb967bf``) replaced three hand-rolled regex scans with
-``ast.parse(f"f({inner})")`` + ``ast.literal_eval`` over the resulting
+syntax-error fallback parser. It parses decorator arguments with
+``ast.parse(f"f({inner})")`` and ``ast.literal_eval`` over the resulting
 ``Call.keywords`` list.
 
-This file pins the *contract* of that function so that any further migration
-(for example, extending support for non-literal expressions via
+This file pins the *contract* of that function so that any extension
+(for example, supporting non-literal expressions via
 ``ast.unparse``) cannot silently regress the existing literal-value policy.
 
 Split:
@@ -196,7 +195,7 @@ class TestRegressionCurrentBehaviour:
 
 
 # ---------------------------------------------------------------------------
-# Part 2: Pathological cases that the AST migration does NOT yet handle.
+# Part 2: Non-literal values the fallback intentionally rejects.
 #
 # Current behaviour: ``ast.literal_eval`` raises on anything that is not a
 # pure literal (calls, f-strings, conditional expressions, etc.).  After the
@@ -208,11 +207,7 @@ class TestRegressionCurrentBehaviour:
 
 
 class TestPathologicalStillUnsupported:
-    """Non-literal expressions remain unsupported in fallback config data.
-
-    Preserved under the legacy class name to keep cross-repo references
-    intact; the assertions now pin W5's fail-loud save-integrity policy.
-    """
+    """Non-literal expressions remain unsupported in fallback config data."""
 
     def test_nested_dict_call_rejected(self) -> None:
         with pytest.raises(ParseError, match="transform"):

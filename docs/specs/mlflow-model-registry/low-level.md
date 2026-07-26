@@ -38,9 +38,8 @@
   cascades *outside* the base cache's lock (the evicted values are
   returned by `evict_where` precisely so the cascade can run lock-free).
 - **`ModelFlavor`** / **`_SUPPORTED_FLAVORS`** (`_model_flavors.py`) —
-  see Module map. Re-exported (via `import X as X`) from
-  `_model_scorer.py` so existing call sites can keep importing them from
-  either module.
+  see Module map. `_model_flavors.py` is their only import surface;
+  scoring and loading modules consume private local aliases.
 - **`ModelSource`** (`_model_scorer.py`) — `Literal["run", "registered"]`.
 - **`ScoreWriteProjection`** (`_model_scorer.py`, frozen `dataclass`,
   `slots=True`) — `passthrough_columns: frozenset[str] | None` (`None`
@@ -203,6 +202,8 @@ thin delegates). Validates `flavor` against `_SUPPORTED_FLAVORS` (raises
 `write_projection` directly), normalises categorical level declarations
 to the feature set, then dispatches to `_score_batched_unified` (`batch=
 True`) or `_score_eager_unified` (`batch=False`).
+The delegates receive `offset_column` on every call, including `None`; there is
+no reduced-arity path for earlier delegate signatures.
 
 - **Eager** (`_score_eager_unified`): resolves the effective offset
   column (explicit argument wins over the model's self-description),
@@ -322,6 +323,10 @@ endpoint.
   CatBoost never receives it as a feature column — it is supplied as a
   numeric `Pool` baseline, because CatBoost only applies a baseline
   passed inside a `Pool`, never through a bare matrix `predict()`.
+- **Pyfunc feature discovery uses the supported MLflow signature API.**
+  `_extract_pyfunc_features` reads `signature.inputs.input_names()`; Haute's
+  MLflow dependency floor is 3.11 and no older list-shaped signature adapter
+  is retained.
 - **Feature order is checked only relatively.** Extra columns elsewhere
   in the input schema are fine; what's enforced is that the model's own
   features appear in the schema in the same relative order they were

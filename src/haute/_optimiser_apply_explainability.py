@@ -525,13 +525,9 @@ def _match_ratebook_input_row(
     # ``PolarsError`` (the base of ColumnNotFound/Schema/Compute/InvalidOperation)
     # rather than bare ``Exception`` keeps unrelated bugs surfacing as errors.
     try:
-        from haute._execution_context import ExecutionProfile
         from haute._polars_utils import streaming_collect
 
-        matched = streaming_collect(
-            parent_frame.filter(predicate).head(1),
-            profile=ExecutionProfile.PREVIEW_EAGER,
-        )
+        matched = streaming_collect(parent_frame.filter(predicate).head(1))
     except pl.exceptions.PolarsError:
         return _python_match_ratebook_input_row(parent_frame, output_row, shared)
     if matched.is_empty():
@@ -574,13 +570,11 @@ def _python_match_ratebook_input_row(
     shared: list[str],
 ) -> dict[str, Any]:
     """Fallback: scan bounded batches in Python for tolerance-aware matches."""
-    from haute._execution_context import ExecutionProfile
     from haute._polars_utils import bounded_collect_batches
 
     saw_row = False
     for batch in bounded_collect_batches(
         parent_frame,
-        profile=ExecutionProfile.PREVIEW_EAGER,
         chunk_size=_TRACE_MATCH_BATCH_SIZE,
         maintain_order=True,
         stage_name="optimiser_trace_match_batch",

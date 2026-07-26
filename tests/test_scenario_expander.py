@@ -4,7 +4,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-from haute._parser_helpers import _build_node_config
+from haute._config_builder import _build_node_config
 from haute._types import GraphNode, NodeData, NodeType
 from haute.codegen import _node_to_code
 from haute.executor import _build_node_fn

@@ -14,9 +14,9 @@ This file covers four CLI architecture concerns:
   in ``src/haute/cli/_*.py`` is split into (a) a thin Click entry point
   that parses args into a config dataclass and (b) a ``handle_*`` pure
   function that does the work.  The Click body stays short.
-* **#131 ``DeployConfig.from_toml`` / ``from_cli_args``** — the legacy
-  ``_load_deploy_config`` helper is replaced by two explicit classmethods
-  on :class:`haute.deploy._config.DeployConfig`.
+* **#131 ``DeployConfig.from_toml`` / ``from_cli_args``** — two explicit
+  classmethods own file and CLI configuration on
+  :class:`haute.deploy._config.DeployConfig`.
 
 All tests are expected to fail before the dev patch lands; that is the
 red phase of the TDD cycle.  Failures should carry clear messages so the
@@ -1320,41 +1320,17 @@ class TestDeployConfigFromCliArgs:
         assert config.endpoint_suffix == "-staging"
 
 
-class TestLoadDeployConfigRemoved:
-    """The legacy ``_load_deploy_config`` helper must be removed.
-
-    After #131, the two explicit classmethods ``from_toml`` and
-    ``from_cli_args`` cover every code path the old helper did.  Leaving
-    the legacy helper around creates two ways to build a config, which
-    is exactly the drift we're trying to avoid.
-    """
-
-    def test_helpers_module_does_not_export_load_deploy_config(self) -> None:
-        """``haute.cli._helpers._load_deploy_config`` is gone."""
-        import haute.cli._helpers as helpers_mod
-
-        assert not hasattr(helpers_mod, "_load_deploy_config"), (
-            "The legacy _load_deploy_config helper must be removed — use "
-            "DeployConfig.from_toml / DeployConfig.from_cli_args instead"
-        )
-
-
 # ===========================================================================
-# Deploy fallback: stem-derived model_name when no --model-name + no toml
-# (restores coverage deleted in Wave 9B — flagged by reviewer)
+# Deploy default: stem-derived model_name when no --model-name + no toml
 # ===========================================================================
 
 
 class TestDeployFallbackStemDerivedModelName:
     """``haute deploy`` derives ``model_name`` from the pipeline stem.
 
-    When no ``haute.toml`` is present AND no ``--model-name`` is passed,
-    :func:`handle_deploy` must fall back to deriving the model name from
-    the resolved pipeline file's stem (``my_pipeline.py`` →
-    ``my_pipeline``).  The pre-9B ``_load_deploy_config`` helper
-    implemented this directly; after 9B the logic moved into the
-    deploy-command handler.  This test pins the restored coverage that
-    was deleted with ``TestLoadDeployConfig::test_fallback_to_pipeline_file``.
+    When no ``haute.toml`` is present and no ``--model-name`` is passed,
+    :func:`handle_deploy` derives the model name from the resolved pipeline
+    file's stem (``my_pipeline.py`` → ``my_pipeline``).
     """
 
     def test_no_toml_no_flag_derives_model_name_from_stem(
@@ -1366,7 +1342,7 @@ class TestDeployFallbackStemDerivedModelName:
         """No toml + pipeline file arg + no --model-name → stem is the model_name."""
         monkeypatch.chdir(tmp_path)
         # No haute.toml present.  A uniquely-named pipeline file is given
-        # so its stem (``my_pipeline``) is the fallback model_name.
+        # so its stem (``my_pipeline``) is the default model_name.
         pipeline = _touch_pipeline(tmp_path, "my_pipeline.py")
 
         resolved = _mock_resolved()

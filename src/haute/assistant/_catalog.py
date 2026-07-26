@@ -109,8 +109,8 @@ _USAGE_NOTES: dict[NodeType, str] = {
         "outputs with the chosen operation; make table factors and miss policy explicit."
     ),
     NodeType.OUTPUT: (
-        "Assemble the top-level JSON response from selected upstream columns; "
-        "use outputMapping rather than the retired fields shape."
+        "Assemble the top-level JSON response from selected upstream columns "
+        "with an explicit outputMapping."
     ),
     NodeType.EXPLORE: (
         "Request exploratory summaries or apply an exploration code block; "
@@ -176,11 +176,6 @@ def _make_entry(node_type: NodeType) -> NodeCatalogEntry:
 NODE_CATALOG: dict[NodeType, NodeCatalogEntry] = {
     node_type: _make_entry(node_type) for node_type in NodeType if node_type in _USAGE_NOTES
 }
-
-# Short aliases keep the public seam discoverable for callers that think of
-# this as a type catalog rather than a node catalog.
-CATALOG = NODE_CATALOG
-NODE_TYPE_CATALOG = NODE_CATALOG
 
 
 def validate_catalog_complete() -> None:
@@ -288,9 +283,7 @@ validate_catalog_complete()
 
 
 __all__ = [
-    "CATALOG",
     "NODE_CATALOG",
-    "NODE_TYPE_CATALOG",
     "NodeCatalogEntry",
     "render_catalog",
     "render_system_prompt",

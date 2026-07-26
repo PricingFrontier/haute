@@ -1,8 +1,6 @@
-"""Per-frame JSON shred for v2 schema mappings (MULTI_FRAME_PLAN commit 3).
+"""Per-frame JSON shred for the current schema mapping.
 
-Where v1's :mod:`_json_flatten` produces a single flat table with
-index-based array expansion (``drivers.0.id``, ``drivers.1.id``, ...),
-v2 produces ONE frame per emit-true ``tables[]`` entry, each frame
+The shred produces one frame per emit-true ``tables[]`` entry, each frame
 materialised at its own JSON iteration depth.
 
 Algorithm in one paragraph: single-pass walk over the top-level records.
@@ -347,8 +345,8 @@ def _data_file_matches(
 ) -> bool:
     """True iff the data file on disk still matches the recorded signature.
 
-    Order of checks: missing/garbled signature → stale (pre-W2 caches
-    invalidate once and rebuild); stat failure → stale (serving cached rows
+    Order of checks: missing/garbled signature → stale; stat failure → stale
+    (serving cached rows
     for a deleted source would be silent wrongness); size mismatch → stale
     (a cheap pre-reject); otherwise the recorded content hash is the sole
     authority.
@@ -640,11 +638,9 @@ def _resolve_leaf(value: Any, leaf: str) -> Any:
 
     A dotted leaf addresses 1-1 OBJECT nesting only (that is the only shape
     inference ever produces a dotted leaf for — an array becomes a child
-    table, never a dotted hop). If a NON-EMPTY list is encountered mid-walk
-    the data doesn't match that shape, and the historical behaviour of
-    silently taking ``cur[0]`` discarded every other element with no
-    accounting. That silent collapse is a conservation violation, so it now
-    fails LOUD (W1): the array field must be modelled as its own child table.
+    table, never a dotted hop). A NON-EMPTY list encountered mid-walk does
+    not match that shape: collapsing it to one element would violate
+    conservation, so the array field must be modelled as its own child table.
 
     An EMPTY list mid-walk discards nothing — there is no element to drop —
     so it is not a conservation violation. It resolves to None (the value is
@@ -932,7 +928,7 @@ def _shred_data_file(
             raise RuntimeError(
                 "json shred conservation violation for root table "
                 f"{table_spec.label!r}: {emitted} emitted + {skipped} skipped "
-                f"!= {record_count} records read â€” a row was lost or "
+                f"!= {record_count} records read — a row was lost or "
                 "duplicated without accounting",
             )
 
@@ -983,7 +979,7 @@ def _cache_manifest_structure_failure(
 
     Manifest ``parquet`` values are checked for consistency but never trusted
     as paths: every artifact name is derived from its validated table label.
-    Missing, extra, duplicate, or legacy-unsigned entries make the candidate
+    Missing, extra, duplicate, or unsigned entries make the candidate
     unusable. Artifact bytes are deliberately checked by the caller: runtime
     probes must verify the exact payload they subsequently hand to Polars.
     """
@@ -1244,7 +1240,7 @@ def build_per_port_cache(
         ):
             existing_meta = read_per_port_cache_meta(cd)
             if existing_meta is not None:
-                fp8 = str(existing_meta.get("schema_fingerprint", ""))[:8]  # pragma: no mutate
+                fp8 = str(existing_meta["schema_fingerprint"])[:8]  # pragma: no mutate
                 logger.info(
                     "json_shred_build_noop",
                     data_path=str(dp),
@@ -1252,11 +1248,11 @@ def build_per_port_cache(
                     fingerprint=fp8,
                 )
                 return {
-                    "schema_mode": existing_meta.get("schema_mode", "v2"),
-                    "schema_fingerprint": existing_meta.get("schema_fingerprint", ""),
-                    "tables": existing_meta.get("tables", []),
-                    "data_file": existing_meta.get("data_file"),
-                    "skipped": existing_meta.get("skipped", {"records": 0, "rows_by_table": {}}),
+                    "schema_mode": existing_meta["schema_mode"],
+                    "schema_fingerprint": existing_meta["schema_fingerprint"],
+                    "tables": existing_meta["tables"],
+                    "data_file": existing_meta["data_file"],
+                    "skipped": existing_meta["skipped"],
                     "cache_dir": str(cd),
                 }
 
@@ -1279,9 +1275,6 @@ def build_per_port_cache(
         import pyarrow.parquet as pq  # local — keeps top-of-module import surface small
 
         fingerprint = _v2_fingerprint(v2_config)
-        legacy_tmp_dir = cd.with_name(cd.name + ".build-tmp")
-        if legacy_tmp_dir.exists():
-            shutil.rmtree(legacy_tmp_dir)
         tmp_dir = _unique_build_tmp_dir(cd)
         tmp_dir.mkdir(parents=True)
         try:
@@ -1293,8 +1286,7 @@ def build_per_port_cache(
                 # Convert to Arrow and attach the per-frame schema in the
                 # footer (DUAL_CACHE.md §3). Polars's DataFrame.write_parquet
                 # doesn't accept the bytes-keyed metadata shape PyArrow uses;
-                # going via Arrow directly is the same pattern v1 used in
-                # _json_flatten.
+                # going via Arrow directly matches the flat-cache writer.
                 arrow_tbl = frame.to_arrow()
                 arrow_tbl = arrow_tbl.replace_schema_metadata(
                     _per_frame_metadata(label, col_specs),
@@ -1360,10 +1352,6 @@ def _swap_dir_into_place(tmp_dir: Path, live_dir: Path) -> None:
     remove the old copy. If the second rename fails the old dir is restored
     before re-raising, so the cache is never left missing.
     """
-    legacy_backup = live_dir.with_name(live_dir.name + ".build-old")
-    if legacy_backup.exists():
-        shutil.rmtree(legacy_backup)
-
     if live_dir.exists():
         backup = _unique_build_old_dir(live_dir)
         try:
@@ -1624,8 +1612,7 @@ def is_per_port_cache_valid(
     same-mtime byte-changing rewrite as fresh (matching
     :func:`_data_file_matches`). The committed-layer deploy fallback still
     survives file copies because the hash matches when only the mtime moved.
-    A meta without a recorded source or per-parquet signature is stale by
-    construction — one-time invalidation on upgrade.
+    Metadata without a recorded source or per-parquet signature is invalid.
     """
     try:
         signature = (

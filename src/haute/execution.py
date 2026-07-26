@@ -130,7 +130,6 @@ __all__ = [
     "preview_lineage_cache_key",
     "prune_source_switch_edges",
     "ratebook_factor_required_columns",
-    "runtime_input_extra_keys",
     "source_scan_projection",
 ]
 
@@ -878,66 +877,6 @@ def _runtime_file_signature_paths(graph: PipelineGraph, node: GraphNode) -> dict
     return paths
 
 
-def _runtime_file_inputs_signature(graph: PipelineGraph) -> str:
-    """Digest of every file-backed runtime input's state in *graph*.
-
-    One entry per node with file inputs, enumerated by
-    :func:`_runtime_file_signature_paths` (which mirrors the builders'
-    runtime dispatch per node type).  Returns ``""`` when the graph has
-    no file-backed inputs.
-
-    A missing file is signed as ``exists: False`` — the changed key
-    forces re-execution, which then surfaces the missing file through
-    the node's normal execution error instead of a stale cached frame.
-    """
-    entries: list[Mapping[str, object]] = []
-    for node in sorted(graph.nodes, key=lambda item: item.id):
-        signature_paths = _runtime_file_signature_paths(graph, node)
-        if not signature_paths:
-            continue
-        entries.append(
-            {
-                "node_id": node.id,
-                "files": {
-                    field: _stat_gated_runtime_path_fingerprint(path)
-                    for field, path in signature_paths.items()
-                },
-            }
-        )
-    if not entries:
-        return ""
-    return "runtime_files=" + content_hash_bytes(canonical_json(entries).encode())
-
-
-def runtime_input_extra_keys(graph: PipelineGraph) -> tuple[str, ...]:
-    """Return the legacy diagnostic tuple for runtime inputs outside graph JSON.
-
-    Maintained cache consumers use :func:`dataframe_graph_input_fingerprint`
-    and its checked contract. This compatibility helper remains available to
-    callers that inspect the two historical component signatures:
-
-    * ``runtime_files=…`` — file-backed input state
-      (:func:`_runtime_file_inputs_signature`), so an out-of-band
-      change to a direct Data Input, active input snapshot, flat-file
-      apiInput, external file, or model artifact invalidates affected entries;
-    * ``json_cache=…`` — the JSON-shape apiInput cache state
-      (:func:`haute._json_flatten.cache_state_signature_for_graph`), so
-      a cache build/clear/mirror invalidates affected entries.
-
-    File access is stat-gated via
-    :func:`_stat_gated_runtime_path_fingerprint`: unchanged inputs cost
-    one ``stat`` per file per call, never a content re-hash.
-    """
-    keys: list[str] = []
-    file_signature = _runtime_file_inputs_signature(graph)
-    if file_signature:
-        keys.append(file_signature)
-    json_cache_signature = cache_state_signature_for_graph(graph)
-    if json_cache_signature:
-        keys.append(json_cache_signature)
-    return tuple(keys)
-
-
 def _lineage_runtime_graph(graph: PipelineGraph, prepared: PreparedGraph) -> PipelineGraph:
     """Return the source-pruned target lineage used for runtime-input hashing."""
     relevant_ids = set(prepared.order)
@@ -1149,13 +1088,16 @@ def build_linear_execution_chain_functions(
     if not chain_ids:
         return {}
 
-    from haute._execute_lazy import _build_funcs, _prepare_graph_with_edges
+    from haute._execute_lazy import _build_funcs
 
-    node_map, _order, _parents_of, id_to_name, relevant_edges = _prepare_graph_with_edges(
+    prepared = prepare_graph(
         graph,
         target_node_id,
         source=routing_source,
     )
+    node_map = prepared.node_map
+    id_to_name = prepared.id_to_name
+    relevant_edges = prepared.relevant_edges
     missing = [node_id for node_id in (base_node_id, *chain_ids) if node_id not in node_map]
     if missing:
         raise ValueError(
@@ -1188,7 +1130,6 @@ def build_linear_execution_chain_functions(
     return _build_funcs(
         chain_ids,
         node_map,
-        chain_parents,
         id_to_name,
         graph.parents_of,
         build_node_fn,

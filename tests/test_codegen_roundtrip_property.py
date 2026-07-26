@@ -46,8 +46,8 @@ from hypothesis import HealthCheck, given, settings
 
 from haute._banding_config import expand_banding_config_from_sidecar
 from haute._config_io import collect_node_configs
-from haute._graph_utils import _resolve_sink_path, _sanitize_func_name
-from haute._rating_step_config import expand_rating_step_config_from_sidecar
+from haute._graph_utils import _sanitize_func_name
+from haute._rating_step_config import normalise_rating_step_config
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute.codegen import graph_to_code_multi
 from haute.parser import parse_pipeline_file
@@ -334,8 +334,13 @@ def _capstone_root_graph(
                             "entries": [{"score_band": "{low}", "value": "1.25"}],
                         }
                     ],
-                    "operation": "multiply",
-                    "combinedColumn": "rated premium",
+                    "combinedOutputs": [
+                        {
+                            "outputColumn": "rated premium",
+                            "operation": "multiply",
+                            "baseValue": 1.0,
+                        }
+                    ],
                     "code": _simple_user_code(user_text),
                 }
             ),
@@ -619,15 +624,10 @@ def _canonical_config(node_type: NodeType, config: dict[str, Any], remap: dict[s
     normalized = dict(config)
     if normalized.get("code") == "":
         normalized.pop("code")
-    if node_type == NodeType.DATA_OUTPUT and "path" in normalized:
-        normalized["path"] = _resolve_sink_path(
-            str(normalized.get("path") or ""),
-            str(normalized.get("format") or "parquet"),
-        )
     if node_type == NodeType.BANDING:
         normalized = expand_banding_config_from_sidecar(normalized)
     if node_type == NodeType.RATING_STEP:
-        normalized = expand_rating_step_config_from_sidecar(normalized)
+        normalized = normalise_rating_step_config(normalized)
     for field in _NODE_REFERENCE_CONFIG_FIELDS.get(node_type, frozenset()):
         value = normalized.get(field)
         if isinstance(value, str):
@@ -846,7 +846,7 @@ def test_submodel_container_types_are_explicitly_budgeted() -> None:
 
     The single-file node strategy still excludes container-only node types.
     Their implicit boundary edges and hidden source/target ports are covered
-    by the dedicated multi-file parse â†’ codegen â†’ parse conservation
+    by the dedicated multi-file parse → codegen → parse conservation
     regression in ``test_parser_conservation.py``.
     """
     assert NodeType.SUBMODEL not in ROUNDTRIPPABLE_NODE_TYPES

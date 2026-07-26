@@ -30,7 +30,7 @@ describe("useStaleConfigEstimate", () => {
       useStaleConfigEstimate<FakeEstimate>(
         "node_1",
         configA,
-        { configHash: "old-hash" },
+        { configHash: "old-hash", source: "source_a", structuralVersion: 1 },
         endpoint,
         { source: "source_a", structuralVersion: 1 },
       ),

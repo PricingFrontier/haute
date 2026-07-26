@@ -58,7 +58,10 @@ from haute.routes._helpers import (
     ws_clients_discard,
     ws_clients_lock,
 )
-from haute.routes._optimiser_service import reap_stale_optimiser_artifacts
+from haute.routes._optimiser_service import (
+    _artifact_stale_seconds,
+    reap_stale_optimiser_artifacts,
+)
 from haute.routes.assistant import router as assistant_router
 from haute.routes.databricks import router as databricks_router
 from haute.routes.explore import router as explore_router
@@ -100,6 +103,7 @@ def static_build_ready(static_dir: Path) -> bool:
 logger = get_logger(component="server")
 
 _watcher_task: asyncio.Task | None = None
+_optimiser_reaper_task: asyncio.Task[None] | None = None
 _WATCHER_RESTART_DELAY_SECONDS = 0.1
 WS_FRAME_GRAPH_UPDATE = "graph_update"
 WS_FRAME_PARSE_ERROR = "parse_error"
@@ -353,6 +357,21 @@ def _clear_bytecache() -> None:
         shutil.rmtree(pycache, ignore_errors=True)
 
 
+async def _reap_stale_optimiser_artifacts_in_background(stale_after_seconds: int) -> None:
+    """Reap optimiser artifacts off the event loop and surface failures."""
+    try:
+        await asyncio.to_thread(reap_stale_optimiser_artifacts, stale_after_seconds)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        logger.error(
+            "optimiser_artifact_reaper_failed",
+            error=str(exc),
+            exc_info=True,
+        )
+        raise
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     from haute.deploy._config import _load_env
@@ -361,7 +380,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     configure_logging()
     _load_env(Path.cwd())
     configure_execution_telemetry()
-    await asyncio.to_thread(reap_stale_optimiser_artifacts)
+    stale_after_seconds = _artifact_stale_seconds()
 
     # Prime the pipeline-name → path index so the first HTTP request doesn't
     # synchronously pay for discovery + parse of every pipeline in the
@@ -370,14 +389,25 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     # ``haute.routes._helpers`` for the full contract.
     _ensure_pipeline_index()
 
-    global _watcher_task
+    global _watcher_task, _optimiser_reaper_task
     _watcher_task = asyncio.create_task(_watcher_forever())
-    yield
-    if _watcher_task:
-        _watcher_task.cancel()
-        with suppress(asyncio.CancelledError):
-            await _watcher_task
-        _watcher_task = None
+    _optimiser_reaper_task = asyncio.create_task(
+        _reap_stale_optimiser_artifacts_in_background(stale_after_seconds)
+    )
+    try:
+        yield
+    finally:
+        try:
+            if _watcher_task:
+                _watcher_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await _watcher_task
+        finally:
+            _watcher_task = None
+            if _optimiser_reaper_task:
+                reaper_task = _optimiser_reaper_task
+                _optimiser_reaper_task = None
+                await reaper_task
 
 
 app = FastAPI(title="Haute", version="0.1.0", lifespan=_lifespan)

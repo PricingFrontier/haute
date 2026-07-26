@@ -242,18 +242,6 @@ class TestContractHash:
         b = build_contract(**kwargs_b)
         assert a.contract_hash == b.contract_hash
 
-    def test_empty_categorical_levels_preserves_legacy_hash(self) -> None:
-        """Adding an empty level map should not invalidate older contracts."""
-        legacy = build_contract(**_basic_kwargs())
-        explicit_empty = build_contract(
-            **{
-                **_basic_kwargs(),
-                "categorical_levels": {},
-            }
-        )
-
-        assert legacy.contract_hash == explicit_empty.contract_hash
-
     def test_categorical_level_reorder_preserves_hash(self) -> None:
         kwargs_a = _basic_kwargs()
         kwargs_a["categorical_levels"] = {"region": ["north", "south"]}
@@ -326,10 +314,12 @@ class TestLoadRejectsMalformed:
             "features": c.features,
             "feature_types": c.feature_types,
             "categorical_features": c.categorical_features,
+            "categorical_levels": c.categorical_levels,
             "target_name": c.target_name,
             "target_type": c.target_type,
             "task": c.task,
             "contract_hash": c.contract_hash,
+            "offset_column": c.offset_column,
         }
 
     def test_load_rejects_missing_required_field(self, tmp_path: Path) -> None:
@@ -567,6 +557,7 @@ def _raw_from_contract(contract: FeatureContract) -> dict:
         "target_type": contract.target_type,
         "task": contract.task,
         "contract_hash": contract.contract_hash,
+        "offset_column": contract.offset_column,
     }
 
 
@@ -618,18 +609,6 @@ class TestStructuredContext:
         assert ctx.get("field") == "target_type"
         assert ctx.get("expected") == "Int64"
         assert ctx.get("actual") == "Float64"
-
-    def test_load_legacy_contract_without_categorical_levels(self, tmp_path: Path) -> None:
-        contract = build_contract(**_basic_kwargs())
-        raw = _raw_from_contract(contract)
-        raw.pop("categorical_levels")
-        path = tmp_path / "legacy.json"
-        path.write_text(json.dumps(raw, indent=2, sort_keys=True), encoding="utf-8")
-
-        loaded = load_contract(path)
-
-        assert loaded.categorical_levels == {}
-        assert loaded.contract_hash == contract.contract_hash
 
     def test_load_rejects_malformed_categorical_levels(self, tmp_path: Path) -> None:
         contract = build_contract(**_basic_kwargs())

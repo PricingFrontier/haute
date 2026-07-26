@@ -264,7 +264,7 @@ class TestMergeSubmodels:
             parent,
             {"sub": child},
             {"sub": "modules/sub.py"},
-            parent_edges=[("load", "child_a"), ("child_b", "output")],
+            parent_edges=[("load", "child_a", None, None), ("child_b", "output", None, None)],
             flatten=True,
         )
         node_ids = {n.id for n in result.nodes}
@@ -279,7 +279,7 @@ class TestMergeSubmodels:
             parent,
             {"sub": child},
             {"sub": "modules/sub.py"},
-            parent_edges=[("load", "child_a"), ("child_b", "output")],
+            parent_edges=[("load", "child_a", None, None), ("child_b", "output", None, None)],
             flatten=True,
         )
         edge_pairs = {(e.source, e.target) for e in result.edges}
@@ -294,7 +294,7 @@ class TestMergeSubmodels:
             parent,
             {"sub": child},
             {"sub": "modules/sub.py"},
-            parent_edges=[("load", "child_a"), ("child_b", "output")],
+            parent_edges=[("load", "child_a", None, None), ("child_b", "output", None, None)],
             flatten=False,
         )
         node_ids = {n.id for n in result.nodes}
@@ -307,7 +307,7 @@ class TestMergeSubmodels:
             parent,
             {"sub": child},
             {"sub": "modules/sub.py"},
-            parent_edges=[("load", "child_a"), ("child_b", "output")],
+            parent_edges=[("load", "child_a", None, None), ("child_b", "output", None, None)],
             flatten=False,
         )
         edge_sources = {e.source for e in result.edges}
@@ -322,7 +322,7 @@ class TestMergeSubmodels:
             parent,
             {"sub": child},
             {"sub": "modules/sub.py"},
-            parent_edges=[("load", "child_a")],
+            parent_edges=[("load", "child_a", None, None)],
             flatten=False,
         )
         assert result.submodels is not None
@@ -359,14 +359,14 @@ class TestMergeSubmodelsCrossBoundaryEdges:
     ``_build_edges`` drops edges whose endpoints reference a submodel child
     (it only knows about main-file nodes), so ``merge_submodels`` rebuilds
     those edges from the raw ``parent_edges`` tuples. These tests pin down
-    the tuple-shape handling and the de-duplication / membership guards.
+    port handling and the de-duplication / membership guards.
     """
 
-    def test_three_tuple_source_port_cross_edge_reconstructed(self) -> None:
-        """A 3-tuple ``(src, tgt, source_port)`` cross-boundary edge is kept.
+    def test_source_port_without_target_cross_edge_reconstructed(self) -> None:
+        """A source-port-only cross-boundary edge is kept.
 
-        The pre-port-aware codegen emits 3-tuples carrying only a source
-        port (no target port). The edge ``load -> child_a`` would otherwise
+        The edge carries only a source port (no target port). The edge
+        ``load -> child_a`` would otherwise
         be dropped; it must be reconstructed and then rewired to the
         submodel placeholder with an ``in__child_a`` target handle.
         """
@@ -376,8 +376,11 @@ class TestMergeSubmodelsCrossBoundaryEdges:
             parent,
             {"sub": child},
             {"sub": "modules/sub.py"},
-            # 3-tuple: source-port edge with no target port.
-            parent_edges=[("load", "child_a", "some_port"), ("child_b", "output")],
+            # Canonical four-tuple: source port with no target port.
+            parent_edges=[
+                ("load", "child_a", "some_port", None),
+                ("child_b", "output", None, None),
+            ],
             flatten=False,
         )
         # The cross-boundary edge survived reconstruction and was rewired to
@@ -389,7 +392,7 @@ class TestMergeSubmodelsCrossBoundaryEdges:
             and e.target == "submodel__sub"
             and e.targetHandle == "in__child_a"
         ]
-        assert len(boundary) == 1, "3-tuple cross-boundary edge should be reconstructed and rewired"
+        assert len(boundary) == 1, "cross-boundary edge should be reconstructed and rewired"
 
     def test_four_tuple_source_and_target_port_cross_edge_reconstructed(self) -> None:
         """A 4-tuple ``(src, tgt, source_port, target_port)`` is reconstructed.
@@ -408,7 +411,7 @@ class TestMergeSubmodelsCrossBoundaryEdges:
             # 4-tuple: both a source port and a target port.
             parent_edges=[
                 ("load", "child_a", "src_port", "tgt_port"),
-                ("child_b", "output"),
+                ("child_b", "output", None, None),
             ],
             flatten=False,
         )
@@ -475,11 +478,11 @@ class TestMergeSubmodelsCrossBoundaryEdges:
         assert len(flat_boundary) == 4
         assert len({edge.id for edge in flat_boundary}) == 4
 
-    def test_three_tuple_output_side_source_port_reconstructed(self) -> None:
-        """A 3-tuple whose *source* is a child node is reconstructed too.
+    def test_output_side_source_port_reconstructed(self) -> None:
+        """A source-port-only edge whose source is a child is reconstructed.
 
         Covers the output-port side: ``child_b -> output`` arrives as a
-        3-tuple and must become an ``out__child_b`` edge from the
+        source-port-only tuple and must become an ``out__child_b`` edge from the
         placeholder.
         """
         parent = _make_parent_graph()
@@ -488,7 +491,7 @@ class TestMergeSubmodelsCrossBoundaryEdges:
             parent,
             {"sub": child},
             {"sub": "modules/sub.py"},
-            parent_edges=[("load", "child_a"), ("child_b", "output", "result")],
+            parent_edges=[("load", "child_a", None, None), ("child_b", "output", "result", None)],
             flatten=False,
         )
         out_edges = [
@@ -527,7 +530,7 @@ class TestMergeSubmodelsCrossBoundaryEdges:
             {"sub": child},
             {"sub": "modules/sub.py"},
             # Same pair appears in parent_edges -> must be de-duplicated.
-            parent_edges=[("load", "child_a"), ("child_b", "output")],
+            parent_edges=[("load", "child_a", None, None), ("child_b", "output", None, None)],
             flatten=False,
         )
         into_child_a = [
@@ -567,9 +570,9 @@ class TestMergeSubmodelsCrossBoundaryEdges:
             {"sub": "modules/sub.py"},
             # (load, other): neither endpoint is a submodel child.
             parent_edges=[
-                ("load", "child_a"),
-                ("load", "other"),
-                ("child_b", "output"),
+                ("load", "child_a", None, None),
+                ("load", "other", None, None),
+                ("child_b", "output", None, None),
             ],
             flatten=False,
         )
@@ -595,7 +598,7 @@ class TestMergeSubmodelsCrossBoundaryEdges:
             parent,
             {"sub": child},
             {"sub": "modules/sub.py"},
-            parent_edges=[("load", "child_a")],
+            parent_edges=[("load", "child_a", None, None)],
             flatten=False,
         )
         assert result.submodels is not None

@@ -73,36 +73,13 @@ def test_load_test_quote_file_unwraps_golden_rows_and_strips_metadata(
     assert load_test_quote_file(quote_file) == [{"VehPower": 7, "Area": "C"}]
 
 
-def test_load_test_quote_file_preserves_legacy_flat_input_column(
-    tmp_path: Path,
-) -> None:
-    quote_file = tmp_path / "legacy.json"
-    _write_json(quote_file, [{"input": "raw-api-field", "VehPower": 7, "_note": "strip me"}])
-
-    assert load_test_quote_file(quote_file) == [{"input": "raw-api-field", "VehPower": 7}]
-
-
-def test_load_test_quote_file_preserves_legacy_flat_input_object_column(
-    tmp_path: Path,
-) -> None:
-    quote_file = tmp_path / "legacy.json"
-    _write_json(
-        quote_file,
-        [{"input": {"nested": "raw-api-field"}, "VehPower": 7, "_note": "strip me"}],
-    )
-
-    assert load_test_quote_file(quote_file) == [
-        {"input": {"nested": "raw-api-field"}, "VehPower": 7}
-    ]
-
-
-def test_load_test_quote_file_preserves_single_input_object_field(
+def test_load_test_quote_file_unwraps_input_without_expected_output(
     tmp_path: Path,
 ) -> None:
     quote_file = tmp_path / "single-input-field.json"
     _write_json(quote_file, [{"input": {"raw": 1}, "_note": "strip me"}])
 
-    assert load_test_quote_file(quote_file) == [{"input": {"raw": 1}}]
+    assert load_test_quote_file(quote_file) == [{"raw": 1}]
 
 
 def test_score_test_quotes_passes_expected_outputs_within_tolerance(

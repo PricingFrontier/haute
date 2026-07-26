@@ -10,8 +10,6 @@ from haute.graph_utils import (
     NodeData,
     PipelineGraph,
     _execute_lazy,
-    _prepare_graph,
-    _resolve_sink_path,
     _sanitize_func_name,
     ancestors,
     topo_sort_ids,
@@ -71,34 +69,6 @@ class TestSanitizeFuncName:
         for label in labels:
             name = _sanitize_func_name(label)
             assert name.isidentifier(), f"{label!r} -> {name!r} is not a valid identifier"
-
-
-# ---------------------------------------------------------------------------
-# _resolve_sink_path
-# ---------------------------------------------------------------------------
-
-
-class TestResolveSinkPath:
-    def test_bare_name_gets_outputs_dir_and_extension(self):
-        assert _resolve_sink_path("modelling-data", "parquet") == "outputs/modelling-data.parquet"
-
-    def test_bare_name_csv(self):
-        assert _resolve_sink_path("results", "csv") == "outputs/results.csv"
-
-    def test_already_has_directory_no_prepend(self):
-        assert _resolve_sink_path("my-dir/data", "parquet") == "my-dir/data.parquet"
-
-    def test_already_has_extension_no_append(self):
-        assert (
-            _resolve_sink_path("modelling-data.parquet", "parquet")
-            == "outputs/modelling-data.parquet"
-        )
-
-    def test_full_path_unchanged(self):
-        assert _resolve_sink_path("my-dir/data.parquet", "parquet") == "my-dir/data.parquet"
-
-    def test_wrong_extension_gets_appended(self):
-        assert _resolve_sink_path("data.csv", "parquet") == "outputs/data.csv.parquet"
 
 
 # ---------------------------------------------------------------------------
@@ -185,11 +155,6 @@ class TestAncestors:
         assert result == {"a", "b"}
 
 
-# ---------------------------------------------------------------------------
-# _prepare_graph
-# ---------------------------------------------------------------------------
-
-
 def _make_graph(
     nodes_data: list[tuple[str, str]], edges_data: list[tuple[str, str]]
 ) -> PipelineGraph:
@@ -200,31 +165,6 @@ def _make_graph(
     ]
     edges = [_e(s, t) for s, t in edges_data]
     return PipelineGraph(nodes=nodes, edges=edges)
-
-
-class TestPrepareGraph:
-    def test_returns_all_nodes_without_target(self):
-        g = _make_graph([("a", "A"), ("b", "B")], [("a", "b")])
-        node_map, order, parents, names = _prepare_graph(g)
-        assert set(order) == {"a", "b"}
-
-    def test_filters_to_ancestors_with_target(self):
-        g = _make_graph(
-            [("a", "A"), ("b", "B"), ("c", "C")],
-            [("a", "b")],
-        )
-        _, order, _, _ = _prepare_graph(g, target_node_id="b")
-        assert "c" not in order
-        assert set(order) == {"a", "b"}
-
-    def test_parents_of_correct(self):
-        g = _make_graph(
-            [("a", "A"), ("b", "B"), ("c", "C")],
-            [("a", "c"), ("b", "c")],
-        )
-        _, _, parents, _ = _prepare_graph(g)
-        assert set(parents["c"]) == {"a", "b"}
-        assert parents["a"] == []
 
 
 # ---------------------------------------------------------------------------
@@ -486,7 +426,7 @@ class TestResolveOrigSourceNames:
         from haute.graph_utils import resolve_orig_source_names
 
         node = GraphNode(id="x", data=NodeData(label="x"))
-        assert resolve_orig_source_names(node, {}, {}, {}) is None
+        assert resolve_orig_source_names(node, {}, {}) is None
 
     def test_resolves_from_full_edges(self):
         """Regression: original's parents must be resolved even when they
@@ -501,9 +441,12 @@ class TestResolveOrigSourceNames:
                 id="inst", data=NodeData(label="inst", config={"instanceOf": "freq_set"})
             ),
         }
-        all_parents = {"freq_set": ["policies", "claims_agg"]}
-        # id_to_name only has nodes in the execution subgraph (inst's ancestors)
-        id_to_name = {"policies": "policies", "inst": "inst"}
+        incoming_edges = {
+            "freq_set": [
+                _e("policies", "freq_set"),
+                _e("claims_agg", "freq_set"),
+            ]
+        }
 
-        result = resolve_orig_source_names(node_map["inst"], node_map, all_parents, id_to_name)
+        result = resolve_orig_source_names(node_map["inst"], node_map, incoming_edges)
         assert result == ["policies", "claims_agg"]

@@ -580,12 +580,7 @@ def test_column_order_matches_schema(client: TestClient, tmp_path: Path) -> None
 
 
 # ---------------------------------------------------------------------------
-# _build_column_stats — direct unit tests
-#
-# These pin the five-line invariant from ``_build_column_stats`` (the function
-# behind the Schema Table card) without an HTTP round-trip.  Real ``LazyFrame``
-# inputs are used: Polars makes them cheap and mocking its internals would
-# couple the test to private APIs.
+# _build_frame_stats — direct unit tests
 # ---------------------------------------------------------------------------
 
 
@@ -604,17 +599,17 @@ def explore_execution_context():
         context.release_admission()
 
 
-def test_build_column_stats_object_dtype_distinct_is_none(explore_execution_context) -> None:
-    from haute.routes._explore_service import _build_column_stats
+def test_build_frame_stats_object_dtype_distinct_is_none(explore_execution_context) -> None:
+    from haute.routes._explore_service import _build_frame_stats
 
     series = pl.Series("obj_col", [{"a": 1}, {"a": 2}, {"a": 3}], dtype=pl.Object)
     lf = series.to_frame().lazy()
 
-    stats = _build_column_stats(
+    stats = _build_frame_stats(
         lf,
         lf.collect_schema(),
         execution_context=explore_execution_context,
-    )
+    ).columns
 
     assert len(stats) == 1
     assert stats[0].name == "obj_col"
@@ -622,32 +617,32 @@ def test_build_column_stats_object_dtype_distinct_is_none(explore_execution_cont
     assert stats[0].null_count == 0
 
 
-def test_build_column_stats_struct_dtype_distinct_is_computed(explore_execution_context) -> None:
-    from haute.routes._explore_service import _build_column_stats
+def test_build_frame_stats_struct_dtype_distinct_is_computed(explore_execution_context) -> None:
+    from haute.routes._explore_service import _build_frame_stats
 
     lf = pl.DataFrame({"s": [{"x": 1}, {"x": 2}, {"x": 1}]}).lazy()
 
-    stats = _build_column_stats(
+    stats = _build_frame_stats(
         lf,
         lf.collect_schema(),
         execution_context=explore_execution_context,
-    )
+    ).columns
 
     assert len(stats) == 1
     assert stats[0].name == "s"
     assert stats[0].distinct_count == 2
 
 
-def test_build_column_stats_empty_schema_returns_empty_list(explore_execution_context) -> None:
-    from haute.routes._explore_service import _build_column_stats
+def test_build_frame_stats_empty_schema_returns_empty_list(explore_execution_context) -> None:
+    from haute.routes._explore_service import _build_frame_stats
 
     lf = pl.LazyFrame()
 
-    stats = _build_column_stats(
+    stats = _build_frame_stats(
         lf,
         lf.collect_schema(),
         execution_context=explore_execution_context,
-    )
+    ).columns
 
     assert stats == []
 
@@ -1268,8 +1263,8 @@ def test_build_frame_stats_categorical_value_counts_handle_count_column_name(
     assert [(item.value, item.count) for item in profile.values] == [("one", 2), ("two", 1)]
 
 
-def test_build_column_stats_happy_path(explore_execution_context) -> None:
-    from haute.routes._explore_service import _build_column_stats
+def test_build_frame_stats_happy_path(explore_execution_context) -> None:
+    from haute.routes._explore_service import _build_frame_stats
 
     lf = pl.DataFrame(
         {
@@ -1279,11 +1274,11 @@ def test_build_column_stats_happy_path(explore_execution_context) -> None:
         }
     ).lazy()
 
-    stats = _build_column_stats(
+    stats = _build_frame_stats(
         lf,
         lf.collect_schema(),
         execution_context=explore_execution_context,
-    )
+    ).columns
 
     assert [s.name for s in stats] == ["id", "name", "score"]
     assert [s.dtype for s in stats] == ["Int64", "String", "Float64"]

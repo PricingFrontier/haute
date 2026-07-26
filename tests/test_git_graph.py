@@ -186,28 +186,12 @@ class TestForkAttachments:
         assert _branch(rich_graph, twin_b).fork_point_sha == topo.commits["M4"]
         assert rich_graph.order.index(twin_a) < rich_graph.order.index(twin_b)
 
-    def test_topology_survives_missing_forks_json_entry(
+    def test_topology_is_derived_from_git_ancestry(
         self, rich_repo: tuple[Path, SeededTopology], rich_graph: GitGraphResponse
     ) -> None:
-        # twin-a's forks.json entry was deleted (a branch made in another
-        # clone) — the ancestry-derived fork point must be unaffected.
         _, topo = rich_repo
         twin_a = _branch(rich_graph, topo.branches["twin_a"])
-        assert twin_a.forked_from is None
         assert twin_a.fork_point_sha == topo.commits["M4"]
-
-    def test_forked_from_is_passthrough_not_topology(
-        self, rich_repo: tuple[Path, SeededTopology], rich_graph: GitGraphResponse
-    ) -> None:
-        _, topo = rich_repo
-        c = topo.commits
-        # forks.json records the commit the user forked AT (the pending save
-        # for a crystallized fork) — distinct from the ancestry fork point.
-        crystal = _branch(rich_graph, topo.branches["crystal"])
-        assert crystal.forked_from == c["S1"]
-        assert crystal.fork_point_sha == c["M5"]
-        assert _branch(rich_graph, topo.branches["fork_old"]).forked_from == c["M2"]
-        assert _branch(rich_graph, topo.branches["work"]).forked_from is None
 
     def test_fork_source_and_credit_across_the_forest(
         self, rich_repo: tuple[Path, SeededTopology], rich_graph: GitGraphResponse
@@ -384,7 +368,6 @@ class TestEntryMetadata:
         archived = _branch(rich_graph, topo.branches["archived"])
         assert archived.is_archived is True
         assert archived.is_current is False
-        assert archived.forked_from == topo.commits["M1"]  # back-link renamed with the pair
         assert [b.name for b in rich_graph.branches if b.is_archived] == [archived.name]
 
     def test_is_current_only_on_the_working_branch(

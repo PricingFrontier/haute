@@ -307,12 +307,6 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
             "success_schema": {"$ref": "#/components/schemas/JsonCacheInferResponse"},
         },
     },
-    "/api/json-cache/cancel": {
-        "POST": {
-            "request_ref": "#/components/schemas/JsonCacheBuildRequest",
-            "success_schema": {"$ref": "#/components/schemas/JsonCacheCancelResponse"},
-        },
-    },
     "/api/json-cache/progress": {
         "GET": {
             "request_ref": None,
@@ -453,12 +447,6 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
         "GET": {
             "request_ref": None,
             "success_schema": {"$ref": "#/components/schemas/OptimiserFrontierStatusResponse"},
-        },
-    },
-    "/api/optimiser/frontier/auto-range": {
-        "POST": {
-            "request_ref": "#/components/schemas/OptimiserFrontierAutoRangeRequest",
-            "success_schema": {"$ref": "#/components/schemas/OptimiserFrontierAutoRangeResponse"},
         },
     },
     "/api/optimiser/frontier/auto-range/start": {

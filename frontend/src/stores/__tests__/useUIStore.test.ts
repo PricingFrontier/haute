@@ -79,24 +79,6 @@ describe("useUIStore", () => {
   // markSaved / isDirty lives in useGraphStore.consolidation.test.ts.
   // -----------------------------------------------------------------------
 
-  describe("no dirty-tracking state on useUIStore (Wave 7E)", () => {
-    it("does not expose lastSavedSnapshot", () => {
-      const state = useUIStore.getState() as unknown as Record<string, unknown>
-      expect(state).not.toHaveProperty("lastSavedSnapshot")
-    })
-
-    it("does not expose markSaved", () => {
-      const state = useUIStore.getState() as unknown as Record<string, unknown>
-      expect(state).not.toHaveProperty("markSaved")
-    })
-
-    it("does not expose the legacy dirty boolean / setDirty", () => {
-      const state = useUIStore.getState() as unknown as Record<string, unknown>
-      expect(state).not.toHaveProperty("dirty")
-      expect(state).not.toHaveProperty("setDirty")
-    })
-  })
-
   // -----------------------------------------------------------------------
   // Git panel mutual exclusion
   // -----------------------------------------------------------------------

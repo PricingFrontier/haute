@@ -14,7 +14,6 @@ export type RatingFactorDtype =
   | { kind: "Enum"; categories: string[] }
 
 export type RatingTable = {
-  name: string
   factors: string[]
   factorDtypes?: Record<string, RatingFactorDtype>
   outputColumn: string
@@ -32,8 +31,8 @@ export type RatingTableStatus = {
   issues: string[]
 }
 
-function defaultRatingTable(idx: number): RatingTable {
-  return { name: `Table ${idx + 1}`, factors: [], outputColumn: "", defaultValue: "1.0", entries: [] }
+function defaultRatingTable(): RatingTable {
+  return { factors: [], outputColumn: "", defaultValue: "1.0", entries: [] }
 }
 
 function isEntry(value: unknown): value is Record<string, string | number> {
@@ -119,8 +118,8 @@ function normaliseFactorDtypes(raw: unknown, factors: string[]): Record<string, 
   return Object.keys(factorDtypes).length > 0 ? factorDtypes : undefined
 }
 
-function normaliseRatingTable(raw: unknown, idx: number): RatingTable {
-  const fallback = defaultRatingTable(idx)
+function normaliseRatingTable(raw: unknown): RatingTable {
+  const fallback = defaultRatingTable()
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return fallback
 
   const table = raw as Record<string, unknown>
@@ -130,7 +129,6 @@ function normaliseRatingTable(raw: unknown, idx: number): RatingTable {
     : []
   const factorDtypes = normaliseFactorDtypes(table.factorDtypes, factors)
   return {
-    name: outputColumn.trim() || fallback.name,
     factors,
     ...(factorDtypes ? { factorDtypes } : {}),
     outputColumn,
@@ -146,7 +144,7 @@ function normaliseRatingTable(raw: unknown, idx: number): RatingTable {
 export function normaliseRatingTables(config: Record<string, unknown>): RatingTable[] {
   const raw = config.tables
   if (Array.isArray(raw) && raw.length > 0) return raw.map(normaliseRatingTable)
-  return [defaultRatingTable(0)]
+  return [defaultRatingTable()]
 }
 
 export function ratingTableStatus(
@@ -244,7 +242,6 @@ function isStringLikeDtype(dtype: string): boolean {
   const normalized = dtype.trim().toLowerCase()
   return normalized === "str" ||
     normalized.includes("string") ||
-    normalized.includes("utf8") ||
     normalized.includes("categorical") ||
     normalized.includes("enum")
 }

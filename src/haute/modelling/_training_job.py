@@ -13,7 +13,7 @@ from typing import Any
 
 import polars as pl
 
-from haute._execution_context import ExecutionContext, ExecutionProfile
+from haute._execution_context import ExecutionContext
 from haute._logging import get_logger
 from haute._polars_utils import streaming_collect
 from haute.modelling._algorithms import (
@@ -114,7 +114,7 @@ def _training_streaming_collect(
         label=f"before_{stage_name}",
     )
     with _training_stage(execution_context, stage_name):
-        df = streaming_collect(lf, profile=ExecutionProfile.TRAINING_PREP)
+        df = streaming_collect(lf, execution_context=execution_context)
     _training_checkpoint(
         execution_context,
         label=f"after_{stage_name}",
@@ -174,10 +174,7 @@ class TrainResult:
     feature_importance: list[dict[str, Any]]
     model_path: str
     train_rows: int
-    # ``test_rows`` is a legacy name that carries the VALIDATION-set count
-    # (``split_result.n_validation``), kept for API/frontend back-compat. See
-    # schemas.TrainResponse and the semantics pin in tests/test_modelling.py.
-    test_rows: int
+    validation_rows: int
     features: list[str]
     cat_features: list[str]
     holdout_rows: int = 0
@@ -528,7 +525,7 @@ class TrainingJob:
                 feature_importance=metrics_result.importance,
                 model_path=str(model_path),
                 train_rows=split_result.n_train,
-                test_rows=split_result.n_validation,
+                validation_rows=split_result.n_validation,
                 holdout_rows=split_result.n_holdout,
                 holdout_metrics=metrics_result.holdout_metrics,
                 diagnostics_set=metrics_result.diagnostics_set,
@@ -1153,14 +1150,8 @@ class TrainingJob:
         )
         _mem_checkpoint(f"read {diagnostics_set} partition for diagnostics ({len(diag_df):,} rows)")
         y_true = diag_df[self.target].to_numpy()
-        # Offset-inclusive predictions: reported fit quality must describe
-        # the predictions the model actually serves.  The kwarg is only
-        # threaded when an offset is configured so minimal predict stubs
-        # (tests, duck-typed algos) keep working for offset-less jobs.
-        if self.offset:
-            y_pred = algo.predict(model, diag_df, features, offset=self.offset)
-        else:
-            y_pred = algo.predict(model, diag_df, features)
+        # Reported fit quality describes the predictions the model serves.
+        y_pred = algo.predict(model, diag_df, features, offset=self.offset)
         w = diag_df[self.weight].to_numpy() if self.weight else None
 
         # Primary metrics from the diagnostics set
@@ -1188,10 +1179,7 @@ class TrainingJob:
                     stage_name="training_validation_metrics_materialise",
                 )
                 val_y_true = val_df[self.target].to_numpy()
-                if self.offset:
-                    val_y_pred = algo.predict(model, val_df, features, offset=self.offset)
-                else:
-                    val_y_pred = algo.predict(model, val_df, features)
+                val_y_pred = algo.predict(model, val_df, features, offset=self.offset)
                 val_w = val_df[self.weight].to_numpy() if self.weight else None
                 metrics = compute_metrics(
                     val_y_true,
@@ -1350,11 +1338,7 @@ class TrainingJob:
         training steps; the contract is only written when the caller
         has the real feature list in hand.
         """
-        from haute.modelling._feature_contract import (
-            CONTRACT_FILENAME,
-            build_contract,
-            save_contract,
-        )
+        from haute.modelling._feature_contract import build_contract, save_contract
 
         ext = _MODEL_EXT_MAP.get(self.algorithm, ".model")
         output_dir = Path(self.output_dir)
@@ -1383,19 +1367,6 @@ class TrainingJob:
             contract_path = output_dir / model_contract_filename(self.name)
             save_contract(contract, contract_path)
 
-            legacy_contract_path = output_dir / CONTRACT_FILENAME
-            if legacy_contract_path.exists():
-                # Pre-4b.9 versions wrote one SHARED contract per output
-                # dir; with more than one model it silently described
-                # whichever model trained last.  Never trust, rewrite, or
-                # delete the leftover — warn loudly so operators repoint
-                # any feature_contract_path config at the per-model file.
-                logger.warning(
-                    "legacy_shared_feature_contract_present",
-                    legacy_path=str(legacy_contract_path),
-                    per_model_path=str(contract_path),
-                    model_name=self.name,
-                )
         return model_path
 
     # ------------------------------------------------------------------
@@ -1584,7 +1555,7 @@ class TrainingJob:
             algorithm=self.algorithm,
             task=self.task,
             train_rows=result.train_rows,
-            test_rows=result.test_rows,
+            validation_rows=result.validation_rows,
             holdout_rows=result.holdout_rows,
             features=result.features,
             split_config=asdict(self.split_config) if self.split_config else {},

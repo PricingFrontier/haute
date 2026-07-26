@@ -246,11 +246,7 @@ def merge_submodels(
     parent_graph: PipelineGraph,
     submodel_graphs: dict[str, PipelineGraph],
     submodel_files: dict[str, str],
-    parent_edges: (
-        list[tuple[str, str, str | None, str | None]]
-        | list[tuple[str, str, str | None]]
-        | list[tuple[str, str]]
-    ),
+    parent_edges: list[_Connect4],
     *,
     flatten: bool = False,
 ) -> PipelineGraph:
@@ -275,16 +271,7 @@ def merge_submodels(
     for sm_graph in submodel_graphs.values():
         all_child_ids.update(n.id for n in sm_graph.nodes)
 
-    resolved_parent_edges: list[_Connect4] = []
-    for edge_tuple in parent_edges:
-        if len(edge_tuple) == 4:
-            resolved_parent_edges.append(edge_tuple)
-        elif len(edge_tuple) == 3:
-            src, tgt, source_port = edge_tuple
-            resolved_parent_edges.append((src, tgt, source_port, None))
-        else:
-            src, tgt = edge_tuple
-            resolved_parent_edges.append((src, tgt, None, None))
+    resolved_parent_edges = list(parent_edges)
 
     # A function parameter can name a node outside its own source file. Keep
     # parser-private signature metadata just long enough to infer those edges
@@ -310,6 +297,17 @@ def merge_submodels(
                 ):
                     occupied_pairs.add(pair)
                     resolved_parent_edges.append((source_id, target_id, None, None))
+
+    resolved_parent_graph_edges = [
+        GraphEdge(
+            id=_edge_id(source, target, source_port, target_port),
+            source=source,
+            target=target,
+            sourceHandle=source_port,
+            targetHandle=target_port,
+        )
+        for source, target, source_port, target_port in resolved_parent_edges
+    ]
 
     # _build_edges drops edges where one endpoint is a submodel child node
     # (because it only knows about main-file nodes).  Reconstruct those
@@ -349,7 +347,7 @@ def merge_submodels(
 
         # Determine input and output ports from cross-boundary edges
         input_ports, output_ports = classify_ports(
-            resolved_parent_edges,
+            resolved_parent_graph_edges,
             child_node_names,
         )
 

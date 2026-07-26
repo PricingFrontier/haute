@@ -114,7 +114,7 @@ def _completed_train_result(model_path: str) -> object:
         feature_importance=[],
         model_path=model_path,
         train_rows=48,
-        test_rows=12,
+        validation_rows=12,
         features=["x1", "x2"],
         cat_features=[],
     )

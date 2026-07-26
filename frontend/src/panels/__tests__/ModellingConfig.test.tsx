@@ -92,7 +92,7 @@ function makeTrainResult(overrides: Partial<TrainResult> = {}): TrainResult {
     ],
     model_path: "/models/catboost_model.cbm",
     train_rows: 8000,
-    test_rows: 2000,
+    validation_rows: 2000,
     ...overrides,
   }
 }

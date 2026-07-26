@@ -139,7 +139,6 @@ export interface PipelineResponse {
   sources?: string[]
   active_source?: string
 }
-
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
 }
@@ -652,11 +651,6 @@ function parseExecutionMetrics(
       ? null
       : parseExecutionAdmission(parser, admission, `${field}.admission`),
     execution_strategy: parseExecutionStrategyDiagnostic(obj.execution_strategy),
-    projection_plan_diagnostics: optionalNullableObject(
-      parser,
-      obj,
-      "projection_plan_diagnostics",
-    ),
     stages: optionalArray(parser, obj, "stages", (item, itemField) =>
       parseExecutionStageMetrics(parser, item, itemField),
     ),
@@ -1617,7 +1611,7 @@ export function parseTrainResponse(value: unknown): TrainResponse {
     feature_importance: optionalArray("parseTrainResponse", obj, "feature_importance", parseFeatureImportanceRow),
     model_path: optionalString("parseTrainResponse", obj, "model_path"),
     train_rows: optionalNumber("parseTrainResponse", obj, "train_rows"),
-    test_rows: optionalNumber("parseTrainResponse", obj, "test_rows"),
+    validation_rows: optionalNumber("parseTrainResponse", obj, "validation_rows"),
     holdout_rows: optionalNumber("parseTrainResponse", obj, "holdout_rows"),
     holdout_metrics: optionalNumberRecord("parseTrainResponse", obj, "holdout_metrics"),
     diagnostics_set: optionalString("parseTrainResponse", obj, "diagnostics_set", "validation"),
@@ -1816,14 +1810,19 @@ export function parseExploreStatusResponse(value: unknown): ExploreStatusRespons
 export function parseMlflowCheckResponse(value: unknown): MlflowCheckResponse {
   const obj = expectPlainObject("parseMlflowCheckResponse", value)
   const mlflowInstalled = expectBoolean("parseMlflowCheckResponse", obj.mlflow_installed, "field `mlflow_installed`")
-  const mlflowImportable = optionalBoolean("parseMlflowCheckResponse", obj, "mlflow_importable", mlflowInstalled)
-  const trackingConfiguredValue = obj.tracking_configured ?? obj.tracking_available
+  const mlflowImportable = expectBoolean(
+    "parseMlflowCheckResponse",
+    obj.mlflow_importable,
+    "field `mlflow_importable`",
+  )
   return {
     mlflow_installed: mlflowInstalled,
     mlflow_importable: mlflowImportable,
-    tracking_configured: trackingConfiguredValue === undefined
-      ? mlflowInstalled && mlflowImportable
-      : expectBoolean("parseMlflowCheckResponse", trackingConfiguredValue, "field `tracking_configured`"),
+    tracking_configured: expectBoolean(
+      "parseMlflowCheckResponse",
+      obj.tracking_configured,
+      "field `tracking_configured`",
+    ),
     backend: optionalString("parseMlflowCheckResponse", obj, "backend"),
     databricks_host: optionalString("parseMlflowCheckResponse", obj, "databricks_host"),
     detail: optionalString("parseMlflowCheckResponse", obj, "detail"),
@@ -2468,9 +2467,6 @@ function parseGitManagedBranch(value: unknown, field: string): GitManagedBranch 
     has_uncommitted_changes: optionalBoolean(
       "parseGitWorkingBranchesResponse", obj, "has_uncommitted_changes", false,
     ),
-    forked_from: optionalNullableString(
-      "parseGitWorkingBranchesResponse", obj, "forked_from",
-    ),
   }
 }
 
@@ -2521,8 +2517,6 @@ function parseGitRemote(value: unknown, field: string): GitRemote {
   return {
     name: expectString("parseGitRemotesResponse", obj.name, `${field}.name`),
     url: optionalNullableString("parseGitRemotesResponse", obj, "url"),
-    ahead: optionalNullableNumber("parseGitRemotesResponse", obj, "ahead"),
-    behind: optionalNullableNumber("parseGitRemotesResponse", obj, "behind"),
     working: obj.working == null
       ? null
       : parseGitRemoteLeg(obj.working, `${field}.working`),

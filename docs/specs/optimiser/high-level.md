@@ -24,9 +24,8 @@ belongs to `price-contour`.
 In scope:
 
 - Starting, polling, and cancelling a background optimiser solve (online or ratebook mode).
-- Fast, non-solving previews of the solver's input volume (`/estimate`) and of viable
-  efficient-frontier threshold ranges (`/frontier/auto-range`, foreground and background
-  variants).
+- Fast, non-solving previews of the solver's input volume (`/estimate`) and background
+  estimation of viable efficient-frontier threshold ranges (`/frontier/auto-range/start`).
 - Computing an efficient frontier for a completed solve and letting a user select — or
   materialise, for ratebook — one of its points as the active result.
 - Producing a bounded, size-limited per-quote apply preview for online results.
@@ -189,16 +188,12 @@ compute cap in particular is checked *before* the solver runs, using the same gr
 `price-contour` itself uses, so an oversized request is rejected with an actionable message
 rather than dying inside the solver as an opaque failure.
 
-Three further alternatives shape the frontier design. Treating frontier ranges as multipliers of
+Two further alternatives shape the frontier design. Treating frontier ranges as multipliers of
 a baseline was rejected for the reason above — a multiplier is ambiguous once constraints have
 different natural scales, and both the route's own API and the underlying `price-contour`
-integration operate on absolute threshold values. Auto-range deliberately exposes both a
-synchronous endpoint (direct response for short/legacy callers; its temporary job is always
-deleted) and a background start/status/cancel API (progress, timeout, and cancellation for longer
-runs); making either form the only API would discard one of those contracts. Adding a frontend
-fallback for an incomplete selected frontier point was rejected because a point missing its
-numeric summary fields cannot produce a faithful solve summary — a guessed or partial one would
-misrepresent the actual solve.
+integration operate on absolute threshold values. Adding a frontend fallback for an incomplete
+selected frontier point was rejected because a point missing its numeric summary fields cannot
+produce a faithful solve summary — a guessed or partial one would misrepresent the actual solve.
 
 A frontier sweep is hundreds of sequential re-solves at 2-3 constraints — the same class of
 sustained CPU work as a full solve — so it was moved off the request thread onto a background job
@@ -323,3 +318,14 @@ Remaining optimiser improvement work is tracked in the
 Acceptance covers multiple roots/direct parents, explicit source selection, direct and cached
 inputs, generation invalidation, post-input code columns, no remote fetch during setup/solve, and
 complete removal of legacy source branches.
+
+## Approved change contract — prerelease canonical frontier ranges
+
+This contract implements
+[ROAD-CANON-01](../../roadmap/engineering-quality.md#road-canon-01--prerelease-canonical-only-contract).
+Every configured constraint range is represented only by
+`frontier_ranges[constraint] = {"min": number, "max": number}`. There is no global-range reader,
+fallback, mirroring, or migration in the service or optimiser UI.
+
+Tests cover exact per-constraint validation and frontend persistence containing
+`frontier_ranges` only; historical-field fixtures are deleted.

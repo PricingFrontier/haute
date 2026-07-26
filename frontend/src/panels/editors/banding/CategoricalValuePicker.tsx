@@ -46,7 +46,7 @@ export function CategoricalValuePicker({
           onChange={(e) => setFilter(e.target.value)}
           className="w-full px-2 py-1 rounded text-[11px] font-mono focus:outline-none"
           style={{
-            background: "var(--bg-surface)",
+            background: "var(--bg-panel)",
             border: "1px solid var(--border)",
             color: "var(--text-primary)",
           }}

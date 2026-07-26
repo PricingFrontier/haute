@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import polars as pl
+import pytest
 from fastapi import HTTPException
 
 from tests.optimiser_fixtures import make_select_job as _make_select_job
@@ -55,10 +56,92 @@ def _frontier_job(*, artifact_handles: object | None = None) -> dict:
             "converged": True,
         },
         "created_at": time.time(),
+        "completed_at": time.time(),
     }
     if artifact_handles is not None:
         job["artifact_handles"] = artifact_handles
     return job
+
+
+def test_estimate_schema_rejects_missing_columns() -> None:
+    from haute.routes.optimiser import _estimate_quote_id_column_or_raise
+
+    source = pl.LazyFrame({"quote_id": ["q1"]})
+    config = {
+        "objective": "expected_income",
+        "constraints": {"volume": {"min": 0.9}},
+        "quote_id": "quote_id",
+        "scenario_index": "scenario_index",
+        "scenario_value": "scenario_value",
+    }
+
+    with pytest.raises(HTTPException) as exc_info:
+        _estimate_quote_id_column_or_raise(source, config)
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == (
+        "Missing columns in scored data: "
+        "['expected_income', 'scenario_index', 'scenario_value', 'volume']. "
+        "Available: ['quote_id']"
+    )
+
+
+def test_estimate_schema_rejects_numeric_quote_ids() -> None:
+    from haute.routes.optimiser import _estimate_quote_id_column_or_raise
+
+    source = pl.LazyFrame(
+        {
+            "quote_id": [1],
+            "scenario_index": [0],
+            "scenario_value": [1.0],
+            "expected_income": [100.0],
+        }
+    )
+    config = {
+        "objective": "expected_income",
+        "constraints": {},
+        "quote_id": "quote_id",
+        "scenario_index": "scenario_index",
+        "scenario_value": "scenario_value",
+    }
+
+    with pytest.raises(HTTPException) as exc_info:
+        _estimate_quote_id_column_or_raise(source, config)
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == (
+        "quote_id must be Utf8 (String), Categorical, or Enum, got Int64. "
+        "Numeric, binary, and other dtypes are not supported as quote_id columns."
+    )
+
+
+def test_frontier_lambda_rejects_empty_name() -> None:
+    from haute.routes.optimiser import _add_frontier_point_lambda
+
+    with pytest.raises(HTTPException) as exc_info:
+        _add_frontier_point_lambda({}, "", 0.2, field="lambda")
+
+    assert exc_info.value.status_code == 500
+    assert exc_info.value.detail == (
+        "Frontier point data is malformed: lambda names must be non-empty strings"
+    )
+
+
+def test_frontier_lambda_rejects_conflicting_value() -> None:
+    from haute.routes.optimiser import _add_frontier_point_lambda
+
+    with pytest.raises(HTTPException) as exc_info:
+        _add_frontier_point_lambda(
+            {"volume": 0.2},
+            "volume",
+            0.4,
+            field="lambda_volume",
+        )
+
+    assert exc_info.value.status_code == 500
+    assert exc_info.value.detail == (
+        "Frontier point data is malformed: conflicting lambda for 'volume'"
+    )
 
 
 def test_estimate_returns_input_metrics_when_metadata_lookup_fails(client, tmp_path: Path):
@@ -109,7 +192,7 @@ def test_estimate_returns_input_metrics_when_metadata_lookup_fails(client, tmp_p
 
     with (
         patch(
-            "haute._ram_estimate._ancestor_source_metadata",
+            "haute._ram_estimate._detailed_ancestor_source_metadata",
             side_effect=RuntimeError("metadata unavailable"),
         ),
         patch("haute.routes.optimiser.logger.warning") as log_warning,
@@ -139,6 +222,7 @@ def test_apply_rejects_non_mapping_artifact_handles(client, clean_job_store):
         "status": "completed",
         "artifact_handles": ["not", "a", "mapping"],
         "created_at": time.time(),
+        "completed_at": time.time(),
     }
 
     resp = client.post("/api/optimiser/apply", json={"job_id": "bad_apply_handles"})
@@ -153,6 +237,7 @@ def test_apply_rejects_missing_artifact_summary(client, clean_job_store):
         "artifact_handles": {"apply_result": {"path": "already-validated-by-patch"}},
         "result": "not a summary mapping",
         "created_at": time.time(),
+        "completed_at": time.time(),
     }
 
     with patch(
@@ -174,6 +259,7 @@ def test_apply_rejects_incomplete_artifact_summary(client, clean_job_store):
         "artifact_handles": {"apply_result": {"path": "already-validated-by-patch"}},
         "result": {"total_objective": "not numeric", "constraints": {"volume": 0.9}},
         "created_at": time.time(),
+        "completed_at": time.time(),
     }
 
     with patch(
@@ -194,6 +280,7 @@ def test_frontier_fails_if_runtime_disappears_after_touch(client, clean_job_stor
         "status": "completed",
         "solver": MagicMock(),
         "created_at": time.time(),
+        "completed_at": time.time(),
     }
 
     with patch.object(clean_job_store, "touch_heavy_objects", return_value=True):
@@ -231,6 +318,7 @@ def test_frontier_select_succeeds_when_runtime_is_absent(client, clean_job_store
             "baseline_constraints": {"volume": 0.85},
         },
         "created_at": time.time(),
+        "completed_at": time.time(),
     }
 
     resp = client.post(
@@ -323,6 +411,7 @@ def test_save_rechecks_solve_result_after_touch(client, clean_job_store, tmp_pat
         "status": "completed",
         "solve_result": None,
         "created_at": time.time(),
+        "completed_at": time.time(),
     }
 
     try:
@@ -356,6 +445,7 @@ def test_save_reraises_http_exception_from_artifact_build(
         "config": {"mode": "online"},
         "node_label": "opt",
         "created_at": time.time(),
+        "completed_at": time.time(),
     }
 
     try:
@@ -384,6 +474,7 @@ def test_mlflow_log_rechecks_solve_result_after_touch(client, clean_job_store):
         "solver": MagicMock(),
         "solve_result": None,
         "created_at": time.time(),
+        "completed_at": time.time(),
     }
 
     with patch.object(clean_job_store, "touch_heavy_objects", return_value=True):
@@ -402,6 +493,7 @@ def test_mlflow_log_rechecks_solver_after_touch(client, clean_job_store):
         "solver": None,
         "solve_result": SimpleNamespace(),
         "created_at": time.time(),
+        "completed_at": time.time(),
     }
 
     with patch.object(clean_job_store, "touch_heavy_objects", return_value=True):
@@ -575,6 +667,7 @@ def test_run_frontier_returns_409_when_atomic_update_loses_race(
         },
         "artifact_handles": {},
         "created_at": time.time(),
+        "completed_at": time.time(),
     }
 
     with patch.object(clean_job_store, "atomic_update", return_value=None):
@@ -642,6 +735,7 @@ def test_apply_reuses_cached_frontier_apply_artifact_for_online_mode(
         },
         "artifact_handles": {"frontier_apply_result:0": handle},
         "created_at": time.time(),
+        "completed_at": time.time(),
     }
 
     # ``apply_from_grid`` MUST NOT be called when reusing the cached artifact.
@@ -706,6 +800,7 @@ def test_apply_returns_400_when_quote_grid_evicted_from_heavy_state(
         # state has been slimmed by TTL.
         "artifact_handles": {},
         "created_at": time.time(),
+        "completed_at": time.time(),
     }
 
     # ``touch_heavy_objects`` returns False when the required keys are
@@ -755,6 +850,7 @@ def test_apply_returns_400_when_quote_grid_value_is_none_after_touch(
         "quote_grid": None,  # touch passes (key present), value is None
         "artifact_handles": {},
         "created_at": time.time(),
+        "completed_at": time.time(),
     }
 
     with patch.object(clean_job_store, "touch_heavy_objects", return_value=True):
@@ -820,6 +916,7 @@ def test_apply_falls_back_to_in_memory_when_persistence_unavailable(
         "quote_grid": quote_grid,
         "artifact_handles": {},
         "created_at": time.time(),
+        "completed_at": time.time(),
     }
 
     with (
@@ -896,6 +993,7 @@ def test_apply_cleans_up_orphan_artifact_when_atomic_update_loses_race(
         "quote_grid": MagicMock(),
         "artifact_handles": {},
         "created_at": time.time(),
+        "completed_at": time.time(),
     }
 
     with (
@@ -978,6 +1076,7 @@ def test_mlflow_log_ratebook_falls_back_to_solve_result_factor_tables(
         "solve_result": solve_result,
         "node_label": "opt",
         "created_at": time.time(),
+        "completed_at": time.time(),
     }
 
     captured_payloads: list[str] = []
@@ -1084,6 +1183,7 @@ def test_ratebook_materialise_emits_non_converged_warning_in_response(
         "factor_dtypes": {"region": [{"column": "region", "dtype": {"kind": "String"}}]},
         "artifact_handles": {},
         "created_at": time.time(),
+        "completed_at": time.time(),
     }
 
     resp = client.post(
@@ -1154,6 +1254,7 @@ def test_ratebook_materialise_rejects_missing_dtype_metadata(
         "factor_level_counts": {"region": {"North": 1}},
         "artifact_handles": {},
         "created_at": time.time(),
+        "completed_at": time.time(),
     }
 
     response = client.post(
@@ -1229,6 +1330,7 @@ def test_ratebook_materialise_returns_cached_when_lambdas_match_and_no_dataframe
         "factor_dtypes": factor_dtypes,
         "artifact_handles": {},
         "created_at": time.time(),
+        "completed_at": time.time(),
     }
 
     resp = client.post(
@@ -1300,6 +1402,7 @@ def test_ratebook_materialise_returns_409_on_atomic_update_race(
         "factor_dtypes": {"region": [{"column": "region", "dtype": {"kind": "String"}}]},
         "artifact_handles": {},
         "created_at": time.time(),
+        "completed_at": time.time(),
     }
 
     with patch.object(clean_job_store, "atomic_update", return_value=None):
@@ -1359,6 +1462,7 @@ def test_ratebook_runtime_state_or_raise_rejects_partial_heavy_objects(
         "factor_columns_valid": [["region"]],
         "artifact_handles": {},
         "created_at": time.time(),
+        "completed_at": time.time(),
     }
 
     with patch.object(clean_job_store, "touch_heavy_objects", return_value=True):
@@ -1417,6 +1521,7 @@ def test_ratebook_runtime_state_rejects_invalid_factor_columns_metadata(
         "factor_columns_valid": [[42]],
         "artifact_handles": {},
         "created_at": time.time(),
+        "completed_at": time.time(),
     }
 
     resp = client.post(
@@ -1470,6 +1575,7 @@ def test_run_frontier_rejects_invalid_apply_handle_shape(
         # Frontier-apply handle exists but is not a dict — corruption.
         "artifact_handles": {"frontier_apply_result:0": "not-a-dict"},
         "created_at": time.time(),
+        "completed_at": time.time(),
     }
 
     status = run_frontier_and_wait(

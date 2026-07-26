@@ -73,7 +73,6 @@ vi.mock("../LazyNodeEditors", async () => {
   ConstantEditor: () => <div data-testid="ConstantEditor" />,
   SubmodelEditor: () => <div data-testid="SubmodelEditor" />,
   ColumnsTab: () => <div data-testid="ColumnsTab" />,
-  GroupedColumnsTab: () => <div data-testid="GroupedColumnsTab" />,
   ModellingConfig: (props: Record<string, unknown>) => {
     modellingConfigProps.push(props)
     return <div data-testid="ModellingConfig" />
@@ -1169,36 +1168,6 @@ describe("NodePanel", () => {
     expect(screen.getByText("Input Mapping")).toBeInTheDocument()
     expect(screen.getByText("sale_flag")).toBeInTheDocument()
     expect(screen.getByRole("combobox")).toHaveValue("premium")
-  })
-
-  it("resolves hidden originals from direct submodel metadata shape", () => {
-    const originalNode = makeNode({
-      id: "direct_original",
-      data: { label: "direct_original", description: "", nodeType: "polars", config: {} },
-    })
-    const instanceNode = makeNode({
-      id: "direct_instance",
-      data: {
-        label: "direct_instance",
-        description: "",
-        nodeType: "polars",
-        config: { instanceOf: "direct_original" },
-      },
-    })
-
-    renderPanel({
-      node: instanceNode,
-      allNodes: [instanceNode],
-      submodels: {
-        direct_model: {
-          nodes: [originalNode],
-          edges: [],
-        },
-      },
-    })
-
-    expect(screen.getByText("Instance of")).toBeInTheDocument()
-    expect(screen.getByText("direct_original")).toBeInTheDocument()
   })
 
   it("renders an in-panel diagnostic when visible and hidden originals share an id", () => {

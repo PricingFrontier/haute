@@ -117,8 +117,6 @@ function makeProps(overrides: MakePropsOverrides = {}) {
   return {
     componentProps,
     graph: { allNodes, edges, submodels, preamble },
-    // Legacy accessors so existing tests can keep using `props.onUpdate` etc.
-    get onUpdate() { return componentProps.onUpdate },
   }
 }
 
@@ -232,7 +230,7 @@ describe("OptimiserConfig", () => {
       const props = makeProps()
       renderConfig(props)
       fireEvent.click(screen.getByRole("button", { name: "Ratebook" }))
-      expect(props.onUpdate).toHaveBeenCalledWith("mode", "ratebook")
+      expect(props.componentProps.onUpdate).toHaveBeenCalledWith("mode", "ratebook")
     })
   })
 
@@ -385,7 +383,7 @@ describe("OptimiserConfig", () => {
         Array.from(s.querySelectorAll("option")).some(o => o.textContent === "Select objective..."),
       )!
       fireEvent.change(objectiveSelect, { target: { value: "loss_ratio" } })
-      expect(props.onUpdate).toHaveBeenCalledWith("objective", "loss_ratio")
+      expect(props.componentProps.onUpdate).toHaveBeenCalledWith("objective", "loss_ratio")
     })
   })
 
@@ -555,7 +553,7 @@ describe("OptimiserConfig", () => {
         Array.from(s.querySelectorAll("option")).some(o => o.textContent === "Select quote id..."),
       )!
       fireEvent.change(quoteIdSelect, { target: { value: "premium" } })
-      expect(props.onUpdate).toHaveBeenCalledWith("quote_id", "premium")
+      expect(props.componentProps.onUpdate).toHaveBeenCalledWith("quote_id", "premium")
     })
   })
 
@@ -646,9 +644,9 @@ describe("OptimiserConfig", () => {
       renderConfig(props)
       const input = screen.getByDisplayValue("50")
       fireEvent.change(input, { target: { value: "100" } })
-      expect(props.onUpdate).not.toHaveBeenCalled()
+      expect(props.componentProps.onUpdate).not.toHaveBeenCalled()
       fireEvent.blur(input)
-      expect(props.onUpdate).toHaveBeenCalledWith("max_iter", 100)
+      expect(props.componentProps.onUpdate).toHaveBeenCalledWith("max_iter", 100)
     })
   })
 
@@ -923,9 +921,9 @@ describe("OptimiserConfig", () => {
       renderConfig(props)
       const input = screen.getByDisplayValue("0.000001")
       fireEvent.change(input, { target: { value: "0.001" } })
-      expect(props.onUpdate).not.toHaveBeenCalled()
+      expect(props.componentProps.onUpdate).not.toHaveBeenCalled()
       fireEvent.blur(input)
-      expect(props.onUpdate).toHaveBeenCalledWith("tolerance", 0.001)
+      expect(props.componentProps.onUpdate).toHaveBeenCalledWith("tolerance", 0.001)
     })
 
     it("renders custom max_iter from config", () => {
@@ -969,9 +967,9 @@ describe("OptimiserConfig", () => {
       renderConfig(props)
       const input = screen.getByDisplayValue("500000")
       fireEvent.change(input, { target: { value: "100000" } })
-      expect(props.onUpdate).not.toHaveBeenCalled()
+      expect(props.componentProps.onUpdate).not.toHaveBeenCalled()
       fireEvent.blur(input)
-      expect(props.onUpdate).toHaveBeenCalledWith("chunk_size", 100000)
+      expect(props.componentProps.onUpdate).toHaveBeenCalledWith("chunk_size", 100000)
     })
 
     it("toggling record_history calls onUpdate", () => {
@@ -979,7 +977,7 @@ describe("OptimiserConfig", () => {
       const props = makeProps()
       renderConfig(props)
       fireEvent.click(screen.getByText("Off"))
-      expect(props.onUpdate).toHaveBeenCalledWith("record_history", true)
+      expect(props.componentProps.onUpdate).toHaveBeenCalledWith("record_history", true)
     })
   })
 
@@ -994,7 +992,7 @@ describe("OptimiserConfig", () => {
       })
       renderConfig(props)
       fireEvent.click(screen.getByRole("button", { name: "Online" }))
-      expect(props.onUpdate).toHaveBeenCalledWith("mode", "online")
+      expect(props.componentProps.onUpdate).toHaveBeenCalledWith("mode", "online")
     })
   })
 
@@ -1495,7 +1493,7 @@ describe("OptimiserConfig", () => {
       })
       renderConfig(props)
       fireEvent.click(screen.getByRole("button", { name: "Efficient frontier" }))
-      expect(props.onUpdate).toHaveBeenCalledWith("frontier_enabled", true)
+      expect(props.componentProps.onUpdate).toHaveBeenCalledWith("frontier_enabled", true)
     })
 
     it("selecting individual point updates frontier_enabled", () => {
@@ -1510,7 +1508,7 @@ describe("OptimiserConfig", () => {
       })
       renderConfig(props)
       fireEvent.click(screen.getByRole("button", { name: "Individual point" }))
-      expect(props.onUpdate).toHaveBeenCalledWith("frontier_enabled", false)
+      expect(props.componentProps.onUpdate).toHaveBeenCalledWith("frontier_enabled", false)
     })
 
     it("highlights missing frontier range values instead of rendering defaults", () => {
@@ -1544,24 +1542,6 @@ describe("OptimiserConfig", () => {
       expect(within(settingsCard).queryByTestId("constraint-bound-settings")).not.toBeInTheDocument()
       expect(within(settingsCard).queryByText("Maximum")).not.toBeInTheDocument()
       expect(within(settingsCard).queryByDisplayValue("1.05")).not.toBeInTheDocument()
-    })
-
-    it("renders custom frontier values from config", () => {
-      renderConfig(makeProps({
-            config: {
-              _nodeId: "opt_1",
-              mode: "online",
-              objective: "premium",
-              constraints: { loss_ratio: { max: 1.05 } },
-              frontier_enabled: true,
-              frontier_min: 0.70,
-              frontier_max: 1.30,
-              frontier_steps: 25,
-            },
-          }))
-      expect(screen.getByDisplayValue("0.7")).toBeInTheDocument()
-      expect(screen.getByDisplayValue("1.3")).toBeInTheDocument()
-      expect(screen.getByDisplayValue("25")).toBeInTheDocument()
     })
 
     it("renders per-constraint frontier range values from config", () => {
@@ -1622,10 +1602,8 @@ describe("OptimiserConfig", () => {
           { signal: expect.any(AbortSignal) },
         )
       })
-      expect(props.onUpdate).toHaveBeenCalledWith({
+      expect(props.componentProps.onUpdate).toHaveBeenCalledWith({
         frontier_ranges: { loss_ratio: { min: 11, max: 39 } },
-        frontier_min: 11,
-        frontier_max: 39,
       })
     })
 
@@ -1668,7 +1646,7 @@ describe("OptimiserConfig", () => {
       )).toBeInTheDocument()
       expect(screen.queryByText("Memory pressure reached 75% of the auto-range budget.")).not.toBeInTheDocument()
       expect(screen.queryByText("Technical details")).not.toBeInTheDocument()
-      expect(props.onUpdate).not.toHaveBeenCalled()
+      expect(props.componentProps.onUpdate).not.toHaveBeenCalled()
     })
 
     it("auto range falls back to error_detail when status message is empty", async () => {
@@ -1704,7 +1682,7 @@ describe("OptimiserConfig", () => {
       expect(await screen.findByText(
         "Configured optimiser data_input 'optimiser_input' did not produce data.",
       )).toBeInTheDocument()
-      expect(props.onUpdate).not.toHaveBeenCalled()
+      expect(props.componentProps.onUpdate).not.toHaveBeenCalled()
     })
 
     it("auto range derives memory-limited messages from execution metrics", async () => {
@@ -1742,7 +1720,7 @@ describe("OptimiserConfig", () => {
       )).toBeInTheDocument()
       expect(screen.getByText("Technical details")).toBeInTheDocument()
       expect(screen.getByText("Stage collect")).toBeInTheDocument()
-      expect(props.onUpdate).not.toHaveBeenCalled()
+      expect(props.componentProps.onUpdate).not.toHaveBeenCalled()
     })
 
     it("auto range uses execution metrics for memory-limited failures", async () => {
@@ -1778,7 +1756,7 @@ describe("OptimiserConfig", () => {
       expect(await screen.findByText(
         "Auto range failed: memory pressure reached 75% of the auto-range budget. RSS 1.7 KB of 2.9 KB limit.",
       )).toBeInTheDocument()
-      expect(props.onUpdate).not.toHaveBeenCalled()
+      expect(props.componentProps.onUpdate).not.toHaveBeenCalled()
     })
 
     it("auto range preserves structured metrics from admission failures before a job starts", async () => {
@@ -1820,7 +1798,7 @@ describe("OptimiserConfig", () => {
       )).toBeInTheDocument()
       expect(screen.getByText("Technical details")).toBeInTheDocument()
       expect(screen.getByText("Stage collect")).toBeInTheDocument()
-      expect(props.onUpdate).not.toHaveBeenCalled()
+      expect(props.componentProps.onUpdate).not.toHaveBeenCalled()
     })
 
     it("auto range does not render raw object error details", async () => {
@@ -1858,7 +1836,7 @@ describe("OptimiserConfig", () => {
       expect(screen.queryByText(/"raw"/)).not.toBeInTheDocument()
     })
 
-    it("changing frontier_min calls onUpdate without inventing missing max values", () => {
+    it("changing a frontier minimum preserves an unset maximum", () => {
       const props = makeProps({
         config: {
           _nodeId: "opt_1",
@@ -1871,13 +1849,12 @@ describe("OptimiserConfig", () => {
       renderConfig(props)
       const input = screen.getByLabelText("loss_ratio min value")
       fireEvent.change(input, { target: { value: "0.75" } })
-      expect(props.onUpdate).toHaveBeenCalledWith({
+      expect(props.componentProps.onUpdate).toHaveBeenCalledWith({
         frontier_ranges: { loss_ratio: { min: 0.75 } },
-        frontier_min: 0.75,
       })
     })
 
-    it("changing frontier_max calls onUpdate without inventing missing min values", () => {
+    it("changing a frontier maximum preserves an unset minimum", () => {
       const props = makeProps({
         config: {
           _nodeId: "opt_1",
@@ -1890,9 +1867,8 @@ describe("OptimiserConfig", () => {
       renderConfig(props)
       const input = screen.getByLabelText("loss_ratio max value")
       fireEvent.change(input, { target: { value: "1.25" } })
-      expect(props.onUpdate).toHaveBeenCalledWith({
+      expect(props.componentProps.onUpdate).toHaveBeenCalledWith({
         frontier_ranges: { loss_ratio: { max: 1.25 } },
-        frontier_max: 1.25,
       })
     })
 
@@ -1909,9 +1885,9 @@ describe("OptimiserConfig", () => {
       renderConfig(props)
       const input = screen.getByDisplayValue("15")
       fireEvent.change(input, { target: { value: "20" } })
-      expect(props.onUpdate).not.toHaveBeenCalled()
+      expect(props.componentProps.onUpdate).not.toHaveBeenCalled()
       fireEvent.blur(input)
-      expect(props.onUpdate).toHaveBeenCalledWith("frontier_steps", 20)
+      expect(props.componentProps.onUpdate).toHaveBeenCalledWith("frontier_steps", 20)
     })
   })
 })

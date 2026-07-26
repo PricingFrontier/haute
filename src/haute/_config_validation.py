@@ -140,10 +140,9 @@ def warn_unrecognized_config_keys(
 def validate_node_config(node_type: NodeType | str, config: dict[str, Any]) -> dict[str, Any]:
     """Strictly validate configs whose runtime contract is discriminated.
 
-    Most historical node configs still use the warning-only key registry.
-    The retained Data Input/Output types are intentionally stricter: their
-    provider branch controls which keys and capabilities are legal, so an
-    inactive key cannot be silently persisted and ignored.
+    Data Input/Output provider branches control which keys and capabilities
+    are legal, so an inactive key cannot be silently persisted and ignored.
+    Other node types use the warning-only key registry.
     """
     nt = NodeType(node_type) if not isinstance(node_type, NodeType) else node_type
     if nt == NodeType.DATA_INPUT:

@@ -31,8 +31,8 @@ vi.mock("../../stores/useToastStore", () => ({
 const remote = (over: Partial<Record<string, unknown>> = {}) => ({
   name: "origin",
   url: "git@example.com:x.git",
-  ahead: null,
-  behind: null,
+  working: null,
+  ledger: null,
   ...over,
 })
 
@@ -66,8 +66,6 @@ describe("RemotePushControl — error paths and catch-up matrix", () => {
     mockGetGitRemotes.mockResolvedValue({
       remotes: [
         remote({
-          ahead: 0,
-          behind: 1,
           working: { status: "behind", ahead: 0, behind: 1 },
           ledger: { status: "behind", ahead: 0, behind: 1 },
         }),
@@ -87,8 +85,6 @@ describe("RemotePushControl — error paths and catch-up matrix", () => {
     mockGetGitRemotes.mockResolvedValue({
       remotes: [
         remote({
-          ahead: 0,
-          behind: 1,
           working: { status: "behind", ahead: 0, behind: 1 },
           ledger: { status: "synced", ahead: 0, behind: 0 },
         }),
@@ -197,8 +193,6 @@ describe("RemotePushControl — error paths and catch-up matrix", () => {
     mockGetGitRemotes.mockResolvedValue({
       remotes: [
         remote({
-          ahead: 0,
-          behind: 1,
           working: { status: "behind", ahead: 0, behind: 1 },
           ledger: { status: "synced", ahead: 0, behind: 0 },
         }),
@@ -213,8 +207,6 @@ describe("RemotePushControl — error paths and catch-up matrix", () => {
     mockGetGitRemotes.mockResolvedValue({
       remotes: [
         remote({
-          ahead: 0,
-          behind: 0,
           working: { status: "synced", ahead: 0, behind: 0 },
           ledger: { status: "behind", ahead: 0, behind: 2 },
         }),
@@ -231,8 +223,6 @@ describe("RemotePushControl — error paths and catch-up matrix", () => {
     mockGetGitRemotes.mockResolvedValue({
       remotes: [
         remote({
-          ahead: 1,
-          behind: 0,
           working: { status: "ahead", ahead: 1, behind: 0 },
           ledger: { status: "behind", ahead: 0, behind: 2 },
         }),
@@ -248,8 +238,6 @@ describe("RemotePushControl — error paths and catch-up matrix", () => {
     mockGetGitRemotes.mockResolvedValue({
       remotes: [
         remote({
-          ahead: 0,
-          behind: 1,
           working: { status: "behind", ahead: 0, behind: 1 },
           ledger: { status: "diverged", ahead: 1, behind: 1 },
         }),
@@ -266,8 +254,6 @@ describe("RemotePushControl — error paths and catch-up matrix", () => {
     mockGetGitRemotes.mockResolvedValue({
       remotes: [
         remote({
-          ahead: 0,
-          behind: 0,
           working: { status: "synced", ahead: 0, behind: 0 },
           ledger: { status: "synced", ahead: 0, behind: 0 },
         }),

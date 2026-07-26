@@ -8,9 +8,8 @@
  * `classifyConfig → readV2` and then re-serialises that view via
  * `writeV2` on the next edit, a dropped-on-read entry was permanently
  * deleted from the persisted config on the user's next keystroke
- * elsewhere. A blank entry could arrive from a hand-edited/legacy file
- * or as the residue of the old per-keystroke editor that committed
- * `name:""`. Either way the user had no surface to see or repair it —
+ * elsewhere. A blank entry can arrive from a hand-edited current file or an
+ * interrupted edit. Either way the user needs a surface to see or repair it —
  * a violation of the 1:1 JSON↔UI render-gate invariant (every persisted
  * entry must surface somewhere visible; greying/erroring is fine,
  * suppression is not).
@@ -21,8 +20,7 @@
  * backend output that was never user-persisted — opts back into dropping
  * via `{ dropIncomplete: true }`.
  *
- * Companion suites: `apiInputSchemaSanitisation.test.ts` (removedTables),
- * `ApiInputEditor.test.tsx` (the editor surfaces these entries + the
+ * Companion suites: `ApiInputEditor.test.tsx` (the editor surfaces these entries + the
  * persistent-boundary round-trip), and `tests/test_v2_codec_and_shred.py`
  * (the backend twin LOUDLY rejects the same blanks rather than dropping).
  *
@@ -161,15 +159,6 @@ describe("readV2 render-gate — keeps blank entries by default (no silent drop)
     expect(cols[0]).toMatchObject({ name: "", path: "$[:].policy_id" })
   })
 
-  it("does NOT resurrect removedTables while keeping blank entries (sanitisation intact)", () => {
-    const config = {
-      ...configWith([BLANK_NAME_COL]),
-      removedTables: ["dropped_a"],
-    }
-    const v2 = readV2(config)
-    expect(v2).not.toHaveProperty("removedTables")
-    expect(v2.tables[0].columns).toHaveLength(1)
-  })
 })
 
 describe("readV2 { dropIncomplete: true } — infer-path sanitisation drops blanks", () => {

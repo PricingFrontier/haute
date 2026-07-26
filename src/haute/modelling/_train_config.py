@@ -66,20 +66,6 @@ def default_metrics(
     return ["gini", "rmse"]
 
 
-def _power_values_equal(left: Any, right: Any) -> bool:
-    try:
-        return float(left) == float(right)
-    except (TypeError, ValueError):
-        return bool(left == right)
-
-
-def _first_set(*values: Any) -> Any:
-    for value in values:
-        if value is not None:
-            return value
-    return None
-
-
 def training_objective_issue(config: Mapping[str, Any]) -> str | None:
     """Return an actionable message when the training objective is incomplete.
 
@@ -91,12 +77,9 @@ def training_objective_issue(config: Mapping[str, Any]) -> str | None:
     the train route's fast upfront validation so the two can never drift.
     Returns ``None`` when the objective is fully specified.
     """
-    params = config.get("params")
-    if not isinstance(params, Mapping):
-        params = {}
     algorithm = str(config.get("algorithm", "catboost")).lower()
     if algorithm == "glm":
-        family = params.get("family") or config.get("family")
+        family = config.get("family")
         if not family:
             return (
                 "GLM config has no family. Open the config panel and choose a "
@@ -104,18 +87,14 @@ def training_objective_issue(config: Mapping[str, Any]) -> str | None:
                 "gamma for severity) — an unset family would silently train a "
                 "gaussian model."
             )
-        var_power = _first_set(
-            params.get("var_power"),
-            config.get("var_power"),
-            config.get("variance_power"),
-        )
+        var_power = config.get("var_power")
         if str(family).lower() == "tweedie" and var_power is None:
             return (
                 "Tweedie GLM has no variance power. Set it explicitly "
                 "(1=Poisson, 2=Gamma) — an unset value would silently fit "
                 "at power 1.5."
             )
-        theta = _first_set(params.get("theta"), config.get("theta"))
+        theta = config.get("theta")
         if str(family).lower() == "negbinomial" and theta is None:
             return (
                 "Negative Binomial GLM has no dispersion (theta). Set it "
@@ -123,16 +102,16 @@ def training_objective_issue(config: Mapping[str, Any]) -> str | None:
                 "not estimate theta, so an unset value would silently fit "
                 "at theta=1.0."
             )
-        terms = _first_set(params.get("terms"), config.get("terms"))
-        all_factors = _first_set(params.get("all_factors"), config.get("all_factors"))
+        terms = config.get("terms")
+        all_factors = config.get("all_factors")
         if not terms and not all_factors:
             return (
                 "GLM config has no factors. Add factors or tick 'All features' "
                 "— an empty factor set would silently auto-build a term for "
                 "every column."
             )
-        regularization = _first_set(params.get("regularization"), config.get("regularization"))
-        l1_ratio = _first_set(params.get("l1_ratio"), config.get("l1_ratio"))
+        regularization = config.get("regularization")
+        l1_ratio = config.get("l1_ratio")
         if str(regularization or "").lower() == "elastic_net" and l1_ratio is None:
             return (
                 "Elastic-net regularisation has no L1 ratio. Set it explicitly "
@@ -148,7 +127,7 @@ def training_objective_issue(config: Mapping[str, Any]) -> str | None:
                 "RMSE for a squared-error regression) — an unset loss would "
                 "silently train under the library default."
             )
-        variance_power = _first_set(config.get("variance_power"), config.get("var_power"))
+        variance_power = config.get("variance_power")
         if str(loss_function) == "Tweedie" and variance_power is None:
             return (
                 "Tweedie loss has no variance power. Set it explicitly "
@@ -161,21 +140,15 @@ def training_objective_issue(config: Mapping[str, Any]) -> str | None:
 def build_train_params(config: Mapping[str, Any]) -> dict[str, Any]:
     """Build the algorithm ``params`` dict from a modelling-node config.
 
-    Starts from a copy of ``config["params"]``. For GLM only, top-level GLM
-    config keys are merged in (without overriding explicit ``params`` entries).
-    Any other algorithm receives ``config["params"]`` untouched — CatBoost in
-    particular has no ``**kwargs``, so a leaked GLM key (e.g. ``offset`` in the
-    standard log-exposure frequency workflow) crashes the fit.
+    GLM receives only its canonical top-level config keys. Any other algorithm
+    receives a copy of ``config["params"]`` — CatBoost in particular has no
+    ``**kwargs``, so a leaked GLM key (e.g. ``offset`` in the standard
+    log-exposure frequency workflow) crashes the fit.
     """
-    params: dict[str, Any] = {**(config.get("params") or {})}
     algorithm = str(config.get("algorithm", "catboost")).lower()
     if algorithm == "glm":
-        for key in GLM_CONFIG_KEYS:
-            if key in config and key not in params:
-                params[key] = config[key]
-        if config.get("variance_power") is not None and "var_power" not in params:
-            params["var_power"] = config["variance_power"]
-    return params
+        return {key: config[key] for key in GLM_CONFIG_KEYS if key in config}
+    return {**(config.get("params") or {})}
 
 
 def build_training_job_kwargs(
@@ -223,26 +196,7 @@ def build_training_job_kwargs(
     task = str(config.get("task", "regression"))
     family = params.get("family") if algorithm == "glm" else None
     loss_function = None if algorithm == "glm" else config.get("loss_function")
-    raw_params = config.get("params") or {}
-    params_has_explicit_var_power = (
-        isinstance(raw_params, Mapping) and raw_params.get("var_power") is not None
-    )
-    variance_power = (
-        config.get("variance_power")
-        if config.get("variance_power") is not None
-        else config.get("var_power")
-    )
-    if algorithm == "glm" and params.get("var_power") is not None:
-        if (
-            config.get("variance_power") is not None
-            and params_has_explicit_var_power
-            and not _power_values_equal(config.get("variance_power"), params["var_power"])
-        ):
-            raise TrainingConfigError(
-                "GLM config has conflicting variance_power and params['var_power'] "
-                "settings. Keep one Tweedie variance-power source."
-            )
-        variance_power = params["var_power"]
+    variance_power = config.get("var_power") if algorithm == "glm" else config.get("variance_power")
 
     return {
         "name": config.get("name", default_name),

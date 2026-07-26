@@ -1,7 +1,7 @@
-"""Tests for ``_compute_needed_columns`` — backward column analysis.
+"""Tests for ``compute_prepared_plan(...).needed_by_node`` — backward column analysis.
 
-These tests pin the public contract of ``_compute_needed_columns`` so the
-production implementation can be rewritten from an O(edges × contract
+These tests pin the public contract of ``compute_prepared_plan(...).needed_by_node`` so the
+implementation can be optimised from an O(edges × contract
 lookups) backward pass into a single forward-pass over sorted nodes that
 reuses a per-node cached ``get_column_contract`` result (review item #87
 in ``docs/CODEBASE_REVIEW.md``).
@@ -29,14 +29,14 @@ from collections.abc import Callable
 
 import pytest
 
-from haute._builders import get_column_contract
-from haute._execute_lazy import _compute_needed_columns, _compute_projection_plan
+from haute._contracts import get_column_contract
 from haute._types import (
     GraphNode,
     NodeData,
     NodeType,
 )
 from haute.errors import ContractMismatchError
+from haute.projection import compute_prepared_plan
 from tests.conftest import make_output_config
 
 # ---------------------------------------------------------------------------
@@ -94,6 +94,23 @@ def _build_children_of(
     return children_of
 
 
+def _needed_by_node(
+    order: list[str],
+    children_of: dict[str, list[str]],
+    node_map: dict[str, GraphNode],
+    required_columns_by_node=None,
+    *,
+    strict_projection: bool = False,
+):
+    return compute_prepared_plan(
+        order,
+        children_of,
+        node_map,
+        required_columns_by_node,
+        strict_projection=strict_projection,
+    ).needed_by_node
+
+
 # ---------------------------------------------------------------------------
 # Reference implementations used by the benchmark
 # ---------------------------------------------------------------------------
@@ -109,7 +126,7 @@ def _reference_backward_pass(
     that visits it, which is the inefficiency review item #87 targets.
 
     Behaviour is byte-for-byte identical to the current production
-    ``_compute_needed_columns`` (see ``_execute_lazy.py`` lines 207+).
+    ``compute_prepared_plan(...).needed_by_node``.
     Kept here so the benchmark has a stable baseline to measure the
     forward pass against, independent of whatever the production
     function later becomes.
@@ -245,7 +262,7 @@ class TestLinearChain:
         parents_of = {order[i]: ([order[i - 1]] if i > 0 else []) for i in range(10)}
         children_of = _build_children_of(order, parents_of)
 
-        needed = _compute_needed_columns(order, children_of, node_map)
+        needed = _needed_by_node(order, children_of, node_map)
 
         assert needed["n9"] == {"alpha", "beta", "gamma"}
         for intermediate in order[:-1]:
@@ -270,7 +287,7 @@ class TestLinearChain:
         parents_of = {"src": [], "band": ["src"], "out": ["band"]}
         children_of = _build_children_of(order, parents_of)
 
-        needed = _compute_needed_columns(order, children_of, node_map)
+        needed = _needed_by_node(order, children_of, node_map)
 
         assert needed["out"] == {"age_band", "extra"}
         # band carries {age_band, extra} downstream
@@ -308,7 +325,7 @@ class TestDiamond:
         }
         children_of = _build_children_of(order, parents_of)
 
-        needed = _compute_needed_columns(order, children_of, node_map)
+        needed = _needed_by_node(order, children_of, node_map)
 
         # Every passthrough just carries the OUTPUT fields through.
         assert needed["out"] == {"x", "y", "z"}
@@ -347,7 +364,7 @@ class TestDiamond:
         }
         children_of = _build_children_of(order, parents_of)
 
-        needed = _compute_needed_columns(order, children_of, node_map)
+        needed = _needed_by_node(order, children_of, node_map)
 
         assert needed["src"] == {"a", "b", "shared"}
 
@@ -378,7 +395,7 @@ class TestOpaquePropagation:
         }
         children_of = _build_children_of(order, parents_of)
 
-        needed = _compute_needed_columns(order, children_of, node_map)
+        needed = _needed_by_node(order, children_of, node_map)
 
         # Downstream of opaque is concrete (its child is passthrough OUTPUT):
         assert needed["out"] == {"z"}
@@ -412,7 +429,7 @@ class TestOpaquePropagation:
         }
         children_of = _build_children_of(order, parents_of)
 
-        needed = _compute_needed_columns(order, children_of, node_map)
+        needed = _needed_by_node(order, children_of, node_map)
 
         # fanout has one opaque + one concrete child → opaque wins.
         assert needed["fanout"] is None
@@ -449,7 +466,7 @@ class TestContractAlgebra:
         parents_of = {"src": [], "band": ["src"], "out": ["band"]}
         children_of = _build_children_of(order, parents_of)
 
-        needed = _compute_needed_columns(order, children_of, node_map)
+        needed = _needed_by_node(order, children_of, node_map)
 
         # Pin the exact algebra.
         # band_needed = {a_band, extra}
@@ -477,7 +494,7 @@ class TestContractAlgebra:
         parents_of = {"src": [], "band": ["src"], "out": ["band"]}
         children_of = _build_children_of(order, parents_of)
 
-        needed = _compute_needed_columns(order, children_of, node_map)
+        needed = _needed_by_node(order, children_of, node_map)
 
         # age_band is produced by band, so upstream must NOT see it.
         assert needed["src"] == {"age"}
@@ -488,7 +505,7 @@ class TestEdgeCases:
     """Degenerate graphs that shouldn't crash or return garbage."""
 
     def test_empty_graph_returns_empty_dict(self):
-        needed = _compute_needed_columns([], {}, {})
+        needed = _needed_by_node([], {}, {})
         assert needed == {}
 
     def test_single_source_no_consumers_returns_none(self):
@@ -497,19 +514,19 @@ class TestEdgeCases:
         anything — a hypothetical consumer would want).
         """
         node_map = {"src": _source("src")}
-        needed = _compute_needed_columns(["src"], {"src": []}, node_map)
+        needed = _needed_by_node(["src"], {"src": []}, node_map)
         assert needed == {"src": None}
 
     def test_single_output_no_consumers_with_fields(self):
         """A terminal OUTPUT with fields: needed = those fields."""
         node_map = {"out": _output("out", fields=["a", "b"])}
-        needed = _compute_needed_columns(["out"], {"out": []}, node_map)
+        needed = _needed_by_node(["out"], {"out": []}, node_map)
         assert needed == {"out": {"a", "b"}}
 
     def test_single_output_no_fields_returns_none(self):
         """A terminal OUTPUT with no fields signals "all columns" ≡ None."""
         node_map = {"out": _output("out", fields=[])}
-        needed = _compute_needed_columns(["out"], {"out": []}, node_map)
+        needed = _needed_by_node(["out"], {"out": []}, node_map)
         assert needed == {"out": None}
 
     def test_single_source_with_one_output_child(self):
@@ -522,7 +539,7 @@ class TestEdgeCases:
         parents_of = {"src": [], "out": ["src"]}
         children_of = _build_children_of(order, parents_of)
 
-        needed = _compute_needed_columns(order, children_of, node_map)
+        needed = _needed_by_node(order, children_of, node_map)
 
         assert needed["out"] == {"x", "y"}
         assert needed["src"] == {"x", "y"}
@@ -537,7 +554,7 @@ class TestEdgeCases:
         parents_of = {"src": [], "sink": ["src"]}
         children_of = _build_children_of(order, parents_of)
 
-        needed = _compute_needed_columns(order, children_of, node_map)
+        needed = _needed_by_node(order, children_of, node_map)
 
         assert needed["sink"] is None
         assert needed["src"] is None
@@ -551,7 +568,7 @@ class TestEdgeCases:
         parents_of = {"src": [], "opt": ["src"]}
         children_of = _build_children_of(order, parents_of)
 
-        needed = _compute_needed_columns(
+        needed = _needed_by_node(
             order,
             children_of,
             node_map,
@@ -574,7 +591,7 @@ class TestEdgeCases:
         parents_of = {"src": [], "data_input": ["src"], "opt": ["data_input"]}
         children_of = _build_children_of(order, parents_of)
 
-        needed = _compute_needed_columns(
+        needed = _needed_by_node(
             order,
             children_of,
             node_map,
@@ -606,7 +623,7 @@ class TestEdgeCases:
         }
         children_of = _build_children_of(order, parents_of)
 
-        needed = _compute_needed_columns(
+        needed = _needed_by_node(
             order,
             children_of,
             node_map,
@@ -646,7 +663,7 @@ class TestEdgeCases:
         }
         children_of = _build_children_of(order, parents_of)
 
-        needed = _compute_needed_columns(
+        needed = _needed_by_node(
             order,
             children_of,
             node_map,
@@ -715,7 +732,7 @@ class TestEdgeCases:
         }
         children_of = _build_children_of(order, parents_of)
 
-        needed = _compute_needed_columns(
+        needed = _needed_by_node(
             order,
             children_of,
             node_map,
@@ -765,7 +782,7 @@ class TestEdgeCases:
         }
         children_of = _build_children_of(order, parents_of)
 
-        plan = _compute_projection_plan(
+        plan = compute_prepared_plan(
             order,
             children_of,
             node_map,
@@ -822,7 +839,7 @@ class TestEdgeCases:
         }
         children_of = _build_children_of(order, parents_of)
 
-        plan = _compute_projection_plan(
+        plan = compute_prepared_plan(
             order,
             children_of,
             node_map,
@@ -878,7 +895,7 @@ class TestEdgeCases:
         }
         children_of = _build_children_of(order, parents_of)
 
-        plan = _compute_projection_plan(
+        plan = compute_prepared_plan(
             order,
             children_of,
             node_map,
@@ -929,7 +946,7 @@ class TestEdgeCases:
         }
         children_of = _build_children_of(order, parents_of)
 
-        plan = _compute_projection_plan(
+        plan = compute_prepared_plan(
             order,
             children_of,
             node_map,
@@ -970,7 +987,7 @@ class TestEdgeCases:
         children_of = _build_children_of(order, parents_of)
 
         with pytest.raises(ValueError, match="factor_columns"):
-            _compute_projection_plan(
+            compute_prepared_plan(
                 order,
                 children_of,
                 node_map,
@@ -996,7 +1013,7 @@ class TestEdgeCases:
         children_of = _build_children_of(order, parents_of)
 
         with pytest.raises(ContractMismatchError, match="data_input"):
-            _compute_projection_plan(
+            compute_prepared_plan(
                 order,
                 children_of,
                 node_map,
@@ -1029,7 +1046,7 @@ class TestEdgeCases:
         children_of = _build_children_of(order, parents_of)
 
         with pytest.raises(ContractMismatchError, match="banding_source"):
-            _compute_projection_plan(
+            compute_prepared_plan(
                 order,
                 children_of,
                 node_map,
@@ -1073,7 +1090,7 @@ class TestEdgeCases:
         }
         children_of = _build_children_of(order, parents_of)
 
-        plan = _compute_projection_plan(
+        plan = compute_prepared_plan(
             order,
             children_of,
             node_map,
@@ -1144,7 +1161,7 @@ class TestEdgeCases:
         }
         children_of = _build_children_of(order, parents_of)
 
-        plan = _compute_projection_plan(
+        plan = compute_prepared_plan(
             order,
             children_of,
             node_map,
@@ -1194,7 +1211,7 @@ class TestEdgeCases:
         parents_of = {"policies": [], "lookup": [], "join": ["policies", "lookup"]}
         children_of = _build_children_of(order, parents_of)
 
-        plan = _compute_projection_plan(
+        plan = compute_prepared_plan(
             order,
             children_of,
             node_map,
@@ -1231,7 +1248,7 @@ class TestEdgeCases:
         children_of = _build_children_of(order, parents_of)
 
         with pytest.raises(ContractMismatchError, match="does not cover columns"):
-            _compute_projection_plan(
+            compute_prepared_plan(
                 order,
                 children_of,
                 node_map,
@@ -1263,7 +1280,7 @@ class TestEdgeCases:
         children_of = _build_children_of(order, parents_of)
 
         with pytest.raises(ContractMismatchError, match="unknown parent"):
-            _compute_projection_plan(
+            compute_prepared_plan(
                 order,
                 children_of,
                 node_map,
@@ -1295,7 +1312,7 @@ class TestEdgeCases:
         children_of = _build_children_of(order, parents_of)
 
         with pytest.raises(ContractMismatchError, match="fully concrete"):
-            _compute_projection_plan(
+            compute_prepared_plan(
                 order,
                 children_of,
                 node_map,
@@ -1413,7 +1430,7 @@ class TestAlgorithmEquivalence:
 
     def test_reference_backward_matches_production(self, label, build):
         order, children_of, node_map = build()
-        assert _reference_backward_pass(order, children_of, node_map) == _compute_needed_columns(
+        assert _reference_backward_pass(order, children_of, node_map) == _needed_by_node(
             order,
             children_of,
             node_map,
@@ -1421,7 +1438,7 @@ class TestAlgorithmEquivalence:
 
     def test_reference_forward_matches_production(self, label, build):
         order, children_of, node_map = build()
-        assert _reference_forward_pass(order, children_of, node_map) == _compute_needed_columns(
+        assert _reference_forward_pass(order, children_of, node_map) == _needed_by_node(
             order,
             children_of,
             node_map,
@@ -1602,7 +1619,7 @@ class TestForwardPassReferenceAlgorithmBenchmark:
         order, children_of, node_map = _build_realistic_200_node_graph()
         backward = _reference_backward_pass(order, children_of, node_map)
         forward = _reference_forward_pass(order, children_of, node_map)
-        production = _compute_needed_columns(order, children_of, node_map)
+        production = _needed_by_node(order, children_of, node_map)
         assert backward == forward
         assert backward == production
 
@@ -1644,12 +1661,12 @@ class TestForwardPassReferenceAlgorithmBenchmark:
 class TestProductionComputeNeededColumnsBenchmark:
     """Production-path work-reduction guard for review item #87.
 
-    Counts contract resolver calls in the real ``_compute_needed_columns``
-    imported from ``haute._execute_lazy`` against the backward-reference
+    Counts contract resolver calls in the real ``compute_prepared_plan(...).needed_by_node``
+    from the canonical ``haute.projection`` module against the backward-reference
     baseline.  This keeps the performance claim deterministic in CI.
     """
 
-    def test_production_compute_needed_columns_reuses_contracts_per_node(
+    def test_prepared_projection_plan_reuses_contracts_per_node(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ):
@@ -1672,14 +1689,14 @@ class TestProductionComputeNeededColumnsBenchmark:
         with monkeypatch.context() as ctx:
             production_calls, production = _count_contract_lookups(
                 ctx,
-                sys.modules[_compute_needed_columns.__module__],
-                lambda: _compute_needed_columns(order, children_of, node_map),
+                sys.modules[compute_prepared_plan.__module__],
+                lambda: _needed_by_node(order, children_of, node_map),
             )
 
         assert backward == production
         assert production_calls <= len(order)
         assert backward_calls >= production_calls * 2, (
-            "production _compute_needed_columns did not cut contract lookups "
+            "production prepared projection planning did not cut contract lookups "
             "by at least half vs the backward-reference baseline. "
             f"backward_calls={backward_calls} production_calls={production_calls}"
         )

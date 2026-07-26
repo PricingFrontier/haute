@@ -1,6 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import OptimiserPreview, { type SolveResult } from "../OptimiserPreview"
+import OptimiserPreview from "../OptimiserPreview"
+import type { OptimiserSolveResult } from "../../api/types"
 import useNodeResultsStore, {
   resetNodeResultsDerivedCaches,
 } from "../../stores/useNodeResultsStore"
@@ -44,7 +45,9 @@ function resetStore() {
   })
 }
 
-function makeSolveResult(overrides: Partial<SolveResult> = {}): SolveResult {
+function makeSolveResult(
+  overrides: Partial<OptimiserSolveResult> = {},
+): OptimiserSolveResult {
   return {
     total_objective: 100,
     baseline_objective: 80,

@@ -432,7 +432,7 @@ def test_byte_budget_target_build_failure_is_logged_before_reclassify(
     assert "engine defect during planning" in warnings[0]["error"]
 
 
-def test_chunk_plan_explicit_row_chunk_size_preserves_legacy_semantics(
+def test_chunk_plan_uses_explicit_row_chunk_size(
     tmp_path: Path,
 ) -> None:
     source_path = _write_projected_source(tmp_path, extra_columns=12)

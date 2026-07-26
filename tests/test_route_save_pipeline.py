@@ -1277,18 +1277,12 @@ class TestSaveEndpointIntegration:
 
 
 # ---------------------------------------------------------------------------
-# _infer_flatten_schemas
+# _validate_api_inputs_have_schemas
 # ---------------------------------------------------------------------------
 
 
 class TestValidateApiInputsHaveSchemas:
-    """The save hook renamed from ``_infer_flatten_schemas`` to
-    ``_validate_api_inputs_have_schemas`` per the v1-removal pivot
-    (commit 5.5 / D4). Behaviour inverted: no on-disk mutation; instead
-    a warning string is appended to the save response for JSON apiInput
-    nodes whose ``tables[]`` is empty. The user clicks Infer Tables to
-    populate the schema.
-    """
+    """Saving reports JSON API Inputs whose canonical ``tables`` are empty."""
 
     def test_warns_when_json_api_input_has_no_tables(self, tmp_path: Path) -> None:
         svc = SavePipelineService(tmp_path)
@@ -1299,9 +1293,8 @@ class TestValidateApiInputsHaveSchemas:
         )
         warnings: list[str] = []
         svc._validate_api_inputs_have_schemas(graph, warnings)
-        # On-disk config NOT mutated: no flattenSchema, no tables auto-written.
+        # Validation is read-only: it does not infer or write tables.
         cfg = graph.nodes[0].data.config
-        assert "flattenSchema" not in cfg
         assert "tables" not in cfg
         # Warning surfaced for the empty-tables case.
         assert any("api_input" in w and "Infer Tables" in w for w in warnings), (

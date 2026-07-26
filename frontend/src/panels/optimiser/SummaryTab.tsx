@@ -8,7 +8,7 @@
 
 import { Loader2 } from "lucide-react"
 import { formatNumber } from "../../utils/formatValue"
-import type { SolveResult } from "../OptimiserPreview"
+import type { OptimiserSolveResult } from "../../api/types"
 import { isConstraintMet } from "./optimiserHelpers"
 import RatebookImpactBeeswarm from "./RatebookImpactBeeswarm"
 import { hasFactorTables } from "./ratebookFactorTables"
@@ -19,7 +19,7 @@ type RatebookRatesLoadState =
   | { status: "error"; error: string }
 
 interface SummaryTabProps {
-  result: SolveResult
+  result: OptimiserSolveResult
   constraints: Record<string, Record<string, number>>
   canMaterialiseRatebookRates?: boolean
   ratebookRatesDetail?: RatebookRatesLoadState

@@ -332,7 +332,9 @@ class TestExtractionFailsLoudOnUnparseableBodies:
     def test_external_unparseable_body_raises(self) -> None:
         with pytest.raises(ParseError):
             _extract_external_user_code(
-                "    obj = load_external_object('m', 'pickle')\n    df = df.foo(\n    return df",
+                "    obj = load_external_object_from_config('config/load_file/m.json')\n"
+                "    df = df.foo(\n"
+                "    return df",
                 ["df"],
             )
 
@@ -343,8 +345,8 @@ class TestExtractionFailsLoudOnUnparseableBodies:
 
 _GENERATED_LOAD_PREFIX = [
     "from pathlib import Path",
-    "from haute.graph_utils import load_external_object",
-    'obj = load_external_object("models/lookup.pkl", "pickle")',
+    "from haute.graph_utils import load_external_object_from_config",
+    'obj = load_external_object_from_config("config/load_file/lookup.json")',
 ]
 
 
@@ -428,19 +430,6 @@ class TestExternalImportPreservation:
         result = _extract_external_user_code(body, ["df"])
         assert result == ("import numpy as np\ndf = df.with_columns(y=pl.lit(float(np.pi)))")
 
-    def test_legacy_with_open_load_still_strips_loader_imports(self) -> None:
-        body = (
-            "import pickle\n"
-            'with open("m.pkl", "rb") as f:\n'
-            "    obj = pickle.load(f)\n"
-            "import numpy as np\n"
-            "df = df.with_columns(pred=pl.lit(float(np.float64(0.5))))\n"
-            "return df"
-        )
-        result = _extract_external_user_code(body, ["df"])
-        assert "import pickle" not in result
-        assert result.startswith("import numpy as np\n")
-
     def test_pure_boilerplate_body_still_returns_empty(self) -> None:
         body = "\n".join([*_GENERATED_LOAD_PREFIX, "return df"])
         assert _extract_external_user_code(body, ["df"]) == ""
@@ -451,8 +440,8 @@ class TestExternalImportPreservation:
         the saved file no longer ran standalone."""
         body_lines = [
             "from pathlib import Path",
-            "from haute.graph_utils import load_external_object",
-            'obj = load_external_object("models/lookup.pkl", "pickle")',
+            "from haute.graph_utils import load_external_object_from_config",
+            'obj = load_external_object_from_config("config/load_file/lookup.json")',
             "import numpy as np",
             "df = up.with_columns(pred=pl.lit(float(np.float64(0.5))))",
             "return df",
@@ -471,8 +460,8 @@ class TestExternalImportPreservation:
 
     def test_production_roundtrip_interleaved_imports(self, tmp_path: Path) -> None:
         body_lines = [
-            "from haute.graph_utils import load_external_object",
-            'obj = load_external_object("models/lookup.pkl", "pickle")',
+            "from haute.graph_utils import load_external_object_from_config",
+            'obj = load_external_object_from_config("config/load_file/lookup.json")',
             "import numpy as np",
             "df = up.with_columns(a=pl.lit(float(np.pi)))",
             "from json import dumps",

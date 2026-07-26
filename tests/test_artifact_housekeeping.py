@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import stat
 import threading
 from pathlib import Path
 from types import SimpleNamespace
@@ -12,6 +13,7 @@ from types import SimpleNamespace
 import polars as pl
 import pytest
 
+from haute import _artifact_housekeeping as artifact_housekeeping
 from haute._artifact_housekeeping import (
     create_owned_artifact_directory,
     reap_stale_artifact_directories,
@@ -37,12 +39,23 @@ def _directory_symlink_for_test(
         return
 
     link.mkdir()
-    original_is_symlink = Path.is_symlink
+    original_lstat = Path.lstat
 
-    def is_symlink(path: Path) -> bool:
-        return path == link or original_is_symlink(path)
+    def classify_as_symlink(
+        path: Path, *args: object, **kwargs: object
+    ) -> os.stat_result | SimpleNamespace:
+        metadata = original_lstat(path, *args, **kwargs)
+        if path != link:
+            return metadata
+        return SimpleNamespace(
+            st_mode=stat.S_IFLNK | stat.S_IMODE(metadata.st_mode),
+            st_file_attributes=(
+                getattr(metadata, "st_file_attributes", 0)
+                | getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x0400)
+            ),
+        )
 
-    monkeypatch.setattr(Path, "is_symlink", is_symlink)
+    monkeypatch.setattr(Path, "lstat", classify_as_symlink)
 
 
 def test_reaper_removes_only_marked_owned_stale_direct_child(tmp_path: Path) -> None:
@@ -97,6 +110,101 @@ def test_reaper_skips_symlink_and_reaps_exact_stale_cutoff(
     assert not stale.exists()
     assert target.exists()
     assert link.is_symlink()
+
+
+def test_reaper_does_not_resolve_ordinary_direct_child(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stale = tmp_path / "stale"
+    _marker(stale)
+    original_resolve = Path.resolve
+
+    def deny_child_resolution(path: Path, strict: bool = False) -> Path:
+        if path == stale:
+            raise PermissionError(5, "Access is denied", str(path))
+        return original_resolve(path, strict=strict)
+
+    monkeypatch.setattr(Path, "resolve", deny_child_resolution)
+
+    report = reap_stale_artifact_directories(tmp_path, "test-owner", 10, now=100.0)
+
+    assert report["removed"] == 1
+    assert report["failed"] == 0
+    assert not stale.exists()
+
+
+def test_reaper_preserves_windows_reparse_point_child(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reparse_child = tmp_path / "junction"
+    _marker(reparse_child)
+    original_lstat = Path.lstat
+
+    def classify_child_as_reparse_point(
+        path: Path, *args: object, **kwargs: object
+    ) -> os.stat_result | SimpleNamespace:
+        metadata = original_lstat(path, *args, **kwargs)
+        if path != reparse_child:
+            return metadata
+        return SimpleNamespace(
+            st_mode=metadata.st_mode,
+            st_file_attributes=(
+                getattr(metadata, "st_file_attributes", 0)
+                | getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x0400)
+            ),
+        )
+
+    monkeypatch.setattr(Path, "lstat", classify_child_as_reparse_point)
+
+    report = reap_stale_artifact_directories(tmp_path, "test-owner", 10, now=100.0)
+
+    assert report["removed"] == 0
+    assert report["skipped"] == 1
+    assert report["failed"] == 0
+    assert reparse_child.exists()
+
+
+def test_reaper_isolates_unreadable_child_metadata_without_traceback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    unreadable = tmp_path / "unreadable"
+    _marker(unreadable)
+    original_lstat = Path.lstat
+
+    def deny_child_metadata(path: Path, *args: object, **kwargs: object) -> os.stat_result:
+        if path == unreadable:
+            raise PermissionError(5, "Access is denied", str(path))
+        return original_lstat(path, *args, **kwargs)
+
+    warnings: list[tuple[str, dict[str, object]]] = []
+    monkeypatch.setattr(Path, "lstat", deny_child_metadata)
+    monkeypatch.setattr(
+        artifact_housekeeping,
+        "logger",
+        SimpleNamespace(
+            warning=lambda event, **fields: warnings.append((event, fields)),
+        ),
+    )
+
+    report = reap_stale_artifact_directories(tmp_path, "test-owner", 10, now=100.0)
+
+    assert report == {
+        "inspected": 1,
+        "removed": 0,
+        "skipped": 0,
+        "failed": 1,
+        "reclaimed_bytes": 0,
+    }
+    assert unreadable.exists()
+    assert len(warnings) == 1
+    event, fields = warnings[0]
+    assert event == "artifact_reap_child_inspection_failed"
+    assert fields["path"] == str(unreadable)
+    assert fields["error"]
+    assert "exc_info" not in fields
 
 
 @pytest.mark.parametrize(
@@ -217,6 +325,43 @@ def test_housekeeping_refuses_symlink_root(
     assert list(target.iterdir()) == []
 
 
+def test_housekeeping_refuses_windows_reparse_point_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "junction-root"
+    root.mkdir()
+    original_lstat = Path.lstat
+
+    def classify_root_as_reparse_point(
+        path: Path, *args: object, **kwargs: object
+    ) -> os.stat_result | SimpleNamespace:
+        metadata = original_lstat(path, *args, **kwargs)
+        if path != root:
+            return metadata
+        return SimpleNamespace(
+            st_mode=metadata.st_mode,
+            st_file_attributes=(
+                getattr(metadata, "st_file_attributes", 0)
+                | getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x0400)
+            ),
+        )
+
+    monkeypatch.setattr(Path, "lstat", classify_root_as_reparse_point)
+
+    with pytest.raises(ValueError, match="reparse point"):
+        create_owned_artifact_directory(root, "apply_", "test-owner")
+
+    assert reap_stale_artifact_directories(root, "test-owner", 10, now=100.0) == {
+        "inspected": 0,
+        "removed": 0,
+        "skipped": 0,
+        "failed": 0,
+        "reclaimed_bytes": 0,
+    }
+    assert list(root.iterdir()) == []
+
+
 def test_optimiser_artifact_creators_write_owner_markers(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -263,9 +408,7 @@ def test_optimiser_reaper_targets_only_owned_marked_roots(
     unrelated.mkdir()
     monkeypatch.setattr(service, "_apply_artifact_root", lambda: apply_root)
     monkeypatch.setattr(service, "_ratebook_factors_artifact_root", lambda: factors_root)
-    monkeypatch.setenv("HAUTE_ARTIFACT_STALE_SECONDS", "0")
-
-    reports = service.reap_stale_optimiser_artifacts()
+    reports = service.reap_stale_optimiser_artifacts(0)
 
     assert reports["apply"]["removed"] == 1
     assert reports["ratebook_factors"]["removed"] == 1
@@ -280,10 +423,10 @@ def test_optimiser_reaper_rejects_invalid_stale_configuration(
     monkeypatch.setenv("HAUTE_ARTIFACT_STALE_SECONDS", "1.5")
 
     with pytest.raises(ValueError, match="non-negative integer"):
-        service.reap_stale_optimiser_artifacts()
+        service._artifact_stale_seconds()
 
 
-def test_server_lifespan_reaps_artifacts_before_serving(
+def test_server_lifespan_reaps_artifacts_without_delaying_readiness(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import haute.deploy._config as deploy_config
@@ -291,27 +434,60 @@ def test_server_lifespan_reaps_artifacts_before_serving(
 
     calls: list[str] = []
     lifespan_thread = threading.get_ident()
+    reaper_started = threading.Event()
+    allow_reaper_finish = threading.Event()
+
     monkeypatch.setattr(server, "_clear_bytecache", lambda: calls.append("clear_bytecache"))
     monkeypatch.setattr(server, "configure_logging", lambda: calls.append("configure_logging"))
     monkeypatch.setattr(deploy_config, "_load_env", lambda _path: calls.append("load_env"))
     monkeypatch.setattr(server, "configure_execution_telemetry", lambda: calls.append("telemetry"))
     monkeypatch.setattr(
         server,
+        "_artifact_stale_seconds",
+        lambda: calls.append("artifact_config") or 86_400,
+        raising=False,
+    )
+
+    def blocking_reaper(*_args: object, **_kwargs: object) -> None:
+        calls.append(f"reap_artifacts:{threading.get_ident()}")
+        reaper_started.set()
+        if not allow_reaper_finish.wait(timeout=5):
+            raise TimeoutError("test did not release optimiser artifact reaper")
+
+    monkeypatch.setattr(
+        server,
         "reap_stale_optimiser_artifacts",
-        lambda: calls.append(f"reap_artifacts:{threading.get_ident()}"),
+        blocking_reaper,
     )
     monkeypatch.setattr(server, "_ensure_pipeline_index", lambda: calls.append("pipeline_index"))
 
     async def noop_watcher() -> None:
-        return None
+        await asyncio.Event().wait()
 
     monkeypatch.setattr(server, "_watcher_forever", noop_watcher)
 
     async def exercise_lifespan() -> None:
-        async with server._lifespan(server.app):
+        entered = asyncio.Event()
+        leave = asyncio.Event()
+
+        async def run_lifespan() -> None:
+            async with server._lifespan(server.app):
+                calls.append("ready")
+                entered.set()
+                await leave.wait()
+
+        task = asyncio.create_task(run_lifespan())
+        try:
+            assert await asyncio.to_thread(reaper_started.wait, 1)
+            await asyncio.wait_for(entered.wait(), timeout=1)
             reaper_call = next(call for call in calls if call.startswith("reap_artifacts:"))
             assert reaper_call != f"reap_artifacts:{lifespan_thread}"
-            assert calls.index(reaper_call) < calls.index("pipeline_index")
-            assert calls.index("load_env") < calls.index("telemetry") < calls.index(reaper_call)
+            assert calls.index("load_env") < calls.index("telemetry")
+            assert calls.index("artifact_config") < calls.index("pipeline_index")
+            assert "ready" in calls
+        finally:
+            allow_reaper_finish.set()
+            leave.set()
+            await task
 
     asyncio.run(exercise_lifespan())

@@ -7,8 +7,6 @@
  *   - one block per incoming frame + empty state when there are none;
  *   - add / remove row, per-frame + per-row enable;
  *   - Save round-trips the four-field v2 shape with `[:]` paths;
- *   - a v1 `{ fields: [...] }` config shows the migration banner and Save
- *     writes v2 (one entry per former field);
  *   - Infer adds Inferred pilled rows;
  *   - an invalid path surfaces an error.
  *
@@ -523,71 +521,13 @@ describe("OutputEditor — rows: add / remove / enable / save", () => {
     }
     expect(arg.outputFormat).toBe("json")
     const entry = arg.outputMapping[0]
-    // Exactly the four persisted fields — no `status`, no v1 residue.
+    // Exactly the four persisted fields — no editor-only status.
     expect(Object.keys(entry).sort()).toEqual(
       ["enabled", "output_path", "source_column", "source_port"].sort(),
     )
     expect(entry.source_column).toBe("policy_id")
     expect(entry.output_path).toBe("$[:].policy_ref")
     expect(String(entry.output_path)).toContain("[:]")
-  })
-})
-
-describe("OutputEditor — v1 migration", () => {
-  it("a v1 { fields } config shows the migration banner", () => {
-    render(<OutputEditor {...DEFAULT_PROPS} config={{ fields: ["premium", "area"] }} />, {
-      allNodes: SINGLE_PORT_NODES,
-      edges: SINGLE_PORT_EDGES,
-    })
-    expect(screen.getByTestId("output-migration-banner")).toBeTruthy()
-    expect(
-      screen.getByText(/legacy format; saving will convert it/),
-    ).toBeTruthy()
-  })
-
-  it("first Save on a v1 config writes v2: one entry per former field, [:] paths, enabled", () => {
-    const onUpdateSpy = vi.fn()
-    render(
-      <StatefulHarness
-        initialConfig={{ fields: ["premium", "area"] }}
-        onUpdateSpy={onUpdateSpy}
-        allNodes={SINGLE_PORT_NODES}
-        edges={SINGLE_PORT_EDGES}
-      />,
-    )
-    // The single-port frame migrates fields under its edge-derived input name.
-    expandFrame("output-frame-0")
-    // Adding a row triggers a writeBack of the (migrated) working copy plus
-    // the new row — the migration is applied on the first save.
-    fireEvent.click(screen.getByTestId("output-frame-0-add-row"))
-
-    const arg = onUpdateSpy.mock.calls[0][0] as {
-      outputMapping: { source_column: string; output_path: string; enabled: boolean; source_port: string }[]
-    }
-    const migrated = arg.outputMapping.filter((e) => e.source_column !== "")
-    // Both former fields present, as [:] paths, enabled.
-    expect(migrated.map((e) => e.source_column).sort()).toEqual(["area", "premium"])
-    for (const e of migrated) {
-      expect(e.output_path).toBe(`$[:].${e.source_column}`)
-      expect(e.enabled).toBe(true)
-    }
-  })
-
-  it("the migration banner disappears after the first Save", () => {
-    const onUpdateSpy = vi.fn()
-    render(
-      <StatefulHarness
-        initialConfig={{ fields: ["premium"] }}
-        onUpdateSpy={onUpdateSpy}
-        allNodes={SINGLE_PORT_NODES}
-        edges={SINGLE_PORT_EDGES}
-      />,
-    )
-    expect(screen.getByTestId("output-migration-banner")).toBeTruthy()
-    expandFrame("output-frame-0")
-    fireEvent.click(screen.getByTestId("output-frame-0-add-row"))
-    // After save the config is now v2-shaped (and the banner is silenced).
-    expect(screen.queryByTestId("output-migration-banner")).toBeNull()
   })
 })
 
@@ -854,72 +794,6 @@ describe("OutputEditor — path validation", () => {
   })
 })
 
-// The §4 non-canonical surface is a PERSISTENT, non-modal highlight: a valid but
-// non-canonical committed path is flagged informationally (it assembles
-// identically and never blocks save). No modal, no dismissal, no rewrite button.
-describe("OutputEditor — non-canonical highlight (§4)", () => {
-  it("flags a valid non-canonical committed path and names its canonical form", () => {
-    render(
-      <OutputEditor
-        {...DEFAULT_PROPS}
-        config={{
-          outputMapping: [
-            // Bracket spelling — valid, assembles identically to `$[:].policy_id`.
-            { source_port: "policies", source_column: "policy_id", output_path: "$[:]['policy_id']", enabled: true },
-          ],
-          outputFormat: "json",
-        }}
-      />,
-      { allNodes: MULTI_FRAME_NODES, edges: MULTI_FRAME_EDGES },
-    )
-    expandFrame("output-frame-0")
-    const note = screen.getByTestId("output-frame-0-row-0-path-noncanonical")
-    expect(note.textContent).toBe(
-      "Non-canonical path — assembles identically. Canonical form: $[:].policy_id",
-    )
-    // Informational only — no error, no rewrite affordance.
-    expect(screen.queryByTestId("output-frame-0-row-0-path-error")).toBeNull()
-  })
-
-  it("does NOT flag an already-canonical committed path", () => {
-    render(
-      <OutputEditor
-        {...DEFAULT_PROPS}
-        config={{
-          outputMapping: [
-            { source_port: "policies", source_column: "policy_id", output_path: "$[:].policy_id", enabled: true },
-          ],
-          outputFormat: "json",
-        }}
-      />,
-      { allNodes: MULTI_FRAME_NODES, edges: MULTI_FRAME_EDGES },
-    )
-    expandFrame("output-frame-0")
-    expect(screen.queryByTestId("output-frame-0-row-0-path-noncanonical")).toBeNull()
-  })
-
-  it("flags the §5 non-identifier case with no canonical form to offer", () => {
-    render(
-      <OutputEditor
-        {...DEFAULT_PROPS}
-        config={{
-          outputMapping: [
-            // A dotted key has no safe `.name` rewrite — highlighted, no canonical form.
-            { source_port: "policies", source_column: "policy_id", output_path: "$[:]['a.b']", enabled: true },
-          ],
-          outputFormat: "json",
-        }}
-      />,
-      { allNodes: MULTI_FRAME_NODES, edges: MULTI_FRAME_EDGES },
-    )
-    expandFrame("output-frame-0")
-    const note = screen.getByTestId("output-frame-0-row-0-path-noncanonical")
-    expect(note.textContent).toBe(
-      "Non-canonical path — assembles identically (no simpler spelling exists for non-identifier keys).",
-    )
-  })
-})
-
 describe("OutputEditor — source_port derivation (blocker)", () => {
   it.each([
     ["a resolved singleton frame", SINGLE_FRAME_API_NODES, SINGLE_FRAME_API_EDGES, "quotes"],
@@ -982,25 +856,6 @@ describe("OutputEditor — source_port derivation (blocker)", () => {
     expect(byPort["Source_B"]).toBe("beta")
   })
 
-  it("a v1 single-port migration persists the sanitised frame id (not \"\")", () => {
-    const onUpdateSpy = vi.fn()
-    render(
-      <StatefulHarness
-        initialConfig={{ fields: ["premium"] }}
-        onUpdateSpy={onUpdateSpy}
-        allNodes={SINGLE_PORT_NODES}
-        edges={SINGLE_PORT_EDGES}
-      />,
-    )
-    expandFrame("output-frame-0")
-    fireEvent.click(screen.getByTestId("output-frame-0-add-row"))
-    const arg = onUpdateSpy.mock.calls[0][0] as {
-      outputMapping: { source_port: string; source_column: string }[]
-    }
-    const migrated = arg.outputMapping.find((e) => e.source_column === "premium")
-    // "Upstream Node" → "Upstream_Node".
-    expect(migrated?.source_port).toBe("Upstream_Node")
-  })
 })
 
 describe("OutputEditor — same-resolved-port collision (blocker)", () => {
@@ -1363,7 +1218,7 @@ describe("OutputEditor — per-frame input-data preview", () => {
     )
   })
 
-  it("a multi-frame non-first frame passes its port_label and shows NO caveat (resolvable)", async () => {
+  it("a multi-frame non-first frame passes its port_label", async () => {
     // The 'drivers' frame (output-frame-1) is the SECOND emit table. Its handle
     // ('drivers') names a real emit table, so previewNode is now asked for that
     // frame via port_label and the preview is genuinely the drivers rows — no
@@ -1386,11 +1241,9 @@ describe("OutputEditor — per-frame input-data preview", () => {
     // The frame's OWN port was selected, and the source node was previewed.
     expect(mockPreviewNode.mock.calls[0][0].nodeId).toBe("api")
     expect(mockPreviewNode.mock.calls[0][0].portLabel).toBe("drivers")
-    // No caveat — the frame resolves to its own rows.
-    expect(screen.queryByTestId("output-frame-1-data-preview-note")).toBeNull()
   })
 
-  it("the FIRST frame of a multi-frame source passes its port_label and shows no caveat", async () => {
+  it("the first frame of a multi-frame source passes its port_label", async () => {
     mockPreviewNode.mockResolvedValue({
       node_id: "api",
       status: "ok",
@@ -1407,33 +1260,5 @@ describe("OutputEditor — per-frame input-data preview", () => {
       expect(screen.getByTestId("output-frame-0-data-preview-json")).toBeTruthy(),
     )
     expect(mockPreviewNode.mock.calls[0][0].portLabel).toBe("policies")
-    expect(screen.queryByTestId("output-frame-0-data-preview-note")).toBeNull()
-  })
-
-  it("a multi-frame frame with a DANGLING handle keeps the caveat", async () => {
-    // A handle that names no emit table can't be selected on the source; the
-    // backend falls back to the first frame, so the caveat stays. Build an edge
-    // whose sourceHandle ('ghost') is absent from the source's emit tables.
-    const danglingEdges: SimpleEdge[] = [
-      { id: "e-ghost", source: "api", target: "output_1", sourceHandle: "ghost" },
-    ]
-    mockPreviewNode.mockResolvedValue({
-      node_id: "api",
-      status: "ok",
-      preview: [{ policy_id: 1 }],
-      preview_row_count: 1,
-    } as unknown as Awaited<ReturnType<typeof previewNode>>)
-    render(<OutputEditor {...DEFAULT_PROPS} />, {
-      allNodes: MULTI_FRAME_NODES,
-      edges: danglingEdges,
-    })
-    expandFrame("output-frame-0")
-    fireEvent.click(screen.getByTestId("output-frame-0-data-preview-toggle"))
-    await waitFor(() =>
-      expect(screen.getByTestId("output-frame-0-data-preview-note")).toBeTruthy(),
-    )
-    expect(screen.getByTestId("output-frame-0-data-preview-note").textContent).toContain(
-      "first frame",
-    )
   })
 })

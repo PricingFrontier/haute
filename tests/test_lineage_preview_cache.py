@@ -22,11 +22,11 @@ def _clear_preview_cache():
     from haute.executor import _preview_cache
     from haute.trace import _cache as trace_cache
 
-    _preview_cache.invalidate()
-    trace_cache.invalidate()
+    _preview_cache.clear()
+    trace_cache.clear()
     yield
-    _preview_cache.invalidate()
-    trace_cache.invalidate()
+    _preview_cache.clear()
+    trace_cache.clear()
 
 
 def _graph():
@@ -284,7 +284,7 @@ def test_preview_consumer_reuses_target_after_downstream_only_edit(
         row_limit=10,
         target_preview_only=True,
     )
-    fingerprint = executor._preview_cache.fingerprint
+    fingerprint = executor._preview_cache.most_recent_key
     assert first["target"].preview == [{"y": 2}]
 
     changed = _replace_node_config(graph, "downstream", code="df = df.drop('z')")
@@ -301,7 +301,7 @@ def test_preview_consumer_reuses_target_after_downstream_only_edit(
         target_preview_only=True,
     )
 
-    assert executor._preview_cache.fingerprint == fingerprint
+    assert executor._preview_cache.most_recent_key == fingerprint
     assert second["target"].preview == first["target"].preview
 
 
@@ -346,7 +346,7 @@ def test_preview_consumer_ignores_disconnected_runtime_input_changes(
         row_limit=10,
         target_preview_only=True,
     )
-    fingerprint = executor._preview_cache.fingerprint
+    fingerprint = executor._preview_cache.most_recent_key
 
     pl.DataFrame({"u": [999]}).write_parquet(unrelated_path)
     monkeypatch.setattr(
@@ -361,7 +361,7 @@ def test_preview_consumer_ignores_disconnected_runtime_input_changes(
         target_preview_only=True,
     )
 
-    assert executor._preview_cache.fingerprint == fingerprint
+    assert executor._preview_cache.most_recent_key == fingerprint
 
 
 def test_trace_reuses_a_full_preview_with_the_shared_lineage_key(
@@ -405,7 +405,7 @@ def test_trace_cache_survives_a_downstream_only_edit(
     pl.DataFrame({"x": [1]}).write_parquet(path)
     graph = _graph_with_source_path(path)
     first = trace.execute_trace(graph, target_node_id="target", row_limit=10)
-    fingerprint = trace._cache.fingerprint
+    fingerprint = trace._cache.most_recent_key
     changed = _replace_node_config(graph, "downstream", code="df = df.drop('z')")
     monkeypatch.setattr(
         trace,
@@ -415,7 +415,7 @@ def test_trace_cache_survives_a_downstream_only_edit(
 
     second = trace.execute_trace(changed, target_node_id="target", row_limit=10)
 
-    assert trace._cache.fingerprint == fingerprint
+    assert trace._cache.most_recent_key == fingerprint
     assert [step.output_values for step in second.steps] == [
         step.output_values for step in first.steps
     ]

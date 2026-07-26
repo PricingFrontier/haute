@@ -101,7 +101,7 @@ def test_frontend_pr_benchmark_gate_is_explicit_and_cheap() -> None:
     benchmark_gate = package_json["scripts"]["test:benchmark:pr"]
     expected_tests = [
         "src/__tests__/App.shallowHash.test.ts",
-        "src/hooks/__tests__/columnsEqual.fingerprint.test.ts",
+        "src/utils/__tests__/columnFingerprint.test.ts",
         "src/hooks/__tests__/nodesWithStatus.memo.test.tsx",
         "src/utils/__tests__/graphPerformance.test.ts",
     ]

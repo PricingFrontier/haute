@@ -100,13 +100,13 @@ def _fail_run_git_on(
 
 class TestRollbackFork:
     """`_rollback_fork`: a mid-sequence move-mode fork failure rolls back cleanly —
-    ledger restored to its prior tip, HEAD off the new ledger, fork-map entry
-    dropped, and no half-forked refs leaked."""
+    ledger restored to its prior tip, HEAD off the new ledger, and no half-forked
+    refs leaked."""
 
     def test_move_mode_failure_rolls_back(
         self, repo: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from haute._git_state import read_forks, read_working_branch
+        from haute._git_state import read_working_branch
 
         _fork_setup(repo)
         ledger_tip_before = _git(repo, "rev-parse", LEDGER)
@@ -130,8 +130,6 @@ class TestRollbackFork:
         # The new pair's refs are gone — retry is not blocked.
         assert _git(repo, "branch", "--list", "moved") == ""
         assert _git(repo, "branch", "--list", "moved-save") == ""
-        # No fork-map back-link was recorded (set_fork runs only after success).
-        assert "moved" not in read_forks(repo)
         assert read_working_branch(repo) == WORKING
 
     def test_parallel_fork_lone_ref_cleanup(
@@ -139,8 +137,6 @@ class TestRollbackFork:
     ) -> None:
         """Parallel (move=False) fork: if the ledger ref creation fails after the
         working ref was created, the lone working ref is deleted (no leak)."""
-        from haute._git_state import read_forks
-
         _fork_setup(repo)
 
         # Fail the SECOND `branch <ledger> <base>` — the new ledger ref creation,
@@ -155,7 +151,6 @@ class TestRollbackFork:
         # The lone working ref was cleaned up — neither ref of the pair survives.
         assert _git(repo, "branch", "--list", "para") == ""
         assert _git(repo, "branch", "--list", "para-save") == ""
-        assert "para" not in read_forks(repo)
 
 
 class TestRollbackBranchAway:

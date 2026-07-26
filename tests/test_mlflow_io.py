@@ -1436,22 +1436,6 @@ class TestExtractPyfuncFeatures:
         model.metadata.signature.inputs = None
         assert _extract_pyfunc_features(model) == []
 
-    def test_colspec_fallback(self):
-        """Falls back to ColSpec-style input list when input_names() absent."""
-        from haute._mlflow_io import _extract_pyfunc_features
-
-        # ColSpec objects have a .name attribute
-        col1 = MagicMock()
-        col1.name = "feat_a"
-        col2 = MagicMock()
-        col2.name = "feat_b"
-        # Use a plain list as inputs — lists lack input_names, triggering fallback
-        inputs_list = [col1, col2]
-        model = MagicMock()
-        model.metadata.signature.inputs = inputs_list
-        result = _extract_pyfunc_features(model)
-        assert result == ["feat_a", "feat_b"]
-
     def test_input_names_method(self):
         """Uses input_names() when available."""
         from haute._mlflow_io import _extract_pyfunc_features
@@ -2131,15 +2115,12 @@ class TestFlavorSsot:
     instead of drifting silently.
     """
 
-    def test_scorer_and_mlflow_io_share_one_ssot_object(self):
-        """Both modules bind the identical frozenset object, not a copy."""
-        from haute import _mlflow_io, _model_scorer
+    def test_mlflow_io_uses_the_canonical_flavor_set(self):
+        """Model loading binds the canonical frozenset object, not a copy."""
+        from haute import _mlflow_io
         from haute._model_flavors import _SUPPORTED_FLAVORS
 
-        assert _model_scorer._SUPPORTED_FLAVORS is _SUPPORTED_FLAVORS
         assert _mlflow_io._SUPPORTED_FLAVORS is _SUPPORTED_FLAVORS
-        # The scorer's public ConfigError guard is driven by the SSOT.
-        assert _model_scorer.score_frame.__module__ == "haute._model_scorer"
 
     def test_prepare_predict_frame_recognises_exactly_supported_flavors(self):
         """Every SSOT flavor is prepared; anything outside it is rejected loudly.

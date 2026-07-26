@@ -25,7 +25,7 @@ In scope:
 - Deterministic fingerprinting of pipeline graphs and their execution inputs, used
   as cache keys (content hashing, canonical JSON encoding, graph structural digests).
 - A generic in-process bounded LRU cache with pinning, used as the shared
-  foundation for the preview/trace fingerprint cache and the dataframe execution
+  implementation for the preview/trace caches and the dataframe execution
   cache.
 - A parquet-artifact-backed cache for materialized backend execution frames
   (dataframe execution cache), including on-disk lifecycle (write, scan, evict,
@@ -34,7 +34,7 @@ In scope:
   objects, optimiser/mlflow artifacts) that reload only when file metadata changes.
 - The on-disk JSON-to-parquet cache exposed over HTTP (`/api/json-cache/*`):
   building, checking status of, deleting per-port shredded parquet caches for
-  JSON/JSONL data sources, and preserving the compatibility cancel endpoint.
+  JSON/JSONL data sources.
 
 Out of scope (owned elsewhere, linked where relevant):
 - What actually gets executed when a cache misses — the lazy Polars pipeline
@@ -52,8 +52,7 @@ Out of scope (owned elsewhere, linked where relevant):
   only supplies the json-cache route handlers themselves.
 - Trace- and preview-specific cache *consumers* (what slots they store, when they
   invalidate on user edits) belong to the execution engine's trace/preview
-  modules; this component supplies the `FingerprintCache` and `LRUCache` classes
-  they are built on.
+  modules; this component supplies the `LRUCache` class they are built on.
 
 ## Behaviour
 
@@ -94,11 +93,6 @@ Out of scope (owned elsewhere, linked where relevant):
   build call populates) and `committed/` (the durable layer, promoted from
   `working/` by a save operation elsewhere in the system). Deleting the JSON cache
   through the API only clears `working/`; `committed/` is untouched.
-- **JSON-cache builds cannot be cancelled.** `POST /api/json-cache/cancel` is a
-  compatibility no-op: after validating the requested path it returns
-  `cancelled=false`. The editor's cancel action calls this endpoint but does not
-  interrupt or stop the worker thread, which continues until success, failure,
-  or timeout.
 - **Cache-miss failures are loud.** A build request that cannot resolve a schema,
   fails path validation, or hits corrupt on-disk state returns a structured 4xx/5xx
   error rather than silently falling back to an empty or partial result. See
@@ -156,9 +150,9 @@ Out of scope (owned elsewhere, linked where relevant):
 - **A shared LRU/pinning core.** `LRUCache` (`_lru_cache.py`) consolidates
   eviction and pinning logic that used to be duplicated across the
   preview/trace fingerprint cache and the dataframe execution cache.
-  `FingerprintCache` is now a thin subclass adding multi-slot dict semantics;
-  the dataframe execution cache subclasses `LRUCache` directly and layers
-  parquet-artifact lifecycle management on top.
+  Preview and trace store their canonical payload dictionaries directly;
+  the dataframe execution cache subclasses `LRUCache` and layers parquet-artifact
+  lifecycle management on top.
 - **Pinning is a caller-driven overlay, not automatic reference counting** (except
   for the dataframe cache's live-scan tracking, which is reference counted because
   a `pl.LazyFrame` scan can outlive the call that created it). This keeps the base
@@ -184,7 +178,7 @@ Out of scope (owned elsewhere, linked where relevant):
   is mounted as a FastAPI router (`/api/json-cache`) alongside the rest of the
   HTTP surface.
 - Depended on by the preview and trace subsystems (execution engine), which use
-  `graph_fingerprint()` and `FingerprintCache` to avoid recomputing preview
+  `graph_fingerprint()` and `LRUCache` to avoid recomputing preview
   DataFrames and trace values on unrelated edits.
 - Depended on by optimiser, training, sink, and deploy backend callers (execution
   engine), which build `DataFrameExecutionCacheRequest` objects to opt individual
@@ -398,7 +392,7 @@ eviction, quota accounting, and direct-versus-snapshot schema/data equivalence.
 - The canonical node-config registry classifies every recognised config field
   as execution-affecting or excluded with a rationale. Adding a recognised
   field without updating that registry fails both import-time validation and
-  reflective test coverage. Unknown legacy fields remain conservatively
+  reflective test coverage. Unrecognised fields remain conservatively
   execution-affecting at runtime; they are never silently omitted.
 - Execution graph identity includes node labels when they affect generated
   names or frame binding, relevant node type/config/user code, upstream order,

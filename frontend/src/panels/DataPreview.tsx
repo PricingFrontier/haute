@@ -32,8 +32,7 @@ export interface PreviewData {
    * apiInput), keyed by emit-table label. 2+ entries drive the frame-select
    * dropdown; empty/single-entry for single-frame nodes (no dropdown). */
   frame_columns?: Record<string, ColumnInfo[]>
-  /** The frame label currently shown. `undefined` = the first frame (the
-   * default). Drives the dropdown's selected value. */
+  /** The frame label currently shown. Drives the dropdown's selected value. */
   selected_frame?: string
 }
 

@@ -1,6 +1,5 @@
 import type { OptimiserApplyNodeDetail, TraceNodeDetail } from "../types/trace"
 import {
-  TraceDetailChip,
   TraceDetailPanel,
 } from "./TraceDetail"
 import { BandingDetailBlock } from "./BandingDetail"
@@ -36,27 +35,6 @@ export function NodeDetailBlock({
 
   if (detailType === "rating_step" && (Array.isArray(detail.tables) || Array.isArray(detail.combined_outputs))) {
     return <RatingStepDetailBlock detail={detail} tracedColumn={tracedColumn} />
-  }
-
-  if (detailType === "rate_table_lookup" || detailType === "rating_step") {
-    const keys = detail.lookup_keys as Record<string, unknown> | undefined
-    const matched = detail.matched_row
-    const defaultUsed = detail.default_used as boolean | undefined
-    return (
-      <TraceDetailPanel title="Rate Table Lookup">
-        {keys && (
-          <div className="flex flex-wrap gap-1">
-            {Object.entries(keys).map(([k, v]) => (
-              <TraceDetailChip key={k}>{k}: {String(v)}</TraceDetailChip>
-            ))}
-          </div>
-        )}
-        {matched != null && <TraceDetailChip tone="muted">matched row: {String(matched)}</TraceDetailChip>}
-        {defaultUsed && (
-          <TraceDetailChip tone="warning" mono={false}>default used</TraceDetailChip>
-        )}
-      </TraceDetailPanel>
-    )
   }
 
   if (detailType === "banding") {

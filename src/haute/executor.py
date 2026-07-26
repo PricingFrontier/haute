@@ -35,16 +35,7 @@ from typing import Any
 import polars as pl
 
 import haute.execution as execution_facade
-from haute._builders import (  # noqa: F401
-    NodeBuildContext,
-    NodeBuilder,
-    _apply_online,
-    _apply_ratebook,
-    _build_node_fn,
-    _dispatch_apply,
-    _passthrough_fn,
-    resolve_instance_node,
-)
+from haute._builders import _build_node_fn
 from haute._cache import (
     GraphFingerprintMemo,
     preamble_execution_fingerprint,
@@ -52,11 +43,14 @@ from haute._cache import (
 )
 from haute._execution_admission import create_admitted_execution_context
 from haute._execution_context import ExecutionContext, ExecutionProfile
-from haute._fingerprint_cache import FingerprintCache
 from haute._logging import get_logger
+from haute._lru_cache import LRUCache
 from haute._output_assembler import render_output_document
-from haute._path_resolution import RuntimePathOutsideProjectError, _normalise_path_text
-from haute._rating import _apply_banding  # noqa: F401 — re-exported for tests
+from haute._path_resolution import (
+    RuntimePathOutsideProjectError,
+    _infer_project_root,
+    _normalise_path_text,
+)
 from haute._registry import ensure_registry_ready
 from haute._sandbox import safe_globals, validate_user_code
 from haute._types import NodeData
@@ -67,7 +61,6 @@ from haute.graph_utils import (
     _execute_eager_core,
     _execute_lazy,
     _prune_live_switch_edges,
-    _resolve_sink_path,
     ancestors,
 )
 from haute.schemas import (
@@ -115,16 +108,6 @@ PREVIEW_INITIAL_COLUMN_LIMIT = _positive_int_from_env(
     200,
 )
 """Maximum first-click preview columns when the frontend has no cached schema."""
-
-# Module-level toggle for column-contract enforcement.  ``True`` by
-# default: contract mismatches should fail loudly.  Benchmarks may
-# temporarily flip this to ``False`` to measure overhead.
-# ``execute_graph(..., enforce_contracts=...)`` is the
-# preferred switch for normal code paths; the module flag is the
-# fallback for callers (like the overhead benchmark in
-# ``test_column_contracts_adoption.py``) that need to toggle it
-# without threading the kwarg through their call chain.
-ENFORCE_CONTRACTS: bool = True
 
 # Lock to prevent concurrent module eviction + re-import in _compile_preamble.
 # Without this, two threads (e.g. preview + estimate) can race: one evicts
@@ -752,13 +735,9 @@ def _preview_projection_cache_suffix(
     """Cache-key suffix for projected preview materialisations.
 
     ``port_label`` selects which frame of a multi-frame producer the flat
-    ``columns`` / ``preview`` reflect. It changes the SERIALISED result, not
+    ``columns`` / ``preview`` reflect. It changes the serialised result, not
     the underlying ``eager_outputs`` (which always holds every frame), so it
-    must enter the cache key — otherwise selecting frame B would serve frame
-    A's cached rows. ``None`` (preview the first frame, the legacy default)
-    contributes nothing, keeping every existing key byte-identical; trace
-    reconstructs the suffix with ``port_label`` defaulted to ``None`` and so
-    reuses the default-frame preview entry exactly as before.
+    enters the cache key.
     """
     parts: list[str] = []
     if target_preview_only and target_node_id is not None:
@@ -824,55 +803,26 @@ def _cache_has_required_materialization(
     return True
 
 
-_preview_cache = FingerprintCache(
-    slots=(
-        "eager_outputs",
-        "errors",
-        "order",
-        "timings",
-        "memory_bytes",
-        "error_lines",
-        "available_columns",
-        "output_columns",
-        "frame_columns",
-    ),
+_preview_cache: LRUCache[str, dict[str, Any]] = LRUCache(
+    max_size=8,
     max_bytes=PREVIEW_CACHE_MAX_BYTES,
     size_of=_estimate_preview_cache_entry_bytes,
-    size_sensitive_slots=("eager_outputs",),
 )
 
 
 def _extract_column_refs(
     config: dict[str, Any],
-    *,
-    node_type: NodeType | None = None,  # pragma: no mutate
 ) -> set[str]:
     """Extract column names referenced in a node's config.
 
     Only includes columns that are READ from upstream (not created/output columns).
     Returns an empty set for configs with no column references.
-
-    Bundle 2 executor guard — when ``node_type`` is :data:`NodeType.API_INPUT`,
-    the ``selected_columns`` scoop is skipped. v2 apiInput has no
-    concept of a flat ``selected_columns`` list; the per-column
-    ``selected`` boolean inside ``tables[].columns[]`` is the v2-native
-    column-filter surface. Even if a legacy key leaks into config
-    (which Bundle 2.a's load-time strip is supposed to prevent), this
-    guard ensures the executor's stale-column diff never acts on it
-    for apiInput. Defence-in-depth against any future code path that
-    reintroduces the key without going through the persistence layer.
-    Caller at ``_node_schema_warnings`` passes ``node_type`` from
-    ``node.data.nodeType``. Contract pinning test:
-    tests/test_strict_v2_contract.py::TestExtractColumnRefsNodeTypeGuard.
     """
     refs: set[str] = set()
 
-    # selected_columns: list[str] — on any node type EXCEPT apiInput,
-    # where the v2 spec has no place for it. See guard above.
-    if node_type != NodeType.API_INPUT:
-        for col in config.get("selected_columns", []) or []:
-            if isinstance(col, str) and col:
-                refs.add(col)
+    for col in config.get("selected_columns", []) or []:
+        if isinstance(col, str) and col:
+            refs.add(col)
 
     # target, weight, offset: str — on modelling nodes
     for key in ("target", "weight", "offset"):
@@ -929,7 +879,7 @@ def execute_graph(
     row_limit: int | None = None,  # pragma: no mutate
     max_preview_rows: int = _MAX_PREVIEW_ROWS,
     source: str = "live",
-    enforce_contracts: bool | None = None,  # pragma: no mutate
+    enforce_contracts: bool = True,  # pragma: no mutate
     *,
     target_preview_only: bool = False,
     requested_preview_columns: list[str] | None = None,  # pragma: no mutate
@@ -948,11 +898,9 @@ def execute_graph(
         row_limit: If set, apply .head(row_limit) to source nodes so only
                    that many rows flow through the pipeline.
         max_preview_rows: Max rows to include in the JSON preview payload.
-        enforce_contracts: If ``True``, every node's column contract is
-            asserted at the input and output boundaries.  Default
-            (``None``) falls back to the module-level
-            :data:`ENFORCE_CONTRACTS` flag (itself ``True`` by default),
-            so contract violations surface as ``ContractMismatchError``.
+        enforce_contracts: If ``True`` (the default), every node's column
+            contract is asserted at the input and output boundaries, so
+            contract violations surface as ``ContractMismatchError``.
             Pass ``False`` to run without the check — the benchmark
             uses this to measure overhead; production callers should
             leave it at the default.
@@ -968,10 +916,8 @@ def execute_graph(
         port_label: For a multi-frame target (an apiInput emitting 2+ frames,
             stored as ``dict[label, DataFrame]`` in ``eager_outputs``), the
             frame whose rows/columns the flat ``columns`` / ``preview`` should
-            reflect. ``None`` (default) previews the first frame — the legacy
-            behaviour; a label absent from the dict also falls back to the
-            first frame. Single-frame targets ignore it. Threaded into the
-            preview cache key so each frame is a distinct cache entry.
+            reflect. Single-frame targets ignore it. Threaded into the preview
+            cache key so each frame is a distinct cache entry.
 
     Returns:
         Dict mapping node_id → {
@@ -982,8 +928,6 @@ def execute_graph(
             "error": str | None,
         }
     """
-    if enforce_contracts is None:
-        enforce_contracts = ENFORCE_CONTRACTS
     if not graph.nodes:
         return {}
     if execution_context is None:
@@ -1072,7 +1016,7 @@ def execute_graph(
 
     # Check if we can extend the cache (same graph, new target is a superset)
     with _execution_stage(execution_context, "preview_cache_lookup"):
-        cached = _preview_cache.try_get(fp)
+        cached = _preview_cache.get(fp)
     if cached is not None:
         prev_outputs = cached["eager_outputs"]
         cached_order = cached["order"]
@@ -1165,17 +1109,19 @@ def execute_graph(
                 if nid not in errors:
                     merged_errors.pop(nid, None)
                     merged_error_lines.pop(nid, None)
-            preview_store_retained = _preview_cache.store(
+            preview_store_retained = _preview_cache.put(
                 fp,
-                eager_outputs=merged,
-                errors=merged_errors,
-                order=merged_order,
-                timings=merged_timings,
-                memory_bytes=merged_memory,
-                error_lines=merged_error_lines,
-                available_columns=merged_avail,
-                output_columns=merged_output_cols,
-                frame_columns=merged_frame_cols,
+                {
+                    "eager_outputs": merged,
+                    "errors": merged_errors,
+                    "order": merged_order,
+                    "timings": merged_timings,
+                    "memory_bytes": merged_memory,
+                    "error_lines": merged_error_lines,
+                    "available_columns": merged_avail,
+                    "output_columns": merged_output_cols,
+                    "frame_columns": merged_frame_cols,
+                },
             )
             if preview_store_retained:
                 _preview_cache.pin(fp)
@@ -1201,7 +1147,7 @@ def execute_graph(
             "preview_cache_miss",
             fingerprint=fp[:8],
             target=target_node_id,
-            prev_fingerprint=(_preview_cache.fingerprint or "")[:8],
+            prev_fingerprint=(_preview_cache.most_recent_key or "")[:8],
         )
         with _execution_stage(execution_context, "preview_cache_miss"):
             (
@@ -1227,17 +1173,19 @@ def execute_graph(
                 execution_context=execution_context,
             )
         eager_outputs = {k: v for k, v in raw_outputs.items() if v is not None}
-        preview_store_retained = _preview_cache.store(
+        preview_store_retained = _preview_cache.put(
             fp,
-            eager_outputs=eager_outputs,
-            errors=errors,
-            order=order,
-            timings=timings,
-            memory_bytes=memory_bytes,
-            error_lines=error_lines,
-            available_columns=avail_cols,
-            output_columns=output_cols,
-            frame_columns=frame_cols,
+            {
+                "eager_outputs": eager_outputs,
+                "errors": errors,
+                "order": order,
+                "timings": timings,
+                "memory_bytes": memory_bytes,
+                "error_lines": error_lines,
+                "available_columns": avail_cols,
+                "output_columns": output_cols,
+                "frame_columns": frame_cols,
+            },
         )
         # Pin this entry through result serialisation so it cannot be
         # evicted while the caller is still building the response. Full
@@ -1327,7 +1275,7 @@ def execute_graph(
             # selected_columns scoop is skipped for apiInput nodes
             # (v2 has no spec for it; per-column `selected` bool in
             # tables[].columns[] is the v2-native surface).
-            config_refs = _extract_column_refs(node_data.config, node_type=node_data.nodeType)
+            config_refs = _extract_column_refs(node_data.config)
             node_warnings = list(schema_warnings.get(node_id, []))
             if config_refs and available:
                 available_names = {c.name for c in available}
@@ -1355,12 +1303,6 @@ def execute_graph(
                 )
                 continue
             df = eager_outputs.get(nid)
-            # Multi-frame emit (commit 4): an apiInput with 2+ emit-true
-            # tables stores ``dict[port_name, DataFrame]`` in
-            # eager_outputs. For preview-display purposes, use the first
-            # frame as a representative — a richer per-frame view
-            # belongs in the apiInput editor's preview (commit 5+).
-            #
             # Per-frame column schema for multi-frame producers, keyed by
             # the emit-table label (the ``sourceHandle`` / port a downstream
             # edge binds to). Read from the executor's name+dtype schema
@@ -1375,20 +1317,21 @@ def execute_graph(
                 for (fc_nid, port_label), schema in frame_cols.items()
                 if fc_nid == nid
             }
-            if isinstance(df, dict):
-                # A materialised multi-frame target stores ``dict[label, df]``
-                # in eager_outputs; collapse to ONE frame as the single
-                # representative for the flat ``columns`` / preview. When this
-                # node is the preview target and a ``port_label`` was requested
-                # AND that label is present, surface THAT frame; otherwise fall
-                # back to the first frame (``port_label=None`` is the legacy
-                # default; an unknown label degrades to the first frame rather
-                # than erroring). The full per-frame schema map
-                # (``frame_columns``) above is left untouched.
-                if port_label is not None and nid == target_node_id and port_label in df:
+            is_frame_bundle = isinstance(df, dict)
+            is_multi_frame_output = is_frame_bundle and len(df) > 1
+            if is_frame_bundle:
+                if len(df) == 1:
+                    # A singleton bundle has exactly one canonical flat frame.
+                    # Preserve the ordinary preview for both the source target
+                    # and an already-materialised source ancestor.
+                    df = next(iter(df.values()))
+                # Only a labelled target frame has a flat preview when there
+                # are multiple frames. Ancestor schemas remain available
+                # through frame_columns without choosing a representative.
+                elif is_multi_frame_output and nid == target_node_id and port_label is not None:
                     df = df[port_label]
                 else:
-                    df = next(iter(df.values()), None)  # may be None if dict empty
+                    df = None
             columns, avail_col_infos = _column_infos_for_node(nid, df)
             node_warnings = _node_schema_warnings(nid, avail_col_infos)
             if df is None:
@@ -1399,7 +1342,9 @@ def execute_graph(
                 # flat ``columns``, mirroring the materialised multi-frame
                 # target). Either one being present means we have real schema
                 # to surface, not a genuine failure.
-                if (columns or frame_columns) and nid not in preview_node_ids:
+                if (columns or frame_columns) and (
+                    nid not in preview_node_ids or is_multi_frame_output
+                ):
                     results[nid] = NodeResult(
                         status="ok",
                         column_count=len(columns),
@@ -1603,53 +1548,29 @@ def _resolve_batch_scenario(graph: PipelineGraph) -> str | None:  # pragma: no m
     return batch_scenario
 
 
-def resolve_sink_output_path(
-    graph: PipelineGraph,
-    path: str,
-    fmt: str,
-    *,
-    project_root: str | Path | None = None,  # pragma: no mutate
-) -> Path:
-    """Resolve the filesystem path a sink write will use.
-
-    When *project_root* is supplied, the resolved target must stay inside
-    that root. The server route passes it for API-submitted graphs; direct
-    executor callers keep the historical explicit-path behavior.
-    """
-    return _contain_output_path(graph, _resolve_sink_path(path, fmt), project_root=project_root)
-
-
 def _contain_output_path(
     graph: PipelineGraph,
     resolved_path: str,
     *,
-    project_root: str | Path | None = None,  # pragma: no mutate
+    project_root: str | Path,  # pragma: no mutate
 ) -> Path:
     """Containment + pipeline-dir anchoring for an already-normalised output path."""
-    if project_root is not None:
-        root = Path(project_root).resolve()
-        raw = Path(_normalise_path_text(resolved_path))
-        if raw.is_absolute():
-            out = raw.resolve()
-        else:
-            base = root
-            if graph.source_file:
-                source = Path(_normalise_path_text(graph.source_file))
-                if not source.is_absolute():
-                    source = root / source
-                base = source.resolve().parent
-            out = (base / raw).resolve()
-        if not out.is_relative_to(root):
-            raise RuntimePathOutsideProjectError(
-                f"Sink path {resolved_path!r} resolves outside the project root"
-            )
-        return out
-
-    out = Path(resolved_path)
-    if not out.is_absolute():
-        pdir = _pipeline_dir(graph)
-        if pdir is not None:
-            out = pdir / out
+    root = Path(project_root).resolve()
+    raw = Path(_normalise_path_text(resolved_path))
+    if raw.is_absolute():
+        out = raw.resolve()
+    else:
+        base = root
+        if graph.source_file:
+            source = Path(_normalise_path_text(graph.source_file))
+            if not source.is_absolute():
+                source = root / source
+            base = source.resolve().parent
+        out = (base / raw).resolve()
+    if not out.is_relative_to(root):
+        raise RuntimePathOutsideProjectError(
+            f"Sink path {resolved_path!r} resolves outside the project root"
+        )
     return out
 
 
@@ -1657,7 +1578,7 @@ def _validate_output_publish_paths(
     final_path: Path,
     staging_path: Path,
     *,
-    project_root: str | Path,
+    project_root: str | Path,  # pragma: no mutate
 ) -> None:
     """Validate both sides of an atomic output publish against the project root.
 
@@ -1683,14 +1604,13 @@ def _validate_output_publish_paths(
 def _cleanup_output_staging_path(
     staging_path: Path,
     *,
-    project_root: str | Path | None,
+    project_root: str | Path,  # pragma: no mutate
 ) -> None:
     """Remove a failed staging artefact without following a swapped path outside the project."""
-    if project_root is not None:
-        root = Path(project_root).resolve()
-        if not staging_path.resolve().is_relative_to(root):
-            logger.warning("data_output_stage_cleanup_blocked", path=str(staging_path))
-            return
+    root = Path(project_root).resolve()
+    if not staging_path.resolve().is_relative_to(root):
+        logger.warning("data_output_stage_cleanup_blocked", path=str(staging_path))
+        return
     try:
         staging_path.unlink(missing_ok=True)
     except OSError as exc:
@@ -1743,6 +1663,8 @@ def _publish_output_create_only(
     staging_path: Path,
     final_path: Path,
     display_path: str,
+    *,
+    project_root: str | Path,  # pragma: no mutate
 ) -> None:
     """Publish a staged artifact without replacing an existing destination."""
     try:
@@ -1759,7 +1681,7 @@ def _publish_output_create_only(
     if not _IS_WINDOWS:
         # The final path is already a complete published hard link. Failure to
         # remove its staging sibling is cleanup residue, not a failed write.
-        _cleanup_output_staging_path(staging_path, project_root=None)
+        _cleanup_output_staging_path(staging_path, project_root=project_root)
 
 
 def _output_row_count_scan_kwargs(
@@ -1801,13 +1723,16 @@ def resolve_data_output_path(
     """
     from haute._polars_io_registry import default_output_extension, format_for_config
 
+    root = _infer_project_root(
+        project_root=project_root,
+        source_file=graph.source_file,
+    )
     fmt_entry = format_for_config(config)
     if fmt_entry.source_kind == "database":
         raw_uri = config.get("uri")
-        if project_root is not None and isinstance(raw_uri, str) and raw_uri:
+        if isinstance(raw_uri, str) and raw_uri:
             from haute._database_io import validate_sqlite_project_path
 
-            root = Path(project_root).resolve()
             validate_sqlite_project_path(
                 raw_uri,
                 base_dir=_pipeline_dir(graph) or root,
@@ -1823,7 +1748,7 @@ def resolve_data_output_path(
     ext = default_output_extension(fmt_entry)
     if ext is not None and not Path(path).suffix:
         path = f"{path}{ext}"
-    return _contain_output_path(graph, path, project_root=project_root), path
+    return _contain_output_path(graph, path, project_root=root), path
 
 
 def write_data_output(
@@ -1862,7 +1787,11 @@ def write_data_output(
     config = validate_data_output_config(output_node.data.config)
     from haute._polars_io_registry import format_for_config, format_group
 
-    out, path = resolve_data_output_path(graph, config, project_root=project_root)
+    root = _infer_project_root(
+        project_root=project_root,
+        source_file=graph.source_file,
+    )
+    out, path = resolve_data_output_path(graph, config, project_root=root)
     is_file_target = format_group(format_for_config(config)) == "file"
     if is_file_target and out is not None and out.exists() and not overwrite:
         raise DataOutputDestinationExistsError(path)
@@ -1940,7 +1869,7 @@ def write_data_output(
                 ),
                 target_node_id=output_node_id,
                 required_columns_by_node=required_columns_by_node,
-                enforce_contracts=ENFORCE_CONTRACTS,
+                enforce_contracts=True,
                 preamble_ns_supplied=bool(preamble_ns),
                 streaming_chunk_size=streaming_chunk_size or DEFAULT_STREAMING_CHUNK_SIZE,
             )
@@ -1951,7 +1880,7 @@ def write_data_output(
                 preamble_ns=preamble_ns or None,
                 source=output_scenario,
                 checkpoint_dir=checkpoint_path,
-                enforce_contracts=ENFORCE_CONTRACTS,
+                enforce_contracts=True,
                 required_columns_by_node=required_columns_by_node,
                 execution_context=execution_context,
                 dataframe_cache_request=dataframe_cache_request,
@@ -1976,11 +1905,11 @@ def write_data_output(
             nonlocal data_output_rows
             from haute._polars_io_registry import write_polars_output
 
-            if staging_out is not None and out is not None and project_root is not None:
+            if staging_out is not None and out is not None:
                 _validate_output_publish_paths(
                     out,
                     staging_out,
-                    project_root=project_root,
+                    project_root=root,
                 )
             data_output_rows = write_polars_output(
                 frame,
@@ -2024,24 +1953,28 @@ def write_data_output(
                 ).select(pl.len())
                 row_count = streaming_collect(
                     count_lf,
-                    profile=execution_context.profile,
+                    execution_context=execution_context,
                 ).item()
         execution_context.checkpoint(label="after_output_row_count", node_id=output_node_id)
         execution_context.checkpoint(label="before_output_publish", node_id=output_node_id)
         if staging_out is not None:
             if out is None:  # pragma: no mutate - staging implies a file target
                 raise RuntimeError("Data output staging resolved no final target")
-            if project_root is not None:
-                _validate_output_publish_paths(
-                    out,
-                    staging_out,
-                    project_root=project_root,
-                )
+            _validate_output_publish_paths(
+                out,
+                staging_out,
+                project_root=root,
+            )
             _sync_output_artifact(staging_out)
             if overwrite:
                 os.replace(staging_out, out)
             else:
-                _publish_output_create_only(staging_out, out, path)
+                _publish_output_create_only(
+                    staging_out,
+                    out,
+                    path,
+                    project_root=root,
+                )
             try:
                 _sync_output_directory(out.parent)
             except OSError as exc:
@@ -2070,6 +2003,6 @@ def write_data_output(
         if staging_out is not None:
             _cleanup_output_staging_path(
                 staging_out,
-                project_root=project_root,
+                project_root=root,
             )
         shutil.rmtree(tmp_dir, ignore_errors=True)

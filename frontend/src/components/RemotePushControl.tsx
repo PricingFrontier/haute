@@ -277,17 +277,11 @@ export default function RemotePushControl({
 /** The working branch's divergence from the selected remote — ahead (local-only)
  *  and behind (remote-only), read from local refs only (no fetch). */
 function AheadBehind({ remote }: { remote: GitRemote }) {
-  if (remote.ahead === null || remote.behind === null) {
-    // F2 honesty: distinguish "never pushed here" (—) from "couldn't read the
-    // remote" (?) so the user never mistakes "can't tell" for "in sync".
-    const unknown = remote.working?.status === "unknown"
+  const working = remote.working
+  if (working === null || working.status === "untracked") {
     return (
       <Tooltip
-        label={
-          unknown
-            ? `Can't tell — couldn't read ${remote.name}`
-            : "Not pushed to this remote yet — divergence is unknown until you push"
-        }
+        label="Not pushed to this remote yet — divergence is unknown until you push"
         side="bottom"
       >
         <span
@@ -295,12 +289,25 @@ function AheadBehind({ remote }: { remote: GitRemote }) {
           className="text-[11px] font-mono shrink-0"
           style={{ color: "var(--text-muted)" }}
         >
-          {unknown ? "?" : "—"}
+          —
         </span>
       </Tooltip>
     )
   }
-  if (remote.ahead === 0 && remote.behind === 0) {
+  if (working.status === "unknown") {
+    return (
+      <Tooltip label={`Can't tell — couldn't read ${remote.name}`} side="bottom">
+        <span
+          data-testid="git-push-aheadbehind"
+          className="text-[11px] font-mono shrink-0"
+          style={{ color: "var(--text-muted)" }}
+        >
+          ?
+        </span>
+      </Tooltip>
+    )
+  }
+  if (working.status === "synced") {
     return (
       <Tooltip label={`In sync with ${remote.name}`} side="bottom">
         <span
@@ -314,7 +321,7 @@ function AheadBehind({ remote }: { remote: GitRemote }) {
     )
   }
   return (
-    <Tooltip label={`${remote.ahead} ahead, ${remote.behind} behind ${remote.name}`} side="bottom">
+    <Tooltip label={`${working.ahead} ahead, ${working.behind} behind ${remote.name}`} side="bottom">
       <span
         data-testid="git-push-aheadbehind"
         className="inline-flex items-center gap-1.5 text-[10px] font-mono shrink-0"
@@ -322,11 +329,11 @@ function AheadBehind({ remote }: { remote: GitRemote }) {
       >
         <span className="inline-flex items-center gap-0.5">
           <ArrowUp size={10} />
-          {remote.ahead}
+          {working.ahead}
         </span>
         <span className="inline-flex items-center gap-0.5">
           <ArrowDown size={10} />
-          {remote.behind}
+          {working.behind}
         </span>
       </span>
     </Tooltip>

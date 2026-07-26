@@ -6,7 +6,7 @@ contract for items #18-#22 from ``docs/CODEBASE_REVIEW.md`` / ``CODEBASE_REVIEW_
 Covered items:
 
     #18 — Silent config-path recovery on Windows
-          ``src/haute/_parser_helpers.py:985-999``
+          ``src/haute/_config_builder.py``
 
     #19 — Instance mapping overrides stale explicit entries
           ``src/haute/codegen.py:884-887`` + ``src/haute/_types.py:597-642``
@@ -35,8 +35,8 @@ import polars as pl
 import pytest
 
 from haute._codegen_builders import _gen_transform
+from haute._config_builder import _resolve_node_config
 from haute._graph_utils import build_instance_mapping
-from haute._parser_helpers import _resolve_node_config
 from haute._types import NodeType
 from haute.codegen import _instance_to_code, graph_to_code_multi
 from haute.errors import ConfigError, HauteError, ParseError
@@ -63,7 +63,7 @@ pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
 # Item #18 — Silent config-path recovery on Windows
 # ===========================================================================
 #
-# Current behaviour (``_parser_helpers.py:985-999``): when ``load_node_config``
+# Current behaviour: when ``load_node_config``
 # fails with ``FileNotFoundError`` / ``json.JSONDecodeError`` / ``OSError`` /
 # ``ValueError``, the code logs a warning and silently falls back to scanning
 # every config folder for a file named ``{func_name}.json``.  If that scan
@@ -713,17 +713,19 @@ class TestItem21ExtendPathNoStaleData:
         fp = graph_fingerprint(graph, "None:live")
         stale_src = pl.DataFrame({"x": [999, 999, 999]})
         stale_mid = pl.DataFrame({"x": [999, 999, 999], "y": [0, 0, 0]})
-        _preview_cache.store(
+        _preview_cache.put(
             fp,
-            eager_outputs={"src": stale_src, "mid": stale_mid},
-            order=["src", "mid"],
-            errors={},
-            timings={"src": 1.0, "mid": 1.0},
-            memory_bytes={"src": 1, "mid": 1},
-            error_lines={},
-            available_columns={
-                "src": [("x", "Int64")],
-                "mid": [("x", "Int64"), ("y", "Int64")],
+            {
+                "eager_outputs": {"src": stale_src, "mid": stale_mid},
+                "order": ["src", "mid"],
+                "errors": {},
+                "timings": {"src": 1.0, "mid": 1.0},
+                "memory_bytes": {"src": 1, "mid": 1},
+                "error_lines": {},
+                "available_columns": {
+                    "src": [("x", "Int64")],
+                    "mid": [("x", "Int64"), ("y", "Int64")],
+                },
             },
         )
 

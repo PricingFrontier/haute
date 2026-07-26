@@ -1,23 +1,16 @@
-"""V2 schema recognition/validation + per-port shred (MULTI_FRAME_PLAN commit 3).
-
-Note (AS-BUILT 2026-06-24): despite the filename, there is no longer a
-``legacy_to_v2`` / ``v2_to_legacy`` migration codec — it was deleted in the
-v1-removal pivot. Only ``is_v2_shape`` (shape recognition) survives; its
-absence is positively tested elsewhere (the import of the deleted symbols
-raises). A v1/legacy config is no longer migrated in-schema — it opens as an
-empty v2 surface to be re-inferred.
+"""API-input schema recognition, validation, and per-port shredding.
 
 Layered:
 
-1. ``is_v2_shape`` / ``validate_v2_schema`` / path helpers — pure
-   functions, exhaustive edge cases.
+1. ``validate_v2_schema`` / path helpers — pure functions, exhaustive
+   edge cases.
 2. ``shred_to_buffers`` — algorithm correctness on rating-shaped
    nested-array data (including ancestor-column distribution).
 3. ``build_per_port_cache`` + ``load_per_port_cache`` +
    ``is_per_port_cache_valid`` — disk round-trip, fingerprint
    invalidation on schema change.
-4. Route dispatch via the FastAPI test client — v2 build/status, and the
-   422 returned when no v2 schema source is present (no v1 fallthrough).
+4. Route dispatch via the FastAPI test client — build/status and the
+   422 returned when no schema source is present.
 """
 
 from __future__ import annotations
@@ -33,7 +26,6 @@ import pytest
 
 from haute._api_input_schema import (
     ApiInputSchemaError,
-    is_v2_shape,
     parse_column_path,
     parse_table_path,
     validate_v2_schema,
@@ -50,7 +42,6 @@ from haute._json_shred import (
 
 
 def test_parse_table_path_root() -> None:
-    assert parse_table_path("$") == ()
     assert parse_table_path("$[:]") == ()
 
 
@@ -94,37 +85,6 @@ def test_parse_column_path_rejects_unrelated() -> None:
         parse_column_path("$[:].vehicles[:].id", "$[:].drivers[:]")
 
 
-def test_parse_table_path_accepts_bracket_name() -> None:
-    # Grammar unification: identifier bracket-names normalise to the bare name
-    # (matches OUTPUT). Equivalent to the dotted spelling.
-    assert parse_table_path("$[:]['drivers'][:]") == (("drivers", True),)
-    assert parse_table_path('$[:]["drivers"][:]') == parse_table_path("$[:].drivers[:]")
-
-
-def test_validate_accepts_bracket_spelled_paths() -> None:
-    # A whole config spelled with bracket-names validates — INPUT now shares
-    # OUTPUT's acceptance grammar, so brackets are no longer a save-time 422.
-    cfg = {
-        "path": "data.json",
-        "tables": [
-            {
-                "path": "$[:]['drivers'][:]",
-                "label": "drivers",
-                "emit": True,
-                "columns": [
-                    {
-                        "name": "id",
-                        "path": "$[:]['drivers'][:]['id']",
-                        "type": "int",
-                        "selected": True,
-                    },
-                ],
-            },
-        ],
-    }
-    validate_v2_schema(cfg)  # must not raise
-
-
 def test_validate_rejects_non_identifier_dot_key() -> None:
     # Charset tightening: a non-identifier dot key (digit-leading) is rejected,
     # where the old loose INPUT parser accepted any non-`[`/`]` key.
@@ -145,25 +105,7 @@ def test_validate_rejects_non_identifier_dot_key() -> None:
         validate_v2_schema(cfg)
 
 
-# ─── is_v2_shape / validate_v2_schema ─────────────────────────────
-
-
-def test_is_v2_shape_recognises_tables() -> None:
-    assert is_v2_shape({"tables": []}) is True
-    assert is_v2_shape({"tables": [{"label": "x", "path": "$[:]"}]}) is True
-
-
-def test_is_v2_shape_rejects_v1() -> None:
-    assert is_v2_shape({"flattenSchema": {"a": "int"}}) is False
-    assert is_v2_shape({}) is False
-
-
-def test_is_v2_shape_tolerates_corrupt_mix() -> None:
-    """Per D9: a config carrying BOTH `tables` AND `flattenSchema` is treated
-    as v2 — stray legacy keys are silently ignored. The migration codec is
-    gone; we use the v2 surface and drop unknown keys at save time.
-    """
-    assert is_v2_shape({"tables": [], "flattenSchema": {"a": "int"}}) is True
+# ─── validate_v2_schema ────────────────────────────────────────────
 
 
 def _minimal_v2() -> dict[str, Any]:
@@ -391,9 +333,6 @@ def test_validate_accepts_non_empty_levels() -> None:
     cfg["tables"][0]["columns"][0]["type"] = "str"
     cfg["tables"][0]["columns"][0]["levels"] = ["A", "B", None]
     validate_v2_schema(cfg)
-
-
-# (v1→v2 / v2→v1 migration tests deleted with the codec.)
 
 
 # ─── shred_to_buffers algorithm ───────────────────────────────────
@@ -824,9 +763,7 @@ def test_route_build_without_schema_source_returns_422(
     client,
     tmp_path: Path,
 ) -> None:
-    """Without a v2 schema source (no volatile_schema, no v2 disk config),
-    the build route returns 422 — there is no v1 fallthrough.
-    """
+    """Without a schema source, the build route returns 422."""
     data_path = tmp_path / "data.jsonl"
     data_path.write_text('{"a": 1, "b": "x"}\n{"a": 2, "b": "y"}\n')
 

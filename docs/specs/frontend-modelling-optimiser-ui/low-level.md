@@ -43,10 +43,13 @@
 ### Modelling
 
 1. `frontend/src/panels/ModellingConfig.tsx` reads graph/source/job state, passes its sections the
-   shared `onUpdate` contract, and gates training with `trainingObjectiveIssue`.
+   shared `onUpdate` contract, and gates training with `trainingObjectiveIssue`. CatBoost
+   hyperparameters use `config.params` and `config.variance_power`; GLM controls write their
+   algorithm fields directly on `config`, including `config.var_power`.
 2. `useStaleConfigEstimate` receives the RAM request endpoint with graph/source/structural version;
-   it owns abort/loading/error and associates an estimate with the current config rather than an
-   obsolete result.
+   it owns abort/loading/error and associates an estimate with the current config. Every cached
+   solve/train result carries the complete canonical identity
+   `{ configHash, source, structuralVersion }`; the hook has no partial-result shape.
 3. Training creates/updates result-store job state. Structured execution details are converted to
    progress/error state. The optional GLM dispersion action calls the dispersion API and writes a
    successful theta/variance-power estimate through the ordinary editable update callback.
@@ -183,3 +186,11 @@ This contract implements ROAD-UI-02 and ROAD-UI-03 in the
 - `src/panels/__tests__/OptimiserConfig.test.tsx` owns missing explicit source, healthy source,
   zero-level source, and mixed-output alert boundaries. Existing result-store tests continue to
   own rejection of a backend response whose echoed point index differs from the requested one.
+
+## Approved change contract — prerelease canonical frontier-range editor
+
+The target is defined in
+[the frontend optimiser high-level contract](high-level.md#approved-change-contract--prerelease-canonical-frontier-range-editor).
+`frontend/src/panels/OptimiserConfig.tsx` removes the scalar range reads and single-constraint
+mirror writes. `rangeForConstraint` resolves only the named object in `frontier_ranges`, and
+focused component tests inspect the complete update payload.

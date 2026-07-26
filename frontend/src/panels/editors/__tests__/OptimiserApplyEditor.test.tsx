@@ -627,38 +627,6 @@ describe("OptimiserApplyEditor", () => {
     expect(optionTexts.some((t) => t?.includes("opt-run"))).toBe(true)
   })
 
-  it("shows ratebook input selector for selected ratebook MLflow runs", () => {
-    mockMlflow.browseExpId = "exp-1"
-    mockMlflow.runs = [
-      {
-        run_id: "ratebook-run",
-        run_name: "ratebook opt",
-        metrics: { converged: 1, cd_iterations: 5, total_objective: 3.14 },
-        artifacts: [],
-      },
-    ]
-    const props = defaultProps()
-    props.config = { sourceType: "run", run_id: "ratebook-run" }
-    props.inputSources = [
-      {
-        sourceNodeId: "optimiser-input-node",
-        name: "optimiser_input",
-        sourceLabel: "optimiser_input",
-        edgeId: "e1",
-      },
-      {
-        sourceNodeId: "age-banding-node",
-        name: "age_veh_banding",
-        sourceLabel: "Age banding",
-        edgeId: "e2",
-      },
-    ]
-    render(<OptimiserApplyEditor {...props} />)
-
-    expect(screen.getByRole("option", { name: /ratebook opt \[ratebook\]/ })).toBeInTheDocument()
-    expect(screen.getByLabelText("Ratebook Input")).toBeInTheDocument()
-  })
-
   it("uses MLflow run mode params when deciding if selected runs are ratebook", () => {
     mockMlflow.browseExpId = "exp-1"
     mockMlflow.runs = [
@@ -690,38 +658,6 @@ describe("OptimiserApplyEditor", () => {
 
     expect(screen.getByRole("option", { name: /frontier ratebook opt \[ratebook\]/ })).toBeInTheDocument()
     expect(screen.getByLabelText("Ratebook Input")).toBeInTheDocument()
-  })
-
-  it("hides ratebook input selector for selected online MLflow runs", () => {
-    mockMlflow.browseExpId = "exp-1"
-    mockMlflow.runs = [
-      {
-        run_id: "online-run",
-        run_name: "online opt",
-        metrics: { converged: 1, total_objective: 3.14 },
-        artifacts: [],
-      },
-    ]
-    const props = defaultProps()
-    props.config = { sourceType: "run", run_id: "online-run", ratebook_input: "age-banding-node" }
-    props.inputSources = [
-      {
-        sourceNodeId: "optimiser-input-node",
-        name: "optimiser_input",
-        sourceLabel: "optimiser_input",
-        edgeId: "e1",
-      },
-      {
-        sourceNodeId: "age-banding-node",
-        name: "age_veh_banding",
-        sourceLabel: "Age banding",
-        edgeId: "e2",
-      },
-    ]
-    render(<OptimiserApplyEditor {...props} />)
-
-    expect(screen.getByRole("option", { name: /online opt \[online\]/ })).toBeInTheDocument()
-    expect(screen.queryByLabelText("Ratebook Input")).not.toBeInTheDocument()
   })
 
   it("clears stale ratebook input when the selected run is online", async () => {

@@ -43,7 +43,12 @@ function buildLargeGraphSource(nodeCount: number): string {
     "",
     '@pipeline.data_input(config="config/data_input/raw_rows.json")',
     "def raw_rows() -> pl.LazyFrame:",
-    '    return pl.scan_parquet(Path(__file__).parent.parent / "data" / "sample.parquet")',
+    "    from haute.graph_utils import resolve_data_input_from_config",
+    "    df = resolve_data_input_from_config(",
+    '        "config/data_input/raw_rows.json",',
+    "        base_dir=Path(__file__).parent,",
+    "    )",
+    "    return df",
     "",
   ]
 

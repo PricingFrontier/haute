@@ -245,7 +245,6 @@ def test_generated_join_training_projection_scale_contract(
 
     actual = streaming_collect(
         _semantic_summary(training_lf),
-        profile=context.profile,
         execution_context=context,
     )
     reference_lf = (
@@ -355,7 +354,6 @@ def test_ci_small_execution_profiles_smoke(
         )
         frame = streaming_collect(
             outputs["training_input"].select(_TRAINING_COLUMNS),
-            profile=context.profile,
             execution_context=context,
         )
         assert frame.height == 64

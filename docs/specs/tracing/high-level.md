@@ -89,8 +89,8 @@ Out of scope (owned elsewhere, linked where relevant):
   [mlflow-model-registry](../mlflow-model-registry/high-level.md) (model-score
   explanation) and [optimiser](../optimiser/high-level.md) (optimiser-apply
   explanation).
-- The generic bounded-LRU / fingerprint-cache primitives (`LRUCache`,
-  `FingerprintCache`, `graph_fingerprint()`) the trace cache is built on — owned
+- The generic bounded-LRU and fingerprinting primitives (`LRUCache`,
+  `graph_fingerprint()`) the trace cache is built on — owned
   by [caching](../caching/high-level.md).
 - The HTTP route (`POST /api/pipeline/trace`), its Pydantic request/response
   schemas, timeout handling, request supersession, and concurrency limiting —
@@ -279,7 +279,7 @@ Out of scope (owned elsewhere, linked where relevant):
   model-score explanation (`haute._model_explainability`, imported lazily inside
   `enrich_model_score`) and on [optimiser](../optimiser/high-level.md) for
   optimiser-apply explanation (`haute._optimiser_apply_explainability`).
-- Depends on [caching](../caching/high-level.md) for `FingerprintCache`,
+- Depends on [caching](../caching/high-level.md) for `LRUCache`,
   `graph_fingerprint()`, and `GraphFingerprintMemo`, which back the trace's own
   execution-result cache.
 - Depended on by [server-api](../server-api/high-level.md): `routes/pipeline.py`

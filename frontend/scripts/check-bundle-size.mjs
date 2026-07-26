@@ -53,7 +53,6 @@ export const LAZY_ONLY_MODULEPRELOAD_CHUNK_PREFIXES = [
   "ConstantEditor",
   "SubmodelEditor",
   "ColumnsTab",
-  "GroupedColumnsTab",
   "ModellingConfig",
   "OptimiserConfig",
   "_shared",

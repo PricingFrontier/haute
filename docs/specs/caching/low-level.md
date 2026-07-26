@@ -7,10 +7,9 @@
 | `src/haute/_hashing.py` | Deterministic xxh64 content hashing for bytes and files (`content_hash_bytes`, `content_hash`). The primitive every other digest in this component builds on. |
 | `src/haute/_cache.py` | Checked consumer/config-field contracts; `canonical_json()` — the shared canonical JSON encoder for graph/dataframe cache-key material; `graph_fingerprint()` / `preamble_execution_fingerprint()` — deterministic, versioned digests of a `PipelineGraph`'s execution-relevant inputs; `GraphFingerprintMemo` — request-scoped pin over the process-wide `StatGatedCache`-backed utility-file hash cache. |
 | `src/haute/_lru_cache.py` | `LRUCache[K, V]` — thread-safe bounded LRU cache with optional TTL, pinning, and optional byte-budget eviction. The shared eviction/pinning core for the other in-process caches below. |
-| `src/haute/_fingerprint_cache.py` | `FingerprintCache` — thin `LRUCache` subclass adding multi-slot dict-valued semantics (`store`, `try_get`, `update_slot`), used by the preview and trace caches (execution engine). |
 | `src/haute/_dataframe_execution_cache.py` | `DataFrameExecutionCache` — parquet-artifact-backed `LRUCache` subclass for materialized backend dataframes, plus `dataframe_execution_cache_key()` and `materialize_lazy_frame_with_cache()`, the entry points backend callers use. |
 | `src/haute/_stat_gated_cache.py` | `StatGatedCache[K, V]` — single-flight, `(mtime_ns, size)`-gated cache of loaded file artifacts; a generic primitive (not itself dataframe- or graph-specific) instantiated per use site — external-object/optimiser/mlflow artifact loading, and (`_cache.py`) the process-wide utility-file content-hash cache behind `_utility_file_hash`. |
-| `src/haute/routes/json_cache.py` | FastAPI router (`/api/json-cache`) for building, polling status of, inferring a schema for, deleting the on-disk JSON→parquet shredded cache, and serving a path-validating compatibility cancel no-op. Delegates schema, shredding, and storage lifecycle to the JSON-shredding component. |
+| `src/haute/routes/json_cache.py` | FastAPI router (`/api/json-cache`) for building, polling status of, inferring a schema for, and deleting the on-disk JSON→parquet shredded cache. Delegates schema, shredding, and storage lifecycle to the JSON-shredding component. |
 
 ## Key types and data structures
 
@@ -45,10 +44,9 @@
   TTL is insertion/update based rather than sliding: `get()` lazily removes an
   expired entry and returns `None`, even if it is pinned; `__contains__` is only a
   lightweight presence probe and neither checks TTL nor promotes the entry.
-- **`FingerprintCache`** (`_fingerprint_cache.py`) — `LRUCache[str, dict[str, Any]]`
-  where each value is a dict with a fixed set of declared `slots`. `_capacity_entry_count`
-  is overridden to count *all* entries (not just unpinned ones) — a fully-pinned
-  fingerprint cache rejects new fingerprints instead of growing unboundedly.
+- **Preview/trace caches** — module-level `LRUCache[str, dict[str, Any]]`
+  instances. Each consumer constructs and stores its complete canonical payload
+  dictionary atomically.
 - **`DataFrameExecutionCacheKey`** (`_dataframe_execution_cache.py`, frozen
   dataclass) — exact identity for one reusable materialized frame: `cache_key`
   (the payload digest string), plus the individual components that fed it
@@ -201,9 +199,9 @@
   truthiness) so an explicit empty `{}` from the editor is treated as "user
   supplied this" and validated (and rejected) rather than silently falling
   through to disk. Otherwise `_resolve_config_path` + `_read_v2_config` reads
-  the on-disk config, tolerating "file absent" and "valid JSON but not v2 shape"
-  as `None` (migration path) while raising `ApiInputSchemaError` for unreadable
-  or malformed-JSON files.
+  the on-disk config. Only an absent path or absent file produces `None`; every
+  present decoded document is passed unchanged to the canonical schema
+  validator. Unreadable or malformed-JSON files raise `ApiInputSchemaError`.
 - **`build_json_cache`**: resolves the data path (400/403 on path-resolution
   failure), resolves the schema source (422 on missing/invalid), checks data
   file existence (404), then calls `build_per_port_cache` under
@@ -225,11 +223,6 @@
 - **`_aggregate_v2_tables`** is the single aggregation core both the build
   response and the status response reduce their per-port `tables[]` list
   through, so the two response shapes cannot drift independently.
-- **Cancel** (`POST /cancel`) resolves and validates `body.path`, then always
-  returns `JsonCacheCancelResponse(cancelled=False, data_path=body.path)`. There
-  is no cancellation token or build-registry stop signal: the compatibility
-  endpoint and the editor action that calls it do not stop an in-progress build.
-
 ## Edge cases and invariants
 
 - **Canonical JSON set ordering is total, including `NaN`.** `_sort_key`
@@ -261,16 +254,8 @@
   cache, that stale existing entry is removed rather than left stranded.
 - **`LRUCache.pin`/`unpin` on an unknown key is a silent no-op** — deliberately,
   so a pin racing a rollback/eviction doesn't need coordination.
-- **`FingerprintCache.store` constructs every declared slot atomically** before
-  delegating to the shared LRU implementation, so supported cache entries are
-  always complete and `try_get` can return the fixed slot mapping directly.
-- **`FingerprintCache.update_slot` avoids remeasuring unchanged heavy slots**:
-  updating a slot outside `size_sensitive_slots` under a byte cap preserves the
-  stored byte estimate and just moves the entry to MRU, rather than re-running
-  `size_of` (which could drift under allocator-dependent measurement) on an
-  object that didn't change. A custom `size_sensitive_slots` declaration is
-  accepted only with an active `max_bytes`/`size_of` pair; that declaration is
-  the caller's explicit assertion of which slot changes can affect `size_of`.
+- **Preview/trace payloads are stored atomically** with `LRUCache.put`; callers
+  never update individual payload fields in place.
 - **`DataFrameExecutionCache.path_for_key` includes a UUID suffix** specifically
   so concurrent same-key store attempts (racing before the `RLock` was
   introduced, or across separate cache instances pointed at the same directory)
@@ -300,7 +285,7 @@
 | `RuntimeError` | `_utility_file_hash` (torn read after retry), `StatGatedCache.get_or_load` (torn gate after retry) | Caller of `graph_fingerprint`/`get_or_load` |
 | `RuntimeError` | `_dataframe_execution_cache.py` import with a malformed/non-positive `HAUTE_DATAFRAME_EXECUTION_CACHE_MAX_BYTES` | Importing caller; no default cache is constructed |
 | `FileNotFoundError`/`IsADirectoryError`/`PermissionError`/`OSError` | `_hashing.content_hash` (via `Path.open`), `_stat_gated_cache` stat calls | Propagate unchanged — not wrapped |
-| `ValueError` | `LRUCache.__init__` (bad `max_size`/`max_bytes`/`size_of` combination), `LRUCache.put` size-callback contract violation, `FingerprintCache.__init__`/`.store`/`.update_slot` (unknown slot names, empty `slots` tuple), `DataFrameExecutionCacheRequest.__post_init__`, `_normalise_required_columns`/`_normalise_extra_keys`/`_normalise_non_empty` | Caller constructing the cache/request |
+| `ValueError` | `LRUCache.__init__` (bad `max_size`/`max_bytes`/`size_of` combination), `LRUCache.put` size-callback contract violation, `DataFrameExecutionCacheRequest.__post_init__`, `_normalise_required_columns`/`_normalise_extra_keys`/`_normalise_non_empty` | Caller constructing the cache/request |
 | `TypeError` | `DataFrameExecutionCacheRequest.__post_init__` (wrong types for `cache`/`keys_by_node`/key values) | Caller constructing the request |
 | `DataFrameExecutionCacheError` (base) | `_dataframe_execution_cache.py` | Caller of `materialize_lazy_frame_with_cache`/`store_artifact` |
 | `CacheArtifactMissingError` (`DataFrameExecutionCacheError`, `FileNotFoundError`) | `_validate_entry` | `_evict_if_invalid` (caught, treated as eviction+miss) or re-raised to caller when it's the just-written artifact failing validation |
@@ -321,8 +306,8 @@ cross-cutting regression/property files:
   file-vs-bytes round trip equivalence, determinism across repeated calls,
   change detection (any byte flip changes the digest), streamed reads for large
   files, missing-file/directory-input/unicode-filename edge cases.
-- **`tests/test_lru_cache.py`** and **`tests/test_lru_cache_contracts.py`** —
-  unit and contract tests for `LRUCache`: init validation, get/put, entry-count
+- **`tests/test_lru_cache.py`** — unit and contract tests for `LRUCache`:
+  init validation, get/put, entry-count
   and byte-aware eviction, TTL (including edge cases and `__contains__`
   interaction), dunder methods, thread-safety under concurrent access, `None`
   values/keys, `clear()` reuse, large-cache behaviour, `evict_where` (atomicity
@@ -332,11 +317,6 @@ cross-cutting regression/property files:
   (`TestCategoryAFilesDropLRUCacheImport`, `TestCategoryBFilesKeepLRUCache`),
   and that `StatGatedCache`-style memoisation contracts hold for
   external-object/optimiser/mlflow artifact loading.
-- **`tests/test_fingerprint_cache.py`** — construction/validation, basic
-  set/get, miss behaviour, `invalidate()`, `update_slot` (including edge cases
-  and duplicate stores), thread safety, `repr`, pinning, the `fingerprint`
-  (MRU) property, and a `TestGraphFingerprint` class covering fingerprint
-  determinism from this cache's perspective.
 - **`tests/test_cache_fingerprint_injectivity.py`** and
   **`tests/test_graph_fingerprint_cached.py`** — the fingerprint-correctness
   core: `NaN` set-ordering determinism, separator injectivity (ids/keys
@@ -367,16 +347,10 @@ cross-cutting regression/property files:
   staying correct under concurrency, serialised same-key materialization,
   unrelated keys not blocking each other, and in-flight locks staying
   discoverable through `clear()`).
-- **`tests/test_cache_unification.py`** — regression guards from the
-  `LRUCache`/`FingerprintCache` consolidation: pre-refactor behavioural parity,
-  the `graph_fingerprint` helper's stability, the unified cache's `pinning`
-  kwarg and pin/unpin methods, `FingerprintCache`'s retirement-tolerant
-  contract (`TestFingerprintCacheRetired` — accepts either module removal or a
-  thin `LRUCache` alias), and thread safety of the unified cache.
-- **`tests/test_cache_perf_fixes.py`** and
-  **`tests/test_preview_cache_byte_awareness.py`** — preamble-cache correctness
-  and benchmarks (pre- and post-refactor), the xxh64 migration and cache-key
-  algorithm contract, and fingerprint-cache byte-limit/preview-cache-sizing
+- **`tests/test_cache_unification.py`** — regression guards for the shared
+  `LRUCache`: graph-fingerprint stability, pin/unpin behavior, and thread safety.
+- **`tests/test_preview_cache_byte_awareness.py`** — preview-cache sizing
+  and byte-limit contracts
   behaviour.
 - **`tests/test_preview_cache_hint.py`** and
   **`tests/test_caching_correctness.py`** — consumer-level correctness of
@@ -390,12 +364,11 @@ cross-cutting regression/property files:
 - **`tests/test_json_cache_routes.py`, `test_json_cache_coverage_uplift.py`,
   `test_json_cache_mut_witnesses.py`, `test_json_cache_corrupt_and_errors.py`** —
   the JSON cache route surface:
-  build/status/delete/infer happy paths, the cancel endpoint's validated
-  `cancelled=false` compatibility response, error precedence, path
+  build/status/delete/infer happy paths, error precedence, path
   traversal/null-byte rejection (400/403), build-progress accounting (balanced
   start/finish, overlapping builds), aggregation correctness (missing vs
   present parquet files, summed counts across tables), corrupt-vs-absent config
-  distinction (422 vs migration `None`) and route-level surfacing of shred/build
+  distinction (422 vs unconfigured `None`) and route-level surfacing of shred/build
   failures. `tests/test_json_cache_integrity.py` and the schema/shred assertions
   inside these cross-component files are indexed by
   [json-shredding](../json-shredding/low-level.md); they verify the storage and
@@ -595,7 +568,7 @@ contract through the following low-level boundaries.
   `_config_validation.VALID_KEYS`, with universal fields classified once.
   Execution fields are retained in node identity; excluded fields carry a
   non-empty rationale. Runtime treatment is conservative for an unrecognised
-  legacy key. Import-time validation and reflective tests both compare the
+  key. Import-time validation and reflective tests both compare the
   maintained registry to `VALID_KEYS` so a new official field cannot run or
   merge unclassified.
 - Node identity contains `id`, execution-relevant `label`, `nodeType`, and the

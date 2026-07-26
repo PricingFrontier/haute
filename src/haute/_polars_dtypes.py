@@ -36,8 +36,7 @@ from haute.errors import SchemaMismatchError
 _TimeUnit = Literal["ms", "us", "ns"]
 
 # Scalar string aliases, a superset of the data-source alias table in
-# ``_io.py`` (kept importable from here so the two cannot drift once the
-# legacy nodes converge on this codec).
+# ``_io.py``.
 POLARS_DTYPE_ALIASES: Mapping[str, pl.DataType | type[pl.DataType]] = {
     "bool": pl.Boolean,
     "boolean": pl.Boolean,

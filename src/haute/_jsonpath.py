@@ -6,24 +6,12 @@ shape**; this module pins it for **array-outer JSON** — the one transport buil
 in this PR — where the document root is an array of records reached only by the
 array selector ``[:]``.
 
-This module is deliberately the *one* place the grammar lives, expressed as a
-**small, named, doc-quotable** suite so PATH_GRAMMAR.md can mirror it
-verbatim. It carries three things, matching the spec's three lynchpin
-constructs:
-
-* the **acceptance** grammar — the regex pieces plus :func:`parse_path`, which
-  accepts identifier-valued dotted or bracket selectors and rejects everything
-  outside that representable set;
-* the **canonicality** predicate — :func:`is_canonical`, true iff a path uses
-  only the canonical spellings (§2.1);
-* the **canonical writer** — :func:`make_output_path`, emitting the one
-  canonical spelling.
+This module is deliberately the *one* place the canonical parser and writer
+live so INPUT and OUTPUT cannot drift.
 
 The **transport shape** is the seam for siblings (object-outer JSON, JSONL, …
 — §5): today its only value is array-outer, captured by the root constructs
-``_ROOT_ARRAY`` / ``_ROOT`` and the ``$[:]`` canonical prefix. A sibling slots
-in by varying those, not by rewriting the parser. This is left as a clear
-*seam*, not a plugin system — over-engineering it is out of scope.
+``_ROOT_ARRAY`` and the ``$[:]`` prefix.
 
 Consumers (``_api_input_schema.py`` INPUT, ``_output_assembler.py`` OUTPUT)
 inject their own side's error class so a rejected path raises the type that
@@ -54,20 +42,15 @@ class _PathError(Protocol):
 # The lynchpin — the grammar IS these named constructs (PATH_GRAMMAR.md)
 # ---------------------------------------------------------------------------
 #
-# Acceptance grammar: the identifier charset plus dotted-name and bracket-name
-# object selectors (the latter normalised to the bare name). Both spellings
-# carry identifier-valued names because the downstream dotted-leaf runtime
-# cannot represent arbitrary literal keys. The array selector ``[:]`` and the
-# root are matched literally below. Everything else is rejected.
+# Acceptance grammar: the identifier charset plus dotted-name object selectors.
+# The array selector ``[:]`` and root are matched literally below.
 
 _NAME = r"[A-Za-z_][A-Za-z0-9_]*"  # identifier charset — object key
-_DOT_NAME = re.compile(rf"\.({_NAME})")  # object comprehension (canonical)
-_BRACKET_NAME = re.compile(r"\[(['\"])([^'\"]+)\1\]")  # validated after matching
+_DOT_NAME = re.compile(rf"\.({_NAME})")  # object comprehension
 
 # Transport shape = array-outer JSON. The root container is ``$``; the sole data
 # entry into it is the array selector, so ``$[:]`` is the canonical root prefix.
 _ARRAY = "[:]"  # array comprehension — the only array selector
-_ROOT = "$"  # the root container (not itself a data path)
 _ROOT_ARRAY = "$[:]"  # the canonical (array-outer) data root
 
 
@@ -91,34 +74,28 @@ class _ParsedPath:
     """A parsed output path (the ``[:]``-only conventional-JSONPath subset).
 
     ``segments`` are the keys after the root, each flagged where a ``[:]``
-    selector iterates its value as an array. ``root_array`` records whether the
-    document root itself is an array (``$[:]`` — the json document shape).
+    selector iterates its value as an array.
     """
 
     raw: str
     segments: tuple[_Seg, ...]
-    root_array: bool
 
 
 def parse_path(raw: str, error: _PathError) -> _ParsedPath:
     """Parse a path, rejecting every selector outside the accepted subset (§2/§3).
 
-    Accepts the root ``$``/``$[:]``, dot name selectors (``.name``), bracketed
-    name selectors (``['name']`` / ``["name"]``), and the whole-array selector
-    ``[:]``. Rejects (PATH_GRAMMAR.md) index (``[0]``), range (``[0:5]``),
+    Accepts the root ``$[:]``, dot name selectors (``.name``), and the
+    whole-array selector ``[:]``. Rejects (PATH_GRAMMAR.md) index (``[0]``),
+    range (``[0:5]``),
     filter (``[?(...)]``), descendant (``..``), and non-array wildcard (``.*``,
     ``[*]``) selectors — the dropped ``.:`` dot form included. Raises the
     injected ``error`` (a ``HauteError`` subclass) on anything else, with the
     offending path under ``output_path``.
     """
-    if not raw.startswith(_ROOT):
-        raise error("output path must start with '$'", output_path=raw)
+    if not raw.startswith(_ROOT_ARRAY):
+        raise error("output path must start with '$[:]'", output_path=raw)
 
-    i = 1
-    root_array = False
-    if raw[i : i + len(_ARRAY)] == _ARRAY:
-        root_array = True
-        i += len(_ARRAY)
+    i = len(_ROOT_ARRAY)
 
     segments: list[_Seg] = []
     while i < len(raw):
@@ -128,26 +105,11 @@ def parse_path(raw: str, error: _PathError) -> _ParsedPath:
             if m is None:
                 raise error(
                     "unsupported output-path selector "
-                    "(only '.name', \"['name']\" and whole-array '[:]' are accepted)",
+                    "(only '.name' and whole-array '[:]' are accepted)",
                     output_path=raw,
                 )
             name = m.group(1)
             i = m.end()
-        elif ch == "[":
-            m = _BRACKET_NAME.match(raw, i)
-            if m is None:
-                raise error(
-                    "unsupported array selector "
-                    "(index/range/filter/wildcard are rejected; use '[:]' for the whole array)",
-                    output_path=raw,
-                )
-            name = m.group(2)
-            i = m.end()
-            if not is_identifier_name(name):
-                raise error(
-                    "bracketed object names must use the identifier form [A-Za-z_][A-Za-z0-9_]*",
-                    output_path=raw,
-                )
         else:
             raise error("malformed output path", output_path=raw)
 
@@ -161,7 +123,7 @@ def parse_path(raw: str, error: _PathError) -> _ParsedPath:
             "output path must name a leaf field, not the bare root array",
             output_path=raw,
         )
-    return _ParsedPath(raw, tuple(segments), root_array)
+    return _ParsedPath(raw, tuple(segments))
 
 
 def parse_data_path(
@@ -179,9 +141,9 @@ def parse_data_path(
     sourced (PATH_GRAMMAR.md):
 
     * **Mandatory array-outer root** — a data path enters the document only
-      through ``$[:]`` (``root_array`` true). A bare-``$`` data root
+      through ``$[:]``. A bare-``$`` data root
       (``$.key`` — object-outer, a *different transport*, §5) is rejected.
-    * **Root selectable** — with *allow_root*, the bare root ``$`` / ``$[:]``
+    * **Root selectable** — with *allow_root*, ``$[:]``
       is accepted as the root array itself (zero segments), the spelling an
       INPUT *table path* uses for the outermost level. :func:`parse_path`
       rejects a segment-less path (an OUTPUT path must name a leaf); INPUT
@@ -207,32 +169,25 @@ def parse_data_path(
         sentinel_seg = (_Seg(reserved_leaf, False),)
         core = raw[: -len(f".{reserved_leaf}")]
 
-    if core in (_ROOT, _ROOT_ARRAY):
+    if core == _ROOT_ARRAY:
         if sentinel_seg:
             # ``$[:].$value`` — the sentinel sits directly on the root array,
             # so it names a leaf (a column path) regardless of *allow_root*.
-            return _ParsedPath(raw, sentinel_seg, True)
+            return _ParsedPath(raw, sentinel_seg)
         if allow_root:
             # Bare root array — the INPUT root table level; no further segments.
-            return _ParsedPath(raw, (), True)
+            return _ParsedPath(raw, ())
         # A column path naming no leaf falls through to parse_path's rejection.
 
     parsed = parse_path(core, error)
-    if not parsed.root_array:
-        raise error(
-            "data path must enter the array-outer document via '$[:]' "
-            "(a bare-'$' object root is a different transport)",
-            output_path=raw,
-        )
-    return _ParsedPath(raw, (*parsed.segments, *sentinel_seg), True)
+    return _ParsedPath(raw, (*parsed.segments, *sentinel_seg))
 
 
 def make_output_path(segments: tuple[_Seg, ...] | list[_Seg]) -> str:  # pragma: no mutate
     """The canonical writer — emit the one canonical spelling (§2.1).
 
     Renders ``$[:]`` root + ``.name`` per segment + ``[:]`` after each array
-    segment. No bracket forms, no bare ``$`` data root: the output is canonical
-    by construction (``is_canonical(make_output_path(segs))`` is always true).
+    segment.
     """
     out = _ROOT_ARRAY
     for seg in segments:
@@ -240,23 +195,3 @@ def make_output_path(segments: tuple[_Seg, ...] | list[_Seg]) -> str:  # pragma:
         if seg.is_array:
             out += _ARRAY
     return out
-
-
-def is_canonical(path: str) -> bool:
-    """The canonicality predicate — true iff *path* uses only canonical spellings.
-
-    Canonical (§2.1): ``$[:]`` root, ``.name`` object hops, ``[:]`` array hops;
-    NO bracket forms, NO bare-``$`` data root. Equivalent to round-tripping
-    through the canonical writer: a valid path is canonical iff re-emitting its
-    parsed segments reproduces it verbatim, *and* it carries the canonical
-    array-outer root. An unparseable (rejected) path is not canonical.
-    """
-
-    def _reject(message: str, **context: Any) -> Exception:
-        return ValueError(message)
-
-    try:
-        parsed = parse_path(path, _reject)
-    except ValueError:
-        return False
-    return parsed.root_array and make_output_path(parsed.segments) == path

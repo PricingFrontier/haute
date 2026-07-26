@@ -49,7 +49,13 @@ class _StubAlgo:
     def feature_importance(self, model: Any) -> list[dict[str, Any]]:
         return [{"feature": "x1", "importance": 1.0}]
 
-    def predict(self, model: Any, df: pl.DataFrame, features: list[str]) -> np.ndarray:
+    def predict(
+        self,
+        model: Any,
+        df: pl.DataFrame,
+        features: list[str],
+        offset: str | None = None,
+    ) -> np.ndarray:
         assert len(df) == len(self._predictions)
         return self._predictions
 

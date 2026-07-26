@@ -58,6 +58,7 @@ def _make_completed_job(tmp_path: Path) -> dict:
         "config": {},
         "node_label": "test_opt",
         "created_at": time.time(),
+        "completed_at": time.time(),
     }
 
 

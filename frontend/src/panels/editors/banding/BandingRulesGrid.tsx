@@ -179,7 +179,7 @@ const MATCH_CELL_CLASS = `${CELL_CLASS} text-right text-[10px]`
 const BOXED_INPUT_CLASS = "w-full px-1 py-0.5 rounded text-[11px] font-mono focus:outline-none"
 const BOXED_LABEL_INPUT_CLASS = `${BOXED_INPUT_CLASS} font-semibold`
 const BOXED_SELECT_CLASS = "w-full px-1 py-0.5 rounded text-[11px] font-mono appearance-none"
-const BOXED_CELL_STYLE = { background: 'var(--bg-surface)', border: '1px solid var(--border)', color: 'var(--text-primary)' }
+const BOXED_CELL_STYLE = { background: 'var(--bg-panel)', border: '1px solid var(--border)', color: 'var(--text-primary)' }
 
 export function BandingRulesGrid({
   factor,
@@ -339,7 +339,7 @@ export function BandingRulesGrid({
                       aria-label={`Rule ${i + 1} label`}
                       onKeyDown={(e) => handleKeyDown(e, i)}
                       className={BOXED_LABEL_INPUT_CLASS}
-                      style={{ background: 'var(--bg-surface)', border: '1px solid var(--border)', color: accentColor }} placeholder="" />
+                      style={{ background: 'var(--bg-panel)', border: '1px solid var(--border)', color: accentColor }} placeholder="" />
                   </td>
                   {showMatchCounts && (
                     <td className={MATCH_CELL_CLASS}>
@@ -389,7 +389,7 @@ export function BandingRulesGrid({
                       aria-label={`Rule ${i + 1} group name`}
                       onKeyDown={(e) => handleKeyDown(e, i)}
                       className={BOXED_LABEL_INPUT_CLASS}
-                      style={{ background: 'var(--bg-surface)', border: '1px solid var(--border)', color: accentColor }} placeholder="" />
+                      style={{ background: 'var(--bg-panel)', border: '1px solid var(--border)', color: accentColor }} placeholder="" />
                   </td>
                   {showMatchCounts && (
                     <td className={MATCH_CELL_CLASS}>

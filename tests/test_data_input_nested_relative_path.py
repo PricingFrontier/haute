@@ -51,7 +51,7 @@ def nested_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.chdir(tmp_path)  # cwd == project root, NOT the pipeline dir
     original = _get_project_root()
     set_project_root(tmp_path)
-    _preview_cache.invalidate()
+    _preview_cache.clear()
 
     # haute.toml declares the nested pipeline — the anchor both the cache route
     # and (post-fix) the executor resolve a relative data path against.
@@ -69,7 +69,7 @@ def nested_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     yield data_path
 
     set_project_root(original)
-    _preview_cache.invalidate()
+    _preview_cache.clear()
 
 
 def _data_input_graph(path: str) -> PipelineGraph:
@@ -122,7 +122,7 @@ def test_data_input_out_of_cwd_absolute_is_rejected(
     monkeypatch.chdir(tmp_path)  # cwd == project root
     original = _get_project_root()
     set_project_root(tmp_path)
-    _preview_cache.invalidate()
+    _preview_cache.clear()
     try:
         (tmp_path / "haute.toml").write_text('[project]\npipeline = "rating/main.py"\n')
         (tmp_path / "rating").mkdir(parents=True, exist_ok=True)
@@ -137,7 +137,7 @@ def test_data_input_out_of_cwd_absolute_is_rejected(
             execute_graph(graph, target_node_id="src")
     finally:
         set_project_root(original)
-        _preview_cache.invalidate()
+        _preview_cache.clear()
 
 
 @pytest.mark.parametrize("escape", ["../outside.csv", r"nested\..\..\outside.csv"])

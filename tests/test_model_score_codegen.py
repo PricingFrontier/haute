@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from haute._parser_helpers import _build_node_config
+from haute._config_builder import _build_node_config
 from haute.codegen import graph_to_code
 from tests.conftest import make_edge, make_file_input_config, make_graph
 
@@ -194,9 +194,7 @@ class TestModelScoreCodegen:
                                 "artifact_path": "model.cbm",
                                 "task": "regression",
                                 "output_column": "prediction",
-                                "code": (
-                                    'result = result.with_columns(doubled=pl.col("prediction") * 2)'
-                                ),
+                                "code": ('df = df.with_columns(doubled=pl.col("prediction") * 2)'),
                             },
                         },
                     },

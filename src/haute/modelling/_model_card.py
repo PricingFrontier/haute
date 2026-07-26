@@ -86,7 +86,7 @@ def generate_model_card(
     split_desc = meta.split_config.get("strategy", "random") if meta.split_config else "random"
     summary_rows = [
         ["Train rows", f"{meta.train_rows:,}"],
-        ["Validation rows", f"{meta.test_rows:,}"],
+        ["Validation rows", f"{meta.validation_rows:,}"],
     ]
     if meta.holdout_rows:
         summary_rows.append(["Holdout rows", f"{meta.holdout_rows:,}"])

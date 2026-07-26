@@ -81,6 +81,8 @@ Out of scope (owned elsewhere):
 - **Bounded retention.** Job metadata is evicted lazily on store access once its TTL
   expires (24 hours by default). A running job uses its latest locked update time so active
   progress keeps it alive; terminal jobs use their original `created_at`, not `ended_at`.
+  Every stored job has the `created_at` stamped by `create_job`; the store has no alternate
+  missing-timestamp record shape.
   Heavy result payloads attached to a *completed* job (solver objects, full
   solve-result dataframes, quote grids) are stripped much sooner (15 minutes by
   default) so status polling keeps working without holding onto large in-memory
@@ -142,8 +144,8 @@ Out of scope (owned elsewhere):
   ordinary late exception.
 - **Fail loudly on store misuse.** Constructing a `JobStore` with a negative TTL,
   updating an unknown job ID, or scheduling heavy-object cleanup without a concrete
-  expiry all raise immediately rather than degrading gracefully — consistent with the
-  project's preference for loud failures over silent, hard-to-notice fallbacks.
+  expiry all raise immediately. Canonical job timestamps and artifact handles are consumed
+  directly rather than repaired or skipped as older record shapes.
 
 ## Interactions
 
@@ -307,15 +309,21 @@ worker transport.
 
 Execution-owned artifacts that can survive a process crash live only in explicitly named Haute
 artifact roots. Every reapable child directory contains a versioned ownership marker written at
-creation. Server startup may remove a child only when the root is explicitly registered, the child
-is a direct non-symlink descendant, its marker is valid for the expected owner, and its marker age
-exceeds the configured stale interval. Unmarked directories, malformed markers, symlinks,
-unexpected owners, and unrelated operating-system temporary data are preserved.
+creation. The restart reaper may remove a child only when the root is explicitly registered, the
+child is a direct non-link, non-reparse descendant, its marker is valid for the expected owner,
+and its marker age exceeds the configured stale interval. Unmarked directories, malformed markers,
+symlinks, Windows reparse points (including junctions), unexpected owners, and unrelated
+operating-system temporary data are preserved. On Windows, proving that an ordinary listed child
+is direct must not require opening that child to resolve its final path: access controls and
+short-lived file locks may deny that handle even though the parent entry is safe to inspect.
+Expected filesystem access failures remain local to housekeeping and produce concise structured
+warnings without startup tracebacks.
 
 Optimiser apply-result and ratebook-factor directories adopt this marker contract and are reaped
-from their existing dedicated roots during server lifespan startup. Ordinary job eviction and
-artifact-handle cleanup remain the primary live-process lifecycle; startup reaping is only the
-crash/restart backstop.
+from versioned marker-aware roots by a tracked background task scheduled during server lifespan
+startup. Readiness never waits for filesystem traversal. Ordinary job eviction and artifact-handle
+cleanup remain the primary live-process lifecycle; background reaping is only the crash/restart
+backstop.
 
 Completed heavy runtime objects remain bounded by the existing closed key set and short TTL.
 Their expiry timestamp and clearing timestamp remain observable in job metadata, while artifact
@@ -324,7 +332,6 @@ status reads may extend heavy-object retention only up to the existing metadata 
 
 An isolated-job supervisor must transition an unexpected parent-side exception to `error` with a
 bounded generic public message before reporting the original exception to the thread exception
-hook. The terminal record retains both the compatibility `worker_error_class` field and the
-protocol-aware `supervisor_error_class` field. No supported supervisor failure leaves a job
+hook. The terminal record retains the `supervisor_error_class` field. No supported supervisor failure leaves a job
 permanently `running`. Terminal-transition fault tests cover status-store failure, supersession
 races, and cleanup scheduling without replacing the original worker error.

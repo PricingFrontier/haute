@@ -6,7 +6,7 @@
  *    `<Handle>` per emit:true table; each Handle's `id` is the table's
  *    label.
  *  - apiInput with one or more eligible frames renders one labelled
- *    Handle per frame; only zero frames retains a non-connectable default.
+ *    Handle per frame; zero frames renders no source handle.
  *  - Handles are visually labelled (a small dot + the label string)
  *    so the user can drag-from-handle to identify the port.
  *
@@ -127,27 +127,25 @@ describe("apiInput multi-port Handles (commit 6)", () => {
     expect(sourceHandles[0]).toHaveAttribute("data-handleid", "policies")
   })
 
-  it("renders a single default source Handle when no tables are emit:true", () => {
+  it("renders no source Handle when no tables are emit:true", () => {
     const { container } = renderNode({
       path: "data/quotes.json",
       tables: [
         { path: "$[:]", label: "policies", emit: false, columns: [] },
       ],
     })
-    // Nothing to emit, but the node still needs a Handle in principle
-    // (e.g. a future port could be added). Legacy single Handle is OK.
     const sourceHandles = container.querySelectorAll(
       '.react-flow__handle[data-handlepos="right"]',
     )
-    expect(sourceHandles).toHaveLength(1)
+    expect(sourceHandles).toHaveLength(0)
   })
 
-  it("renders a single default source Handle when config has no tables key (legacy/empty)", () => {
+  it("renders no source Handle for an empty config", () => {
     const { container } = renderNode({ path: "data/quotes.json" })
     const sourceHandles = container.querySelectorAll(
       '.react-flow__handle[data-handlepos="right"]',
     )
-    expect(sourceHandles).toHaveLength(1)
+    expect(sourceHandles).toHaveLength(0)
   })
 })
 
@@ -209,17 +207,12 @@ describe("apiInput handle identity across zoom levels", () => {
     expect(handleIdsAtZoom(config, 0.2)).toEqual(["policy_items"])
   })
 
-  it("falls back to one default handle and the zero-frame body when every multi-emit label is invalid", () => {
+  it("renders no handle and the zero-frame body when every multi-emit label is invalid", () => {
     const { container } = renderNode({
       tables: [eligibleTable(""), eligibleTable(" \t")],
     })
 
-    expect(sourceHandleIds(container)).toEqual([null])
-    const defaultHandle = container.querySelector<HTMLElement>(
-      '.react-flow__handle[data-handlepos="right"]',
-    )
-    expect(defaultHandle).not.toHaveClass("connectablestart")
-    expect(defaultHandle).not.toHaveClass("connectableend")
+    expect(sourceHandleIds(container)).toEqual([])
     const node = screen.getByTestId("node-quotes")
     expect(within(node).getByText("quotes")).toBeInTheDocument()
     expect(within(node).getByText("No emitted frames")).toBeInTheDocument()
@@ -284,10 +277,7 @@ describe("apiInput Handles never synthesize ids (W1.4)", () => {
     expect(sourceHandleIds(container)).toEqual(["Items"])
   })
 
-  it("all-blank labels fall back to the single default handle (no bindable fiction)", () => {
-    // Backend-invalid config (only reachable from legacy disk files —
-    // the editor refuses blank label commits). Nothing portlike is
-    // invented for it.
+  it("all-blank labels render no handle", () => {
     const { container } = renderNode({
       path: "data/quotes.json",
       tables: [
@@ -296,7 +286,7 @@ describe("apiInput Handles never synthesize ids (W1.4)", () => {
       ],
     })
     const ids = sourceHandleIds(container)
-    expect(ids).toEqual([null])
+    expect(ids).toEqual([])
     expect(ids.some((id) => id?.startsWith("port_") || id?.includes("__"))).toBe(false)
   })
 })

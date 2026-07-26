@@ -8,7 +8,6 @@ from unittest.mock import patch
 import polars as pl
 import pytest
 
-from haute import _polars_utils as polars_utils
 from haute._execution_context import (
     ExecutionCancelledError,
     ExecutionContext,
@@ -39,7 +38,7 @@ def test_streaming_collect_uses_polars_streaming_engine() -> None:
             captured["engine"] = engine
             return pl.DataFrame({"x": [1]})
 
-    result = streaming_collect(Lazy(), profile=ExecutionProfile.LAZY_SINK)  # type: ignore[arg-type]
+    result = streaming_collect(Lazy())  # type: ignore[arg-type]
 
     assert result["x"].to_list() == [1]
     assert captured == {"engine": "streaming"}
@@ -70,7 +69,7 @@ def test_streaming_collect_records_collect_metric_on_active_context_stage() -> N
     with context.stage("row_count", node_id="sink"):
         result = streaming_collect(
             pl.LazyFrame({"x": [1]}),
-            profile=ExecutionProfile.LAZY_SINK,
+            execution_context=context,
         )
 
     assert result["x"].to_list() == [1]
@@ -96,7 +95,6 @@ def test_streaming_collect_fault_point_runs_immediately_before_native_collect() 
 
     streaming_collect(
         Lazy(),  # type: ignore[arg-type]
-        profile=ExecutionProfile.LAZY_SINK,
         execution_context=context,
     )
 
@@ -120,73 +118,10 @@ def test_streaming_collect_fault_prevents_native_operation() -> None:
     with pytest.raises(RuntimeError, match="collect fault"):
         streaming_collect(
             Lazy(),  # type: ignore[arg-type]
-            profile=ExecutionProfile.LAZY_SINK,
             execution_context=context,
         )
 
     assert context.metrics_payload()["n_collects"] == 0
-
-
-def test_verified_streaming_compatibility_table_is_intentionally_empty() -> None:
-    """No Polars 1.39.3 signature is classified without reproducible evidence."""
-    assert pl.__version__ == "1.39.3"
-    assert polars_utils._POLARS_STREAMING_COMPATIBILITY_SIGNATURES == ()
-
-
-def test_streaming_classifier_requires_exact_version_type_and_full_message(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    message = "verified exact incompatibility"
-    row = (pl.__version__, pl.exceptions.ComputeError, r"verified exact incompatibility")
-    monkeypatch.setattr(
-        polars_utils,
-        "_POLARS_STREAMING_COMPATIBILITY_SIGNATURES",
-        (row,),
-    )
-
-    assert polars_utils._is_streaming_compatibility_error(pl.exceptions.ComputeError(message))
-    assert not polars_utils._is_streaming_compatibility_error(
-        pl.exceptions.ComputeError(f"prefix {message}")
-    )
-    assert not polars_utils._is_streaming_compatibility_error(
-        pl.exceptions.ComputeError(f"{message} suffix")
-    )
-    assert not polars_utils._is_streaming_compatibility_error(pl.exceptions.SchemaError(message))
-
-    monkeypatch.setattr(pl, "__version__", "1.39.4")
-    assert not polars_utils._is_streaming_compatibility_error(pl.exceptions.ComputeError(message))
-
-
-@pytest.mark.parametrize(
-    "message",
-    [
-        "downstream node failed",
-        "upstream source failed",
-        "stream_id was invalid",
-        "streaming collect failed",
-    ],
-)
-def test_streaming_collect_propagates_unverified_message_unchanged(message: str) -> None:
-    """Tempting tokens do not classify an unverified Polars error."""
-    original = pl.exceptions.ComputeError(message)
-    calls = 0
-
-    class Lazy:
-        def collect(self, *args, **kwargs) -> pl.DataFrame:
-            nonlocal calls
-            calls += 1
-            del args, kwargs
-            raise original
-
-    with pytest.raises(pl.exceptions.ComputeError) as exc_info:
-        streaming_collect(
-            Lazy(),  # type: ignore[arg-type]
-            profile=ExecutionProfile.PREVIEW_EAGER,
-            allow_broad=True,
-        )
-
-    assert exc_info.value is original
-    assert calls == 1
 
 
 def test_streaming_collect_preserves_non_streaming_data_errors() -> None:
@@ -198,7 +133,7 @@ def test_streaming_collect_preserves_non_streaming_data_errors() -> None:
             raise pl.exceptions.InvalidOperationError("conversion from str to f64 failed")
 
     with pytest.raises(pl.exceptions.InvalidOperationError, match="conversion"):
-        streaming_collect(Lazy(), profile=ExecutionProfile.DEPLOY_BATCH)  # type: ignore[arg-type]
+        streaming_collect(Lazy())  # type: ignore[arg-type]
 
 
 def test_streaming_collect_preserves_generic_unsupported_data_errors() -> None:
@@ -210,7 +145,7 @@ def test_streaming_collect_preserves_generic_unsupported_data_errors() -> None:
             raise pl.exceptions.InvalidOperationError("operation not supported for dtype date")
 
     with pytest.raises(pl.exceptions.InvalidOperationError, match="not supported"):
-        streaming_collect(Lazy(), profile=ExecutionProfile.DEPLOY_BATCH)  # type: ignore[arg-type]
+        streaming_collect(Lazy())  # type: ignore[arg-type]
 
 
 def test_streaming_collect_preserves_execution_cancellation() -> None:
@@ -223,7 +158,7 @@ def test_streaming_collect_preserves_execution_cancellation() -> None:
             raise cancellation
 
     with pytest.raises(ExecutionCancelledError) as exc_info:
-        streaming_collect(Lazy(), profile=ExecutionProfile.LAZY_SINK)  # type: ignore[arg-type]
+        streaming_collect(Lazy())  # type: ignore[arg-type]
 
     assert exc_info.value is cancellation
 
@@ -245,40 +180,9 @@ def test_streaming_collect_preserves_execution_memory_limit() -> None:
             raise memory_error
 
     with pytest.raises(ExecutionMemoryLimitExceededError) as exc_info:
-        streaming_collect(Lazy(), profile=ExecutionProfile.LAZY_SINK)  # type: ignore[arg-type]
+        streaming_collect(Lazy())  # type: ignore[arg-type]
 
     assert exc_info.value is memory_error
-
-
-def test_streaming_collect_rejects_broad_fallback_for_bounded_profile() -> None:
-    """Only explicitly broad profiles can opt into non-streaming collect."""
-    calls = 0
-
-    class Lazy:
-        def collect(self, *args, **kwargs) -> pl.DataFrame:
-            nonlocal calls
-            calls += 1
-            del args
-            if kwargs == {"engine": "streaming"}:
-                raise pl.exceptions.ComputeError("streaming collect failed")
-            return pl.DataFrame({"x": [2]})
-
-    with pytest.raises(ValueError, match="allow_broad=True"):
-        streaming_collect(
-            Lazy(),  # type: ignore[arg-type]
-            profile=ExecutionProfile.DEPLOY_BATCH,
-            allow_broad=True,
-        )
-
-    assert calls == 0
-
-
-def test_streaming_collect_rejects_unknown_profile() -> None:
-    """Profile strings are validated so typos do not become silent labels."""
-    lf = pl.LazyFrame({"x": [1]})
-
-    with pytest.raises(ValueError):
-        streaming_collect(lf, profile="typo")
 
 
 def test_bounded_collect_batches_uses_polars_streaming_batches() -> None:
@@ -304,7 +208,6 @@ def test_bounded_collect_batches_uses_polars_streaming_batches() -> None:
     batches = list(
         bounded_collect_batches(
             Lazy(),  # type: ignore[arg-type]
-            profile=ExecutionProfile.CHUNKED_MAP_REDUCE,
             chunk_size=7,
             maintain_order=True,
         )
@@ -332,7 +235,6 @@ def test_bounded_collect_batches_records_only_real_batch_stages() -> None:
     batches = list(
         bounded_collect_batches(
             Lazy(),  # type: ignore[arg-type]
-            profile=ExecutionProfile.LAZY_SINK,
             chunk_size=7,
             execution_context=context,
             stage_name="batch_collect",
@@ -366,35 +268,11 @@ def test_bounded_collect_batches_preserves_unverified_iteration_failure() -> Non
         list(
             bounded_collect_batches(
                 Lazy(),  # type: ignore[arg-type]
-                profile=ExecutionProfile.AUTO_RANGE,
                 chunk_size=5,
             )
         )
 
     assert exc_info.value is original
-
-
-def test_streaming_collect_does_not_broaden_for_unverified_error() -> None:
-    """Broad permission is inert unless the exact error tuple is verified."""
-    calls: list[dict[str, object]] = []
-    original = pl.exceptions.ComputeError("streaming collect failed")
-
-    class Lazy:
-        def collect(self, *args, **kwargs) -> pl.DataFrame:
-            calls.append(dict(kwargs))
-            if kwargs == {"engine": "streaming"}:
-                raise original
-            return pl.DataFrame({"x": [2]})
-
-    with pytest.raises(pl.exceptions.ComputeError) as exc_info:
-        streaming_collect(
-            Lazy(),  # type: ignore[arg-type]
-            profile=ExecutionProfile.PREVIEW_EAGER,
-            allow_broad=True,
-        )
-
-    assert exc_info.value is original
-    assert calls == [{"engine": "streaming"}]
 
 
 def test_streaming_collect_with_active_context_preserves_unverified_error() -> None:
@@ -417,7 +295,7 @@ def test_streaming_collect_with_active_context_preserves_unverified_error() -> N
     ):
         streaming_collect(
             Lazy(),  # type: ignore[arg-type]
-            profile=ExecutionProfile.PREVIEW_EAGER,
+            execution_context=context,
         )
 
     assert exc_info.value is original
@@ -466,7 +344,7 @@ def test_bounded_sink_emits_fault_points_around_native_sink(tmp_path: Path) -> N
 
 
 # ---------------------------------------------------------------------------
-# Fallback tests (parquet & csv, parametrized)
+# Native sink error propagation (parquet & csv, parametrized)
 # ---------------------------------------------------------------------------
 
 _POLARS_FALLBACK_ERRORS = [
@@ -481,7 +359,7 @@ def test_bounded_sink_raises_typed_error_without_collect_fallback(
     tmp_path: Path,
     error_cls: type[BaseException],
 ) -> None:
-    """Bounded sinks fail loudly instead of materialising the full LazyFrame."""
+    """A native sink error propagates without materialising the LazyFrame."""
     lf = pl.LazyFrame({"a": [1, 2, 3]})
     out = tmp_path / "test.parquet"
 
@@ -560,7 +438,7 @@ def test_bounded_sink_preserves_unverified_streaming_compute_error(
 
 
 def test_bounded_sink_real_error_propagates(tmp_path: Path):
-    """PermissionError (non-Polars) must NOT be caught by the fallback."""
+    """PermissionError from the native sink propagates unchanged."""
     lf = pl.LazyFrame({"a": [1]})
     out = tmp_path / "test.parquet"
 

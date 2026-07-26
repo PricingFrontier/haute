@@ -924,13 +924,7 @@ def compute_pdp(
                     modified = sample_df.with_columns(
                         pl.lit(float(val)).cast(sample_df[feat].dtype).alias(feat)
                     )
-                # *algo* is duck-typed here; only thread the offset kwarg
-                # when one is set so offset-less callers keep working with
-                # minimal predict(model, df, features) implementations.
-                if offset:
-                    preds = algo.predict(model, modified, features, offset=offset)
-                else:
-                    preds = algo.predict(model, modified, features)
+                preds = algo.predict(model, modified, features, offset=offset)
                 avg_pred = float(np.mean(preds))
                 grid_entries.append(
                     {

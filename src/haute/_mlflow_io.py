@@ -530,10 +530,7 @@ def _extract_pyfunc_features(model: Any) -> list[str]:
     inputs = sig.inputs
     if inputs is None:
         return []
-    if hasattr(inputs, "input_names"):
-        return list(inputs.input_names())
-    # Older MLflow versions expose inputs as a list of ColSpec
-    return [col.name for col in inputs]
+    return list(inputs.input_names())
 
 
 # ---------------------------------------------------------------------------
@@ -1324,9 +1321,7 @@ def _score_eager(
 
     Thin delegate onto :func:`haute._model_scorer.score_frame` with
     ``batch=False`` — the unified scoring entry point owns the flavor
-    dispatch and the batch/eager fork.  This symbol stays exported so
-    existing call sites (dev executor, deploy scorer) and direct-patch
-    tests keep working.
+    dispatch and the batch/eager fork.
 
     ``offset_column`` is threaded so the model's fit-time offset (contract
     or self-described) is re-applied at score time; ``None`` lets the

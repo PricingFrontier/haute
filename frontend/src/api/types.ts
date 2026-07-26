@@ -18,7 +18,6 @@ export interface PipelineGraph {
   sources?: string[]
   active_source?: string
 }
-
 export interface SchemaWarning {
   column: string
   status: string
@@ -200,7 +199,6 @@ export interface ExecutionMetrics {
   chunk_count: number
   admission: ExecutionAdmission | null
   execution_strategy: ExecutionStrategyDiagnostic | null
-  projection_plan_diagnostics: Record<string, unknown> | null
   stages: ExecutionStageMetrics[]
   memory_pressure_events: ExecutionMemoryPressureEvent[]
 }
@@ -479,8 +477,8 @@ export interface OutputAssembleDryRunResponse {
 
 export interface MlflowCheckResponse {
   mlflow_installed: boolean
-  mlflow_importable?: boolean
-  tracking_configured?: boolean
+  mlflow_importable: boolean
+  tracking_configured: boolean
   backend: string
   databricks_host: string
   detail?: string
@@ -636,7 +634,7 @@ export interface TrainResponse {
   feature_importance?: TrainFeatureImportanceRow[]
   model_path?: string
   train_rows?: number
-  test_rows?: number
+  validation_rows?: number
   holdout_rows?: number
   holdout_metrics?: Record<string, number>
   diagnostics_set?: string
@@ -1238,13 +1236,11 @@ export interface GitGraphBranch {
   is_archived: boolean
   is_current: boolean
   tip_sha: string
-  /** Newest spine commit already owned by an earlier-processed branch
-   *  (ancestry-derived, never forks.json); null for the root of its tree. */
+  /** Newest spine commit already owned by an earlier-processed branch;
+   *  null for the root of its tree. */
   fork_point_sha: string | null
   /** Name of the branch owning that commit; null for the root of its tree. */
   fork_of: string | null
-  /** Legacy clone-local chip data, passthrough only. */
-  forked_from: string | null
   /** The ledger SAVE this branch was actually spawned from, when that differs
    *  from the fork-point milestone (crystallized / pending-save forks);
    *  ancestry-derived. Anchors the spawn chip on the save row when visible. */
@@ -1322,7 +1318,6 @@ export interface GitManagedBranch {
   is_archived: boolean
   has_unmerged_saves: boolean
   has_uncommitted_changes: boolean
-  forked_from: string | null
 }
 
 export interface GitWorkingBranchesResponse {
@@ -1372,11 +1367,7 @@ export interface GitRemoteLeg {
 export interface GitRemote {
   name: string
   url: string | null
-  /** Working-branch commits not on this remote (null = no local tracking ref yet). */
-  ahead: number | null
-  /** Remote commits not in the local working branch (null = no local tracking ref yet). */
-  behind: number | null
-  /** Per-leg structured divergence (P7 F6). `working` mirrors ahead/behind;
+  /** Per-leg structured divergence (P7 F6). `working` is the working branch;
    *  `ledger` surfaces the save-history leg — the two-machine accident is here. */
   working: GitRemoteLeg | null
   ledger: GitRemoteLeg | null

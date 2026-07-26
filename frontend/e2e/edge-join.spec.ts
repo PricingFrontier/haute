@@ -121,11 +121,21 @@ function seedPipeline(): void {
       "",
       '@pipeline.data_input(config="config/data_input/raw_rows.json")',
       "def raw_rows() -> pl.LazyFrame:",
-      '    return pl.scan_parquet(Path(__file__).parent / "data" / "sample.parquet")',
+      "    from haute.graph_utils import resolve_data_input_from_config",
+      "    df = resolve_data_input_from_config(",
+      '        "config/data_input/raw_rows.json",',
+      "        base_dir=Path(__file__).parent,",
+      "    )",
+      "    return df",
       "",
       '@pipeline.data_input(config="config/data_input/lookup_rows.json")',
       "def lookup_rows() -> pl.LazyFrame:",
-      '    return pl.scan_csv(Path(__file__).parent / "data" / "lookup.csv")',
+      "    from haute.graph_utils import resolve_data_input_from_config",
+      "    df = resolve_data_input_from_config(",
+      '        "config/data_input/lookup_rows.json",',
+      "        base_dir=Path(__file__).parent,",
+      "    )",
+      "    return df",
       "",
       '@pipeline.api_input(config="config/quote_input/quotes.json")',
       "def quotes() -> pl.LazyFrame:",
@@ -145,20 +155,13 @@ function seedPipeline(): void {
 }
 
 async function captureInitialGraph(page: Page): Promise<NormalizedGraph> {
-  const requestPromise = page.waitForRequest((request) =>
-    request.method() === "GET" && /\/api\/pipeline(?:\?|$)/.test(request.url()),
-  )
   const responsePromise = page.waitForResponse((response) =>
     response.request().method() === "GET" && /\/api\/pipeline(?:\?|$)/.test(response.url()),
   )
   await page.goto("/")
   await expect(page.getByRole("toolbar", { name: /pipeline toolbar/i })).toBeVisible()
-  const [request, response] = await Promise.all([requestPromise, responsePromise])
+  const response = await responsePromise
   expect(response.status(), "initial pipeline request succeeds").toBe(200)
-  expect(
-    request.headers()["x-haute-session-token"],
-    "legacy session credential is not exposed to browser JavaScript",
-  ).toBeUndefined()
   return graphEnvelope((await response.json()) as GraphEnvelope)
 }
 

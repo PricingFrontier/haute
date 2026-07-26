@@ -497,7 +497,7 @@ class TestTrainingJobGLM:
             assert result.model_path.endswith(".rsglm")
             assert Path(result.model_path).exists()
             assert result.train_rows > 0
-            assert result.test_rows > 0
+            assert result.validation_rows > 0
             assert "gini" in result.metrics
             assert len(result.feature_importance) > 0
 

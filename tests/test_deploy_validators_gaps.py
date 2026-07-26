@@ -97,8 +97,8 @@ class TestLoadTestQuoteFile:
         jf.write_text(
             json.dumps(
                 [
-                    {"age": 30, "_note": "ignore me", "premium": 100},
-                    {"age": 40, "_meta": {"x": 1}},
+                    {"input": {"age": 30, "premium": 100}, "_note": "ignore me"},
+                    {"input": {"age": 40}, "_meta": {"x": 1}},
                 ]
             )
         )

@@ -112,7 +112,7 @@ export function OneWayEditor({ table, bandingLevels, onUpdateEntries }: {
             return (
               <tr key={level} style={{
                 borderBottom: '1px solid var(--border)',
-                background: ri % 2 === 0 ? 'var(--bg-input)' : 'var(--bg-surface)',
+                background: ri % 2 === 0 ? 'var(--bg-input)' : 'var(--bg-panel)',
               }}>
                 <th scope="row" className="px-2.5 py-1.5 font-mono text-[11px] font-medium text-left"
                   style={{ ...NON_EDITABLE_LABEL_CELL_STYLE, borderBottom: '1px solid var(--border)' }}>{level}</th>

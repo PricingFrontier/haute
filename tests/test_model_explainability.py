@@ -367,7 +367,7 @@ def _rustystats_scoring_model(raw_model: Any, features: list[str] | None = None)
 
 
 def test_rustystats_glm_contributions_map_to_shared_trace_contract() -> None:
-    from haute._model_explainability import explain_rustystats_prediction
+    from haute._model_explainability import explain_rustystats_glm_prediction
 
     raw_model = _FakeRustyStatsGLM(
         {
@@ -393,7 +393,7 @@ def test_rustystats_glm_contributions_map_to_shared_trace_contract() -> None:
     )
     scoring_model = _rustystats_scoring_model(raw_model)
 
-    explanation = explain_rustystats_prediction(
+    explanation = explain_rustystats_glm_prediction(
         scoring_model,
         {"difference_to_market": -20.0, "ignored": "not passed"},
         prediction_value=0.645656306,
@@ -434,7 +434,7 @@ def test_rustystats_glm_contributions_map_to_shared_trace_contract() -> None:
 def test_rustystats_glm_contributions_fail_loudly_for_missing_features() -> None:
     from haute._model_explainability import (
         ModelExplanationError,
-        explain_rustystats_prediction,
+        explain_rustystats_glm_prediction,
     )
 
     raw_model = _FakeRustyStatsGLM(
@@ -452,7 +452,7 @@ def test_rustystats_glm_contributions_fail_loudly_for_missing_features() -> None
     )
 
     with pytest.raises(ModelExplanationError, match="Missing feature"):
-        explain_rustystats_prediction(
+        explain_rustystats_glm_prediction(
             scoring_model,
             {"difference_to_market": -20.0},
         )
@@ -461,7 +461,7 @@ def test_rustystats_glm_contributions_fail_loudly_for_missing_features() -> None
 def test_rustystats_glm_contributions_fail_loudly_when_prediction_mismatches() -> None:
     from haute._model_explainability import (
         ModelExplanationError,
-        explain_rustystats_prediction,
+        explain_rustystats_glm_prediction,
     )
 
     raw_model = _FakeRustyStatsGLM(
@@ -480,7 +480,7 @@ def test_rustystats_glm_contributions_fail_loudly_when_prediction_mismatches() -
     )
 
     with pytest.raises(ModelExplanationError, match="does not match"):
-        explain_rustystats_prediction(
+        explain_rustystats_glm_prediction(
             _rustystats_scoring_model(raw_model),
             {"difference_to_market": -20.0},
             prediction_value=0.2,
@@ -490,7 +490,7 @@ def test_rustystats_glm_contributions_fail_loudly_when_prediction_mismatches() -
 def test_rustystats_glm_contributions_fail_loudly_when_additivity_breaks() -> None:
     from haute._model_explainability import (
         ModelExplanationError,
-        explain_rustystats_prediction,
+        explain_rustystats_glm_prediction,
     )
 
     raw_model = _FakeRustyStatsGLM(
@@ -509,7 +509,7 @@ def test_rustystats_glm_contributions_fail_loudly_when_additivity_breaks() -> No
     )
 
     with pytest.raises(ModelExplanationError, match="does not reconstruct"):
-        explain_rustystats_prediction(
+        explain_rustystats_glm_prediction(
             _rustystats_scoring_model(raw_model),
             {"difference_to_market": -20.0},
         )
@@ -520,7 +520,7 @@ def test_real_rustystats_conversion_model_predict_contributions_contract() -> No
     from pathlib import Path
 
     from haute._mlflow_io import _load_rustystats_model
-    from haute._model_explainability import explain_rustystats_prediction
+    from haute._model_explainability import explain_rustystats_glm_prediction
 
     path = Path("outputs/conversion.rsglm")
     if not path.is_file():
@@ -528,7 +528,7 @@ def test_real_rustystats_conversion_model_predict_contributions_contract() -> No
 
     scoring_model = _load_rustystats_model(str(path))
     row = {"difference_to_market": 0.0}
-    explanation = explain_rustystats_prediction(scoring_model, row)
+    explanation = explain_rustystats_glm_prediction(scoring_model, row)
 
     assert explanation["method"] == "rustystats_glm_contributions"
     assert explanation["family"] == "binomial"

@@ -6,7 +6,7 @@
 |---|---|
 | `src/haute/pipeline.py` | `Node` / `NodeRegistry` / `Pipeline` / `Submodel`: the decorator API, `connect()`, the standalone `run()`/`score()` executor, `to_graph()` (live-object → React-Flow dict). |
 | `src/haute/_config_builder.py` | Per-node-type config dict construction from decorator kwargs + function body (`_build_node_config`); sidecar resolution and the parse-time `contract=` cross-check (`_resolve_node_config`). `config["inputs"]` records the function's parameter names verbatim — under input-identity convergence these ARE the per-edge input names (`edge_input_name`: frame labels for apiInput edges, sanitised source labels otherwise), the same strings `input_scenario_map` keys and instance `inputMapping` values reference. |
-| `src/haute/_config_io.py` | Sidecar JSON path conventions (`NODE_TYPE_TO_FOLDER`), read/write helpers, `collect_node_configs` (graph → sidecar files), per-type normalisation (including legacy nested rating maps → canonical ordered rows), and the Windows-reserved-filename guard. |
+| `src/haute/_config_io.py` | Sidecar JSON path conventions (`NODE_TYPE_TO_FOLDER`), read/write helpers, `collect_node_configs` (graph → sidecar files), per-type validation/normalisation of canonical configs, and the Windows-reserved-filename guard. |
 | `src/haute/_config_validation.py` | `VALID_KEYS` registry derived from each node type's `TypedDict`, and `warn_unrecognized_config_keys`. |
 | `src/haute/_builders.py` | Cross-component dependency owned by [execution-engine](../execution-engine/low-level.md): registers each per-`NodeType` runtime builder and its column-contract callback in `NODE_REGISTRY`. Pipeline-config consumes those callbacks through `src/haute/_contracts.py`; it does not own the runtime closures. |
 | `src/haute/_node_builder.py` | Cross-component dependency owned by [execution-engine](../execution-engine/low-level.md): `NodeBuildHooks` / `wrap_builder` allow deploy scoring to intercept runtime builders. It is listed here to make the boundary explicit, not because sidecar/static graph construction calls it. |
@@ -120,7 +120,8 @@ dispatches into `_build_node_config`'s per-`NodeType` branch to build the config
 decorator kwargs + body. `_resolve_node_config` also pops a `contract=` kwarg before
 delegating (so per-type builders don't flag it as unrecognised), cross-checks it via
 `_validate_user_contract`, and re-attaches it to the config afterwards. The resulting raw node
-dicts feed `_build_edges` (explicit `connect()` tuples in 2/3/4-arity legacy/port-aware forms,
+dicts feed `_build_edges` (explicit `connect()` tuples in one four-field
+`(source, target, source_port, target_port)` form,
 plus implicit parameter-name-matching edges; edges are never invented, so a file declaring no
 wiring parses as a disconnected graph) and `_build_rf_nodes` (assigns x-spaced GUI positions) to
 produce
@@ -136,8 +137,7 @@ unchanged if the referenced upstream node can't be resolved), filters each confi
 `_prepare_config_for_sidecar` (strips `code`/`_`-prefixed keys recursively via
 `_strip_internal_keys`, applies the `VALID_KEYS` allowlist — logging any dropped keys at
 WARNING — then per-type canonicalisation for `BANDING`/`RATING_STEP`), and serialises the result
-to `{relative_path: json_string}`. Rating-step canonicalisation always emits ordered entry rows;
-legacy nested maps are accepted only on read and traversed independently of map insertion order.
+to `{relative_path: json_string}`. Rating-step canonicalisation always emits ordered entry rows.
 Any validation error is raised while collecting/staging content, before an existing sidecar is
 replaced.
 
@@ -306,14 +306,13 @@ API and real JSON round-trips rather than mocks:
 - **`test_config_io.py`** + **`test_config_io_gaps.py`** (~97 tests) — sidecar save/load
   round-trips, path conventions (`TestConfigPathForNode`), Windows-reserved-filename rejection
   (`TestIsWindowsReservedFilename`), `collect_node_configs` (including load-error protection
-  and id remapping), banding compaction, rating canonical-row emission and legacy-map migration,
+  and id remapping), banding compaction, rating canonical-row validation/emission,
   and preservation of the prior sidecar when validation fails.
 - **`test_config_validation.py`** (44 tests) — `VALID_KEYS` registry completeness
   (`TestValidKeysRegistry`), `warn_unrecognized_config_keys` behaviour, and alignment between
   each type's decorator kwargs and the config keys `_build_node_config` actually produces
   (`TestBuildNodeConfigProducesValidKeys`, `TestConfigKeyTupleAlignment`).
-- **`test_parser_helpers.py`** + **`test_parser_helpers_split.py`** +
-  **`test_parser_helper_patch_targets.py`** — AST extraction (`TestExtractDecoratedNodes`),
+- **`test_parser_helpers.py`** — AST extraction (`TestExtractDecoratedNodes`),
   decorator kwarg parsing, `_build_node_config` per node type
   (`TestBuildNodeConfigExtended`), `_resolve_node_config` sidecar and contract paths
   (`TestResolveNodeConfig`), and edge/GraphNode building (`TestBuildEdges`,
@@ -331,9 +330,6 @@ API and real JSON round-trips rather than mocks:
 - **`test_executor_builders.py`** + **`test_codegen_builders*.py`** — per-`NodeType` builder
   and column-contract behaviour; this is shared fixture territory between this component's
   registry and execution-engine/codegen, since all three read the same `NODE_REGISTRY`.
-- **`test_strict_v2_contract.py`** — pins the write-time `VALID_KEYS` allowlist and the
-  `apiInput` legacy-key stripping behaviour.
-
 Property/round-trip style coverage (`TestRoundTripDrift` in `test_graph_shape_contracts.py`,
 `test_codegen_roundtrip_property.py`) asserts that parse → build → save → parse is stable for
 generated graphs.
@@ -419,3 +415,11 @@ Remaining pipeline-configuration improvement work is tracked in the
 - Executor builders call the same helpers with their already-resolved inline
   graph config. Generated builders pass only the sidecar path and `base_dir`;
   no declarative field is interpolated into the function body.
+
+## Approved change contract — canonical-only persisted configuration
+
+Under [ROAD-CANON-01](../../roadmap/engineering-quality.md#road-canon-01--prerelease-canonical-only-contract),
+config loading and saving implement only each node type's current schema. They do not classify,
+strip, upgrade, or preserve fields because an earlier Haute version emitted them. Read and write
+paths share the canonical normaliser where one exists; redundant migration-named wrappers and
+migration-specific fixtures are deleted.

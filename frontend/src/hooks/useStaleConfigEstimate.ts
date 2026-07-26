@@ -36,8 +36,8 @@ export interface StaleEstimateContext {
 
 export interface StaleCachedResult {
   configHash: string
-  source?: string
-  structuralVersion?: number
+  source: string
+  structuralVersion: number
 }
 
 interface EstimateState<TEstimate> {
@@ -77,8 +77,6 @@ export function useStaleConfigEstimate<TEstimate>(
 ): UseStaleConfigEstimateResult<TEstimate> {
   const { toastLabel = "Estimate failed", estimateKey = "", enabled = true } = options
   const configHash = useMemo(() => hashConfig(config), [config])
-  // A cached result missing source/structuralVersion (pre-contract shape)
-  // fails the comparison and reads as stale — fail-safe, never fail-current.
   const isStale =
     !!cachedResult &&
     (cachedResult.configHash !== configHash ||

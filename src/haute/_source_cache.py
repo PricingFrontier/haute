@@ -630,7 +630,7 @@ class SourceCacheStore:
             generations_dir = identity_dir / "generations"
             generations_dir.mkdir(parents=True, exist_ok=True)
             # Keep the staging sibling deliberately short: ``atomic_write_text``
-            # appends its own unique suffix, and Windows' legacy path limit can
+            # appends its own unique suffix, and Windows' traditional path limit can
             # otherwise be exceeded beneath pytest's long temporary roots.
             staging = identity_dir / f".staging-{uuid.uuid4().hex[:8]}"
             generation_id = str(uuid.uuid4())

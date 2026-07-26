@@ -39,7 +39,6 @@ export function makeExecutionMetricsFixture(overrides: Partial<ExecutionMetrics>
     checkpoint_count: 0,
     chunk_count: 0,
     execution_strategy: null,
-    projection_plan_diagnostics: null,
     admission: {
       admitted: true,
       operation: "pipeline_preview",

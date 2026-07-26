@@ -97,11 +97,11 @@ def test_trace_provenance_distinguishes_all_execution_origins(tmp_path) -> None:
             "source_file": "pricing/example.py",
         }
     )
-    trace._cache.invalidate()
+    trace._cache.clear()
 
     fresh = execute_trace(graph, target_node_id="source", row_limit=10)
     cached = execute_trace(graph, target_node_id="source", row_limit=10)
-    trace._cache.invalidate()
+    trace._cache.clear()
     preview = execute_trace(
         graph,
         target_node_id="source",

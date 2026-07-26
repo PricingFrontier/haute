@@ -49,7 +49,7 @@ class ModelCardMetadata:
     algorithm: str = ""
     task: str = ""
     train_rows: int = 0
-    test_rows: int = 0
+    validation_rows: int = 0
     holdout_rows: int = 0
     features: list[str] = field(default_factory=list)
     split_config: dict[str, Any] = field(default_factory=dict)

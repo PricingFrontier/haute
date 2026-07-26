@@ -96,9 +96,8 @@ class TestCachedPropertyContract:
         fp2 = graph_fingerprint(g)
         assert fp1 == fp2
         # Non-empty lowercase hex digest after the Wave 9C ``v<N>:``
-        # prefix; the exact algorithm (xxh64 after the Phase 3 Wave 6
-        # migration) is pinned in ``test_cache_perf_fixes.py`` — here
-        # we only pin stability + shape.
+        # prefix; this test pins stability and shape without coupling callers
+        # to the digest implementation.
         assert fp1
         _, _, digest = fp1.partition(":")
         assert all(c in "0123456789abcdef" for c in digest)

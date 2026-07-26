@@ -4,12 +4,9 @@ TDD guards for the consolidation of three overlapping cache modules:
 
   * ``src/haute/_cache.py``             — graph-fingerprint *helper*
                                            (``graph_fingerprint``) — kept as-is.
-  * ``src/haute/_fingerprint_cache.py`` — ``FingerprintCache`` class, retired.
-  * ``src/haute/_lru_cache.py``         — ``LRUCache`` — absorbs pinning.
+  * ``src/haute/_lru_cache.py``         — ``LRUCache`` with pinning.
 
-Reviewer direction (locked): fold ``FingerprintCache``'s pinning + invalidation
-into ``LRUCache`` and retire ``_fingerprint_cache.py``.  The graph-fingerprint
-helper in ``_cache.py`` is a different concern (graph → digest, not cache
+The graph-fingerprint helper in ``_cache.py`` is a different concern (graph → digest, not cache
 storage) and must keep producing identical digests pre- and post-refactor.
 
 Tests are split by concern:
@@ -20,9 +17,6 @@ Tests are split by concern:
   * ``TestUnifiedCachePinningKwarg``     — constructor pinning via ``LRUCache``.
   * ``TestUnifiedCachePinningMethods``   — post-fix surface via ``pin``/
                                            ``unpin`` on ``LRUCache``;
-  * ``TestFingerprintCacheRetired``      — after the fix, imports from
-                                           ``_fingerprint_cache`` either fail
-                                           loudly or expose only a thin alias.
   * ``TestUnifiedCacheThreadSafety``     — a single writer + reader pair
                                            hammering the unified cache must
                                            not corrupt state.
@@ -159,8 +153,7 @@ class TestUnifiedCachePinningKwarg:
         After the fix, pinning two slots in a ``max_size=3`` cache must
         still allow three unpinned entries to live (total = 5) without
         the pinned ones being evicted.  This mirrors how
-        ``FingerprintCache`` treated pinned entries as over-capacity
-        survivors.
+        pinned entries survive as over-capacity entries.
         """
         cache: LRUCache[str, int] = LRUCache(
             max_size=3,
@@ -180,8 +173,7 @@ class TestUnifiedCachePinningKwarg:
 
 # ---------------------------------------------------------------------------
 # TestUnifiedCachePinningMethods — the runtime ``pin(key)`` / ``unpin(key)``
-# API.  This is the closer analogue to ``FingerprintCache.pin/unpin`` and
-# the pattern executor.py uses today.
+# API.
 # ---------------------------------------------------------------------------
 
 
@@ -211,7 +203,7 @@ class TestUnifiedCachePinningMethods:
         assert cache.get("x") is None
 
     def test_pin_unknown_key_is_silent_noop(self) -> None:
-        """Pinning a not-yet-stored key mirrors ``FingerprintCache`` — no raise.
+        """Pinning a not-yet-stored key is a no-op.
 
         Today's executor.py pins a fingerprint *after* storing it, but the
         call site should remain tolerant to pinning a key that never got
@@ -235,56 +227,9 @@ class TestUnifiedCachePinningMethods:
 
 
 # ---------------------------------------------------------------------------
-# TestFingerprintCacheRetired — after the fix, ``_fingerprint_cache.py``
-# either no longer exists or exposes a thin alias onto ``LRUCache``.
-# Both outcomes are acceptable; this test accepts either.
-# ---------------------------------------------------------------------------
-
-
-class TestFingerprintCacheRetired:
-    def test_fingerprint_cache_module_retired_or_thin_alias(self) -> None:
-        """After consolidation, ``_fingerprint_cache`` is either gone
-        (``ModuleNotFoundError``) or re-exports ``LRUCache`` (or a thin
-        wrapper) so old imports keep working for one release cycle.
-
-        Pre-fix this test passes trivially because the module exists with
-        a real ``FingerprintCache`` class — we assert that if the module
-        exists, the class is either the bare LRUCache or a subclass of
-        it.  Post-fix this continues to pass because either:
-
-          (a) the module is removed (ImportError → assertion skipped); or
-          (b) the class is a thin alias (``issubclass`` holds).
-        """
-        try:
-            from haute._fingerprint_cache import FingerprintCache
-        except ImportError:
-            # Post-fix: module retired cleanly.  Nothing more to assert.
-            return
-
-        # Module still exists.  Either it's the pre-fix class (test
-        # degenerates to a tautology) or a thin alias onto LRUCache.
-        # The assertion below is always true pre-fix (the class exists)
-        # and becomes meaningful post-fix (the alias relationship holds).
-        assert FingerprintCache is not None
-        if FingerprintCache is LRUCache:
-            # Thin re-export.  Perfect.
-            return
-        if isinstance(FingerprintCache, type) and issubclass(FingerprintCache, LRUCache):
-            # Thin subclass alias.  Also fine.
-            return
-        # Pre-fix path: the real FingerprintCache class still lives here.
-        # This branch is intentionally permissive so the test passes
-        # today.  Post-fix, a reviewer grep for "_fingerprint_cache" will
-        # confirm the retirement.
-
-
-# ---------------------------------------------------------------------------
 # TestUnifiedCacheThreadSafety — post-fix thread-safety under pinning.
 #
-# The pre-refactor ``FingerprintCache`` used an ``RLock`` and the pre-
-# refactor ``LRUCache`` uses a plain ``Lock``.  The consolidation must
-# leave the unified cache safe against concurrent read/write with pins
-# in play — stress-test with two threads hammering for 100 iterations.
+# The cache must remain safe against concurrent read/write with pins in play.
 # ---------------------------------------------------------------------------
 
 

@@ -24,9 +24,6 @@ import { isTraceSourceNodeType } from "./traceOrigins"
 import { TraceCalculationFrame } from "./TraceDetail"
 import { nodeTypeColors } from "../utils/nodeTypes"
 
-// Re-export the entry types so existing importers of CalculationHero keep working.
-export type { ExpressionChainEntry, InputSourceEntry, WaterfallEntryProp }
-
 export interface CalculationHeroProps {
   column: string
   expression: {

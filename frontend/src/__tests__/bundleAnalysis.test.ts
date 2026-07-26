@@ -108,7 +108,7 @@ describe("bundle source-map analysis", () => {
   it("fails loudly for unsupported source map versions", () => {
     expect(() =>
       analyzer.analyzeSourceMapChunk({
-        chunkName: "legacy.js",
+        chunkName: "unsupported-version.js",
         generatedCode: "console.log(1)",
         sourceMap: {
           version: 2,
@@ -116,7 +116,7 @@ describe("bundle source-map analysis", () => {
           mappings: "",
         },
       }),
-    ).toThrow("legacy.js source map must use version 3.")
+    ).toThrow("unsupported-version.js source map must use version 3.")
   })
 
   it("fails loudly when a JavaScript asset has no matching source map", () => {

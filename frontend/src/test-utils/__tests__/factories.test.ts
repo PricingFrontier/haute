@@ -140,7 +140,7 @@ describe("makeTrainResult", () => {
     const result = makeTrainResult()
     expect(result.status).toBe("complete")
     expect(result.train_rows).toBe(8000)
-    expect(result.test_rows).toBe(2000)
+    expect(result.validation_rows).toBe(2000)
     expect(result.feature_importance).toHaveLength(3)
     expect(result.metrics).toHaveProperty("gini")
   })

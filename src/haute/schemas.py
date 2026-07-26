@@ -583,7 +583,6 @@ class ExecutionMetricsPayload(BaseModel):
     stages: list[ExecutionStageMetricsPayload] = Field(default_factory=list)
     memory_pressure_events: list[ExecutionMemoryPressureEventPayload] = Field(default_factory=list)
     execution_strategy: ExecutionStrategyDiagnosticPayload | None = None
-    projection_plan_diagnostics: dict[str, Any] | None = None
     streamability: Literal["streaming", "materialising"] | None = None
     streamability_evidence: ExecutionStreamabilityEvidencePayload = Field(
         default_factory=ExecutionStreamabilityEvidencePayload
@@ -640,14 +639,8 @@ class PreviewNodeRequest(BaseModel):
     source: str = "live"
     requested_preview_columns: list[str] | None = Field(default=None, min_length=1)
     streaming_chunk_size: StreamingChunkSize = None
-    # The frame/emit-table label to preview for a multi-frame producer (a
-    # multi-table apiInput today; submodels / external callouts later). The
-    # node holds every frame's DataFrame in ``eager_outputs`` as
-    # ``dict[label, df]``; this picks which frame the flat ``columns`` /
-    # ``preview`` reflect. ``None`` (the default) previews the FIRST frame —
-    # the legacy behaviour. A label absent from the dict also falls back to
-    # the first frame. Single-frame nodes ignore it. Part of the preview
-    # cache key, so frame B is a DISTINCT cache entry from frame A.
+    # Frame label selected for a multi-frame target. Single-frame targets
+    # ignore it. It is part of the preview cache identity.
     port_label: str | None = None
 
 
@@ -1144,7 +1137,7 @@ class TableListResponse(BaseModel):
 
 
 class JsonCacheBuildRequest(BaseModel):
-    """Request body for ``POST /api/json-cache/{build,status,cancel}``.
+    """Request body for ``POST /api/json-cache/{build,status}``.
 
     Dispatch precedence in the route:
       1. ``volatile_schema is not None`` — use the in-memory v2 schema
@@ -1165,7 +1158,7 @@ class JsonCacheBuildRequest(BaseModel):
     config_path: str | None = None
     # `Any` (not `dict`) so malformed shapes from the frontend reach
     # `validate_v2_schema` and surface as our structured 422 rather
-    # than as Pydantic's default 422 — T8 contract.
+    # than as Pydantic's default 422.
     volatile_schema: Any = None
 
 
@@ -1212,11 +1205,6 @@ class JsonCacheBuildResponse(BaseModel):
     # zero/empty for clean data.
     skipped_records: int = 0
     skipped_rows: dict[str, int] = Field(default_factory=dict)
-
-
-class JsonCacheCancelResponse(BaseModel):
-    cancelled: bool
-    data_path: str
 
 
 class JsonCacheProgressResponse(BaseModel):
@@ -1433,13 +1421,7 @@ class TrainResponse(BaseModel):
     feature_importance: list[dict[str, Any]] = Field(default_factory=list)
     model_path: str = ""
     train_rows: int = 0
-    # NB: despite the name, ``test_rows`` carries the VALIDATION-set row count
-    # (``split_result.n_validation``), not a separate test set. The name is
-    # frozen by the external API/frontend contract (frontend/src/api/types.ts,
-    # guards.ts, ui_contracts fixtures) so it is intentionally NOT renamed; its
-    # meaning is pinned by
-    # tests/test_modelling.py::TestTrainingJob::test_test_rows_field_carries_validation_set_count.
-    test_rows: int = 0
+    validation_rows: int = 0
     holdout_rows: int = 0
     holdout_metrics: dict[str, float] = Field(default_factory=dict)
     diagnostics_set: str = "validation"  # "train" | "validation" | "holdout"
@@ -1579,8 +1561,8 @@ class LogExperimentResponse(MlflowLogResponse):
 
 class MlflowCheckResponse(BaseModel):
     mlflow_installed: bool
-    mlflow_importable: bool = False
-    tracking_configured: bool = False
+    mlflow_importable: bool
+    tracking_configured: bool
     backend: str = ""
     databricks_host: str = ""
     detail: str = ""
@@ -2054,7 +2036,7 @@ class GitGraphBranch(BaseModel):
     is_current: bool
     tip_sha: str
     # Fork attachment, derived from git ancestry (claim-based over FULL
-    # first-parent spines — never forks.json): the newest spine commit already
+    # first-parent spines): the newest spine commit already
     # owned by an earlier-processed branch, and that branch's name. Both null
     # for the root branch of each tree in the forest. Reported even when the
     # commit falls outside the windowed entries.
@@ -2077,10 +2059,6 @@ class GitGraphBranch(BaseModel):
     # milestone). UI: the spawn chip anchors here when the source save's row
     # is not visible, falling back to fork_point_sha when this is null too.
     fork_credit_sha: str | None = None
-    # Clone-local back-link (forks.json), kept as passthrough for API
-    # completeness — the fork chips are served by /api/git/working-branches,
-    # and the graph client does not read it yet.
-    forked_from: str | None = None
     # True when the full spine is longer than the requested limit (entries are
     # windowed to the newest ``limit``; fork points are not).
     truncated: bool = False
@@ -2167,9 +2145,6 @@ class GitManagedBranch(BaseModel):
     # True only for the current branch when the working tree has tracked,
     # uncommitted changes — archive/delete would have to switch away and can't.
     has_uncommitted_changes: bool = False
-    # The commit this branch was spawned from (if recorded + still reachable), so
-    # the history view can back-link that commit to this branch (S38).
-    forked_from: str | None = None
 
 
 class GitWorkingBranchesResponse(BaseModel):
@@ -2253,15 +2228,13 @@ class GitRemoteLeg(BaseModel):
 
 class GitRemote(BaseModel):
     # One existing remote, for the deliberate-push dropdown (S16) and the passive
-    # behind-remote surface (P7). `ahead`/`behind` remain the WORKING leg's counts
-    # for back-compat; `working`/`ledger` add the per-leg structured state (F6) so
+    # behind-remote surface (P7). `working`/`ledger` carry the per-leg structured
+    # state (F6):
     # ledger divergence — the two-machine save accident — is visible, not just the
     # working leg. Read from locally-known remote refs (a throttled pair fetch
     # freshens them first); null when no working branch is set.
     name: str
     url: str | None = None
-    ahead: int | None = None
-    behind: int | None = None
     working: GitRemoteLeg | None = None
     ledger: GitRemoteLeg | None = None
 

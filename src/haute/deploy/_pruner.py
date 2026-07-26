@@ -49,26 +49,13 @@ def _live_only_edges(
     for sid in switch_ids:
         config = node_map[sid].data.config
         input_scenario_map = config.get("input_scenario_map", {})
-        mapped_live_input_name = next(
-            (k for k, v in input_scenario_map.items() if v == "live"),
-            None,
+        live_input_name = next(
+            name for name, scenario in input_scenario_map.items() if scenario == "live"
         )
-        if mapped_live_input_name is None:
-            # Legacy fallback: use inputs[0] as the live input name and match
-            # it against each connected edge using the same derivation.
-            inputs = config.get("inputs", [])
-            live_input_name = inputs[0] if isinstance(inputs, list) and inputs else "<missing>"
-        else:
-            live_input_name = mapped_live_input_name
         matching_edges = _matching_edge_ids(sid, live_input_name)
         if not matching_edges:
-            source = (
-                "input_scenario_map live input"
-                if mapped_live_input_name is not None
-                else "inputs[0]"
-            )
             raise ValueError(
-                f"LiveSwitch node '{sid}': {source} '{live_input_name}' "
+                f"LiveSwitch node '{sid}': input_scenario_map live input '{live_input_name}' "
                 "does not match any connected node"
             )
         switch_live_edge_ids[sid] = matching_edges
@@ -90,7 +77,7 @@ def prune_for_deploy(
 ) -> tuple[PipelineGraph, list[str], list[str]]:
     """Prune a graph to only the ancestors of the output node.
 
-    For liveSwitch nodes, only the live (first) input branch is kept.
+    For liveSwitch nodes, only the configured live input branch is kept.
 
     Args:
         graph: Full React Flow graph with "nodes" and "edges".

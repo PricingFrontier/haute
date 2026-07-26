@@ -10,8 +10,8 @@ from __future__ import annotations
 import polars as pl
 import pytest
 
+from haute._builders import _build_node_fn, resolve_instance_node
 from haute.errors import ExecutionError, LiveSwitchScenarioError
-from haute.executor import _build_node_fn, resolve_instance_node
 from haute.graph_utils import GraphNode, NodeData
 from tests.conftest import make_node as _n
 from tests.conftest import make_output_config
@@ -254,9 +254,7 @@ class TestBuildOutputEdgeCases:
         assert result.columns == ["a", "c"]
 
     def test_no_fields_returns_empty_document(self) -> None:
-        # v2: an empty outputMapping selects no columns, so the assembled
-        # document is empty — unlike the retired v1 ``{"fields": []}`` which
-        # passed all upstream columns through.
+        # An empty outputMapping selects no columns.
         _, fn, _ = _build("output", make_output_config([]), source_names=["up"])
         lf = pl.DataFrame({"x": [1], "y": [2], "z": [3]}).lazy()
         result = fn(lf).collect()
@@ -264,8 +262,7 @@ class TestBuildOutputEdgeCases:
         assert result.shape == (0, 0)
 
     def test_none_fields_returns_empty_document(self) -> None:
-        # v2: ``make_output_config([])`` (formerly ``{"fields": None}``) yields an
-        # empty outputMapping → empty document, not a passthrough of all columns.
+        # ``make_output_config([])`` yields an empty document.
         _, fn, _ = _build("output", make_output_config([]), source_names=["up"])
         lf = pl.DataFrame({"a": [1], "b": [2]}).lazy()
         result = fn(lf).collect()
@@ -526,7 +523,7 @@ class TestBuildNodeFnDispatcher:
         func_name, _, _ = _build(
             "output",
             make_output_config(["a"]),
-            label="Final Output (v2)",
+            label="Final Output",
             source_names=["up"],
         )
         assert func_name.isidentifier()
@@ -534,13 +531,7 @@ class TestBuildNodeFnDispatcher:
 
 class TestBuildOutputEmptyDataFrame:
     def test_build_output_empty_dataframe(self) -> None:
-        """A 0-row source frame assembles to an empty v2 document (no rows, no paths).
-
-        Under the retired v1 ``{"fields": [...]}`` passthrough this returned a
-        0-row frame that still carried the selected columns ``["a", "c"]``. The
-        v2 assembler produces the document from the actual rows, so an empty
-        input yields an empty array-of-rows and therefore an empty frame.
-        """
+        """A 0-row source frame assembles to an empty document."""
         _, fn, _ = _build("output", make_output_config(["a", "c"]), source_names=["up"])
         lf = pl.DataFrame(
             {

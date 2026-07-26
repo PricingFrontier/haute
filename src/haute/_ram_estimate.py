@@ -258,8 +258,6 @@ def estimate_gpu_vram_bytes(
 # ---------------------------------------------------------------------------
 
 
-# Detailed metadata is deliberately internal.  The compatibility helpers still
-# expose tuple shapes used by existing tests and callers.
 class _DetailedSourceMetadata(NamedTuple):
     row_count: int
     column_count: int
@@ -451,14 +449,6 @@ def _count_source_rows_for_node(node: GraphNode) -> int | None:
     return None
 
 
-def _source_metadata_for_node(node: GraphNode) -> tuple[int, int] | None:
-    """Return (row_count, column_count) for a source node, or None."""
-    detail = _detailed_source_metadata_for_node(node)
-    if detail is None:
-        return None
-    return detail.row_count, detail.column_count
-
-
 def _detailed_source_metadata_for_node(node: GraphNode) -> _DetailedSourceMetadata | None:
     """Return detailed parquet source metadata for a source node, or None."""
     config = node.data.config
@@ -522,23 +512,6 @@ def _jsonl_row_count(path: str) -> int:
     return count
 
 
-def _ancestor_source_metadata(
-    graph: PipelineGraph,
-    target_node_id: str,
-    source: str = "live",
-) -> tuple[int | None, int]:
-    """Row count and column count from ancestor sources of the target node.
-
-    Prunes edges by source (respecting live-switch routing) then walks
-    backwards from the target to find only the relevant source nodes.
-
-    Returns ``(max_rows, max_columns)`` across ancestor sources.
-    ``max_rows`` is ``None`` if no row count could be determined.
-    """
-    meta = _detailed_ancestor_source_metadata(graph, target_node_id, source)
-    return meta.row_count, meta.column_count
-
-
 def _detailed_ancestor_source_metadata(
     graph: PipelineGraph,
     target_node_id: str,
@@ -579,7 +552,7 @@ def estimate_source_rows(graph: PipelineGraph) -> int | None:
     """Estimate total rows entering the pipeline from all source nodes.
 
     Returns the **maximum** row count across all source nodes.
-    Prefer :func:`_ancestor_source_metadata` when target and source
+    Prefer :func:`_detailed_ancestor_source_metadata` when target and source
     are known.
     """
     max_rows: int | None = None
@@ -662,11 +635,10 @@ def _resolve_target_columns(
     source: str,
     *,
     _index: _EstimateGraphIndex | None = None,
-) -> int | None:
-    """Resolve the target column count through one per-estimate index."""
+) -> _ResolvedTargetColumns | None:
+    """Resolve the detailed target schema through one per-estimate index."""
     index = _index or _EstimateGraphIndex.build(graph, source)
-    resolved = index.resolve_columns(target_node_id)
-    return len(resolved.columns) if resolved is not None else None
+    return index.resolve_columns(target_node_id)
 
 
 def _edge_join_input_roles(
@@ -826,18 +798,6 @@ def _resolve_edge_join_column_names(
     return resolved.columns if resolved is not None else None
 
 
-def _resolve_target_columns_detail(
-    graph: PipelineGraph,
-    target_node_id: str,
-    source: str,
-    *,
-    _index: _EstimateGraphIndex | None = None,
-) -> _ResolvedTargetColumns | None:
-    """Resolve target column names when config or parquet metadata exposes them."""
-    index = _index or _EstimateGraphIndex.build(graph, source)
-    return index.resolve_columns(target_node_id)
-
-
 def _resolve_target_columns_from_index(
     index: _EstimateGraphIndex,
     target_node_id: str,
@@ -891,7 +851,7 @@ def _resolve_target_column_names(
     source: str,
 ) -> tuple[str, ...] | None:
     """Resolve target column names when config or parquet metadata exposes them."""
-    resolved = _resolve_target_columns_detail(graph, target_node_id, source)
+    resolved = _resolve_target_columns(graph, target_node_id, source)
     return resolved.columns if resolved is not None else None
 
 
@@ -1044,16 +1004,16 @@ def estimate_safe_training_rows(
         )
 
     # ── 2. Column count at the training node ─────────────────────────
-    #   Walk backwards through the graph from the target.  Returns the
-    #   count from the first node with selected_columns or source metadata.
-    n_columns = _resolve_target_columns(
+    # Walk backwards through the graph from the target and resolve the
+    # canonical detailed target schema from selected_columns or source metadata.
+    target_columns = _resolve_target_columns(
         graph,
         target_node_id,
         source,
         _index=estimate_index,
     )
 
-    if not n_columns:
+    if target_columns is None or not target_columns.columns:
         logger.info(
             "schema_unavailable",
             target=target_node_id,
@@ -1086,30 +1046,19 @@ def estimate_safe_training_rows(
         _index=estimate_index,
     )
     preserved_excluded_join_keys = excluded & join_keys_on_path
-    target_columns = _resolve_target_columns_detail(
-        graph,
-        target_node_id,
-        source,
-        _index=estimate_index,
+    peak_columns = _filter_resolved_columns(
+        target_columns,
+        (
+            column
+            for column in target_columns.columns
+            if column not in excluded or column in preserved_excluded_join_keys
+        ),
     )
-    if target_columns is not None:
-        peak_columns = _filter_resolved_columns(
-            target_columns,
-            (
-                column
-                for column in target_columns.columns
-                if column not in excluded or column in preserved_excluded_join_keys
-            ),
-        )
-        peak_column_names = peak_columns.columns
-        peak_width_column_names = tuple(
-            peak_columns.width_columns.get(column, column) for column in peak_column_names
-        )
-        n_columns = max(len(peak_column_names), 1)
-    else:
-        n_columns = max(n_columns - len(excluded - preserved_excluded_join_keys), 1)
-        peak_column_names = None
-        peak_width_column_names = None
+    peak_column_names = peak_columns.columns
+    peak_width_column_names = tuple(
+        peak_columns.width_columns.get(column, column) for column in peak_column_names
+    )
+    n_columns = max(len(peak_column_names), 1)
 
     logger.info(
         "schema_resolved",
@@ -1210,7 +1159,7 @@ def estimate_materialisation_boundary(
             assumptions=("known-empty ancestor source",),
         )
 
-    resolved_columns = _resolve_target_columns_detail(
+    resolved_columns = _resolve_target_columns(
         graph,
         target_node_id,
         source,
@@ -1223,19 +1172,7 @@ def estimate_materialisation_boundary(
         )
         n_columns = len(column_names)
     else:
-        n_columns = (
-            _resolve_target_columns(
-                graph,
-                target_node_id,
-                source,
-                _index=estimate_index,
-            )
-            or 0
-        )
-        if n_columns <= 0:
-            return MaterialisationEstimate.unavailable("target_schema_unavailable")
-        column_names = None
-        width_column_names = None
+        return MaterialisationEstimate.unavailable("target_schema_unavailable")
 
     base_bytes_per_row = _estimate_base_bytes_per_row(
         n_columns,

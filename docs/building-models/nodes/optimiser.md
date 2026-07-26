@@ -69,8 +69,6 @@ This tells the optimiser: maximise the objective column, but keep premium at or 
     |---|---|
     | `frontier_enabled` | Whether to compute an efficient frontier after the individual-point solve |
     | `frontier_ranges` | Preferred absolute `min`/`max` portfolio totals for each constraint |
-    | `frontier_min` | Legacy absolute lower bound used for every constraint when `frontier_ranges` is omitted |
-    | `frontier_max` | Legacy absolute upper bound used for every constraint when `frontier_ranges` is omitted |
     | `frontier_steps` | Number of points per constraint dimension on the frontier |
 
 **See also:**

@@ -64,8 +64,7 @@ def create_submodel_graph(
     ]
 
     # Determine input/output ports from cross-boundary edges
-    cross_tuples = [(e.source, e.target) for e in cross_edges]
-    input_ports, output_ports = classify_ports(cross_tuples, child_node_ids)
+    input_ports, output_ports = classify_ports(cross_edges, child_node_ids)
 
     # Build submodel internal graph dict
     sm_graph = {

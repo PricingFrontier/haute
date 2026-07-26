@@ -18,7 +18,6 @@ export const OptimiserApplyEditor = lazy(() => import("./editors/OptimiserApplyE
 export const ConstantEditor = lazy(() => import("./editors/ConstantEditor"))
 export const SubmodelEditor = lazy(() => import("./editors/SubmodelEditor"))
 export const ColumnsTab = lazy(() => import("./editors/ColumnsTab"))
-export const GroupedColumnsTab = lazy(() => import("./editors/GroupedColumnsTab"))
 export const ModellingConfig = lazy(() => import("./ModellingConfig"))
 export const OptimiserConfig = lazy(() => import("./OptimiserConfig"))
 

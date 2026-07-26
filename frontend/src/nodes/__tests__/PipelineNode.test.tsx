@@ -362,7 +362,7 @@ describe("PipelineNode", () => {
       })
     })
 
-    it("keeps the instance name, explicit empty-state hint, and default right-side handle when no frame is visible", () => {
+    it("keeps the instance name and explicit empty-state hint without an output handle when no frame is visible", () => {
       const nodeLabel = "Unconfigured Input"
       const { container } = renderNode({
         label: nodeLabel,
@@ -379,17 +379,7 @@ describe("PipelineNode", () => {
       expect(emptyHint).toHaveStyle({ color: "var(--text-muted)" })
       expect(within(node).queryAllByTestId(/^api-input-frame-row-/)).toHaveLength(0)
 
-      const handle = within(node).getByTestId(`output-connector[0]:${nodeLabel}`)
-      expect(handle).not.toHaveAttribute("data-handleid")
-      expect(handle).toHaveClass("react-flow__handle-right")
-      expect(handle).not.toHaveClass("connectablestart")
-      expect(handle).not.toHaveClass("connectableend")
-      // JSDOM cannot measure the rendered centre. The default right-side
-      // Handle is centred by React Flow when `top` is implicit; an explicit
-      // 50% is equivalent, while any per-frame offset would violate the
-      // zero-frame fallback contract.
-      expect(["", "50%"]).toContain(handle.style.top)
-      expect(sourceHandles(container)).toEqual([handle])
+      expect(sourceHandles(container)).toEqual([])
     })
 
     it("renders an active trace value before the frame rows without displacing them", () => {

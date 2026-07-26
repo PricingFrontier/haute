@@ -108,17 +108,6 @@ describe("validateConfigRefs", () => {
     expect(validateConfigRefs(nodes, submodels)).toEqual([])
   })
 
-  it("does not warn when a ref resolves into a submodel's direct metadata shape", () => {
-    const nodes = [
-      makeNode("inst", "Instance", { instanceOf: "direct_original" }),
-      makeNode("opt", "Optimiser", { data_input: "direct_original" }),
-    ]
-    const submodels = {
-      direct_model: { nodes: [{ id: "direct_original", data: { label: "direct_original" } }] },
-    }
-    expect(validateConfigRefs(nodes, submodels)).toEqual([])
-  })
-
   it("still warns when instanceOf target is absent from both graph and submodels", () => {
     const nodes = [
       makeNode("inst", "Instance", { instanceOf: "not_anywhere" }),
@@ -147,7 +136,7 @@ describe("validateConfigRefs", () => {
     expect(warnings[0].referencedId).toBe("deleted_node")
   })
 
-  it("behaves identically with no submodels argument (backward compatible)", () => {
+  it("handles an omitted submodel collection", () => {
     const nodes = [makeNode("inst", "Instance", { instanceOf: "missing" })]
     expect(validateConfigRefs(nodes)).toHaveLength(1)
     expect(validateConfigRefs(nodes, undefined)).toHaveLength(1)

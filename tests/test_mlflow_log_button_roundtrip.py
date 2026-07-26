@@ -157,7 +157,7 @@ def _completed_result(model_path: str, **overrides: Any) -> TrainResponse:
         "metrics": {"rmse": 0.1, "gini": 0.5},
         "model_path": model_path,
         "train_rows": 60,
-        "test_rows": 20,
+        "validation_rows": 20,
         "features": FEATURES,
         "cat_features": CAT_FEATURES,
     }

@@ -45,7 +45,8 @@ Out of scope, owned elsewhere:
   live progress bar and printing the returned result's model path, feature counts, and metrics.
 - `haute serve [--host] [--port] [--no-browser]` starts the Haute UI: dev mode (Vite + FastAPI with
   autoreload) when a `frontend/` checkout with `node_modules` is discoverable, otherwise production
-  mode serving a pre-built static bundle. Binds to `127.0.0.1` by default.
+  mode serving a pre-built static bundle. Binds to `localhost` by default so the browser session
+  works with a bare `haute serve`.
 - `haute deploy [pipeline_file] [--model-name] [--dry-run] [--endpoint-suffix]` validates a pipeline,
   scores its test quotes, and deploys it to the configured target. Non-dry-run deploys are blocked
   outside a recognised CI environment.
@@ -84,7 +85,7 @@ Invariants that hold across every command:
   env var (`GITHUB_ACTIONS`, `GITLAB_CI`, `CIRCLECI`, `TF_BUILD`, `BUILDKITE`, generic `CI`) is set
   truthily. This is a deliberate guardrail: production model changes must go through reviewed CI/CD,
   not an engineer's laptop.
-- **`serve` is loopback-only.** `haute serve` binds `127.0.0.1` by default and accepts only
+- **`serve` is loopback-only.** `haute serve` binds `localhost` by default and accepts only
   `localhost`, IPv4 loopback addresses, or IPv6 `::1` from the CLI or `haute.toml`. Wildcard,
   LAN/public IP, and custom-hostname values fail before port probing or process launch; this
   command is a local editor surface, not an application-hosting surface.

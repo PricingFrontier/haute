@@ -6,22 +6,21 @@ Used by both ``_parser_submodels.py`` (parse-time hierarchical view) and
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from hashlib import blake2b
 
 from haute.graph_utils import GraphEdge, GraphNode, NodeData, NodeType
 
 
 def _boundary_edge_id(
-    legacy_id: str,
+    base_id: str,
     source_port: str | None,
     target_port: str | None,
 ) -> str:
-    """Keep legacy ids for bare edges and disambiguate ported boundaries."""
-    if source_port is None and target_port is None:
-        return legacy_id
+    """Create a port-aware deterministic boundary edge identifier."""
     payload = "\0".join((source_port or "", target_port or "")).encode()
     digest = blake2b(payload, digest_size=6).hexdigest()
-    return f"{legacy_id}_{digest}"
+    return f"{base_id}_{digest}"
 
 
 def build_submodel_placeholder(
@@ -70,11 +69,7 @@ def build_submodel_placeholder(
 
 
 def classify_ports(
-    cross_edges: (
-        list[tuple[str, str, str | None, str | None]]
-        | list[tuple[str, str, str | None]]
-        | list[tuple[str, str]]
-    ),
+    cross_edges: Sequence[GraphEdge],
     child_node_ids: set[str],
 ) -> tuple[list[str], list[str]]:
     """Determine input and output ports from cross-boundary edges.
@@ -82,11 +77,9 @@ def classify_ports(
     Parameters
     ----------
     cross_edges:
-        ``(source, target)`` or ``(source, target, source_port)`` tuples
-        for edges that cross the submodel boundary. The third element
-        (commit-6 port-aware codegen) is ignored here — port
-        classification depends on which side of the boundary each
-        endpoint sits, not on the edge's source-port label.
+        Canonical graph edges that cross the submodel boundary. Port
+        classification depends only on which side of the boundary each
+        endpoint sits.
     child_node_ids:
         Set of node IDs that belong to the submodel.
 
@@ -98,9 +91,7 @@ def classify_ports(
     input_ports: list[str] = []
     output_ports: list[str] = []
     for edge in cross_edges:
-        # Tolerate both pre- and post-commit-6 tuple shapes — the
-        # extra source_port field is irrelevant here.
-        src, tgt = edge[0], edge[1]
+        src, tgt = edge.source, edge.target
         if tgt in child_node_ids and src not in child_node_ids:
             if tgt not in input_ports:
                 input_ports.append(tgt)
@@ -138,11 +129,11 @@ def rewire_edges(
             )
             authored_target_port = e.targetPort if e.targetPort is not None else e.targetHandle
             target_handle = f"in__{e.target}"
-            legacy_id = f"e_{e.source}_{sm_node_id}__{e.target}"
+            base_id = f"e_{e.source}_{sm_node_id}__{e.target}"
             result.append(
                 GraphEdge(
                     id=_boundary_edge_id(
-                        legacy_id,
+                        base_id,
                         authored_source_port,
                         authored_target_port,
                     ),
@@ -162,11 +153,11 @@ def rewire_edges(
                 e.targetPort if e.target.startswith("submodel__") else e.targetHandle
             )
             source_handle = f"out__{e.source}"
-            legacy_id = f"e_{sm_node_id}_{e.target}__{e.source}"
+            base_id = f"e_{sm_node_id}_{e.target}__{e.source}"
             result.append(
                 GraphEdge(
                     id=_boundary_edge_id(
-                        legacy_id,
+                        base_id,
                         authored_source_port,
                         authored_target_port,
                     ),

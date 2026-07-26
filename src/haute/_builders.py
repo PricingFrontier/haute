@@ -13,7 +13,7 @@ the single source of truth shared with ``_codegen_builders.py``.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
@@ -21,14 +21,17 @@ from typing import Any, cast
 import polars as pl
 
 import haute.projection as projection
-from haute._code_extraction import _strip_generated_boilerplate_from_code
-
-# The Contract dataclass is defined canonically in haute._contracts; re-exported
-# here for back-compat (builder source files + the adoption tests import it via
-# haute._builders). The tuple aliases / OPAQUE_CONTRACT below stay local.
-from haute._contracts import (  # noqa: F401
+from haute._contracts import (
     _DEPLOY_MODEL_INPUT_COLUMNS_CONFIG_KEY,
-    Contract,
+)
+from haute._contracts import (
+    OPAQUE_CONTRACT as _OPAQUE_CONTRACT,
+)
+from haute._contracts import (
+    ColumnContract as _ColumnContract,
+)
+from haute._contracts import (
+    ColumnContractFn as _ColumnContractFn,
 )
 from haute._edge_join import (
     build_edge_join_kwargs,
@@ -39,20 +42,8 @@ from haute._execution_context import ExecutionProfile, current_execution_context
 from haute._graph_utils import _sanitize_func_name
 from haute._io import _select_columns
 from haute._logging import get_logger
-
-# Scenario-expander defaults live in ``_node_apply`` (the shared apply module)
-# so the executor and generated code cannot drift; re-exported here for the
-# chunking / optimiser-service call sites that import them from ``_builders``.
 from haute._node_apply import (
-    _DEFAULT_SCENARIO_MAX as _DEFAULT_SCENARIO_MAX,
-)
-from haute._node_apply import (
-    _DEFAULT_SCENARIO_MIN as _DEFAULT_SCENARIO_MIN,
-)
-from haute._node_apply import (
-    _DEFAULT_SCENARIO_STEPS as _DEFAULT_SCENARIO_STEPS,
-)
-from haute._node_apply import (
+    _DEFAULT_SCENARIO_STEPS,
     apply_optimiser_apply_from_config,
     assemble_output_from_config,
     expand_scenarios_from_config,
@@ -200,28 +191,11 @@ class NodeBuildContext:
 # Type alias for builder functions.
 NodeBuilder = Callable[[NodeBuildContext], tuple[str, Callable, bool]]
 
-# Column contract type: (produced_columns, referenced_columns).
-# ``produced``: columns the node creates (not in input).  None = opaque.
-# ``referenced``: input columns the node reads for computation.  None = opaque.
-ColumnContract = tuple[set[str] | None, set[str] | None]
-ColumnContractFn = Callable[[dict[str, Any]], ColumnContract]
-
-#: Sentinel for builders that are genuinely opaque — user code, external
-#: file schemas, etc.  Registering this explicitly (rather than omitting
-#: a contract registration altogether) lets the system distinguish
-#: "declared opaque" from "forgot to declare", which is important for
-#: adoption tracking and the codegen/parser/executor contract pipeline.
-OPAQUE_CONTRACT: ColumnContract = (None, None)
-
-#: String sentinel emitted by codegen for opaque contracts.  Kept in
-#: sync with ``tests.fixtures.expected_contracts.OPAQUE_SENTINEL``.
-OPAQUE_CONTRACT_SENTINEL = "opaque"
-
 
 def _register(
     node_type: NodeType,
     *,
-    columns: ColumnContractFn | None = None,
+    columns: _ColumnContractFn | None = None,
     opaque: bool = False,
     is_behavioural: bool = False,
 ) -> Callable[[NodeBuilder], NodeBuilder]:
@@ -250,7 +224,7 @@ def _register(
 
     # Resolve the contract callback eagerly so every registry view references
     # the same callable (test_column_contracts asserts identity).
-    contract_fn: ColumnContractFn | None
+    contract_fn: _ColumnContractFn | None
     if opaque:
         contract_fn = _opaque_columns
     else:
@@ -269,38 +243,12 @@ def _register(
     return decorator
 
 
-def get_column_contract(
-    node_type: NodeType,
-    config: dict[str, Any],
-) -> ColumnContract:
-    """Return the column contract for a node type.
-
-    Every registered ``NodeType`` must have a ``column_contract`` entry
-    in :data:`haute._registry.NODE_REGISTRY`.  If a future ``NodeType`` is
-    added without a contract, this function raises — silently falling back
-    to opaque would hide the omission.
-    """
-    entry = NODE_REGISTRY.get(node_type)
-    if entry is None or entry.column_contract is None:
-        raise KeyError(
-            f"NodeType {node_type!r} has no column contract registered. "
-            "Every builder in NODE_REGISTRY must also register a contract "
-            "in NODE_REGISTRY (pass columns=... or opaque=True to "
-            "_register).",
-        )
-    # The registry stores the contract fn as ``Callable[[dict], Any]`` for
-    # cross-module generality; every registration in this module passes a
-    # ``ColumnContractFn``, so the cast is safe by construction.
-    result: ColumnContract = entry.column_contract(config)
-    return result
-
-
-def _opaque_columns(_config: dict[str, Any]) -> ColumnContract:
+def _opaque_columns(_config: dict[str, Any]) -> _ColumnContract:
     """Column contract for explicitly opaque nodes: (None, None)."""
-    return OPAQUE_CONTRACT
+    return _OPAQUE_CONTRACT
 
 
-def _passthrough_columns(_config: dict[str, Any]) -> ColumnContract:
+def _passthrough_columns(_config: dict[str, Any]) -> _ColumnContract:
     """Column contract for passthrough nodes: creates nothing, reads nothing."""
     return (set(), set())
 
@@ -308,13 +256,8 @@ def _passthrough_columns(_config: dict[str, Any]) -> ColumnContract:
 def _passthrough_fn(*dfs_positional: _Frame, **dfs_by_name: _Frame) -> _Frame:
     """Shared passthrough: return the first incoming frame or an empty LazyFrame.
 
-    Per MULTI_FRAME_PLAN §4b the executor binds incoming edges to the
-    consumer function as keyword arguments keyed by ``sourceHandle or
-    source_node_label``. The function also accepts positional args so
-    direct callers (tests that drive the builder-produced function
-    in isolation) keep working. When both forms are supplied the keyword
-    form takes precedence; ``next(iter(dfs_by_name.values()))`` preserves
-    the edge-declaration order the executor inserts into the dict.
+    Graph execution supplies frames in edge order. Named-frame invocation
+    preserves its insertion order and takes precedence when present.
     """
     if dfs_by_name:
         return next(iter(dfs_by_name.values()))
@@ -326,9 +269,9 @@ def _explore_fn(df: _Frame) -> _Frame:
     return df
 
 
-def _explore_columns(config: dict[str, Any]) -> ColumnContract:
+def _explore_columns(config: dict[str, Any]) -> _ColumnContract:
     """Explore code can derive/filter arbitrary analysis columns."""
-    return OPAQUE_CONTRACT if (config.get("code") or "").strip() else _passthrough_columns(config)
+    return _OPAQUE_CONTRACT if (config.get("code") or "").strip() else _passthrough_columns(config)
 
 
 def _configured_pipeline_dir() -> Path | None:
@@ -355,28 +298,10 @@ def _configured_pipeline_dir() -> Path | None:
 def _resolve_runtime_data_path(data_path: str) -> str:
     """Anchor a (possibly relative) runtime data path to the pipeline dir.
 
-    This retains the historical builder-level path contract for the direct
-    helper call sites below. Registered API Input and External File builders
-    now delegate their full config-driven load to :mod:`haute._node_apply`,
-    which applies the same project/pipeline candidate policy.
-
     Relative ``path`` values are pipeline-directory-relative (the GUI file
     browser reports them from the pipeline's location, and codegen emits them
     under ``Path(__file__).parent``); the cache-build route resolves them the
-    same way.  These in-process executor paths used to consume the RAW relative
-    string, so downstream resolution happened against ``cwd`` —
-    :func:`haute._json_flatten._path_hash` for apiInput; ``Path(...).resolve()``
-    inside ``read_source`` (API_INPUT) and ``content_hash`` /
-    ``validate_project_path`` inside ``load_external_object`` (EXTERNAL_FILE).
-    When the pipeline lived in a subdirectory and the server ran from the
-    project root, the resolved location diverged from the pipeline-dir-anchored
-    one the optional "Cache as Parquet" prewarm wrote / the nested data file
-    actually sits at — producing a wrong cache key or raw-file miss (apiInput), or a
-    file-not-found / wrong-file read (API_INPUT, EXTERNAL_FILE) that only
-    agreed when cwd == the pipeline dir.
-
-    Resolving here — at each call site, exactly as codegen resolves in its
-    generated function body — keeps the shared runtime entry points
+    same way. Resolving at this builder seam keeps the shared runtime entry points
     (``load_v2_api_source``, ``read_data_source``, ``load_external_object``)
     free of duplicated resolution logic.  Absolute paths pass straight through
     :func:`haute._path_resolution.resolve_runtime_file_path`.
@@ -413,11 +338,8 @@ def _config_with_resolved_data_path(config: Mapping[str, Any]) -> Mapping[str, A
     Flat, non-JSON ``API_INPUT`` nodes carry the runtime
     data path inside ``config["path"]``, consumed by
     :func:`haute._io.read_data_source` → ``build_data_source_adapter`` →
-    ``read_source``.  That read resolves a relative path against ``cwd``, so the
-    same nested-pipeline / project-root launch that broke the v2 apiInput cache
-    lookup also made a relative ``API_INPUT`` path read the wrong (or a
-    missing) file.  Anchor it the same way :func:`_resolve_runtime_data_path`
-    anchors the apiInput closure path, at execute time.
+    ``read_source``. Anchor it the same way :func:`_resolve_runtime_data_path`
+    anchors the apiInput closure path at execute time.
 
     ``databricks`` sources (no ``path``), empty paths, and absolute paths leave
     the config unchanged (returned as-is, no copy) — there is nothing to
@@ -501,10 +423,7 @@ def _build_api_input(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
 @_register(NodeType.DATA_INPUT, opaque=True)
 def _build_data_input(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
-    code = _strip_generated_boilerplate_from_code(
-        config.get("code") or "",
-        kind="data_input",
-    )
+    code = str(config.get("code") or "").strip()
     code_preserves_projection = projection.source_user_code_preserves_column_projection(code)
     preamble = dict(ctx.preamble_ns) if ctx.preamble_ns else None
 
@@ -551,7 +470,7 @@ def _build_data_output(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     return ctx.func_name, _passthrough_fn, False
 
 
-def _constant_columns(config: dict[str, Any]) -> ColumnContract:
+def _constant_columns(config: dict[str, Any]) -> _ColumnContract:
     raw_values = config.get("values", []) or []
     produced = {v.get("name", "") for v in raw_values if v.get("name")}
     return produced or {"constant"}, set()
@@ -591,20 +510,12 @@ def _build_live_switch(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
         # Build a name->frame view in declared-source order, then delegate to
         # the shared selector so the canvas executor and a generated
         # standalone ``@pipeline.live_switch`` body route the SAME branch.
-        # The wrapper accepts both kwarg (executor) and positional (direct
-        # test caller) forms.
         if dfs_by_name:
             order = [name for name in input_names if name in dfs_by_name]
             frames = {name: dfs_by_name[name] for name in order}
         else:
             order = list(input_names[: len(dfs_positional)])
             frames = dict(zip(order, dfs_positional))
-            # A caller that supplies more positional frames than declared
-            # inputs (or none declared) still gets a deterministic fallback.
-            if len(dfs_positional) > len(order):
-                for extra_i in range(len(order), len(dfs_positional)):
-                    frames[f"__arg{extra_i}"] = dfs_positional[extra_i]
-                    order.append(f"__arg{extra_i}")
         return select_live_switch_input(
             input_scenario_map,
             _source,
@@ -618,11 +529,7 @@ def _build_live_switch(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
 
 @_register(NodeType.EXPLORE, columns=_explore_columns)
 def _build_explore(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
-    code = _strip_generated_boilerplate_from_code(
-        ctx.config.get("code") or "",
-        kind="polars",
-        param_names=ctx.source_names,
-    )
+    code = str(ctx.config.get("code") or "").strip()
     if not code:
         return ctx.func_name, _explore_fn, False
 
@@ -647,11 +554,7 @@ def _build_explore(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
 @_register(NodeType.EXTERNAL_FILE, opaque=True)
 def _build_external_file(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
-    code = _strip_generated_boilerplate_from_code(
-        config.get("code") or "",
-        kind="external",
-        param_names=ctx.source_names,
-    )
+    code = str(config.get("code") or "").strip()
     _src_names = list(ctx.source_names)
 
     _orig_src = list(ctx.orig_source_names) if ctx.orig_source_names else None
@@ -688,7 +591,7 @@ def _build_external_file(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
         return ctx.func_name, _passthrough_fn, False
 
 
-def _output_columns(config: dict[str, Any]) -> ColumnContract:
+def _output_columns(config: dict[str, Any]) -> _ColumnContract:
     """Column contract for an OUTPUT node: it reads the mapping's source columns.
 
     Produces nothing into the column space (it is terminal and emits a JSON
@@ -707,9 +610,7 @@ def _build_output(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
     if config.get("outputMapping") is None:
         raise OutputMappingSchemaError(
-            f"OUTPUT node {ctx.node.data.label!r} has no `outputMapping`; the "
-            "legacy `fields` shape is no longer supported — open the OUTPUT "
-            "editor to migrate.",
+            f"OUTPUT node {ctx.node.data.label!r} requires `outputMapping`.",
         )
 
     # The executor binds incoming edges positionally — ``fn(*input_lfs)`` in
@@ -719,9 +620,8 @@ def _build_output(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     # port name (``sourceHandle or source-node-name``), which both aligns
     # with ``input_lfs[i]`` and disambiguates a multi-port source (one
     # apiInput feeding several edges has one node name but distinct
-    # sourceHandles). Fall back to ``source_names`` when a caller didn't
-    # supply ports (e.g. a direct ``_build_node_fn`` call in a unit test).
-    source_ports = list(ctx.source_ports if ctx.source_ports is not None else ctx.source_names)
+    # sourceHandles).
+    source_ports = list(ctx.source_ports or [])
     label = ctx.node.data.label
 
     def output_fn(*dfs_positional: _Frame, **dfs_by_name: _Frame) -> _Frame:
@@ -740,7 +640,7 @@ def _build_output(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     return ctx.func_name, output_fn, False
 
 
-def _banding_columns(config: dict[str, Any]) -> ColumnContract:
+def _banding_columns(config: dict[str, Any]) -> _ColumnContract:
     factors = config.get("factors") or []
     produced = {f["outputColumn"] for f in factors if f.get("outputColumn")}
     referenced = {f["column"] for f in factors if f.get("column")}
@@ -768,9 +668,9 @@ def _build_banding(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     return ctx.func_name, banding_fn, False
 
 
-def _rating_step_columns(config: dict[str, Any]) -> ColumnContract:
+def _rating_step_columns(config: dict[str, Any]) -> _ColumnContract:
     if (config.get("code") or "").strip():
-        return OPAQUE_CONTRACT
+        return _OPAQUE_CONTRACT
     tables = normalise_rating_tables(config)
     produced: set[str] = set()
     referenced: set[str] = set()
@@ -779,10 +679,7 @@ def _rating_step_columns(config: dict[str, Any]) -> ColumnContract:
         if out:
             produced.add(out)
         referenced.update(t.get("factors") or [])
-    table_out_cols = [t.get("outputColumn", "") for t in tables if t.get("outputColumn")]
     for combined in _normalise_combined_outputs(config):
-        if combined.get("_legacy") and len(table_out_cols) < 2:
-            continue
         produced.add(combined["outputColumn"])
     return produced, referenced
 
@@ -792,12 +689,7 @@ def _build_rating_step(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
     tables = normalise_rating_tables(config)
     combined_outputs = _normalise_combined_outputs(config)
-    first = ctx.source_names[0] if ctx.source_names else "df"
-    code = _strip_generated_boilerplate_from_code(
-        config.get("code") or "",
-        kind="rating_step",
-        param_names=(first,),
-    )
+    code = str(config.get("code") or "").strip()
     _preamble = dict(ctx.preamble_ns) if ctx.preamble_ns else None
 
     _tables_captured: list = list(tables)
@@ -817,7 +709,7 @@ def _build_rating_step(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     return ctx.func_name, rating_fn, False
 
 
-def _scenario_expander_columns(config: dict[str, Any]) -> ColumnContract:
+def _scenario_expander_columns(config: dict[str, Any]) -> _ColumnContract:
     # Post-expansion user code can reference arbitrary columns — opaque.
     if (config.get("code") or "").strip():
         return (None, None)
@@ -840,12 +732,7 @@ def _build_scenario_expander(ctx: NodeBuildContext) -> tuple[str, Callable, bool
     _steps = int(raw_steps) if raw_steps is not None else _DEFAULT_SCENARIO_STEPS
     if _steps < 1:
         raise ValueError(f"Scenario expander requires steps >= 1, got {_steps}")
-    first = ctx.source_names[0] if ctx.source_names else "df"
-    code = _strip_generated_boilerplate_from_code(
-        config.get("code") or "",
-        kind="scenario_expander",
-        param_names=(first,),
-    )
+    code = str(config.get("code") or "").strip()
     _preamble = dict(ctx.preamble_ns) if ctx.preamble_ns else None
     _config_captured = dict(config)
 
@@ -903,7 +790,7 @@ def _build_optimiser(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     return ctx.func_name, _passthrough_fn, False
 
 
-def _optimiser_apply_columns(config: dict[str, Any]) -> ColumnContract:
+def _optimiser_apply_columns(config: dict[str, Any]) -> _ColumnContract:
     # Mirror the "do we have a source configured?" check in
     # _build_optimiser_apply: without an artifact path or a valid
     # MLflow source the builder returns _passthrough_fn, meaning the
@@ -988,16 +875,12 @@ def _build_modelling(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     return ctx.func_name, _passthrough_fn, False
 
 
-def _model_score_columns(config: dict[str, Any]) -> ColumnContract:
+def _model_score_columns(config: dict[str, Any]) -> _ColumnContract:
     out = config.get("output_column", "prediction")
     produced = {out} if out else {"prediction"}
 
     # Post-processing code can reference arbitrary columns — opaque.
-    code = _strip_generated_boilerplate_from_code(
-        config.get("code") or "",
-        kind="model_score",
-        param_names=("df",),
-    )
+    code = str(config.get("code") or "").strip()
     if code:
         return produced, None
 
@@ -1122,11 +1005,7 @@ def _declared_categorical_levels_for_model_score(
 @_register(NodeType.MODEL_SCORE, columns=_model_score_columns, is_behavioural=True)
 def _build_model_score(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
-    code = _strip_generated_boilerplate_from_code(
-        config.get("code") or "",
-        kind="model_score",
-        param_names=ctx.source_names,
-    )
+    code = str(config.get("code") or "").strip()
     # Default to "" (not "run") — empty sourceType means the node is
     # unconfigured and should passthrough.  Codegen and score_from_config
     # default to "run" because they only execute for configured nodes.
@@ -1183,11 +1062,7 @@ def _build_model_score(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
 def _build_transform(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
     _src_names = list(ctx.source_names)
-    code = _strip_generated_boilerplate_from_code(
-        config.get("code") or "",
-        kind="polars",
-        param_names=_src_names,
-    )
+    code = str(config.get("code") or "").strip()
     _orig_src = list(ctx.orig_source_names) if ctx.orig_source_names else None
     _in_map = dict(config.get("inputMapping", {})) or None
     _preamble = dict(ctx.preamble_ns) if ctx.preamble_ns else None
@@ -1443,7 +1318,6 @@ def _apply_online(
 
 def _prepare_online_apply_frame(lf: _Frame, artifact: dict[str, Any]) -> pl.DataFrame:
     """Materialise an online apply input frame using runtime apply dtypes."""
-    from haute._execution_context import ExecutionProfile
     from haute._polars_utils import streaming_collect
 
     qid_col = artifact.get("quote_id", "quote_id")
@@ -1474,10 +1348,7 @@ def _prepare_online_apply_frame(lf: _Frame, artifact: dict[str, Any]) -> pl.Data
             cast_exprs.append(pl.col(name).cast(pl.Float32))
             cast_names.add(name)
 
-    return streaming_collect(
-        lf.with_columns(cast_exprs),
-        profile=ExecutionProfile.LAZY_SINK,
-    )
+    return streaming_collect(lf.with_columns(cast_exprs))
 
 
 # Composite ratebook factor groups (3b.2): price-contour names a composite
@@ -1487,45 +1358,8 @@ def _prepare_online_apply_frame(lf: _Frame, artifact: dict[str, Any]) -> pl.Data
 # save path through JSON's ``\u001f`` escape).  Splitting on these two
 # separators is therefore the library-canonical decoding — the same one
 # ``RatebookResult.to_rating_entries`` performs.
-_RATEBOOK_GROUP_NAME_SEPARATOR = ":"
 _RATEBOOK_GROUP_LEVEL_SEPARATOR = "\x1f"
 _RATEBOOK_FACTOR_GROUP_KEY = "__factor_group__"
-
-
-def _ratebook_table_is_composite(levels: Iterable[Any]) -> bool:
-    """A saved factor table is composite iff any level embeds the unit separator.
-
-    A join of two or more component values always contains the separator, and
-    an ASCII control character never appears in real level labels — so the
-    artifact is self-describing.  A table whose NAME contains ``":"`` but
-    whose levels carry no separator is a literal single column named
-    ``"a:b"`` and joins as such.
-    """
-    return any(
-        isinstance(level, str) and _RATEBOOK_GROUP_LEVEL_SEPARATOR in level for level in levels
-    )
-
-
-def _ratebook_join_columns(table_name: str) -> list[str]:
-    """Component join columns of a composite factor table name.
-
-    Only called for tables whose levels are unit-separator joined, so the
-    name MUST decompose into two or more distinct, non-empty column names.
-    Anything else is a malformed artifact and fails loudly.
-    """
-    columns = table_name.split(_RATEBOOK_GROUP_NAME_SEPARATOR)
-    if (
-        len(columns) < 2
-        or any(not column for column in columns)
-        or len(set(columns)) != len(columns)
-    ):
-        raise ValueError(
-            f"optimiserApply ratebook factor table {table_name!r} has composite "
-            "levels (unit-separator joined) but its name does not decompose into "
-            "two or more distinct non-empty column names joined by "
-            f"{_RATEBOOK_GROUP_NAME_SEPARATOR!r}"
-        )
-    return columns
 
 
 def _split_ratebook_level(level: Any, join_columns: list[str], table_name: str) -> list[str]:
@@ -1543,12 +1377,9 @@ def _split_ratebook_level(level: Any, join_columns: list[str], table_name: str) 
 def _ratebook_lookup_table(
     name: str,
     entries: list[dict[str, Any]],
-    dtype_records: list[dict[str, Any]] | None = None,
-) -> dict[str, Any] | None:
+    dtype_records: list[dict[str, Any]],
+) -> dict[str, Any]:
     """Convert one saved factor table into a rating-table lookup spec.
-
-    Returns ``None`` when no entry carries ``__factor_group__`` (skipped with
-    a warning, matching the long-standing behaviour for malformed rows).
 
     Miss policy (3b.5): the spec deliberately opts in to ``onMissing:
     "neutral"`` with NO ``defaultValue``.  An optimiser relativity is a
@@ -1560,30 +1391,11 @@ def _ratebook_lookup_table(
     (table, count, missing keys) at materialisation, and the explainability
     ladder flags the row as ``unseen``.
     """
-    raw_entries = [entry for entry in entries if _RATEBOOK_FACTOR_GROUP_KEY in entry]
-    skipped = len(entries) - len(raw_entries)
-    if skipped:
-        logger.warning(
-            "ratebook_entries_missing_factor_group",
-            factor=name,
-            skipped=skipped,
-            total=len(entries),
-        )
-    if not raw_entries:
-        return None
-
-    levels = [entry[_RATEBOOK_FACTOR_GROUP_KEY] for entry in raw_entries]
-    if dtype_records is not None:
-        join_columns = [str(record["column"]) for record in dtype_records]
-        is_composite = len(join_columns) > 1
-    else:
-        # Compatibility for direct helper callers. Production apply always
-        # supplies persisted metadata and never guesses factor columns.
-        is_composite = _ratebook_table_is_composite(levels)
-        join_columns = _ratebook_join_columns(name) if is_composite else [name]
+    join_columns = [str(record["column"]) for record in dtype_records]
+    is_composite = len(join_columns) > 1
     if is_composite:
         lookup_entries = []
-        for entry in raw_entries:
+        for entry in entries:
             parts = _split_ratebook_level(entry[_RATEBOOK_FACTOR_GROUP_KEY], join_columns, name)
             lookup_entry: dict[str, Any] = dict(zip(join_columns, parts))
             lookup_entry["value"] = entry["optimal_scenario_value"]
@@ -1594,7 +1406,7 @@ def _ratebook_lookup_table(
                 join_columns[0]: entry[_RATEBOOK_FACTOR_GROUP_KEY],
                 "value": entry["optimal_scenario_value"],
             }
-            for entry in raw_entries
+            for entry in entries
         ]
 
     return {
@@ -1727,8 +1539,6 @@ def _apply_ratebook(
             # {"__factor_group__": level, "optimal_scenario_value": value}
             # Convert to the rating table format expected by _apply_rating_table
             table = _ratebook_lookup_table(_name, entries, dtype_records)
-            if table is None:
-                continue
             out_col: str = table["outputColumn"]
             result_lf = _apply_rating_table(result_lf, table, input_schema=schema_by_name)
             # Neutral fill AFTER the miss guard has counted and logged the

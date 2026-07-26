@@ -219,7 +219,6 @@ class TestEngineInvocation:
         preamble namespace, and the production contract-enforcement flag."""
 
         import haute.assistant._tools as tools_module
-        from haute.executor import ENFORCE_CONTRACTS
 
         captured: dict = {}
         real_facade = tools_module.execute_lazy_graph
@@ -236,7 +235,7 @@ class TestEngineInvocation:
         assert "columns" in result, result
         assert captured["target_node_id"] == "enriched"
         assert captured["preserve_node_ids"] == {"enriched"}
-        assert captured["enforce_contracts"] is ENFORCE_CONTRACTS
+        assert captured["enforce_contracts"] is True
         parsed_active_source = tools_module.parse_pipeline_to_graph(Path("main.py")).active_source
         assert captured["source"] == parsed_active_source
         assert captured["preamble_ns"], "preamble namespace must be compiled and passed"

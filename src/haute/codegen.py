@@ -545,11 +545,9 @@ def _error_on_name_collisions(labels: list[str]) -> None:
     """Raise :class:`ParseError` on any pair of labels that sanitize to the
     same identifier.
 
-    Haute has no deployed user base that needs a migration path, so a
-    collision is treated as a hard error.  It is a silent user-data-loss
-    bug: codegen emits two ``def <name>(...)`` blocks and the second
-    shadows the first at import time.  Failing at codegen time prevents
-    corrupting the pipeline on disk.
+    A collision is a silent user-data-loss bug: codegen emits two
+    ``def <name>(...)`` blocks and the second shadows the first at import
+    time. Failing at codegen time prevents corrupting the pipeline on disk.
 
     Pass a flat list of every label that will ultimately become a
     function name in any emitted file (root graph + every submodel).

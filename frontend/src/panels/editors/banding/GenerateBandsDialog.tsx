@@ -87,7 +87,7 @@ export function GenerateBandsDialog({
   }
 
   const inputStyle = {
-    background: "var(--bg-surface)",
+    background: "var(--bg-panel)",
     border: "1px solid var(--border)",
     color: "var(--text-primary)",
   }
@@ -163,7 +163,7 @@ export function GenerateBandsDialog({
           onClick={onClose}
           className="px-2.5 py-1 rounded-md text-[11px] font-medium transition-colors"
           style={{
-            background: "var(--bg-surface)",
+            background: "var(--bg-panel)",
             border: "1px solid var(--border)",
             color: "var(--text-secondary)",
           }}
