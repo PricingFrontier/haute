@@ -323,8 +323,8 @@ def test_explore_reuses_typed_report_cache_without_reexecuting_sources(
         "source": "live",
     }
     spec = _explore_service._prepare_spec(ExploreRunRequest.model_validate(body))
-    assert EXPLORE_CACHE_VERSION == 3
-    assert spec.report_cache_key.startswith("explore:v3:")
+    assert EXPLORE_CACHE_VERSION == 4
+    assert spec.report_cache_key.startswith("explore:v4:")
 
     _explore_service._report_cache.put(
         spec.report_cache_key,
@@ -431,14 +431,14 @@ def test_explore_cancel_stops_in_flight_job(
 
     # Make the worker block until we tell it to proceed, so we can cancel mid-flight.
     gate = threading.Event()
-    original_collect = service_mod.streaming_collect
+    original_collect = service_mod.cancellable_streaming_collect
 
     def gated_collect(*args, **kwargs):
         if not gate.is_set():
             gate.wait(timeout=5.0)
         return original_collect(*args, **kwargs)
 
-    monkeypatch.setattr(service_mod, "streaming_collect", gated_collect)
+    monkeypatch.setattr(service_mod, "cancellable_streaming_collect", gated_collect)
 
     body = {"graph": _explore_graph(str(path)), "node_id": "explore", "source": "live"}
     started = client.post("/api/explore/run", json=body).json()
@@ -460,6 +460,68 @@ def test_explore_cancel_stops_in_flight_job(
             thread.join(timeout=5.0)
             assert not thread.is_alive()
             break
+
+
+def test_explore_supersedes_an_in_flight_job(
+    client: TestClient,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """A newer request for the same Explore family supersedes the older job."""
+    from haute.routes.explore import _explore_service
+
+    path = tmp_path / "quotes.parquet"
+    pl.DataFrame({"quote_id": ["a"], "premium": [10]}).write_parquet(path)
+    entered = threading.Event()
+    release = threading.Event()
+    original_materialise = _explore_service._materialise_and_summarise
+
+    def blocked_materialise(*args, **kwargs):
+        entered.set()
+        assert release.wait(timeout=5.0)
+        return original_materialise(*args, **kwargs)
+
+    monkeypatch.setattr(_explore_service, "_materialise_and_summarise", blocked_materialise)
+    body = {"graph": _explore_graph(str(path)), "node_id": "explore", "source": "live"}
+
+    first = client.post("/api/explore/run", json=body).json()
+    assert entered.wait(timeout=5.0)
+    second = client.post("/api/explore/run", json=body).json()
+
+    assert first["status"] == "started"
+    assert second["status"] == "started"
+    first_status = client.get(f"/api/explore/status/{first['job_id']}")
+    assert first_status.status_code == 200
+    assert first_status.json()["status"] == "superseded"
+
+    release.set()
+    assert _poll_explore(client, second["job_id"], timeout=5.0)["status"] in _TERMINAL_JOB_STATUSES
+    for job_id in (first["job_id"], second["job_id"]):
+        worker_name = f"haute-explore-{job_id}"
+        for thread in threading.enumerate():
+            if thread.name == worker_name:
+                thread.join(timeout=5.0)
+                assert not thread.is_alive()
+                break
+
+
+def test_explore_rejects_node_without_exactly_one_parent(
+    client: TestClient, tmp_path: Path
+) -> None:
+    path = tmp_path / "quotes.parquet"
+    pl.DataFrame({"quote_id": ["a"], "premium": [10]}).write_parquet(path)
+    graph = _explore_graph(str(path))
+    graph["edges"] = [edge for edge in graph["edges"] if edge["target"] != "explore"]
+
+    response = client.post(
+        "/api/explore/run",
+        json={"graph": graph, "node_id": "explore", "source": "live"},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == (
+        "Explore node 'explore' must have exactly one upstream input (found 0)."
+    )
 
 
 def test_explore_status_unknown_job_is_404(client: TestClient) -> None:
@@ -1245,6 +1307,55 @@ def test_build_frame_stats_keeps_unsupported_categorical_profiles_unexpanded(
     assert profile.values == []
 
 
+def test_build_frame_stats_does_not_mark_uncomputed_list_values_as_truncated(
+    explore_execution_context,
+) -> None:
+    from haute.routes._explore_service import _build_frame_stats
+
+    lf = pl.DataFrame({"codes": [[str(index)] for index in range(51)]}).lazy()
+
+    frame_stats = _build_frame_stats(
+        lf,
+        lf.collect_schema(),
+        execution_context=explore_execution_context,
+    )
+
+    [profile] = frame_stats.overview_summary.categorical_summary
+    assert profile.distinct_count == 51
+    assert profile.expandable is False
+    assert profile.values_truncated is False
+    assert profile.values == []
+
+
+def test_build_frame_stats_uses_display_label_groups_for_binary_truncation(
+    explore_execution_context,
+) -> None:
+    from haute.routes._explore_service import _build_frame_stats
+
+    # Every raw binary value is distinct, but all lossily decode to the same
+    # display label. Truncation reflects labels returned to the UI, not raw bytes.
+    lf = pl.DataFrame(
+        {
+            "payload": pl.Series(
+                "payload",
+                [b"\x80" + bytes([index]) for index in range(0x80, 0x80 + 51)],
+                dtype=pl.Binary,
+            )
+        }
+    ).lazy()
+
+    frame_stats = _build_frame_stats(
+        lf,
+        lf.collect_schema(),
+        execution_context=explore_execution_context,
+    )
+
+    [profile] = frame_stats.overview_summary.categorical_summary
+    assert profile.distinct_count == 51
+    assert profile.values_truncated is False
+    assert [(item.value, item.count) for item in profile.values] == [("\ufffd" * 2, 51)]
+
+
 def test_build_frame_stats_categorical_value_counts_handle_count_column_name(
     explore_execution_context,
 ) -> None:
@@ -1297,13 +1408,13 @@ def test_build_explore_frame_stats_uses_one_streaming_collect_without_categorica
     from haute.routes import _explore_service as service_mod
 
     calls = []
-    original_streaming_collect = service_mod.streaming_collect
+    original_streaming_collect = service_mod.cancellable_streaming_collect
 
     def counted_streaming_collect(*args, **kwargs):
         calls.append(args[0])
         return original_streaming_collect(*args, **kwargs)
 
-    monkeypatch.setattr(service_mod, "streaming_collect", counted_streaming_collect)
+    monkeypatch.setattr(service_mod, "cancellable_streaming_collect", counted_streaming_collect)
     lf = pl.DataFrame({"value": [None, 1.0, 2.0]}).lazy()
 
     frame_stats = service_mod._build_frame_stats(
@@ -1323,13 +1434,13 @@ def test_build_explore_frame_stats_uses_single_batched_collect_for_bounded_value
     from haute.routes import _explore_service as service_mod
 
     calls = []
-    original_streaming_collect = service_mod.streaming_collect
+    original_streaming_collect = service_mod.cancellable_streaming_collect
 
     def counted_streaming_collect(*args, **kwargs):
         calls.append(args[0])
         return original_streaming_collect(*args, **kwargs)
 
-    monkeypatch.setattr(service_mod, "streaming_collect", counted_streaming_collect)
+    monkeypatch.setattr(service_mod, "cancellable_streaming_collect", counted_streaming_collect)
     lf = pl.DataFrame(
         {
             "value": [None, "a", "b"],

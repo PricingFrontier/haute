@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -268,6 +270,118 @@ def test_apply_explicit_frontier_point_materialises_online_result_to_disk(
     assert Path(handle["path"]).is_file()
     assert "solve_result" not in job
     assert "quote_grid" not in job
+
+
+def test_concurrent_frontier_point_materialisations_preserve_both_handles(
+    client,
+    clean_job_store,
+):
+    """Disjoint point artifacts merge instead of overwriting one another."""
+    apply_barrier = threading.Barrier(2)
+    job = _online_frontier_job(quote_grid=MagicMock())
+    clean_job_store.jobs["apply_points_concurrently"] = job
+
+    def apply_from_grid(_grid, *, lambdas, constraints):
+        del constraints
+        apply_barrier.wait(timeout=3)
+        point_value = float(lambdas["volume"])
+        return SimpleNamespace(
+            dataframe=pl.DataFrame(
+                {
+                    "quote_id": [f"q-{point_value}"],
+                    "optimal_scenario_value": [point_value],
+                }
+            )
+        )
+
+    def request_point(point_index: int):
+        return client.post(
+            "/api/optimiser/apply",
+            json={
+                "job_id": "apply_points_concurrently",
+                "point_index": point_index,
+            },
+        )
+
+    with (
+        patch("price_contour.apply_from_grid", side_effect=apply_from_grid),
+        patch.object(clean_job_store, "clear_result_data"),
+        ThreadPoolExecutor(max_workers=2) as pool,
+    ):
+        responses = [
+            future.result(timeout=5)
+            for future in (pool.submit(request_point, 0), pool.submit(request_point, 1))
+        ]
+
+    assert [response.status_code for response in responses] == [200, 200]
+    handles = clean_job_store.require_job("apply_points_concurrently")["artifact_handles"]
+    assert set(handles) == {"frontier_apply_result:0", "frontier_apply_result:1"}
+    for handle in handles.values():
+        assert Path(handle["path"]).is_file()
+
+
+def test_frontier_point_materialisation_survives_store_copy_of_frontier_payload(
+    client,
+    clean_job_store,
+):
+    """A store may copy nested payloads without representing a recompute."""
+    job_id = "apply_point_after_store_copy"
+    clean_job_store.jobs[job_id] = _online_frontier_job(
+        quote_grid=MagicMock(),
+        frontier_generation=7,
+    )
+
+    def apply_from_grid(_grid, *, lambdas, constraints):
+        del lambdas, constraints
+        current = clean_job_store.require_job(job_id)
+        clean_job_store.atomic_update(
+            job_id,
+            {"frontier_data": dict(current["frontier_data"])},
+            expected_status="completed",
+        )
+        return SimpleNamespace(
+            dataframe=pl.DataFrame(
+                {
+                    "quote_id": ["q-store-copy"],
+                    "optimal_scenario_value": [1.0],
+                }
+            )
+        )
+
+    with patch("price_contour.apply_from_grid", side_effect=apply_from_grid):
+        response = client.post(
+            "/api/optimiser/apply",
+            json={"job_id": job_id, "point_index": 0},
+        )
+
+    assert response.status_code == 200, response.text
+    assert clean_job_store.require_job(job_id)["frontier_generation"] == 7
+
+
+def test_frontier_point_artifact_handles_are_capped_oldest_first():
+    from haute.routes.optimiser import (
+        _MAX_FRONTIER_APPLY_ARTIFACTS,
+        _with_bounded_frontier_apply_handle,
+    )
+
+    existing = {
+        "apply_result": {"path": "base"},
+        **{
+            f"frontier_apply_result:{index}": {"path": f"point-{index}"}
+            for index in range(_MAX_FRONTIER_APPLY_ARTIFACTS)
+        },
+    }
+
+    updated, evicted = _with_bounded_frontier_apply_handle(
+        existing,
+        "frontier_apply_result:99",
+        {"path": "point-99"},
+    )
+
+    assert updated["apply_result"] == {"path": "base"}
+    assert "frontier_apply_result:0" not in updated
+    assert updated["frontier_apply_result:99"] == {"path": "point-99"}
+    assert evicted == [{"path": "point-0"}]
 
 
 def test_apply_explicit_ratebook_frontier_point_is_contract_error(

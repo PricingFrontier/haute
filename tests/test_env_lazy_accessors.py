@@ -181,7 +181,7 @@ def test_accessor_malformed_value_fails_loudly(
 
 
 def test_solver_timeout_optional_semantics(monkeypatch):
-    """``HAUTE_SOLVER_TIMEOUT`` is optional: unset means None (no timeout)."""
+    """The optional timeout is absent by default and strict when configured."""
     from haute.routes import _optimiser_service as opt
 
     monkeypatch.delenv("HAUTE_SOLVER_TIMEOUT", raising=False)
@@ -190,7 +190,7 @@ def test_solver_timeout_optional_semantics(monkeypatch):
     assert opt._default_solver_timeout() == 42
     # Malformed must not silently remove the timeout.
     monkeypatch.setenv("HAUTE_SOLVER_TIMEOUT", "not-an-int")
-    with pytest.raises(RuntimeError, match="HAUTE_SOLVER_TIMEOUT"):
+    with pytest.raises(RuntimeError, match="HAUTE_SOLVER_TIMEOUT.*positive integer"):
         opt._default_solver_timeout()
 
 

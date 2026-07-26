@@ -115,7 +115,7 @@ class TestCreateSubmodelGraph:
         assert meta["file"] == "modules/sub.py"
         assert set(meta["childNodeIds"]) == {"t1", "t2"}
         assert "t1" in meta["inputPorts"]
-        assert meta["graph"]["submodel_name"] == "sub"
+        assert meta["graph"]["pipeline_name"] == "sub"
 
     def test_preserves_existing_submodels(self):
         """Existing submodel metadata is preserved when adding a new one."""
@@ -333,7 +333,7 @@ class TestCreateSubmodelGraph:
         assert inner_edge_sources == {"t1"}
         assert inner_edge_targets == {"t2"}
 
-        assert sm_graph["submodel_name"] == "inner"
+        assert sm_graph["pipeline_name"] == "inner"
         assert sm_graph["source_file"] == "modules/inner.py"
 
     def test_no_cross_edges(self):

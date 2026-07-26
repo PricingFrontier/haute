@@ -25,9 +25,7 @@ _TS_SCHEMA = (
     / "editors"
     / "apiInputSchema.ts"
 )
-_TS_NODE_TYPES = (
-    Path(__file__).resolve().parent.parent / "frontend" / "src" / "utils" / "nodeTypes.ts"
-)
+_TS_NODE_TYPES = Path(__file__).resolve().parent.parent / "frontend" / "src" / "types" / "node.ts"
 
 
 def test_frontend_and_backend_allowed_column_types_agree() -> None:
@@ -46,13 +44,17 @@ def test_frontend_and_backend_allowed_column_types_agree() -> None:
 
 def test_frontend_and_backend_node_types_agree() -> None:
     ts = _TS_NODE_TYPES.read_text(encoding="utf-8")
-    m = re.search(r"export const NODE_TYPES\s*=\s*\{(.*?)\}\s*as const", ts, re.DOTALL)
-    assert m is not None, "NODE_TYPES object literal not found in nodeTypes.ts"
+    m = re.search(
+        r"export const PIPELINE_NODE_TYPES\s*=\s*\{(.*?)\}\s*as const",
+        ts,
+        re.DOTALL,
+    )
+    assert m is not None, "PIPELINE_NODE_TYPES object literal not found in types/node.ts"
     frontend_node_types = set(re.findall(r':\s*"([^"]+)"', m.group(1)))
-    assert frontend_node_types, "no quoted node type values parsed from NODE_TYPES"
+    assert frontend_node_types, "no quoted node type values parsed from PIPELINE_NODE_TYPES"
     backend_node_types = {node_type.value for node_type in NodeType}
     assert frontend_node_types == backend_node_types, (
-        f"frontend NODE_TYPES {sorted(frontend_node_types)} != backend "
+        f"frontend PIPELINE_NODE_TYPES {sorted(frontend_node_types)} != backend "
         f"NodeType {sorted(backend_node_types)}. The React Flow wire vocabulary "
         "must match the backend enum exactly."
     )

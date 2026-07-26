@@ -166,8 +166,8 @@ describe("useBackgroundJobs", () => {
       // Progress should be updated on the active job
       expect(useNodeResultsStore.getState().solveJobs["n1"]?.progress?.progress).toBe(0.5)
 
-      // Second poll fires 500ms later (BASE_INTERVAL_MS, no errors)
-      await advance(500)
+      // Healthy polling ramps after the first response: 500ms -> 1s.
+      await advance(1000)
       expect(mockGetStatus).toHaveBeenCalledTimes(2)
 
       // Job should now be completed and moved to results
@@ -261,7 +261,7 @@ describe("useBackgroundJobs", () => {
       expect(mockGetStatus).toHaveBeenCalledTimes(1)
     })
 
-    it("throttles repeated running progress before writing solve job state", async () => {
+    it("publishes repeated running progress on the ramped solve schedule", async () => {
       const mockGetStatus = vi.mocked(getOptimiserStatus)
       mockGetStatus.mockReset()
       mockGetStatus
@@ -278,10 +278,10 @@ describe("useBackgroundJobs", () => {
       await advance(500)
       expect(useNodeResultsStore.getState().solveJobs["n1"]?.progress?.progress).toBe(0.1)
 
-      await advance(500)
-      expect(useNodeResultsStore.getState().solveJobs["n1"]?.progress?.progress).toBe(0.1)
+      await advance(1000)
+      expect(useNodeResultsStore.getState().solveJobs["n1"]?.progress?.progress).toBe(0.2)
 
-      await advance(500)
+      await advance(2000)
       expect(useNodeResultsStore.getState().solveJobs["n1"]?.progress?.progress).toBe(0.3)
     })
   })
@@ -320,7 +320,7 @@ describe("useBackgroundJobs", () => {
       expect(state.trainJobs["t1"]).toBeUndefined()
     })
 
-    it("throttles repeated running progress before writing train job state", async () => {
+    it("publishes repeated running progress on the ramped train schedule", async () => {
       const mockGetStatus = vi.mocked(getTrainStatus)
       mockGetStatus.mockReset()
       mockGetStatus
@@ -337,10 +337,10 @@ describe("useBackgroundJobs", () => {
       await advance(500)
       expect(useNodeResultsStore.getState().trainJobs["t1"]?.progress?.progress).toBe(0.1)
 
-      await advance(500)
-      expect(useNodeResultsStore.getState().trainJobs["t1"]?.progress?.progress).toBe(0.1)
+      await advance(1000)
+      expect(useNodeResultsStore.getState().trainJobs["t1"]?.progress?.progress).toBe(0.2)
 
-      await advance(500)
+      await advance(2000)
       expect(useNodeResultsStore.getState().trainJobs["t1"]?.progress?.progress).toBe(0.3)
     })
 

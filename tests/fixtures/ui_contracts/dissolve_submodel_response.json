@@ -4,15 +4,15 @@
     "nodes": [
       {
         "id": "n1",
-        "type": "custom",
+        "type": "polars",
         "position": { "x": 0, "y": 0 },
-        "data": { "label": "Left" }
+        "data": { "label": "Left", "nodeType": "polars" }
       },
       {
         "id": "n2",
-        "type": "custom",
+        "type": "polars",
         "position": { "x": 100, "y": 0 },
-        "data": { "label": "Right" }
+        "data": { "label": "Right", "nodeType": "polars" }
       }
     ],
     "edges": []

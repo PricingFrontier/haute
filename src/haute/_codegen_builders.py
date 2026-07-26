@@ -85,27 +85,6 @@ def _safe_path(value: str) -> str:
     return _safe_str(value.replace("\\", "/"))
 
 
-def _is_absolute_path(path: str) -> bool:
-    """Check whether *path* looks absolute (Unix or Windows)."""
-    normalized = path.replace("\\", "/")
-    if normalized.startswith("/"):
-        return True
-    if len(normalized) >= 3 and normalized[1] == ":" and normalized[2] == "/":
-        return True
-    return False
-
-
-def _portable_path_expr(path: str) -> str:
-    """Return a Python expression that resolves *path* relative to ``__file__``.
-
-    Absolute paths are left as-is (returned as a quoted string literal).
-    Relative paths become ``Path(__file__).parent / "rel/path"``.
-    """
-    if _is_absolute_path(path):
-        return _safe_path(path)
-    return f"Path(__file__).parent / {_safe_path(path)}"
-
-
 # ---------------------------------------------------------------------------
 # Common helpers shared across builders.
 # ---------------------------------------------------------------------------
@@ -253,14 +232,14 @@ def {func_name}({params}) -> pl.LazyFrame:
 
 def _retained_api_input_template(config_path: str) -> str:
     """Emit an API input whose loader is entirely driven by its sidecar."""
-    return '''\\
+    return f'''\
 @pipeline.api_input()
-def {func_name}() -> pl.LazyFrame | dict[str, pl.LazyFrame]:
-    """{description}"""
+def {{func_name}}() -> pl.LazyFrame | dict[str, pl.LazyFrame]:
+    """{{description}}"""
     from pathlib import Path
     from haute.graph_utils import resolve_api_input_from_config
     return resolve_api_input_from_config(
-        {config_path_repr}, base_dir=Path(__file__).resolve().parent
+        {_safe_path(config_path)}, base_dir=Path(__file__).resolve().parent
     )
 '''
 
@@ -422,7 +401,6 @@ def _gen_api_input(node: GraphNode, source_names: list[str]) -> str:
     return template.format(
         func_name=func_name,
         description=description,
-        config_path_repr=_safe_path(cfg_path),
     )
 
 
@@ -1037,8 +1015,6 @@ __all__ = [
     "_build_params",
     "_common_node_fields",
     "_first_source",
-    "_is_absolute_path",
-    "_portable_path_expr",
     "_safe_path",
     "_safe_str",
     "_sanitize_description",

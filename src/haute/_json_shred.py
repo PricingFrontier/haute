@@ -848,7 +848,10 @@ def shred_to_buffers(
         # shape — but COUNT it (W2 item 2.7): a mixed array loses that element's
         # row for this table, and the loss must be surfaced, never silent.
         for label, col_specs in tables_by_pos.get(pos, []):
-            is_scalar_table = any(leaf == _SCALAR_VALUE_LEAF for _n, leaf, _t, _d in col_specs)
+            is_scalar_table = any(
+                leaf == _SCALAR_VALUE_LEAF and source_depth == depth
+                for _n, leaf, _t, source_depth in col_specs
+            )
             shape_matches = is_scalar if is_scalar_table else is_dict
             if not shape_matches:
                 _count_row_skip(label)
@@ -881,7 +884,10 @@ def shred_to_buffers(
                 # $value resolves to None; ancestor columns still distribute), a
                 # non-record for an object table (counted as a dropped row).
                 for label, col_specs in tables_by_pos.get(pos, []):
-                    if any(leaf == _SCALAR_VALUE_LEAF for _n, leaf, _t, _d in col_specs):
+                    if any(
+                        leaf == _SCALAR_VALUE_LEAF and source_depth == depth
+                        for _n, leaf, _t, source_depth in col_specs
+                    ):
                         buffers[label].append(_emit_row(col_specs, None, ancestors, depth))
                     else:
                         _count_row_skip(label)
@@ -1221,12 +1227,11 @@ def build_per_port_cache(
     dp = Path(data_path)
     cd = Path(cache_dir)
 
-    table_specs = _emitting_table_specs(v2_config)
-    # A build has one source identity. Reuse this exact, double-stat-verified
-    # signature for the no-op decision and for a possible new meta.json.
-    data_file_sig = _data_file_signature(dp)
-
     with _build_lock_for(cd):
+        table_specs = _emitting_table_specs(v2_config)
+        # A build has one source identity. Reuse this exact, double-stat-
+        # verified signature for the no-op decision and a possible new meta.json.
+        data_file_sig = _data_file_signature(dp)
         # No-op trapdoor: if the existing meta.json's fingerprint matches the
         # current v2 schema, the recorded source signature still matches, and
         # every expected parquet matches its signed manifest entry and footer

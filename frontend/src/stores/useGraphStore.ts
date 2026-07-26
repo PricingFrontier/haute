@@ -1,5 +1,5 @@
 /**
- * Zustand store for graph-shaped state (nodes, edges, preamble) with
+ * Zustand store for graph-shaped state (nodes, edges, preamble, submodels) with
  * integrated undo/redo history.
  *
  * Consolidates state previously scattered across `useGraphCanvasState`
@@ -20,11 +20,12 @@
  *
  * Actions split into two tiers:
  *
- *   - History-aware: `setNodes`, `setEdges`, `setPreamble`, and manual
- *     `pushSnapshot`.  Each captures the pre-mutation `{nodes, edges,
- *     preamble}` onto `undoStack` and clears `redoStack`.
+ *   - History-aware: `setNodes`, `setEdges`, `setPreamble`,
+ *     `setNodesAndEdgesAndSubmodels`, and manual `pushSnapshot`. Each captures
+ *     the pre-mutation `{nodes, edges, preamble, submodels}` onto `undoStack`
+ *     and clears `redoStack`.
  *
- *   - Raw: `setNodesRaw`, `setEdgesRaw`, `setPreambleRaw`.  These skip the
+ *   - Raw: `setNodesRaw`, `setEdgesRaw`, `setSubmodelsRaw`, `setPreambleRaw`.
  *     history push — used for mid-drag position updates (React Flow's
  *     `onNodesChange` replays many `position` events per frame; snapshotting
  *     each would fill undo with ~60 entries per drag), for WebSocket sync,
@@ -90,7 +91,7 @@ export interface GraphStore {
   nodes: Node[]
   edges: PipelineEdge[]
   preamble: string
-  /** History-only metadata; excluded from persisted dirty fingerprints. */
+  /** Persisted submodel graphs; included in history and dirty fingerprints. */
   submodels: Record<string, unknown>
   lastSavedSnapshot: GraphSnapshot | null
   undoStack: HistoryEntry[]
@@ -373,8 +374,15 @@ function computePersistedFingerprint(
   nodes: Node[],
   edges: PipelineEdge[],
   preamble: string,
+  submodels: Record<string, unknown>,
 ): string {
-  return serializeSnapshot({ nodes, edges, preamble })
+  return serializeSnapshot({ nodes, edges, preamble, submodels })
+}
+
+function appendHistoryEntry(stack: HistoryEntry[], entry: HistoryEntry): HistoryEntry[] {
+  return stack.length >= MAX_HISTORY
+    ? [...stack.slice(stack.length - MAX_HISTORY + 1), entry]
+    : [...stack, entry]
 }
 
 function computeDirty(
@@ -440,11 +448,7 @@ const useGraphStore = create<GraphStore>()((set, get) => {
   function pushSnapshotInternal(): HistoryEntry[] {
     const { undoStack } = get()
     const snap = captureGraphSnapshot(get())
-    const next =
-      undoStack.length >= MAX_HISTORY
-        ? [...undoStack.slice(undoStack.length - MAX_HISTORY + 1), snap]
-        : [...undoStack, snap]
-    return next
+    return appendHistoryEntry(undoStack, snap)
   }
 
   return {
@@ -460,7 +464,7 @@ const useGraphStore = create<GraphStore>()((set, get) => {
     structuralFingerprint: computeStructuralFingerprint([], [], ""),
     panelContextVersion: 0,
     panelContextFingerprint: computePanelContextFingerprint([], []),
-    persistedFingerprint: computePersistedFingerprint([], [], ""),
+    persistedFingerprint: computePersistedFingerprint([], [], "", {}),
     savedPersistedFingerprint: null,
     dirty: false,
 
@@ -472,7 +476,12 @@ const useGraphStore = create<GraphStore>()((set, get) => {
         redoStack: [],
         ...(() => {
           const nodes = applyUpdater(state.nodes, updater)
-          const nextPersistedFingerprint = computePersistedFingerprint(nodes, state.edges, state.preamble)
+          const nextPersistedFingerprint = computePersistedFingerprint(
+            nodes,
+            state.edges,
+            state.preamble,
+            state.submodels,
+          )
           const nextFingerprint = computeStructuralFingerprint(nodes, state.edges, state.preamble)
           return {
             nodes,
@@ -500,7 +509,12 @@ const useGraphStore = create<GraphStore>()((set, get) => {
         redoStack: [],
         ...(() => {
           const edges = applyUpdater(state.edges, updater)
-          const nextPersistedFingerprint = computePersistedFingerprint(state.nodes, edges, state.preamble)
+          const nextPersistedFingerprint = computePersistedFingerprint(
+            state.nodes,
+            edges,
+            state.preamble,
+            state.submodels,
+          )
           const nextFingerprint = computeStructuralFingerprint(state.nodes, edges, state.preamble)
           return {
             edges,
@@ -532,7 +546,12 @@ const useGraphStore = create<GraphStore>()((set, get) => {
         const undoStack = pushSnapshotInternal()
         const nodes = applyUpdater(state.nodes, nodesUpdater)
         const edges = applyUpdater(state.edges, edgesUpdater)
-        const nextPersistedFingerprint = computePersistedFingerprint(nodes, edges, state.preamble)
+        const nextPersistedFingerprint = computePersistedFingerprint(
+          nodes,
+          edges,
+          state.preamble,
+          state.submodels,
+        )
         const nextFingerprint = computeStructuralFingerprint(nodes, edges, state.preamble)
         return {
           undoStack,
@@ -561,7 +580,12 @@ const useGraphStore = create<GraphStore>()((set, get) => {
         const undoStack = pushSnapshotInternal()
         const nodes = applyUpdater(state.nodes, nodesUpdater)
         const edges = applyUpdater(state.edges, edgesUpdater)
-        const nextPersistedFingerprint = computePersistedFingerprint(nodes, edges, state.preamble)
+        const nextPersistedFingerprint = computePersistedFingerprint(
+          nodes,
+          edges,
+          state.preamble,
+          submodels,
+        )
         const nextFingerprint = computeStructuralFingerprint(nodes, edges, state.preamble)
         return {
           undoStack,
@@ -588,7 +612,12 @@ const useGraphStore = create<GraphStore>()((set, get) => {
 
     setPreamble: (value) => {
       set((state) => {
-        const nextPersistedFingerprint = computePersistedFingerprint(state.nodes, state.edges, value)
+        const nextPersistedFingerprint = computePersistedFingerprint(
+          state.nodes,
+          state.edges,
+          value,
+          state.submodels,
+        )
         const nextFingerprint = computeStructuralFingerprint(state.nodes, state.edges, value)
         return {
           undoStack: pushSnapshotInternal(),
@@ -629,6 +658,7 @@ const useGraphStore = create<GraphStore>()((set, get) => {
           nodes,
           state.edges,
           state.preamble,
+          state.submodels,
         )
         const persistedPatch = {
           persistedFingerprint: nextPersistedFingerprint,
@@ -670,6 +700,7 @@ const useGraphStore = create<GraphStore>()((set, get) => {
           state.nodes,
           edges,
           state.preamble,
+          state.submodels,
         )
         const persistedPatch = {
           persistedFingerprint: nextPersistedFingerprint,
@@ -699,12 +730,33 @@ const useGraphStore = create<GraphStore>()((set, get) => {
     },
 
     setSubmodelsRaw: (submodels) => {
-      set({ submodels })
+      set((state) => {
+        const nextPersistedFingerprint = computePersistedFingerprint(
+          state.nodes,
+          state.edges,
+          state.preamble,
+          submodels,
+        )
+        return {
+          submodels,
+          persistedFingerprint: nextPersistedFingerprint,
+          dirty: computeDirty(
+            state.lastSavedSnapshot,
+            state.savedPersistedFingerprint,
+            nextPersistedFingerprint,
+          ),
+        }
+      })
     },
 
     setPreambleRaw: (value) => {
       set((state) => {
-        const nextPersistedFingerprint = computePersistedFingerprint(state.nodes, state.edges, value)
+        const nextPersistedFingerprint = computePersistedFingerprint(
+          state.nodes,
+          state.edges,
+          value,
+          state.submodels,
+        )
         const nextFingerprint = computeStructuralFingerprint(state.nodes, state.edges, value)
         return {
           preamble: value,
@@ -733,11 +785,10 @@ const useGraphStore = create<GraphStore>()((set, get) => {
     pushVcEntry: (entry) => {
       set((state) => {
         const full: VcHistoryEntry = { kind: "vc", ...entry }
-        const next =
-          state.undoStack.length >= MAX_HISTORY
-            ? [...state.undoStack.slice(state.undoStack.length - MAX_HISTORY + 1), full]
-            : [...state.undoStack, full]
-        return { undoStack: next, redoStack: [] }
+        return {
+          undoStack: appendHistoryEntry(state.undoStack, full),
+          redoStack: [],
+        }
       })
     },
 
@@ -752,14 +803,14 @@ const useGraphStore = create<GraphStore>()((set, get) => {
         // the undo stack so the user can retry.
         set((state) => ({
           undoStack: newUndo,
-          redoStack: [...state.redoStack, prev],
+          redoStack: appendHistoryEntry(state.redoStack, prev),
           vcBusy: true,
         }))
         void prev
           .undo()
           .catch(() => {
             set((state) => ({
-              undoStack: [...state.undoStack, prev],
+              undoStack: appendHistoryEntry(state.undoStack, prev),
               redoStack: state.redoStack.filter((e) => e !== prev),
             }))
           })
@@ -768,10 +819,15 @@ const useGraphStore = create<GraphStore>()((set, get) => {
       }
       const nextFingerprint = computeStructuralFingerprint(prev.nodes, prev.edges, prev.preamble)
       const nextPanelContextFingerprint = computePanelContextFingerprint(prev.nodes, prev.edges)
-      const nextPersistedFingerprint = computePersistedFingerprint(prev.nodes, prev.edges, prev.preamble)
+      const nextPersistedFingerprint = computePersistedFingerprint(
+        prev.nodes,
+        prev.edges,
+        prev.preamble,
+        prev.submodels,
+      )
       set((state) => ({
         undoStack: newUndo,
-        redoStack: [...state.redoStack, captureGraphSnapshot(state)],
+        redoStack: appendHistoryEntry(state.redoStack, captureGraphSnapshot(state)),
         nodes: prev.nodes,
         edges: prev.edges,
         preamble: prev.preamble,
@@ -801,14 +857,14 @@ const useGraphStore = create<GraphStore>()((set, get) => {
       if (isVcEntry(next)) {
         set((state) => ({
           redoStack: newRedo,
-          undoStack: [...state.undoStack, next],
+          undoStack: appendHistoryEntry(state.undoStack, next),
           vcBusy: true,
         }))
         void next
           .redo()
           .catch(() => {
             set((state) => ({
-              redoStack: [...state.redoStack, next],
+              redoStack: appendHistoryEntry(state.redoStack, next),
               undoStack: state.undoStack.filter((e) => e !== next),
             }))
           })
@@ -817,10 +873,15 @@ const useGraphStore = create<GraphStore>()((set, get) => {
       }
       const nextFingerprint = computeStructuralFingerprint(next.nodes, next.edges, next.preamble)
       const nextPanelContextFingerprint = computePanelContextFingerprint(next.nodes, next.edges)
-      const nextPersistedFingerprint = computePersistedFingerprint(next.nodes, next.edges, next.preamble)
+      const nextPersistedFingerprint = computePersistedFingerprint(
+        next.nodes,
+        next.edges,
+        next.preamble,
+        next.submodels,
+      )
       set((state) => ({
         redoStack: newRedo,
-        undoStack: [...state.undoStack, captureGraphSnapshot(state)],
+        undoStack: appendHistoryEntry(state.undoStack, captureGraphSnapshot(state)),
         nodes: next.nodes,
         edges: next.edges,
         preamble: next.preamble,
@@ -853,11 +914,13 @@ const useGraphStore = create<GraphStore>()((set, get) => {
           state.nodes,
           state.edges,
           state.preamble,
+          state.submodels,
         )
         const savedPersistedFingerprint = computePersistedFingerprint(
           lastSavedSnapshot.nodes,
           lastSavedSnapshot.edges,
           lastSavedSnapshot.preamble,
+          lastSavedSnapshot.submodels,
         )
         return {
           lastSavedSnapshot,
@@ -875,8 +938,8 @@ const useGraphStore = create<GraphStore>()((set, get) => {
     // ── Pure selectors ──────────────────────────────────────────────────
 
     isDirty: () => {
-      const { lastSavedSnapshot, nodes, edges, preamble } = get()
-      const current = serializeSnapshot({ nodes, edges, preamble })
+      const { lastSavedSnapshot, nodes, edges, preamble, submodels } = get()
+      const current = serializeSnapshot({ nodes, edges, preamble, submodels })
       if (lastSavedSnapshot === null) {
         return current !== EMPTY_SNAPSHOT
       }

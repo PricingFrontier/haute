@@ -11,8 +11,7 @@ import pytest
 from haute._codegen_builders import (
     _build_extra_kwargs,
     _build_params,
-    _is_absolute_path,
-    _portable_path_expr,
+    _retained_api_input_template,
     _sanitize_description,
     _wrap_user_code,
 )
@@ -112,45 +111,6 @@ class TestBuildParams:
     def test_multiple_sources(self):
         result = _build_params(["a", "b"])
         assert result == "a: pl.LazyFrame, b: pl.LazyFrame"
-
-
-# ---------------------------------------------------------------------------
-# _is_absolute_path / _portable_path_expr
-# ---------------------------------------------------------------------------
-
-
-class TestPortablePath:
-    def test_unix_absolute(self):
-        assert _is_absolute_path("/home/user/data.parquet") is True
-
-    def test_windows_absolute(self):
-        assert _is_absolute_path("C:/Users/data.parquet") is True
-
-    def test_windows_backslash(self):
-        assert _is_absolute_path("C:\\Users\\data.parquet") is True
-
-    def test_relative(self):
-        assert _is_absolute_path("data/input.csv") is False
-
-    def test_empty(self):
-        assert _is_absolute_path("") is False
-
-    def test_dot_relative(self):
-        assert _is_absolute_path("../data/file.json") is False
-
-    def test_portable_relative_uses_file_parent(self):
-        result = _portable_path_expr("data/input.parquet")
-        assert "Path(__file__).parent" in result
-        assert '"data/input.parquet"' in result
-
-    def test_portable_absolute_stays_raw(self):
-        result = _portable_path_expr("/absolute/path.csv")
-        assert "Path(__file__)" not in result
-        assert '"/absolute/path.csv"' in result
-
-    def test_portable_empty_treated_as_relative(self):
-        result = _portable_path_expr("")
-        assert "Path(__file__).parent" in result
 
 
 # ---------------------------------------------------------------------------
@@ -1839,6 +1799,89 @@ class TestApiInputCodegen:
         assert "resolve_api_input_from_config" in code
         assert "input.parquet" not in code
         _compile_node_code(code)
+
+    def test_retained_api_input_code_has_no_escaped_path_artifact(self):
+        template = _retained_api_input_template("config/custom/quotes.json")
+        assert not template.startswith("\\")
+        assert '"config/custom/quotes.json"' in template
+
+
+class TestPreservedBlocksRoundTrip:
+    def test_module_block_is_not_preamble_and_reaches_source_fixpoint(self):
+        from haute.parser import parse_pipeline_source
+
+        source = """\
+import polars as pl
+import haute
+
+# haute:preserve-start
+VALUE = 7
+# haute:preserve-end
+
+pipeline = haute.Pipeline("main")
+
+@pipeline.polars
+def transform(df: pl.LazyFrame) -> pl.LazyFrame:
+    df = df.with_columns(pl.lit(1).alias("one"))
+    return df
+"""
+        first_graph = parse_pipeline_source(source)
+        assert "VALUE = 7" not in (first_graph.preamble or "")
+        assert first_graph.preserved_blocks == ["VALUE = 7"]
+
+        first_code = graph_to_code(first_graph)
+        assert first_code.count("VALUE = 7") == 1
+        second_code = graph_to_code(parse_pipeline_source(first_code))
+        assert second_code == first_code
+
+    def test_indented_preserve_marker_stays_in_decorated_node_code(self):
+        from haute.parser import parse_pipeline_source
+
+        source = """\
+import polars as pl
+import haute
+
+pipeline = haute.Pipeline("main")
+
+@pipeline.polars
+def transform(df: pl.LazyFrame) -> pl.LazyFrame:
+    # haute:preserve-start
+    marker = 1
+    # haute:preserve-end
+    return df
+"""
+        graph = parse_pipeline_source(source)
+        assert graph.preserved_blocks == []
+        code = graph_to_code(graph)
+        assert "    marker = 1" in code
+        compile(code, "<test>", "exec")
+
+    def test_identical_node_labels_raise_parse_error(self):
+        graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "one",
+                        "data": {
+                            "label": "Duplicate",
+                            "nodeType": "polars",
+                            "config": {"code": "return df"},
+                        },
+                    },
+                    {
+                        "id": "two",
+                        "data": {
+                            "label": "Duplicate",
+                            "nodeType": "polars",
+                            "config": {"code": "return df"},
+                        },
+                    },
+                ],
+                "edges": [],
+            }
+        )
+        with pytest.raises(ParseError):
+            graph_to_code(graph)
 
 
 # ---------------------------------------------------------------------------

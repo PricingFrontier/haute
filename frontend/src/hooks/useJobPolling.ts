@@ -26,6 +26,7 @@ interface JobPollerState<TStatus = unknown> {
   timeoutId?: ReturnType<typeof setTimeout>
   progressTimeoutId?: ReturnType<typeof setTimeout>
   startedAt: number
+  intervalMs: number
   consecutiveErrors: number
   toastedWarning: boolean
   lastProgressPublishedAt: number
@@ -162,23 +163,25 @@ function reconcilePollers<TJob, TStatus>(
       if (!job || !isCurrentJob(state)) return
       const elapsed = Date.now() - state.startedAt
 
-      // ── Max lifetime check ──
-      if (elapsed >= MAX_LIFETIME_MS) {
+      function failForMaxLifetime(): void {
         clearPendingProgress(state)
         delete stateRef.current[nodeId]
         onFail(nodeId, "Job timed out after 24 hours")
         addToast("error", `${failLabel}: ${labelFn(job)} — Job timed out after 24 hours`)
+      }
+
+      // ── Max lifetime check ──
+      if (elapsed >= MAX_LIFETIME_MS) {
+        failForMaxLifetime()
         return
       }
 
-      // Compute delay: base interval with exponential backoff on errors
-      const delay =
-        state.consecutiveErrors === 0
-          ? BASE_INTERVAL_MS
-          : Math.min(BASE_INTERVAL_MS * Math.pow(2, state.consecutiveErrors), MAX_INTERVAL_MS)
-
       state.timeoutId = setTimeout(async () => {
         if (!isCurrentJob(state)) return
+        if (Date.now() - state.startedAt >= MAX_LIFETIME_MS) {
+          failForMaxLifetime()
+          return
+        }
         let pollTimeoutId: ReturnType<typeof setTimeout> | undefined
         try {
           const status = await Promise.race([
@@ -190,7 +193,7 @@ function reconcilePollers<TJob, TStatus>(
           clearTimeout(pollTimeoutId)
           if (!isCurrentJob(state)) return
 
-          // Reset backoff on successful network call
+          // Reset consecutive-error warning state after a successful network call.
           state.consecutiveErrors = 0
           state.toastedWarning = false
 
@@ -212,6 +215,7 @@ function reconcilePollers<TJob, TStatus>(
           // newer job for the same node; stale statuses must not publish or
           // enqueue another poll.
           if (!isCurrentJob(state)) return
+          state.intervalMs = Math.min(state.intervalMs * 2, MAX_INTERVAL_MS)
           schedulePoll(state)
           queueProgress(state, status)
           return
@@ -233,18 +237,20 @@ function reconcilePollers<TJob, TStatus>(
             state.toastedWarning = true
             addToast("warning", `Polling is struggling for ${labelFn(job)} — ${state.consecutiveErrors} consecutive errors`)
           }
+          state.intervalMs = Math.min(state.intervalMs * 2, MAX_INTERVAL_MS)
         }
 
         // Schedule next poll (whether success-in-progress or error)
         if (isCurrentJob(state)) {
           schedulePoll(state)
         }
-      }, delay)
+      }, Math.min(state.intervalMs, MAX_LIFETIME_MS - elapsed))
     }
 
     const initialState: JobPollerState<TStatus> = {
       jobId,
       startedAt: now,
+      intervalMs: BASE_INTERVAL_MS,
       consecutiveErrors: 0,
       toastedWarning: false,
       lastProgressPublishedAt: 0,

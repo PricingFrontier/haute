@@ -175,7 +175,8 @@ approving it.
   decision to avoid premature abstraction: with only two implemented targets
   (Databricks, container) plus scaffolded container-platform variants, any `Protocol`
   or base class would be guessing at a shape the codebase doesn't yet have enough
-  concrete implementations to justify. Dispatch in `__init__.py::_dispatch_resolved`
+  concrete implementations to justify. Dispatch in
+  `src/haute/deploy/__init__.py::_dispatch_resolved`
   is a plain if-chain; container-platform targets share `deploy_to_platform_container()`
   but there is no `Protocol` or base class because the concrete shape of a third
   genuinely different target isn't known yet.
