@@ -740,9 +740,16 @@ def safe_joblib_load(path: str | Path) -> Any:
         ):
             if isinstance(file_object, str):
                 raise ValueError("legacy joblib persistence formats are not supported")
-            return RestrictedNumpyUnpickler(
-                filename,
-                file_object,
-                ensure_native_byte_order=True,
-                mmap_mode=mmap_mode,
-            ).load()
+            try:
+                unpickler = RestrictedNumpyUnpickler(
+                    filename,
+                    file_object,
+                    ensure_native_byte_order=True,
+                    mmap_mode=mmap_mode,
+                )
+            except TypeError as exc:
+                raise RuntimeError(
+                    "Installed joblib is incompatible with Haute's restricted loader: "
+                    "the numpy_pickle unpickler constructor is unsupported"
+                ) from exc
+            return unpickler.load()

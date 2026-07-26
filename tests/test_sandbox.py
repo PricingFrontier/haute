@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import pickle
 import sys
+import tomllib
 from importlib import import_module
 from pathlib import Path
 from types import ModuleType
 
 import pytest
+from packaging.requirements import Requirement
 
 from haute._sandbox import (
     UnsafeCodeError,
@@ -173,6 +175,22 @@ class TestSafeUnpickle:
 
 class TestSafeJoblibLoad:
     """Verify joblib loading goes through the restricted unpickler."""
+
+    def test_supported_joblib_floor_is_a_direct_dependency(self) -> None:
+        """The private restricted-loader contract must be installable from Haute alone."""
+        pyproject_path = Path(__file__).parents[1] / "pyproject.toml"
+        project = tomllib.loads(pyproject_path.read_text(encoding="utf-8"))["project"]
+        requirements = {
+            requirement.name: requirement
+            for raw_requirement in project["dependencies"]
+            for requirement in (Requirement(raw_requirement),)
+        }
+
+        assert "joblib" in requirements
+        supported = requirements["joblib"].specifier
+        assert supported.contains("1.5")
+        assert not supported.contains("1.4.2")
+        assert not supported.contains("2")
 
     def test_safe_object_loads(self, tmp_path: Path):
         """A plain numpy array saved with joblib should load fine."""
@@ -826,6 +844,36 @@ class TestJoblibMonkeyPatchThreadSafety:
         artifact = tmp_path / "data.joblib"
         joblib.dump({"value": 1}, artifact)
         monkeypatch.delattr(joblib.numpy_pickle, "_validate_fileobject_and_memmap")
+
+        with pytest.raises(RuntimeError, match="joblib is incompatible"):
+            safe_joblib_load(artifact)
+
+    def test_incompatible_joblib_constructor_fails_loudly(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Private constructor signature drift must retain Haute's typed boundary."""
+        import joblib
+
+        set_project_root(tmp_path)
+        artifact = tmp_path / "data.joblib"
+        joblib.dump({"value": 1}, artifact)
+
+        class IncompatibleNumpyUnpickler:
+            def __init__(
+                self,
+                filename: str,
+                file_handle: object,
+                mmap_mode: str | None = None,
+            ) -> None:
+                del filename, file_handle, mmap_mode
+
+        monkeypatch.setattr(
+            joblib.numpy_pickle,
+            "NumpyUnpickler",
+            IncompatibleNumpyUnpickler,
+        )
 
         with pytest.raises(RuntimeError, match="joblib is incompatible"):
             safe_joblib_load(artifact)

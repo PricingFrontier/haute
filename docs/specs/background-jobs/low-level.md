@@ -319,8 +319,9 @@ The thread executes one total outcome pipeline:
    original exception is retained as `exception_to_report`.
 2. `_finish_outcome` runs the parent completion/cleanup callback. A cleanup failure
    is retained as `cleanup_error`/`cleanup_error_class` without changing the worker
-   outcome. In particular, cleanup after a committed completed publication cannot
-   discard its result or turn success into `error`.
+   outcome, and is logged with its job ID and traceback for operator diagnosis. In
+   particular, cleanup after a committed completed publication cannot discard its
+   result or turn success into `error`.
 3. `_persist_terminal_outcome` attempts the lifecycle transition once and verifies
    that a precedence-rejected write still left the job terminal.
 4. A missing/unverifiable job or failed terminal write is recorded on

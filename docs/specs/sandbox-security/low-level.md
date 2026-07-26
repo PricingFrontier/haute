@@ -168,9 +168,12 @@ of `_FORMAT_METHOD_NAMES`. Receiver shapes:
 5. `safe_joblib_load` defines a private `NumpyUnpickler` subclass whose
    `find_class` routes through `_resolve_allowed_global`, then uses joblib's
    file-object validation/decompression context and instantiates that subclass
-   directly. It never mutates `NumpyUnpickler.find_class` process-wide. A missing
-   `joblib` package logs a warning and falls back to `safe_unpickle(validated)`;
-   an installed joblib missing the required private APIs raises `RuntimeError`.
+   directly. It never mutates `NumpyUnpickler.find_class` process-wide. Haute
+   declares `joblib>=1.5,<2` directly because this restricted path requires the
+   private file-object validator and native-byte-order constructor contract
+   introduced in joblib 1.5. A missing `joblib` package logs a warning and falls
+   back to `safe_unpickle(validated)`; an installed joblib missing those private
+   APIs, or exposing an incompatible unpickler constructor, raises `RuntimeError`.
    If joblib's file-object validator reports a legacy string-backed persistence
    format, the loader raises `ValueError` rather than bypassing the restricted
    subclass.
@@ -321,7 +324,9 @@ of `_FORMAT_METHOD_NAMES`. Receiver shapes:
   `safe_joblib_load` when joblib exposes a legacy string-backed persistence format
   that cannot use the restricted unpickler. Not caught inside this component.
 - `RuntimeError` — raised when installed joblib lacks the private
-  `NumpyUnpickler`/file-object validation APIs required to enforce the allowlist.
+  `NumpyUnpickler`/file-object validation APIs required to enforce the allowlist,
+  or when its private unpickler constructor is incompatible with the supported
+  joblib 1.x contract.
 - Local-session/host failures never raise into application code — they are
   short-circuited as HTTP `400`/`403` `JSONResponse`s (or a plain-text `400` for
   the trusted-host check) or a WebSocket close before `accept()`; there is no

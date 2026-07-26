@@ -319,7 +319,7 @@ class IsolatedJobSupervisor:
                     completed_fields=completed_fields,
                     completed_message=completed_message,
                 )
-                outcome = self._finish_outcome(outcome, on_finished)
+                outcome = self._finish_outcome(job_id, outcome, on_finished)
                 self._persist_terminal_outcome(
                     job_id,
                     to=outcome.terminal_reason,
@@ -349,7 +349,7 @@ class IsolatedJobSupervisor:
                 exc,
                 message_prefix="Failed to start isolated supervisor: ",
             )
-            outcome = self._finish_outcome(outcome, on_finished)
+            outcome = self._finish_outcome(job_id, outcome, on_finished)
             self._persist_terminal_outcome(
                 job_id,
                 to=outcome.terminal_reason,
@@ -390,6 +390,7 @@ class IsolatedJobSupervisor:
 
     @staticmethod
     def _finish_outcome(
+        job_id: str,
         outcome: _SupervisorOutcome,
         on_finished: Callable[[], None] | None,
     ) -> _SupervisorOutcome:
@@ -398,6 +399,14 @@ class IsolatedJobSupervisor:
         try:
             on_finished()
         except BaseException as exc:
+            logger.error(
+                "isolated_job_cleanup_failed",
+                job_id=job_id,
+                terminal_reason=outcome.terminal_reason,
+                error=str(exc),
+                error_type=type(exc).__name__,
+                exc_info=True,
+            )
             fields = dict(outcome.fields)
             fields.update(
                 {

@@ -5,6 +5,7 @@ import shutil
 import threading
 import time
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -617,21 +618,34 @@ def test_protocol_supervisor_cleanup_failure_preserves_committed_success(tmp_pat
     store = JobStore()
     job_id = store.create_job({"status": "running"})
 
+    def fail_cleanup() -> None:
+        raise OSError("cleanup failed")
+
     supervisor = IsolatedJobSupervisor(
         JobLifecycle(store),
         protocol_runner=lambda *_args, **_kwargs: WorkerResultManifest(metadata={}),
     )
-    thread = supervisor.launch_protocol(
-        job_id,
-        lambda *_args: None,
-        WorkerRequest(job_id, "test", {}),
-        artifact_root=tmp_path,
-        artifact_kinds=frozenset(),
-        max_artifact_size_bytes=0,
-        completed_fields=lambda _result: {"published_path": "models/fitted.joblib"},
-        on_finished=lambda: (_ for _ in ()).throw(OSError("cleanup failed")),
+    with patch("haute.routes._background_jobs.logger.error") as log_error:
+        thread = supervisor.launch_protocol(
+            job_id,
+            lambda *_args: None,
+            WorkerRequest(job_id, "test", {}),
+            artifact_root=tmp_path,
+            artifact_kinds=frozenset(),
+            max_artifact_size_bytes=0,
+            completed_fields=lambda _result: {"published_path": "models/fitted.joblib"},
+            on_finished=fail_cleanup,
+        )
+        thread.join_and_raise(timeout=10)
+
+    log_error.assert_called_once_with(
+        "isolated_job_cleanup_failed",
+        job_id=job_id,
+        terminal_reason="completed",
+        error="cleanup failed",
+        error_type="OSError",
+        exc_info=True,
     )
-    thread.join_and_raise(timeout=10)
 
     job = store.require_job(job_id)
     assert job["status"] == "completed"
