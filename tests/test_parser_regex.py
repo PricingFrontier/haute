@@ -898,6 +898,31 @@ x = {unclosed
         assert graph.pipeline_description == 'd"e'
 
     @pytest.mark.parametrize(
+        "ignored_import",
+        [
+            "import haute as",
+            "import haute; import os",
+        ],
+        ids=["malformed", "multiple-statements"],
+    )
+    def test_unusable_import_lines_do_not_block_canonical_pipeline_metadata(
+        self,
+        ignored_import: str,
+    ) -> None:
+        source = f"""\
+import haute
+{ignored_import}
+pipeline = haute.Pipeline("motor_rating", description="real desc")
+
+@pipeline.polars()
+def broken(df):
+    return (
+"""
+        graph = fallback_parse(source, "f.py", SyntaxError("bad"))
+        assert graph.pipeline_name == "motor_rating"
+        assert graph.pipeline_description == "real desc"
+
+    @pytest.mark.parametrize(
         ("import_line", "constructor"),
         [
             ("import haute as ht", "ht.Pipeline"),
