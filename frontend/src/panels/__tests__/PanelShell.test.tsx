@@ -39,6 +39,21 @@ describe("PanelShell", () => {
     expect(shell.style.width).toBe("940px")
   })
 
+  it("keeps its mount-time default width across unrelated rerenders", () => {
+    Object.defineProperty(window, "innerWidth", { value: 1440 })
+    useUIStore.setState({ nodePanelWidth: 0, paletteOpen: true })
+    const { container, rerender } = render(
+      <PanelShell><span>initial content</span></PanelShell>,
+    )
+    const shell = container.firstElementChild as HTMLElement
+    expect(shell.style.width).toBe("630px")
+
+    Object.defineProperty(window, "innerWidth", { value: 1024 })
+    rerender(<PanelShell><span>updated content</span></PanelShell>)
+
+    expect(shell.style.width).toBe("630px")
+  })
+
   it("applies background from CSS variable", () => {
     const { container } = render(<PanelShell><span>content</span></PanelShell>)
     const shell = container.firstElementChild as HTMLElement

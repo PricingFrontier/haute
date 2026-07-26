@@ -7,7 +7,7 @@
 | `frontend/src/panels/NodePanel.tsx` | Selects configuration/columns/instance views, routes the selected node to an editor, and derives the per-edge `InputSource` list via `edgeInputName` (memoised on a per-edge signature covering edge id, source id/label, `sourceHandle`, the derived input name, and the `frameUnresolved` resolution state). |
 | `frontend/src/panels/NodePalette.tsx` | Renders draggable node templates. |
 | `frontend/src/panels/LazyNodeEditors.tsx` | Central dynamic-import registry and loading boundaries for editor bodies. |
-| `frontend/src/panels/PanelShell.tsx`, `frontend/src/panels/PanelHeader.tsx` | Right-panel shell/header used by node, imports and utility authoring views. |
+| `frontend/src/panels/PanelShell.tsx`, `frontend/src/panels/PanelHeader.tsx` | Right-panel shell/header used by node, imports and utility authoring views. A shell with no stored width chooses 50% of the available space when it mounts and keeps that established width across unrelated rerenders and viewport changes; an explicit drag updates the shared stored width. |
 | `frontend/src/components/ReadOnlyNodeConfig.tsx`, `frontend/src/components/FramesTable.tsx`, `frontend/src/components/KeyPickerModal.tsx` | Inert configuration, API-frame rows and reusable API-input key picker. |
 | `frontend/src/panels/editors/index.ts` | Public editor exports. |
 | `frontend/src/panels/editors/_shared.tsx` | Shared editor types, styles, file browser, schema preview and the input-source bar (chips keyed by edge id, showing each edge's input name — the code argument — with the source node named in the tooltip). |
